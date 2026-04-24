@@ -38,6 +38,24 @@ AUTO_RETRY=false
 CLEAR_DATA=false
 LIST_ONLY=false
 
+usage() {
+    cat <<'USAGE'
+Usage: run-android-tests.sh [OPTIONS]
+
+Options:
+  --project-root <path>   Project root (required).
+  --device <serial>       ADB device serial.
+  --module-filter <glob>  Comma-separated glob patterns for module names.
+  --skip-app              Skip app/androidApp modules.
+  --verbose               Show last 30 lines of log on failure.
+  --flavor <name>         Android build flavor.
+  --auto-retry            Retry failed modules once.
+  --clear-data            Clear app data before retry.
+  --list | --list-only    List discovered modules and exit.
+USAGE
+    exit "${1:-0}"
+}
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -65,9 +83,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$PROJECT_ROOT" ]]; then
-    err "[ERROR] --project-root is required."
-    usage
-    exit 1
+    echo -e "\033[31m[ERROR] --project-root is required.\033[0m" >&2
+    usage 1
 fi
 
 # Color codes

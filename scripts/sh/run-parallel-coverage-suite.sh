@@ -79,7 +79,7 @@ Options:
   --benchmark-config <name>   Benchmark config: smoke (default) | main | stress
   -h | --help                 Show this help.
 USAGE
-    exit 0
+    exit "${1:-0}"
 }
 
 # ---------------------------------------------------------------------------
@@ -111,8 +111,7 @@ done
 
 if [[ -z "$PROJECT_ROOT" ]]; then
     err "[ERROR] --project-root is required."
-    usage
-    exit 1
+    usage 1
 fi
 
 # ---------------------------------------------------------------------------

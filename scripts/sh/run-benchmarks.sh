@@ -55,7 +55,7 @@ Options:
   --include-shared            Include shared-kmp-libs benchmark modules.
   -h, --help                  Show this help.
 USAGE
-    exit 0
+    exit "${1:-0}"
 }
 
 # ---------------------------------------------------------------------------
@@ -75,8 +75,7 @@ done
 
 if [[ -z "$PROJECT_ROOT" ]]; then
     err "[ERROR] --project-root is required."
-    usage
-    exit 1
+    usage 1
 fi
 
 if [[ ! -d "$PROJECT_ROOT" ]]; then

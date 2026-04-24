@@ -71,7 +71,7 @@ Options:
   --exclude-coverage <list>   Comma-separated modules to exclude from coverage.
   -h | --help                 Show this help.
 USAGE
-    exit 0
+    exit "${1:-0}"
 }
 
 # ---------------------------------------------------------------------------
@@ -95,8 +95,7 @@ done
 
 if [[ -z "$PROJECT_ROOT" ]]; then
     err "[ERROR] --project-root is required."
-    usage
-    exit 1
+    usage 1
 fi
 
 # ============================================================================
