@@ -1,0 +1,44 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: shellcheck
+        if: matrix.os == 'ubuntu-latest'
+        run: shellcheck scripts/sh/*.sh scripts/sh/lib/*.sh
+      - name: bats
+        if: matrix.os == 'ubuntu-latest'
+        run: npx bats tests/bats/
+      - name: Pester
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: Invoke-Pester -Path tests/pester/ -CI
+      - name: vitest
+        run: npx vitest run --coverage
+  secrets-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: TruffleHog OSS
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified

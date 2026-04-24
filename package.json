@@ -12,5 +12,14 @@
   "license": "Apache-2.0",
   "engines": {
     "node": ">=18"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "shellcheck": "shellcheck scripts/sh/*.sh scripts/sh/lib/*.sh"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0",
+    "@vitest/coverage-v8": "^2.1.0"
   }
 }

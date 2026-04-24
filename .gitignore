@@ -1,14 +1,12 @@
-# Node
+.env
+*.env.local
 node_modules/
 dist/
 coverage/
-*.env.local
-.env
-
-# Gradle
 .gradle/
 build/
-**/gradle.properties
-
-# IDE
 .idea/
+gradle.properties
+*.log
+.DS_Store
+Thumbs.db
