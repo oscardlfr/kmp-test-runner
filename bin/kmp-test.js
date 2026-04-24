@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // bin/kmp-test.js — OS-dispatching CLI for kmp-test-runner
 
-const { spawnSync } = require('node:child_process');
-const { readFileSync } = require('node:fs');
-const path = require('node:path');
+import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // 5 subcommands → (sh-script-name, ps1-script-name, extra-prefix-args)
 const COMMANDS = {
@@ -110,16 +113,9 @@ function main() {
   return result.status ?? 1;
 }
 
-if (require.main === module) {
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
   process.exit(main());
 }
 
-module.exports = {
-  main,
-  COMMANDS,
-  resolveScript,
-  pickWindowsShell,
-  ensureProjectRoot,
-  readVersion,
-  printHelp,
-};
+export { main, COMMANDS, resolveScript, pickWindowsShell, ensureProjectRoot, readVersion, printHelp };
