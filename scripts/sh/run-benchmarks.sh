@@ -184,12 +184,26 @@ while IFS= read -r mod; do
     [[ -n "$mod" ]] && BENCHMARK_MODULES+=("$mod")
 done < <(detect_benchmark_modules "$PROJECT_ROOT" "$MODULE_FILTER")
 
-# Include shared-kmp-libs modules if requested
-SHARED_ROOT="$(dirname "$PROJECT_ROOT")/shared-kmp-libs"
-if $INCLUDE_SHARED && [[ -d "$SHARED_ROOT" ]]; then
-    while IFS= read -r mod; do
-        [[ -n "$mod" ]] && BENCHMARK_MODULES+=("${SHARED_LIBS_PREFIX:-shared-kmp-libs}:$mod")
-    done < <(detect_benchmark_modules "$SHARED_ROOT" "$MODULE_FILTER")
+# Include shared project modules if requested
+SHARED_PROJECT_NAME="${SHARED_PROJECT_NAME:-}"
+SHARED_ROOT="${SHARED_ROOT:-}"
+if $INCLUDE_SHARED; then
+    if [[ -z "$SHARED_PROJECT_NAME" && -z "$SHARED_ROOT" ]]; then
+        warn "[!] --include-shared requires SHARED_PROJECT_NAME or SHARED_ROOT env var"
+    else
+        if [[ -n "$SHARED_ROOT" ]]; then
+            _shared_dir="$SHARED_ROOT"
+            _shared_name="${SHARED_PROJECT_NAME:-$(basename "$SHARED_ROOT")}"
+        else
+            _shared_dir="$(dirname "$PROJECT_ROOT")/$SHARED_PROJECT_NAME"
+            _shared_name="$SHARED_PROJECT_NAME"
+        fi
+        if [[ -d "$_shared_dir" ]]; then
+            while IFS= read -r mod; do
+                [[ -n "$mod" ]] && BENCHMARK_MODULES+=("${_shared_name}:$mod")
+            done < <(detect_benchmark_modules "$_shared_dir" "$MODULE_FILTER")
+        fi
+    fi
 fi
 
 if [[ ${#BENCHMARK_MODULES[@]} -eq 0 ]]; then
@@ -229,7 +243,7 @@ for mod in "${BENCHMARK_MODULES[@]}"; do
         # Resolve the actual module name and project root for this module
         actual_mod="$mod"
         gradle_root="$PROJECT_ROOT"
-        shared_prefix="${SHARED_LIBS_PREFIX:-shared-kmp-libs}"
+        shared_prefix="$SHARED_PROJECT_NAME"
         if [[ "$mod" == ${shared_prefix}:* ]]; then
             actual_mod="${mod#${shared_prefix}:}"
             gradle_root="$SHARED_ROOT"

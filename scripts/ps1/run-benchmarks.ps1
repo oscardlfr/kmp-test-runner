@@ -122,16 +122,26 @@ if (-not $runJvm -and -not $runAndroid) {
 
 $modules = @(Detect-BenchmarkModules -ProjectRoot $ProjectRoot -ModuleFilter $ModuleFilter)
 
+$SharedProjectName = if ($env:SHARED_PROJECT_NAME) { $env:SHARED_PROJECT_NAME } else { "" }
+
 if ($IncludeShared) {
-    $sharedLibsName = if ($env:SHARED_LIBS_PREFIX) { $env:SHARED_LIBS_PREFIX } else { "shared-kmp-libs" }
-    $sharedRoot = Join-Path (Split-Path $ProjectRoot -Parent) $sharedLibsName
-    if (Test-Path $sharedRoot) {
-        $sharedModules = @(Detect-BenchmarkModules -ProjectRoot $sharedRoot -ModuleFilter $ModuleFilter)
-        foreach ($sm in $sharedModules) {
-            $modules += "${sharedLibsName}:$sm"
-        }
+    if (-not $SharedProjectName -and -not $env:SHARED_ROOT) {
+        Write-Host "[!!] --include-shared requires SHARED_PROJECT_NAME or SHARED_ROOT env var" -ForegroundColor Yellow
     } else {
-        Write-Host "[!!] $sharedLibsName directory not found at: $sharedRoot" -ForegroundColor Yellow
+        $sharedRoot = if ($env:SHARED_ROOT) {
+            $env:SHARED_ROOT
+        } else {
+            Join-Path (Split-Path $ProjectRoot -Parent) $SharedProjectName
+        }
+        $resolvedName = if ($SharedProjectName) { $SharedProjectName } else { Split-Path $sharedRoot -Leaf }
+        if (Test-Path $sharedRoot) {
+            $sharedModules = @(Detect-BenchmarkModules -ProjectRoot $sharedRoot -ModuleFilter $ModuleFilter)
+            foreach ($sm in $sharedModules) {
+                $modules += "${resolvedName}:$sm"
+            }
+        } else {
+            Write-Host "[!!] $resolvedName directory not found at: $sharedRoot" -ForegroundColor Yellow
+        }
     }
 }
 
@@ -186,7 +196,7 @@ function Invoke-GradleBenchmark {
 
 foreach ($mod in $modules) {
     # Resolve project root for this module (shared-kmp-libs prefix means different root)
-    $sharedLibsName = if ($env:SHARED_LIBS_PREFIX) { $env:SHARED_LIBS_PREFIX } else { "shared-kmp-libs" }
+    $sharedLibsName = $SharedProjectName
     $isShared = $mod.StartsWith("${sharedLibsName}:")
     if ($isShared) {
         $effectiveRoot  = Join-Path (Split-Path $ProjectRoot -Parent) $sharedLibsName
@@ -229,7 +239,7 @@ foreach ($mod in $modules) {
 $benchmarkEntries = @()
 
 foreach ($mod in $modules) {
-    $sharedLibsName = if ($env:SHARED_LIBS_PREFIX) { $env:SHARED_LIBS_PREFIX } else { "shared-kmp-libs" }
+    $sharedLibsName = $SharedProjectName
     $isShared = $mod.StartsWith("${sharedLibsName}:")
     if ($isShared) {
         $effectiveRoot   = Join-Path (Split-Path $ProjectRoot -Parent) $sharedLibsName

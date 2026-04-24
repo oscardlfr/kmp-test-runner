@@ -98,6 +98,9 @@ if [[ -z "$PROJECT_ROOT" ]]; then
     usage 1
 fi
 
+SHARED_PROJECT_NAME="${SHARED_PROJECT_NAME:-}"
+SHARED_ROOT="${SHARED_ROOT:-}"
+
 # ============================================================================
 # GIT CHANGE DETECTION
 # ============================================================================
@@ -122,8 +125,8 @@ find_changed_modules() {
         local module
         module="$(get_module_from_file "$file" "$project_path")"
         if [[ -n "$module" ]]; then
-            # Filter shared-kmp-libs if not included
-            if [[ "$include_shared" != "true" ]] && echo "$module" | grep -q 'shared-kmp-libs'; then
+            # Filter shared project if not included
+            if [[ "$include_shared" != "true" && -n "$SHARED_PROJECT_NAME" ]] && echo "$module" | grep -q "${SHARED_PROJECT_NAME}"; then
                 continue
             fi
             echo "$module" >> "$mod_counts_tmp"

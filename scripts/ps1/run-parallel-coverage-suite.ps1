@@ -362,21 +362,32 @@ $projectsToProcess = @(
     [PSCustomObject]@{ Name = $projectName; Path = $ProjectRoot; Prefix = "" }
 )
 
+$SharedProjectName = if ($env:SHARED_PROJECT_NAME) { $env:SHARED_PROJECT_NAME } else { "" }
+
 if ($IncludeShared) {
-    $sharedLibsPath = Join-Path (Split-Path $ProjectRoot -Parent) "shared-kmp-libs"
-    $sharedLibsResolved = (Resolve-Path $sharedLibsPath -ErrorAction SilentlyContinue).Path
-    $projectRootResolved = (Resolve-Path $ProjectRoot).Path
-    if ($sharedLibsResolved -and (Test-Path $sharedLibsResolved) -and ($sharedLibsResolved -ne $projectRootResolved)) {
-        $projectsToProcess += [PSCustomObject]@{
-            Name = "shared-kmp-libs"
-            Path = $sharedLibsResolved
-            Prefix = "shared-kmp-libs:"
-        }
-        Write-Host "[+] Including shared-kmp-libs: $sharedLibsResolved" -ForegroundColor Green
-    } elseif ($sharedLibsResolved -eq $projectRootResolved) {
-        Write-Host "[~] shared-kmp-libs IS the project root - skipping duplicate" -ForegroundColor DarkYellow
+    if (-not $SharedProjectName -and -not $env:SHARED_ROOT) {
+        Write-Host "[!] --include-shared requires SHARED_PROJECT_NAME or SHARED_ROOT env var" -ForegroundColor Yellow
     } else {
-        Write-Host "[!] shared-kmp-libs not found at: $sharedLibsPath" -ForegroundColor Yellow
+        $sharedLibsPath = if ($env:SHARED_ROOT) {
+            $env:SHARED_ROOT
+        } else {
+            Join-Path (Split-Path $ProjectRoot -Parent) $SharedProjectName
+        }
+        $resolvedName = if ($SharedProjectName) { $SharedProjectName } else { Split-Path $sharedLibsPath -Leaf }
+        $sharedLibsResolved = (Resolve-Path $sharedLibsPath -ErrorAction SilentlyContinue).Path
+        $projectRootResolved = (Resolve-Path $ProjectRoot).Path
+        if ($sharedLibsResolved -and (Test-Path $sharedLibsResolved) -and ($sharedLibsResolved -ne $projectRootResolved)) {
+            $projectsToProcess += [PSCustomObject]@{
+                Name = $resolvedName
+                Path = $sharedLibsResolved
+                Prefix = "${resolvedName}:"
+            }
+            Write-Host "[+] Including ${resolvedName}: $sharedLibsResolved" -ForegroundColor Green
+        } elseif ($sharedLibsResolved -eq $projectRootResolved) {
+            Write-Host "[~] $resolvedName IS the project root - skipping duplicate" -ForegroundColor DarkYellow
+        } else {
+            Write-Host "[!] $resolvedName not found at: $sharedLibsPath" -ForegroundColor Yellow
+        }
     }
 }
 
@@ -467,8 +478,8 @@ foreach ($module in $allModules) {
 
     $testableModules.Add($module)
 
-    $isShared = $module.Name.StartsWith("shared-kmp-libs:")
-    $shortMod = if ($isShared) { $module.Name.Substring("shared-kmp-libs:".Length) } else { $module.Name }
+    $isShared = $SharedProjectName -and $module.Name.StartsWith("${SharedProjectName}:")
+    $shortMod = if ($isShared) { $module.Name.Substring("${SharedProjectName}:".Length) } else { $module.Name }
     # Convert colon-separated module path to Gradle task path
     $gradlePath = ":$($shortMod -replace ':', ':')"
 
@@ -650,10 +661,10 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
                 ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
             Start-Sleep -Seconds 2
 
-            # Cross-project clean: shared-kmp-libs first, then main project
-            $sharedPath = Join-Path (Split-Path $ProjectRoot -Parent) "shared-kmp-libs"
-            if (Test-Path $sharedPath) {
-                Write-Host "[RECOVERY] Stopping daemons in shared-kmp-libs..." -ForegroundColor Yellow
+            # Cross-project clean: shared project first, then main project
+            $sharedPath = if ($env:SHARED_ROOT) { $env:SHARED_ROOT } elseif ($SharedProjectName) { Join-Path (Split-Path $ProjectRoot -Parent) $SharedProjectName } else { $null }
+            if ($sharedPath -and (Test-Path $sharedPath)) {
+                Write-Host "[RECOVERY] Stopping daemons in $SharedProjectName..." -ForegroundColor Yellow
                 Push-Location $sharedPath
                 & ./gradlew --stop 2>&1 | Out-Null
                 Pop-Location
@@ -698,8 +709,8 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
     Remove-Item $tempLog -Force -ErrorAction SilentlyContinue
 
     foreach ($module in $testableModules) {
-        $isShared = $module.Name.StartsWith("shared-kmp-libs:")
-        $shortMod = if ($isShared) { $module.Name.Substring("shared-kmp-libs:".Length) } else { $module.Name }
+        $isShared = $SharedProjectName -and $module.Name.StartsWith("${SharedProjectName}:")
+        $shortMod = if ($isShared) { $module.Name.Substring("${SharedProjectName}:".Length) } else { $module.Name }
         $gradlePath = ":$($shortMod -replace ':', ':')"
 
         # Check if this module's test task failed
@@ -839,9 +850,9 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
         }
     }
 
-    # Run shared-kmp-libs coverage tasks from shared-kmp-libs directory
+    # Run shared project coverage tasks from shared project directory
     if ($covTasksShared.Count -gt 0) {
-        $sharedLibsPath = ($projectsToProcess | Where-Object { $_.Name -eq "shared-kmp-libs" } | Select-Object -First 1).Path
+        $sharedLibsPath = ($projectsToProcess | Where-Object { $_.Name -eq $SharedProjectName } | Select-Object -First 1).Path
         if ($sharedLibsPath -and (Test-Path $sharedLibsPath)) {
             $covArgsShared = @()
             $covArgsShared += $covTasksShared
@@ -849,7 +860,7 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
             $covArgsShared += "--continue"
             if ($MaxWorkers -gt 0) { $covArgsShared += "--max-workers=$MaxWorkers" }
 
-            Write-Host "  [>] Generating shared-kmp-libs coverage ($($covTasksShared.Count) modules)..." -ForegroundColor Cyan
+            Write-Host "  [>] Generating $SharedProjectName coverage ($($covTasksShared.Count) modules)..." -ForegroundColor Cyan
             Push-Location $sharedLibsPath
             $covOutputShared = & ./gradlew @covArgsShared 2>&1
             $covExitCodeShared = $LASTEXITCODE
@@ -858,7 +869,7 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
             if ($covExitCodeShared -ne 0) {
                 # Check if --continue saved us
                 $covXmlCountS = 0
-                foreach ($mod in ($allModules | Where-Object { $_.Name -like "shared-kmp-libs:*" })) {
+                foreach ($mod in ($allModules | Where-Object { $SharedProjectName -and $_.Name.StartsWith("${SharedProjectName}:") })) {
                     $modTool = $mod.CovTool
                     if (-not $modTool -or $modTool -eq "none") { continue }
                     $xmlCheck = Get-CoverageXmlPath -Tool $modTool -ModulePath $mod.Path -IsDesktop $Desktop
@@ -881,7 +892,7 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
                     if ($retryExitS -eq 0) {
                         $covOkS = $covTasksShared.Count
                     } else {
-                        foreach ($mod in ($allModules | Where-Object { $_.Name -like "shared-kmp-libs:*" })) {
+                        foreach ($mod in ($allModules | Where-Object { $SharedProjectName -and $_.Name.StartsWith("${SharedProjectName}:") })) {
                             $modTool = $mod.CovTool
                             if (-not $modTool -or $modTool -eq "none") { continue }
                             $xmlCheck = Get-CoverageXmlPath -Tool $modTool -ModulePath $mod.Path -IsDesktop $Desktop
@@ -895,10 +906,10 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
                     }
                 }
             } else {
-                Write-Host "  [OK] shared-kmp-libs coverage reports generated ($($covTasksShared.Count) modules)" -ForegroundColor Green
+                Write-Host "  [OK] $SharedProjectName coverage reports generated ($($covTasksShared.Count) modules)" -ForegroundColor Green
             }
         } else {
-            Write-Host "  [!] shared-kmp-libs not found for coverage at: $sharedLibsPath" -ForegroundColor Yellow
+            Write-Host "  [!] $SharedProjectName not found for coverage at: $sharedLibsPath" -ForegroundColor Yellow
         }
     }
 
@@ -1096,8 +1107,8 @@ Write-Host ""
 Write-Host ("{0,-48} {1,10} {2,8}" -f "MODULE", "COVERAGE", "MISSED") -ForegroundColor White
 Write-Host ("-" * 70) -ForegroundColor DarkGray
 
-$mainModules = $moduleSummaries.Values | Where-Object { -not $_.Name.StartsWith("shared-kmp-libs:") } | Sort-Object Name
-$sharedModules = $moduleSummaries.Values | Where-Object { $_.Name.StartsWith("shared-kmp-libs:") } | Sort-Object Name
+$mainModules = $moduleSummaries.Values | Where-Object { -not ($SharedProjectName -and $_.Name.StartsWith("${SharedProjectName}:")) } | Sort-Object Name
+$sharedModules = $moduleSummaries.Values | Where-Object { $SharedProjectName -and $_.Name.StartsWith("${SharedProjectName}:") } | Sort-Object Name
 
 foreach ($m in $mainModules) {
     $color = if ($m.CoveragePct -lt 50) { "Red" } elseif ($m.CoveragePct -lt 80) { "Yellow" } else { "Green" }

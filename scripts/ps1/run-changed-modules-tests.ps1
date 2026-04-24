@@ -177,11 +177,12 @@ function Find-ChangedModules {
         }
     }
 
-    # Filter out shared-kmp-libs if not included
-    if (-not $IncludeShared) {
+    # Filter out shared project modules if not included
+    $sharedProjectName = if ($env:SHARED_PROJECT_NAME) { $env:SHARED_PROJECT_NAME } else { "" }
+    if (-not $IncludeShared -and $sharedProjectName) {
         $filteredModules = @{}
         foreach ($key in $modules.Keys) {
-            if ($key -notmatch 'shared-kmp-libs') {
+            if ($key -notmatch [regex]::Escape($sharedProjectName)) {
                 $filteredModules[$key] = $modules[$key]
             }
         }
