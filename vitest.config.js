@@ -7,7 +7,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       all: true,
-      include: ['bin/**/*.js'],
+      include: ['lib/**/*.js'],
       reporter: ['text', 'html', 'lcov'],
       thresholds: {
         lines: 80,
