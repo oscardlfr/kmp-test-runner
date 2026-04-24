@@ -6,51 +6,6 @@ category: testing
 description: "Testing category hub: KMP testing patterns — runTest, fakes, coroutine dispatchers, coverage"
 version: 1
 last_updated: "2026-04"
-monitor_urls:
-  - url: "https://github.com/Kotlin/kotlinx.coroutines/releases"
-    type: github-releases
-    tier: 1
-  - url: "https://github.com/Kotlin/kotlinx-kover/releases"
-    type: github-releases
-    tier: 2
-rules:
-  - id: no-default-dispatcher-in-tests
-    type: banned-usage
-    message: "Tests must inject TestDispatcher; never use Dispatchers.Default directly (exception: benchmarks — see testing-patterns-benchmarks)"
-    detect:
-      in_source_set: commonTest
-      banned_expression: "Dispatchers.Default"
-      prefer: "injected testDispatcher parameter"
-    hand_written: false
-  - id: no-hardcoded-dispatchers
-    type: banned-usage
-    message: "Dispatchers must be injected, not hardcoded in ViewModels or UseCases"
-    detect:
-      in_class_extending: [ViewModel, UseCase]
-      banned_call_prefix: "Dispatchers."
-      banned_values: [Main, IO, Default, Unconfined]
-      prefer: "injected CoroutineDispatchers interface"
-    hand_written: true
-    source_rule: NoHardcodedDispatchersRule.kt
-  - id: no-launch-in-init
-    type: banned-usage
-    message: "launch {} inside init {} is dangerous — move to a named function"
-    detect:
-      in_init_block: true
-      banned_call: launch
-    hand_written: true
-    source_rule: NoLaunchInInitRule.kt
-  - id: no-mocks-in-common-tests
-    type: banned-import
-    message: "Use pure Kotlin fakes in commonTest, not Mockito or MockK"
-    detect:
-      in_source_set: commonTest
-      banned_import_prefixes:
-        - "io.mockk"
-        - "org.mockito"
-      prefer: "pure Kotlin fake class"
-    hand_written: false
-
 ---
 
 # Testing

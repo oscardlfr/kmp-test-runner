@@ -4,25 +4,11 @@ version: 2
 last_updated: "2026-03"
 assumes_read: testing-hub
 token_budget: 1399
-monitor_urls:
-  - url: "https://github.com/Kotlin/kotlinx.coroutines/releases"
-    type: github-releases
-    tier: 1
 description: "Coroutine test patterns: runTest, TestScope, virtual time, StateFlow collection, common pitfalls"
 slug: testing-patterns-coroutines
 status: active
 parent: testing-patterns
 category: testing
-rules:
-  - id: no-default-dispatcher-in-tests
-    type: banned-usage
-    message: "Tests must inject TestDispatcher; never use Dispatchers.Default directly in test code"
-    detect:
-      in_source_set: commonTest
-      banned_expression: "Dispatchers.Default"
-      prefer: "injected testDispatcher parameter"
-    hand_written: false
-
 validate_upstream:
   - url: "https://developer.android.com/kotlin/coroutines/test"
     assertions:

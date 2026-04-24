@@ -9,33 +9,6 @@ slug: testing-patterns
 status: active
 category: testing
 
-monitor_urls:
-  - url: "https://github.com/Kotlin/kotlinx.coroutines/releases"
-    type: github-releases
-    tier: 1
-  - url: "https://github.com/Kotlin/kotlinx-kover/releases"
-    type: github-releases
-    tier: 1
-rules:
-  - id: no-default-dispatcher-in-tests
-    type: banned-usage
-    message: "Tests must inject TestDispatcher; never use Dispatchers.Default directly"
-    detect:
-      in_source_set: commonTest
-      banned_expression: "Dispatchers.Default"
-      prefer: "injected testDispatcher parameter"
-    hand_written: false
-  - id: no-mocks-in-common-tests
-    type: banned-import
-    message: "Use pure Kotlin fakes in commonTest, not Mockito or MockK"
-    detect:
-      in_source_set: commonTest
-      banned_import_prefixes:
-        - "io.mockk"
-        - "org.mockito"
-      prefer: "pure Kotlin fake class"
-    hand_written: false
-
 ---
 
 # Testing Patterns for Kotlin Multiplatform

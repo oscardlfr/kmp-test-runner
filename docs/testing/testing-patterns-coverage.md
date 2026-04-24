@@ -9,21 +9,7 @@ slug: testing-patterns-coverage
 status: active
 parent: testing-patterns
 
-monitor_urls:
-  - url: "https://github.com/Kotlin/kotlinx-kover/releases"
-    type: github-releases
-    tier: 2
 category: testing
-rules:
-  - id: no-default-dispatcher-in-tests
-    type: banned-usage
-    message: "Tests must inject TestDispatcher; never use Dispatchers.Default directly"
-    detect:
-      in_source_set: commonTest
-      banned_expression: "Dispatchers.Default"
-      prefer: "injected testDispatcher parameter"
-    hand_written: false
-
 ---
 
 # Coverage and Platform Testing Patterns

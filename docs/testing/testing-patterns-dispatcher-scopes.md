@@ -9,15 +9,6 @@ slug: testing-patterns-dispatcher-scopes
 status: active
 parent: testing-patterns
 category: testing
-rules:
-  - id: no-standalone-unconfined-scope
-    type: banned-usage
-    message: "NEVER create CoroutineScope(UnconfinedTestDispatcher()) outside runTest — no shared testScheduler, delay() breaks"
-    detect:
-      in_source_set: commonTest
-      banned_pattern: "CoroutineScope(UnconfinedTestDispatcher())"
-      prefer: "backgroundScope (Path B/StateFlow) or CoroutineScope(UnconfinedTestDispatcher(testScheduler)) (Path B2/SharedFlow) — always pass testScheduler explicitly"
-    hand_written: true
 ---
 
 # Dispatcher Scope Patterns

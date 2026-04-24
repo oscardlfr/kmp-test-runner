@@ -9,23 +9,7 @@ slug: testing-patterns-fakes
 status: active
 parent: testing-patterns
 
-monitor_urls:
-  - url: "https://github.com/Kotlin/kotlinx.coroutines/releases"
-    type: github-releases
-    tier: 2
 category: testing
-rules:
-  - id: no-mocks-in-common-tests
-    type: banned-import
-    message: "Use pure Kotlin fakes in commonTest, not Mockito or MockK"
-    detect:
-      in_source_set: commonTest
-      banned_import_prefixes:
-        - "io.mockk"
-        - "org.mockito"
-      prefer: "pure Kotlin fake class"
-    hand_written: false
-
 ---
 
 # Fake and Test Double Patterns
