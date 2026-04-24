@@ -76,6 +76,7 @@ done
 if [[ -z "$PROJECT_ROOT" ]]; then
     err "[ERROR] --project-root is required."
     usage
+    exit 1
 fi
 
 if [[ ! -d "$PROJECT_ROOT" ]]; then

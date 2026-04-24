@@ -28,7 +28,7 @@ source "$SCRIPT_DIR/lib/audit-append.sh"
 # =============================================================================
 
 # Defaults
-PROJECT_ROOT="."
+PROJECT_ROOT=""
 DEVICE=""
 MODULE_FILTER=""
 SKIP_APP=false
@@ -64,6 +64,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ -z "$PROJECT_ROOT" ]]; then
+    err "[ERROR] --project-root is required."
+    usage
+    exit 1
+fi
+
 # Color codes
 color_cyan="\033[36m"
 color_green="\033[32m"
@@ -74,9 +80,7 @@ color_magenta="\033[35m"
 color_reset="\033[0m"
 
 # Navigate to project root
-if [[ "$PROJECT_ROOT" != "." ]]; then
-    cd "$PROJECT_ROOT"
-fi
+cd "$PROJECT_ROOT"
 PROJECT_ROOT="$(pwd)"
 
 # Setup ADB

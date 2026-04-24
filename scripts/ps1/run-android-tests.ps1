@@ -13,7 +13,7 @@
 #   - Logcat capture filtered by package
 
 param(
-    [string]$ProjectRoot = ".",
+    [string]$ProjectRoot = "",
     [string]$Device = "",
     [string]$ModuleFilter = "",
     [switch]$SkipApp = $false,
@@ -36,10 +36,13 @@ $Colors = @{
     Module = "Magenta"
 }
 
-# Navigate to project root
-if ($ProjectRoot -ne ".") {
-    Set-Location $ProjectRoot
+if (-not $ProjectRoot) {
+    Write-Error "[ERROR] --project-root is required."
+    exit 1
 }
+
+# Navigate to project root
+Set-Location $ProjectRoot
 $ProjectRoot = (Get-Location).Path
 
 # Setup Environment
