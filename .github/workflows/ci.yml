@@ -17,6 +17,9 @@ jobs:
         with:
           node-version: 20
       - run: npm ci
+      - name: npm audit
+        run: npm audit --audit-level=high
+        continue-on-error: false
       - name: shellcheck
         if: matrix.os == 'ubuntu-latest'
         run: shellcheck --severity=warning --external-sources --exclude=SC2034,SC2053,SC2069 scripts/sh/*.sh scripts/sh/lib/*.sh
