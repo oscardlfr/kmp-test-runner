@@ -22,7 +22,9 @@ teardown() {
 }
 
 @test "android: --list-only exits 0 without requiring ADB" {
-    skip "run-android-tests.sh checks ADB before --list-only flag; requires domain-dev fix"
+    run bash "$SCRIPT" --project-root "$WORK_DIR" --list-only
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"ADB not found"* ]]
 }
 
 @test "android: error path exits 1 when --project-root missing" {
