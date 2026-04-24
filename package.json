@@ -1,0 +1,16 @@
+{
+  "name": "kmp-test-runner",
+  "version": "0.1.0",
+  "description": "Parallel test runner for KMP and Android Gradle projects",
+  "bin": "bin/kmp-test.js",
+  "files": [
+    "bin/",
+    "scripts/",
+    "LICENSE",
+    "README.md"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,14 @@
+# Node
+node_modules/
+dist/
+coverage/
+*.env.local
+.env
+
+# Gradle
+.gradle/
+build/
+**/gradle.properties
+
+# IDE
+.idea/
