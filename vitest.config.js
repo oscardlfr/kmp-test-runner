@@ -1,6 +1,8 @@
 import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
+    pool: 'forks',
+    setupFiles: ['tests/vitest/setup.js'],
     include: ['tests/vitest/**/*.test.js'],
     coverage: {
       provider: 'v8',

@@ -19,7 +19,7 @@
     "shellcheck": "shellcheck scripts/sh/*.sh scripts/sh/lib/*.sh"
   },
   "devDependencies": {
-    "vitest": "^2.1.0",
-    "@vitest/coverage-v8": "^2.1.0"
+    "@vitest/coverage-v8": "^2.1.0",
+    "vitest": "^2.1.0"
   }
 }
