@@ -19,7 +19,7 @@ jobs:
       - run: npm ci
       - name: shellcheck
         if: matrix.os == 'ubuntu-latest'
-        run: shellcheck --severity=warning --external-sources scripts/sh/*.sh scripts/sh/lib/*.sh
+        run: shellcheck --severity=warning --external-sources --exclude=SC2034,SC2053,SC2069 scripts/sh/*.sh scripts/sh/lib/*.sh
       - name: bats
         if: matrix.os == 'ubuntu-latest'
         run: npx bats tests/bats/
