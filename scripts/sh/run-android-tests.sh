@@ -100,17 +100,6 @@ color_reset="\033[0m"
 cd "$PROJECT_ROOT"
 PROJECT_ROOT="$(pwd)"
 
-# Setup ADB
-ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
-if [[ -f "$ANDROID_HOME/platform-tools/adb" ]]; then
-    ADB="$ANDROID_HOME/platform-tools/adb"
-elif command -v adb >/dev/null 2>&1; then
-    ADB="adb"
-else
-    echo -e "${color_red}ERROR: ADB not found. Set ANDROID_HOME or ANDROID_SDK_ROOT.${color_reset}"
-    exit 1
-fi
-
 # Detect package name from AndroidManifest.xml
 get_package_name() {
     local root="$1"
@@ -171,7 +160,7 @@ discover_android_test_modules() {
 
 # Discover all modules
 ALL_MODULES_RAW=$(discover_android_test_modules "$PROJECT_ROOT")
-if [[ -z "$ALL_MODULES_RAW" ]]; then
+if [[ -z "$ALL_MODULES_RAW" ]] && [[ "$LIST_ONLY" != "true" ]]; then
     echo -e "${color_red}ERROR: No modules found with androidTest directory${color_reset}"
     exit 1
 fi
@@ -201,7 +190,7 @@ if [[ -n "$MODULE_FILTER" ]]; then
     MODULES_RAW=$(echo "$filtered" | sed '/^$/d')
 fi
 
-if [[ -z "$MODULES_RAW" ]]; then
+if [[ -z "$MODULES_RAW" ]] && [[ "$LIST_ONLY" != "true" ]]; then
     echo -e "${color_red}ERROR: No modules found with androidTest directory${color_reset}"
     if [[ -n "$MODULE_FILTER" ]]; then
         echo -e "${color_yellow}Filter applied: ${MODULE_FILTER}${color_reset}"
@@ -227,6 +216,17 @@ if [[ "$LIST_ONLY" == "true" ]]; then
         echo "  - ${name}${local_tags} - ${description}"
     done <<< "$MODULES_RAW"
     exit 0
+fi
+
+# Setup ADB (only needed for actual test execution)
+ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+if [[ -f "$ANDROID_HOME/platform-tools/adb" ]]; then
+    ADB="$ANDROID_HOME/platform-tools/adb"
+elif command -v adb >/dev/null 2>&1; then
+    ADB="adb"
+else
+    echo -e "${color_red}ERROR: ADB not found. Set ANDROID_HOME or ANDROID_SDK_ROOT.${color_reset}"
+    exit 1
 fi
 
 # Device detection (required for actual test execution)
