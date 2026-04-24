@@ -40,7 +40,6 @@ Options:
 }
 
 function ensureProjectRoot(args) {
-  // --project-root default to cwd if not provided
   const idx = args.indexOf('--project-root');
   if (idx === -1) {
     return ['--project-root', process.cwd(), ...args];
@@ -55,42 +54,50 @@ function pickWindowsShell() {
   return 'powershell.exe';
 }
 
+function resolveScript(sub, platform) {
+  const cmd = COMMANDS[sub];
+  if (!cmd) return null;
+  return {
+    script: platform === 'win32' ? cmd.ps1 : cmd.sh,
+    prefix: cmd.prefix,
+  };
+}
+
 function main() {
   const argv = process.argv.slice(2);
 
   if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
     printHelp();
-    process.exit(argv.length === 0 ? 2 : 0);
+    return argv.length === 0 ? 2 : 0;
   }
 
   if (argv[0] === '--version' || argv[0] === '-v') {
     process.stdout.write(readVersion() + '\n');
-    process.exit(0);
+    return 0;
   }
 
   const sub = argv[0];
-  const cmd = COMMANDS[sub];
-  if (!cmd) {
+  const resolved = resolveScript(sub, process.platform);
+  if (!resolved) {
     process.stderr.write(`kmp-test: unknown subcommand '${sub}'\n`);
     printHelp();
-    process.exit(2);
+    return 2;
   }
 
   const rest = argv.slice(1);
   const withProjectRoot = ensureProjectRoot(rest);
-  const finalArgs = [...cmd.prefix, ...withProjectRoot];
+  const finalArgs = [...resolved.prefix, ...withProjectRoot];
 
-  const isWin = process.platform === 'win32';
   const scriptsDir = path.join(__dirname, '..', 'scripts');
 
   let spawnCmd, spawnArgs;
-  if (isWin) {
+  if (process.platform === 'win32') {
     const shell = pickWindowsShell();
-    const scriptPath = path.join(scriptsDir, 'ps1', cmd.ps1);
+    const scriptPath = path.join(scriptsDir, 'ps1', resolved.script);
     spawnCmd = shell;
     spawnArgs = ['-NoLogo', '-NoProfile', '-File', scriptPath, ...finalArgs];
   } else {
-    const scriptPath = path.join(scriptsDir, 'sh', cmd.sh);
+    const scriptPath = path.join(scriptsDir, 'sh', resolved.script);
     spawnCmd = 'bash';
     spawnArgs = [scriptPath, ...finalArgs];
   }
@@ -98,9 +105,21 @@ function main() {
   const result = spawnSync(spawnCmd, spawnArgs, { stdio: 'inherit' });
   if (result.error) {
     process.stderr.write(`kmp-test: failed to spawn '${spawnCmd}': ${result.error.message}\n`);
-    process.exit(1);
+    return 1;
   }
-  process.exit(result.status ?? 1);
+  return result.status ?? 1;
 }
 
-main();
+if (require.main === module) {
+  process.exit(main());
+}
+
+module.exports = {
+  main,
+  COMMANDS,
+  resolveScript,
+  pickWindowsShell,
+  ensureProjectRoot,
+  readVersion,
+  printHelp,
+};
