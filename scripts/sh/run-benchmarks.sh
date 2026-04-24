@@ -7,7 +7,7 @@ set -euo pipefail
 # Discovers benchmark modules, executes kotlinx-benchmark / androidx.benchmark
 # tasks via Gradle, parses JSON results, and produces a markdown report.
 #
-# Supports both main project and shared-kmp-libs benchmark modules.
+# Supports main project and sibling shared-libs benchmark modules (via SHARED_PROJECT_NAME).
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ Options:
   --config <name>             Benchmark config: smoke (default) | main | stress
   --platform <name>           Platform: all (default) | jvm | android
   --module-filter <pattern>   Filter modules (wildcards/comma-separated). Default: *
-  --include-shared            Include shared-kmp-libs benchmark modules.
+  --include-shared            Include sibling shared-libs benchmark modules (requires SHARED_PROJECT_NAME).
   -h, --help                  Show this help.
 USAGE
     exit "${1:-0}"
@@ -287,7 +287,7 @@ declare -A MODULE_AVG_SCORE
 for mod in "${BENCHMARK_MODULES[@]}"; do
     actual_mod="$mod"
     gradle_root="$PROJECT_ROOT"
-    shared_prefix="${SHARED_LIBS_PREFIX:-shared-kmp-libs}"
+    shared_prefix="${SHARED_LIBS_PREFIX:-${SHARED_PROJECT_NAME:-}}"
     if [[ "$mod" == ${shared_prefix}:* ]]; then
         actual_mod="${mod#${shared_prefix}:}"
         gradle_root="$SHARED_ROOT"

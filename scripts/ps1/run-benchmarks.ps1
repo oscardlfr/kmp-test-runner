@@ -24,7 +24,7 @@
     Glob pattern to filter which modules are included. Default "*" (all).
 
 .PARAMETER IncludeShared
-    Also scan shared-kmp-libs (sibling directory) for benchmark modules.
+    Also scan sibling shared-libs directory for benchmark modules (requires SHARED_PROJECT_NAME env var).
 
 .EXAMPLE
     ./run-benchmarks.ps1 -ProjectRoot "C:\Projects\MyApp"
@@ -195,7 +195,7 @@ function Invoke-GradleBenchmark {
 }
 
 foreach ($mod in $modules) {
-    # Resolve project root for this module (shared-kmp-libs prefix means different root)
+    # Resolve project root for this module (shared-libs prefix means different root)
     $sharedLibsName = $SharedProjectName
     $isShared = $mod.StartsWith("${sharedLibsName}:")
     if ($isShared) {

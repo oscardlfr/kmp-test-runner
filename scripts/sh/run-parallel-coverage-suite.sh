@@ -61,7 +61,7 @@ Required:
   --project-root <path>       Path to the main project root.
 
 Options:
-  --include-shared            Include shared-kmp-libs modules.
+  --include-shared            Include sibling shared-libs modules (requires SHARED_PROJECT_NAME).
   --test-type <type>          all | common | androidUnit | androidInstrumented | desktop
   --module-filter <pattern>   Filter modules (wildcards/comma-separated). Default: *
   --skip-tests                Skip test execution, regenerate coverage only.
@@ -367,7 +367,7 @@ fi
 # ============================================================================
 
 # We store module info in parallel arrays (bash 3.2 compatible associative-array workaround)
-declare -a MOD_NAMES=()   # Display name (may include shared-kmp-libs: prefix)
+declare -a MOD_NAMES=()   # Display name (may include SHARED_PROJECT_NAME prefix)
 declare -a MOD_PATHS=()   # Filesystem path
 declare -a MOD_PROJ=()    # Project path this module belongs to
 declare -a MOD_SHORT=()   # Short name (last segment)
@@ -887,7 +887,7 @@ if ! $SKIP_TESTS && [[ "${#ALL_TEST_TASKS[@]}" -gt 0 ]]; then
         fi
     fi
 
-    # Run shared-kmp-libs coverage tasks
+    # Run shared-libs coverage tasks
     if [[ "${#COV_TASKS_SHARED[@]}" -gt 0 ]]; then
         SHARED_LIBS_PATH=""
         for pi in "${!PROJ_NAMES[@]}"; do

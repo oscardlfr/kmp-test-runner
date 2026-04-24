@@ -12,13 +12,13 @@
     - Uses `git status --porcelain` to find changed files
     - Maps file paths to Gradle modules
     - Filters out modules without build.gradle.kts
-    - Optionally includes shared-kmp-libs changes
+    - Optionally includes sibling shared-libs changes (via SHARED_PROJECT_NAME)
 
 .PARAMETER ProjectRoot
     Path to the project root. Required.
 
 .PARAMETER IncludeShared
-    Include changes in shared-kmp-libs when detecting modules.
+    Include changes in sibling shared-libs project when detecting modules (requires SHARED_PROJECT_NAME).
 
 .PARAMETER TestType
     Test type to run: "all", "common", "androidUnit", "androidInstrumented", "desktop".
@@ -45,7 +45,7 @@
     ./run-changed-modules-tests.ps1 -ProjectRoot "C:\Projects\MyApp" -ShowModulesOnly
 
 .EXAMPLE
-    # Only staged files, include shared-kmp-libs
+    # Only staged files, include sibling shared-libs
     ./run-changed-modules-tests.ps1 -ProjectRoot "C:\Projects\MyApp" -StagedOnly -IncludeShared
 
 .NOTES
@@ -224,7 +224,7 @@ if ($changedModules.Count -eq 0) {
     Write-Host "Possible reasons:" -ForegroundColor Gray
     Write-Host "  - No changes in module source directories" -ForegroundColor Gray
     Write-Host "  - Changes only in non-module files (root scripts, etc.)" -ForegroundColor Gray
-    Write-Host "  - Use --include-shared to include shared-kmp-libs changes" -ForegroundColor Gray
+    Write-Host "  - Use --include-shared to include sibling shared-libs changes (SHARED_PROJECT_NAME)" -ForegroundColor Gray
     exit 0
 }
 

@@ -12,7 +12,7 @@ set -euo pipefail
 #   - Uses `git status --porcelain` to find changed files
 #   - Maps file paths to Gradle modules
 #   - Filters out modules without build.gradle.kts
-#   - Optionally includes shared-kmp-libs changes
+#   - Optionally includes sibling shared-libs changes (via SHARED_PROJECT_NAME)
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ Required:
   --project-root <path>       Path to the project root.
 
 Options:
-  --include-shared            Include changes in shared-kmp-libs.
+  --include-shared            Include changes in sibling shared-libs project (requires SHARED_PROJECT_NAME).
   --test-type <type>          all | common | androidUnit | androidInstrumented | desktop
   --staged-only               Only consider staged files (git add).
   --show-modules-only         Show detected modules without running tests (dry run).
@@ -191,7 +191,7 @@ if [[ "${#CHANGED_MODULES[@]}" -eq 0 ]]; then
     gray "Possible reasons:"
     gray "  - No changes in module source directories"
     gray "  - Changes only in non-module files (root scripts, etc.)"
-    gray "  - Use --include-shared to include shared-kmp-libs changes"
+    gray "  - Use --include-shared to include sibling shared-libs changes (SHARED_PROJECT_NAME)"
     rm -f "$COUNTS_FILE" 2>/dev/null || true
     exit 0
 fi

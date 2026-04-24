@@ -19,7 +19,7 @@
     Path to the main project root. Required.
 
 .PARAMETER IncludeShared
-    Include shared-kmp-libs modules in test execution and coverage report.
+    Include sibling shared-libs modules in test execution and coverage report (requires SHARED_PROJECT_NAME env var).
 
 .PARAMETER TestType
     Test type: "common", "desktop", "androidUnit", "androidInstrumented", "all".
@@ -451,7 +451,7 @@ Write-Host ""
 # BUILD TASK LISTS
 # ============================================================================
 
-# Separate task lists by project (main vs shared-kmp-libs)
+# Separate task lists by project (main vs shared-libs)
 # Use List<T> for O(1) amortized appends instead of O(N) array += copies
 $testTasks = [System.Collections.Generic.List[string]]::new()
 $testTasksShared = [System.Collections.Generic.List[string]]::new()
@@ -584,7 +584,7 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
     Write-Host "========================================" -ForegroundColor Yellow
     Write-Host ""
 
-    # Build Gradle command — main project tasks run from MyApp (composite build resolves shared-kmp-libs)
+    # Build Gradle command — main project tasks run from main root (composite build resolves shared-libs)
     $gradleArgs = @()
     $gradleArgs += $allTestTasks
     $gradleArgs += "--parallel"
