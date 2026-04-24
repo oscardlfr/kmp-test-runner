@@ -6,6 +6,7 @@
   "bin": "bin/kmp-test.js",
   "files": [
     "bin/",
+    "lib/",
     "scripts/",
     "LICENSE",
     "README.md"
@@ -20,6 +21,7 @@
     "shellcheck": "shellcheck scripts/sh/*.sh scripts/sh/lib/*.sh"
   },
   "devDependencies": {
+    "@vitest/coverage-istanbul": "^2.1.9",
     "@vitest/coverage-v8": "^2.1.0",
     "vitest": "^2.1.0"
   }

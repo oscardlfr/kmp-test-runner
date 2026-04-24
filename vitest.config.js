@@ -1,11 +1,13 @@
 import { defineConfig } from 'vitest/config';
+
 export default defineConfig({
   test: {
-    pool: 'forks',
-    setupFiles: ['tests/vitest/setup.js'],
     include: ['tests/vitest/**/*.test.js'],
+    // pool: default ('threads') — DO NOT use 'forks' (kills coverage)
     coverage: {
       provider: 'v8',
+      all: true,
+      include: ['bin/**/*.js'],
       reporter: ['text', 'html', 'lcov'],
       thresholds: {
         lines: 80,
@@ -14,7 +16,6 @@ export default defineConfig({
         statements: 80,
       },
       thresholdAutoUpdate: false,
-      include: ['bin/**/*.js'],
     },
   },
 });
