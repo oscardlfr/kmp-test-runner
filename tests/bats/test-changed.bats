@@ -15,6 +15,11 @@ exit 0
 EOF
     chmod +x "$WORK_DIR/bin/gradlew"
     export PATH="$WORK_DIR/bin:$PATH"
+    # Self-contained git identity for CI runners without global config
+    export GIT_AUTHOR_NAME="bats-test"
+    export GIT_AUTHOR_EMAIL="bats@test.local"
+    export GIT_COMMITTER_NAME="bats-test"
+    export GIT_COMMITTER_EMAIL="bats@test.local"
 }
 
 teardown() {
