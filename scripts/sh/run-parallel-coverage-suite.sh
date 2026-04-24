@@ -132,7 +132,7 @@ for i in "${!CORE_ONLY_MODULES[@]}"; do
     local_val="${CORE_ONLY_MODULES[$i]}"
     local_val="${local_val#"${local_val%%[![:space:]]*}"}"
     local_val="${local_val%"${local_val##*[![:space:]]}"}"
-    CORE_ONLY_MODULES[$i]="$local_val"
+    CORE_ONLY_MODULES[i]="$local_val"
 done
 
 # Source libraries

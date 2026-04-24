@@ -140,6 +140,7 @@ if [[ "$PLATFORM" == "all" ]] || [[ "$PLATFORM" == "android" ]]; then
         # Build summary string: model (type) for each device
         local_summaries=()
         for dev in "${ANDROID_DEVICES[@]}"; do
+            # shellcheck disable=SC2034
             IFS='|' read -r serial dtype model api <<< "$dev"
             local_summaries+=("${model} (${dtype})")
         done
@@ -223,6 +224,7 @@ echo ""
 info "[>>] Running benchmarks (config=$CONFIG, platform=$PLATFORM)..."
 echo ""
 
+# shellcheck disable=SC2034
 declare -A MODULE_STATUS
 TOTAL_PASS=0
 TOTAL_FAIL=0
@@ -245,7 +247,7 @@ for mod in "${BENCHMARK_MODULES[@]}"; do
         gradle_root="$PROJECT_ROOT"
         shared_prefix="$SHARED_PROJECT_NAME"
         if [[ "$mod" == ${shared_prefix}:* ]]; then
-            actual_mod="${mod#${shared_prefix}:}"
+            actual_mod="${mod#"${shared_prefix}":}"
             gradle_root="$SHARED_ROOT"
         fi
 
@@ -289,7 +291,7 @@ for mod in "${BENCHMARK_MODULES[@]}"; do
     gradle_root="$PROJECT_ROOT"
     shared_prefix="${SHARED_LIBS_PREFIX:-${SHARED_PROJECT_NAME:-}}"
     if [[ "$mod" == ${shared_prefix}:* ]]; then
-        actual_mod="${mod#${shared_prefix}:}"
+        actual_mod="${mod#"${shared_prefix}":}"
         gradle_root="$SHARED_ROOT"
     fi
 

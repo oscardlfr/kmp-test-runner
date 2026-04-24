@@ -209,6 +209,7 @@ total_modules=$(echo "$MODULES_RAW" | wc -l | tr -d ' \r')
 if [[ "$LIST_ONLY" == "true" ]]; then
     echo ""
     echo -e "${color_cyan}Android Test Modules (${total_modules}):${color_reset}"
+    # shellcheck disable=SC2034
     while IFS='|' read -r name path has_flavor is_kmp description; do
         local_tags=""
         [[ "$is_kmp" == "true" ]] && local_tags+=" [KMP]"
