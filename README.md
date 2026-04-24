@@ -1,27 +1,34 @@
 # kmp-test-runner
 
-Generic parallel test runner for Kotlin Multiplatform and Android Gradle projects. Ships as an npm CLI, Gradle plugin, and shell installer. Apache-2.0.
+Standalone parallel test runner for Kotlin Multiplatform and Android Gradle projects.
 
+<!-- TODO: finalize in sub-wave c -->
 ## Install
 
-[TODO: finalize in sub-wave c]
+```sh
+npm install -g kmp-test-runner
+```
 
-Planned install methods:
-- **npm CLI** — `npm install -g kmp-test-runner`
-- **Gradle plugin** — `plugins { id("io.github.oscardlfr.kmp-test-runner") version "0.2.0" }`
-- **Shell installer** — `curl -fsSL .../install.sh | bash`
-
+<!-- TODO: finalize in sub-wave c -->
 ## Usage
 
-[TODO: finalize in sub-wave c]
+```sh
+# Run all tests in parallel with coverage
+kmp-test parallel --project-root /path/to/project
 
-Planned CLI subcommands:
-- `kmp-test parallel --project-root <path>` — run all tests in parallel with coverage
-- `kmp-test changed --project-root <path>` — run tests only for modules with uncommitted changes
-- `kmp-test android --project-root <path>` — run Android instrumented tests
-- `kmp-test benchmark --project-root <path>` — run benchmark suites
-- `kmp-test coverage --project-root <path>` — generate coverage report (skips test execution)
+# Run only changed modules
+kmp-test changed --project-root /path/to/project
+
+# Run Android instrumented tests
+kmp-test android --project-root /path/to/project
+
+# Run benchmarks
+kmp-test benchmark --project-root /path/to/project
+
+# Generate coverage report only (skip test run)
+kmp-test coverage --project-root /path/to/project
+```
 
 ## License
 
-Apache-2.0 — see [LICENSE](./LICENSE).
+Apache-2.0 — see [LICENSE](LICENSE) for details.
