@@ -17,6 +17,6 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
       - name: Publish to GitHub Packages
-        run: ./gradlew -p gradle-plugin publishAllPublicationsToGitHubPackagesRepository
+        run: cd gradle-plugin && ./gradlew publishAllPublicationsToGitHubPackagesRepository
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
