@@ -64,6 +64,16 @@ describe('main()', () => {
     process.argv = ['node', 'kmp-test.js', '--version'];
     expect(main()).toBe(0);
   });
+  it('--help after subcommand returns 0 without spawning', () => {
+    process.argv = ['node', 'kmp-test.js', 'parallel', '--help'];
+    expect(main()).toBe(0);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+  it('--version after subcommand returns 0 without spawning', () => {
+    process.argv = ['node', 'kmp-test.js', 'parallel', '--version'];
+    expect(main()).toBe(0);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
   it('unknown subcommand returns 2', () => {
     process.argv = ['node', 'kmp-test.js', 'nope'];
     expect(main()).toBe(2);
