@@ -37,6 +37,7 @@ FLAVOR=""
 AUTO_RETRY=false
 CLEAR_DATA=false
 LIST_ONLY=false
+TEST_FILTER=""
 
 usage() {
     cat <<'USAGE'
@@ -52,6 +53,11 @@ Options:
   --auto-retry            Retry failed modules once.
   --clear-data            Clear app data before retry.
   --list | --list-only    List discovered modules and exit.
+  --test-filter <pattern> Filter tests to a single class FQN. Maps to
+                          -Pandroid.testInstrumentationRunnerArguments.class=<FQN>.
+                          Wildcards are not supported by the Android instrumentation
+                          runner; pass a literal class FQN (the kmp-test CLI resolves
+                          *Pattern* globs to FQNs by source scan before invoking this script).
 USAGE
     exit "${1:-0}"
 }
@@ -77,6 +83,8 @@ while [[ $# -gt 0 ]]; do
             CLEAR_DATA=true; shift ;;
         --list|--list-only)
             LIST_ONLY=true; shift ;;
+        --test-filter)
+            TEST_FILTER="$2"; shift 2 ;;
         *)
             shift ;;
     esac
@@ -323,12 +331,18 @@ while IFS='|' read -r module_name module_path has_flavor is_kmp description; do
     module_logcat_file="${logs_dir}/${safe_name}_logcat.log"
     module_errors_file="${logs_dir}/${safe_name}_errors.json"
 
-    echo -e "${color_gray}Running: ./gradlew ${task}${color_reset}"
+    # Build per-module gradle args, optionally with a test-filter passthrough
+    gradle_filter_args=()
+    if [[ -n "$TEST_FILTER" ]]; then
+        gradle_filter_args+=("-Pandroid.testInstrumentationRunnerArguments.class=$TEST_FILTER")
+    fi
+
+    echo -e "${color_gray}Running: ./gradlew ${task} ${gradle_filter_args[*]:-}${color_reset}"
 
     # Run tests
     start_sec=$SECONDS
     exit_code=0
-    ./gradlew "$task" --console=plain 2>&1 | tee "$module_log_file" || exit_code=$?
+    ./gradlew "$task" "${gradle_filter_args[@]+"${gradle_filter_args[@]}"}" --console=plain 2>&1 | tee "$module_log_file" || exit_code=$?
     duration_sec=$((SECONDS - start_sec))
     duration_min=$((duration_sec / 60))
     duration_s=$((duration_sec % 60))
@@ -428,7 +442,7 @@ with open(output_file, 'w') as f:
 
         retry_log_file="${logs_dir}/${safe_name}_retry.log"
         retry_exit=0
-        ./gradlew "$task" --console=plain 2>&1 | tee "$retry_log_file" || retry_exit=$?
+        ./gradlew "$task" "${gradle_filter_args[@]+"${gradle_filter_args[@]}"}" --console=plain 2>&1 | tee "$retry_log_file" || retry_exit=$?
 
         if [[ $retry_exit -eq 0 ]]; then
             echo -e "  ${color_green}[RETRY] Succeeded on retry!${color_reset}"

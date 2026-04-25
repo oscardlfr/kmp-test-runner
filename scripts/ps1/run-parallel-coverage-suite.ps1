@@ -86,7 +86,8 @@ param(
     [string]$ExcludeCoverage = "",
     [switch]$Benchmark,
     [ValidateSet("smoke", "main", "stress")]
-    [string]$BenchmarkConfig = "smoke"
+    [string]$BenchmarkConfig = "smoke",
+    [string]$TestFilter = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -592,6 +593,11 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
 
     if ($MaxWorkers -gt 0) {
         $gradleArgs += "--max-workers=$MaxWorkers"
+    }
+    # gradle's --tests applies to every Test task in $gradleArgs; modules without a
+    # matching class run zero tests rather than erroring.
+    if ($TestFilter) {
+        $gradleArgs += @("--tests", $TestFilter)
     }
 
     Write-Host "[>] Executing $($allTestTasks.Count) test tasks in parallel..." -ForegroundColor Cyan

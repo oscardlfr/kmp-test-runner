@@ -100,3 +100,24 @@ Describe 'Happy path: run-benchmarks.ps1' {
         $errors | Should -HaveCount 0
     }
 }
+
+Describe 'TestFilter parameter wiring' {
+    # v0.3.7: every script the CLI may dispatch to must accept -TestFilter so that
+    # `kmp-test <sub> --test-filter <pattern>` (translated by cli.js to PowerShell
+    # PascalCase) doesn't blow up on an unknown parameter.
+    $scripts = @(
+        'run-parallel-coverage-suite.ps1',
+        'run-changed-modules-tests.ps1',
+        'run-android-tests.ps1',
+        'run-benchmarks.ps1'
+    )
+
+    foreach ($script in $scripts) {
+        It "$script declares a -TestFilter param" {
+            $scriptPath = Join-Path $PSScriptRoot '..\..\scripts\ps1' $script
+            $content = Get-Content $scriptPath -Raw
+            # Match the parameter declaration in any case variation (e.g. [string]$TestFilter).
+            $content | Should -Match '\[\s*string\s*\]\s*\$TestFilter'
+        }
+    }
+}
