@@ -14,6 +14,68 @@ Describe 'install.ps1 syntax' {
     }
 }
 
+Describe 'install.ps1 Get-LocationHeader (PS7 compat regression)' {
+    # Regression for v0.3.5: in PowerShell 7+ the response Headers object is
+    # System.Net.Http.Headers.HttpResponseHeaders, which has no indexer — the
+    # original `$Response.Headers["Location"]` threw "Unable to index into an
+    # object of type ...". The fix introduces Get-LocationHeader, which must
+    # work for BOTH a Hashtable-style Headers (PS 5.1) and the
+    # HttpResponseHeaders shape (PS 7+).
+
+    BeforeAll {
+        # Dot-source install.ps1 in -WhatIf-equivalent way: parse + extract just
+        # the Get-LocationHeader function body so we can test it without running
+        # the whole installer. The simplest reliable approach: source the file
+        # but short-circuit before any side-effecting code runs.
+        $InstallScript = Join-Path $PSScriptRoot '..\..\scripts\install.ps1'
+        $content = Get-Content $InstallScript -Raw
+        # Pull the function body via the AST so the test stays robust to file
+        # reordering.
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput($content, [ref]$null, [ref]$null)
+        $fnAst = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-LocationHeader'
+        }, $true)
+        if ($null -eq $fnAst) { throw "Get-LocationHeader function not found in install.ps1" }
+        Invoke-Expression $fnAst.Extent.Text
+    }
+
+    It 'returns the Location string when given a Hashtable-style header (PS 5.1 shape)' {
+        $headers = @{ 'Location' = 'https://github.com/oscardlfr/kmp-test-runner/releases/tag/v0.3.5' }
+        $result = Get-LocationHeader $headers
+        $result | Should -Be 'https://github.com/oscardlfr/kmp-test-runner/releases/tag/v0.3.5'
+    }
+
+    It 'returns the first Location string when given an array of values (intermediate runtime shape)' {
+        $headers = @{ 'Location' = @('https://github.com/oscardlfr/kmp-test-runner/releases/tag/v0.3.5') }
+        $result = Get-LocationHeader $headers
+        $result | Should -Be 'https://github.com/oscardlfr/kmp-test-runner/releases/tag/v0.3.5'
+    }
+
+    It 'returns null for null Headers' {
+        Get-LocationHeader $null | Should -BeNullOrEmpty
+    }
+
+    It 'returns null when Location key is missing' {
+        $headers = @{ 'Content-Type' = 'text/html' }
+        Get-LocationHeader $headers | Should -BeNullOrEmpty
+    }
+
+    It 'works against a real GitHub redirect response under the current PS edition' {
+        # End-to-end: hit /releases/latest with -MaximumRedirection 0 and verify
+        # Get-LocationHeader extracts the v* tag URL. This is the exact path that
+        # broke in PS 7 before the fix.
+        $url = 'https://github.com/oscardlfr/kmp-test-runner/releases/latest'
+        try {
+            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -MaximumRedirection 0 -ErrorAction SilentlyContinue
+            $loc = Get-LocationHeader $resp.Headers
+        } catch {
+            $loc = Get-LocationHeader $_.Exception.Response.Headers
+        }
+        $loc | Should -Match '^https://github\.com/oscardlfr/kmp-test-runner/releases/tag/v\d+\.\d+\.\d+'
+    }
+}
+
 Describe 'install.ps1 safety constraints' {
     BeforeAll {
         $script:InstallContent   = Get-Content (Join-Path $PSScriptRoot '..\..\scripts\install.ps1') -Raw
