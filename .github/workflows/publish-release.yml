@@ -9,6 +9,12 @@ on:
       tag:
         description: 'Release tag to publish (e.g. v0.3.0)'
         required: true
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.3.0)'
+        required: true
+        type: string
 
 jobs:
   release:
@@ -19,12 +25,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # When invoked via workflow_call (from auto-tag.yml) or workflow_dispatch,
+          # check out the tag explicitly so the build runs against the right commit.
+          # When triggered by the tag push itself (push:tags:), GITHUB_REF_NAME is the
+          # tag and the default checkout is fine.
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Determine version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.tag }}"
+          # Three trigger paths, all need to resolve to the same TAG/VER:
+          #   - push: tags:  → use GITHUB_REF_NAME ("vX.Y.Z")
+          #   - workflow_dispatch → use github.event.inputs.tag
+          #   - workflow_call    → use inputs.tag (passed by the calling workflow)
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
           else
             TAG="${GITHUB_REF_NAME}"
           fi
