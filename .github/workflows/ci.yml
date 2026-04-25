@@ -51,4 +51,4 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
       - name: Test Gradle plugin
-        run: ./gradlew -p gradle-plugin test
+        run: cd gradle-plugin && ./gradlew test
