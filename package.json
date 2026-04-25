@@ -1,0 +1,27 @@
+{
+  "name": "kmp-test-runner",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Parallel test runner for KMP and Android Gradle projects",
+  "bin": "bin/kmp-test.js",
+  "files": [
+    "bin/",
+    "lib/",
+    "scripts/",
+    "LICENSE",
+    "README.md"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "shellcheck": "shellcheck scripts/sh/*.sh scripts/sh/lib/*.sh"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^2.1.0",
+    "vitest": "^2.1.0"
+  }
+}

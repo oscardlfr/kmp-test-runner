@@ -1,0 +1,12 @@
+.env
+*.env.local
+node_modules/
+dist/
+coverage/
+.gradle/
+build/
+.idea/
+gradle.properties
+*.log
+.DS_Store
+Thumbs.db
