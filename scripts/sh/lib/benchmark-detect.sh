@@ -127,6 +127,63 @@ detect_benchmark_modules() {
     done <<< "$modules"
 }
 
+# detect_module_benchmark_platforms <project_root> <module>
+#   Returns the platforms a benchmark module supports, one per line.
+#   Possible values: "jvm", "android".
+#   - androidx.benchmark presence → android
+#   - kotlinx.benchmark plugin / dep → jvm
+#   - both → both lines emitted
+#   - neither → nothing emitted
+#
+#   This is used by run-benchmarks.sh to skip modules that don't support the
+#   user's --platform choice (avoids invoking non-existent Gradle tasks like
+#   :module:desktopSmokeBenchmark on an androidx.benchmark-only module).
+detect_module_benchmark_platforms() {
+    local project_root="$1"
+    local module="$2"
+    local module_dir="$project_root/${module//://}"
+    local build_file="$module_dir/build.gradle.kts"
+
+    if [[ ! -f "$build_file" ]]; then
+        return
+    fi
+
+    local content
+    content="$(<"$build_file")"
+
+    # androidx.benchmark → Android-only (instrumented benchmarks via connectedAndroidTest)
+    if [[ "$content" == *"androidx.benchmark"* ]]; then
+        echo "android"
+    fi
+
+    # kotlinx.benchmark plugin/dep → JVM (desktop[Smoke|Stress]Benchmark tasks)
+    if [[ "$content" == *"kotlinx.benchmark"* ]] || \
+       [[ "$content" == *"org.jetbrains.kotlinx.benchmark"* ]]; then
+        echo "jvm"
+    fi
+}
+
+# module_supports_platform <project_root> <module> <platform>
+#   Returns 0 if the module's build file matches the requested platform's
+#   benchmark capability, 1 otherwise. Suitable for `if module_supports_platform ...`.
+module_supports_platform() {
+    local project_root="$1"
+    local module="$2"
+    local platform="$3"
+    local supported
+    supported="$(detect_module_benchmark_platforms "$project_root" "$module")"
+    if [[ -z "$supported" ]]; then
+        # No benchmark plugin detected at all → don't filter (be permissive,
+        # let Gradle decide). This preserves the previous behaviour for modules
+        # with non-standard benchmark setups.
+        return 0
+    fi
+    if echo "$supported" | grep -qx "$platform"; then
+        return 0
+    fi
+    return 1
+}
+
 # get_benchmark_gradle_task <module> <platform> <config>
 #   Maps module, platform, and config to the appropriate Gradle task name.
 #   platform: "jvm" | "android"

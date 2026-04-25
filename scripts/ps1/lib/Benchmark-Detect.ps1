@@ -135,6 +135,73 @@ function Detect-BenchmarkModules {
     return $modules
 }
 
+function Get-ModuleBenchmarkPlatforms {
+    <#
+    .SYNOPSIS
+        Returns the platforms a benchmark module supports based on its build.gradle.kts.
+    .DESCRIPTION
+        - androidx.benchmark presence → "android"
+        - kotlinx.benchmark plugin / dep → "jvm"
+        - both → both values returned
+        - neither → empty array
+    .PARAMETER ProjectRoot
+        Root directory of the Gradle project.
+    .PARAMETER Module
+        Gradle module name (without leading colon).
+    .OUTPUTS
+        Array of platform strings ("jvm" / "android").
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [Parameter(Mandatory)][string]$Module
+    )
+
+    $modulePath = $Module -replace ':', [IO.Path]::DirectorySeparatorChar
+    $buildFile  = Join-Path $ProjectRoot $modulePath "build.gradle.kts"
+    if (-not (Test-Path $buildFile)) { return @() }
+
+    $content = Get-Content $buildFile -Raw -ErrorAction SilentlyContinue
+    if (-not $content) { return @() }
+
+    $platforms = @()
+    if ($content -match 'androidx\.benchmark') {
+        $platforms += "android"
+    }
+    if ($content -match 'kotlinx[\.\-]benchmark' -or
+        $content -match 'org\.jetbrains\.kotlinx\.benchmark') {
+        $platforms += "jvm"
+    }
+    return $platforms
+}
+
+function Test-ModuleSupportsPlatform {
+    <#
+    .SYNOPSIS
+        Returns $true if the module declares benchmark capability for the given platform.
+    .DESCRIPTION
+        Modules with no detectable benchmark plugin are treated as supported (permissive
+        fallback for non-standard setups). This avoids invoking non-existent Gradle tasks
+        like :module:desktopSmokeBenchmark on an androidx.benchmark-only module.
+    .PARAMETER ProjectRoot
+        Root directory of the Gradle project.
+    .PARAMETER Module
+        Gradle module name (without leading colon).
+    .PARAMETER Platform
+        Platform to test: "jvm" or "android".
+    .OUTPUTS
+        Boolean.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [Parameter(Mandatory)][string]$Module,
+        [Parameter(Mandatory)][string]$Platform
+    )
+
+    $supported = Get-ModuleBenchmarkPlatforms -ProjectRoot $ProjectRoot -Module $Module
+    if ($supported.Count -eq 0) { return $true }
+    return ($supported -contains $Platform)
+}
+
 function Get-BenchmarkGradleTask {
     <#
     .SYNOPSIS

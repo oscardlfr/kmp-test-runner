@@ -163,6 +163,7 @@ Write-Host ""
 
 # Result tracking: array of PSCustomObjects
 $taskResults = @()
+$script:SkippedIncompat = 0
 
 function Invoke-GradleBenchmark {
     <#
@@ -211,6 +212,16 @@ foreach ($mod in $modules) {
     if ($runAndroid) { $platforms += "android" }
 
     foreach ($plat in $platforms) {
+        # Skip modules that don't declare benchmark capability for the requested platform.
+        # Avoids invoking non-existent Gradle tasks (e.g. :module:desktopSmokeBenchmark on
+        # an androidx.benchmark-only module) which would fail with TaskSelectionException
+        # after a long Gradle configuration phase.
+        if (-not (Test-ModuleSupportsPlatform -ProjectRoot $effectiveRoot -Module $effectiveModule -Platform $plat)) {
+            Write-Host "  [SKIP] $mod ($plat) — module does not declare $plat benchmark capability" -ForegroundColor Yellow
+            $script:SkippedIncompat++
+            continue
+        }
+
         $task  = Get-BenchmarkGradleTask -Module $effectiveModule -Platform $plat -Config $Config
         $label = "$mod [$plat/$Config]"
 
@@ -230,6 +241,15 @@ foreach ($mod in $modules) {
             Duration = $result.Duration
         }
     }
+}
+
+# All combinations skipped → exit clearly instead of pretending success
+if ($taskResults.Count -eq 0 -and $script:SkippedIncompat -gt 0) {
+    Write-Host "[ERROR] No benchmark module supports platform '$Platform'." -ForegroundColor Red
+    Write-Host "        $script:SkippedIncompat module/platform combination(s) were skipped due to missing benchmark capability." -ForegroundColor Red
+    Write-Host "        Hint: try -Platform all, or check that the module's build.gradle.kts declares the expected" -ForegroundColor Red
+    Write-Host "              benchmark plugin (kotlinx.benchmark for jvm, androidx.benchmark for android)." -ForegroundColor Red
+    exit 3
 }
 
 # =============================================================================
