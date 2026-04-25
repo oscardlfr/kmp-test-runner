@@ -50,8 +50,5 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
       - name: Test Gradle plugin
         run: ./gradlew -p gradle-plugin test
