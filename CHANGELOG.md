@@ -5,7 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] — YYYY-MM-DD
+## [0.3.1] — 2026-04-25
+
+### Fixed
+- Release artifact extraction. v0.3.0 archives were packaged with files at top level
+  (`bin/`, `lib/`, `scripts/` directly), but `install.sh` (`tar --strip-components=1`)
+  and `install.ps1` (`Get-ChildItem -Directory | Select-Object -First 1`) both expect
+  a single wrapper directory (`kmp-test-runner-${VER}/`). Result on v0.3.0: installers
+  ran without error but produced unusable installs (`kmp-test --version` failed with
+  `MODULE_NOT_FOUND`). v0.3.1 wraps the archive contents in `kmp-test-runner-${VER}/`
+  so the installer extraction logic works as designed.
+
+### Notes
+- v0.3.0 users: please reinstall from v0.3.1. Run `scripts/uninstall.{sh,ps1}` first
+  to clear the broken v0.3.0 install, then `scripts/install.{sh,ps1}` from v0.3.1.
+
+## [0.3.0] — 2026-04-25
+
+> **NOTE:** v0.3.0 archives have a packaging bug (no wrapper directory) that breaks
+> installer extraction. **Do not install v0.3.0 — use v0.3.1 instead.** The v0.3.0
+> installer scripts themselves are sound; only the release artifacts are broken.
 
 ### Added
 - Shell installer (`scripts/install.sh`) — POSIX-compatible, works on Linux and macOS (bash 3.2+)
@@ -46,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TruffleHog secrets scan as required CI status check
 - Apache-2.0 license
 
+[0.3.1]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/oscardlfr/kmp-test-runner/releases/tag/v0.1.0

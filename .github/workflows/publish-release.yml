@@ -37,22 +37,26 @@ jobs:
           TAG="${{ steps.version.outputs.tag }}"
           VER="${{ steps.version.outputs.ver }}"
 
-          STAGING="staging-${VER}"
+          # Wrapper directory matches what install.sh (--strip-components=1) and
+          # install.ps1 ("strip top-level dir") expect. v0.3.0 was missing this
+          # wrapper, which broke extraction. See CHANGELOG v0.3.1.
+          WRAPPER="kmp-test-runner-${VER}"
+          STAGING="staging-${VER}/${WRAPPER}"
           mkdir -p "${STAGING}"
 
           cp -r bin lib scripts LICENSE CHANGELOG.md "${STAGING}/"
 
-          # Linux tarball
+          # Linux tarball — wrapper dir present at top level
           LINUX_ARCHIVE="kmp-test-runner-${VER}-linux.tar.gz"
-          tar -czf "${LINUX_ARCHIVE}" -C "${STAGING}" .
+          tar -czf "${LINUX_ARCHIVE}" -C "staging-${VER}" "${WRAPPER}"
           echo "linux_archive=${LINUX_ARCHIVE}" >> "$GITHUB_ENV"
 
-          # Windows zip
+          # Windows zip — wrapper dir present at top level
           WINDOWS_ARCHIVE="kmp-test-runner-${VER}-windows.zip"
-          (cd "${STAGING}" && zip -r "../${WINDOWS_ARCHIVE}" .)
+          (cd "staging-${VER}" && zip -r "../${WINDOWS_ARCHIVE}" "${WRAPPER}")
           echo "windows_archive=${WINDOWS_ARCHIVE}" >> "$GITHUB_ENV"
 
-          rm -rf "${STAGING}"
+          rm -rf "staging-${VER}"
 
       - name: Extract release notes
         run: |
