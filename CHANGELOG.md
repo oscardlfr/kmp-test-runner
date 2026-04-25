@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] — 2026-04-25
+
+### Fixed
+- `auto-tag.yml` → `publish-release.yml` cascade now fires automatically.
+  v0.3.5 exposed that the tag created and pushed by `auto-tag.yml` did NOT
+  trigger `publish-release.yml`'s `push: tags:` listener, because GitHub
+  Actions blocks pushes made with the default `GITHUB_TOKEN` from triggering
+  downstream workflows (anti-recursion guard). Workaround was a manual
+  `gh workflow run publish-release.yml -f tag=vX.Y.Z` after every release
+  merge.
+- Fix uses `workflow_call` (no new credentials needed):
+  - `publish-release.yml` adds a `workflow_call:` trigger alongside the
+    existing `push: tags:` and `workflow_dispatch:` triggers, parameterized
+    on a `tag` input. The version-determination logic resolves `TAG` from
+    `inputs.tag` (workflow_call / workflow_dispatch) or `GITHUB_REF_NAME`
+    (push:tags:), so all three paths produce identical artefacts.
+  - `auto-tag.yml` gains a `release` job that depends on `tag` and
+    `uses: ./.github/workflows/publish-release.yml` via workflow_call when
+    `tag.outputs.tag_created == 'true'`. No PAT, no GitHub App — a built-in
+    cross-workflow dependency that explicitly chains the two.
+
+### Validated
+- Second exercise of the auto-publish pipeline. v0.3.5 needed manual
+  intervention for the GitHub Release artefacts; v0.3.6 should be 100 %
+  hands-off — bump version, merge develop → main, all artefacts land.
+
 ## [0.3.5] — 2026-04-25
 
 ### Fixed
@@ -199,6 +225,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TruffleHog secrets scan as required CI status check
 - Apache-2.0 license
 
+[0.3.6]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.2...v0.3.3

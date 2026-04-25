@@ -22,6 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # required to push tags
+    outputs:
+      tag_created: ${{ steps.check.outputs.skip != 'true' }}
+      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,3 +55,17 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "Release $tag (auto-tagged from package.json on merge to main)"
           git push origin "$tag"
+
+  # Cascade: when a new tag was just created, invoke publish-release.yml
+  # via workflow_call. We can't rely on the tag push itself triggering
+  # publish-release (push:tags:) because GitHub blocks pushes made with the
+  # default GITHUB_TOKEN from triggering downstream workflows (anti-recursion
+  # guard). workflow_call is the no-PAT-needed escape hatch.
+  release:
+    needs: tag
+    if: needs.tag.outputs.tag_created == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-release.yml
+    with:
+      tag: v${{ needs.tag.outputs.version }}
