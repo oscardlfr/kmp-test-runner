@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] — 2026-04-25
+
+### Added
+- `--json` / `--format json` output mode: emits a single, parseable JSON object on
+  stdout with `tool`, `subcommand`, `version`, `project_root`, `exit_code`,
+  `duration_ms`, `tests {total/passed/failed/skipped}`, `modules[]`,
+  `coverage {tool, missed_lines}`, and `errors[]`. Designed for AI agents and
+  structured-output consumers — typical response is a few hundred tokens vs.
+  several thousand for raw Gradle + report parsing. Always valid JSON; parse
+  failures surface in `errors[]` rather than crashing.
+- Per-subcommand `--help` for `parallel`, `changed`, `android`, `benchmark`, and
+  `coverage`. Each shows subcommand-specific flags + one usage example,
+  ≤30 lines.
+- Pre-flight `gradlew` check: before invoking the bash/PowerShell script the
+  CLI verifies `<project-root>/gradlew` (or `gradlew.bat` on Windows) exists
+  and prints a 3-line helpful error (exit code `3`) when it doesn't.
+- Semantic exit codes documented in `--help` and README: `0` success, `1` test
+  failure, `2` config error (bad CLI usage), `3` environment error
+  (`gradlew`/`bash`/`pwsh` missing).
+- README "Agentic usage — token-cost rationale" section comparing three
+  approaches: (A) raw Gradle + report parsing, (B) `kmp-test` default,
+  (C) `kmp-test --json`. Side-by-side example shows ~80–100 tokens for
+  `--json` vs. several thousand for the equivalent raw-Gradle workflow.
+- vitest tests for parser, JSON envelope, gradlew pre-flight, and exit-code
+  semantics. `bin/kmp-test.js` + `lib/cli.js` line coverage now ~97%.
+- bats smoke tests for `--json` output shape, `--format json` alias, missing
+  gradlew, and per-subcommand help.
+
+### Changed
+- `--project-root` is now formally documented as defaulting to `process.cwd()`,
+  so `cd <project> && kmp-test parallel` works without typing the path. (The
+  default already existed in code; this release locks it into the public help
+  text and README.)
+- Global flags `--json` / `--format json` may appear before OR after the
+  subcommand (e.g. both `kmp-test --json parallel` and
+  `kmp-test parallel --json` work).
+- `ENOENT` when spawning `bash`/`pwsh` now exits with `3`
+  (environment error) instead of the previous `127`, aligning with the
+  documented semantic-exit-code scheme.
+
 ## [0.3.3] — 2026-04-25
 
 ### Fixed
@@ -98,6 +138,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TruffleHog secrets scan as required CI status check
 - Apache-2.0 license
 
+[0.3.4]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.0...v0.3.1
