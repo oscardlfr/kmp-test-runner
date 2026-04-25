@@ -44,7 +44,9 @@ jobs:
           STAGING="staging-${VER}/${WRAPPER}"
           mkdir -p "${STAGING}"
 
-          cp -r bin lib scripts LICENSE CHANGELOG.md "${STAGING}/"
+          # package.json is required at runtime — cli.js reads version from it.
+          # v0.3.0 + v0.3.1 omitted this, breaking `kmp-test --version` post-install.
+          cp -r bin lib scripts LICENSE CHANGELOG.md package.json "${STAGING}/"
 
           # Linux tarball — wrapper dir present at top level
           LINUX_ARCHIVE="kmp-test-runner-${VER}-linux.tar.gz"

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] — 2026-04-25
+
+### Fixed
+- Release artifacts now include `package.json`. Without it, `cli.js`'s `readVersion()`
+  function (which reads version via `path.join(__dirname, '..', 'package.json')`)
+  failed post-install with `ENOENT: no such file or directory`. v0.3.0 + v0.3.1
+  artifacts both omitted `package.json` from the `cp` list in `publish-release.yml`,
+  so `kmp-test --version` failed even after fixing the wrapper-directory bug in v0.3.1.
+
+### Notes
+- v0.3.0 + v0.3.1 users: please reinstall from v0.3.2. The installers themselves
+  (`install.sh`, `install.ps1`) are unchanged — the bug is in the release artifacts.
+- Run `scripts/uninstall.{sh,ps1}` first to clear the broken install, then re-run
+  `scripts/install.{sh,ps1}` from v0.3.2.
+
 ## [0.3.1] — 2026-04-25
 
 ### Fixed
@@ -16,9 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MODULE_NOT_FOUND`). v0.3.1 wraps the archive contents in `kmp-test-runner-${VER}/`
   so the installer extraction logic works as designed.
 
+> **NOTE:** v0.3.1 also has a packaging bug — see v0.3.2.
+
 ### Notes
-- v0.3.0 users: please reinstall from v0.3.1. Run `scripts/uninstall.{sh,ps1}` first
-  to clear the broken v0.3.0 install, then `scripts/install.{sh,ps1}` from v0.3.1.
+- v0.3.0 users: do NOT install v0.3.1 — install v0.3.2 instead.
 
 ## [0.3.0] — 2026-04-25
 
@@ -65,6 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TruffleHog secrets scan as required CI status check
 - Apache-2.0 license
 
+[0.3.2]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.1.0...v0.2.0
