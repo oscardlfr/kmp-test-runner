@@ -5,7 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] — 2026-04-25
+
+### Fixed
+- `package.json` version bumped from `0.2.0` to `0.3.3` to match the GitHub Release
+  tag. Sub-wave c (v0.3.0..v0.3.2) shipped installer + workflow changes only — no
+  npm/Gradle code change — and missed bumping `package.json`. Result on v0.3.0/0.3.1/0.3.2:
+  `kmp-test --version` returned `0.2.0` post-install (the stale `package.json` value)
+  even though users installed from a v0.3.x GitHub Release. v0.3.3 syncs the
+  version-string source-of-truth with the release tag.
+- Note: the **npm registry** still publishes `kmp-test-runner@0.2.0`. `publish-npm.yml`
+  is `workflow_dispatch`-only (intentionally — Trusted Publisher OIDC requires manual
+  approval). To publish v0.3.3 to npm, trigger that workflow explicitly.
+
+### Notes
+- v0.3.0..v0.3.2 users: please reinstall from v0.3.3. Run `scripts/uninstall.{sh,ps1}`
+  first, then `scripts/install.{sh,ps1}` from v0.3.3.
+
 ## [0.3.2] — 2026-04-25
+
+> **NOTE:** v0.3.2 reports `kmp-test --version` as `0.2.0` (stale `package.json`).
+> Use v0.3.3 — same installer, correct version reporting.
 
 ### Fixed
 - Release artifacts now include `package.json`. Without it, `cli.js`'s `readVersion()`
@@ -15,10 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so `kmp-test --version` failed even after fixing the wrapper-directory bug in v0.3.1.
 
 ### Notes
-- v0.3.0 + v0.3.1 users: please reinstall from v0.3.2. The installers themselves
-  (`install.sh`, `install.ps1`) are unchanged — the bug is in the release artifacts.
-- Run `scripts/uninstall.{sh,ps1}` first to clear the broken install, then re-run
-  `scripts/install.{sh,ps1}` from v0.3.2.
+- v0.3.0 + v0.3.1 users: please reinstall from v0.3.3 (NOT v0.3.2 — see note above).
 
 ## [0.3.1] — 2026-04-25
 
@@ -81,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TruffleHog secrets scan as required CI status check
 - Apache-2.0 license
 
+[0.3.3]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.2.0...v0.3.0
