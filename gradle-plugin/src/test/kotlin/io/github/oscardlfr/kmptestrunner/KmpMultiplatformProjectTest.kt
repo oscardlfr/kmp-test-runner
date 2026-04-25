@@ -18,6 +18,8 @@ class KmpMultiplatformProjectTest {
 
     @Test
     fun `all 5 tasks are registered for kmp multiplatform project shape`() {
+        val pluginVersion = System.getProperty("plugin.version")
+            ?: error("plugin.version system property not set — did the build script wire it up?")
         projectDir.resolve("settings.gradle.kts").writeText(
             """
             pluginManagement {
@@ -34,7 +36,7 @@ class KmpMultiplatformProjectTest {
         projectDir.resolve("build.gradle.kts").writeText(
             """
             plugins {
-                id("io.github.oscardlfr.kmp-test-runner") version "0.2.0"
+                id("io.github.oscardlfr.kmp-test-runner") version "$pluginVersion"
             }
             kmpTestRunner {
                 projectRoot = rootDir.absolutePath
@@ -62,6 +64,8 @@ class KmpMultiplatformProjectTest {
 
     @Test
     fun `coverageTask kover auto-detect fires when kover plugin present`() {
+        val pluginVersion = System.getProperty("plugin.version")
+            ?: error("plugin.version system property not set — did the build script wire it up?")
         projectDir.resolve("settings.gradle.kts").writeText(
             """
             pluginManagement {
@@ -77,7 +81,7 @@ class KmpMultiplatformProjectTest {
         projectDir.resolve("build.gradle.kts").writeText(
             """
             plugins {
-                id("io.github.oscardlfr.kmp-test-runner") version "0.2.0"
+                id("io.github.oscardlfr.kmp-test-runner") version "$pluginVersion"
                 id("org.jetbrains.kotlinx.kover") version "0.9.1"
             }
             kmpTestRunner {

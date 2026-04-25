@@ -1,19 +1,55 @@
 name: Publish to npm
 on:
+  push:
+    branches: [main]
+    paths:
+      # Only fire on changes that could plausibly affect the published npm shape.
+      # Avoids cycling on docs-only commits.
+      - 'package.json'
+      - 'package-lock.json'
+      - 'bin/**'
+      - 'lib/**'
+      - 'scripts/**'
+      - '.github/workflows/publish-npm.yml'
   workflow_dispatch:
+
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      id-token: write   # required for npm publish --provenance
+      contents: write       # needed if we end up tagging from this workflow
+      id-token: write       # required for npm publish --provenance (Trusted Publisher OIDC)
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # need full history to query existing tags
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: 'https://registry.npmjs.org'
-      - run: npm install -g npm@latest
-      - run: npm ci
+
+      - name: Read version from package.json
+        id: ver
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Check if version already on npm (idempotency)
+        id: check
+        run: |
+          if npm view "kmp-test-runner@${{ steps.ver.outputs.version }}" version >/dev/null 2>&1; then
+            echo "Version ${{ steps.ver.outputs.version }} already published — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version ${{ steps.ver.outputs.version }} not yet on npm — will publish."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install deps
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          npm install -g npm@latest
+          npm ci
+
       - name: Publish
+        if: steps.check.outputs.skip == 'false'
         run: npm publish --provenance --access public

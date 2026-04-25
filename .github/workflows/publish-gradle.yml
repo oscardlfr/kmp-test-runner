@@ -1,6 +1,12 @@
 name: Publish Gradle Plugin
 
 on:
+  push:
+    branches: [main]
+    paths:
+      # Only fire on changes that could plausibly affect the published artefact.
+      - 'gradle-plugin/**'
+      - '.github/workflows/publish-gradle.yml'
   workflow_dispatch:
 
 jobs:
@@ -12,11 +18,41 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
+
+      - name: Read gradle-plugin version
+        id: ver
+        run: |
+          version="$(grep -E '^version\s*=' gradle-plugin/build.gradle.kts | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Detected gradle-plugin version: $version"
+
+      - name: Check if version already on GitHub Packages (idempotency)
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # GitHub Packages Maven endpoint for an io.github.oscardlfr.kmp-test-runner artefact:
+          #   /repos/${owner}/${repo}/packages/maven/{group}.{artifact}/versions
+          # Public-read on this repo so a 200 means "exists".
+          status=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://maven.pkg.github.com/oscardlfr/kmp-test-runner/io/github/oscardlfr/kmp-test-runner-gradle-plugin/${{ steps.ver.outputs.version }}/maven-metadata.xml")
+          if [ "$status" = "200" ]; then
+            echo "Gradle plugin ${{ steps.ver.outputs.version }} already published — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Gradle plugin ${{ steps.ver.outputs.version }} not on GitHub Packages (HTTP $status) — will publish."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to GitHub Packages
+        if: steps.check.outputs.skip == 'false'
         run: cd gradle-plugin && ./gradlew publishAllPublicationsToGitHubPackagesRepository
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

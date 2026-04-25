@@ -1,0 +1,54 @@
+name: Auto-tag from package.json
+# Reads `version` from package.json on every push to main. If the corresponding
+# `vX.Y.Z` git tag does not exist yet, creates and pushes it. The tag push then
+# fires `publish-release.yml` (which builds linux.tar.gz + windows.zip and creates
+# the GitHub Release).
+#
+# This means: bumping `package.json` version + merging to main = full release
+# pipeline (npm + gradle + GitHub Release artefacts), no manual tagging needed.
+# Re-pushing to main with same version = no-op (tag already exists, git push --tags
+# skips, downstream workflows hit their own idempotency checks).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'package.json'
+      - '.github/workflows/auto-tag.yml'
+  workflow_dispatch:
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # required to push tags
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history so we can see all existing tags
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read version
+        id: ver
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: check
+        run: |
+          tag="v${{ steps.ver.outputs.version }}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $tag does not exist — will create and push."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push tag
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          tag="v${{ steps.ver.outputs.version }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Release $tag (auto-tagged from package.json on merge to main)"
+          git push origin "$tag"

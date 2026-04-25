@@ -4,10 +4,10 @@
 
 ## Repo state (2026-04-25)
 
-- npm: `kmp-test-runner@0.2.0` (Trusted Publisher OIDC; W31.5a)
-- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.2.0` (GitHub Packages; W31.5b)
-- GitHub Releases: `v0.3.3` (installer artifacts; W31.5c shipped + 3 post-ship hotfixes)
-- **Note**: `package.json` is at `0.3.3` but npm registry still at `0.2.0` (`publish-npm.yml` is `workflow_dispatch` only — intentional for OIDC manual approval)
+- npm: `kmp-test-runner@0.3.4` (Trusted Publisher OIDC; auto-publishes on push to `main`)
+- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.3.4` (GitHub Packages; auto-publishes on push to `main`)
+- GitHub Releases: `v0.3.4` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
+- All 3 shapes share the same source-of-truth version (`package.json`), bumped together per release.
 
 ## Layout
 
@@ -21,29 +21,52 @@
 - `.github/workflows/` — `ci.yml` (6 jobs: build x2, secrets-scan, gradle-plugin-test, installer-e2e x2), `publish-release.yml` (tag `v*` trigger), `publish-npm.yml` + `publish-gradle.yml` (workflow_dispatch only)
 - `BACKLOG.md` — current and queued tasks; check this first
 
-## CRITICAL — Gitflow enforced server-side
+## CRITICAL — Gitflow with develop + auto-publish on main
 
-**NEVER push directly to `main`.** Branch protection requires:
+Two long-lived branches:
+- **`develop`** — integration branch where features land
+- **`main`** — only contains released versions; **every push to main is a release**
+
+**NEVER push directly to `main` or `develop`.** Branch protection on both requires:
 - PR (no direct push, no force push, no delete)
 - All 6 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`
 - Linear history (squash/rebase only)
 - `enforce_admins: true` (rule applies to repo owner — no bypass)
 
-Workflow for ANY change (incl. one-line hotfixes):
+### Daily workflow (feature → develop)
 
 ```bash
-git checkout main && git pull
+git checkout develop && git pull
 git checkout -b feature/<slug>
 # edit
 git commit -m "type(scope): summary"
 git push -u origin feature/<slug>
-gh pr create --title "..." --body "..."
+gh pr create --base develop --title "..." --body "..."
 # wait for CI green
 gh pr merge <num> --squash --delete-branch
-git checkout main && git pull
+git checkout develop && git pull
 ```
 
-For a release: after merging the version-bumping PR, `git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`. The `publish-release.yml` workflow auto-runs on tag push and creates the GitHub Release with `linux.tar.gz` + `windows.zip` artifacts.
+### Release workflow (develop → main)
+
+When `develop` is ready to release:
+
+1. On `develop`: bump `package.json` `version` (and `gradle-plugin/build.gradle.kts` `version` to match), update `CHANGELOG.md`, commit, push, PR to develop, merge.
+2. Open `release: vX.Y.Z` PR from `develop` → `main`. CI runs the full 6-check matrix.
+3. Squash-merge to `main`. **Three workflows fire automatically:**
+    - `auto-tag.yml` — creates `vX.Y.Z` git tag from `package.json` version (if missing)
+    - `publish-npm.yml` — runs `npm publish` (skipped if version already on registry)
+    - `publish-gradle.yml` — publishes to GitHub Packages (skipped if version already there)
+    - The `auto-tag.yml` tag push then cascades into `publish-release.yml`, building `linux.tar.gz` + `windows.zip` and creating the GitHub Release.
+4. Sync develop with main (`git checkout develop && git merge main && git push`) so the next cycle starts from a clean base.
+
+### Idempotency
+
+All publish workflows are no-ops when their version already exists in the target registry. Re-pushing the same version to main = nothing happens. Bumping version + pushing = full release pipeline.
+
+### Manual dispatch
+
+Each publish workflow keeps `workflow_dispatch:` as a fallback (e.g. for re-publish after a registry outage). Use sparingly — the auto-flow is canonical.
 
 ## Versioning
 
