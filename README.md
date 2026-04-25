@@ -197,6 +197,8 @@ BUILD SUCCESSFUL
 
 That's ~300 bytes — roughly **80–100 tokens** vs. several thousand for approach A. For an agent running tests on every iteration of a coding loop, the difference compounds quickly.
 
+> **Measured numbers** (single module, `shared-kmp-libs/core-result`, 2026-04-26): **A 12,816 tokens**, **B 376 tokens**, **C 100 tokens** — `--json` is **128× cheaper than raw gradle + report parsing**, and **3.8× cheaper than the default markdown output**. Full methodology and reproducibility script in [`docs/token-cost-measurement.md`](docs/token-cost-measurement.md).
+
 ### What the JSON guarantees
 
 - **Always valid JSON**, even if parsing the script output partially fails. Parse gaps are surfaced in the `errors[]` array rather than crashing the CLI.

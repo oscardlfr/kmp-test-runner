@@ -12,23 +12,6 @@ _(none — pick from QUEUED below or open a new entry)_
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
 
-### Real token-cost metrics for README "Agentic usage" section
-
-The README "Agentic usage — token-cost rationale" section currently makes a qualitative claim ("~80–100 tokens vs. several thousand"). It would be more credible with **measured numbers from a real KMP project run**, not estimated.
-
-Open question: how to measure realistically and reproducibly? Options to think through:
-
-- **Token counter:** use `tiktoken` (OpenAI) and / or Anthropic's `count_tokens` API endpoint to count the actual stdout an agent would consume.
-- **Three runs on the same project:**
-  - **A. raw Gradle**: `./gradlew :module1:test :module2:test ... --parallel` + `koverHtmlReport`, then read every generated `build/reports/**/index.html` + `*.xml`. Capture full stdout + report file contents.
-  - **B. `kmp-test` default**: capture full stdout (already markdown-summarized).
-  - **C. `kmp-test --json`**: capture single JSON line.
-- **Same project, same module set** for fair comparison. Could use DawSync or a fixture — DawSync is more credible (real production codebase) but moves token counts every commit.
-- **Repeat 3 times, report mean ± std** — token counts vary by which tests run, log volume, ANSI density.
-- Output a small report (markdown table) committed to the repo, referenced from README. Keeps the claim self-auditable.
-
-Estimated effort: 2–3h. Could be a `tools/measure-token-cost.sh` script + `docs/token-cost-measurement.md`.
-
 ### Other QUEUED ideas
 
 - **ANSI color** — auto-detect TTY, plain output when piped
@@ -40,6 +23,7 @@ Estimated effort: 2–3h. Could be a `tools/measure-token-cost.sh` script + `doc
 
 ## DONE (recent — newest first)
 
+- 2026-04-26: **Real token-cost metrics for the "Agentic usage" claim** — `tools/measure-token-cost.js` (Node + js-tiktoken; `--project-root`, `--module-filter`, `--test-task`, `--runs`) runs the three approaches (A: raw `./gradlew + read build/reports/**`, B: `kmp-test parallel`, C: `kmp-test parallel --json`) against any KMP project and emits a markdown table with token counts. First run against `shared-kmp-libs:core-result:desktopTest` produced **A 12,816 tok / B 376 tok / C 100 tok** — `--json` is **128× cheaper than raw gradle**. Captured run logs committed to `tools/runs/`; methodology + caveats in `docs/token-cost-measurement.md`; README "Agentic usage" section updated to link the doc. Replaces the prior qualitative claim with a self-auditable measurement.
 - 2026-04-26: **v0.3.7** — DX & agentic features bundle. `--dry-run` (skip spawn, print/JSON the resolved plan), `kmp-test doctor` subcommand (5 env checks: Node, shell, gradlew, JDK, ADB; human table + `--json` array), and `--test-filter <pattern>` passthrough (gradle `--tests` for JVM, `-Pandroid.testInstrumentationRunnerArguments.class=` for Android with `*Pattern*` → FQN resolution by source scan). Plus Conventional Commits enforcement on PR titles via `.github/workflows/commit-lint.yml` (adapted inline from AndroidCommonDoc reusable workflow — repo stays standalone). 91 vitest + 52 bats tests. **Branch protection must be updated to add `commit-lint / 🔤 Commit Lint` as required check.**
 - 2026-04-25: **v0.3.6** — `auto-tag.yml` → `publish-release.yml` cascade now fires automatically via `workflow_call` (no PAT, no rotation). v0.3.5 had needed manual `gh workflow run -f tag=...` to ship artefacts because GitHub blocks `GITHUB_TOKEN`-pushed events from triggering downstream workflows. v0.3.6's merge was the first 100 %-hands-off cascade end-to-end (auto-tag → release artefacts → npm publish → gradle publish), ~90 sec from merge to all artefacts visible. (PR #15 + #16)
 - 2026-04-25: **v0.3.5** — `scripts/install.ps1` `Resolve-LatestVersion` now works in PowerShell 7+ via new `Get-LocationHeader` helper (the old `$Response.Headers["Location"]` indexer threw on `HttpResponseHeaders`). Also added `develop` to `ci.yml` triggers (PR-to-develop checks were not running). Was the first real exercise of the auto-publish pipeline (v0.3.4's was a no-op for auto-tag). Caught while validating v0.3.4 install.ps1 against the live GitHub Release. (PR #13 + #14)
