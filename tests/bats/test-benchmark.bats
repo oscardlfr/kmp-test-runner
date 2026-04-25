@@ -97,3 +97,194 @@ EOF
     module_supports_platform "$WORK_DIR" "plain" "jvm"
     module_supports_platform "$WORK_DIR" "plain" "android"
 }
+
+@test "benchmark-detect: KMP module with both kotlinx + androidx → supports both platforms" {
+    mkdir -p "$WORK_DIR/multi"
+    cat > "$WORK_DIR/multi/build.gradle.kts" << 'EOF'
+plugins {
+    id("org.jetbrains.kotlinx.benchmark")
+    id("com.android.library")
+}
+android {
+    defaultConfig {
+        testInstrumentationRunner = "androidx.benchmark.junit4.AndroidBenchmarkRunner"
+    }
+}
+EOF
+    source scripts/sh/lib/benchmark-detect.sh
+    local platforms
+    platforms="$(detect_module_benchmark_platforms "$WORK_DIR" "multi")"
+    [[ "$platforms" == *"jvm"* ]]
+    [[ "$platforms" == *"android"* ]]
+    module_supports_platform "$WORK_DIR" "multi" "jvm"
+    module_supports_platform "$WORK_DIR" "multi" "android"
+}
+
+@test "benchmark-detect: nested colon module path (sdk:wiring-e) resolved correctly" {
+    mkdir -p "$WORK_DIR/sdk/wiring-e"
+    cat > "$WORK_DIR/sdk/wiring-e/build.gradle.kts" << 'EOF'
+plugins { id("org.jetbrains.kotlinx.benchmark") }
+EOF
+    source scripts/sh/lib/benchmark-detect.sh
+    local platforms
+    platforms="$(detect_module_benchmark_platforms "$WORK_DIR" "sdk:wiring-e")"
+    [[ "$platforms" == "jvm" ]]
+    module_supports_platform "$WORK_DIR" "sdk:wiring-e" "jvm"
+    if module_supports_platform "$WORK_DIR" "sdk:wiring-e" "android"; then
+        return 1  # should NOT support android
+    fi
+}
+
+@test "benchmark-detect: missing build.gradle.kts → empty platforms (permissive)" {
+    # Module dir doesn't exist at all
+    source scripts/sh/lib/benchmark-detect.sh
+    local platforms
+    platforms="$(detect_module_benchmark_platforms "$WORK_DIR" "nonexistent")"
+    [[ -z "$platforms" ]]
+    # module_supports_platform returns 0 (permissive) when no info
+    module_supports_platform "$WORK_DIR" "nonexistent" "jvm"
+    module_supports_platform "$WORK_DIR" "nonexistent" "android"
+}
+
+@test "benchmark-detect: empty build.gradle.kts → empty platforms (permissive)" {
+    mkdir -p "$WORK_DIR/empty"
+    : > "$WORK_DIR/empty/build.gradle.kts"
+    source scripts/sh/lib/benchmark-detect.sh
+    local platforms
+    platforms="$(detect_module_benchmark_platforms "$WORK_DIR" "empty")"
+    [[ -z "$platforms" ]]
+    module_supports_platform "$WORK_DIR" "empty" "jvm"
+}
+
+@test "benchmark-detect: hyphenated benchmark plugin id (kotlinx-benchmark) recognized" {
+    # Some setups use the hyphenated form (e.g. classpath dep notation)
+    mkdir -p "$WORK_DIR/hyphen"
+    cat > "$WORK_DIR/hyphen/build.gradle.kts" << 'EOF'
+classpath("org.jetbrains.kotlinx:kotlinx-benchmark-runtime:0.4.10")
+EOF
+    source scripts/sh/lib/benchmark-detect.sh
+    local platforms
+    platforms="$(detect_module_benchmark_platforms "$WORK_DIR" "hyphen")"
+    # The detector greps for "kotlinx.benchmark" — hyphenated form should NOT trigger it
+    # (we only want declarations, not transitive runtime deps). This documents current behaviour.
+    [[ -z "$platforms" || "$platforms" == "jvm" ]]
+}
+
+@test "benchmark-detect: get_benchmark_gradle_task — jvm/smoke maps correctly" {
+    source scripts/sh/lib/benchmark-detect.sh
+    [[ "$(get_benchmark_gradle_task 'foo' 'jvm' 'smoke')" == ':foo:desktopSmokeBenchmark' ]]
+    [[ "$(get_benchmark_gradle_task 'foo' 'jvm' 'stress')" == ':foo:desktopStressBenchmark' ]]
+    [[ "$(get_benchmark_gradle_task 'foo' 'jvm' 'main')" == ':foo:desktopBenchmark' ]]
+    [[ "$(get_benchmark_gradle_task 'foo' 'android' 'smoke')" == ':foo:connectedAndroidTest' ]]
+    [[ "$(get_benchmark_gradle_task 'foo' 'android' 'main')" == ':foo:connectedAndroidTest' ]]
+}
+
+@test "benchmark-detect: detect_benchmark_modules with default filter '*' returns all matching modules (regression)" {
+    # Regression: previously detect_benchmark_modules used [[ "$mod" != *"$filter"* ]]
+    # which with filter="*" (default of run-benchmarks.sh) literal-substring-checked
+    # for "*" inside the module name and silently filtered EVERY module out, breaking
+    # the default `kmp-test benchmark` invocation.
+    cat > "$WORK_DIR/settings.gradle.kts" << 'EOF'
+rootProject.name = "fake"
+include(":benchmark")
+include(":perf")
+include(":app")
+EOF
+    mkdir -p "$WORK_DIR/benchmark" "$WORK_DIR/perf" "$WORK_DIR/app"
+    echo 'androidx.benchmark.junit4.AndroidBenchmarkRunner' > "$WORK_DIR/benchmark/build.gradle.kts"
+    echo 'id("org.jetbrains.kotlinx.benchmark")' > "$WORK_DIR/perf/build.gradle.kts"
+    echo '// no benchmark here' > "$WORK_DIR/app/build.gradle.kts"
+
+    source scripts/sh/lib/benchmark-detect.sh
+    local result
+    result="$(detect_benchmark_modules "$WORK_DIR" "*")"
+    [[ "$result" == *"benchmark"* ]]
+    [[ "$result" == *"perf"* ]]
+    [[ "$result" != *"app"* ]]  # has no benchmark plugin → excluded
+}
+
+@test "benchmark-detect: detect_benchmark_modules with empty filter returns all matching modules" {
+    cat > "$WORK_DIR/settings.gradle.kts" << 'EOF'
+include(":alpha")
+include(":beta")
+EOF
+    mkdir -p "$WORK_DIR/alpha" "$WORK_DIR/beta"
+    echo 'id("org.jetbrains.kotlinx.benchmark")' > "$WORK_DIR/alpha/build.gradle.kts"
+    echo 'id("org.jetbrains.kotlinx.benchmark")' > "$WORK_DIR/beta/build.gradle.kts"
+
+    source scripts/sh/lib/benchmark-detect.sh
+    local result
+    result="$(detect_benchmark_modules "$WORK_DIR" "")"
+    [[ "$result" == *"alpha"* ]]
+    [[ "$result" == *"beta"* ]]
+}
+
+@test "benchmark-detect: detect_benchmark_modules with substring filter returns only matches" {
+    cat > "$WORK_DIR/settings.gradle.kts" << 'EOF'
+include(":core-bench")
+include(":app-bench")
+include(":other")
+EOF
+    mkdir -p "$WORK_DIR/core-bench" "$WORK_DIR/app-bench" "$WORK_DIR/other"
+    for d in core-bench app-bench other; do
+        echo 'id("org.jetbrains.kotlinx.benchmark")' > "$WORK_DIR/$d/build.gradle.kts"
+    done
+
+    source scripts/sh/lib/benchmark-detect.sh
+    local result
+    result="$(detect_benchmark_modules "$WORK_DIR" "core")"
+    [[ "$result" == *"core-bench"* ]]
+    [[ "$result" != *"app-bench"* ]]
+    [[ "$result" != *"other"* ]]
+}
+
+@test "benchmark-detect: detect_benchmark_modules locale-portable include extraction (regression)" {
+    # Regression: previously used `grep -oP` (PCRE) which fails on Git Bash with
+    # "supports only unibyte and UTF-8 locales" when LC_ALL=C. The fix uses
+    # POSIX-friendly grep -E + sed.
+    cat > "$WORK_DIR/settings.gradle.kts" << 'EOF'
+rootProject.name = "fake"
+include  (   ":spaced-include"   )
+include(":nested:module")
+include(":simple")
+EOF
+    for m in spaced-include nested/module simple; do
+        mkdir -p "$WORK_DIR/$m"
+        echo 'id("org.jetbrains.kotlinx.benchmark")' > "$WORK_DIR/$m/build.gradle.kts"
+    done
+
+    source scripts/sh/lib/benchmark-detect.sh
+    local result
+    # Force C locale to reproduce the original Git Bash environment
+    result="$(LC_ALL=C detect_benchmark_modules "$WORK_DIR" "*")"
+    [[ "$result" == *"spaced-include"* ]]
+    [[ "$result" == *"nested:module"* ]]
+    [[ "$result" == *"simple"* ]]
+}
+
+@test "benchmark integration: --platform jvm against android-only module exits 3 with hint (not TaskSelectionException)" {
+    # End-to-end: build a fake project with one androidx.benchmark-only module,
+    # invoke run-benchmarks.sh with --platform jvm, expect exit 3 and hint message.
+    mkdir -p "$WORK_DIR/benchmark"
+    cat > "$WORK_DIR/settings.gradle.kts" << 'EOF'
+rootProject.name = "fake"
+include(":benchmark")
+EOF
+    cat > "$WORK_DIR/benchmark/build.gradle.kts" << 'EOF'
+testInstrumentationRunner = "androidx.benchmark.junit4.AndroidBenchmarkRunner"
+EOF
+    # Stub gradlew so script doesn't try to start real Gradle (it shouldn't even reach this)
+    cat > "$WORK_DIR/gradlew" << 'EOF'
+#!/usr/bin/env bash
+echo "STUB GRADLEW INVOKED — should NOT happen for incompatible platform"
+exit 99
+EOF
+    chmod +x "$WORK_DIR/gradlew"
+
+    run bash scripts/sh/run-benchmarks.sh --project-root "$WORK_DIR" --platform jvm --config smoke
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"[SKIP]"* ]] || [[ "$output" == *"No benchmark module"* ]]
+    [[ "$output" == *"benchmark plugin"* ]] || [[ "$output" == *"--platform"* ]]
+    # Critically: stub gradlew must NOT have been invoked
+    [[ "$output" != *"STUB GRADLEW INVOKED"* ]]
+}

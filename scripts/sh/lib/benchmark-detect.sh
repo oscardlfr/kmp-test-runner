@@ -92,17 +92,22 @@ detect_benchmark_modules() {
         return
     fi
 
-    # Extract module include paths from settings.gradle.kts
-    # Matches: include(":module-name") or include(":parent:child")
+    # Extract module include paths from settings.gradle.kts.
+    # Matches: include(":module-name") or include(":parent:child").
+    # Uses POSIX -E (sed) instead of -P (grep PCRE) — -P fails on Git Bash
+    # when LC_ALL is not UTF-8 ("supports only unibyte and UTF-8 locales").
     local modules
-    modules=$(grep -oP 'include\s*\(\s*":([\w:.-]+)"' "$settings_file" | \
-              sed -E 's/include\s*\(\s*"://; s/"//')
+    modules=$(grep -E 'include[[:space:]]*\([[:space:]]*":' "$settings_file" | \
+              sed -E 's/.*include[[:space:]]*\([[:space:]]*":([^"]+)".*/\1/')
 
     while IFS= read -r module; do
         [[ -z "$module" ]] && continue
 
-        # Apply filter if provided
-        if [[ -n "$module_filter" ]] && [[ "$module" != *"$module_filter"* ]]; then
+        # Apply filter if provided. Treat "*" (and empty) as "match all" — a literal
+        # substring check on "*" would never match real module names like "benchmark"
+        # and so silently filter out every module (the default of run-benchmarks.sh).
+        if [[ -n "$module_filter" ]] && [[ "$module_filter" != "*" ]] && \
+           [[ "$module" != *"$module_filter"* ]]; then
             continue
         fi
 
