@@ -68,6 +68,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   script exits `3` (env error) with a useful hint instead of pretending success.
   Discovered while validating v0.3.4 against `dipatternsdemo` (an
   `androidx.benchmark`-only project).
+- `detect_benchmark_modules` (sh) now correctly handles the default
+  `--module-filter "*"`. Previously the filter check used a literal substring
+  match (`[[ "$mod" != *"*"* ]]`), so passing `*` filtered EVERY module out
+  (since module names like "benchmark" don't contain a literal asterisk),
+  silently returning zero benchmark modules on any default invocation.
+  The filter now treats `*` and the empty string as "match all" and only
+  applies substring filtering for non-empty, non-asterisk patterns. Caught
+  by the new `detect_benchmark_modules with default filter '*'` regression
+  bats test.
+- `detect_benchmark_modules` (sh) `include(...)` extraction is now locale-
+  portable. Previously it used `grep -oP` (PCRE), which fails under MinGW /
+  Git Bash with `grep: -P supports only unibyte and UTF-8 locales` when
+  `LC_ALL=C`, returning zero modules. The implementation now uses
+  `grep -E` + `sed -E` (POSIX) and is exercised under `LC_ALL=C` by a
+  dedicated regression bats test.
 
 ## [0.3.3] — 2026-04-25
 
