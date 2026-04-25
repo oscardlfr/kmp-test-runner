@@ -43,10 +43,13 @@ dependencies {
     implementation(kotlin("stdlib"))
     testImplementation(kotlin("test"))
     testImplementation(gradleTestKit())
+    testImplementation("org.junit.jupiter:junit-jupiter-params:5.11.0")
 }
 
 tasks.test {
     useJUnitPlatform()
+    dependsOn("publishToMavenLocal")
+    maxParallelForks = 1
 }
 
 val syncScripts by tasks.registering(Sync::class) {
