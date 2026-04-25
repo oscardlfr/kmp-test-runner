@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] — 2026-04-25
+
+### Fixed
+- `scripts/install.ps1` `Resolve-LatestVersion` now works in PowerShell 7+.
+  The previous code accessed `$Response.Headers["Location"]` directly, which
+  works on Windows PowerShell 5.1 (where `Headers` is a `Hashtable` /
+  `WebHeaderCollection`) but throws `Unable to index into an object of type
+  System.Net.Http.Headers.HttpResponseHeaders` on PowerShell 7+. Replaced
+  with `Get-LocationHeader` helper that handles both shapes (Hashtable
+  indexer, single-string array, and the typed `HttpResponseHeaders.GetValues`
+  / `.Location` accessors). Workaround until the fix shipped: pass `-Version`
+  explicitly.
+
+### Validated
+- First end-to-end exercise of the auto-publish pipeline introduced in
+  v0.3.4: bumping `package.json` + `gradle-plugin/build.gradle.kts` to
+  `0.3.5` on `develop`, PR `develop → main`, squash-merge → `auto-tag.yml`
+  creates `v0.3.5` git tag → cascades to `publish-release.yml` (artefacts)
+  → `publish-npm.yml` + `publish-gradle.yml` push their respective
+  registries — all without manual intervention. v0.3.4 was a no-op for
+  `auto-tag.yml` (tag pre-existed); v0.3.5 was the first real exercise.
+
 ## [0.3.4] — 2026-04-25
 
 ### Added
@@ -177,6 +199,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TruffleHog secrets scan as required CI status check
 - Apache-2.0 license
 
+[0.3.5]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.1...v0.3.2
