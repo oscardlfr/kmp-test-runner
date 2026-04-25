@@ -25,8 +25,9 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "",
-    [string]$Prefix  = ""
+    [string]$Version      = "",
+    [string]$Prefix       = "",
+    [string]$LocalArchive = ""
 )
 
 Set-StrictMode -Version Latest
@@ -115,14 +116,19 @@ function Download-Archive {
     }
 }
 
-$Downloaded = Download-Archive -Url $PrimaryUrl -Dest $ArchivePath
-if (-not $Downloaded) {
-    Write-Host "Primary URL failed, trying versioned URL..."
-    $Downloaded = Download-Archive -Url $VersionedUrl -Dest $ArchivePath
+if ($LocalArchive -ne "") {
+    Copy-Item -Path $LocalArchive -Destination $ArchivePath
 }
-if (-not $Downloaded) {
-    Write-Error "Download failed. Check your network or try -Version."
-    exit 1
+else {
+    $Downloaded = Download-Archive -Url $PrimaryUrl -Dest $ArchivePath
+    if (-not $Downloaded) {
+        Write-Host "Primary URL failed, trying versioned URL..."
+        $Downloaded = Download-Archive -Url $VersionedUrl -Dest $ArchivePath
+    }
+    if (-not $Downloaded) {
+        Write-Error "Download failed. Check your network or try -Version."
+        exit 1
+    }
 }
 
 # --------------------------------------------------------------------------

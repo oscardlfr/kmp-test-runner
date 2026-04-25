@@ -15,6 +15,7 @@ Options:
   --version <ver>   Install a specific version (default: latest)
   --prefix <dir>    Installation prefix (default: $XDG_DATA_HOME/kmp-test-runner
                     or ~/.local/share/kmp-test-runner)
+  --archive <path>  Use a local archive instead of downloading from GitHub
   --help            Print this message and exit
 
 The installer places the runtime under <prefix>/lib/ and creates a symlink
@@ -29,11 +30,13 @@ USAGE
 # --------------------------------------------------------------------------
 VERSION=""
 PREFIX=""
+LOCAL_ARCHIVE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version) VERSION="$2"; shift 2 ;;
         --prefix)  PREFIX="$2";  shift 2 ;;
+        --archive) LOCAL_ARCHIVE="$2"; shift 2 ;;
         --help|-h) usage 0 ;;
         *) echo "Unknown option: $1" >&2; usage 1 ;;
     esac
@@ -125,11 +128,15 @@ download_archive() {
     return 1
 }
 
-if ! download_archive "$PRIMARY_URL"; then
-    echo "Primary URL failed, trying versioned URL..."
-    if ! download_archive "$VERSIONED_URL"; then
-        echo "Download failed. Check your network or try --version." >&2
-        exit 1
+if [[ -n "${LOCAL_ARCHIVE:-}" ]]; then
+    cp "$LOCAL_ARCHIVE" "$ARCHIVE_PATH"
+else
+    if ! download_archive "$PRIMARY_URL"; then
+        echo "Primary URL failed, trying versioned URL..."
+        if ! download_archive "$VERSIONED_URL"; then
+            echo "Download failed. Check your network or try --version." >&2
+            exit 1
+        fi
     fi
 fi
 
