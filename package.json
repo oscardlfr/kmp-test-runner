@@ -3,6 +3,25 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Parallel test runner for KMP and Android Gradle projects",
+  "homepage": "https://github.com/oscardlfr/kmp-test-runner#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oscardlfr/kmp-test-runner.git"
+  },
+  "bugs": {
+    "url": "https://github.com/oscardlfr/kmp-test-runner/issues"
+  },
+  "keywords": [
+    "kotlin",
+    "kotlin-multiplatform",
+    "kmp",
+    "android",
+    "gradle",
+    "test-runner",
+    "parallel-tests",
+    "coverage"
+  ],
+  "author": "oscardlfr",
   "bin": "bin/kmp-test.js",
   "files": [
     "bin/",
