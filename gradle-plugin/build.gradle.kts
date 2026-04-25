@@ -35,6 +35,10 @@ publishing {
     }
 }
 
+repositories {
+    mavenCentral()
+}
+
 dependencies {
     implementation(kotlin("stdlib"))
     testImplementation(kotlin("test"))
@@ -44,3 +48,9 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
 }
+
+val syncScripts by tasks.registering(Sync::class) {
+    from("../scripts/sh")
+    into(layout.buildDirectory.dir("resources/main/scripts/sh"))
+}
+tasks.named("processResources") { dependsOn(syncScripts) }
