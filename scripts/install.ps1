@@ -53,13 +53,45 @@ $BinDir     = Join-Path $Prefix "bin"
 # --------------------------------------------------------------------------
 # Resolve version
 # --------------------------------------------------------------------------
+
+# Cross-version Location-header reader.
+# - Windows PowerShell 5.1: $Response.Headers is a [Hashtable]/[WebHeaderCollection], indexer returns [string].
+# - PowerShell 7+: $Response.Headers is [System.Net.Http.Headers.HttpResponseHeaders], which has no indexer
+#   (throws "Unable to index into an object of type ..."). Use GetValues() and take the first element.
+function Get-LocationHeader {
+    param($Headers)
+    if ($null -eq $Headers) { return $null }
+    try {
+        # Try the PS 5.1 indexer path first; if Headers is a Hashtable / WebHeaderCollection this returns
+        # a [string]. If Headers is HttpResponseHeaders, the indexer either throws (caught below) or
+        # returns [string[]] in some intermediate runtimes — we then collapse to the first value.
+        $value = $Headers['Location']
+        if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
+            $value = ($value | Select-Object -First 1)
+        }
+        if (-not [string]::IsNullOrEmpty($value)) { return [string]$value }
+    } catch {
+        # PS 7 fallthrough below.
+    }
+    # PS 7 path: HttpResponseHeaders exposes GetValues(name) returning IEnumerable<string>.
+    if ($Headers.GetType().GetMethod('GetValues') -and $Headers.Contains('Location')) {
+        $values = $Headers.GetValues('Location')
+        $first  = $values | Select-Object -First 1
+        if (-not [string]::IsNullOrEmpty($first)) { return [string]$first }
+    }
+    # HttpResponseHeaders also exposes a typed Location property of [Uri].
+    if ($Headers.PSObject.Properties.Name -contains 'Location' -and $null -ne $Headers.Location) {
+        return $Headers.Location.ToString()
+    }
+    return $null
+}
+
 function Resolve-LatestVersion {
     # Primary: follow redirect URL — avoids 60/hr API rate limit
     $RedirectUrl = "https://github.com/$Repo/releases/latest"
     try {
         $Response = Invoke-WebRequest -Uri $RedirectUrl -UseBasicParsing -MaximumRedirection 0 -ErrorAction SilentlyContinue
-        # 301/302 Location header contains the tag
-        $Location = $Response.Headers["Location"]
+        $Location = Get-LocationHeader $Response.Headers
         if (-not [string]::IsNullOrEmpty($Location)) {
             $Tag = Split-Path $Location -Leaf
             return $Tag.TrimStart("v")
@@ -69,7 +101,7 @@ function Resolve-LatestVersion {
         # Redirect throws on non-2xx; extract from exception's Response
         $Ex = $_.Exception
         if ($null -ne $Ex.Response) {
-            $Location = $Ex.Response.Headers["Location"]
+            $Location = Get-LocationHeader $Ex.Response.Headers
             if (-not [string]::IsNullOrEmpty($Location)) {
                 $Tag = Split-Path $Location -Leaf
                 return $Tag.TrimStart("v")
