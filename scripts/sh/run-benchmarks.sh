@@ -240,6 +240,7 @@ elif [[ "$PLATFORM" == "android" ]]; then
     PLATFORMS_TO_RUN+=("android")
 fi
 
+SKIPPED_INCOMPAT=0
 for mod in "${BENCHMARK_MODULES[@]}"; do
     for plat in "${PLATFORMS_TO_RUN[@]}"; do
         # Resolve the actual module name and project root for this module
@@ -249,6 +250,16 @@ for mod in "${BENCHMARK_MODULES[@]}"; do
         if [[ "$mod" == ${shared_prefix}:* ]]; then
             actual_mod="${mod#"${shared_prefix}":}"
             gradle_root="$SHARED_ROOT"
+        fi
+
+        # Skip modules that don't support the requested platform.
+        # Avoids invoking non-existent Gradle tasks (e.g. :module:desktopSmokeBenchmark
+        # on an androidx.benchmark-only module) which would fail with TaskSelectionException
+        # after a long Gradle configuration phase.
+        if ! module_supports_platform "$gradle_root" "$actual_mod" "$plat"; then
+            warn "  [SKIP] $mod ($plat) — module does not declare $plat benchmark capability"
+            SKIPPED_INCOMPAT=$((SKIPPED_INCOMPAT + 1))
+            continue
         fi
 
         task=$(get_benchmark_gradle_task "$actual_mod" "$plat" "$CONFIG")
@@ -274,6 +285,16 @@ for mod in "${BENCHMARK_MODULES[@]}"; do
         echo ""
     done
 done
+
+# All combinations skipped → tell user clearly instead of silently "succeeding"
+TOTAL_ATTEMPTED=$((TOTAL_PASS + TOTAL_FAIL))
+if [[ $TOTAL_ATTEMPTED -eq 0 ]] && [[ $SKIPPED_INCOMPAT -gt 0 ]]; then
+    err "[ERROR] No benchmark module supports platform '$PLATFORM'."
+    err "        $SKIPPED_INCOMPAT module/platform combination(s) were skipped due to missing benchmark capability."
+    err "        Hint: try --platform all, or check that the module's build.gradle.kts declares the expected"
+    err "              benchmark plugin (kotlinx.benchmark for jvm, androidx.benchmark for android)."
+    exit 3
+fi
 
 # ---------------------------------------------------------------------------
 # JSON RESULT PARSING

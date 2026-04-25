@@ -44,3 +44,56 @@ teardown() {
         [[ "$sources" == *'$SCRIPT_DIR'* ]]
     fi
 }
+
+@test "benchmark-detect: detect_module_benchmark_platforms returns 'android' for androidx.benchmark module" {
+    # Simulate an Android-only benchmark module
+    mkdir -p "$WORK_DIR/benchmark"
+    cat > "$WORK_DIR/benchmark/build.gradle.kts" << 'EOF'
+plugins { alias(libs.plugins.android.library) }
+android {
+    defaultConfig {
+        testInstrumentationRunner = "androidx.benchmark.junit4.AndroidBenchmarkRunner"
+    }
+}
+EOF
+    source scripts/sh/lib/benchmark-detect.sh
+    local result
+    result="$(detect_module_benchmark_platforms "$WORK_DIR" "benchmark")"
+    [[ "$result" == *"android"* ]]
+    [[ "$result" != *"jvm"* ]]
+}
+
+@test "benchmark-detect: detect_module_benchmark_platforms returns 'jvm' for kotlinx.benchmark module" {
+    mkdir -p "$WORK_DIR/perf"
+    cat > "$WORK_DIR/perf/build.gradle.kts" << 'EOF'
+plugins { id("org.jetbrains.kotlinx.benchmark") version "0.4.10" }
+benchmark { targets { register("jvm") } }
+EOF
+    source scripts/sh/lib/benchmark-detect.sh
+    local result
+    result="$(detect_module_benchmark_platforms "$WORK_DIR" "perf")"
+    [[ "$result" == *"jvm"* ]]
+    [[ "$result" != *"android"* ]]
+}
+
+@test "benchmark-detect: module_supports_platform returns 1 (false) for jvm on android-only module" {
+    mkdir -p "$WORK_DIR/benchmark"
+    cat > "$WORK_DIR/benchmark/build.gradle.kts" << 'EOF'
+testInstrumentationRunner = "androidx.benchmark.junit4.AndroidBenchmarkRunner"
+EOF
+    source scripts/sh/lib/benchmark-detect.sh
+    if module_supports_platform "$WORK_DIR" "benchmark" "jvm"; then
+        return 1  # should NOT support jvm
+    fi
+    module_supports_platform "$WORK_DIR" "benchmark" "android"  # should support android
+}
+
+@test "benchmark-detect: module_supports_platform is permissive when no plugin detected" {
+    # Modules without recognizable benchmark refs should default to supported
+    # so non-standard setups are not blocked.
+    mkdir -p "$WORK_DIR/plain"
+    echo "// no benchmark plugin here" > "$WORK_DIR/plain/build.gradle.kts"
+    source scripts/sh/lib/benchmark-detect.sh
+    module_supports_platform "$WORK_DIR" "plain" "jvm"
+    module_supports_platform "$WORK_DIR" "plain" "android"
+}

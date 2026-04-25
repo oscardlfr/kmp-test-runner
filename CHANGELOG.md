@@ -53,6 +53,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on `PATH` instead of the documented `kmp-test`. The shell installer
   (`scripts/install.{sh,ps1}`) was unaffected since it creates the `kmp-test`
   shim explicitly.
+- `kmp-test benchmark --platform jvm/android` no longer invokes non-existent
+  Gradle tasks on incompatible modules. Previously `detect_benchmark_modules`
+  returned every module with a benchmark reference and `get_benchmark_gradle_task`
+  blindly built a task name (`:module:desktopSmokeBenchmark` for jvm,
+  `:module:connectedAndroidTest` for android), so an `androidx.benchmark`-only
+  module asked to run as `--platform jvm` produced a `TaskSelectionException`
+  after a long Gradle configuration phase. New helpers
+  `detect_module_benchmark_platforms` (sh) / `Get-ModuleBenchmarkPlatforms`
+  (ps1) categorize each module by detected capability (`androidx.benchmark` →
+  android, `kotlinx.benchmark` / `org.jetbrains.kotlinx.benchmark` → jvm), and
+  the runner skips modules that don't declare the requested platform with a
+  `[SKIP]` warning. If every module/platform combination is skipped, the
+  script exits `3` (env error) with a useful hint instead of pretending success.
+  Discovered while validating v0.3.4 against `dipatternsdemo` (an
+  `androidx.benchmark`-only project).
 
 ## [0.3.3] — 2026-04-25
 
