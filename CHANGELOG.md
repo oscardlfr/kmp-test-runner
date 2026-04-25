@@ -45,6 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (environment error) instead of the previous `127`, aligning with the
   documented semantic-exit-code scheme.
 
+### Fixed
+- `npm install -g kmp-test-runner` now installs a `kmp-test` binary, matching
+  the documented usage. Previously the `bin` field was a string
+  (`"bin/kmp-test.js"`), which made npm derive the shim name from the package
+  name (`kmp-test-runner`), so users who installed via npm got `kmp-test-runner`
+  on `PATH` instead of the documented `kmp-test`. The shell installer
+  (`scripts/install.{sh,ps1}`) was unaffected since it creates the `kmp-test`
+  shim explicitly.
+
 ## [0.3.3] — 2026-04-25
 
 ### Fixed
