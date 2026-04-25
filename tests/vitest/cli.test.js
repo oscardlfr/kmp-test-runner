@@ -1,5 +1,5 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -13,13 +13,21 @@ import {
   ensureProjectRoot,
   getProjectRoot,
   getCoverageToolFromArgs,
+  getBenchmarkPlatform,
   checkGradlew,
   consumeJsonFlag,
+  consumeDryRunFlag,
+  consumeTestFilter,
   stripAnsi,
   parseScriptOutput,
   buildJsonReport,
+  buildDryRunReport,
   envErrorJson,
   translateFlagForPowerShell,
+  findFirstClassFqn,
+  resolveAndroidTestFilter,
+  resolvePatternForSubcommand,
+  runDoctorChecks,
 } from '../../lib/cli.js';
 
 beforeEach(() => spawnMock.mockReset().mockReturnValue({ status: 0 }));
@@ -475,6 +483,414 @@ describe('main() — exit codes & flow', () => {
       } finally {
         process.cwd = origCwd;
       }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.3.7 — DX & agentic features: --dry-run, doctor, --test-filter
+// ---------------------------------------------------------------------------
+
+describe('consumeDryRunFlag', () => {
+  it('strips --dry-run and reports true', () => {
+    const { args, dryRun } = consumeDryRunFlag(['parallel', '--dry-run', '--project-root', '/x']);
+    expect(dryRun).toBe(true);
+    expect(args).toEqual(['parallel', '--project-root', '/x']);
+  });
+  it('passes through unchanged when absent', () => {
+    const { args, dryRun } = consumeDryRunFlag(['parallel', '--project-root', '/x']);
+    expect(dryRun).toBe(false);
+    expect(args).toEqual(['parallel', '--project-root', '/x']);
+  });
+  it('strips multiple occurrences (idempotent)', () => {
+    const { args, dryRun } = consumeDryRunFlag(['--dry-run', 'a', '--dry-run']);
+    expect(dryRun).toBe(true);
+    expect(args).toEqual(['a']);
+  });
+});
+
+describe('consumeTestFilter', () => {
+  it('strips --test-filter <pattern> and returns it', () => {
+    const { args, pattern } = consumeTestFilter(['--test-filter', '*FooTest*', '--module-filter', '*']);
+    expect(pattern).toBe('*FooTest*');
+    expect(args).toEqual(['--module-filter', '*']);
+  });
+  it('passes through unchanged when absent', () => {
+    const { args, pattern } = consumeTestFilter(['--module-filter', '*']);
+    expect(pattern).toBeNull();
+    expect(args).toEqual(['--module-filter', '*']);
+  });
+  it('honors only the last --test-filter when given twice', () => {
+    const { args, pattern } = consumeTestFilter(['--test-filter', 'A', '--test-filter', 'B']);
+    expect(pattern).toBe('B');
+    expect(args).toEqual([]);
+  });
+  it('does not consume --test-filter without a value', () => {
+    // Trailing flag with no value: no value to capture, flag swallowed (defensive).
+    const { args, pattern } = consumeTestFilter(['--test-filter']);
+    expect(pattern).toBeNull();
+    // Edge: unconsumed value-less flag is preserved (loop hits last index without next).
+    expect(args).toEqual(['--test-filter']);
+  });
+});
+
+describe('getBenchmarkPlatform', () => {
+  it('defaults to "all" when --platform absent', () => {
+    expect(getBenchmarkPlatform([])).toBe('all');
+  });
+  it('returns explicit platform value', () => {
+    expect(getBenchmarkPlatform(['--platform', 'jvm'])).toBe('jvm');
+    expect(getBenchmarkPlatform(['--platform', 'android'])).toBe('android');
+  });
+});
+
+describe('findFirstClassFqn', () => {
+  it('locates a Kotlin class declaration with package and returns FQN', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-class-fqn-'));
+    try {
+      const moduleSrc = path.join(dir, 'benchmarks', 'src', 'main', 'kotlin', 'com', 'example');
+      mkdirSync(moduleSrc, { recursive: true });
+      writeFileSync(path.join(moduleSrc, 'ScaleBenchmark.kt'),
+        'package com.example\n\nclass ScaleBenchmark {\n  fun bench() {}\n}\n');
+      // Add a decoy file with similar name to confirm we match exact simpleName boundary.
+      writeFileSync(path.join(moduleSrc, 'ScaleBenchmarkContext.kt'),
+        'package com.example\n\nclass ScaleBenchmarkContext {}\n');
+      expect(findFirstClassFqn(dir, 'ScaleBenchmark')).toBe('com.example.ScaleBenchmark');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null when no class with that simpleName exists', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-class-none-'));
+    try {
+      const src = path.join(dir, 'src', 'main', 'kotlin');
+      mkdirSync(src, { recursive: true });
+      writeFileSync(path.join(src, 'A.kt'), 'package x\n\nclass A {}\n');
+      expect(findFirstClassFqn(dir, 'NotPresent')).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips build/, .gradle/, node_modules/, .git/', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-class-skip-'));
+    try {
+      // Class inside build/ — must NOT be matched
+      mkdirSync(path.join(dir, 'build', 'gen'), { recursive: true });
+      writeFileSync(path.join(dir, 'build', 'gen', 'BuildArtifact.kt'),
+        'package gen\n\nclass BuildArtifact {}\n');
+      expect(findFirstClassFqn(dir, 'BuildArtifact')).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns simpleName when class found but no package declaration', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-class-nopkg-'));
+    try {
+      writeFileSync(path.join(dir, 'NoPkg.kt'), 'class NoPkg {}\n');
+      expect(findFirstClassFqn(dir, 'NoPkg')).toBe('NoPkg');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('resolveAndroidTestFilter', () => {
+  it('passes pattern through unchanged when no wildcards', () => {
+    expect(resolveAndroidTestFilter('com.example.Foo', '/nope')).toBe('com.example.Foo');
+  });
+  it('returns original pattern when no source match found', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-resolve-fail-'));
+    try {
+      expect(resolveAndroidTestFilter('*Missing*', dir)).toBe('*Missing*');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('resolves *FooBar* glob to FQN when class found', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-resolve-ok-'));
+    try {
+      const src = path.join(dir, 'src', 'androidTest', 'kotlin', 'com', 'demo');
+      mkdirSync(src, { recursive: true });
+      writeFileSync(path.join(src, 'ScaleBenchmark.kt'),
+        'package com.demo\n\nclass ScaleBenchmark {}\n');
+      expect(resolveAndroidTestFilter('*ScaleBenchmark*', dir)).toBe('com.demo.ScaleBenchmark');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('returns null/empty input unchanged', () => {
+    expect(resolveAndroidTestFilter(null, '/x')).toBeNull();
+    expect(resolveAndroidTestFilter('', '/x')).toBe('');
+  });
+});
+
+describe('resolvePatternForSubcommand', () => {
+  it('parallel/changed/coverage pass pattern through (gradle --tests handles globs)', () => {
+    expect(resolvePatternForSubcommand('*Foo*', 'parallel', [], '/x')).toBe('*Foo*');
+    expect(resolvePatternForSubcommand('*Foo*', 'changed', [], '/x')).toBe('*Foo*');
+    expect(resolvePatternForSubcommand('*Foo*', 'coverage', [], '/x')).toBe('*Foo*');
+  });
+  it('android resolves glob via source scan', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-resolve-android-'));
+    try {
+      const src = path.join(dir, 'src', 'androidTest', 'kotlin', 'p');
+      mkdirSync(src, { recursive: true });
+      writeFileSync(path.join(src, 'WidgetTest.kt'),
+        'package p\n\nclass WidgetTest {}\n');
+      expect(resolvePatternForSubcommand('*WidgetTest*', 'android', [], dir)).toBe('p.WidgetTest');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('benchmark + --platform jvm passes pattern through', () => {
+    expect(resolvePatternForSubcommand('*Foo*', 'benchmark', ['--platform', 'jvm'], '/x')).toBe('*Foo*');
+  });
+  it('benchmark + --platform android resolves glob', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-resolve-bench-'));
+    try {
+      const src = path.join(dir, 'benchmarks', 'src', 'main', 'kotlin', 'b');
+      mkdirSync(src, { recursive: true });
+      writeFileSync(path.join(src, 'DiBenchmark.kt'),
+        'package b\n\nclass DiBenchmark {}\n');
+      expect(
+        resolvePatternForSubcommand('*DiBenchmark*', 'benchmark', ['--platform', 'android'], dir)
+      ).toBe('b.DiBenchmark');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('returns null when no pattern given', () => {
+    expect(resolvePatternForSubcommand(null, 'parallel', [], '/x')).toBeNull();
+  });
+});
+
+describe('buildDryRunReport', () => {
+  it('emits the canonical envelope with dry_run:true and a plan{} section', () => {
+    const report = buildDryRunReport({
+      subcommand: 'parallel',
+      projectRoot: '/abs',
+      plan: {
+        spawn_cmd: 'bash',
+        spawn_args: ['/path/to/script.sh', '--project-root', '/abs'],
+        script_path: '/path/to/script.sh',
+        final_args: ['--project-root', '/abs'],
+        test_filter: null,
+      },
+    });
+    expect(report.tool).toBe('kmp-test');
+    expect(report.subcommand).toBe('parallel');
+    expect(report.dry_run).toBe(true);
+    expect(report.exit_code).toBe(EXIT.SUCCESS);
+    expect(report.duration_ms).toBe(0);
+    expect(report.plan.spawn_cmd).toBe('bash');
+    expect(report.tests).toEqual({ total: 0, passed: 0, failed: 0, skipped: 0 });
+    // Round-trips through JSON without loss
+    expect(JSON.parse(JSON.stringify(report))).toEqual(report);
+  });
+});
+
+describe('runDoctorChecks', () => {
+  it('returns at least 5 checks (Node, shell, gradlew, JDK, ADB)', () => {
+    // Mock all spawn probes — JDK 21 found, ADB missing, pwsh found on win
+    spawnMock.mockImplementation((cmd) => {
+      if (cmd === 'java') {
+        return { status: 0, stderr: 'openjdk version "21.0.10" 2024-12\n', stdout: '' };
+      }
+      if (cmd === 'adb') {
+        const e = new Error('not found'); e.code = 'ENOENT';
+        return { error: e, status: null };
+      }
+      // pwsh / bash probes
+      return { status: 0, stdout: '', stderr: '' };
+    });
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-doctor-'));
+    try {
+      const { checks, exitCode } = runDoctorChecks(dir);
+      expect(checks.length).toBeGreaterThanOrEqual(5);
+      const names = checks.map(c => c.name);
+      expect(names).toContain('Node');
+      expect(names.some(n => n === 'bash' || n === 'pwsh')).toBe(true);
+      expect(names).toContain('gradlew');
+      expect(names).toContain('JDK');
+      expect(names).toContain('ADB');
+      // Node always present (running tests on >=18)
+      const nodeCheck = checks.find(c => c.name === 'Node');
+      expect(['OK', 'FAIL']).toContain(nodeCheck.status);
+      // No FAIL → exit SUCCESS
+      const hasFail = checks.some(c => c.status === 'FAIL');
+      expect(exitCode).toBe(hasFail ? EXIT.ENV_ERROR : EXIT.SUCCESS);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports JDK FAIL when java spawn fails outright', () => {
+    spawnMock.mockImplementation((cmd) => {
+      if (cmd === 'java') {
+        const e = new Error('ENOENT'); e.code = 'ENOENT';
+        return { error: e, status: null };
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    });
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-doctor-no-jdk-'));
+    try {
+      const { checks, exitCode } = runDoctorChecks(dir);
+      const jdk = checks.find(c => c.name === 'JDK');
+      expect(jdk.status).toBe('FAIL');
+      expect(exitCode).toBe(EXIT.ENV_ERROR);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports gradlew OK when present in projectRoot', () => {
+    spawnMock.mockImplementation((cmd) => {
+      if (cmd === 'java') return { status: 0, stderr: 'openjdk version "17.0.1"\n' };
+      return { status: 0 };
+    });
+    withFakeGradleProject(dir => {
+      const { checks } = runDoctorChecks(dir);
+      const gw = checks.find(c => c.name === 'gradlew');
+      expect(gw.status).toBe('OK');
+    });
+  });
+});
+
+describe('main() — doctor subcommand', () => {
+  it('doctor returns SUCCESS when no FAIL', () => {
+    spawnMock.mockImplementation((cmd) => {
+      if (cmd === 'java') return { status: 0, stderr: 'openjdk version "17.0.1"\n' };
+      return { status: 0 };
+    });
+    process.argv = ['node', 'kmp-test.js', 'doctor', '--project-root', tmpdir()];
+    const code = main();
+    expect([EXIT.SUCCESS, EXIT.ENV_ERROR]).toContain(code);
+  });
+
+  it('doctor --json emits a single JSON object with checks[]', () => {
+    spawnMock.mockImplementation((cmd) => {
+      if (cmd === 'java') return { status: 0, stderr: 'openjdk version "17.0.1"\n' };
+      return { status: 0 };
+    });
+    const captured = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+    try {
+      process.argv = ['node', 'kmp-test.js', 'doctor', '--json', '--project-root', tmpdir()];
+      main();
+    } finally {
+      process.stdout.write = origWrite;
+    }
+    const json = JSON.parse(captured.join('').trim());
+    expect(json.tool).toBe('kmp-test');
+    expect(json.subcommand).toBe('doctor');
+    expect(Array.isArray(json.checks)).toBe(true);
+    expect(json.checks.length).toBeGreaterThan(0);
+    expect(typeof json.exit_code).toBe('number');
+  });
+
+  it('doctor --help prints help and returns SUCCESS without spawning checks', () => {
+    process.argv = ['node', 'kmp-test.js', 'doctor', '--help'];
+    expect(main()).toBe(EXIT.SUCCESS);
+    // No java/adb probes should have been issued.
+    const probed = spawnMock.mock.calls.some(c => ['java', 'adb'].includes(c[0]));
+    expect(probed).toBe(false);
+  });
+});
+
+describe('main() — --dry-run', () => {
+  it('--dry-run skips spawn and returns SUCCESS', () => {
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--project-root', dir];
+      expect(main()).toBe(EXIT.SUCCESS);
+      const ranScript = spawnMock.mock.calls.some(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(ranScript).toBe(false);
+    });
+  });
+
+  it('--dry-run --json emits a single JSON object with dry_run:true and a plan{}', () => {
+    const captured = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+    try {
+      withFakeGradleProject(dir => {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--json', '--project-root', dir];
+        expect(main()).toBe(EXIT.SUCCESS);
+      });
+    } finally {
+      process.stdout.write = origWrite;
+    }
+    const json = JSON.parse(captured.join('').trim());
+    expect(json.tool).toBe('kmp-test');
+    expect(json.subcommand).toBe('parallel');
+    expect(json.dry_run).toBe(true);
+    expect(json.exit_code).toBe(0);
+    expect(json.plan).toBeTypeOf('object');
+    expect(Array.isArray(json.plan.spawn_args)).toBe(true);
+    expect(typeof json.plan.script_path).toBe('string');
+  });
+
+  it('--dry-run BEFORE the subcommand is also recognized (hoisted)', () => {
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', '--dry-run', 'parallel', '--project-root', dir];
+      expect(main()).toBe(EXIT.SUCCESS);
+      const ranScript = spawnMock.mock.calls.some(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(ranScript).toBe(false);
+    });
+  });
+
+  it('--dry-run still validates gradlew (env error if missing)', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-dry-no-grad-'));
+    try {
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--project-root', dir];
+      expect(main()).toBe(EXIT.ENV_ERROR);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('main() — --test-filter passthrough', () => {
+  it('parallel + --test-filter <pattern> appends --test-filter to script args', () => {
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel',
+        '--test-filter', '*FooTest*', '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();
+      const argList = scriptCall[1].map(String);
+      const i = argList.findIndex(a => a === '--test-filter' || a === '-TestFilter');
+      expect(i).toBeGreaterThan(-1);
+      expect(argList[i + 1]).toBe('*FooTest*');
+    });
+  });
+
+  it('android + glob --test-filter resolves via source scan to FQN', () => {
+    withFakeGradleProject(dir => {
+      const src = path.join(dir, 'app', 'src', 'androidTest', 'kotlin', 'app');
+      mkdirSync(src, { recursive: true });
+      writeFileSync(path.join(src, 'WidgetTest.kt'),
+        'package app\n\nclass WidgetTest {}\n');
+      process.argv = ['node', 'kmp-test.js', 'android',
+        '--test-filter', '*WidgetTest*', '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      const argList = scriptCall[1].map(String);
+      const i = argList.findIndex(a => a === '--test-filter' || a === '-TestFilter');
+      expect(i).toBeGreaterThan(-1);
+      // Wildcards stripped + resolved to FQN
+      expect(argList[i + 1]).toBe('app.WidgetTest');
     });
   });
 });

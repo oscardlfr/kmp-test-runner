@@ -66,7 +66,8 @@ param(
     [int]$MinMissedLines = 0,
     [ValidateSet("jacoco", "kover", "auto", "none", "")]
     [string]$CoverageTool = "",
-    [string]$ExcludeCoverage = ""
+    [string]$ExcludeCoverage = "",
+    [string]$TestFilter = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -270,6 +271,10 @@ if ($CoverageTool -ne "") {
 
 if ($ExcludeCoverage -ne "") {
     $params.ExcludeCoverage = $ExcludeCoverage
+}
+
+if ($TestFilter -ne "") {
+    $params.TestFilter = $TestFilter
 }
 
 & "$ScriptRoot/run-parallel-coverage-suite.ps1" @params

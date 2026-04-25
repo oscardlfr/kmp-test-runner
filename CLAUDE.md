@@ -2,11 +2,11 @@
 
 > Standalone parallel test runner for Kotlin Multiplatform and Android Gradle projects. npm CLI + Gradle plugin + shell installers. Apache-2.0.
 
-## Repo state (2026-04-25)
+## Repo state (2026-04-26)
 
-- npm: `kmp-test-runner@0.3.4` (Trusted Publisher OIDC; auto-publishes on push to `main`)
-- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.3.4` (GitHub Packages; auto-publishes on push to `main`)
-- GitHub Releases: `v0.3.4` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
+- npm: `kmp-test-runner@0.3.7` (Trusted Publisher OIDC; auto-publishes on push to `main`)
+- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.3.7` (GitHub Packages; auto-publishes on push to `main`)
+- GitHub Releases: `v0.3.7` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
 - All 3 shapes share the same source-of-truth version (`package.json`), bumped together per release.
 
 ## Layout
@@ -18,7 +18,7 @@
 - `scripts/build-artifact.sh` — extracts publish-release.yml build logic for local CI E2E testing
 - `gradle-plugin/` — Gradle plugin shape (`KmpTestRunnerPlugin` + `KmpTestRunnerExtension` + 5 task classes; Kover auto-detect)
 - `tests/unit/` (vitest) + `tests/bats/` + `tests/pester/` + `tests/installer/` (E2E install/uninstall; Linux+Windows matrix)
-- `.github/workflows/` — `ci.yml` (6 jobs: build x2, secrets-scan, gradle-plugin-test, installer-e2e x2), `publish-release.yml` (tag `v*` trigger), `publish-npm.yml` + `publish-gradle.yml` (workflow_dispatch only)
+- `.github/workflows/` — `ci.yml` (6 jobs: build x2, secrets-scan, gradle-plugin-test, installer-e2e x2), `commit-lint.yml` (Conventional Commits enforcement on PR titles, squash-merge mode), `publish-release.yml` (tag `v*` trigger), `publish-npm.yml` + `publish-gradle.yml` (workflow_dispatch only)
 - `BACKLOG.md` — current and queued tasks; check this first
 
 ## CRITICAL — Gitflow with develop + auto-publish on main
@@ -29,9 +29,15 @@ Two long-lived branches:
 
 **NEVER push directly to `main` or `develop`.** Branch protection on both requires:
 - PR (no direct push, no force push, no delete)
-- All 6 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`
+- All 7 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `commit-lint / 🔤 Commit Lint`
 - Linear history (squash/rebase only)
 - `enforce_admins: true` (rule applies to repo owner — no bypass)
+
+> **Adding a new required check:** when a new workflow lands (e.g. v0.3.7's `commit-lint`), branch protection must be updated manually via `Settings → Branches → Edit rule` to add the check name (matches the workflow's `jobs.<id>.name`) to the required-status-checks list. Do this once per branch (`main` and `develop`).
+
+### Conventional Commits (PR titles)
+
+PR titles MUST conform to Conventional Commits v1.0.0 (enforced by `.github/workflows/commit-lint.yml`). Format: `<type>[scope][!]: <description>`. Description starts lowercase, no trailing period, ≤72 chars. Valid types: `feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert,release`. Because branch protection enforces squash-merge, only the PR title is validated (it becomes the squash commit message). Examples: `feat(cli): add --dry-run flag`, `fix(installer): handle PS7 redirect headers`, `release: v0.3.7`.
 
 ### Daily workflow (feature → develop)
 
@@ -52,7 +58,7 @@ git checkout develop && git pull
 When `develop` is ready to release:
 
 1. On `develop`: bump `package.json` `version` (and `gradle-plugin/build.gradle.kts` `version` to match), update `CHANGELOG.md`, commit, push, PR to develop, merge.
-2. Open `release: vX.Y.Z` PR from `develop` → `main`. CI runs the full 6-check matrix.
+2. Open `release: vX.Y.Z` PR from `develop` → `main`. CI runs the full 7-check matrix (6 build/test + commit-lint).
 3. Squash-merge to `main`. **Three workflows fire automatically:**
     - `auto-tag.yml` — creates `vX.Y.Z` git tag from `package.json` version (if missing)
     - `publish-npm.yml` — runs `npm publish` (skipped if version already on registry)
@@ -130,5 +136,5 @@ cd gradle-plugin && ./gradlew test
 3. **For tests**: do NOT weaken or remove existing tests to make new code pass. If a test fails, fix the production code, not the test
 4. **For new install/CI logic**: add E2E coverage that catches the bug class (we have 5 bats E2E + 4 Pester E2E as a baseline; v0.3.0/0.3.2/0.3.3 historical bugs are the regression-test rubric)
 5. **Commit message format**: Conventional Commits (`feat(scope): ...`, `fix(scope): ...`, `test(scope): ...`, `docs(scope): ...`)
-6. **After PR**: wait for all 6 CI checks green before merge; squash merge; delete branch; pull main
+6. **After PR**: wait for all 7 CI checks green before merge; squash merge; delete branch; pull main
 7. **For releases**: bump `package.json` `version` BEFORE tagging; run `installer-e2e` mentally — does the tag match `package.json`?

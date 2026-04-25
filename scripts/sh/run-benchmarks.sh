@@ -37,6 +37,7 @@ CONFIG="smoke"
 PLATFORM="all"
 MODULE_FILTER="*"
 INCLUDE_SHARED=false
+TEST_FILTER=""
 
 # ---------------------------------------------------------------------------
 # USAGE
@@ -53,6 +54,11 @@ Options:
   --platform <name>           Platform: all (default) | jvm | android
   --module-filter <pattern>   Filter modules (wildcards/comma-separated). Default: *
   --include-shared            Include sibling shared-libs benchmark modules (requires SHARED_PROJECT_NAME).
+  --test-filter <pattern>     Filter to a single benchmark class. JVM uses gradle --tests
+                              (globs OK); Android uses
+                              -Pandroid.testInstrumentationRunnerArguments.class=<FQN>
+                              (wildcards not supported by the runner — pass a literal FQN;
+                              kmp-test CLI resolves *Pattern* globs to FQNs upstream).
   -h, --help                  Show this help.
 USAGE
     exit "${1:-0}"
@@ -68,6 +74,7 @@ while [[ $# -gt 0 ]]; do
         --platform)           PLATFORM="$2"; shift 2 ;;
         --module-filter)      MODULE_FILTER="$2"; shift 2 ;;
         --include-shared)     INCLUDE_SHARED=true; shift ;;
+        --test-filter)        TEST_FILTER="$2"; shift 2 ;;
         -h|--help)            usage ;;
         *) err "[ERROR] Unknown option: $1"; exit 1 ;;
     esac
@@ -263,10 +270,20 @@ for mod in "${BENCHMARK_MODULES[@]}"; do
         fi
 
         task=$(get_benchmark_gradle_task "$actual_mod" "$plat" "$CONFIG")
-        info "  [>>] $mod ($plat) -> $task"
+        # Per-platform translation of --test-filter so a glob like *ScaleBenchmark*
+        # produces gradle --tests for jvm and -Pandroid.test...class= for android.
+        gradle_filter_args=()
+        if [[ -n "$TEST_FILTER" ]]; then
+            if [[ "$plat" == "jvm" ]]; then
+                gradle_filter_args+=("--tests" "$TEST_FILTER")
+            else
+                gradle_filter_args+=("-Pandroid.testInstrumentationRunnerArguments.class=$TEST_FILTER")
+            fi
+        fi
+        info "  [>>] $mod ($plat) -> $task ${gradle_filter_args[*]:-}"
 
         set +e
-        (cd "$gradle_root" && ./gradlew "$task" --continue 2>&1) | while IFS= read -r line; do
+        (cd "$gradle_root" && ./gradlew "$task" "${gradle_filter_args[@]+"${gradle_filter_args[@]}"}" --continue 2>&1) | while IFS= read -r line; do
             gray "       $line"
         done
         exit_code=${PIPESTATUS[0]}

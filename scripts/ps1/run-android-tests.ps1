@@ -21,7 +21,8 @@ param(
     [string]$Flavor = "",
     [switch]$AutoRetry = $false,
     [switch]$ClearData = $false,
-    [Alias("List")][switch]$ListOnly = $false
+    [Alias("List")][switch]$ListOnly = $false,
+    [string]$TestFilter = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -257,15 +258,21 @@ foreach ($module in $modules) {
     $moduleLogcatFile = "$logsDir\${safeName}_logcat.log"
     $moduleErrorsFile = "$logsDir\${safeName}_errors.json"
 
-    Write-Host "Running: .\gradlew.bat $task" -ForegroundColor $Colors.Info
+    # Per-module gradle args, optionally a test-filter passthrough
+    $gradleFilterArgs = @()
+    if ($TestFilter) {
+        $gradleFilterArgs += "-Pandroid.testInstrumentationRunnerArguments.class=$TestFilter"
+    }
+
+    Write-Host "Running: .\gradlew.bat $task $($gradleFilterArgs -join ' ')" -ForegroundColor $Colors.Info
 
     # Run tests
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         if ($IsWindows -or $env:OS -match "Windows") {
-            & ".\gradlew.bat" $task --console=plain 2>&1 | Tee-Object -FilePath $moduleLogFile
+            & ".\gradlew.bat" $task @gradleFilterArgs --console=plain 2>&1 | Tee-Object -FilePath $moduleLogFile
         } else {
-            & "./gradlew" $task --console=plain 2>&1 | Tee-Object -FilePath $moduleLogFile
+            & "./gradlew" $task @gradleFilterArgs --console=plain 2>&1 | Tee-Object -FilePath $moduleLogFile
         }
         $exitCode = $LASTEXITCODE
     }
@@ -361,9 +368,9 @@ foreach ($module in $modules) {
         # Retry
         $retryLogFile = "$logsDir\${safeName}_retry.log"
         if ($IsWindows -or $env:OS -match "Windows") {
-            & ".\gradlew.bat" $task --console=plain 2>&1 | Tee-Object -FilePath $retryLogFile
+            & ".\gradlew.bat" $task @gradleFilterArgs --console=plain 2>&1 | Tee-Object -FilePath $retryLogFile
         } else {
-            & "./gradlew" $task --console=plain 2>&1 | Tee-Object -FilePath $retryLogFile
+            & "./gradlew" $task @gradleFilterArgs --console=plain 2>&1 | Tee-Object -FilePath $retryLogFile
         }
         $retryExitCode = $LASTEXITCODE
 
