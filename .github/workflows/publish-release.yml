@@ -1,0 +1,75 @@
+name: Publish Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.3.0)'
+        required: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VER="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "ver=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Build artifacts
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          VER="${{ steps.version.outputs.ver }}"
+
+          STAGING="staging-${VER}"
+          mkdir -p "${STAGING}"
+
+          cp -r bin lib scripts LICENSE CHANGELOG.md "${STAGING}/"
+
+          # Linux tarball
+          LINUX_ARCHIVE="kmp-test-runner-${VER}-linux.tar.gz"
+          tar -czf "${LINUX_ARCHIVE}" -C "${STAGING}" .
+          echo "linux_archive=${LINUX_ARCHIVE}" >> "$GITHUB_ENV"
+
+          # Windows zip
+          WINDOWS_ARCHIVE="kmp-test-runner-${VER}-windows.zip"
+          (cd "${STAGING}" && zip -r "../${WINDOWS_ARCHIVE}" .)
+          echo "windows_archive=${WINDOWS_ARCHIVE}" >> "$GITHUB_ENV"
+
+          rm -rf "${STAGING}"
+
+      - name: Extract release notes
+        run: |
+          VER="${{ steps.version.outputs.ver }}"
+          awk "/^## \[${VER}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md > release-notes.txt
+          if [ ! -s release-notes.txt ]; then
+            echo "No release notes found for version ${VER} in CHANGELOG.md" >&2
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --notes-file release-notes.txt \
+            "${{ env.linux_archive }}" \
+            "${{ env.windows_archive }}"

@@ -22,14 +22,14 @@ jobs:
         continue-on-error: false
       - name: shellcheck
         if: matrix.os == 'ubuntu-latest'
-        run: shellcheck --severity=warning --external-sources --exclude=SC2034,SC2053,SC2069 scripts/sh/*.sh scripts/sh/lib/*.sh
+        run: shellcheck --severity=warning --external-sources --exclude=SC2034,SC2053,SC2069 scripts/sh/*.sh scripts/sh/lib/*.sh scripts/install.sh scripts/uninstall.sh
       - name: bats
         if: matrix.os == 'ubuntu-latest'
-        run: npx bats tests/bats/
+        run: npx bats tests/bats/ tests/installer/
       - name: Pester
         if: matrix.os == 'windows-latest'
         shell: pwsh
-        run: Invoke-Pester -Path tests/pester/ -CI
+        run: Invoke-Pester -Path tests/pester/,tests/installer/ -CI
       - name: vitest
         run: npx vitest run --coverage
   secrets-scan:
