@@ -3,7 +3,7 @@ import { vi, describe, it, expect, beforeEach } from 'vitest';
 const spawnMock = vi.hoisted(() => vi.fn(() => ({ status: 0 })));
 vi.mock('node:child_process', () => ({ spawnSync: spawnMock }));
 
-import { main, resolveScript, ensureProjectRoot } from '../../lib/cli.js';
+import { main, resolveScript, ensureProjectRoot, translateFlagForPowerShell } from '../../lib/cli.js';
 
 beforeEach(() => spawnMock.mockReset().mockReturnValue({ status: 0 }));
 
@@ -20,6 +20,27 @@ describe('resolveScript', () => {
   });
   it('unknown subcommand returns null', () => {
     expect(resolveScript('xyz', 'linux')).toBeNull();
+  });
+});
+
+describe('translateFlagForPowerShell', () => {
+  it('converts --project-root to -ProjectRoot', () => {
+    expect(translateFlagForPowerShell('--project-root')).toBe('-ProjectRoot');
+  });
+  it('converts --skip-tests to -SkipTests', () => {
+    expect(translateFlagForPowerShell('--skip-tests')).toBe('-SkipTests');
+  });
+  it('converts --include-shared to -IncludeShared', () => {
+    expect(translateFlagForPowerShell('--include-shared')).toBe('-IncludeShared');
+  });
+  it('passes through values unchanged', () => {
+    expect(translateFlagForPowerShell('/tmp/x')).toBe('/tmp/x');
+  });
+  it('passes through short flags unchanged', () => {
+    expect(translateFlagForPowerShell('-h')).toBe('-h');
+  });
+  it('handles multi-word flags correctly', () => {
+    expect(translateFlagForPowerShell('--benchmark-config')).toBe('-BenchmarkConfig');
   });
 });
 
@@ -61,6 +82,12 @@ describe('main()', () => {
       c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
     );
     expect(scriptCall).toBeTruthy();
-    expect(scriptCall[1].some(a => String(a).includes('--skip-tests'))).toBe(true);
+    expect(scriptCall[1].some(a => String(a).includes('--skip-tests') || String(a).includes('-SkipTests'))).toBe(true);
+  });
+  it('ENOENT returns 127', () => {
+    const err = new Error('ENOENT'); err.code = 'ENOENT';
+    spawnMock.mockReturnValue({ error: err });
+    process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', '/tmp/x'];
+    expect(main()).toBe(127);
   });
 });

@@ -2,6 +2,14 @@
 
 Standalone parallel test runner for Kotlin Multiplatform and Android Gradle projects.
 
+## Requirements
+
+- Node.js 18+
+- Either:
+  - **Unix (Linux/macOS)**: bash
+  - **Windows**: PowerShell 5.1+ (built-in) or pwsh 7+
+- JDK 17+ and Gradle 8+ on the target project
+
 <!-- TODO: finalize in sub-wave c -->
 ## Install
 
