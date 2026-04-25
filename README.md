@@ -6,12 +6,12 @@ Standalone parallel test runner for Kotlin Multiplatform and Android Gradle proj
 
 **Linux / macOS**
 ```sh
-curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.0/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.3/scripts/install.sh | bash
 ```
 
 **Windows (PowerShell)**
 ```powershell
-iwr -useb https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.0/scripts/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.3/scripts/install.ps1 | iex
 ```
 
 Or install via npm:
@@ -40,21 +40,21 @@ KMP projects mix JVM, Android, and native targets — each with its own Gradle t
 
 **Linux / macOS**
 ```sh
-curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.0/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.3/scripts/install.sh | bash
 ```
 
 **Windows (PowerShell)**
 ```powershell
-iwr -useb https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.0/scripts/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.3/scripts/install.ps1 | iex
 ```
 
 To uninstall:
 ```sh
 # Linux/macOS
-curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.0/scripts/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.3/scripts/uninstall.sh | bash
 
 # Windows (PowerShell)
-iwr -useb https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.0/scripts/uninstall.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.3/scripts/uninstall.ps1 | iex
 ```
 
 ### Option 2 — npm
