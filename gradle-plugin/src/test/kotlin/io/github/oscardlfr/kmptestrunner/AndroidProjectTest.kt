@@ -17,6 +17,8 @@ class AndroidProjectTest {
 
     @Test
     fun `all 5 tasks are registered for android project shape`() {
+        val pluginVersion = System.getProperty("plugin.version")
+            ?: error("plugin.version system property not set — did the build script wire it up?")
         projectDir.resolve("settings.gradle.kts").writeText(
             """
             pluginManagement {
@@ -31,7 +33,7 @@ class AndroidProjectTest {
         projectDir.resolve("build.gradle.kts").writeText(
             """
             plugins {
-                id("io.github.oscardlfr.kmp-test-runner") version "0.2.0"
+                id("io.github.oscardlfr.kmp-test-runner") version "$pluginVersion"
             }
             kmpTestRunner {
                 projectRoot = rootDir.absolutePath

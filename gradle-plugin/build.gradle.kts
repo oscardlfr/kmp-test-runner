@@ -50,6 +50,9 @@ tasks.test {
     useJUnitPlatform()
     dependsOn("publishToMavenLocal")
     maxParallelForks = 1
+    // Expose plugin version to TestKit fixtures so they can resolve the freshly
+    // published artefact without hardcoding a literal that would rot on every bump.
+    systemProperty("plugin.version", project.version.toString())
 }
 
 val syncScripts by tasks.registering(Sync::class) {
