@@ -22,7 +22,9 @@
     "coverage"
   ],
   "author": "oscardlfr",
-  "bin": "bin/kmp-test.js",
+  "bin": {
+    "kmp-test": "bin/kmp-test.js"
+  },
   "files": [
     "bin/",
     "lib/",
