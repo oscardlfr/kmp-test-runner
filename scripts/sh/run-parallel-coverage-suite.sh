@@ -49,6 +49,7 @@ COVERAGE_MODULES="${COVERAGE_MODULES:-}"
 COVERAGE_TOOL="auto"
 EXCLUDE_COVERAGE=""
 TIMEOUT=600
+TEST_FILTER=""
 
 # ---------------------------------------------------------------------------
 # USAGE
@@ -75,6 +76,7 @@ Options:
   --coverage-tool <tool>      Coverage tool: auto (default) | jacoco | kover | none
   --exclude-coverage <list>   Comma-separated modules to exclude from coverage (still tested).
   --timeout <seconds>         Timeout for test execution. Default: 600
+  --test-filter <pattern>     Filter tests to a single class (gradle --tests <pattern>). Globs OK.
   --benchmark                 Run benchmarks after tests/coverage (default: off).
   --benchmark-config <name>   Benchmark config: smoke (default) | main | stress
   -h | --help                 Show this help.
@@ -102,6 +104,7 @@ while [[ $# -gt 0 ]]; do
         --coverage-tool)      COVERAGE_TOOL="$2"; shift 2 ;;
         --exclude-coverage)   EXCLUDE_COVERAGE="$2"; shift 2 ;;
         --timeout)            TIMEOUT="$2"; shift 2 ;;
+        --test-filter)        TEST_FILTER="$2"; shift 2 ;;
         --benchmark)          BENCHMARK=true; shift ;;
         --benchmark-config)   BENCHMARK_CONFIG="$2"; shift 2 ;;
         -h|--help)            usage ;;
@@ -643,6 +646,11 @@ if ! $SKIP_TESTS && [[ "${#ALL_TEST_TASKS[@]}" -gt 0 ]]; then
     GRADLE_ARGS=("${ALL_TEST_TASKS[@]}" "--parallel" "--continue")
     if [[ "$MAX_WORKERS" -gt 0 ]]; then
         GRADLE_ARGS+=("--max-workers=$MAX_WORKERS")
+    fi
+    # gradle's --tests applies to every Test task in GRADLE_ARGS; modules without a
+    # matching class run zero tests rather than erroring.
+    if [[ -n "$TEST_FILTER" ]]; then
+        GRADLE_ARGS+=("--tests" "$TEST_FILTER")
     fi
 
     info "[>] Executing ${#ALL_TEST_TASKS[@]} test tasks in parallel..."

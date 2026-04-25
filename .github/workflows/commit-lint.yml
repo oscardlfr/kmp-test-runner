@@ -1,0 +1,83 @@
+name: Commit Lint
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Conventional Commits v1.0.0 enforcement for kmp-test-runner.
+#
+# Adapted from AndroidCommonDoc/reusable-commit-lint.yml (kept inline so this
+# repo stays standalone — see CLAUDE.md "Decouple from L0").
+#
+# Branch protection on `main` and `develop` enforces squash-merge, so the only
+# message that survives the merge is the PR title. We therefore validate ONLY
+# the PR title (squash_merge mode).
+#
+# Format:  <type>[scope][!]: <description>
+# Types:   feat | fix | docs | style | refactor | perf | test | build | ci |
+#          chore | revert | release
+# Rules:   description starts lowercase, no trailing period, ≤ 72 chars.
+#
+# To enforce this as a required check, add `commit-lint / 🔤 Commit Lint` to
+# the protected-branch required-status-checks list (matches the job's `name:`).
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  pull_request:
+    branches: [main, develop]
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  commit-lint:
+    name: "🔤 Commit Lint"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          VALID_TYPES="feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert,release"
+          MAX_LEN=72
+
+          TYPE_PATTERN=$(echo "$VALID_TYPES" | tr ',' '|')
+          SCOPE_PATTERN='(\([a-z0-9/_-]+\))?'
+          FULL_PATTERN="^(${TYPE_PATTERN})${SCOPE_PATTERN}!?: .+"
+
+          MSG="$PR_TITLE"
+          ERRORS=0
+
+          echo "PR title: '$MSG'"
+
+          if ! echo "$MSG" | grep -qP "$FULL_PATTERN"; then
+            echo "::error::Invalid format: '$MSG'"
+            echo "  Expected: <type>[scope][!]: <description>"
+            echo "  Valid types: $VALID_TYPES"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          DESC=$(echo "$MSG" | sed 's/^[^:]*: //')
+          if echo "$DESC" | grep -qP '^[A-Z]'; then
+            echo "::error::Description starts with uppercase: '$DESC'"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if echo "$DESC" | grep -qP '\.$'; then
+            echo "::error::Description ends with period: '$DESC'"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if [ ${#MSG} -gt "$MAX_LEN" ]; then
+            echo "::warning::Subject exceeds $MAX_LEN chars (${#MSG}): '$MSG'"
+          fi
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo ""
+            echo "❌ PR title does not conform to Conventional Commits v1.0.0"
+            echo "   Examples:"
+            echo "     feat(cli): add --dry-run flag"
+            echo "     fix(installer): handle PowerShell 7 redirect headers"
+            echo "     release: v0.3.7"
+            exit 1
+          fi
+
+          echo "✅ PR title conforms to Conventional Commits v1.0.0"

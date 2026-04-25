@@ -50,7 +50,9 @@ param(
 
     [string]$ModuleFilter = "*",
 
-    [switch]$IncludeShared
+    [switch]$IncludeShared,
+
+    [string]$TestFilter = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -173,11 +175,12 @@ function Invoke-GradleBenchmark {
     param(
         [string]$Root,
         [string]$Task,
-        [string]$Label
+        [string]$Label,
+        [string[]]$ExtraArgs = @()
     )
 
     Write-Host "[>>] Running: $Label" -ForegroundColor Cyan
-    Write-Host "     Task   : $Task" -ForegroundColor Gray
+    Write-Host "     Task   : $Task $($ExtraArgs -join ' ')" -ForegroundColor Gray
 
     $gradlew = Join-Path $Root "gradlew.bat"
     if (-not (Test-Path $gradlew)) {
@@ -185,7 +188,7 @@ function Invoke-GradleBenchmark {
     }
 
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    & $gradlew $Task --no-daemon --stacktrace 2>&1 | ForEach-Object { Write-Host "     $_" -ForegroundColor DarkGray }
+    & $gradlew $Task @ExtraArgs --no-daemon --stacktrace 2>&1 | ForEach-Object { Write-Host "     $_" -ForegroundColor DarkGray }
     $exitCode = $LASTEXITCODE
     $stopwatch.Stop()
 
@@ -225,7 +228,18 @@ foreach ($mod in $modules) {
         $task  = Get-BenchmarkGradleTask -Module $effectiveModule -Platform $plat -Config $Config
         $label = "$mod [$plat/$Config]"
 
-        $result = Invoke-GradleBenchmark -Root $effectiveRoot -Task $task -Label $label
+        # Per-platform translation of -TestFilter so a glob like *ScaleBenchmark*
+        # produces gradle --tests for jvm and -Pandroid.test...class= for android.
+        $extraArgs = @()
+        if ($TestFilter) {
+            if ($plat -eq "jvm") {
+                $extraArgs += @("--tests", $TestFilter)
+            } else {
+                $extraArgs += "-Pandroid.testInstrumentationRunnerArguments.class=$TestFilter"
+            }
+        }
+
+        $result = Invoke-GradleBenchmark -Root $effectiveRoot -Task $task -Label $label -ExtraArgs $extraArgs
 
         $success = $result.ExitCode -eq 0
         $statusText = if ($success) { "PASS" } else { "FAIL" }

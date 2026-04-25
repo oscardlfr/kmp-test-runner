@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] — 2026-04-26
+
+### Added
+- `--dry-run` global flag: prints the resolved plan (project root, subcommand,
+  script path, final argv, spawn command) and exits `0` without invoking the
+  underlying script. Hoisted alongside `--json`, so it can appear before or
+  after the subcommand. Under `--json` the flag emits the canonical envelope
+  with `dry_run: true`, all-zero `tests` counts, and a `plan{}` section
+  describing what would have run. Useful for agents that want to introspect
+  what `kmp-test` would do without paying the test-execution cost.
+- `kmp-test doctor` subcommand: diagnoses the local environment with five
+  checks — Node ≥18, `bash` (Linux/macOS) or `pwsh`/`powershell.exe` (Windows),
+  `gradlew` in `--project-root` (warn-only), `java -version` (≥17 recommended),
+  and `adb version` (warn-only — only needed for the `android` subcommand).
+  Human output prints a `CHECK / STATUS / VALUE / MESSAGE` table; `--json`
+  emits a single JSON object with a `checks[]` array of
+  `{name, status, value, message}` entries. Exit code `0` when all OK or WARN,
+  `3` when any FAIL.
+- `--test-filter <pattern>` global flag: filters to a single test class without
+  forcing the user to bypass the CLI. Mapping per subcommand:
+  - JVM tasks (`parallel`, `changed`, `coverage`, `benchmark --platform jvm`):
+    appended as `--tests <pattern>` to the gradle command line. Gradle's
+    `--tests` handles globs natively, so `*FooTest*` works as-is.
+  - Android instrumented (`android`, `benchmark --platform android` or `all`):
+    appended as `-Pandroid.testInstrumentationRunnerArguments.class=<FQN>`.
+    The Android instrumentation runner does NOT accept wildcards, so the CLI
+    pre-resolves a `*Pattern*` glob to a fully-qualified class name by walking
+    the project sources for `class <stripped>` declarations (skipping `build/`,
+    `.gradle/`, `node_modules/`, `.git/`). If no match is found, the original
+    pattern is forwarded — gradle/Android then surfaces a clear error rather
+    than the CLI guessing.
+  Caught while validating v0.3.4 against `dipatternsdemo` (3 benchmark classes,
+  user wanted to filter to a single one).
+- Conventional Commits enforcement on PR titles via
+  `.github/workflows/commit-lint.yml`. Adapted inline from
+  AndroidCommonDoc/reusable-commit-lint.yml so the repo stays standalone (per
+  CLAUDE.md "Decouple from L0"). Squash-merge mode — only the PR title is
+  validated since branch protection enforces squash-merge and the PR title
+  becomes the squash commit message. Valid types:
+  `feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert,release`.
+  **Branch protection on `main` and `develop` must be updated to require the
+  new `commit-lint / 🔤 Commit Lint` check** (manual one-time step).
+
+### Changed
+- README "Agentic flags" section added covering `--dry-run`, `--json`,
+  `--test-filter`, and the `doctor` subcommand with example invocations.
+- Per-subcommand `--help` text now documents `--dry-run` and `--test-filter`
+  for `parallel`, `changed`, `android`, `benchmark`, and `coverage`.
+- vitest coverage on `lib/cli.js` extended with 35 new tests (91 total) for
+  the new helpers (`consumeDryRunFlag`, `consumeTestFilter`,
+  `findFirstClassFqn`, `resolveAndroidTestFilter`, `resolvePatternForSubcommand`,
+  `runDoctorChecks`, `buildDryRunReport`) and end-to-end `main()` flows for
+  `--dry-run`, `doctor`, and `--test-filter`.
+- bats tests added for `--dry-run`, `doctor`, and `--test-filter` against a
+  stub gradlew (`tests/bats/test-dryrun.bats`, `test-doctor.bats`,
+  `test-testfilter.bats`).
+- Pester smoke now asserts every `scripts/ps1/*.ps1` declares a `-TestFilter`
+  parameter so the CLI's `--test-filter` translation never lands on an
+  unknown-parameter error.
+
 ## [0.3.6] — 2026-04-25
 
 ### Fixed
@@ -225,6 +285,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TruffleHog secrets scan as required CI status check
 - Apache-2.0 license
 
+[0.3.7]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.3...v0.3.4
