@@ -89,6 +89,7 @@ Pass `--project-root <path>` explicitly when scripting from a different director
 | `android` | Run Android instrumented tests (requires connected device or emulator) |
 | `benchmark` | Run benchmark suites with `Dispatchers.Default` for real contention |
 | `coverage` | Generate coverage report only (skips test execution) |
+| `doctor` | Diagnose the local environment (Node, bash/pwsh, gradlew, JDK, ADB) |
 
 Each subcommand has its own `--help`:
 
@@ -98,6 +99,7 @@ kmp-test changed --help
 kmp-test android --help
 kmp-test benchmark --help
 kmp-test coverage --help
+kmp-test doctor --help
 ```
 
 ### Examples
@@ -201,6 +203,78 @@ That's ~300 bytes — roughly **80–100 tokens** vs. several thousand for appro
 - **Stable schema**: `tool`, `subcommand`, `version`, `project_root`, `exit_code`, `duration_ms`, `tests {total/passed/failed/skipped}`, `modules[]`, `coverage {tool, missed_lines}`, `errors[]`.
 - **Single line on stdout** — no surrounding noise, suitable for `JSON.parse()` directly.
 - **Exit code matches `exit_code` field**, so an agent can branch on either.
+
+## Agentic flags
+
+`--json` is the headline flag, but four agentic levers ship together so you can introspect, scope, and validate without paying full test-execution cost.
+
+### `--dry-run` — what would run, no spawn
+
+```sh
+kmp-test parallel --dry-run --project-root /abs/path
+# kmp-test parallel — DRY RUN (no script invoked)
+#   Project root: /abs/path
+#   Subcommand:   parallel
+#   Script:       /abs/path/to/run-parallel-coverage-suite.sh
+#   Final argv:   --project-root /abs/path
+#   Spawn:        bash /abs/path/to/run-parallel-coverage-suite.sh --project-root /abs/path
+```
+
+Pair with `--json` for a structured plan:
+
+```json
+{"tool":"kmp-test","subcommand":"parallel","version":"0.3.7","dry_run":true,"exit_code":0,"plan":{"spawn_cmd":"bash","spawn_args":["…/run-parallel-coverage-suite.sh","--project-root","/abs"],"script_path":"…/run-parallel-coverage-suite.sh","final_args":["--project-root","/abs"],"test_filter":null},…}
+```
+
+`--dry-run` still validates `gradlew` (so a missing wrapper still exits `3`). It just stops before spawning the script.
+
+### `--test-filter <pattern>` — single-class scope
+
+Cuts a multi-module suite down to one test class without forcing the agent to bypass the CLI:
+
+```sh
+# JVM gradle tasks — gradle's --tests handles globs natively
+kmp-test parallel --test-filter "*FooServiceTest"
+
+# Android instrumented — CLI resolves *Pattern* to FQN by source scan
+# (the Android runner doesn't accept wildcards, so this resolution is required)
+kmp-test android --test-filter "*WidgetTest*"
+
+# Benchmark — same translation, per-platform
+kmp-test benchmark --platform android --test-filter "*ScaleBenchmark*"
+```
+
+When the pattern contains `*`, the CLI walks the project sources (skipping `build/`, `.gradle/`, `node_modules/`, `.git/`) for a `class <stripped>` declaration and substitutes the FQN. If no match is found, the original pattern is forwarded — gradle/Android then surfaces a clear error rather than the CLI guessing.
+
+### `kmp-test doctor` — environment diagnosis
+
+Five quick checks that catch the usual "why isn't this running" suspects:
+
+```sh
+kmp-test doctor
+# CHECK    STATUS  VALUE      MESSAGE
+# Node     OK      v22.5.0    >=18 required
+# bash     OK      available  shell present
+# gradlew  OK      present    /path/to/project
+# JDK      OK      17.0.10    >=17 recommended
+# ADB      WARN    not found  install Android SDK platform-tools to run android subcommand
+```
+
+Exit `0` if every check is OK or WARN; exit `3` if any FAIL (Node <18, missing shell, missing JDK). `--json` emits the same data as a structured array for agents:
+
+```json
+{"tool":"kmp-test","subcommand":"doctor","exit_code":0,"checks":[{"name":"Node","status":"OK","value":"v22.5.0","message":">=18 required"},…]}
+```
+
+### Composing them
+
+```sh
+# Show the plan an agent would execute, in JSON, with the test-filter resolved:
+kmp-test benchmark --platform android --test-filter "*ScaleBenchmark*" --dry-run --json
+
+# Confirm the box can run kmp-test before queueing a real run:
+kmp-test doctor --json | jq '.checks[] | select(.status == "FAIL")'
+```
 
 ## Gradle Plugin
 
