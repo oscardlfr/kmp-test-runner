@@ -29,7 +29,7 @@ Two long-lived branches:
 
 **NEVER push directly to `main` or `develop`.** Branch protection on both requires:
 - PR (no direct push, no force push, no delete)
-- All 7 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `commit-lint / 🔤 Commit Lint`
+- All 7 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `commit-lint / Commit Lint` (job renamed from `🔤 Commit Lint` in v0.4.x — see `commit-lint.yml` for context)
 - Linear history (squash/rebase only)
 - `enforce_admins: true` (rule applies to repo owner — no bypass)
 
