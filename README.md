@@ -4,107 +4,101 @@ Standalone parallel test runner for Kotlin Multiplatform and Android Gradle proj
 
 ## Why this exists — token cost per agent test-run iteration
 
-For an AI coding agent re-running a workflow on every change, the cheapest path matters. Four features measured side-by-side, three observation strategies each ([methodology](docs/token-cost-measurement.md)):
+For an AI coding agent re-running a workflow on every change, the cheapest path matters. Four `kmp-test` features × three observation strategies × four tokenizers — every cell measured ([methodology](docs/token-cost-measurement.md)).
 
 - **A.** Raw `./gradlew` + reading every generated report file — what an agent does without `kmp-test`.
 - **B.** `kmp-test <feature>` — markdown-summarised stdout.
 - **C.** `kmp-test <feature> --json` — single-line JSON envelope (agentic mode).
 
-Measured against a representative KMP SDK module on Windows + JDK 21, single run per approach.
+Measured against a representative KMP SDK module on Windows + JDK 21, single run per approach. Every cell in every table is a real `messages.countTokens` API count (Claude columns) or `cl100k_base` offline count via `js-tiktoken`. Bar width = `value / table-max` rendered in unicode block characters — visual scale is faithful to the underlying numbers.
 
-### Cross-feature summary
+### Cross-feature summary — 4 features × 3 approaches × 4 tokenizers
 
-Three bars per feature — A (raw gradle), B (kmp-test markdown), C (`--json`). Lower is better.
+Bars scaled to the global table max (`coverage · A · claude-opus-4-7` = **123,845 tokens** = 20 chars wide).
 
-```mermaid
-%%{init: {'theme':'base','themeVariables':{'xyChart':{'backgroundColor':'transparent','plotColorPalette':'#5e35b1, #00897b, #fb8c00','titleColor':'#1a237e','xAxisLabelColor':'#212121','yAxisLabelColor':'#212121','xAxisTitleColor':'#212121','yAxisTitleColor':'#212121','xAxisLineColor':'#616161','yAxisLineColor':'#616161','xAxisTickColor':'#616161','yAxisTickColor':'#616161','titleFontSize':'18'},'fontFamily':'system-ui, -apple-system, Segoe UI, sans-serif','fontSize':'13px'}}}%%
-xychart-beta
-    title "Tokens per approach × feature (cl100k_base)"
-    x-axis ["parallel", "coverage", "changed", "benchmark"]
-    y-axis "Tokens" 0 --> 130000
-    bar [12807, 108405, 12694, 16083]
-    bar [376, 273, 466, 6211]
-    bar [101, 89, 100, 89]
-```
+| Feature · Approach    | 🟦 cl100k_base                | 🟥 claude-opus-4-7             | 🟩 claude-sonnet-4-6           | 🟧 claude-haiku-4-5            |
+|-----------------------|-------------------------------|--------------------------------|--------------------------------|--------------------------------|
+| `parallel`  · A. raw  | `  12,807 ██▏`                | `  25,780 ████▏`               | `  19,234 ███▏`                | `  19,234 ███▏`                |
+| `parallel`  · B. md   | `     376 ▏`                  | `     642 ▏`                   | `     444 ▏`                   | `     444 ▏`                   |
+| `parallel`  · C. json | `     101 ▏`                  | `     187 ▏`                   | `     125 ▏`                   | `     125 ▏`                   |
+| `coverage`  · A. raw  | `**108,405 █████████████████▌**` | `**123,845 ████████████████████**` | `  92,940 ███████████████`     | `  92,940 ███████████████`     |
+| `coverage`  · B. md   | `     273 ▏`                  | `     482 ▏`                   | `     317 ▏`                   | `     317 ▏`                   |
+| `coverage`  · C. json | `      89 ▏`                  | `     162 ▏`                   | `     109 ▏`                   | `     109 ▏`                   |
+| `changed`   · A. raw  | `  12,694 ██`                 | `  25,580 ████▏`               | `  19,098 ███▏`                | `  19,098 ███▏`                |
+| `changed`   · B. md   | `     466 ▏`                  | `     787 ▏`                   | `     550 ▏`                   | `     550 ▏`                   |
+| `changed`   · C. json | `     100 ▏`                  | `     186 ▏`                   | `     125 ▏`                   | `     125 ▏`                   |
+| `benchmark` · A. raw  | `  16,083 ██▋`                | `  23,527 ███▊`                | `  19,266 ███▏`                | `  19,266 ███▏`                |
+| `benchmark` · B. md   | `   6,211 █`                  | `   9,916 █▋`                  | `   7,596 █▎`                  | `   7,596 █▎`                  |
+| `benchmark` · C. json | `      89 ▏`                  | `     163 ▏`                   | `     109 ▏`                   | `     109 ▏`                   |
 
-> **Reading the chart:** each feature has 3 bars side-by-side. Left to right within a feature: 🟪 **A** (raw gradle + reports), 🟩 **B** (kmp-test markdown), 🟧 **C** (`--json`). The B and C bars are tiny next to A on this scale — that's the point.
+A:C savings ratio per feature, per tokenizer:
 
-| Feature      | A. Raw gradle + reports | B. kmp-test markdown | C. `--json` | A:C ratio |
-|--------------|------------------------:|---------------------:|------------:|----------:|
-| `parallel`   |                  12,807 |                  376 |         101 |     127× |
-| `coverage`   |             **108,405** |                  273 |          89 |  **1218×** |
-| `changed`    |                  12,694 |                  466 |         100 |     127× |
-| `benchmark`  |                  16,083 |                6,211 |          89 |     181× |
+| Feature      | 🟦 cl100k_base | 🟥 opus-4-7 | 🟩 sonnet-4-6 | 🟧 haiku-4-5 |
+|--------------|--------------:|------------:|--------------:|-------------:|
+| `parallel`   |          127× |        138× |          154× |         154× |
+| `coverage`   |     **1218×** |    **765×** |      **853×** |     **853×** |
+| `changed`    |          127× |        138× |          153× |         153× |
+| `benchmark`  |          181× |        144× |          177× |         177× |
 
-**C is consistently 89–101 tokens** regardless of feature — the agentic `--json` envelope is the cheapest path on every workflow. **B varies a lot**: tiny on coverage/parallel/changed (273–466 tokens), heavier on benchmark (6,211 — the markdown report inlines per-benchmark scores). **A always blows past 12 K**, and `coverage` blows past 100 K because Kover HTML reports include per-line annotated source pages.
+Two observations carry across every feature:
+- **Tokenizer transition.** `claude-sonnet-4-6` and `claude-haiku-4-5` share a tokenizer (identical counts to the unit on every cell). `claude-opus-4-7` ships a new tokenizer that produces 30–100% more tokens for the same input — most visibly on heavy XML/HTML payloads (approach A).
+- **C is consistently 89–187 tokens** regardless of feature or tokenizer — the agentic `--json` envelope strips the workload down to `{exit_code, tests, modules, errors[]}` and stays tiny no matter how heavy the underlying gradle did.
 
-### Per-feature breakdown — same captures, four tokenizers
+### Per-feature drill-down
 
-Each per-feature chart shows 4 bars per approach group (A / B / C). The bars in each group are, left to right: 🟦 `cl100k_base` · 🟥 `claude-opus-4-7` · 🟩 `claude-sonnet-4-6` · 🟧 `claude-haiku-4-5`. Counts come from Anthropic's `messages.countTokens` API on the same byte-for-byte capture (`cl100k_base` is the OpenAI baseline via `js-tiktoken`).
+Each per-feature table is scaled to its own max (so the bar visualisation maximises within the feature). Bars in column A always dominate; B/C are sub-1-char unicode blocks that visually disappear — that's the savings story.
 
 #### `parallel` — full test suite
 
-```mermaid
-%%{init: {'theme':'base','themeVariables':{'xyChart':{'backgroundColor':'transparent','plotColorPalette':'#3949ab, #e53935, #43a047, #fb8c00','titleColor':'#1a237e','xAxisLabelColor':'#212121','yAxisLabelColor':'#212121','xAxisTitleColor':'#212121','yAxisTitleColor':'#212121','xAxisLineColor':'#616161','yAxisLineColor':'#616161','xAxisTickColor':'#616161','yAxisTickColor':'#616161','titleFontSize':'17'},'fontFamily':'system-ui, -apple-system, Segoe UI, sans-serif','fontSize':'13px'}}}%%
-xychart-beta
-    title "parallel — tokens per approach × tokenizer"
-    x-axis ["A. raw gradle", "B. kmp-test", "C. --json"]
-    y-axis "Tokens" 0 --> 27000
-    bar [12807, 376, 101]
-    bar [25780, 642, 187]
-    bar [19234, 444, 125]
-    bar [19234, 444, 125]
-```
+Bars scaled to `25,780` (opus, A).
 
-A:C ratio holds in a tight **127×–154×** band across all four tokenizers; B:C in **3.4×–3.7×**. `claude-sonnet-4-6` and `claude-haiku-4-5` share a tokenizer (identical counts to the unit). `claude-opus-4-7` ships a new tokenizer that produces 30–100% more tokens for the same input — most visibly on heavy XML/HTML payloads. Captures: [`tools/runs/parallel/`](tools/runs/parallel/) · evidence: [`tools/runs/cross-model-results-parallel.txt`](tools/runs/cross-model-results-parallel.txt).
+| Model               | A. raw                              | B. md         | C. --json     | A:C   |
+|---------------------|-------------------------------------|---------------|---------------|-------|
+| 🟦 `cl100k_base`    | ` 12,807 ██████████`                | `   376 ▎`    | `   101 ▏`    | 127×  |
+| 🟥 `opus-4-7`       | ` 25,780 ████████████████████`      | `   642 ▌`    | `   187 ▏`    | 138×  |
+| 🟩 `sonnet-4-6`     | ` 19,234 ██████████████▉`           | `   444 ▍`    | `   125 ▏`    | 154×  |
+| 🟧 `haiku-4-5`      | ` 19,234 ██████████████▉`           | `   444 ▍`    | `   125 ▏`    | 154×  |
+
+Captures: [`tools/runs/parallel/`](tools/runs/parallel/) · evidence: [`tools/runs/cross-model-results-parallel.txt`](tools/runs/cross-model-results-parallel.txt).
 
 #### `coverage` — Kover XML + HTML reports
 
-```mermaid
-%%{init: {'theme':'base','themeVariables':{'xyChart':{'backgroundColor':'transparent','plotColorPalette':'#3949ab, #e53935, #43a047, #fb8c00','titleColor':'#b71c1c','xAxisLabelColor':'#212121','yAxisLabelColor':'#212121','xAxisTitleColor':'#212121','yAxisTitleColor':'#212121','xAxisLineColor':'#616161','yAxisLineColor':'#616161','xAxisTickColor':'#616161','yAxisTickColor':'#616161','titleFontSize':'17'},'fontFamily':'system-ui, -apple-system, Segoe UI, sans-serif','fontSize':'13px'}}}%%
-xychart-beta
-    title "coverage — tokens per approach × tokenizer"
-    x-axis ["A. raw gradle + kover", "B. kmp-test", "C. --json"]
-    y-axis "Tokens" 0 --> 130000
-    bar [108405, 273, 89]
-    bar [123845, 482, 162]
-    bar [92940, 317, 109]
-    bar [92940, 317, 109]
-```
+Bars scaled to `123,845` (opus, A) — the largest cell across the whole measurement.
 
-The largest savings of any feature: A:C = **765×–1218×** across tokenizers (cl100k 1218×, opus 765×, sonnet/haiku 853×). Kover HTML reports include a fully annotated source page per file — slurping `build/reports/kover/**` for one module gives the agent ~261 KB of HTML it has to scan to find one number. Captures: [`tools/runs/coverage/`](tools/runs/coverage/) · evidence: [`tools/runs/cross-model-results-coverage.txt`](tools/runs/cross-model-results-coverage.txt).
+| Model               | A. raw                                    | B. md         | C. --json     | A:C       |
+|---------------------|-------------------------------------------|---------------|---------------|-----------|
+| 🟦 `cl100k_base`    | `108,405 █████████████████▌`              | `   273 ▏`    | `    89 ▏`    | **1218×** |
+| 🟥 `opus-4-7`       | `123,845 ████████████████████`            | `   482 ▏`    | `   162 ▏`    | 765×      |
+| 🟩 `sonnet-4-6`     | ` 92,940 ███████████████`                 | `   317 ▏`    | `   109 ▏`    | 853×      |
+| 🟧 `haiku-4-5`      | ` 92,940 ███████████████`                 | `   317 ▏`    | `   109 ▏`    | 853×      |
+
+The largest savings of any feature. Kover HTML reports include a fully annotated source page per file — slurping `build/reports/kover/**` for one module gives the agent ~261 KB of HTML it has to scan to find one number. Captures: [`tools/runs/coverage/`](tools/runs/coverage/) · evidence: [`tools/runs/cross-model-results-coverage.txt`](tools/runs/cross-model-results-coverage.txt).
 
 #### `changed` — tests for modules touched since `HEAD~1`
 
-```mermaid
-%%{init: {'theme':'base','themeVariables':{'xyChart':{'backgroundColor':'transparent','plotColorPalette':'#3949ab, #e53935, #43a047, #fb8c00','titleColor':'#004d40','xAxisLabelColor':'#212121','yAxisLabelColor':'#212121','xAxisTitleColor':'#212121','yAxisTitleColor':'#212121','xAxisLineColor':'#616161','yAxisLineColor':'#616161','xAxisTickColor':'#616161','yAxisTickColor':'#616161','titleFontSize':'17'},'fontFamily':'system-ui, -apple-system, Segoe UI, sans-serif','fontSize':'13px'}}}%%
-xychart-beta
-    title "changed — tokens per approach × tokenizer"
-    x-axis ["A. raw gradle", "B. kmp-test", "C. --json"]
-    y-axis "Tokens" 0 --> 27000
-    bar [12694, 466, 100]
-    bar [25580, 787, 186]
-    bar [19098, 550, 125]
-    bar [19098, 550, 125]
-```
+Bars scaled to `25,580` (opus, A).
 
-A:C = **127×–153×** band, B:C = **4.2×–4.7×**. B/C dispatch through the full parallel coverage suite (broader scope than A's single `:module:desktopTest`), so wall-clock time isn't apples-to-apples — token count is. Captures: [`tools/runs/changed/`](tools/runs/changed/) · evidence: [`tools/runs/cross-model-results-changed.txt`](tools/runs/cross-model-results-changed.txt).
+| Model               | A. raw                              | B. md         | C. --json     | A:C   |
+|---------------------|-------------------------------------|---------------|---------------|-------|
+| 🟦 `cl100k_base`    | ` 12,694 █████████▉`                | `   466 ▍`    | `   100 ▏`    | 127×  |
+| 🟥 `opus-4-7`       | ` 25,580 ████████████████████`      | `   787 ▋`    | `   186 ▏`    | 138×  |
+| 🟩 `sonnet-4-6`     | ` 19,098 ██████████████▉`           | `   550 ▍`    | `   125 ▏`    | 153×  |
+| 🟧 `haiku-4-5`      | ` 19,098 ██████████████▉`           | `   550 ▍`    | `   125 ▏`    | 153×  |
+
+B/C dispatch through the full parallel coverage suite (broader scope than A's single `:module:desktopTest`), so wall-clock time isn't apples-to-apples — token count is. Captures: [`tools/runs/changed/`](tools/runs/changed/) · evidence: [`tools/runs/cross-model-results-changed.txt`](tools/runs/cross-model-results-changed.txt).
 
 #### `benchmark` — JMH desktopSmokeBenchmark
 
-```mermaid
-%%{init: {'theme':'base','themeVariables':{'xyChart':{'backgroundColor':'transparent','plotColorPalette':'#3949ab, #e53935, #43a047, #fb8c00','titleColor':'#e65100','xAxisLabelColor':'#212121','yAxisLabelColor':'#212121','xAxisTitleColor':'#212121','yAxisTitleColor':'#212121','xAxisLineColor':'#616161','yAxisLineColor':'#616161','xAxisTickColor':'#616161','yAxisTickColor':'#616161','titleFontSize':'17'},'fontFamily':'system-ui, -apple-system, Segoe UI, sans-serif','fontSize':'13px'}}}%%
-xychart-beta
-    title "benchmark — tokens per approach × tokenizer"
-    x-axis ["A. raw gradle + JSON", "B. kmp-test", "C. --json"]
-    y-axis "Tokens" 0 --> 25000
-    bar [16083, 6211, 89]
-    bar [23527, 9916, 163]
-    bar [19266, 7596, 109]
-    bar [19266, 7596, 109]
-```
+Bars scaled to `23,527` (opus, A). B is unusually heavy here (`6,211`–`9,916`) — the markdown report inlines per-benchmark scores by design.
 
-A:C = **144×–181×**, B:C = **60×–70×** (the largest B:C gap of any feature). The markdown report keeps per-benchmark scores by design — useful when a human is reading the output to decide if a regression is real, expensive when the agent just wants a pass/fail signal. Captures: [`tools/runs/benchmark/`](tools/runs/benchmark/) · evidence: [`tools/runs/cross-model-results-benchmark.txt`](tools/runs/cross-model-results-benchmark.txt).
+| Model               | A. raw                              | B. md             | C. --json     | A:C   |
+|---------------------|-------------------------------------|-------------------|---------------|-------|
+| 🟦 `cl100k_base`    | ` 16,083 █████████████▋`            | ` 6,211 █████▎`   | `    89 ▏`    | 181×  |
+| 🟥 `opus-4-7`       | ` 23,527 ████████████████████`      | ` 9,916 ████████▍`| `   163 ▏`    | 144×  |
+| 🟩 `sonnet-4-6`     | ` 19,266 ████████████████▍`         | ` 7,596 ██████▌`  | `   109 ▏`    | 177×  |
+| 🟧 `haiku-4-5`      | ` 19,266 ████████████████▍`         | ` 7,596 ██████▌`  | `   109 ▏`    | 177×  |
+
+Largest B:C gap of any feature (60×–70×). If you want the per-benchmark scores, use B; if you only need to know whether benchmarks regressed, C is 70× cheaper. Captures: [`tools/runs/benchmark/`](tools/runs/benchmark/) · evidence: [`tools/runs/cross-model-results-benchmark.txt`](tools/runs/cross-model-results-benchmark.txt).
 
 ### How the numbers are produced
 
