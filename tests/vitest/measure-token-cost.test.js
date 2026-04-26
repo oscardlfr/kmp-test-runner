@@ -1,15 +1,7 @@
-// SPDX-License-Identifier: Apache-2.0
-//
-// Unit tests for tools/measure-token-cost.js -- covers the cross-model branch
-// added in v0.3.9. The gradle-driven default mode is exercised end-to-end by
-// the docs/token-cost-measurement.md captures and is not re-tested here.
-
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-
-const countTokensMock = vi.fn();
 
 import {
   parseAnthropicModels,
@@ -22,7 +14,7 @@ import {
   runCrossModelMode,
 } from '../../tools/measure-token-cost.js';
 
-// ----- helpers --------------------------------------------------------------
+const countTokensMock = vi.fn();
 
 function makeSink() {
   const log = vi.fn();
@@ -31,15 +23,12 @@ function makeSink() {
 }
 
 function makeFakeRunsDir(files) {
-  // files: { 'A-foo-run1.txt': 'content', ... }
   const dir = mkdtempSync(path.join(tmpdir(), 'kmp-test-runs-'));
   for (const [name, content] of Object.entries(files)) {
     writeFileSync(path.join(dir, name), content, 'utf8');
   }
   return dir;
 }
-
-// ----- parseAnthropicModels -------------------------------------------------
 
 describe('parseAnthropicModels', () => {
   it('returns [] for empty / undefined input', () => {
@@ -54,8 +43,6 @@ describe('parseAnthropicModels', () => {
     expect(parseAnthropicModels('a,,b,')).toEqual(['a', 'b']);
   });
 });
-
-// ----- parseArgs ------------------------------------------------------------
 
 describe('parseArgs', () => {
   let exitSpy;
@@ -94,8 +81,6 @@ describe('parseArgs', () => {
     expect(out.testTask).toBe('desktopTest');
   });
 });
-
-// ----- countTokensAnthropic -------------------------------------------------
 
 describe('countTokensAnthropic', () => {
   beforeEach(() => countTokensMock.mockReset());
@@ -149,8 +134,6 @@ describe('countTokensAnthropic', () => {
   });
 });
 
-// ----- loadCaptures ---------------------------------------------------------
-
 describe('loadCaptures', () => {
   let dir;
   afterEach(() => {
@@ -187,8 +170,6 @@ describe('loadCaptures', () => {
   });
 });
 
-// ----- formatCrossModelTable ------------------------------------------------
-
 describe('formatCrossModelTable', () => {
   it('produces a markdown table with model columns', () => {
     const rows = [
@@ -202,27 +183,21 @@ describe('formatCrossModelTable', () => {
   });
 });
 
-// ----- summariseCrossModelVariation -----------------------------------------
-
 describe('summariseCrossModelVariation', () => {
   it('computes spread across cl100k + per-model numeric values', () => {
     const rows = [
       { approach: 'A', file: 'A.txt', cl100k: 1000, perModel: { m1: 1100, m2: 950 } },
     ];
     const out = summariseCrossModelVariation(rows, ['m1', 'm2']);
-    // min=950, max=1100, spread = (1100-950)/950 = 15.789...%
     expect(out[0].spreadPct).toBeCloseTo(15.8, 1);
   });
 
   it('returns spread null when only one numeric value is available', () => {
     const rows = [{ approach: 'A', file: 'A.txt', cl100k: 1000, perModel: { m1: '[error: x]', m2: '[error: y]' } }];
     const out = summariseCrossModelVariation(rows, ['m1', 'm2']);
-    // Only cl100k is numeric -> cannot compute spread
     expect(out[0].spreadPct).toBe(null);
   });
 });
-
-// ----- runCrossModelMode ----------------------------------------------------
 
 describe('runCrossModelMode', () => {
   let dir;
@@ -246,11 +221,11 @@ describe('runCrossModelMode', () => {
     expect(error.mock.calls[0][0]).toMatch(/no captures found/);
   });
 
-  it('happy path: per-capture x per-model count, prints table, returns exitCode 0', async () => {
+  it('happy path: per-capture per-model count, prints table, returns exitCode 0', async () => {
     countTokensMock.mockImplementation((args) => {
-      const model = args?.model;
+      const model = args ? args.model : undefined;
       const map = { 'claude-opus-4-7': 1234, 'claude-sonnet-4-6': 1200 };
-      return Promise.resolve({ input_tokens: map[model] ?? 999 });
+      return Promise.resolve({ input_tokens: map[model] != null ? map[model] : 999 });
     });
     dir = makeFakeRunsDir({
       'A-rawgradle-run1.txt': 'A capture body',
@@ -267,9 +242,7 @@ describe('runCrossModelMode', () => {
     expect(result.rows).toHaveLength(2);
     expect(result.rows[0].approach).toBe('A');
     expect(result.rows[0].perModel['claude-opus-4-7']).toBe(1234);
-    // 2 captures x 2 models = 4 SDK calls
     expect(countTokensMock).toHaveBeenCalledTimes(4);
-    // Table content reached stdout sink
     const stdout = log.mock.calls.map((c) => c[0]).join('\n');
     expect(stdout).toContain('Cross-model token-cost');
     expect(stdout).toContain('claude-opus-4-7');
@@ -277,8 +250,7 @@ describe('runCrossModelMode', () => {
     expect(stdout).toContain('Approach ratio vs C');
   });
 
-  it('per-model error renders inline as [error: ...] without aborting the run', async () => {
-    // Order: first call is for claude-opus-4-7 (resolves), second is for the bad model (rejects).
+  it('per-model error renders inline as bracketed error string without aborting the run', async () => {
     countTokensMock
       .mockResolvedValueOnce({ input_tokens: 500 })
       .mockRejectedValueOnce({ status: 404, message: 'model not found' });
