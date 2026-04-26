@@ -1,5 +1,5 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -17,7 +17,15 @@ import {
   checkGradlew,
   consumeJsonFlag,
   consumeDryRunFlag,
+  consumeForceFlag,
   consumeTestFilter,
+  lockfilePath,
+  isPidAlive,
+  readLockfile,
+  writeLockfile,
+  removeLockfile,
+  acquireLock,
+  lockAgeLabel,
   stripAnsi,
   parseScriptOutput,
   buildJsonReport,
@@ -891,6 +899,362 @@ describe('main() — --test-filter passthrough', () => {
       expect(i).toBeGreaterThan(-1);
       // Wildcards stripped + resolved to FQN
       expect(argList[i + 1]).toBe('app.WidgetTest');
+    });
+  });
+});
+
+// ============================================================================
+// Concurrency Tier 1 (v0.3.8+): lockfile + --force + run-id
+// ============================================================================
+
+// PID 999999999 is well outside any OS PID range — process.kill(pid, 0)
+// reliably throws ESRCH, giving a deterministic "dead PID" for tests.
+const DEAD_PID = 999999999;
+
+describe('consumeForceFlag', () => {
+  it('strips --force and reports true', () => {
+    const { args, force } = consumeForceFlag(['--force', '--project-root', '/x']);
+    expect(force).toBe(true);
+    expect(args).toEqual(['--project-root', '/x']);
+  });
+  it('passes through unchanged when absent', () => {
+    const { args, force } = consumeForceFlag(['--project-root', '/x']);
+    expect(force).toBe(false);
+    expect(args).toEqual(['--project-root', '/x']);
+  });
+  it('handles --force at any position', () => {
+    expect(consumeForceFlag(['parallel', '--force']).force).toBe(true);
+    expect(consumeForceFlag(['--force', 'parallel']).force).toBe(true);
+    expect(consumeForceFlag(['parallel', '--json', '--force']).force).toBe(true);
+  });
+});
+
+describe('lockfilePath', () => {
+  it('returns <projectRoot>/.kmp-test-runner.lock', () => {
+    const got = lockfilePath('/abs/proj');
+    expect(got.endsWith('.kmp-test-runner.lock')).toBe(true);
+    expect(got.includes('proj')).toBe(true);
+  });
+});
+
+describe('isPidAlive', () => {
+  it('returns true for current process PID', () => {
+    expect(isPidAlive(process.pid)).toBe(true);
+  });
+  it('returns false for clearly-dead PID', () => {
+    expect(isPidAlive(DEAD_PID)).toBe(false);
+  });
+  it('returns false for non-numeric / invalid input', () => {
+    expect(isPidAlive(null)).toBe(false);
+    expect(isPidAlive(undefined)).toBe(false);
+    expect(isPidAlive('123')).toBe(false);
+    expect(isPidAlive(0)).toBe(false);
+    expect(isPidAlive(-1)).toBe(false);
+    expect(isPidAlive(NaN)).toBe(false);
+  });
+});
+
+describe('readLockfile / writeLockfile / removeLockfile round-trip', () => {
+  it('returns null when no lockfile exists', () => {
+    withFakeGradleProject(dir => {
+      expect(readLockfile(dir)).toBeNull();
+    });
+  });
+
+  it('write → read produces the same shape with required keys', () => {
+    withFakeGradleProject(dir => {
+      const written = writeLockfile(dir, 'parallel');
+      const read = readLockfile(dir);
+      expect(read).toEqual(written);
+      expect(read.schema).toBe(1);
+      expect(read.pid).toBe(process.pid);
+      expect(read.subcommand).toBe('parallel');
+      expect(read.project_root).toBe(dir);
+      expect(typeof read.start_time).toBe('string');
+      expect(new Date(read.start_time).toString()).not.toBe('Invalid Date');
+      expect(typeof read.version).toBe('string');
+    });
+  });
+
+  it('returns {invalid:true} on unparseable JSON', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, '.kmp-test-runner.lock'), 'not-json{', 'utf8');
+      expect(readLockfile(dir)).toEqual({ invalid: true });
+    });
+  });
+
+  it('removeLockfile deletes the file and is idempotent', () => {
+    withFakeGradleProject(dir => {
+      writeLockfile(dir, 'parallel');
+      expect(existsSync(path.join(dir, '.kmp-test-runner.lock'))).toBe(true);
+      removeLockfile(dir);
+      expect(existsSync(path.join(dir, '.kmp-test-runner.lock'))).toBe(false);
+      // Calling again on missing lock must not throw.
+      expect(() => removeLockfile(dir)).not.toThrow();
+    });
+  });
+});
+
+describe('acquireLock', () => {
+  it('fresh acquire when no prior lock', () => {
+    withFakeGradleProject(dir => {
+      const r = acquireLock(dir, 'parallel', { force: false });
+      expect(r.ok).toBe(true);
+      expect(r.reclaimed).toBeUndefined();
+      expect(r.forced).toBeUndefined();
+      expect(r.ourLock.pid).toBe(process.pid);
+    });
+  });
+
+  it('refuses with lock_held when existing lock has live PID and no --force', () => {
+    withFakeGradleProject(dir => {
+      // Pre-write a lock with our own PID (definitely alive).
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+          subcommand: 'parallel', project_root: dir, version: '0.3.8',
+        }),
+        'utf8',
+      );
+      const r = acquireLock(dir, 'changed', { force: false });
+      expect(r.ok).toBe(false);
+      expect(r.reason).toBe('lock_held');
+      expect(r.existing.pid).toBe(process.pid);
+      expect(r.existing.subcommand).toBe('parallel');
+    });
+  });
+
+  it('reclaims when existing lock has dead PID', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: DEAD_PID, start_time: '2026-04-26T00:00:00.000Z',
+          subcommand: 'parallel', project_root: dir, version: '0.3.8',
+        }),
+        'utf8',
+      );
+      const r = acquireLock(dir, 'changed', { force: false });
+      expect(r.ok).toBe(true);
+      expect(r.reclaimed).toBe(true);
+      expect(r.ourLock.pid).toBe(process.pid);
+      expect(r.ourLock.subcommand).toBe('changed');
+    });
+  });
+
+  it('--force bypasses a live lock and writes our own', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+          subcommand: 'parallel', project_root: dir, version: '0.3.8',
+        }),
+        'utf8',
+      );
+      const r = acquireLock(dir, 'changed', { force: true });
+      expect(r.ok).toBe(true);
+      expect(r.forced).toBe(true);
+      expect(r.existing).toBeTruthy();
+      expect(r.ourLock.subcommand).toBe('changed');
+      // On disk, the new lock should reflect 'changed', not the original 'parallel'.
+      const onDisk = readLockfile(dir);
+      expect(onDisk.subcommand).toBe('changed');
+    });
+  });
+
+  it('reclaims unparseable lockfile', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, '.kmp-test-runner.lock'), 'garbage{', 'utf8');
+      const r = acquireLock(dir, 'parallel', { force: false });
+      expect(r.ok).toBe(true);
+      expect(r.ourLock.pid).toBe(process.pid);
+    });
+  });
+
+  it('returns write_error when target dir does not exist', () => {
+    const ghost = path.join(tmpdir(), 'kmp-no-such-dir-' + Date.now());
+    const r = acquireLock(ghost, 'parallel', { force: false });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('write_error');
+    expect(r.error).toBeTruthy();
+  });
+});
+
+describe('lockAgeLabel', () => {
+  it('formats sub-minute as "Ns"', () => {
+    const t = new Date(Date.now() - 5_000).toISOString();
+    expect(lockAgeLabel(t)).toMatch(/^\ds$/);
+  });
+  it('formats sub-hour as "NmMs"', () => {
+    const t = new Date(Date.now() - (3 * 60 + 12) * 1000).toISOString();
+    expect(lockAgeLabel(t)).toBe('3m12s');
+  });
+  it('formats over-hour as "NhMm"', () => {
+    const t = new Date(Date.now() - (2 * 3600 + 17 * 60) * 1000).toISOString();
+    expect(lockAgeLabel(t)).toBe('2h17m');
+  });
+  it('returns "?" for unparseable input', () => {
+    expect(lockAgeLabel('not-a-date')).toBe('?');
+    expect(lockAgeLabel(null)).toBe('?');
+  });
+});
+
+describe('main() — lockfile integration', () => {
+  it('cleans up lockfile after a successful spawn', () => {
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      main();
+      expect(existsSync(path.join(dir, '.kmp-test-runner.lock'))).toBe(false);
+    });
+  });
+
+  it('refuses to spawn when a live lock is held (no --force)', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+          subcommand: 'parallel', project_root: dir, version: '0.3.8',
+        }),
+        'utf8',
+      );
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      expect(main()).toBe(EXIT.ENV_ERROR);
+      // Spawn must NOT have run for the script.
+      const ranScript = spawnMock.mock.calls.some(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(ranScript).toBe(false);
+      // The original lock must remain (we did not steal it).
+      const onDisk = readLockfile(dir);
+      expect(onDisk.subcommand).toBe('parallel');
+      expect(onDisk.pid).toBe(process.pid);
+    });
+  });
+
+  it('lock_held in --json mode emits errors[].code = "lock_held"', () => {
+    const captured = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+    try {
+      withFakeGradleProject(dir => {
+        writeFileSync(
+          path.join(dir, '.kmp-test-runner.lock'),
+          JSON.stringify({
+            schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+            subcommand: 'parallel', project_root: dir, version: '0.3.8',
+          }),
+          'utf8',
+        );
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+        expect(main()).toBe(EXIT.ENV_ERROR);
+      });
+    } finally {
+      process.stdout.write = origWrite;
+    }
+    const obj = JSON.parse(captured.join('').trim());
+    expect(obj.exit_code).toBe(EXIT.ENV_ERROR);
+    expect(obj.errors[0].code).toBe('lock_held');
+    expect(obj.errors[0].message).toMatch(/already running/);
+  });
+
+  it('--force bypasses live lock and proceeds to spawn', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+          subcommand: 'parallel', project_root: dir, version: '0.3.8',
+        }),
+        'utf8',
+      );
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--force', '--project-root', dir];
+      expect(main()).toBe(EXIT.SUCCESS);
+      const ranScript = spawnMock.mock.calls.some(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(ranScript).toBe(true);
+      // Lock cleaned up after spawn.
+      expect(existsSync(path.join(dir, '.kmp-test-runner.lock'))).toBe(false);
+    });
+  });
+
+  it('--force placed before subcommand is also recognized', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+          subcommand: 'parallel', project_root: dir, version: '0.3.8',
+        }),
+        'utf8',
+      );
+      process.argv = ['node', 'kmp-test.js', '--force', 'parallel', '--project-root', dir];
+      expect(main()).toBe(EXIT.SUCCESS);
+    });
+  });
+
+  it('stale lock (dead PID) is reclaimed automatically — no --force needed', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: DEAD_PID, start_time: '2026-01-01T00:00:00.000Z',
+          subcommand: 'parallel', project_root: dir, version: '0.3.8',
+        }),
+        'utf8',
+      );
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      expect(main()).toBe(EXIT.SUCCESS);
+      // Lock cleaned up after spawn.
+      expect(existsSync(path.join(dir, '.kmp-test-runner.lock'))).toBe(false);
+    });
+  });
+
+  it('--dry-run does NOT acquire a lock', () => {
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--project-root', dir];
+      expect(main()).toBe(EXIT.SUCCESS);
+      // Lockfile must not be present after dry-run.
+      expect(existsSync(path.join(dir, '.kmp-test-runner.lock'))).toBe(false);
+    });
+  });
+
+  it('--dry-run does NOT block on existing live lock (read-only operation)', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+          subcommand: 'parallel', project_root: dir, version: '0.3.8',
+        }),
+        'utf8',
+      );
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--project-root', dir];
+      expect(main()).toBe(EXIT.SUCCESS);
+      // Original lock untouched.
+      expect(readLockfile(dir).pid).toBe(process.pid);
+    });
+  });
+
+  it('doctor does NOT acquire a lock even with one present', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+          subcommand: 'parallel', project_root: dir, version: '0.3.8',
+        }),
+        'utf8',
+      );
+      process.argv = ['node', 'kmp-test.js', 'doctor', '--project-root', dir];
+      // doctor exits with 0 or ENV_ERROR depending on env, but must not be lock_held.
+      const code = main();
+      expect([EXIT.SUCCESS, EXIT.ENV_ERROR]).toContain(code);
+      // Original lock untouched (we never wrote/removed it).
+      expect(readLockfile(dir).subcommand).toBe('parallel');
     });
   });
 });

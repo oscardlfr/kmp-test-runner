@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] — 2026-04-26
+
+### Added
+- **Concurrent-invocation safety (Tier 1)** — when multiple `kmp-test` runs
+  share the same `--project-root` (multi-agent workflows, CI matrix shards,
+  human + agent overlap), an advisory lockfile at
+  `<project>/.kmp-test-runner.lock` now coordinates them:
+  - **First arrival** writes
+    `{schema:1, pid, start_time, subcommand, project_root, version}` JSON,
+    proceeds, removes the lock on exit (success, failure, or signal).
+  - **Second arrival with live PID in the lock** refuses with exit `3` and
+    prints PID + age + subcommand of the holder. In `--json` mode the
+    envelope includes `errors[].code = "lock_held"`.
+  - **Stale lock** (PID dead, e.g. previous run killed `-9`) is reclaimed
+    silently — no manual cleanup needed.
+  - **Cleanup hooks** for `SIGINT` (Ctrl-C), `SIGTERM`, and
+    `uncaughtException` drop the lockfile so a crashed run doesn't leave
+    a stuck lock behind.
+  - **`doctor` and `--dry-run` skip the lock entirely** — they're read-only
+    operations with no side effects worth coordinating.
+- **`--force` global flag** — bypasses a live lock when you intentionally
+  want concurrent runs (e.g. a debug session alongside CI). Hoisted like
+  `--json` / `--dry-run` so it can appear before or after the subcommand.
+- **Run-id naming for reports and temp logs** — every run computes a
+  `YYYYMMDD-HHMMSS-PID6` run-id (zero-padded last 6 digits of PID) and
+  uses it to suffix:
+  - `<project>/coverage-full-report-<run-id>.md` (parallel/coverage)
+  - `<project>/benchmark-report-<run-id>.md` (benchmark)
+  - `${TMPDIR}/gradle-parallel-tests-<run-id>.log` (parallel/coverage)
+
+  The legacy stable filenames (`coverage-full-report.md`,
+  `benchmark-report.md`) remain as a "last finished run" mirror copy so
+  existing consumers keep working.
+
+### Fixed
+- Same-second simultaneous parallel runs no longer clobber each other's
+  `gradle-parallel-tests-<timestamp>.log` (now PID-suffixed).
+- Two runs against the same project no longer race each other into the
+  fixed report filenames — each gets its own versioned copy.
+
 ## [0.3.7] — 2026-04-26
 
 ### Added

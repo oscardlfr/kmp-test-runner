@@ -1,6 +1,6 @@
 {
   "name": "kmp-test-runner",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "type": "module",
   "description": "Parallel test runner for KMP and Android Gradle projects",
   "homepage": "https://github.com/oscardlfr/kmp-test-runner#readme",
@@ -43,6 +43,7 @@
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^2.1.0",
+    "js-tiktoken": "^1.0.21",
     "vitest": "^2.1.0"
   }
 }

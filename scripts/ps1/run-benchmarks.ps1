@@ -360,7 +360,13 @@ if ($benchmarkEntries.Count -gt 0) {
 # MARKDOWN REPORT
 # =============================================================================
 
-$reportPath = Join-Path $ProjectRoot "benchmark-report.md"
+# Run-id (PID-suffixed) prevents report clobber when multiple kmp-test runs share project root.
+if ([string]::IsNullOrEmpty($env:KMP_RUN_ID)) {
+    $env:KMP_RUN_ID = "{0}-{1:D6}" -f (Get-Date -Format 'yyyyMMdd-HHmmss'), ($PID % 1000000)
+}
+$KmpRunId = $env:KMP_RUN_ID
+$reportPath = Join-Path $ProjectRoot "benchmark-report-$KmpRunId.md"
+$reportPathLegacy = Join-Path $ProjectRoot "benchmark-report.md"
 $timestamp  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
 $md = [System.Text.StringBuilder]::new()
@@ -414,7 +420,11 @@ if ($benchmarkEntries.Count -gt 0) {
 
 $md.ToString() | Out-File -FilePath $reportPath -Encoding UTF8 -Force
 
+# Mirror to legacy stable name (last writer wins under concurrent invocations).
+Copy-Item -Path $reportPath -Destination $reportPathLegacy -Force -ErrorAction SilentlyContinue
+
 Write-Host "[>>] Report saved to: $reportPath" -ForegroundColor Cyan
+Write-Host "    legacy alias: $reportPathLegacy" -ForegroundColor DarkGray
 Write-Host ""
 
 # =============================================================================
