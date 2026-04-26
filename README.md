@@ -497,7 +497,23 @@ kmp-test-runner uses a three-shape model: an npm CLI, a Gradle plugin, and shell
 
 ## Contributing
 
-Open issues and pull requests are welcome. Please run `npm test` (Vitest + bats + shellcheck) and `./gradlew test` (Gradle TestKit) locally before submitting a PR. A `CONTRIBUTING.md` with full contributor guide is planned for v0.4.0.
+Open issues and pull requests are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the full contributor guide — branch model, conventional commits, the SH/PS1 parity rule, the test matrix per change area, and the release flow.
+
+Quick check before a PR:
+
+```bash
+npm test                                       # vitest (183+ tests)
+npx bats tests/bats/ tests/installer/          # bats (Linux/macOS)
+cd gradle-plugin && ./gradlew test && cd ..    # Gradle TestKit
+npm run shellcheck                             # POSIX script lint (0 warnings required)
+```
+
+Pester runs in CI on `windows-latest`. PR titles must conform to [Conventional Commits v1.0.0](https://www.conventionalcommits.org/) (the workflow-validated PR title becomes the squash commit message).
+
+### Community
+
+- **Code of conduct**: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — Contributor Covenant 2.1.
+- **Security**: report vulnerabilities privately per [SECURITY.md](SECURITY.md) (do NOT open a public issue for security issues).
 
 ## License
 
