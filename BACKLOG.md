@@ -53,6 +53,29 @@ Open questions: (1) does `describe` cover KMP-only (non-Android) modules, or onl
 
 Estimated effort: 3–4h research + refactor in `scripts/sh/lib/`. Pending review on (1) above before committing — if `describe` doesn't enumerate KMP non-AGP modules it's not a drop-in replacement.
 
+### Concurrent-invocation safety (multi-agent scenarios)
+
+When multiple AI agents (or humans, or CI matrix shards) run `kmp-test` against the **same project root** simultaneously, several output paths collide and a few resources contend. Gradle itself is safe — its daemon serializes builds and `.gradle/` lockfiles prevent corruption. The CLI layer does not.
+
+**Hard collisions (data clobber):**
+- `<project>/coverage-full-report.md` and `<project>/benchmark-report.md` — fixed names. Two runs → last writer wins. An agent reading the report mid-write sees garbage.
+- `${TMPDIR}/gradle-parallel-tests-<YYYYMMDD-HHMMSS>.log` — date-second granularity. Same-second invocations clobber. Missing `$$` (PID).
+
+**Resource contention:**
+- `kmp-test android` device auto-detect — two parallel runs without explicit `--device` both pick `emulator-5554`, tests interleave on the same device.
+- `kmp-test changed` reads `git status` then runs — if another process commits between detection and execution, the detected module set is stale.
+
+**Soft contention (slow, not corrupt):**
+- Gradle's own daemon + `.gradle/` lockfile serialize builds against the same project. Second invocation just waits. Correct but invisible.
+
+**Proposed deliverable — three tiers, ship tier 1 first:**
+
+1. **Cheap hardening (~1h):** add `$$` / PID to `TEMP_LOG` filename; per-invocation run-id (timestamp + PID hash) in report filenames; advisory lockfile at `<project>/.kmp-test-runner.lock` with `{pid, start_time, subcommand, project_root}` JSON; on collision warn + offer `--force` override. Stale-lock detection (PID dead → reclaim).
+2. **Audit + docs (~30min):** grep every output path in `scripts/sh/` and `scripts/ps1/`; produce `docs/concurrency.md` with the collision matrix (subcommand × resource × outcome) so consumers know what's safe.
+3. **Opt-in isolation (~3-4h):** `--isolated` global flag → injects `--project-cache-dir <tmp>` into every gradle invocation, giving each run its own `.gradle/` cache. Slow (no cache hits), but truly parallel-safe. Ideal for CI multi-agent fan-out.
+
+Out of scope for this item: cross-host coordination (use a real lock manager), Gradle-internal concurrency tuning, or rewriting the daemon model.
+
 ### Other QUEUED ideas
 
 - **ANSI color** — auto-detect TTY, plain output when piped
