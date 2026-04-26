@@ -85,8 +85,17 @@ The largest savings of any feature. Kover HTML reports include a fully
 annotated source page per file (line numbers, hit counts, branch summaries,
 package indexes) — slurping `build/reports/kover/**` for a single module
 gives the agent ~261 KB of HTML it has to scan to find one number.
-Captures: [`tools/runs/coverage/`](../tools/runs/coverage/). Cross-model
-results: [`tools/runs/cross-model-results-coverage.txt`](../tools/runs/cross-model-results-coverage.txt).
+
+Cross-tokenizer ([`tools/runs/cross-model-results-coverage.txt`](../tools/runs/cross-model-results-coverage.txt)):
+
+| Tokenizer            | A. Raw gradle + kover  | B. kmp-test coverage | C. kmp-test --json | A vs C  |
+|----------------------|-----------------------:|---------------------:|-------------------:|--------:|
+| `cl100k_base`        |            **108,405** |              **273** |             **89** | **1218×** |
+| `claude-opus-4-7`    |                123,845 |                  482 |                162 |    765× |
+| `claude-sonnet-4-6`  |                 92,940 |                  317 |                109 |    853× |
+| `claude-haiku-4-5`   |                 92,940 |                  317 |                109 |    853× |
+
+Captures: [`tools/runs/coverage/`](../tools/runs/coverage/).
 
 ### `changed` — tests for modules touched since `HEAD~1`
 
@@ -110,8 +119,18 @@ delegates to the full parallel coverage suite (broader test selection),
 while A only invokes the single `:module:desktopTest` task an agent
 without `kmp-test` would naturally type. The token-cost ratio is the
 headline — B/C deliver more thorough testing in 100–466 tokens vs A's
-12,694. Captures: [`tools/runs/changed/`](../tools/runs/changed/).
-Cross-model results: [`tools/runs/cross-model-results-changed.txt`](../tools/runs/cross-model-results-changed.txt).
+12,694.
+
+Cross-tokenizer ([`tools/runs/cross-model-results-changed.txt`](../tools/runs/cross-model-results-changed.txt)):
+
+| Tokenizer            | A. Raw gradle + reports | B. kmp-test changed | C. kmp-test --json | A vs C  |
+|----------------------|------------------------:|--------------------:|-------------------:|--------:|
+| `cl100k_base`        |                  12,694 |                 466 |                100 |    127× |
+| `claude-opus-4-7`    |              **25,580** |             **787** |            **186** | **138×** |
+| `claude-sonnet-4-6`  |                  19,098 |                 550 |                125 |    153× |
+| `claude-haiku-4-5`   |                  19,098 |                 550 |                125 |    153× |
+
+Captures: [`tools/runs/changed/`](../tools/runs/changed/).
 
 ### `benchmark` — JMH `desktopSmokeBenchmark`
 
@@ -135,8 +154,17 @@ per-benchmark scores by design — useful when a human is reading the
 output to decide if a regression is real, expensive when the agent
 just wants a pass/fail signal. If you need the scores, use B; if you
 only need to know whether benchmarks regressed, C is 70× cheaper.
+
+Cross-tokenizer ([`tools/runs/cross-model-results-benchmark.txt`](../tools/runs/cross-model-results-benchmark.txt)):
+
+| Tokenizer            | A. Raw gradle + JSON   | B. kmp-test benchmark | C. kmp-test --json | A vs C |
+|----------------------|-----------------------:|----------------------:|-------------------:|-------:|
+| `cl100k_base`        |                 16,083 |                 6,211 |                 89 |   181× |
+| `claude-opus-4-7`    |             **23,527** |             **9,916** |            **163** |  144×  |
+| `claude-sonnet-4-6`  |                 19,266 |                 7,596 |                109 |   177× |
+| `claude-haiku-4-5`   |                 19,266 |                 7,596 |                109 |   177× |
+
 Captures: [`tools/runs/benchmark/`](../tools/runs/benchmark/).
-Cross-model results: [`tools/runs/cross-model-results-benchmark.txt`](../tools/runs/cross-model-results-benchmark.txt).
 
 ## Methodology
 
