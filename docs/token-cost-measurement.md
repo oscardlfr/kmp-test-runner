@@ -6,10 +6,10 @@ suite in three different ways. Backs the qualitative claim in the README
 
 ```mermaid
 xychart-beta horizontal
-    title "Token cost — every (approach × tokenizer) combination from the same captures"
-    x-axis ["A · cl100k_base", "A · claude-opus-4-7", "A · claude-sonnet-4-6", "A · claude-haiku-4-5", "B · cl100k_base", "B · claude-opus-4-7", "B · claude-sonnet-4-6", "B · claude-haiku-4-5", "C · cl100k_base", "C · claude-opus-4-7", "C · claude-sonnet-4-6", "C · claude-haiku-4-5"]
+    title "Token cost — same captures, four tokenizers, three observation strategies (A,B,C) per tokenizer"
+    x-axis ["cl100k_base · A", "cl100k_base · B", "cl100k_base · C", "claude-opus-4-7 · A", "claude-opus-4-7 · B", "claude-opus-4-7 · C", "claude-sonnet-4-6 · A", "claude-sonnet-4-6 · B", "claude-sonnet-4-6 · C", "claude-haiku-4-5 · A", "claude-haiku-4-5 · B", "claude-haiku-4-5 · C"]
     y-axis "Tokens" 0 --> 28000
-    bar [12807, 25780, 19234, 19234, 376, 642, 444, 444, 101, 187, 125, 125]
+    bar [12807, 376, 101, 25780, 642, 187, 19234, 444, 125, 19234, 444, 125]
 ```
 
 | Tokenizer            | A. Raw gradle + reports | B. kmp-test parallel | C. kmp-test --json | A vs C  |
