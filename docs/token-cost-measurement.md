@@ -1,222 +1,293 @@
 # Token-cost measurement
 
-Empirical measurement of the token cost an AI agent pays to run a KMP test
-suite in three different ways. Backs the qualitative claim in the README
-"Agentic usage" section with a real number from a real codebase.
+Empirical measurement of the token cost an AI agent pays to run a KMP
+workflow in three different ways, across four `kmp-test` features.
+Backs the qualitative claim in the README "Why this exists" section
+with real numbers from a representative KMP SDK module.
 
-```mermaid
-xychart-beta horizontal
-    title "Token cost — same captures, four tokenizers, three observation strategies (A,B,C) per tokenizer"
-    x-axis ["cl100k_base · A", "cl100k_base · B", "cl100k_base · C", "claude-opus-4-7 · A", "claude-opus-4-7 · B", "claude-opus-4-7 · C", "claude-sonnet-4-6 · A", "claude-sonnet-4-6 · B", "claude-sonnet-4-6 · C", "claude-haiku-4-5 · A", "claude-haiku-4-5 · B", "claude-haiku-4-5 · C"]
-    y-axis "Tokens" 0 --> 28000
-    bar [12807, 376, 101, 25780, 642, 187, 19234, 444, 125, 19234, 444, 125]
-```
+## Cross-feature summary — 4 features × 3 approaches × 4 tokenizers
 
-| Tokenizer            | A. Raw gradle + reports | B. kmp-test parallel | C. kmp-test --json | A vs C  |
-|----------------------|------------------------:|---------------------:|-------------------:|--------:|
-| `cl100k_base`        |                  12,807 |                  376 |                101 |    127× |
-| `claude-opus-4-7`    |              **25,780** |              **642** |            **187** | **138×**|
-| `claude-sonnet-4-6`  |                  19,234 |                  444 |                125 |    154× |
-| `claude-haiku-4-5`   |                  19,234 |                  444 |                125 |    154× |
+Every cell is a real token count (`cl100k_base` via `js-tiktoken` offline; the
+three Claude columns via Anthropic's `messages.countTokens` API). Bars are
+unicode block characters scaled to the global table max
+(`coverage · A · claude-opus-4-7` = **123,845 tokens** = 20 chars wide).
 
-The chart above uses `claude-opus-4-7` (the largest of the family). A:B:C
-ratio holds in a tight 127×–154× / 3.4×–3.7× band across cl100k_base +
-Claude 4.x — absolute counts vary by up to ±100%, the relative order
-doesn't.
+| Feature · Approach    | 🟦 cl100k_base                | 🟥 claude-opus-4-7             | 🟩 claude-sonnet-4-6           | 🟧 claude-haiku-4-5            |
+|-----------------------|-------------------------------|--------------------------------|--------------------------------|--------------------------------|
+| `parallel`  · A. raw  | `  12,807 ██▏`                | `  25,780 ████▏`               | `  19,234 ███▏`                | `  19,234 ███▏`                |
+| `parallel`  · B. md   | `     376 ▏`                  | `     642 ▏`                   | `     444 ▏`                   | `     444 ▏`                   |
+| `parallel`  · C. json | `     101 ▏`                  | `     187 ▏`                   | `     125 ▏`                   | `     125 ▏`                   |
+| ─────────────────── | ───────────────────────────── | ────────────────────────────── | ────────────────────────────── | ────────────────────────────── |
+| `coverage`  · A. raw  | `**108,405 █████████████████▌**` | `**123,845 ████████████████████**` | `  92,940 ███████████████`     | `  92,940 ███████████████`     |
+| `coverage`  · B. md   | `     273 ▏`                  | `     482 ▏`                   | `     317 ▏`                   | `     317 ▏`                   |
+| `coverage`  · C. json | `      89 ▏`                  | `     162 ▏`                   | `     109 ▏`                   | `     109 ▏`                   |
+| ─────────────────── | ───────────────────────────── | ────────────────────────────── | ────────────────────────────── | ────────────────────────────── |
+| `changed`   · A. raw  | `  12,694 ██`                 | `  25,580 ████▏`               | `  19,098 ███▏`                | `  19,098 ███▏`                |
+| `changed`   · B. md   | `     466 ▏`                  | `     787 ▏`                   | `     550 ▏`                   | `     550 ▏`                   |
+| `changed`   · C. json | `     100 ▏`                  | `     186 ▏`                   | `     125 ▏`                   | `     125 ▏`                   |
+| ─────────────────── | ───────────────────────────── | ────────────────────────────── | ────────────────────────────── | ────────────────────────────── |
+| `benchmark` · A. raw  | `  16,083 ██▋`                | `  23,527 ███▊`                | `  19,266 ███▏`                | `  19,266 ███▏`                |
+| `benchmark` · B. md   | `   6,211 █`                  | `   9,916 █▋`                  | `   7,596 █▎`                  | `   7,596 █▎`                  |
+| `benchmark` · C. json | `      89 ▏`                  | `     163 ▏`                   | `     109 ▏`                   | `     109 ▏`                   |
 
-## TL;DR
+A:C savings ratio per feature, per tokenizer (the headline number — relative
+cost of raw gradle vs `--json`):
 
-For the same test failure on the same module (cl100k_base baseline):
+| Feature      | 🟦 cl100k_base | 🟥 opus-4-7 | 🟩 sonnet-4-6 | 🟧 haiku-4-5 |
+|--------------|--------------:|------------:|--------------:|-------------:|
+| `parallel`   |          127× |        138× |          154× |         154× |
+| `coverage`   |     **1218×** |    **765×** |      **853×** |     **853×** |
+| `changed`    |          127× |        138× |          153× |         153× |
+| `benchmark`  |          181× |        144× |          177× |         177× |
 
-| Approach | Tokens | Bytes | vs `--json` |
-|---|---:|---:|---:|
-| **A.** Raw `./gradlew :module:desktopTest` + read `build/reports/**` | **12,807** | 54 KB | **127×** |
-| **B.** `kmp-test parallel` (default markdown) | **376** | 2.0 KB | **3.7×** |
-| **C.** `kmp-test parallel --json` | **101** | 343 B | **1.0×** |
+Three patterns hold across every feature × tokenizer combination:
 
-`--json` mode delivers the same actionable failure information (exit code,
-test counts, failure message) at ~1% of the raw-gradle-plus-reports cost.
+1. **C is consistently 89–187 tokens.** The `--json` envelope strips the
+   feature down to `{exit_code, tests, modules, errors[]}` regardless of
+   how heavy the underlying gradle workload is.
+2. **A always exceeds 12 K tokens** on `cl100k_base` (and ~25 K on
+   `claude-opus-4-7`). Raw gradle stdout alone is verbose; the report
+   files multiply it. `coverage` is an outlier (108–124 K) because
+   Kover HTML reports include per-line annotated source pages.
+3. **B's variance comes from how rich the per-feature markdown report is.**
+   Tiny on parallel/coverage/changed (273–787 tokens), heavy on
+   benchmark (6,211–9,916) because the markdown report inlines
+   per-benchmark scores by design — useful for humans, expensive for
+   agents.
 
-## Cross-model validation
+Two cross-tokenizer observations:
+- **Tokenizer transition.** `claude-sonnet-4-6` and `claude-haiku-4-5`
+  share a tokenizer (identical counts to the unit on every cell).
+  `claude-opus-4-7` ships a new tokenizer that produces 30–100% more
+  tokens for the same input — most visibly on heavy XML/HTML payloads
+  (approach A).
+- **Ratios survive across tokenizers.** Despite per-model spreads of
+  70–101% in absolute count, the A:C ratio sits in a feature-specific
+  band that holds across all four tokenizers (parallel/changed in
+  127×–154×, benchmark in 144×–181×, coverage in 765×–1218×).
 
-The same captures re-tokenised through Anthropic's
-[`messages.countTokens`](https://docs.anthropic.com/en/api/messages-count-tokens)
-API per Claude 4.x model — full numbers are at the [top of this doc](#token-cost-measurement); this section focuses on what the cross-model run *teaches*.
+## Per-feature drill-down
 
-Two notable findings:
+Each per-feature table is scaled to its own column max (so the bar
+visualisation maximises within the feature). Bars in column A always
+dominate; B/C are sub-1-char unicode blocks that visually disappear —
+that's the savings story.
 
-- **Tokenizer transition.** `claude-sonnet-4-6` and `claude-haiku-4-5` share
-  the same tokenizer (identical counts to the unit). `claude-opus-4-7` ships
-  a new tokenizer that produces 34–50% more tokens for the same input — most
-  visibly on heavy XML/HTML report payloads (approach A).
-- **Ratios survive.** Despite per-model spreads of 70–101% in absolute count,
-  the A:B:C ratio sits in a 127×–154× / 3.4×–3.7× band across all four
-  tokenizers. The "raw gradle is two orders of magnitude more expensive than
-  `--json`" claim holds regardless of which Claude tokenizer the agent runs
-  on.
+### `parallel` — full test suite
 
-Captured run output: [`tools/runs/cross-model-results.txt`](../tools/runs/cross-model-results.txt).
-Reproduce with:
+Bars scaled to `25,780` (opus, A).
 
-```bash
-ANTHROPIC_API_KEY=sk-ant-… \
-  node tools/measure-token-cost.js \
-  --anthropic-models claude-opus-4-7,claude-sonnet-4-6,claude-haiku-4-5
-```
+| Model               | A. raw                              | B. md         | C. --json     | A:C   |
+|---------------------|-------------------------------------|---------------|---------------|-------|
+| 🟦 `cl100k_base`    | ` 12,807 ██████████`                | `   376 ▎`    | `   101 ▏`    | 127×  |
+| 🟥 `opus-4-7`       | ` 25,780 ████████████████████`      | `   642 ▌`    | `   187 ▏`    | 138×  |
+| 🟩 `sonnet-4-6`     | ` 19,234 ██████████████▉`           | `   444 ▍`    | `   125 ▏`    | 154×  |
+| 🟧 `haiku-4-5`      | ` 19,234 ██████████████▉`           | `   444 ▍`    | `   125 ▏`    | 154×  |
+
+Captures: [`tools/runs/parallel/`](../tools/runs/parallel/) · evidence: [`tools/runs/cross-model-results-parallel.txt`](../tools/runs/cross-model-results-parallel.txt).
+
+### `coverage` — Kover XML + HTML reports
+
+Bars scaled to `123,845` (opus, A) — the largest cell across the whole
+measurement.
+
+| Model               | A. raw                                    | B. md         | C. --json     | A:C       |
+|---------------------|-------------------------------------------|---------------|---------------|-----------|
+| 🟦 `cl100k_base`    | `108,405 █████████████████▌`              | `   273 ▏`    | `    89 ▏`    | **1218×** |
+| 🟥 `opus-4-7`       | `123,845 ████████████████████`            | `   482 ▏`    | `   162 ▏`    | 765×      |
+| 🟩 `sonnet-4-6`     | ` 92,940 ███████████████`                 | `   317 ▏`    | `   109 ▏`    | 853×      |
+| 🟧 `haiku-4-5`      | ` 92,940 ███████████████`                 | `   317 ▏`    | `   109 ▏`    | 853×      |
+
+The largest savings of any feature. Kover HTML reports include a fully
+annotated source page per file (line numbers, hit counts, branch summaries,
+package indexes) — slurping `build/reports/kover/**` for one module
+gives the agent ~261 KB of HTML it has to scan to find one number.
+
+Captures: [`tools/runs/coverage/`](../tools/runs/coverage/) · evidence: [`tools/runs/cross-model-results-coverage.txt`](../tools/runs/cross-model-results-coverage.txt).
+
+### `changed` — tests for modules touched since `HEAD~1`
+
+Bars scaled to `25,580` (opus, A).
+
+| Model               | A. raw                              | B. md         | C. --json     | A:C   |
+|---------------------|-------------------------------------|---------------|---------------|-------|
+| 🟦 `cl100k_base`    | ` 12,694 █████████▉`                | `   466 ▍`    | `   100 ▏`    | 127×  |
+| 🟥 `opus-4-7`       | ` 25,580 ████████████████████`      | `   787 ▋`    | `   186 ▏`    | 138×  |
+| 🟩 `sonnet-4-6`     | ` 19,098 ██████████████▉`           | `   550 ▍`    | `   125 ▏`    | 153×  |
+| 🟧 `haiku-4-5`      | ` 19,098 ██████████████▉`           | `   550 ▍`    | `   125 ▏`    | 153×  |
+
+Wall-clock note: B/C take 33–42s vs A's 2s because `kmp-test changed`
+delegates to the full parallel coverage suite (broader test selection),
+while A only invokes the single `:module:desktopTest` task an agent
+without `kmp-test` would naturally type. The token-cost ratio is the
+headline — B/C deliver more thorough testing in 100–466 tokens vs A's
+12,694.
+
+Captures: [`tools/runs/changed/`](../tools/runs/changed/) · evidence: [`tools/runs/cross-model-results-changed.txt`](../tools/runs/cross-model-results-changed.txt).
+
+### `benchmark` — JMH `desktopSmokeBenchmark`
+
+Bars scaled to `23,527` (opus, A). B is unusually heavy here
+(`6,211`–`9,916`) — the markdown report inlines per-benchmark scores
+by design.
+
+| Model               | A. raw                              | B. md             | C. --json     | A:C   |
+|---------------------|-------------------------------------|-------------------|---------------|-------|
+| 🟦 `cl100k_base`    | ` 16,083 █████████████▋`            | ` 6,211 █████▎`   | `    89 ▏`    | 181×  |
+| 🟥 `opus-4-7`       | ` 23,527 ████████████████████`      | ` 9,916 ████████▍`| `   163 ▏`    | 144×  |
+| 🟩 `sonnet-4-6`     | ` 19,266 ████████████████▍`         | ` 7,596 ██████▌`  | `   109 ▏`    | 177×  |
+| 🟧 `haiku-4-5`      | ` 19,266 ████████████████▍`         | ` 7,596 ██████▌`  | `   109 ▏`    | 177×  |
+
+Largest B:C gap of any feature (60×–70×). If you need the per-benchmark
+scores, use B; if you only need to know whether benchmarks regressed, C
+is 70× cheaper.
+
+Captures: [`tools/runs/benchmark/`](../tools/runs/benchmark/) · evidence: [`tools/runs/cross-model-results-benchmark.txt`](../tools/runs/cross-model-results-benchmark.txt).
 
 ## Methodology
 
-- **Project**: `shared-kmp-libs` (real production KMP library; 68 modules).
-- **Scope**: single module `core-result` with 4 unit test files (KMP
-  desktopTest target). Failure reproduces because the JDK on the measurement
-  machine targets a runtime older than the compile target —
-  `UnsupportedClassVersionError`. The failure shape is irrelevant; what
-  matters is each approach's report cost.
-- **Tokenizer**: `cl100k_base` via `js-tiktoken` for the baseline above.
-  Anthropic's `messages.countTokens` API is also exercised against the same
-  captures (see [Cross-model validation](#cross-model-validation)) — the
-  ratio between approaches is what backs the README claim, and that ratio
-  is preserved across tokenizers.
-- **Date**: 2026-04-26.
-- **Tool version**: kmp-test-runner v0.3.8 (cross-model validation added in
-  v0.3.9 against the same captures).
+- **Reference project**: a representative KMP SDK module (~80-module
+  multi-target codebase, JDK 21). The captures committed under
+  `tools/runs/` are byte-for-byte the actual output measured; project
+  identity is not part of the methodology — any KMP project with similar
+  module density would reproduce the ratios within the same band.
+- **Per-feature scope** (one module each, kept consistent across measurements):
+    - `parallel`, `coverage`, `changed` → a small Result/Either-style
+      utility module (4 unit-test files, KMP `desktopTest` target).
+    - `benchmark` → a kotlinx-benchmark module
+      (`desktopSmokeBenchmark` config: 3 warmups × 3 iterations × 500 ms).
+- **Tokenizer**: `cl100k_base` via [`js-tiktoken`](https://www.npmjs.com/package/js-tiktoken)
+  for the baseline numbers above. Anthropic's
+  [`messages.countTokens`](https://docs.anthropic.com/en/api/messages-count-tokens)
+  API for cross-model validation per Claude 4.x model — that endpoint
+  is free of charge (rate-limited only) and returns the exact
+  `input_tokens` count those models would charge for. Per-feature
+  evidence files in `tools/runs/cross-model-results-<feature>.txt`.
+- **`changed` setup**: a synthetic uncommitted change is applied to the
+  target module so both approaches see the same git diff. The script
+  then calls `git diff --name-only HEAD` (override via
+  `--changed-range <rev>`) to detect modules; the bash CLI uses
+  `git status --porcelain`. Both resolve to the same module set for
+  tracked-file edits.
+- **`benchmark` JDK**: `kotlinx-benchmark` modules whose convention
+  plugin sets `jvmTarget = JVM_21` require JDK 21 at build time. Run
+  with `JAVA_HOME=<jdk-21>` or the JmhBytecodeGeneratorWorker fails
+  with a class file version mismatch.
+- **Date**: 2026-04-26. **Tool version**: kmp-test-runner v0.4.0
+  (multi-feature measurement; v0.3.9 introduced cross-model validation
+  for the parallel feature).
 - **Runs per approach**: 1. The script supports `--runs N` for noise
-  robustness, but with the Gradle daemon hot the variance run-to-run is
-  small. Re-run the script if you want N>1 numbers.
+  robustness; with the Gradle daemon hot the variance run-to-run is
+  small.
 
 ## Captured outputs
 
 The `tools/runs/` directory contains the actual stdout captured for each
-approach (committed alongside this doc):
-
-- `A-raw_gradle_report_parsing-run1.txt` — what an agent would see invoking
-  `./gradlew :core-result:desktopTest --console=plain` and then reading
-  every `*/build/reports/tests/test/*.html` and `*/build/test-results/test/*.xml`
-  (matched against the same module filter).
-- `B-kmp_test_parallel_markdown_-run1.txt` — `kmp-test parallel
-  --module-filter core-result` stdout.
-- `C-kmp_test_parallel_json-run1.txt` — `kmp-test parallel --json
-  --module-filter core-result` stdout (single JSON line).
-
-All three captured the same underlying test failure: `core-result` module's
-`desktopTest` task failed with `UnsupportedClassVersionError`.
-
-## Side-by-side: failure reporting
-
-The README claim is that `--json` lets an agent act on the same information
-the human-readable output conveys, at a fraction of the cost. To make that
-concrete, here's the failure summary each mode emits:
-
-**A. Raw gradle (showing only the relevant 4 lines out of 1,934 captured):**
+approach (committed alongside this doc, one subdirectory per feature):
 
 ```
-> Task :core-result:desktopTest FAILED
-
-ExecutionResultTest[desktop] > initializationError[desktop] FAILED
-    java.lang.UnsupportedClassVersionError at ClassLoader.java:-2
+tools/runs/
+├── parallel/
+│   ├── A-run1.txt    # ./gradlew :<module>:desktopTest + reports walk
+│   ├── B-run1.txt    # kmp-test parallel --module-filter <module>
+│   └── C-run1.txt    # kmp-test parallel --json --module-filter <module>
+├── coverage/
+│   ├── A-run1.txt    # ./gradlew :<module>:koverXml/HtmlReport + reports walk
+│   ├── B-run1.txt    # kmp-test coverage
+│   └── C-run1.txt    # kmp-test coverage --json
+├── changed/
+│   ├── A-run1.txt    # ./gradlew :<module>:desktopTest + reports walk
+│   ├── B-run1.txt    # kmp-test changed
+│   └── C-run1.txt    # kmp-test changed --json
+├── benchmark/
+│   ├── A-run1.txt    # ./gradlew :<bench>:desktopSmokeBenchmark + JSON reports
+│   ├── B-run1.txt    # kmp-test benchmark
+│   └── C-run1.txt    # kmp-test benchmark --json
+├── cross-model-results-parallel.txt    # per-tokenizer run (Anthropic countTokens)
+├── cross-model-results-coverage.txt
+├── cross-model-results-changed.txt
+└── cross-model-results-benchmark.txt
 ```
-
-…surrounded by ~100 lines of `> Task :core-result:foo UP-TO-DATE` progress
-logs, plus the full HTML index of the test report and every JUnit XML in
-`build/test-results/`. ~12.8K tokens total.
-
-**B. `kmp-test parallel`:**
-
-```
-[FAIL] core-result :desktopTest — initializationError (UnsupportedClassVersionError)
-
-Tests: 1 total | 0 passed | 1 failed | 0 skipped
-BUILD FAILED — 1 module(s) failed
-```
-
-…inside a 50-line markdown-summarized run report. ~376 tokens.
-
-**C. `kmp-test parallel --json`:**
-
-```json
-{"tool":"kmp-test","subcommand":"parallel","version":"0.3.7","project_root":"…","exit_code":1,"duration_ms":46680,"tests":{"total":1,"passed":0,"failed":1,"skipped":0},"modules":[],"coverage":{"tool":"auto","missed_lines":null},"errors":[{"message":"BUILD FAILED - 1 module(s) failed"}]}
-```
-
-One line. ~101 tokens (cl100k) / ~187 tokens (claude-opus-4-7). An agent can
-`JSON.parse` this and branch on `exit_code` / `tests.failed` /
-`errors[0].message`.
-
-## What this means in practice
-
-Per agent iteration the absolute token saving is 25,593 tokens (A → C, on
-the claude-opus-4-7 tokenizer — the largest of the family). At Claude Opus
-input pricing (~$15/MTok at the time of writing) that's roughly
-$0.38/iteration in input cost on the test-running step alone. For a coding
-loop that runs tests on every change — say 50× per session — that's
-$19.20 per session of pure log-parsing tokens that the agent wastes when it
-could be reasoning about the actual failure. Even on Sonnet pricing
-(~$3/MTok) the gap is $3.84 per session. Numbers shrink on
-sonnet-4-6 / haiku-4-5 (which share an older, more compact tokenizer) but
-the ratio stays in the same band.
-
-More importantly: **context window pressure**. A ~25 K-token observation
-per loop iteration competes with the agent's actual working context. After
-5 iterations the agent has spent ~128 K tokens just *reading test
-reports* — that's the entire 200 K standard context burned on log
-parsing. With `--json`, that drops to ~1 K tokens and the agent's
-context stays focused on the code.
 
 ## Reproducibility
 
-```bash
-node tools/measure-token-cost.js \
-  --project-root /path/to/kmp/project \
-  --module-filter "<module-pattern>" \
-  --test-task "<gradle-task-name>" \
-  --runs 1
-```
-
-The exact command used for the numbers above:
+Per-feature capture (writes `tools/runs/<feature>/{A,B,C}-run1.txt`) —
+substitute your own KMP project root + module names:
 
 ```bash
-node tools/measure-token-cost.js \
-  --project-root C:/Users/34645/AndroidStudioProjects/shared-kmp-libs \
-  --module-filter "core-result" \
-  --test-task "desktopTest" \
-  --runs 1
+# parallel — full test suite
+node tools/measure-token-cost.js --feature parallel \
+  --project-root /path/to/your/kmp/project \
+  --module-filter "<your-module>" \
+  --test-task desktopTest
+
+# coverage — Kover XML + HTML reports
+node tools/measure-token-cost.js --feature coverage \
+  --project-root /path/to/your/kmp/project \
+  --module-filter "<your-module>"
+
+# changed — modules touched since HEAD~1 (or override --changed-range)
+node tools/measure-token-cost.js --feature changed \
+  --project-root /path/to/your/kmp/project \
+  --test-task desktopTest \
+  --changed-range HEAD       # use working-tree changes, like the CLI does
+
+# benchmark — JMH desktop smoke config (kotlinx-benchmark on JDK 21+)
+JAVA_HOME=/path/to/jdk-21 node tools/measure-token-cost.js --feature benchmark \
+  --project-root /path/to/your/kmp/project \
+  --module-filter "<your-bench-module>" \
+  --benchmark-task desktopSmokeBenchmark
 ```
 
-Outputs land in `tools/runs/`. The script counts tokens per file and prints
-a markdown table on stdout — pipe it into a fresh copy of this doc to
-refresh the table when re-measuring.
+Cross-model re-tokenize (per feature; reads existing captures from
+`tools/runs/<feature>/`):
 
-### Why `--test-task`?
+```bash
+ANTHROPIC_API_KEY=sk-ant-... node tools/measure-token-cost.js \
+  --feature <name> \
+  --anthropic-models claude-opus-4-7,claude-sonnet-4-6,claude-haiku-4-5 \
+  > tools/runs/cross-model-results-<name>.txt
+```
 
-KMP modules use `:module:desktopTest` / `:module:jvmTest` for JVM-side test
-execution; plain Kotlin/JVM modules use `:module:test`. The script defaults
-to `test` and accepts `--test-task` to override.
+## What this means in practice
 
-### Why not measure on `dipatternsdemo`?
+Per agent iteration the absolute token saving is feature-specific:
 
-Earlier attempts ran kmp-test against `dipatternsdemo` (43 modules, mixed
-KMP+Android). Module discovery on a 43-module multi-target project hung
-beyond a 10-minute timeout on Windows MinGW (filesystem walk overhead).
-`shared-kmp-libs` has 68 modules but only one had to be in scope; with
-`--module-filter "core-result"` discovery stayed fast enough.
+| Feature    | A→C absolute saving (cl100k_base) | 5-iteration loop saving |
+|------------|----------------------------------:|------------------------:|
+| `parallel`  |                            12,706 |                  ~64 K |
+| `coverage`  |                       **108,316** |             **~542 K** |
+| `changed`   |                            12,594 |                  ~63 K |
+| `benchmark` |                            15,994 |                  ~80 K |
+
+A 5-iteration coverage loop on raw gradle burns ~542 K tokens — more
+than two full 200 K Claude contexts. The same loop on `--json` burns
+~500 tokens. **Context window pressure** is the real story, not the
+dollar cost: the agent's working memory stays focused on the code
+instead of log noise.
 
 ## Caveats
 
-- **Tokenizer drift, validated.** cl100k_base is OpenAI's; Claude's
+- **Tokenizer drift, validated.** `cl100k_base` is OpenAI's; Claude's
   tokenizer differs and isn't even consistent within the 4.x family
-  (`claude-opus-4-7` ships a new tokenizer that's 34–50% less compact than
-  the one shared by `sonnet-4-6` / `haiku-4-5`). The *ratio* between
-  approaches (127×–154× for A vs C, 3.4×–3.7× for B vs C) is robust across
-  all four tokenizers measured — see
-  [Cross-model validation](#cross-model-validation). Earlier versions of
-  this doc claimed "within ±15% of cl100k_base"; the actual spread is
-  closer to ±100% on heavy XML/HTML payloads, but the *ratio claim* held.
-- **Project size matters.** A larger module set explodes A's cost faster
-  than B/C (more `> Task` lines, more report files). Re-running on
-  DawSync/WakeTheCave-scale projects would show even larger ratios. The
-  current measurement is a conservative single-module baseline.
-- **Failure shape matters.** The test failure here is a JDK mismatch
-  (build-time, simple). A real test assertion failure with a long stack
-  trace would inflate all three approaches, but A would inflate the most
-  (the full trace lands in `build/test-results/*.xml`).
-- **Single run.** Run the script with `--runs 3` (or higher) for
-  mean ± std numbers if precision matters for your context.
+  (`claude-opus-4-7` ships a new tokenizer that's 34–50% less compact
+  than the one shared by `sonnet-4-6` / `haiku-4-5`). The *ratio*
+  between approaches (127× to 1218× for A vs C, depending on feature)
+  is robust across all four tokenizers measured per feature.
+- **Project size matters.** A larger module set explodes A's cost
+  faster than B/C (more `> Task` lines, more report files). Re-running
+  on a 100+-module aggregate would show even larger ratios. The current
+  measurement is a conservative single-module baseline.
+- **Failure shape matters.** A real test assertion failure with a long
+  stack trace would inflate all three approaches, but A would inflate
+  the most (the full trace lands in `build/test-results/*.xml`).
+- **`coverage` ratio is an upper bound on a small module.** The 1218×
+  number comes from comparing 108 K tokens of Kover HTML against an
+  89-token JSON envelope. On a multi-module aggregate (10+ modules
+  under `--module-filter`) the absolute A grows linearly while C stays
+  at ~89 tokens — the ratio grows further, not shrinks.
+- **`benchmark` B is intentionally heavy.** The markdown report inlines
+  per-benchmark scores so a human reviewer can see what regressed.
+  Agents that only need a pass/fail should use C.
+- **Single run.** Re-run with `--runs 3` (or higher) for mean ± std
+  numbers if precision matters for your context.

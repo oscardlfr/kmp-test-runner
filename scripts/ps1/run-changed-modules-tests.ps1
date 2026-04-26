@@ -115,8 +115,12 @@ function Get-ModuleFromFile {
         [string]$ProjectRoot
     )
 
-    # Split path into parts
-    $parts = $FilePath.Split('/', '\') | Where-Object { $_ }
+    # Split path into parts on either separator. Using the -split operator with
+    # a character class instead of String.Split: the .NET overload chosen here
+    # was Split(Char, Int32) — the '\' second arg got coerced to Int32 and
+    # blew up with "The input string '\' was not in a correct format". `-split`
+    # takes a regex so we get the multi-delimiter behaviour we actually wanted.
+    $parts = $FilePath -split '[/\\]' | Where-Object { $_ }
 
     if ($parts.Count -lt 2) {
         return $null
@@ -243,17 +247,25 @@ if ($ShowModulesOnly) {
     exit 0
 }
 
-# Build module filter for run-parallel-coverage-suite.ps1
-$moduleFilter = ($changedModules.Keys | Sort-Object) -join ','
+# Build module filter for run-parallel-coverage-suite.ps1.
+# Get-ModuleFromFile returns gradle-style names with a leading colon (':core-result',
+# ':feature:home') but the parallel suite's --ModuleFilter expects bare globs
+# like 'core-result' / 'feature-home'. Strip the leading colon to match the
+# bash sibling (run-changed-modules-tests.sh line 228: `trimmed="${mod#:}"`).
+$moduleFilter = ($changedModules.Keys | Sort-Object | ForEach-Object { $_.TrimStart(':') }) -join ','
 
 Write-Host "Running tests on: $moduleFilter" -ForegroundColor Cyan
 Write-Host ""
 
-# Execute tests using existing script
+# Execute tests using existing script. Match the bash sibling
+# (run-changed-modules-tests.sh): MaxFailures is parsed at this level for CLI
+# parity but is NOT forwarded — run-parallel-coverage-suite.ps1 doesn't
+# declare a -MaxFailures parameter, so splatting it threw "A parameter cannot
+# be found that matches parameter name 'MaxFailures'" the moment kmp-test
+# changed actually got past the dry-run path.
 $params = @{
     ProjectRoot = $ProjectRoot
     ModuleFilter = $moduleFilter
-    MaxFailures = $MaxFailures
     MinMissedLines = $MinMissedLines
 }
 

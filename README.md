@@ -4,37 +4,126 @@ Standalone parallel test runner for Kotlin Multiplatform and Android Gradle proj
 
 ## Why this exists — token cost per agent test-run iteration
 
-For an AI coding agent re-running the suite on every change, the cheapest path matters. Same module, same failure, three observation strategies measured side-by-side ([methodology](docs/token-cost-measurement.md)):
+For an AI coding agent re-running a workflow on every change, the cheapest path matters. Four `kmp-test` features × three observation strategies × four tokenizers — every cell measured ([methodology](docs/token-cost-measurement.md)).
 
-```mermaid
-xychart-beta horizontal
-    title "Token cost — same captures, four tokenizers, three observation strategies (A,B,C) per tokenizer"
-    x-axis ["cl100k_base · A", "cl100k_base · B", "cl100k_base · C", "claude-opus-4-7 · A", "claude-opus-4-7 · B", "claude-opus-4-7 · C", "claude-sonnet-4-6 · A", "claude-sonnet-4-6 · B", "claude-sonnet-4-6 · C", "claude-haiku-4-5 · A", "claude-haiku-4-5 · B", "claude-haiku-4-5 · C"]
-    y-axis "Tokens" 0 --> 28000
-    bar [12807, 376, 101, 25780, 642, 187, 19234, 444, 125, 19234, 444, 125]
-```
+- **A.** Raw `./gradlew` + reading every generated report file — what an agent does without `kmp-test`.
+- **B.** `kmp-test <feature>` — markdown-summarised stdout.
+- **C.** `kmp-test <feature> --json` — single-line JSON envelope (agentic mode).
 
-Reading the chart: 12 rows = 4 tokenizers × 3 approaches (A, B, C). Each tokenizer gets its own ABC triplet so you can see how it counts the same captures. The pattern repeats per tokenizer: A dominates, B and C collapse to near-zero on this scale. Same numbers, tabulated:
+Measured against a representative KMP SDK module on Windows + JDK 21, single run per approach. Every cell in every table is a real `messages.countTokens` API count (Claude columns) or `cl100k_base` offline count via `js-tiktoken`. Bar width = `value / table-max` rendered in unicode block characters — visual scale is faithful to the underlying numbers.
 
-| Tokenizer            | A. Raw gradle + reports | B. kmp-test parallel | C. kmp-test --json | A vs C  |
-|----------------------|------------------------:|---------------------:|-------------------:|--------:|
-| `cl100k_base`        |                  12,807 |                  376 |                101 |    127× |
-| `claude-opus-4-7`    |              **25,780** |              **642** |            **187** | **138×**|
-| `claude-sonnet-4-6`  |                  19,234 |                  444 |                125 |    154× |
-| `claude-haiku-4-5`   |                  19,234 |                  444 |                125 |    154× |
+### Cross-feature summary — 4 features × 3 approaches × 4 tokenizers
 
-The A:B:C ratio holds in a tight **127×–154× / 3.4×–3.7×** band across all four tokenizers — absolute counts vary by up to ±100% between tokenizers, but the relative order doesn't. Full per-model run output: [`tools/runs/cross-model-results.txt`](tools/runs/cross-model-results.txt).
+Bars scaled to the global table max (`coverage · A · claude-opus-4-7` = **123,845 tokens** = 20 chars wide).
 
-**How the numbers are produced.** Each approach's actual output is captured once into `tools/runs/`: for **A**, gradle stdout (`./gradlew :module:test --console=plain`) **plus** every generated `build/reports/tests/test/*.html` and `build/test-results/test/*.xml` — what an agent actually has to feed back into context to understand a failure; for **B** and **C**, the corresponding `kmp-test parallel` stdout. The same byte-for-byte text is then re-tokenized two ways: offline via [`js-tiktoken`](https://www.npmjs.com/package/js-tiktoken) using `cl100k_base` (the baseline column), and online via Anthropic's [`messages.countTokens`](https://docs.anthropic.com/en/api/messages-count-tokens) API (the three Claude 4.x columns — exact tokens those models would charge for). Reproduce with:
+| Feature · Approach    | 🟦 cl100k_base                | 🟥 claude-opus-4-7             | 🟩 claude-sonnet-4-6           | 🟧 claude-haiku-4-5            |
+|-----------------------|-------------------------------|--------------------------------|--------------------------------|--------------------------------|
+| `parallel`  · A. raw  | `  12,807 ██▏`                | `  25,780 ████▏`               | `  19,234 ███▏`                | `  19,234 ███▏`                |
+| `parallel`  · B. md   | `     376 ▏`                  | `     642 ▏`                   | `     444 ▏`                   | `     444 ▏`                   |
+| `parallel`  · C. json | `     101 ▏`                  | `     187 ▏`                   | `     125 ▏`                   | `     125 ▏`                   |
+| ─────────────────── | ───────────────────────────── | ────────────────────────────── | ────────────────────────────── | ────────────────────────────── |
+| `coverage`  · A. raw  | `**108,405 █████████████████▌**` | `**123,845 ████████████████████**` | `  92,940 ███████████████`     | `  92,940 ███████████████`     |
+| `coverage`  · B. md   | `     273 ▏`                  | `     482 ▏`                   | `     317 ▏`                   | `     317 ▏`                   |
+| `coverage`  · C. json | `      89 ▏`                  | `     162 ▏`                   | `     109 ▏`                   | `     109 ▏`                   |
+| ─────────────────── | ───────────────────────────── | ────────────────────────────── | ────────────────────────────── | ────────────────────────────── |
+| `changed`   · A. raw  | `  12,694 ██`                 | `  25,580 ████▏`               | `  19,098 ███▏`                | `  19,098 ███▏`                |
+| `changed`   · B. md   | `     466 ▏`                  | `     787 ▏`                   | `     550 ▏`                   | `     550 ▏`                   |
+| `changed`   · C. json | `     100 ▏`                  | `     186 ▏`                   | `     125 ▏`                   | `     125 ▏`                   |
+| ─────────────────── | ───────────────────────────── | ────────────────────────────── | ────────────────────────────── | ────────────────────────────── |
+| `benchmark` · A. raw  | `  16,083 ██▋`                | `  23,527 ███▊`                | `  19,266 ███▏`                | `  19,266 ███▏`                |
+| `benchmark` · B. md   | `   6,211 █`                  | `   9,916 █▋`                  | `   7,596 █▎`                  | `   7,596 █▎`                  |
+| `benchmark` · C. json | `      89 ▏`                  | `     163 ▏`                   | `     109 ▏`                   | `     109 ▏`                   |
+
+A:C savings ratio per feature, per tokenizer:
+
+| Feature      | 🟦 cl100k_base | 🟥 opus-4-7 | 🟩 sonnet-4-6 | 🟧 haiku-4-5 |
+|--------------|--------------:|------------:|--------------:|-------------:|
+| `parallel`   |          127× |        138× |          154× |         154× |
+| `coverage`   |     **1218×** |    **765×** |      **853×** |     **853×** |
+| `changed`    |          127× |        138× |          153× |         153× |
+| `benchmark`  |          181× |        144× |          177× |         177× |
+
+Two observations carry across every feature:
+- **Tokenizer transition.** `claude-sonnet-4-6` and `claude-haiku-4-5` share a tokenizer (identical counts to the unit on every cell). `claude-opus-4-7` ships a new tokenizer that produces 30–100% more tokens for the same input — most visibly on heavy XML/HTML payloads (approach A).
+- **C is consistently 89–187 tokens** regardless of feature or tokenizer — the agentic `--json` envelope strips the workload down to `{exit_code, tests, modules, errors[]}` and stays tiny no matter how heavy the underlying gradle did.
+
+### Per-feature drill-down
+
+Each per-feature table is scaled to its own max (so the bar visualisation maximises within the feature). Bars in column A always dominate; B/C are sub-1-char unicode blocks that visually disappear — that's the savings story.
+
+#### `parallel` — full test suite
+
+Bars scaled to `25,780` (opus, A).
+
+| Model               | A. raw                              | B. md         | C. --json     | A:C   |
+|---------------------|-------------------------------------|---------------|---------------|-------|
+| 🟦 `cl100k_base`    | ` 12,807 ██████████`                | `   376 ▎`    | `   101 ▏`    | 127×  |
+| 🟥 `opus-4-7`       | ` 25,780 ████████████████████`      | `   642 ▌`    | `   187 ▏`    | 138×  |
+| 🟩 `sonnet-4-6`     | ` 19,234 ██████████████▉`           | `   444 ▍`    | `   125 ▏`    | 154×  |
+| 🟧 `haiku-4-5`      | ` 19,234 ██████████████▉`           | `   444 ▍`    | `   125 ▏`    | 154×  |
+
+Captures: [`tools/runs/parallel/`](tools/runs/parallel/) · evidence: [`tools/runs/cross-model-results-parallel.txt`](tools/runs/cross-model-results-parallel.txt).
+
+#### `coverage` — Kover XML + HTML reports
+
+Bars scaled to `123,845` (opus, A) — the largest cell across the whole measurement.
+
+| Model               | A. raw                                    | B. md         | C. --json     | A:C       |
+|---------------------|-------------------------------------------|---------------|---------------|-----------|
+| 🟦 `cl100k_base`    | `108,405 █████████████████▌`              | `   273 ▏`    | `    89 ▏`    | **1218×** |
+| 🟥 `opus-4-7`       | `123,845 ████████████████████`            | `   482 ▏`    | `   162 ▏`    | 765×      |
+| 🟩 `sonnet-4-6`     | ` 92,940 ███████████████`                 | `   317 ▏`    | `   109 ▏`    | 853×      |
+| 🟧 `haiku-4-5`      | ` 92,940 ███████████████`                 | `   317 ▏`    | `   109 ▏`    | 853×      |
+
+The largest savings of any feature. Kover HTML reports include a fully annotated source page per file — slurping `build/reports/kover/**` for one module gives the agent ~261 KB of HTML it has to scan to find one number. Captures: [`tools/runs/coverage/`](tools/runs/coverage/) · evidence: [`tools/runs/cross-model-results-coverage.txt`](tools/runs/cross-model-results-coverage.txt).
+
+#### `changed` — tests for modules touched since `HEAD~1`
+
+Bars scaled to `25,580` (opus, A).
+
+| Model               | A. raw                              | B. md         | C. --json     | A:C   |
+|---------------------|-------------------------------------|---------------|---------------|-------|
+| 🟦 `cl100k_base`    | ` 12,694 █████████▉`                | `   466 ▍`    | `   100 ▏`    | 127×  |
+| 🟥 `opus-4-7`       | ` 25,580 ████████████████████`      | `   787 ▋`    | `   186 ▏`    | 138×  |
+| 🟩 `sonnet-4-6`     | ` 19,098 ██████████████▉`           | `   550 ▍`    | `   125 ▏`    | 153×  |
+| 🟧 `haiku-4-5`      | ` 19,098 ██████████████▉`           | `   550 ▍`    | `   125 ▏`    | 153×  |
+
+B/C dispatch through the full parallel coverage suite (broader scope than A's single `:module:desktopTest`), so wall-clock time isn't apples-to-apples — token count is. Captures: [`tools/runs/changed/`](tools/runs/changed/) · evidence: [`tools/runs/cross-model-results-changed.txt`](tools/runs/cross-model-results-changed.txt).
+
+#### `benchmark` — JMH desktopSmokeBenchmark
+
+Bars scaled to `23,527` (opus, A). B is unusually heavy here (`6,211`–`9,916`) — the markdown report inlines per-benchmark scores by design.
+
+| Model               | A. raw                              | B. md             | C. --json     | A:C   |
+|---------------------|-------------------------------------|-------------------|---------------|-------|
+| 🟦 `cl100k_base`    | ` 16,083 █████████████▋`            | ` 6,211 █████▎`   | `    89 ▏`    | 181×  |
+| 🟥 `opus-4-7`       | ` 23,527 ████████████████████`      | ` 9,916 ████████▍`| `   163 ▏`    | 144×  |
+| 🟩 `sonnet-4-6`     | ` 19,266 ████████████████▍`         | ` 7,596 ██████▌`  | `   109 ▏`    | 177×  |
+| 🟧 `haiku-4-5`      | ` 19,266 ████████████████▍`         | ` 7,596 ██████▌`  | `   109 ▏`    | 177×  |
+
+Largest B:C gap of any feature (60×–70×). If you want the per-benchmark scores, use B; if you only need to know whether benchmarks regressed, C is 70× cheaper. Captures: [`tools/runs/benchmark/`](tools/runs/benchmark/) · evidence: [`tools/runs/cross-model-results-benchmark.txt`](tools/runs/cross-model-results-benchmark.txt).
+
+### How the numbers are produced
+
+For each feature, the script captures one A/B/C triplet under `tools/runs/<feature>/` — for **A**, gradle stdout (`./gradlew :module:<task> --console=plain`) **plus** every generated report file matched by the feature's predicate (test HTML/XML for parallel/changed, kover HTML/XML for coverage, kotlinx-benchmark JSON for benchmark); for **B** and **C**, the corresponding `kmp-test <feature> [--json]` stdout. The same byte-for-byte text is then re-tokenized two ways: offline via [`js-tiktoken`](https://www.npmjs.com/package/js-tiktoken) using `cl100k_base` (the baseline column), and online via Anthropic's [`messages.countTokens`](https://docs.anthropic.com/en/api/messages-count-tokens) API per Claude 4.x model (cross-model evidence files in `tools/runs/cross-model-results-<feature>.txt`). Reproduce against your own KMP project with:
 
 ```bash
-node tools/measure-token-cost.js \
-  --project-root /path/to/kmp/project --module-filter "<module>" --test-task desktopTest
-ANTHROPIC_API_KEY=sk-ant-... node tools/measure-token-cost.js \
+# Per-feature capture (writes tools/runs/<feature>/{A,B,C}-run1.txt)
+node tools/measure-token-cost.js --feature parallel \
+  --project-root /path/to/your/kmp/project --module-filter "<module>" --test-task desktopTest
+node tools/measure-token-cost.js --feature coverage \
+  --project-root /path/to/your/kmp/project --module-filter "<module>"
+node tools/measure-token-cost.js --feature changed \
+  --project-root /path/to/your/kmp/project --test-task desktopTest --changed-range HEAD
+node tools/measure-token-cost.js --feature benchmark \
+  --project-root /path/to/your/kmp/project --module-filter "<bench-module>" --benchmark-task desktopSmokeBenchmark
+
+# Cross-model re-tokenize (Anthropic count_tokens is free; rate-limited only)
+ANTHROPIC_API_KEY=sk-ant-... node tools/measure-token-cost.js --feature <name> \
   --anthropic-models claude-opus-4-7,claude-sonnet-4-6,claude-haiku-4-5
 ```
 
-> **Practical impact.** A 5-iteration agent loop on raw gradle burns ~128 K tokens just reading test reports — most of a 200 K context. Same loop on `--json` burns ~1 K. The agent's working memory stays focused on the code instead of log noise.
+> **Practical impact across features.** A 5-iteration agent loop reading raw gradle output burns ~64 K tokens for `parallel`/`changed`, ~80 K for `benchmark`, and **~542 K for `coverage`** (more than two full 200 K contexts). The same loops on `--json` burn ~500 tokens each. The agent's working memory stays focused on the code instead of log noise.
 
 ## Quick Start
 

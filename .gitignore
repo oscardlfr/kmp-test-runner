@@ -2,7 +2,9 @@
 *.env.local
 node_modules/
 dist/
-coverage/
+# Root-level only — npm/c8 test-coverage output. The measurement captures live
+# under tools/runs/coverage/ and must NOT be ignored.
+/coverage/
 .gradle/
 build/
 .idea/
