@@ -32,6 +32,15 @@ gray()   { color_print "$GRAY"   "$1"; }
 white()  { color_print "$WHITE"  "$1"; }
 
 # ---------------------------------------------------------------------------
+# RUN ID — concurrent-invocation safety (v0.3.8+)
+# Format: YYYYMMDD-HHMMSS-PID6 (zero-padded last 6 digits of PID). Used to
+# disambiguate temp logs and report filenames when multiple kmp-test runs
+# share the same project root.
+# ---------------------------------------------------------------------------
+KMP_RUN_ID="${KMP_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$(printf '%06d' $(($$ % 1000000)))}"
+export KMP_RUN_ID
+
+# ---------------------------------------------------------------------------
 # DEFAULTS
 # ---------------------------------------------------------------------------
 PROJECT_ROOT=""
@@ -662,8 +671,9 @@ if ! $SKIP_TESTS && [[ "${#ALL_TEST_TASKS[@]}" -gt 0 ]]; then
     done
     echo ""
 
-    # Run Gradle as background process with timeout watchdog
-    TEMP_LOG="${TMPDIR:-/tmp}/gradle-parallel-tests-$(date +%Y%m%d-%H%M%S).log"
+    # Run Gradle as background process with timeout watchdog.
+    # Run-id (PID-suffixed) prevents log clobber when two runs start in same second.
+    TEMP_LOG="${TMPDIR:-/tmp}/gradle-parallel-tests-${KMP_RUN_ID}.log"
     TEMP_LOG_ERR="${TEMP_LOG}.err"
 
     (cd "$PROJECT_ROOT" && ./gradlew "${GRADLE_ARGS[@]}" > "$TEMP_LOG" 2> "$TEMP_LOG_ERR") &
@@ -1087,13 +1097,21 @@ TOTAL_SECS=$((TOTAL_DURATION % 60))
 SKIP_TESTS_LABEL="Yes (parallel)"
 if $SKIP_TESTS; then SKIP_TESTS_LABEL="No (--skip-tests)"; fi
 
-REPORT_FILE="$PROJECT_ROOT/$OUTPUT_FILE"
+# Run-id-versioned filename prevents clobber across concurrent invocations.
+# Legacy filename is mirrored as a "latest finished run" pointer (last writer wins).
+case "$OUTPUT_FILE" in
+    *.md) OUTPUT_VERSIONED="${OUTPUT_FILE%.md}-${KMP_RUN_ID}.md" ;;
+    *)    OUTPUT_VERSIONED="${OUTPUT_FILE}-${KMP_RUN_ID}" ;;
+esac
+REPORT_FILE="$PROJECT_ROOT/$OUTPUT_VERSIONED"
+REPORT_FILE_LEGACY="$PROJECT_ROOT/$OUTPUT_FILE"
 
 {
 cat <<HEADER
 # Full Coverage Report
 
 > **Generated**: $(date "+%Y-%m-%d %H:%M:%S")
+> **Run ID**: $KMP_RUN_ID
 > **Projects**: $PROJECTS_LIST
 > **Platform**: $PLATFORM_NAME
 > **Tests Run**: $SKIP_TESTS_LABEL
@@ -1167,6 +1185,10 @@ FOOTER
 
 } > "$REPORT_FILE"
 
+# Mirror to legacy stable name so existing consumers still find it.
+# Best-effort copy — concurrent runs leave the last finisher visible.
+cp -f "$REPORT_FILE" "$REPORT_FILE_LEGACY" 2>/dev/null || true
+
 # ============================================================================
 # CONSOLE SUMMARY
 # ============================================================================
@@ -1174,6 +1196,7 @@ FOOTER
 echo ""
 ok "[OK] Full coverage report generated!"
 info "[>>] Report saved to: $REPORT_FILE"
+gray "    legacy alias: $REPORT_FILE_LEGACY"
 echo ""
 
 if ! $SKIP_TESTS; then
