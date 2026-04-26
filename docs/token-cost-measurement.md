@@ -6,33 +6,23 @@ suite in three different ways. Backs the qualitative claim in the README
 
 ```mermaid
 xychart-beta
-    title "Token cost per test-run iteration (bars: cl100k_base, opus-4-7, sonnet-4-6, haiku-4-5)"
+    title "Token cost on claude-opus-4-7 — same module, three observation strategies"
     x-axis ["A. Raw gradle + reports", "B. kmp-test parallel", "C. kmp-test --json"]
     y-axis "Tokens" 0 --> 28000
-    bar [12807, 376, 101]
     bar [25780, 642, 187]
-    bar [19234, 444, 125]
-    bar [19234, 444, 125]
 ```
 
-<details>
-<summary>ASCII fallback (if Mermaid xychart-beta doesn't render)</summary>
+| Tokenizer            | A. Raw gradle + reports | B. kmp-test parallel | C. kmp-test --json | A vs C  |
+|----------------------|------------------------:|---------------------:|-------------------:|--------:|
+| `cl100k_base`        |                  12,807 |                  376 |                101 |    127× |
+| `claude-opus-4-7`    |              **25,780** |              **642** |            **187** | **138×**|
+| `claude-sonnet-4-6`  |                  19,234 |                  444 |                125 |    154× |
+| `claude-haiku-4-5`   |                  19,234 |                  444 |                125 |    154× |
 
-```
-                              cl100k_base   opus-4-7   sonnet-4-6   haiku-4-5
-A. Raw gradle + reports           12,807     25,780       19,234      19,234
-B. kmp-test parallel                 376        642          444         444
-C. kmp-test --json                   101        187          125         125
-
-A vs C ratio                         127×       138×         154×        154×
-B vs C ratio                         3.7×       3.4×         3.6×        3.6×
-```
-
-Same captures, four tokenizers. A:B:C ratio holds in a 127×–154× /
-3.4×–3.7× band across all of them — that ratio is what the cost claim rests
-on, not the absolute counts (which differ by up to 101% across the family).
-
-</details>
+The chart above uses `claude-opus-4-7` (the largest of the family). A:B:C
+ratio holds in a tight 127×–154× / 3.4×–3.7× band across cl100k_base +
+Claude 4.x — absolute counts vary by up to ±100%, the relative order
+doesn't.
 
 ## TL;DR
 
@@ -51,21 +41,7 @@ test counts, failure message) at ~1% of the raw-gradle-plus-reports cost.
 
 The same captures re-tokenised through Anthropic's
 [`messages.countTokens`](https://docs.anthropic.com/en/api/messages-count-tokens)
-API per Claude 4.x model — confirms the A:B:C ratio is robust to tokenizer
-choice, even though absolute counts differ across the family.
-
-| Approach | cl100k_base | claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 |
-|---|---:|---:|---:|---:|
-| **A.** Raw gradle + reports | 12,807 | **25,780** | 19,234 | 19,234 |
-| **B.** `kmp-test parallel` | 376 | **642** | 444 | 444 |
-| **C.** `kmp-test parallel --json` | 101 | **187** | 125 | 125 |
-
-**Approach ratio vs C** (the metric the README claim rests on):
-
-| Approach | cl100k_base | claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 |
-|---|---:|---:|---:|---:|
-| A vs C | 127× | **138×** | 154× | 154× |
-| B vs C | 3.7× | **3.4×** | 3.6× | 3.6× |
+API per Claude 4.x model — full numbers are at the [top of this doc](#token-cost-measurement); this section focuses on what the cross-model run *teaches*.
 
 Two notable findings:
 
