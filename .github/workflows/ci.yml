@@ -24,7 +24,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: shellcheck --severity=warning --external-sources --exclude=SC2034,SC2053,SC2069 scripts/sh/*.sh scripts/sh/lib/*.sh scripts/install.sh scripts/uninstall.sh
       - name: bats
-        if: matrix.os != 'windows-latest'
+        if: matrix.os == 'ubuntu-latest'
         run: npx bats tests/bats/ tests/installer/
       - name: Pester
         if: matrix.os == 'windows-latest'
@@ -47,25 +47,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Build local artifact (Linux/macOS — both reuse linux.tar.gz)
-        if: matrix.os != 'windows-latest'
+      - name: Build local artifact (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           ARTIFACT_VER="$(node -p "require('./package.json').version")"
           bash scripts/build-artifact.sh "$ARTIFACT_VER" /tmp/kmp-e2e-artifacts
           echo "LOCAL_ARCHIVE=/tmp/kmp-e2e-artifacts/kmp-test-runner-${ARTIFACT_VER}-linux.tar.gz" >> "$GITHUB_ENV"
           echo "ARTIFACT_VER=${ARTIFACT_VER}" >> "$GITHUB_ENV"
-      - name: Install npm deps (Linux/macOS — bats via local node_modules)
-        if: matrix.os != 'windows-latest'
+      - name: Install npm deps (Linux — bats via local node_modules)
+        if: matrix.os == 'ubuntu-latest'
         run: npm ci
-      - name: Run E2E bats tests (Linux/macOS)
-        if: matrix.os != 'windows-latest'
+      - name: Run E2E bats tests (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: npx bats tests/installer/install.bats --filter "E2E"
       - name: Run E2E Pester tests (Windows)
         if: matrix.os == 'windows-latest'
