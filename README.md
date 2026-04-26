@@ -6,12 +6,12 @@ Standalone parallel test runner for Kotlin Multiplatform and Android Gradle proj
 
 **Linux / macOS**
 ```sh
-curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.3/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/main/scripts/install.sh | bash
 ```
 
 **Windows (PowerShell)**
 ```powershell
-iwr -useb https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.3/scripts/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/main/scripts/install.ps1 | iex
 ```
 
 Or install via npm:
@@ -28,6 +28,8 @@ kmp-test parallel --project-root /path/to/your/project
 
 KMP projects mix JVM, Android, and native targets — each with its own Gradle task graph. Running them sequentially on CI blows past time budgets; running them naively in parallel hits file-lock contention on Windows and socket conflicts on emulators. kmp-test-runner wraps the right `maxParallelForks` and task-isolation defaults so your suite runs safely in parallel without custom scripting, whether you call it from npm, Gradle, or a shell one-liner.
 
+It's also the testing piece that's missing from Google's [official `android` CLI for AI agents](https://developer.android.com/tools/agents/android-cli). That CLI (v0.7.x) covers project create/describe/deploy/emulator but ships no `test` subcommand — Google delegated test execution back to Gradle. `kmp-test --json` fills that gap with a single-line, parseable response that drops the agent-context cost from ~13 K tokens (raw Gradle + reports) to ~100 tokens. See "[Agentic usage](#agentic-usage--token-cost-rationale)" below for the measurement.
+
 ## Installation
 
 ### Requirements
@@ -40,21 +42,21 @@ KMP projects mix JVM, Android, and native targets — each with its own Gradle t
 
 **Linux / macOS**
 ```sh
-curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.3/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/main/scripts/install.sh | bash
 ```
 
 **Windows (PowerShell)**
 ```powershell
-iwr -useb https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.3/scripts/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/main/scripts/install.ps1 | iex
 ```
 
 To uninstall:
 ```sh
 # Linux/macOS
-curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.3/scripts/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/main/scripts/uninstall.sh | bash
 
 # Windows (PowerShell)
-iwr -useb https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/v0.3.3/scripts/uninstall.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/main/scripts/uninstall.ps1 | iex
 ```
 
 ### Option 2 — npm
@@ -192,10 +194,16 @@ BUILD SUCCESSFUL
 **Agentic (`--json`) output** — the entire response, on one line:
 
 ```json
-{"tool":"kmp-test","subcommand":"parallel","version":"0.3.4","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16},"errors":[]}
+{"tool":"kmp-test","subcommand":"parallel","version":"0.3.7","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16},"errors":[]}
 ```
 
 That's ~300 bytes — roughly **80–100 tokens** vs. several thousand for approach A. For an agent running tests on every iteration of a coding loop, the difference compounds quickly.
+
+> **Measured numbers** (single module, `shared-kmp-libs/core-result`, 2026-04-26): **A 12,816 tokens**, **B 376 tokens**, **C 100 tokens** — `--json` is **128× cheaper than raw gradle + report parsing**, and **3.8× cheaper than the default markdown output**. Full methodology and reproducibility script in [`docs/token-cost-measurement.md`](docs/token-cost-measurement.md).
+
+### Why this gap matters
+
+Google's [`android` CLI for agents](https://developer.android.com/tools/agents/android-cli) is the canonical agentic toolbelt for Android development — it has `create`, `describe`, `run`, `emulator`, `screen`, `layout`, `info`, `sdk`, and a pluggable `skills` system. It does **not** have a test command. An agent reaching for "the official tool" to run tests has to fall back to raw `./gradlew` invocations and parse multi-KB report files — exactly approach **A** above. `kmp-test --json` is the agent-friendly testing complement: same shape as `android describe` (single-line JSON, parseable, stable schema), focused on the test slice the official CLI doesn't cover.
 
 ### What the JSON guarantees
 
@@ -303,7 +311,7 @@ pluginManagement {
 In `build.gradle.kts`:
 ```kotlin
 plugins {
-    id("io.github.oscardlfr.kmp-test-runner") version "0.2.0"
+    id("io.github.oscardlfr.kmp-test-runner") version "0.3.7"
 }
 
 kmpTestRunner {
