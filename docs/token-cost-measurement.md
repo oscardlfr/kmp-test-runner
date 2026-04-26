@@ -5,9 +5,9 @@ suite in three different ways. Backs the qualitative claim in the README
 "Agentic usage" section with a real number from a real codebase.
 
 ```mermaid
-xychart-beta
+xychart-beta horizontal
     title "Token cost — every (approach × tokenizer) combination from the same captures"
-    x-axis ["A·cl100k", "A·opus-4-7", "A·sonnet-4-6", "A·haiku-4-5", "B·cl100k", "B·opus-4-7", "B·sonnet-4-6", "B·haiku-4-5", "C·cl100k", "C·opus-4-7", "C·sonnet-4-6", "C·haiku-4-5"]
+    x-axis ["A · cl100k_base", "A · claude-opus-4-7", "A · claude-sonnet-4-6", "A · claude-haiku-4-5", "B · cl100k_base", "B · claude-opus-4-7", "B · claude-sonnet-4-6", "B · claude-haiku-4-5", "C · cl100k_base", "C · claude-opus-4-7", "C · claude-sonnet-4-6", "C · claude-haiku-4-5"]
     y-axis "Tokens" 0 --> 28000
     bar [12807, 25780, 19234, 19234, 376, 642, 444, 444, 101, 187, 125, 125]
 ```

@@ -7,14 +7,14 @@ Standalone parallel test runner for Kotlin Multiplatform and Android Gradle proj
 For an AI coding agent re-running the suite on every change, the cheapest path matters. Same module, same failure, three observation strategies measured side-by-side ([methodology](docs/token-cost-measurement.md)):
 
 ```mermaid
-xychart-beta
+xychart-beta horizontal
     title "Token cost — every (approach × tokenizer) combination from the same captures"
-    x-axis ["A·cl100k", "A·opus-4-7", "A·sonnet-4-6", "A·haiku-4-5", "B·cl100k", "B·opus-4-7", "B·sonnet-4-6", "B·haiku-4-5", "C·cl100k", "C·opus-4-7", "C·sonnet-4-6", "C·haiku-4-5"]
+    x-axis ["A · cl100k_base", "A · claude-opus-4-7", "A · claude-sonnet-4-6", "A · claude-haiku-4-5", "B · cl100k_base", "B · claude-opus-4-7", "B · claude-sonnet-4-6", "B · claude-haiku-4-5", "C · cl100k_base", "C · claude-opus-4-7", "C · claude-sonnet-4-6", "C · claude-haiku-4-5"]
     y-axis "Tokens" 0 --> 28000
     bar [12807, 25780, 19234, 19234, 376, 642, 444, 444, 101, 187, 125, 125]
 ```
 
-Reading the chart: 4 bars per approach (one per tokenizer), 3 approaches grouped left-to-right. The dramatic step-down between A → B → C is the cost claim; the within-group variation between tokenizers is what the cross-model run validates. Same numbers in the table below:
+Reading the chart: rows are the 12 (approach × tokenizer) combinations, bar length is tokens consumed. The four A rows dominate (raw gradle + reports); the four B rows and four C rows are the orders-of-magnitude smaller alternatives. Within each group of four, the cross-tokenizer variation is what the cross-model run validates. Same numbers in the table below:
 
 | Tokenizer            | A. Raw gradle + reports | B. kmp-test parallel | C. kmp-test --json | A vs C  |
 |----------------------|------------------------:|---------------------:|-------------------:|--------:|
