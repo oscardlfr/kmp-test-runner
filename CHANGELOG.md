@@ -5,7 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] — 2026-04-26
+
+### Added
+- **`--feature <parallel|coverage|changed|benchmark>` flag in `tools/measure-token-cost.js`.**
+  v0.3.x measured only the `parallel` feature; v0.4 extends to all four
+  CLI subcommands via a `FEATURES` registry that plugs per-feature gradle
+  tasks, report-file predicates, and module resolution into a shared
+  approach-A/B/C runner. Captures land in
+  `tools/runs/<feature>/<A|B|C>-run<N>.txt` (subdir per feature). Cross-model
+  evidence files (`tools/runs/cross-model-results-<feature>.txt`) committed
+  for all four features — 48 canonical numbers (4 features × 3 approaches
+  × 4 tokenizers).
+- **Cross-model token-cost validation via Anthropic `messages.countTokens`.**
+  The same captured stdout is re-tokenised offline (`cl100k_base` baseline)
+  AND online per Claude 4.x model — `claude-opus-4-7`, `claude-sonnet-4-6`,
+  `claude-haiku-4-5`. The `messages.countTokens` endpoint is free of
+  charge (rate-limited only). Confirms the A:C ratio survives the
+  tokenizer family in a tight per-feature band:
+  - `parallel` 127×–154× · `changed` 127×–153× · `benchmark` 144×–181×
+  - `coverage` **765×–1218×** (largest savings of any feature — Kover
+    HTML reports include a fully annotated source page per file)
+  - `claude-sonnet-4-6` and `claude-haiku-4-5` share a tokenizer
+    (identical counts to the unit on every cell)
+  - `claude-opus-4-7` ships a new tokenizer producing 30–100% more
+    tokens for the same input
+- **`--benchmark-task` and `--changed-range` flags** for per-feature gradle
+  task / git-rev-range overrides (default: `jvmBenchmark` / `HEAD~1..HEAD`).
+- **macOS CI matrix** (`build` and `installer-e2e` jobs now run on
+  `ubuntu-latest`, `windows-latest`, `macos-latest` — 9 required checks
+  total).
+- **README "Why this exists" + `docs/token-cost-measurement.md` rewritten**
+  with cross-feature summary table + per-feature drill-down tables.
+  Bars are unicode block characters (full-block `█` only, sub-1-char
+  values render as `▏`) for guaranteed-uniform GitHub rendering across
+  light/dark themes — replaces the v0.3.9 Mermaid `xychart-beta` charts
+  whose multi-series mode stacks bars instead of grouping (historic
+  Mermaid bug). Models distinguished via colored squares
+  (🟦 cl100k_base · 🟥 opus-4-7 · 🟩🟧 sonnet/haiku) in column headers.
+
+### Fixed
+- **`run-changed-modules-tests.ps1`: 3 Windows-blocking bugs** that made
+  `kmp-test changed` end-to-end non-functional on Windows for any project:
+  - `Get-ModuleFromFile`: `$path.Split('/', '\')` resolved to .NET
+    `String.Split(Char, Int32)` overload — `'\'` got coerced to Int32
+    and threw "input string '\' was not in correct format" the moment a
+    Windows-style path appeared. Replaced with `-split '[/\\]'` regex.
+  - Splat hashtable mismatch: `MaxFailures` was splatted to
+    `run-parallel-coverage-suite.ps1` which doesn't declare it, raising
+    "parameter cannot be found". Now matches the bash sibling
+    (drops `MaxFailures` from forwarding).
+  - Leading colon: `Get-ModuleFromFile` returns `':core-result'` (gradle
+    style) but `-ModuleFilter` expects `'core-result'`. Now uses
+    `TrimStart(':')` to match the bash sibling
+    (`run-changed-modules-tests.sh` line 228: `trimmed="${mod#:}"`).
+- **`run-benchmarks.ps1` wrong-cwd bug.** `Invoke-GradleBenchmark` called
+  `& $gradlew $Task` without changing directory first; gradle uses the
+  *current* working directory as the project root unless `--project-dir`
+  is passed, so the script blew up with "Directory '<cwd>' does not
+  contain a Gradle build" the moment it was launched from anywhere
+  other than the target Gradle project. Wraps the call in
+  `Push-Location $Root` / `Pop-Location` to mirror the bash sibling
+  (`(cd "$gradle_root" && ./gradlew …)`).
+- All four PowerShell bug fixes have AST-driven Pester regression tests
+  (28 tests in the script-smoke suite).
 
 ### Changed
 - **License relicensed from Apache-2.0 to MIT.** All first-party source files
@@ -14,6 +77,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scripts retain their upstream Apache-2.0 header (Copyright © 2015 the
   original Gradle authors) — they are unmodified files from the Gradle
   wrapper distribution and remain under their original license.
+- **`measure-token-cost.js` capture layout:** legacy
+  `<A|B|C>-<descriptive>-run<N>.txt` at `tools/runs/` root migrated to
+  `tools/runs/parallel/<A|B|C>-run<N>.txt` (subdir per feature). The
+  legacy `cross-model-results.txt` renamed to
+  `cross-model-results-parallel.txt` for symmetry with the three new
+  evidence files.
+- **Vitest test count** grew from 143 to 183 (40 new tests covering the
+  `FEATURES` registry, `parseArgs --feature` dispatch including invalid
+  input, `filterModulesByGlob`, `modulesFromGitDiff` against real tmp git
+  repos, `featureRunsDir`, `loadCaptures` short-form regex,
+  `buildApproachAInvocation` per feature, `buildKmpTestCliInvocation`
+  per feature, and `runCrossModelMode`'s feature-aware heading).
+- **`.gitignore` `coverage/`** scoped to root only (`/coverage/`) so
+  `tools/runs/coverage/` measurement evidence is checked in.
 
 ## [0.3.8] — 2026-04-26
 
@@ -335,6 +412,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TruffleHog secrets scan as required CI status check
 - Apache-2.0 license
 
+[0.4.0]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.8...v0.4.0
+[0.3.8]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.4...v0.3.5

@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.github.oscardlfr"
-version = "0.3.8"
+version = "0.4.0"
 
 kotlin {
     jvmToolchain(17)
