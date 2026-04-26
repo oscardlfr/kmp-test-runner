@@ -234,3 +234,52 @@ Describe 'TestFilter parameter wiring' {
         $content | Should -Match '\[\s*string\s*\]\s*\$TestFilter'
     }
 }
+
+Describe 'run-benchmarks.ps1 invokes gradlew with the project root as cwd' {
+    # v0.4 regression: Invoke-Gradle called `& $gradlew $Task` without changing
+    # directory first. gradle uses the *current* working directory as the
+    # project root unless --project-dir is passed, so the script blew up with
+    # "Directory '<cwd>' does not contain a Gradle build" the moment it was
+    # launched from anywhere other than the target Gradle project. Bash sibling
+    # uses `(cd "$gradle_root" && ./gradlew …)` to scope the cd; PS port
+    # missed that. Fix wraps the call in Push-Location/Pop-Location.
+    BeforeAll {
+        $script:scriptPath = Join-Path $PSScriptRoot '..\..\scripts\ps1\run-benchmarks.ps1'
+    }
+
+    It 'wraps the Invoke-GradleBenchmark gradlew call in Push-Location/Pop-Location' {
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script:scriptPath, [ref]$null, [ref]$errors
+        )
+        $funcAst = $ast.FindAll({
+            $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and `
+            $args[0].Name -eq 'Invoke-GradleBenchmark'
+        }, $true) | Select-Object -First 1
+        $funcAst | Should -Not -BeNullOrEmpty
+        # Match statement-form occurrences (start-of-line, no leading `# ` comment).
+        # Otherwise IndexOf catches the words inside this fix's own explanatory
+        # comment and reports nonsense ordering.
+        $funcText = $funcAst.Extent.Text
+        $stmtRegex = [System.Text.RegularExpressions.Regex]::new('(?m)^\s*(?<stmt>Push-Location\s+\$Root|&\s+\$gradlew\s+\$Task|Pop-Location)\b')
+        $matches   = $stmtRegex.Matches($funcText)
+        $stmts     = @($matches | ForEach-Object { $_.Groups['stmt'].Value -replace '\s+', ' ' })
+        # Order must be exactly: Push-Location $Root → & $gradlew $Task → Pop-Location.
+        $stmts | Should -HaveCount 3
+        $stmts[0] | Should -Match 'Push-Location\s+\$Root'
+        $stmts[1] | Should -Match '&\s+\$gradlew\s+\$Task'
+        $stmts[2] | Should -Be 'Pop-Location'
+    }
+
+    It 'never re-introduces a bare `& $gradlew` outside Push-Location scope' {
+        # Negative guard: the only place gradlew is invoked must have
+        # Push-Location $Root within ~10 lines above it.
+        $lines = Get-Content $script:scriptPath
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '&\s+\$gradlew\s+\$Task') {
+                $window = $lines[[Math]::Max(0, $i - 12)..$i] -join "`n"
+                $window | Should -Match 'Push-Location\s+\$Root' -Because "gradlew at line $($i+1) must be wrapped in Push-Location/Pop-Location"
+            }
+        }
+    }
+}

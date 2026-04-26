@@ -1,0 +1,1465 @@
+Starting a Gradle Daemon, 2 incompatible Daemons could not be reused, use --status for details
+Calculating task graph as configuration cache cannot be reused because JVM has changed.
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:compileKotlin FROM-CACHE
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:pluginDescriptors UP-TO-DATE
+> Task :build-logic:processResources UP-TO-DATE
+> Task :build-logic:classes UP-TO-DATE
+> Task :build-logic:jar
+> Task :benchmark-crypto:desktopProcessResources NO-SOURCE
+> Task :core-sdk:kmpPartiallyResolvedDependenciesChecker
+> Task :core-di-anvil:kmpPartiallyResolvedDependenciesChecker
+> Task :core-encryption:kmpPartiallyResolvedDependenciesChecker
+> Task :benchmark-infra:kmpPartiallyResolvedDependenciesChecker
+> Task :core-result:kmpPartiallyResolvedDependenciesChecker
+> Task :core-di-anvil:desktopProcessResources NO-SOURCE
+> Task :core-logging:desktopProcessResources NO-SOURCE
+> Task :core-security-keys:kmpPartiallyResolvedDependenciesChecker
+> Task :benchmark-crypto:kmpPartiallyResolvedDependenciesChecker
+> Task :core-common:kmpPartiallyResolvedDependenciesChecker
+> Task :core-logging:kmpPartiallyResolvedDependenciesChecker
+> Task :core-encryption-envelope:kmpPartiallyResolvedDependenciesChecker
+> Task :core-encryption-envelope-api:kmpPartiallyResolvedDependenciesChecker
+> Task :benchmark-infra:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core-encryption:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core-encryption-envelope-api:desktopProcessResources NO-SOURCE
+> Task :core-encryption:desktopProcessResources NO-SOURCE
+> Task :core-security-keys:desktopProcessResources NO-SOURCE
+> Task :core-encryption-envelope:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :benchmark-infra:desktopProcessResources NO-SOURCE
+> Task :core-common:desktopProcessResources NO-SOURCE
+> Task :core-result:desktopProcessResources NO-SOURCE
+> Task :core-encryption-envelope:desktopProcessResources NO-SOURCE
+> Task :core-sdk:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core-security-keys:processDesktopMainResources SKIPPED
+> Task :core-encryption-envelope:processDesktopMainResources SKIPPED
+> Task :core-common:processDesktopMainResources SKIPPED
+> Task :core-encryption:processDesktopMainResources SKIPPED
+> Task :core-encryption-envelope-api:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core-encryption-envelope-api:processDesktopMainResources SKIPPED
+> Task :core-result:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :benchmark-crypto:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :benchmark-crypto:processDesktopMainResources SKIPPED
+> Task :core-di-anvil:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core-logging:processDesktopMainResources SKIPPED
+> Task :core-di-anvil:processDesktopMainResources SKIPPED
+> Task :core-security-keys:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core-logging:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core-common:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :benchmark-infra:processDesktopMainResources SKIPPED
+> Task :core-result:processDesktopMainResources SKIPPED
+> Task :core-di-anvil:compileKotlinDesktop FROM-CACHE
+> Task :core-di-anvil:compileDesktopMainJava NO-SOURCE
+> Task :core-di-anvil:desktopMainClasses UP-TO-DATE
+> Task :core-di-anvil:desktopJar UP-TO-DATE
+> Task :core-security-keys:compileKotlinDesktop FROM-CACHE
+> Task :core-common:compileKotlinDesktop FROM-CACHE
+> Task :core-security-keys:compileDesktopMainJava NO-SOURCE
+> Task :core-common:compileDesktopMainJava NO-SOURCE
+> Task :core-common:desktopMainClasses UP-TO-DATE
+> Task :core-security-keys:desktopMainClasses UP-TO-DATE
+> Task :core-security-keys:desktopJar UP-TO-DATE
+> Task :core-common:desktopJar UP-TO-DATE
+> Task :core-result:compileKotlinDesktop FROM-CACHE
+> Task :core-result:compileDesktopMainJava NO-SOURCE
+> Task :core-result:desktopMainClasses UP-TO-DATE
+> Task :core-result:desktopJar UP-TO-DATE
+> Task :core-encryption-envelope-api:compileKotlinDesktop FROM-CACHE
+> Task :core-encryption-envelope-api:compileDesktopMainJava NO-SOURCE
+> Task :core-encryption-envelope-api:desktopMainClasses UP-TO-DATE
+> Task :core-encryption-envelope-api:desktopJar UP-TO-DATE
+> Task :core-logging:compileKotlinDesktop FROM-CACHE
+> Task :core-logging:compileDesktopMainJava NO-SOURCE
+> Task :core-logging:desktopMainClasses UP-TO-DATE
+> Task :core-logging:desktopJar UP-TO-DATE
+> Task :core-sdk:kspKotlinDesktop SKIPPED
+> Task :core-sdk:desktopProcessResources NO-SOURCE
+> Task :core-sdk:processDesktopMainResources SKIPPED
+> Task :core-sdk:compileKotlinDesktop FROM-CACHE
+> Task :core-sdk:compileDesktopMainJava NO-SOURCE
+> Task :core-sdk:desktopMainClasses UP-TO-DATE
+> Task :core-sdk:desktopJar UP-TO-DATE
+> Task :core-encryption:compileKotlinDesktop FROM-CACHE
+> Task :core-encryption:compileDesktopMainJava NO-SOURCE
+> Task :core-encryption:desktopMainClasses UP-TO-DATE
+> Task :core-encryption:desktopJar UP-TO-DATE
+> Task :benchmark-infra:compileKotlinDesktop
+> Task :core-encryption-envelope:compileKotlinDesktop
+> Task :benchmark-infra:compileDesktopMainJava NO-SOURCE
+> Task :core-encryption-envelope:compileDesktopMainJava NO-SOURCE
+> Task :benchmark-infra:desktopMainClasses
+> Task :core-encryption-envelope:desktopMainClasses
+> Task :benchmark-infra:desktopJar UP-TO-DATE
+> Task :core-encryption-envelope:desktopJar UP-TO-DATE
+> Task :benchmark-crypto:compileKotlinDesktop
+> Task :benchmark-crypto:compileDesktopMainJava NO-SOURCE
+> Task :benchmark-crypto:desktopMainClasses
+
+> Task :benchmark-crypto:desktopBenchmarkGenerate
+Analyzing 8 files from C:\Users\34645\AndroidStudioProjects\shared-kmp-libs\benchmark-crypto\build\classes\kotlin\desktop\main
+Analyzing 0 files from C:\Users\34645\AndroidStudioProjects\shared-kmp-libs\benchmark-crypto\build\classes\java\desktopMain
+Analyzing 0 files from C:\Users\34645\AndroidStudioProjects\shared-kmp-libs\benchmark-crypto\build\processedResources\desktop\main
+Writing out Java source to C:\Users\34645\AndroidStudioProjects\shared-kmp-libs\benchmark-crypto\build\benchmarks\desktop\sources and resources to C:\Users\34645\AndroidStudioProjects\shared-kmp-libs\benchmark-crypto\build\benchmarks\desktop\resources
+
+> Task :benchmark-crypto:desktopBenchmarkCompile
+
+> Task :benchmark-crypto:desktopSmokeBenchmark
+Running 'smoke' benchmarks for 'desktop'
+
+� com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.decrypt | payloadSize=100
+
+Warm-up 1: 28,400 ms/op
+Warm-up 2: 27,615 ms/op
+Warm-up 3: 27,734 ms/op
+Iteration 1: 27,634 ms/op
+Iteration 2: 27,577 ms/op
+Iteration 3: 27,597 ms/op
+
+  Success: 27,602 �(99.9%) 0,531 ms/op [Average]
+  (min, avg, max) = (27,577, 27,602, 27,634), stdev = 0,029
+  CI (99.9%): [27,071, 28,134] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.decrypt | payloadSize=1024
+
+Warm-up 1: 27,492 ms/op
+Warm-up 2: 26,792 ms/op
+Warm-up 3: 26,870 ms/op
+Iteration 1: 26,903 ms/op
+Iteration 2: 26,926 ms/op
+Iteration 3: 28,143 ms/op
+
+  Success: 27,324 �(99.9%) 12,939 ms/op [Average]
+  (min, avg, max) = (26,903, 27,324, 28,143), stdev = 0,709
+  CI (99.9%): [14,385, 40,263] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.decrypt | payloadSize=65536
+
+Warm-up 1: 29,365 ms/op
+Warm-up 2: 28,507 ms/op
+Warm-up 3: 28,823 ms/op
+Iteration 1: 29,102 ms/op
+Iteration 2: 30,819 ms/op
+Iteration 3: 28,246 ms/op
+
+  Success: 29,389 �(99.9%) 23,904 ms/op [Average]
+  (min, avg, max) = (28,246, 29,389, 30,819), stdev = 1,310
+  CI (99.9%): [5,485, 53,293] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.encrypt | payloadSize=100
+
+Warm-up 1: 31,521 ms/op
+Warm-up 2: 29,338 ms/op
+Warm-up 3: 27,516 ms/op
+Iteration 1: 37,411 ms/op
+Iteration 2: 40,090 ms/op
+Iteration 3: 29,875 ms/op
+
+  Success: 35,792 �(99.9%) 96,624 ms/op [Average]
+  (min, avg, max) = (29,875, 35,792, 40,090), stdev = 5,296
+  CI (99.9%): [? 0, 132,416] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.encrypt | payloadSize=1024
+
+Warm-up 1: 32,486 ms/op
+Warm-up 2: 33,648 ms/op
+Warm-up 3: 35,476 ms/op
+Iteration 1: 33,222 ms/op
+Iteration 2: 39,346 ms/op
+Iteration 3: 29,903 ms/op
+
+  Success: 34,157 �(99.9%) 87,393 ms/op [Average]
+  (min, avg, max) = (29,903, 34,157, 39,346), stdev = 4,790
+  CI (99.9%): [? 0, 121,550] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.encrypt | payloadSize=65536
+
+Warm-up 1: 28,269 ms/op
+Warm-up 2: 27,635 ms/op
+Warm-up 3: 27,581 ms/op
+Iteration 1: 27,760 ms/op
+Iteration 2: 27,425 ms/op
+Iteration 3: 27,375 ms/op
+
+  Success: 27,520 �(99.9%) 3,814 ms/op [Average]
+  (min, avg, max) = (27,375, 27,520, 27,760), stdev = 0,209
+  CI (99.9%): [23,706, 31,334] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.roundTrip | payloadSize=100
+
+Warm-up 1: 54,908 ms/op
+Warm-up 2: 53,891 ms/op
+Warm-up 3: 53,915 ms/op
+Iteration 1: 53,891 ms/op
+Iteration 2: 53,778 ms/op
+Iteration 3: 53,680 ms/op
+
+  Success: 53,783 �(99.9%) 1,928 ms/op [Average]
+  (min, avg, max) = (53,680, 53,783, 53,891), stdev = 0,106
+  CI (99.9%): [51,855, 55,711] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.roundTrip | payloadSize=1024
+
+Warm-up 1: 55,363 ms/op
+Warm-up 2: 53,707 ms/op
+Warm-up 3: 53,687 ms/op
+Iteration 1: 53,617 ms/op
+Iteration 2: 53,608 ms/op
+Iteration 3: 53,577 ms/op
+
+  Success: 53,600 �(99.9%) 0,383 ms/op [Average]
+  (min, avg, max) = (53,577, 53,600, 53,617), stdev = 0,021
+  CI (99.9%): [53,217, 53,983] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.roundTrip | payloadSize=65536
+
+Warm-up 1: 57,647 ms/op
+Warm-up 2: 54,988 ms/op
+Warm-up 3: 54,947 ms/op
+Iteration 1: 56,013 ms/op
+Iteration 2: 54,781 ms/op
+Iteration 3: 54,608 ms/op
+
+  Success: 55,134 �(99.9%) 13,978 ms/op [Average]
+  (min, avg, max) = (54,608, 55,134, 56,013), stdev = 0,766
+  CI (99.9%): [41,156, 69,112] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.decrypt | payloadSize=1024
+
+Warm-up 1: 47,382 ms/op
+Warm-up 2: 45,118 ms/op
+Warm-up 3: 46,502 ms/op
+Iteration 1: 46,440 ms/op
+Iteration 2: 46,271 ms/op
+Iteration 3: 44,083 ms/op
+
+  Success: 45,598 �(99.9%) 23,988 ms/op [Average]
+  (min, avg, max) = (44,083, 45,598, 46,440), stdev = 1,315
+  CI (99.9%): [21,610, 69,586] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.decrypt | payloadSize=65536
+
+Warm-up 1: 49,641 ms/op
+Warm-up 2: 46,744 ms/op
+Warm-up 3: 48,084 ms/op
+Iteration 1: 48,085 ms/op
+Iteration 2: 48,102 ms/op
+Iteration 3: 46,040 ms/op
+
+  Success: 47,409 �(99.9%) 21,635 ms/op [Average]
+  (min, avg, max) = (46,040, 47,409, 48,102), stdev = 1,186
+  CI (99.9%): [25,774, 69,044] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.decrypt | payloadSize=1048576
+
+Warm-up 1: 58,035 ms/op
+Warm-up 2: 54,273 ms/op
+Warm-up 3: 56,429 ms/op
+Iteration 1: 56,120 ms/op
+Iteration 2: 55,939 ms/op
+Iteration 3: 53,942 ms/op
+
+  Success: 55,334 �(99.9%) 22,050 ms/op [Average]
+  (min, avg, max) = (53,942, 55,334, 56,120), stdev = 1,209
+  CI (99.9%): [33,284, 77,384] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.encrypt | payloadSize=1024
+
+Warm-up 1: 51,745 ms/op
+Warm-up 2: 45,586 ms/op
+Warm-up 3: 47,211 ms/op
+Iteration 1: 46,936 ms/op
+Iteration 2: 47,194 ms/op
+Iteration 3: 44,423 ms/op
+
+  Success: 46,184 �(99.9%) 27,934 ms/op [Average]
+  (min, avg, max) = (44,423, 46,184, 47,194), stdev = 1,531
+  CI (99.9%): [18,251, 74,118] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.encrypt | payloadSize=65536
+
+Warm-up 1: 54,782 ms/op
+Warm-up 2: 46,044 ms/op
+Warm-up 3: 47,510 ms/op
+Iteration 1: 47,688 ms/op
+Iteration 2: 47,851 ms/op
+Iteration 3: 44,948 ms/op
+
+  Success: 46,829 �(99.9%) 29,762 ms/op [Average]
+  (min, avg, max) = (44,948, 46,829, 47,851), stdev = 1,631
+  CI (99.9%): [17,067, 76,591] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.encrypt | payloadSize=1048576
+
+Warm-up 1: 65,780 ms/op
+Warm-up 2: 53,442 ms/op
+Warm-up 3: 54,757 ms/op
+Iteration 1: 55,349 ms/op
+Iteration 2: 55,125 ms/op
+Iteration 3: 53,162 ms/op
+
+  Success: 54,546 �(99.9%) 21,955 ms/op [Average]
+  (min, avg, max) = (53,162, 54,546, 55,349), stdev = 1,203
+  CI (99.9%): [32,591, 76,500] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.StreamEncryptionBenchmark.decryptStream | fileSize=1048576
+
+Warm-up 1: 58,851 ms/op
+Warm-up 2: 55,655 ms/op
+Warm-up 3: 57,773 ms/op
+Iteration 1: 57,877 ms/op
+Iteration 2: 57,547 ms/op
+Iteration 3: 55,416 ms/op
+
+  Success: 56,946 �(99.9%) 24,372 ms/op [Average]
+  (min, avg, max) = (55,416, 56,946, 57,877), stdev = 1,336
+  CI (99.9%): [32,574, 81,319] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.StreamEncryptionBenchmark.decryptStream | fileSize=10485760
+
+Warm-up 1: 161,446 ms/op
+Warm-up 2: 133,876 ms/op
+Warm-up 3: 139,089 ms/op
+Iteration 1: 135,004 ms/op
+Iteration 2: 132,350 ms/op
+Iteration 3: 136,071 ms/op
+
+  Success: 134,475 �(99.9%) 34,954 ms/op [Average]
+  (min, avg, max) = (132,350, 134,475, 136,071), stdev = 1,916
+  CI (99.9%): [99,521, 169,429] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.StreamEncryptionBenchmark.encryptStream | fileSize=1048576
+
+Warm-up 1: 59,926 ms/op
+Warm-up 2: 56,824 ms/op
+Warm-up 3: 53,578 ms/op
+Iteration 1: 49,900 ms/op
+Iteration 2: 49,653 ms/op
+Iteration 3: 48,808 ms/op
+
+  Success: 49,454 �(99.9%) 10,438 ms/op [Average]
+  (min, avg, max) = (48,808, 49,454, 49,900), stdev = 0,572
+  CI (99.9%): [39,015, 59,892] (assumes normal distribution)
+
+� com.grinx.shared.benchmark.crypto.StreamEncryptionBenchmark.encryptStream | fileSize=10485760
+
+Warm-up 1: 101,939 ms/op
+Warm-up 2: 60,064 ms/op
+Warm-up 3: 59,466 ms/op
+Iteration 1: 62,028 ms/op
+Iteration 2: 62,214 ms/op
+Iteration 3: 60,116 ms/op
+
+  Success: 61,453 �(99.9%) 21,191 ms/op [Average]
+  (min, avg, max) = (60,116, 61,453, 62,214), stdev = 1,162
+  CI (99.9%): [40,262, 82,644] (assumes normal distribution)
+
+
+desktop summary:
+Benchmark                                (fileSize)  (payloadSize)  Mode  Cnt    Score    Error  Units
+EncryptionServiceBenchmark.decrypt              N/A            100  avgt    3   27,602 �  0,531  ms/op
+EncryptionServiceBenchmark.decrypt              N/A           1024  avgt    3   27,324 � 12,939  ms/op
+EncryptionServiceBenchmark.decrypt              N/A          65536  avgt    3   29,389 � 23,904  ms/op
+EncryptionServiceBenchmark.encrypt              N/A            100  avgt    3   35,792 � 96,624  ms/op
+EncryptionServiceBenchmark.encrypt              N/A           1024  avgt    3   34,157 � 87,393  ms/op
+EncryptionServiceBenchmark.encrypt              N/A          65536  avgt    3   27,520 �  3,814  ms/op
+EncryptionServiceBenchmark.roundTrip            N/A            100  avgt    3   53,783 �  1,928  ms/op
+EncryptionServiceBenchmark.roundTrip            N/A           1024  avgt    3   53,600 �  0,383  ms/op
+EncryptionServiceBenchmark.roundTrip            N/A          65536  avgt    3   55,134 � 13,978  ms/op
+PasswordEncryptionBenchmark.decrypt             N/A           1024  avgt    3   45,598 � 23,988  ms/op
+PasswordEncryptionBenchmark.decrypt             N/A          65536  avgt    3   47,409 � 21,635  ms/op
+PasswordEncryptionBenchmark.decrypt             N/A        1048576  avgt    3   55,334 � 22,050  ms/op
+PasswordEncryptionBenchmark.encrypt             N/A           1024  avgt    3   46,184 � 27,934  ms/op
+PasswordEncryptionBenchmark.encrypt             N/A          65536  avgt    3   46,829 � 29,762  ms/op
+PasswordEncryptionBenchmark.encrypt             N/A        1048576  avgt    3   54,546 � 21,955  ms/op
+StreamEncryptionBenchmark.decryptStream     1048576            N/A  avgt    3   56,946 � 24,372  ms/op
+StreamEncryptionBenchmark.decryptStream    10485760            N/A  avgt    3  134,475 � 34,954  ms/op
+StreamEncryptionBenchmark.encryptStream     1048576            N/A  avgt    3   49,454 � 10,438  ms/op
+StreamEncryptionBenchmark.encryptStream    10485760            N/A  avgt    3   61,453 � 21,191  ms/op
+
+Analysing benchmark results is not always trivial,
+please refer to https://github.com/Kotlin/kotlinx-benchmark/tree/master?tab=readme-ov-file#analyzing-results for details.
+
+
+BUILD SUCCESSFUL in 1m 38s
+39 actionable tasks: 18 executed, 9 from cache, 12 up-to-date
+Configuration cache entry stored.
+WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+
+=== C:\Users\34645\AndroidStudioProjects\shared-kmp-libs\benchmark-crypto\build\reports\benchmarks\smoke\2026-04-26T21.35.29.9884894\desktop.json ===
+[
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.decrypt",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "100"
+        },
+        "primaryMetric" : {
+            "score" : 27.602373684210523,
+            "scoreError" : 0.5311463412712186,
+            "scoreConfidence" : [
+                27.071227342939306,
+                28.13352002548174
+            ],
+            "scorePercentiles" : {
+                "0.0" : 27.576589473684212,
+                "50.0" : 27.596584210526316,
+                "90.0" : 27.63394736842105,
+                "95.0" : 27.63394736842105,
+                "99.0" : 27.63394736842105,
+                "99.9" : 27.63394736842105,
+                "99.99" : 27.63394736842105,
+                "99.999" : 27.63394736842105,
+                "99.9999" : 27.63394736842105,
+                "100.0" : 27.63394736842105
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    27.63394736842105,
+                    27.576589473684212,
+                    27.596584210526316
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.decrypt",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "1024"
+        },
+        "primaryMetric" : {
+            "score" : 27.324224561403508,
+            "scoreError" : 12.93883966435452,
+            "scoreConfidence" : [
+                14.385384897048988,
+                40.26306422575803
+            ],
+            "scorePercentiles" : {
+                "0.0" : 26.903447368421052,
+                "50.0" : 26.926168421052633,
+                "90.0" : 28.14305789473684,
+                "95.0" : 28.14305789473684,
+                "99.0" : 28.14305789473684,
+                "99.9" : 28.14305789473684,
+                "99.99" : 28.14305789473684,
+                "99.999" : 28.14305789473684,
+                "99.9999" : 28.14305789473684,
+                "100.0" : 28.14305789473684
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    26.903447368421052,
+                    26.926168421052633,
+                    28.14305789473684
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.decrypt",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "65536"
+        },
+        "primaryMetric" : {
+            "score" : 29.389002069716778,
+            "scoreError" : 23.903767138067845,
+            "scoreConfidence" : [
+                5.485234931648932,
+                53.29276920778462
+            ],
+            "scorePercentiles" : {
+                "0.0" : 28.246355555555557,
+                "50.0" : 29.10153888888889,
+                "90.0" : 30.819111764705884,
+                "95.0" : 30.819111764705884,
+                "99.0" : 30.819111764705884,
+                "99.9" : 30.819111764705884,
+                "99.99" : 30.819111764705884,
+                "99.999" : 30.819111764705884,
+                "99.9999" : 30.819111764705884,
+                "100.0" : 30.819111764705884
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    29.10153888888889,
+                    30.819111764705884,
+                    28.246355555555557
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.encrypt",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "100"
+        },
+        "primaryMetric" : {
+            "score" : 35.79210352294764,
+            "scoreError" : 96.62389070309158,
+            "scoreConfidence" : [
+                -60.831787180143934,
+                132.41599422603923
+            ],
+            "scorePercentiles" : {
+                "0.0" : 29.875435294117647,
+                "50.0" : 37.41052142857143,
+                "90.0" : 40.090353846153846,
+                "95.0" : 40.090353846153846,
+                "99.0" : 40.090353846153846,
+                "99.9" : 40.090353846153846,
+                "99.99" : 40.090353846153846,
+                "99.999" : 40.090353846153846,
+                "99.9999" : 40.090353846153846,
+                "100.0" : 40.090353846153846
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    37.41052142857143,
+                    40.090353846153846,
+                    29.875435294117647
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.encrypt",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "1024"
+        },
+        "primaryMetric" : {
+            "score" : 34.15716216736694,
+            "scoreError" : 87.39309503503245,
+            "scoreConfidence" : [
+                -53.235932867665504,
+                121.5502572023994
+            ],
+            "scorePercentiles" : {
+                "0.0" : 29.903158823529413,
+                "50.0" : 33.22235625,
+                "90.0" : 39.34597142857143,
+                "95.0" : 39.34597142857143,
+                "99.0" : 39.34597142857143,
+                "99.9" : 39.34597142857143,
+                "99.99" : 39.34597142857143,
+                "99.999" : 39.34597142857143,
+                "99.9999" : 39.34597142857143,
+                "100.0" : 39.34597142857143
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    33.22235625,
+                    39.34597142857143,
+                    29.903158823529413
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.encrypt",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "65536"
+        },
+        "primaryMetric" : {
+            "score" : 27.51993333333333,
+            "scoreError" : 3.8141783794660467,
+            "scoreConfidence" : [
+                23.705754953867284,
+                31.334111712799377
+            ],
+            "scorePercentiles" : {
+                "0.0" : 27.37518947368421,
+                "50.0" : 27.424984210526315,
+                "90.0" : 27.759626315789475,
+                "95.0" : 27.759626315789475,
+                "99.0" : 27.759626315789475,
+                "99.9" : 27.759626315789475,
+                "99.99" : 27.759626315789475,
+                "99.999" : 27.759626315789475,
+                "99.9999" : 27.759626315789475,
+                "100.0" : 27.759626315789475
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    27.759626315789475,
+                    27.424984210526315,
+                    27.37518947368421
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.roundTrip",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "100"
+        },
+        "primaryMetric" : {
+            "score" : 53.78322333333333,
+            "scoreError" : 1.9280576212969165,
+            "scoreConfidence" : [
+                51.85516571203642,
+                55.71128095463025
+            ],
+            "scorePercentiles" : {
+                "0.0" : 53.68027,
+                "50.0" : 53.77796,
+                "90.0" : 53.89144,
+                "95.0" : 53.89144,
+                "99.0" : 53.89144,
+                "99.9" : 53.89144,
+                "99.99" : 53.89144,
+                "99.999" : 53.89144,
+                "99.9999" : 53.89144,
+                "100.0" : 53.89144
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    53.89144,
+                    53.77796,
+                    53.68027
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.roundTrip",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "1024"
+        },
+        "primaryMetric" : {
+            "score" : 53.600253333333335,
+            "scoreError" : 0.3831231422973584,
+            "scoreConfidence" : [
+                53.21713019103598,
+                53.98337647563069
+            ],
+            "scorePercentiles" : {
+                "0.0" : 53.57656,
+                "50.0" : 53.60763,
+                "90.0" : 53.61657,
+                "95.0" : 53.61657,
+                "99.0" : 53.61657,
+                "99.9" : 53.61657,
+                "99.99" : 53.61657,
+                "99.999" : 53.61657,
+                "99.9999" : 53.61657,
+                "100.0" : 53.61657
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    53.61657,
+                    53.60763,
+                    53.57656
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.roundTrip",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "65536"
+        },
+        "primaryMetric" : {
+            "score" : 55.134312592592586,
+            "scoreError" : 13.977932712882518,
+            "scoreConfidence" : [
+                41.156379879710066,
+                69.1122453054751
+            ],
+            "scorePercentiles" : {
+                "0.0" : 54.6084,
+                "50.0" : 54.78116,
+                "90.0" : 56.01337777777778,
+                "95.0" : 56.01337777777778,
+                "99.0" : 56.01337777777778,
+                "99.9" : 56.01337777777778,
+                "99.99" : 56.01337777777778,
+                "99.999" : 56.01337777777778,
+                "99.9999" : 56.01337777777778,
+                "100.0" : 56.01337777777778
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    56.01337777777778,
+                    54.78116,
+                    54.6084
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.decrypt",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "1024"
+        },
+        "primaryMetric" : {
+            "score" : 45.598351010101005,
+            "scoreError" : 23.98804644901264,
+            "scoreConfidence" : [
+                21.610304561088366,
+                69.58639745911364
+            ],
+            "scorePercentiles" : {
+                "0.0" : 44.083216666666665,
+                "50.0" : 46.27137272727273,
+                "90.0" : 46.44046363636364,
+                "95.0" : 46.44046363636364,
+                "99.0" : 46.44046363636364,
+                "99.9" : 46.44046363636364,
+                "99.99" : 46.44046363636364,
+                "99.999" : 46.44046363636364,
+                "99.9999" : 46.44046363636364,
+                "100.0" : 46.44046363636364
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    46.44046363636364,
+                    46.27137272727273,
+                    44.083216666666665
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.decrypt",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "65536"
+        },
+        "primaryMetric" : {
+            "score" : 47.408839393939395,
+            "scoreError" : 21.63480067110158,
+            "scoreConfidence" : [
+                25.774038722837815,
+                69.04364006504098
+            ],
+            "scorePercentiles" : {
+                "0.0" : 46.039545454545454,
+                "50.0" : 48.084627272727275,
+                "90.0" : 48.10234545454546,
+                "95.0" : 48.10234545454546,
+                "99.0" : 48.10234545454546,
+                "99.9" : 48.10234545454546,
+                "99.99" : 48.10234545454546,
+                "99.999" : 48.10234545454546,
+                "99.9999" : 48.10234545454546,
+                "100.0" : 48.10234545454546
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    48.084627272727275,
+                    48.10234545454546,
+                    46.039545454545454
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.decrypt",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "1048576"
+        },
+        "primaryMetric" : {
+            "score" : 55.33383333333333,
+            "scoreError" : 22.050325921639214,
+            "scoreConfidence" : [
+                33.28350741169412,
+                77.38415925497254
+            ],
+            "scorePercentiles" : {
+                "0.0" : 53.94213,
+                "50.0" : 55.93906,
+                "90.0" : 56.12031,
+                "95.0" : 56.12031,
+                "99.0" : 56.12031,
+                "99.9" : 56.12031,
+                "99.99" : 56.12031,
+                "99.999" : 56.12031,
+                "99.9999" : 56.12031,
+                "100.0" : 56.12031
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    56.12031,
+                    55.93906,
+                    53.94213
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.encrypt",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "1024"
+        },
+        "primaryMetric" : {
+            "score" : 46.18425252525253,
+            "scoreError" : 27.93366088201524,
+            "scoreConfidence" : [
+                18.250591643237293,
+                74.11791340726776
+            ],
+            "scorePercentiles" : {
+                "0.0" : 44.42256666666667,
+                "50.0" : 46.935745454545454,
+                "90.0" : 47.19444545454545,
+                "95.0" : 47.19444545454545,
+                "99.0" : 47.19444545454545,
+                "99.9" : 47.19444545454545,
+                "99.99" : 47.19444545454545,
+                "99.999" : 47.19444545454545,
+                "99.9999" : 47.19444545454545,
+                "100.0" : 47.19444545454545
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    46.935745454545454,
+                    47.19444545454545,
+                    44.42256666666667
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.encrypt",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "65536"
+        },
+        "primaryMetric" : {
+            "score" : 46.82888383838384,
+            "scoreError" : 29.761749867464033,
+            "scoreConfidence" : [
+                17.067133970919805,
+                76.59063370584786
+            ],
+            "scorePercentiles" : {
+                "0.0" : 44.94753333333333,
+                "50.0" : 47.68790909090909,
+                "90.0" : 47.851209090909094,
+                "95.0" : 47.851209090909094,
+                "99.0" : 47.851209090909094,
+                "99.9" : 47.851209090909094,
+                "99.99" : 47.851209090909094,
+                "99.999" : 47.851209090909094,
+                "99.9999" : 47.851209090909094,
+                "100.0" : 47.851209090909094
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    47.68790909090909,
+                    47.851209090909094,
+                    44.94753333333333
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.encrypt",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "payloadSize" : "1048576"
+        },
+        "primaryMetric" : {
+            "score" : 54.54558666666666,
+            "scoreError" : 21.954869594019062,
+            "scoreConfidence" : [
+                32.59071707264759,
+                76.50045626068572
+            ],
+            "scorePercentiles" : {
+                "0.0" : 53.16202,
+                "50.0" : 55.12544,
+                "90.0" : 55.3493,
+                "95.0" : 55.3493,
+                "99.0" : 55.3493,
+                "99.9" : 55.3493,
+                "99.99" : 55.3493,
+                "99.999" : 55.3493,
+                "99.9999" : 55.3493,
+                "100.0" : 55.3493
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    55.3493,
+                    55.12544,
+                    53.16202
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.StreamEncryptionBenchmark.decryptStream",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fileSize" : "1048576"
+        },
+        "primaryMetric" : {
+            "score" : 56.94648148148148,
+            "scoreError" : 24.372296548773832,
+            "scoreConfidence" : [
+                32.574184932707645,
+                81.31877803025532
+            ],
+            "scorePercentiles" : {
+                "0.0" : 55.4157,
+                "50.0" : 57.546844444444446,
+                "90.0" : 57.8769,
+                "95.0" : 57.8769,
+                "99.0" : 57.8769,
+                "99.9" : 57.8769,
+                "99.99" : 57.8769,
+                "99.999" : 57.8769,
+                "99.9999" : 57.8769,
+                "100.0" : 57.8769
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    57.8769,
+                    57.546844444444446,
+                    55.4157
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.StreamEncryptionBenchmark.decryptStream",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fileSize" : "10485760"
+        },
+        "primaryMetric" : {
+            "score" : 134.4749833333333,
+            "scoreError" : 34.95398611719233,
+            "scoreConfidence" : [
+                99.52099721614098,
+                169.42896945052564
+            ],
+            "scorePercentiles" : {
+                "0.0" : 132.350075,
+                "50.0" : 135.004125,
+                "90.0" : 136.07075,
+                "95.0" : 136.07075,
+                "99.0" : 136.07075,
+                "99.9" : 136.07075,
+                "99.99" : 136.07075,
+                "99.999" : 136.07075,
+                "99.9999" : 136.07075,
+                "100.0" : 136.07075
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    135.004125,
+                    132.350075,
+                    136.07075
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.StreamEncryptionBenchmark.encryptStream",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fileSize" : "1048576"
+        },
+        "primaryMetric" : {
+            "score" : 49.45353636363637,
+            "scoreError" : 10.438363288767809,
+            "scoreConfidence" : [
+                39.01517307486856,
+                59.89189965240418
+            ],
+            "scorePercentiles" : {
+                "0.0" : 48.808454545454545,
+                "50.0" : 49.6525,
+                "90.0" : 49.899654545454545,
+                "95.0" : 49.899654545454545,
+                "99.0" : 49.899654545454545,
+                "99.9" : 49.899654545454545,
+                "99.99" : 49.899654545454545,
+                "99.999" : 49.899654545454545,
+                "99.9999" : 49.899654545454545,
+                "100.0" : 49.899654545454545
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    49.899654545454545,
+                    49.6525,
+                    48.808454545454545
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.grinx.shared.benchmark.crypto.StreamEncryptionBenchmark.encryptStream",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "C:\\Program Files\\Zulu\\zulu-21\\bin\\java.exe",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=ES",
+            "-Duser.language=es",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.10",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.10+7-LTS",
+        "warmupIterations" : 3,
+        "warmupTime" : "500 ms",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "500 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fileSize" : "10485760"
+        },
+        "primaryMetric" : {
+            "score" : 61.45277777777778,
+            "scoreError" : 21.190904949675854,
+            "scoreConfidence" : [
+                40.26187282810193,
+                82.64368272745364
+            ],
+            "scorePercentiles" : {
+                "0.0" : 60.11586666666667,
+                "50.0" : 62.02802222222222,
+                "90.0" : 62.214444444444446,
+                "95.0" : 62.214444444444446,
+                "99.0" : 62.214444444444446,
+                "99.9" : 62.214444444444446,
+                "99.99" : 62.214444444444446,
+                "99.999" : 62.214444444444446,
+                "99.9999" : 62.214444444444446,
+                "100.0" : 62.214444444444446
+            },
+            "scoreUnit" : "ms/op",
+            "rawData" : [
+                [
+                    62.02802222222222,
+                    62.214444444444446,
+                    60.11586666666667
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    }
+]
+
+

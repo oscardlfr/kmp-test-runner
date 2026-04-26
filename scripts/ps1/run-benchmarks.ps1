@@ -188,8 +188,19 @@ function Invoke-GradleBenchmark {
     }
 
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    & $gradlew $Task @ExtraArgs --no-daemon --stacktrace 2>&1 | ForEach-Object { Write-Host "     $_" -ForegroundColor DarkGray }
-    $exitCode = $LASTEXITCODE
+    # gradlew uses the current working directory as the project root unless
+    # `--project-dir` is passed. Without Push-Location the script invoked
+    # gradle from wherever pwsh was started (typically the kmp-test-runner
+    # repo) and gradle blew up with "Directory 'X' does not contain a Gradle
+    # build". Bash sibling does `(cd "$gradle_root" && ./gradlew …)`; mirror
+    # that with Push-Location/Pop-Location so the cd is local to this scope.
+    Push-Location $Root
+    try {
+        & $gradlew $Task @ExtraArgs --no-daemon --stacktrace 2>&1 | ForEach-Object { Write-Host "     $_" -ForegroundColor DarkGray }
+        $exitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
     $stopwatch.Stop()
 
     return [PSCustomObject]@{
