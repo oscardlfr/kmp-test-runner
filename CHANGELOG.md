@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-04-27
+
+### Added
+- **`CONTRIBUTING.md`** — full contributor guide promised in v0.4.0 README but not shipped. Covers gitflow branch model (main + develop + feature/fix/chore/release branches), conventional-commits PR title format, the SH/PS1 parity rule (every shell change touches both shells), the per-change-area test matrix (vitest + bats + Pester + Gradle TestKit + installer-e2e), the release flow (develop → main triggers auto-tag + npm + GitHub Packages + GitHub Release), and the historical-bug regression-test rubric.
+- **`SECURITY.md`** — vulnerability disclosure policy (private email to oscardlfr@gmail.com), supported-version matrix, in-scope and out-of-scope categories (command injection, path traversal, supply-chain, CI workflow exploits, PowerShell-specific patterns), 48h/1w/2w response timeline, and a list of the security-oriented features already in CI (TruffleHog secrets-scan, Trusted Publisher OIDC for npm, step-level GITHUB_TOKEN scoping, branch protection with `enforce_admins: true`, squash-merge enforcement, commit-lint gate, multi-agent advisory lockfile).
+- **`CODE_OF_CONDUCT.md`** — Contributor Covenant 2.1, scoped to GitHub issues / PR reviews / Discussions / npm package metadata / GitHub Releases comments.
+- **README "Contributing" section rewritten** to point at `CONTRIBUTING.md`, surface the quick-check command list, and link to `CODE_OF_CONDUCT.md` and `SECURITY.md`.
+
+### Changed
+- README no longer claims `CONTRIBUTING.md` is "planned for v0.4.0" — the file now exists.
+
 ## [0.4.0] — 2026-04-26
 
 ### Added
@@ -412,6 +423,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TruffleHog secrets scan as required CI status check
 - Apache-2.0 license
 
+[0.4.1]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.8...v0.4.0
 [0.3.8]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/oscardlfr/kmp-test-runner/compare/v0.3.6...v0.3.7
