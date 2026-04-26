@@ -30,6 +30,13 @@ gray()   { color_print "$GRAY"   "$1"; }
 white()  { color_print "$WHITE"  "$1"; }
 
 # ---------------------------------------------------------------------------
+# RUN ID — concurrent-invocation safety (v0.3.8+)
+# Format: YYYYMMDD-HHMMSS-PID6 (zero-padded last 6 digits of PID).
+# ---------------------------------------------------------------------------
+KMP_RUN_ID="${KMP_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$(printf '%06d' $(($$ % 1000000)))}"
+export KMP_RUN_ID
+
+# ---------------------------------------------------------------------------
 # DEFAULTS
 # ---------------------------------------------------------------------------
 PROJECT_ROOT=""
@@ -441,7 +448,8 @@ echo ""
 # ---------------------------------------------------------------------------
 # MARKDOWN REPORT
 # ---------------------------------------------------------------------------
-REPORT_FILE="$PROJECT_ROOT/benchmark-report.md"
+REPORT_FILE="$PROJECT_ROOT/benchmark-report-${KMP_RUN_ID}.md"
+REPORT_FILE_LEGACY="$PROJECT_ROOT/benchmark-report.md"
 REPORT_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
 
 {
@@ -449,6 +457,7 @@ REPORT_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
     echo ""
     echo "**Config:** ${CONFIG}  "
     echo "**Date:** ${REPORT_DATE}  "
+    echo "**Run ID:** ${KMP_RUN_ID}  "
     echo "**Platform:** ${PLATFORM}  "
     echo ""
     echo "## Platform Availability"
@@ -498,7 +507,11 @@ REPORT_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
     echo "**Total:** ${TOTAL_PASS} passed, ${TOTAL_FAIL} failed  "
 } > "$REPORT_FILE"
 
+# Mirror to legacy stable name (last writer wins under concurrent invocations).
+cp -f "$REPORT_FILE" "$REPORT_FILE_LEGACY" 2>/dev/null || true
+
 ok "[OK] Markdown report saved to: $REPORT_FILE"
+gray "    legacy alias: $REPORT_FILE_LEGACY"
 echo ""
 
 # ---------------------------------------------------------------------------
