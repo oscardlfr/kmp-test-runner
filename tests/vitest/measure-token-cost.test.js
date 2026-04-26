@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Unit tests for tools/measure-token-cost.js — covers the cross-model branch
+// Unit tests for tools/measure-token-cost.js -- covers the cross-model branch
 // added in v0.3.9. The gradle-driven default mode is exercised end-to-end by
 // the docs/token-cost-measurement.md captures and is not re-tested here.
 
@@ -14,16 +14,11 @@ import { fileURLToPath } from 'node:url';
 // closure can see them before the module under test is imported.
 const countTokensMock = vi.hoisted(() => vi.fn());
 
-vi.mock('@anthropic-ai/sdk', () => {
-  class APIError extends Error {
-    constructor(status, message) { super(message); this.status = status; }
-  }
-  function FakeAnthropic() {
+vi.mock('@anthropic-ai/sdk', () => ({
+  default: function FakeAnthropic() {
     return { messages: { countTokens: countTokensMock } };
-  }
-  FakeAnthropic.APIError = APIError;
-  return { default: FakeAnthropic };
-});
+  },
+}));
 
 import {
   parseAnthropicModels,
@@ -227,14 +222,14 @@ describe('summariseCrossModelVariation', () => {
       { approach: 'A', file: 'A.txt', cl100k: 1000, perModel: { m1: 1100, m2: 950 } },
     ];
     const out = summariseCrossModelVariation(rows, ['m1', 'm2']);
-    // min=950, max=1100, spread = (1100-950)/950 = 15.789…%
+    // min=950, max=1100, spread = (1100-950)/950 = 15.789...%
     expect(out[0].spreadPct).toBeCloseTo(15.8, 1);
   });
 
   it('returns spread null when only one numeric value is available', () => {
     const rows = [{ approach: 'A', file: 'A.txt', cl100k: 1000, perModel: { m1: '[error: x]', m2: '[error: y]' } }];
     const out = summariseCrossModelVariation(rows, ['m1', 'm2']);
-    // Only cl100k is numeric → cannot compute spread
+    // Only cl100k is numeric -> cannot compute spread
     expect(out[0].spreadPct).toBe(null);
   });
 });
@@ -263,7 +258,7 @@ describe('runCrossModelMode', () => {
     expect(error.mock.calls[0][0]).toMatch(/no captures found/);
   });
 
-  it('happy path: per-capture × per-model count, prints table, returns exitCode 0', async () => {
+  it('happy path: per-capture x per-model count, prints table, returns exitCode 0', async () => {
     countTokensMock.mockImplementation((args) => {
       const model = args?.model;
       const map = { 'claude-opus-4-7': 1234, 'claude-sonnet-4-6': 1200 };
@@ -284,7 +279,7 @@ describe('runCrossModelMode', () => {
     expect(result.rows).toHaveLength(2);
     expect(result.rows[0].approach).toBe('A');
     expect(result.rows[0].perModel['claude-opus-4-7']).toBe(1234);
-    // 2 captures × 2 models = 4 SDK calls
+    // 2 captures x 2 models = 4 SDK calls
     expect(countTokensMock).toHaveBeenCalledTimes(4);
     // Table content reached stdout sink
     const stdout = log.mock.calls.map((c) => c[0]).join('\n');
@@ -294,7 +289,7 @@ describe('runCrossModelMode', () => {
     expect(stdout).toContain('Approach ratio vs C');
   });
 
-  it('per-model error renders inline as [error: …] without aborting the run', async () => {
+  it('per-model error renders inline as [error: ...] without aborting the run', async () => {
     // Order: first call is for claude-opus-4-7 (resolves), second is for the bad model (rejects).
     countTokensMock
       .mockResolvedValueOnce({ input_tokens: 500 })
