@@ -6,10 +6,10 @@ suite in three different ways. Backs the qualitative claim in the README
 
 ```mermaid
 xychart-beta
-    title "Token cost on claude-opus-4-7 — same module, three observation strategies"
-    x-axis ["A. Raw gradle + reports", "B. kmp-test parallel", "C. kmp-test --json"]
+    title "Token cost — every (approach × tokenizer) combination from the same captures"
+    x-axis ["A·cl100k", "A·opus-4-7", "A·sonnet-4-6", "A·haiku-4-5", "B·cl100k", "B·opus-4-7", "B·sonnet-4-6", "B·haiku-4-5", "C·cl100k", "C·opus-4-7", "C·sonnet-4-6", "C·haiku-4-5"]
     y-axis "Tokens" 0 --> 28000
-    bar [25780, 642, 187]
+    bar [12807, 25780, 19234, 19234, 376, 642, 444, 444, 101, 187, 125, 125]
 ```
 
 | Tokenizer            | A. Raw gradle + reports | B. kmp-test parallel | C. kmp-test --json | A vs C  |

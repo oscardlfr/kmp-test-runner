@@ -8,13 +8,13 @@ For an AI coding agent re-running the suite on every change, the cheapest path m
 
 ```mermaid
 xychart-beta
-    title "Token cost on claude-opus-4-7 — same module, three observation strategies"
-    x-axis ["A. Raw gradle + reports", "B. kmp-test parallel", "C. kmp-test --json"]
+    title "Token cost — every (approach × tokenizer) combination from the same captures"
+    x-axis ["A·cl100k", "A·opus-4-7", "A·sonnet-4-6", "A·haiku-4-5", "B·cl100k", "B·opus-4-7", "B·sonnet-4-6", "B·haiku-4-5", "C·cl100k", "C·opus-4-7", "C·sonnet-4-6", "C·haiku-4-5"]
     y-axis "Tokens" 0 --> 28000
-    bar [25780, 642, 187]
+    bar [12807, 25780, 19234, 19234, 376, 642, 444, 444, 101, 187, 125, 125]
 ```
 
-Per-tokenizer breakdown (all four columns from the same captures, one row per tokenizer):
+Reading the chart: 4 bars per approach (one per tokenizer), 3 approaches grouped left-to-right. The dramatic step-down between A → B → C is the cost claim; the within-group variation between tokenizers is what the cross-model run validates. Same numbers in the table below:
 
 | Tokenizer            | A. Raw gradle + reports | B. kmp-test parallel | C. kmp-test --json | A vs C  |
 |----------------------|------------------------:|---------------------:|-------------------:|--------:|
