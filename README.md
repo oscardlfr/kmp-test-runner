@@ -199,9 +199,29 @@ BUILD SUCCESSFUL
 {"tool":"kmp-test","subcommand":"parallel","version":"0.3.8","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16},"errors":[]}
 ```
 
-That's ~300 bytes — roughly **80–100 tokens** vs. several thousand for approach A. For an agent running tests on every iteration of a coding loop, the difference compounds quickly.
+That's ~300 bytes — roughly **80–200 tokens** vs. tens of thousands for approach A. For an agent running tests on every iteration of a coding loop, the difference compounds quickly.
 
-> **Measured numbers** (single module, `shared-kmp-libs/core-result`, 2026-04-26): **A 12,816 tokens**, **B 376 tokens**, **C 100 tokens** — `--json` is **128× cheaper than raw gradle + report parsing**, and **3.8× cheaper than the default markdown output**. Full methodology and reproducibility script in [`docs/token-cost-measurement.md`](docs/token-cost-measurement.md).
+```mermaid
+xychart-beta
+    title "Token cost per test-run iteration (claude-opus-4-7)"
+    x-axis ["A. Raw gradle + reports", "B. kmp-test parallel", "C. kmp-test --json"]
+    y-axis "Tokens" 0 --> 28000
+    bar [25780, 642, 187]
+```
+
+<details>
+<summary>ASCII fallback (if Mermaid xychart-beta doesn't render)</summary>
+
+```
+A. Raw gradle + reports  ████████████████████████████████████████  25,780 tokens
+B. kmp-test parallel     █                                            642 tokens
+C. kmp-test --json       ▏                                            187 tokens
+                         (claude-opus-4-7 tokenizer; A is ~138× C)
+```
+
+</details>
+
+> **Measured numbers** (single module, `shared-kmp-libs/core-result`, 2026-04-26): **A 25,780 tokens**, **B 642 tokens**, **C 187 tokens** on `claude-opus-4-7` — `--json` is **~138× cheaper than raw gradle + report parsing**, and **~3.4× cheaper than the default markdown output**. Validated across the Claude 4.x family (ratios stay in 127×–154× / 3.4×–3.7× across `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`, plus `cl100k_base` baseline) — methodology + reproducibility in [`docs/token-cost-measurement.md`](docs/token-cost-measurement.md).
 
 ### Why this gap matters
 
