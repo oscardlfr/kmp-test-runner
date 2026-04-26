@@ -412,7 +412,7 @@ Open issues and pull requests are welcome. Please run `npm test` (Vitest + bats 
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE) for details.
 
 ## Changelog
 

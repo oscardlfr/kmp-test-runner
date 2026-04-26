@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 //
 // tools/measure-token-cost.js — measure the token cost of three agent-friendly
 // approaches to running KMP tests:
