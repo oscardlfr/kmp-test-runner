@@ -4,18 +4,89 @@ Empirical measurement of the token cost an AI agent pays to run a KMP test
 suite in three different ways. Backs the qualitative claim in the README
 "Agentic usage" section with a real number from a real codebase.
 
+```mermaid
+xychart-beta
+    title "Token cost per test-run iteration (bars: cl100k_base, opus-4-7, sonnet-4-6, haiku-4-5)"
+    x-axis ["A. Raw gradle + reports", "B. kmp-test parallel", "C. kmp-test --json"]
+    y-axis "Tokens" 0 --> 28000
+    bar [12807, 376, 101]
+    bar [25780, 642, 187]
+    bar [19234, 444, 125]
+    bar [19234, 444, 125]
+```
+
+<details>
+<summary>ASCII fallback (if Mermaid xychart-beta doesn't render)</summary>
+
+```
+                              cl100k_base   opus-4-7   sonnet-4-6   haiku-4-5
+A. Raw gradle + reports           12,807     25,780       19,234      19,234
+B. kmp-test parallel                 376        642          444         444
+C. kmp-test --json                   101        187          125         125
+
+A vs C ratio                         127×       138×         154×        154×
+B vs C ratio                         3.7×       3.4×         3.6×        3.6×
+```
+
+Same captures, four tokenizers. A:B:C ratio holds in a 127×–154× /
+3.4×–3.7× band across all of them — that ratio is what the cost claim rests
+on, not the absolute counts (which differ by up to 101% across the family).
+
+</details>
+
 ## TL;DR
 
-For the same test failure on the same module:
+For the same test failure on the same module (cl100k_base baseline):
 
 | Approach | Tokens | Bytes | vs `--json` |
 |---|---:|---:|---:|
-| **A.** Raw `./gradlew :module:desktopTest` + read `build/reports/**` | **12,816** | 54 KB | **128×** |
-| **B.** `kmp-test parallel` (default markdown) | **376** | 2.0 KB | **3.8×** |
-| **C.** `kmp-test parallel --json` | **100** | 343 B | **1.0×** |
+| **A.** Raw `./gradlew :module:desktopTest` + read `build/reports/**` | **12,807** | 54 KB | **127×** |
+| **B.** `kmp-test parallel` (default markdown) | **376** | 2.0 KB | **3.7×** |
+| **C.** `kmp-test parallel --json` | **101** | 343 B | **1.0×** |
 
 `--json` mode delivers the same actionable failure information (exit code,
 test counts, failure message) at ~1% of the raw-gradle-plus-reports cost.
+
+## Cross-model validation
+
+The same captures re-tokenised through Anthropic's
+[`messages.countTokens`](https://docs.anthropic.com/en/api/messages-count-tokens)
+API per Claude 4.x model — confirms the A:B:C ratio is robust to tokenizer
+choice, even though absolute counts differ across the family.
+
+| Approach | cl100k_base | claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 |
+|---|---:|---:|---:|---:|
+| **A.** Raw gradle + reports | 12,807 | **25,780** | 19,234 | 19,234 |
+| **B.** `kmp-test parallel` | 376 | **642** | 444 | 444 |
+| **C.** `kmp-test parallel --json` | 101 | **187** | 125 | 125 |
+
+**Approach ratio vs C** (the metric the README claim rests on):
+
+| Approach | cl100k_base | claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 |
+|---|---:|---:|---:|---:|
+| A vs C | 127× | **138×** | 154× | 154× |
+| B vs C | 3.7× | **3.4×** | 3.6× | 3.6× |
+
+Two notable findings:
+
+- **Tokenizer transition.** `claude-sonnet-4-6` and `claude-haiku-4-5` share
+  the same tokenizer (identical counts to the unit). `claude-opus-4-7` ships
+  a new tokenizer that produces 34–50% more tokens for the same input — most
+  visibly on heavy XML/HTML report payloads (approach A).
+- **Ratios survive.** Despite per-model spreads of 70–101% in absolute count,
+  the A:B:C ratio sits in a 127×–154× / 3.4×–3.7× band across all four
+  tokenizers. The "raw gradle is two orders of magnitude more expensive than
+  `--json`" claim holds regardless of which Claude tokenizer the agent runs
+  on.
+
+Captured run output: [`tools/runs/cross-model-results.txt`](../tools/runs/cross-model-results.txt).
+Reproduce with:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-… \
+  node tools/measure-token-cost.js \
+  --anthropic-models claude-opus-4-7,claude-sonnet-4-6,claude-haiku-4-5
+```
 
 ## Methodology
 
@@ -25,12 +96,14 @@ test counts, failure message) at ~1% of the raw-gradle-plus-reports cost.
   machine targets a runtime older than the compile target —
   `UnsupportedClassVersionError`. The failure shape is irrelevant; what
   matters is each approach's report cost.
-- **Tokenizer**: `cl100k_base` via `js-tiktoken`. This is OpenAI's tokenizer.
-  Anthropic's tokenizer is similar enough for *relative* comparison — the
-  ratio between approaches is what backs the README claim, not the absolute
-  count.
+- **Tokenizer**: `cl100k_base` via `js-tiktoken` for the baseline above.
+  Anthropic's `messages.countTokens` API is also exercised against the same
+  captures (see [Cross-model validation](#cross-model-validation)) — the
+  ratio between approaches is what backs the README claim, and that ratio
+  is preserved across tokenizers.
 - **Date**: 2026-04-26.
-- **Tool version**: kmp-test-runner v0.3.7.
+- **Tool version**: kmp-test-runner v0.3.8 (cross-model validation added in
+  v0.3.9 against the same captures).
 - **Runs per approach**: 1. The script supports `--runs N` for noise
   robustness, but with the Gradle daemon hot the variance run-to-run is
   small. Re-run the script if you want N>1 numbers.
@@ -88,23 +161,29 @@ BUILD FAILED — 1 module(s) failed
 {"tool":"kmp-test","subcommand":"parallel","version":"0.3.7","project_root":"…","exit_code":1,"duration_ms":46680,"tests":{"total":1,"passed":0,"failed":1,"skipped":0},"modules":[],"coverage":{"tool":"auto","missed_lines":null},"errors":[{"message":"BUILD FAILED - 1 module(s) failed"}]}
 ```
 
-One line. ~100 tokens. An agent can `JSON.parse` this and branch on
-`exit_code` / `tests.failed` / `errors[0].message`.
+One line. ~101 tokens (cl100k) / ~187 tokens (claude-opus-4-7). An agent can
+`JSON.parse` this and branch on `exit_code` / `tests.failed` /
+`errors[0].message`.
 
 ## What this means in practice
 
-Per agent iteration the absolute token saving is 12,716 tokens (A → C). At
-modern API rates (e.g. Anthropic Claude Sonnet 4.5/Opus 4.6+: $3/MTok input)
-that's $0.038/iteration in input cost on the test-running step alone. For a
-coding loop that runs tests on every change — say 50× per session — that's
-$1.91 per session of pure log-parsing tokens that the agent wastes when it
-could be reasoning about the actual failure.
+Per agent iteration the absolute token saving is 25,593 tokens (A → C, on
+the claude-opus-4-7 tokenizer — the largest of the family). At Claude Opus
+input pricing (~$15/MTok at the time of writing) that's roughly
+$0.38/iteration in input cost on the test-running step alone. For a coding
+loop that runs tests on every change — say 50× per session — that's
+$19.20 per session of pure log-parsing tokens that the agent wastes when it
+could be reasoning about the actual failure. Even on Sonnet pricing
+(~$3/MTok) the gap is $3.84 per session. Numbers shrink on
+sonnet-4-6 / haiku-4-5 (which share an older, more compact tokenizer) but
+the ratio stays in the same band.
 
-More importantly: **context window pressure**. A 12 K-token observation per
-loop iteration competes with the agent's actual working context. After 5
-iterations the agent has spent 64 K tokens just *reading test reports*. With
-`--json`, that drops to 500 tokens and the agent's context stays focused on
-the code.
+More importantly: **context window pressure**. A ~25 K-token observation
+per loop iteration competes with the agent's actual working context. After
+5 iterations the agent has spent ~128 K tokens just *reading test
+reports* — that's the entire 200 K standard context burned on log
+parsing. With `--json`, that drops to ~1 K tokens and the agent's
+context stays focused on the code.
 
 ## Reproducibility
 
@@ -146,10 +225,15 @@ beyond a 10-minute timeout on Windows MinGW (filesystem walk overhead).
 
 ## Caveats
 
-- **Tokenizer drift.** cl100k_base is OpenAI's; Claude's tokenizer differs.
-  The *ratio* (~128× difference between A and C) is robust across
-  tokenizers. The absolute token counts on Claude will be within ±15% of
-  the cl100k_base numbers shown here — close enough for the claim.
+- **Tokenizer drift, validated.** cl100k_base is OpenAI's; Claude's
+  tokenizer differs and isn't even consistent within the 4.x family
+  (`claude-opus-4-7` ships a new tokenizer that's 34–50% less compact than
+  the one shared by `sonnet-4-6` / `haiku-4-5`). The *ratio* between
+  approaches (127×–154× for A vs C, 3.4×–3.7× for B vs C) is robust across
+  all four tokenizers measured — see
+  [Cross-model validation](#cross-model-validation). Earlier versions of
+  this doc claimed "within ±15% of cl100k_base"; the actual spread is
+  closer to ±100% on heavy XML/HTML payloads, but the *ratio claim* held.
 - **Project size matters.** A larger module set explodes A's cost faster
   than B/C (more `> Task` lines, more report files). Re-running on
   DawSync/WakeTheCave-scale projects would show even larger ratios. The

@@ -10,10 +10,11 @@
 //   B. kmp-test parallel — markdown-summarized stdout.
 //   C. kmp-test parallel --json — single JSON line on stdout.
 //
-// Tokens are counted with cl100k_base (OpenAI tokenizer; close enough to
-// Anthropic's tokenizer for relative comparison — the ratio between A/B/C is
-// what matters, not the absolute count). Repeat N runs per approach for
-// noise-robustness; report mean ± std.
+// Default mode counts tokens with cl100k_base (OpenAI tokenizer). Pass
+// `--anthropic-models <csv>` to skip the gradle run and re-tokenise the
+// captures already present in `tools/runs/` via the Anthropic API's
+// `messages.countTokens` endpoint per Claude 4.x model — this validates that
+// the A/B/C ratio holds across the Claude family, not just on cl100k_base.
 //
 // Usage:
 //   node tools/measure-token-cost.js \
@@ -21,10 +22,9 @@
 //     --module-filter "module-name*" \
 //     [--runs 3]
 //
-// Example:
+//   # Cross-model re-tokenisation (no gradle, reads tools/runs/*.txt):
 //   node tools/measure-token-cost.js \
-//     --project-root ../dipatternsdemo \
-//     --module-filter "di-contracts*"
+//     --anthropic-models claude-opus-4-7,claude-sonnet-4-6,claude-haiku-4-5
 
 import { spawnSync } from 'node:child_process';
 import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
@@ -32,34 +32,47 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Tiktoken } from 'js-tiktoken/lite';
 import cl100kBase from 'js-tiktoken/ranks/cl100k_base';
+import Anthropic from '@anthropic-ai/sdk';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const enc = new Tiktoken(cl100kBase);
 
-function parseArgs(argv) {
+export function parseAnthropicModels(csv) {
+  if (!csv) return [];
+  return csv.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+export function parseArgs(argv) {
   // testTask: gradle task suffix appended to each matched module for approach A.
   // KMP modules use ":desktopTest" / ":jvmTest"; plain JVM modules use ":test".
-  const out = { runs: 1, testTask: 'test' };
+  const out = { runs: 1, testTask: 'test', anthropicModels: [] };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--project-root' && argv[i + 1]) { out.projectRoot = argv[++i]; continue; }
     if (argv[i] === '--module-filter' && argv[i + 1]) { out.moduleFilter = argv[++i]; continue; }
     if (argv[i] === '--test-task' && argv[i + 1]) { out.testTask = argv[++i]; continue; }
     if (argv[i] === '--runs' && argv[i + 1]) { out.runs = parseInt(argv[++i], 10); continue; }
+    if (argv[i] === '--anthropic-models' && argv[i + 1]) {
+      out.anthropicModels = parseAnthropicModels(argv[++i]);
+      continue;
+    }
   }
-  if (!out.projectRoot) {
+  // --project-root is only required for the gradle mode. In cross-model mode
+  // we read existing captures from tools/runs/ instead.
+  if (out.anthropicModels.length === 0 && !out.projectRoot) {
     console.error('Usage: node tools/measure-token-cost.js --project-root <path> [--module-filter <pat>] [--test-task <name>] [--runs N]');
+    console.error('       node tools/measure-token-cost.js --anthropic-models <csv>   # re-tokenise existing captures');
     process.exit(2);
   }
-  out.projectRoot = path.resolve(out.projectRoot);
+  if (out.projectRoot) out.projectRoot = path.resolve(out.projectRoot);
   return out;
 }
 
-function countTokens(text) {
+export function countTokensCl100k(text) {
   return enc.encode(text || '').length;
 }
 
-function summarize(values) {
+export function summarize(values) {
   if (values.length === 0) return { mean: 0, std: 0, min: 0, max: 0 };
   const mean = values.reduce((a, b) => a + b, 0) / values.length;
   const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;
@@ -169,8 +182,198 @@ function runApproachC(projectRoot, moduleFilter) {
   return spawnCapture(process.execPath, [cli, ...args]);
 }
 
-function main() {
-  const opts = parseArgs(process.argv.slice(2));
+// Cross-model helpers ---------------------------------------------------------
+
+const CAPTURE_RE = /^([ABC])-.*-run(\d+)\.txt$/;
+
+export function loadCaptures(runsDir) {
+  // Returns [{ approach: 'A', file, runIndex, label, text }, …] sorted by
+  // (approach, runIndex). Only matches `<A|B|C>-<label>-run<N>.txt` so
+  // helper outputs like cross-model-results.txt are skipped.
+  if (!existsSync(runsDir)) return [];
+  const captures = [];
+  for (const name of readdirSync(runsDir)) {
+    const m = name.match(CAPTURE_RE);
+    if (!m) continue;
+    const fullPath = path.join(runsDir, name);
+    let text;
+    try { text = readFileSync(fullPath, 'utf8'); } catch { continue; }
+    captures.push({
+      approach: m[1],
+      runIndex: parseInt(m[2], 10),
+      file: name,
+      label: name.replace(CAPTURE_RE, '$1'), // approach letter only; we keep file for display
+      text,
+    });
+  }
+  captures.sort((a, b) =>
+    a.approach.localeCompare(b.approach) || a.runIndex - b.runIndex
+  );
+  return captures;
+}
+
+function simplifyAnthropicError(err) {
+  // Normalise SDK errors into short reason strings for the table cell.
+  // Anthropic.RateLimitError / AuthenticationError / BadRequestError all
+  // extend APIError and carry .status. We avoid `instanceof` so the test
+  // mock doesn't have to mirror the full class hierarchy.
+  if (err && typeof err === 'object') {
+    if (err.status === 429) return 'rate_limited';
+    if (err.status === 401) return 'auth_failed';
+    if (err.status === 404) return 'model_not_found';
+    if (err.status === 400) {
+      const msg = err.message || 'bad_request';
+      // Trim long upstream messages so the table stays narrow.
+      return 'bad_request: ' + msg.slice(0, 80);
+    }
+    if (err.message) return err.message.slice(0, 80);
+  }
+  return String(err);
+}
+
+export async function countTokensAnthropic(client, model, text) {
+  // Wraps client.messages.countTokens in a per-call try/catch so one model's
+  // failure (e.g. a typo'd model id) doesn't abort the whole run. The SDK
+  // applies its own retry policy for 429/5xx before throwing.
+  try {
+    const r = await client.messages.countTokens({
+      model,
+      messages: [{ role: 'user', content: text }],
+    });
+    if (typeof r?.input_tokens !== 'number') {
+      return { ok: false, error: 'no_input_tokens_in_response' };
+    }
+    return { ok: true, tokens: r.input_tokens };
+  } catch (err) {
+    return { ok: false, error: simplifyAnthropicError(err) };
+  }
+}
+
+export function formatCrossModelTable(rows, models) {
+  // rows: [{ approach, file, cl100k, perModel: { [model]: number | "[error: ...]" } }]
+  const headers = ['Approach', 'Capture', 'cl100k_base', ...models];
+  const align = ['---', '---', '---:', ...models.map(() => '---:')];
+  const lines = [];
+  lines.push('| ' + headers.join(' | ') + ' |');
+  lines.push('|' + align.map((a) => a).join('|') + '|');
+  for (const row of rows) {
+    const cells = [
+      row.approach,
+      '`' + row.file + '`',
+      String(row.cl100k),
+      ...models.map((m) => {
+        const v = row.perModel[m];
+        return v == null ? '-' : String(v);
+      }),
+    ];
+    lines.push('| ' + cells.join(' | ') + ' |');
+  }
+  return lines.join('\n');
+}
+
+export function summariseCrossModelVariation(rows, models) {
+  // Per-approach: max(over models) / min(over models) - 1, expressed as %.
+  // Surfaces whether the family agrees within a tight band (low %) or
+  // diverges meaningfully (high %).
+  const out = [];
+  for (const row of rows) {
+    const numeric = models
+      .map((m) => row.perModel[m])
+      .filter((v) => typeof v === 'number');
+    // Include cl100k as the baseline reference.
+    if (typeof row.cl100k === 'number') numeric.push(row.cl100k);
+    if (numeric.length < 2) {
+      out.push({ approach: row.approach, file: row.file, spreadPct: null });
+      continue;
+    }
+    const min = Math.min(...numeric);
+    const max = Math.max(...numeric);
+    const spreadPct = min > 0 ? +(((max - min) / min) * 100).toFixed(1) : null;
+    out.push({ approach: row.approach, file: row.file, spreadPct, min, max });
+  }
+  return out;
+}
+
+export async function runCrossModelMode(opts, sdkFactory, sink = console, runsDir) {
+  // sink: { log, error } — injected for tests so we can capture stdout/stderr.
+  // sdkFactory: () => Anthropic-like client. Defaults to a real one in main().
+  // runsDir: override for tests; defaults to <repoRoot>/tools/runs.
+  const dir = runsDir || path.join(repoRoot, 'tools', 'runs');
+  const captures = loadCaptures(dir);
+  if (captures.length === 0) {
+    sink.error(
+      `Error: no captures found in ${dir}. Run without --anthropic-models first to generate captures.`
+    );
+    return { exitCode: 2, rows: [], variation: [] };
+  }
+  const client = sdkFactory();
+  const rows = [];
+  for (const cap of captures) {
+    const cl100k = countTokensCl100k(cap.text);
+    const perModel = {};
+    for (const model of opts.anthropicModels) {
+      sink.error(`[count] ${cap.file} × ${model}…`);
+      const result = await countTokensAnthropic(client, model, cap.text);
+      perModel[model] = result.ok ? result.tokens : `[error: ${result.error}]`;
+    }
+    rows.push({ approach: cap.approach, file: cap.file, cl100k, perModel });
+  }
+
+  sink.log('');
+  sink.log('# Cross-model token-cost (re-tokenised existing captures)');
+  sink.log('');
+  sink.log(`Captures: ${captures.length} from \`tools/runs/\``);
+  sink.log(`Models: ${opts.anthropicModels.join(', ')}`);
+  sink.log('Tokenizer: cl100k_base baseline + Anthropic `messages.countTokens` per model');
+  sink.log('');
+  sink.log(formatCrossModelTable(rows, opts.anthropicModels));
+  sink.log('');
+
+  // Cross-family variation footer
+  const variation = summariseCrossModelVariation(rows, opts.anthropicModels);
+  sink.log('## Cross-family variation');
+  sink.log('');
+  sink.log('| Approach | Capture | spread (max/min − 1) |');
+  sink.log('|----------|---------|---------------------:|');
+  for (const v of variation) {
+    const cell = v.spreadPct == null ? 'n/a' : v.spreadPct + '%';
+    sink.log(`| ${v.approach} | \`${v.file}\` | ${cell} |`);
+  }
+  sink.log('');
+  // Approach ratio across each model (vs C, like the cl100k table).
+  const byApproach = { A: [], B: [], C: [] };
+  for (const r of rows) byApproach[r.approach]?.push(r);
+  const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+  const cAvg = (key) => avg((byApproach.C || []).map((r) => key === 'cl100k' ? r.cl100k : r.perModel[key]).filter((v) => typeof v === 'number'));
+  const ratioFor = (approach, key) => {
+    const c = cAvg(key);
+    if (!c) return 'n/a';
+    const aVals = byApproach[approach].map((r) => key === 'cl100k' ? r.cl100k : r.perModel[key]).filter((v) => typeof v === 'number');
+    if (aVals.length === 0) return 'n/a';
+    return (avg(aVals) / c).toFixed(1) + '×';
+  };
+  sink.log('## Approach ratio vs C (per tokenizer)');
+  sink.log('');
+  const ratioHeaders = ['Approach', 'cl100k_base', ...opts.anthropicModels];
+  sink.log('| ' + ratioHeaders.join(' | ') + ' |');
+  sink.log('|' + ratioHeaders.map(() => '---').join('|') + '|');
+  for (const a of ['A', 'B', 'C']) {
+    const cells = [
+      a,
+      ratioFor(a, 'cl100k'),
+      ...opts.anthropicModels.map((m) => ratioFor(a, m)),
+    ];
+    sink.log('| ' + cells.join(' | ') + ' |');
+  }
+  sink.log('');
+  sink.log('Raw captures in `tools/runs/`. Re-run with the same flag to refresh.');
+
+  return { exitCode: 0, rows, variation };
+}
+
+// Default-mode (gradle) main loop --------------------------------------------
+
+function runGradleMode(opts) {
   const runsDir = path.join(repoRoot, 'tools', 'runs');
   if (!existsSync(runsDir)) mkdirSync(runsDir, { recursive: true });
 
@@ -192,7 +395,7 @@ function main() {
       const elapsed = Date.now() - t0;
       const outFile = path.join(runsDir, label);
       writeFileSync(outFile, output, 'utf8');
-      const tok = countTokens(output);
+      const tok = countTokensCl100k(output);
       tokens.push(tok);
       bytes.push(Buffer.byteLength(output, 'utf8'));
       durations.push(elapsed);
@@ -238,4 +441,28 @@ function main() {
   console.log('Raw run logs in `tools/runs/`.');
 }
 
-main();
+async function main() {
+  const opts = parseArgs(process.argv.slice(2));
+  if (opts.anthropicModels.length > 0) {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      console.error(
+        'Error: --anthropic-models requires the ANTHROPIC_API_KEY environment variable.\n' +
+        '       Set it in your shell, e.g. `export ANTHROPIC_API_KEY=sk-ant-…`'
+      );
+      process.exit(2);
+    }
+    const result = await runCrossModelMode(opts, () => new Anthropic());
+    process.exit(result.exitCode);
+  }
+  runGradleMode(opts);
+}
+
+// Only auto-run when invoked directly (not when imported by tests).
+const invokedDirectly =
+  process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
