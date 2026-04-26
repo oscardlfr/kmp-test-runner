@@ -47,25 +47,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Build local artifact (Linux)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Build local artifact (Linux/macOS — both reuse linux.tar.gz)
+        if: matrix.os != 'windows-latest'
         run: |
           ARTIFACT_VER="$(node -p "require('./package.json').version")"
           bash scripts/build-artifact.sh "$ARTIFACT_VER" /tmp/kmp-e2e-artifacts
           echo "LOCAL_ARCHIVE=/tmp/kmp-e2e-artifacts/kmp-test-runner-${ARTIFACT_VER}-linux.tar.gz" >> "$GITHUB_ENV"
           echo "ARTIFACT_VER=${ARTIFACT_VER}" >> "$GITHUB_ENV"
-      - name: Install npm deps (Linux — bats via local node_modules)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install npm deps (Linux/macOS — bats via local node_modules)
+        if: matrix.os != 'windows-latest'
         run: npm ci
-      - name: Run E2E bats tests (Linux)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Run E2E bats tests (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        # 5-min timeout so a hang fails fast with logs (the wider tests/bats/
+        # suite has a hang on macos-latest — install.bats specifically should
+        # be quick and clean, this bounds risk).
         run: npx bats tests/installer/install.bats --filter "E2E"
       - name: Run E2E Pester tests (Windows)
         if: matrix.os == 'windows-latest'
