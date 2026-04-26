@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 package io.github.oscardlfr.kmptestrunner
 
 import org.gradle.testkit.runner.GradleRunner

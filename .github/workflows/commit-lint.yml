@@ -7,22 +7,41 @@ name: Commit Lint
 # repo stays standalone — see CLAUDE.md "Decouple from L0").
 #
 # Branch protection on `main` and `develop` enforces squash-merge, so the only
-# message that survives the merge is the PR title. We therefore validate ONLY
-# the PR title (squash_merge mode).
+# message that survives the merge is the PR title (PR events) — equivalently,
+# the latest commit subject on the target branch (push events).
+#
+# This workflow validates BOTH:
+#   - `pull_request` events: validate `github.event.pull_request.title`
+#   - `push` events on main/develop: validate the latest commit subject
+#     (equivalent to the squash-PR title that just landed)
+#   - `workflow_dispatch`: validate either an explicit input message or
+#     the latest commit on the dispatching ref — for re-running after
+#     GitHub Actions deduped a pull_request event (seen on develop→main
+#     release PRs whose head SHA matches a recent push run).
 #
 # Format:  <type>[scope][!]: <description>
 # Types:   feat | fix | docs | style | refactor | perf | test | build | ci |
 #          chore | revert | release
 # Rules:   description starts lowercase, no trailing period, ≤ 72 chars.
 #
-# To enforce this as a required check, add `commit-lint / 🔤 Commit Lint` to
-# the protected-branch required-status-checks list (matches the job's `name:`).
+# Required-status-check name (for branch protection): `commit-lint / Commit Lint`
+# (no leading emoji — the previous "🔤 Commit Lint" name made the GitHub
+# statuses API reject context updates with "4-byte Unicode" validation
+# errors when we tried to backfill the check after a dedup).
 # ──────────────────────────────────────────────────────────────────────────────
 
 on:
   pull_request:
     branches: [main, develop]
     types: [opened, edited, reopened, synchronize]
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "Commit message subject to validate (defaults to latest commit on the dispatching ref)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -30,14 +49,52 @@ permissions:
 
 jobs:
   commit-lint:
-    name: "🔤 Commit Lint"
+    name: "Commit Lint"
     runs-on: ubuntu-latest
     steps:
-      - name: Validate PR title
+      - name: Checkout (push + workflow_dispatch only)
+        if: github.event_name != 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Validate
         env:
+          EVENT_NAME: ${{ github.event_name }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          DISPATCH_MSG: ${{ inputs.message }}
         run: |
           set -euo pipefail
+
+          # Resolve the message to validate based on event source.
+          # Push + workflow_dispatch (no input): take the latest commit subject
+          # from the checked-out ref. Pull_request: take the PR title (which
+          # IS the message that will become the squash commit subject).
+          # workflow_dispatch with message input: take that input verbatim.
+          case "$EVENT_NAME" in
+            pull_request)
+              MSG="$PR_TITLE"
+              SOURCE="PR title"
+              ;;
+            workflow_dispatch)
+              if [ -n "${DISPATCH_MSG:-}" ]; then
+                MSG="$DISPATCH_MSG"
+                SOURCE="workflow_dispatch input"
+              else
+                MSG=$(git log -1 --format=%s)
+                SOURCE="latest commit subject (workflow_dispatch, no input)"
+              fi
+              ;;
+            push)
+              MSG=$(git log -1 --format=%s)
+              SOURCE="latest commit subject (push event)"
+              ;;
+            *)
+              echo "::error::Unsupported event: $EVENT_NAME"
+              exit 1
+              ;;
+          esac
+
           VALID_TYPES="feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert,release"
           MAX_LEN=72
 
@@ -45,19 +102,25 @@ jobs:
           SCOPE_PATTERN='(\([a-z0-9/_-]+\))?'
           FULL_PATTERN="^(${TYPE_PATTERN})${SCOPE_PATTERN}!?: .+"
 
-          MSG="$PR_TITLE"
+          # Squash-merge commit subjects on GitHub include a trailing
+          # ` (#NN)` PR reference. Strip it before validating so the
+          # description-end-period and length checks see the original
+          # PR title shape.
+          STRIPPED=$(echo "$MSG" | sed -E 's/ \(#[0-9]+\)$//')
+
           ERRORS=0
+          echo "Source: $SOURCE"
+          echo "Raw subject:     '$MSG'"
+          echo "Stripped subject: '$STRIPPED'"
 
-          echo "PR title: '$MSG'"
-
-          if ! echo "$MSG" | grep -qP "$FULL_PATTERN"; then
-            echo "::error::Invalid format: '$MSG'"
+          if ! echo "$STRIPPED" | grep -qP "$FULL_PATTERN"; then
+            echo "::error::Invalid format: '$STRIPPED'"
             echo "  Expected: <type>[scope][!]: <description>"
             echo "  Valid types: $VALID_TYPES"
             ERRORS=$((ERRORS + 1))
           fi
 
-          DESC=$(echo "$MSG" | sed 's/^[^:]*: //')
+          DESC=$(echo "$STRIPPED" | sed 's/^[^:]*: //')
           if echo "$DESC" | grep -qP '^[A-Z]'; then
             echo "::error::Description starts with uppercase: '$DESC'"
             ERRORS=$((ERRORS + 1))
@@ -66,13 +129,13 @@ jobs:
             echo "::error::Description ends with period: '$DESC'"
             ERRORS=$((ERRORS + 1))
           fi
-          if [ ${#MSG} -gt "$MAX_LEN" ]; then
-            echo "::warning::Subject exceeds $MAX_LEN chars (${#MSG}): '$MSG'"
+          if [ ${#STRIPPED} -gt "$MAX_LEN" ]; then
+            echo "::warning::Subject exceeds $MAX_LEN chars (${#STRIPPED}): '$STRIPPED'"
           fi
 
           if [ "$ERRORS" -gt 0 ]; then
             echo ""
-            echo "❌ PR title does not conform to Conventional Commits v1.0.0"
+            echo "❌ Subject does not conform to Conventional Commits v1.0.0"
             echo "   Examples:"
             echo "     feat(cli): add --dry-run flag"
             echo "     fix(installer): handle PowerShell 7 redirect headers"
@@ -80,4 +143,4 @@ jobs:
             exit 1
           fi
 
-          echo "✅ PR title conforms to Conventional Commits v1.0.0"
+          echo "✅ Subject conforms to Conventional Commits v1.0.0"

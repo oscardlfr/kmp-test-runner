@@ -1,0 +1,78 @@
+
+========================================
+  Test Changed Modules
+========================================
+Project: C:\Users\34645\AndroidStudioProjects\shared-kmp-libs
+Mode: All changes
+
+Modules with changes:
+  :core-result (1 files)
+
+Running tests on: core-result
+
+
+========================================
+  Parallel Test Suite + Coverage Report
+========================================
+
+[>] Discovering modules in shared-kmp-libs...
+
+Configuration:
+  Project: shared-kmp-libs
+  Test Type: common (desktop (commonTest))
+  Include shared: False
+  Skip tests: False
+  Module filter: core-result
+  Coverage only: False
+  Coverage tool: auto
+  Max workers: auto
+  Timeout: 600s
+  Modules found: 1
+
+
+Testable modules: 1 | Skipped: 0
+
+========================================
+  Running Tests (Single Invocation)
+========================================
+
+[>] Executing 1 test tasks in parallel...
+    Command: ./gradlew 1 tasks --parallel --continue
+    :core-result:desktopTest
+
+
+  [0m15s] Running... active: unknown
+  [FAIL] core-result
+
+Test Duration: 0m 15s
+
+[>] Generating coverage reports...
+  [!] Batch coverage failed (exit 1), 0 reports - retrying full batch without config cache...
+  [!] All 1 coverage tasks failed
+
+========================================
+  Parsing Coverage Reports
+========================================
+
+  [!] No coverage data: core-result
+
+[OK] Full coverage report generated!
+[>>] Report saved to: C:\Users\34645\AndroidStudioProjects\shared-kmp-libs\coverage-full-report-20260426-212625-002608.md
+    legacy alias: C:\Users\34645\AndroidStudioProjects\shared-kmp-libs\coverage-full-report.md
+
+Tests: 1 total | 0 passed | 1 failed | 0 skipped
+
+
+======================================================================
+  MODULE COVERAGE SUMMARY
+======================================================================
+
+MODULE                                             COVERAGE   MISSED
+----------------------------------------------------------------------
+======================================================================
+TOTAL                                                    0%         
+
+SUMMARY: 0% total |  lines missed | 0 modules at 100% | 0m 28s
+================================================================================
+
+BUILD FAILED - 1 module(s) failed

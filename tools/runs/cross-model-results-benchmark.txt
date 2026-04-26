@@ -1,0 +1,39 @@
+[count] A-run1.txt × claude-opus-4-7…
+[count] A-run1.txt × claude-sonnet-4-6…
+[count] A-run1.txt × claude-haiku-4-5…
+[count] B-run1.txt × claude-opus-4-7…
+[count] B-run1.txt × claude-sonnet-4-6…
+[count] B-run1.txt × claude-haiku-4-5…
+[count] C-run1.txt × claude-opus-4-7…
+[count] C-run1.txt × claude-sonnet-4-6…
+[count] C-run1.txt × claude-haiku-4-5…
+
+# Cross-model token-cost — feature: benchmark
+
+Captures: 3 from `tools/runs/benchmark/`
+Models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
+Tokenizer: cl100k_base baseline + Anthropic `messages.countTokens` per model
+
+| Approach | Capture | cl100k_base | claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 |
+|---|---|---:|---:|---:|---:|
+| A | `A-run1.txt` | 16083 | 23527 | 19266 | 19266 |
+| B | `B-run1.txt` | 6211 | 9916 | 7596 | 7596 |
+| C | `C-run1.txt` | 89 | 163 | 109 | 109 |
+
+## Cross-family variation
+
+| Approach | Capture | spread (max/min - 1) |
+|----------|---------|---------------------:|
+| A | `A-run1.txt` | 46.3% |
+| B | `B-run1.txt` | 59.7% |
+| C | `C-run1.txt` | 83.1% |
+
+## Approach ratio vs C (per tokenizer)
+
+| Approach | cl100k_base | claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 |
+|---|---|---|---|---|
+| A | 180.7× | 144.3× | 176.8× | 176.8× |
+| B | 69.8× | 60.8× | 69.7× | 69.7× |
+| C | 1.0× | 1.0× | 1.0× | 1.0× |
+
+Raw captures in `tools/runs/benchmark/`. Re-run with the same flag to refresh.

@@ -1,0 +1,46 @@
+
+========================================
+  Parallel Test Suite + Coverage Report
+========================================
+
+[>] Discovering modules in shared-kmp-libs...
+
+Configuration:
+  Project: shared-kmp-libs
+  Test Type: common (desktop (commonTest))
+  Include shared: False
+  Skip tests: True
+  Module filter: core-result
+  Coverage only: False
+  Coverage tool: auto
+  Max workers: auto
+  Timeout: 600s
+  Modules found: 1
+
+
+Testable modules: 1 | Skipped: 0
+
+========================================
+  Parsing Coverage Reports
+========================================
+
+  [!] No coverage data: core-result
+
+[OK] Full coverage report generated!
+[>>] Report saved to: C:\Users\34645\AndroidStudioProjects\shared-kmp-libs\coverage-full-report-20260426-211352-034924.md
+    legacy alias: C:\Users\34645\AndroidStudioProjects\shared-kmp-libs\coverage-full-report.md
+
+
+======================================================================
+  MODULE COVERAGE SUMMARY
+======================================================================
+
+MODULE                                             COVERAGE   MISSED
+----------------------------------------------------------------------
+======================================================================
+TOTAL                                                    0%         
+
+SUMMARY: 0% total |  lines missed | 0 modules at 100% | 0m 0s
+================================================================================
+
+BUILD SUCCESSFUL

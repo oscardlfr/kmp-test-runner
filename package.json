@@ -1,6 +1,6 @@
 {
   "name": "kmp-test-runner",
-  "version": "0.3.8",
+  "version": "0.4.0",
   "type": "module",
   "description": "Parallel test runner for KMP and Android Gradle projects",
   "homepage": "https://github.com/oscardlfr/kmp-test-runner#readme",
@@ -32,7 +32,7 @@
     "LICENSE",
     "README.md"
   ],
-  "license": "Apache-2.0",
+  "license": "MIT",
   "engines": {
     "node": ">=18"
   },
@@ -42,6 +42,7 @@
     "shellcheck": "shellcheck scripts/sh/*.sh scripts/sh/lib/*.sh"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^0.91.1",
     "@vitest/coverage-v8": "^2.1.0",
     "js-tiktoken": "^1.0.21",
     "vitest": "^2.1.0"
