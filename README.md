@@ -7,14 +7,14 @@ Standalone parallel test runner for Kotlin Multiplatform and Android Gradle proj
 For an AI coding agent re-running the suite on every change, the cheapest path matters. Same module, same failure, three observation strategies measured side-by-side ([methodology](docs/token-cost-measurement.md)):
 
 ```mermaid
-xychart-beta
-    title "Token cost on claude-opus-4-7 — same module, three observation strategies"
-    x-axis ["A. Raw gradle + reports", "B. kmp-test parallel", "C. kmp-test --json"]
+xychart-beta horizontal
+    title "Token cost — same captures, four tokenizers, three observation strategies (A,B,C) per tokenizer"
+    x-axis ["cl100k_base · A", "cl100k_base · B", "cl100k_base · C", "claude-opus-4-7 · A", "claude-opus-4-7 · B", "claude-opus-4-7 · C", "claude-sonnet-4-6 · A", "claude-sonnet-4-6 · B", "claude-sonnet-4-6 · C", "claude-haiku-4-5 · A", "claude-haiku-4-5 · B", "claude-haiku-4-5 · C"]
     y-axis "Tokens" 0 --> 28000
-    bar [25780, 642, 187]
+    bar [12807, 376, 101, 25780, 642, 187, 19234, 444, 125, 19234, 444, 125]
 ```
 
-Per-tokenizer breakdown (all four columns from the same captures, one row per tokenizer):
+Reading the chart: 12 rows = 4 tokenizers × 3 approaches (A, B, C). Each tokenizer gets its own ABC triplet so you can see how it counts the same captures. The pattern repeats per tokenizer: A dominates, B and C collapse to near-zero on this scale. Same numbers, tabulated:
 
 | Tokenizer            | A. Raw gradle + reports | B. kmp-test parallel | C. kmp-test --json | A vs C  |
 |----------------------|------------------------:|---------------------:|-------------------:|--------:|
@@ -23,7 +23,16 @@ Per-tokenizer breakdown (all four columns from the same captures, one row per to
 | `claude-sonnet-4-6`  |                  19,234 |                  444 |                125 |    154× |
 | `claude-haiku-4-5`   |                  19,234 |                  444 |                125 |    154× |
 
-The chart above uses `claude-opus-4-7` (the largest of the family — most pessimistic for the savings claim). The A:B:C ratio holds in a tight **127×–154× / 3.4×–3.7×** band across all four tokenizers — absolute counts vary by up to ±100% between tokenizers, but the relative order doesn't. Full per-model run output: [`tools/runs/cross-model-results.txt`](tools/runs/cross-model-results.txt).
+The A:B:C ratio holds in a tight **127×–154× / 3.4×–3.7×** band across all four tokenizers — absolute counts vary by up to ±100% between tokenizers, but the relative order doesn't. Full per-model run output: [`tools/runs/cross-model-results.txt`](tools/runs/cross-model-results.txt).
+
+**How the numbers are produced.** Each approach's actual output is captured once into `tools/runs/`: for **A**, gradle stdout (`./gradlew :module:test --console=plain`) **plus** every generated `build/reports/tests/test/*.html` and `build/test-results/test/*.xml` — what an agent actually has to feed back into context to understand a failure; for **B** and **C**, the corresponding `kmp-test parallel` stdout. The same byte-for-byte text is then re-tokenized two ways: offline via [`js-tiktoken`](https://www.npmjs.com/package/js-tiktoken) using `cl100k_base` (the baseline column), and online via Anthropic's [`messages.countTokens`](https://docs.anthropic.com/en/api/messages-count-tokens) API (the three Claude 4.x columns — exact tokens those models would charge for). Reproduce with:
+
+```bash
+node tools/measure-token-cost.js \
+  --project-root /path/to/kmp/project --module-filter "<module>" --test-task desktopTest
+ANTHROPIC_API_KEY=sk-ant-... node tools/measure-token-cost.js \
+  --anthropic-models claude-opus-4-7,claude-sonnet-4-6,claude-haiku-4-5
+```
 
 > **Practical impact.** A 5-iteration agent loop on raw gradle burns ~128 K tokens just reading test reports — most of a 200 K context. Same loop on `--json` burns ~1 K. The agent's working memory stays focused on the code instead of log noise.
 
