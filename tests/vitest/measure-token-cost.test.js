@@ -8,7 +8,8 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+
+const countTokensMock = vi.fn();
 
 import {
   parseAnthropicModels,
@@ -20,18 +21,6 @@ import {
   summariseCrossModelVariation,
   runCrossModelMode,
 } from '../../tools/measure-token-cost.js';
-
-// All Anthropic SDK interactions go through an injected sdkFactory or an
-// explicitly-passed client object — the production code never needs the real
-// SDK in tests. Hence no vi.mock('@anthropic-ai/sdk') here: an earlier version
-// used vi.hoisted + vi.mock and consistently threw "SyntaxError: Invalid or
-// unexpected token" inside vitest's hoister on Windows-latest CI even though
-// the same code parsed cleanly on Linux and locally on Windows. The mock was
-// redundant with the factory injection, so it's gone.
-const countTokensMock = vi.fn();
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, '../..');
 
 // ----- helpers --------------------------------------------------------------
 
