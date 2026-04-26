@@ -2,28 +2,28 @@
 // SPDX-License-Identifier: MIT
 //
 // tools/measure-token-cost.js — measure the token cost of three agent-friendly
-// approaches to running KMP tests:
+// approaches to running KMP test/coverage/changed/benchmark workflows:
 //
-//   A. Raw Gradle + report parsing — what an agent would do without kmp-test:
+//   A. Raw Gradle + report parsing — what an agent without kmp-test would do:
 //      invoke gradle directly (capturing stdout) AND read the generated report
-//      files (build/reports/tests/test/index.html + test-results/test/*.xml).
-//   B. kmp-test parallel — markdown-summarized stdout.
-//   C. kmp-test parallel --json — single JSON line on stdout.
+//      files.
+//   B. kmp-test <feature> — markdown-summarized stdout.
+//   C. kmp-test <feature> --json — single JSON line on stdout.
 //
-// Default mode counts tokens with cl100k_base (OpenAI tokenizer). Pass
-// `--anthropic-models <csv>` to skip the gradle run and re-tokenise the
-// captures already present in `tools/runs/` via the Anthropic API's
-// `messages.countTokens` endpoint per Claude 4.x model — this validates that
-// the A/B/C ratio holds across the Claude family, not just on cl100k_base.
+// Each `--feature` reuses the same A/B/C shape but plugs in feature-specific
+// gradle tasks, report globs, and module resolution. The default feature is
+// `parallel` for backward compatibility with the v0.3.x single-feature script.
 //
 // Usage:
 //   node tools/measure-token-cost.js \
 //     --project-root /path/to/kmp/project \
+//     --feature parallel \
 //     --module-filter "module-name*" \
 //     [--runs 3]
 //
-//   # Cross-model re-tokenisation (no gradle, reads tools/runs/*.txt):
+//   # Cross-model re-tokenisation (no gradle, reads tools/runs/<feature>/*.txt):
 //   node tools/measure-token-cost.js \
+//     --feature coverage \
 //     --anthropic-models claude-opus-4-7,claude-sonnet-4-6,claude-haiku-4-5
 
 import { spawnSync } from 'node:child_process';
@@ -38,19 +38,95 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const enc = new Tiktoken(cl100kBase);
 
+// ---------------------------------------------------------------------------
+// Feature registry
+// ---------------------------------------------------------------------------
+
+// Each entry describes how approach A is built for that feature: which gradle
+// tasks to run per matched module, which generated files to slurp afterwards,
+// and how to discover modules (most use the glob filter; `changed` uses git).
+// Approach B/C just dispatch to `kmp-test <cliSubcommand> [--json]`.
+export const FEATURES = {
+  parallel: {
+    cliSubcommand: 'parallel',
+    gradleTasksForModules: (modules, opts) =>
+      modules.map((m) => `:${m}:${opts.testTask || 'test'}`),
+    isReport: (full) =>
+      (full.includes('build') && full.includes('reports') && full.includes('tests') && full.endsWith('.html')) ||
+      (full.includes('build') && full.includes('test-results') && full.endsWith('.xml')),
+    resolveModules: (projectRoot, opts) => filterModulesByGlob(projectRoot, opts.moduleFilter),
+  },
+  coverage: {
+    cliSubcommand: 'coverage',
+    gradleTasksForModules: (modules) =>
+      modules.flatMap((m) => [`:${m}:koverXmlReport`, `:${m}:koverHtmlReport`]),
+    isReport: (full) =>
+      full.includes('build') && full.includes('reports') && full.includes('kover'),
+    resolveModules: (projectRoot, opts) => filterModulesByGlob(projectRoot, opts.moduleFilter),
+  },
+  changed: {
+    cliSubcommand: 'changed',
+    gradleTasksForModules: (modules, opts) =>
+      modules.map((m) => `:${m}:${opts.testTask || 'test'}`),
+    isReport: (full) =>
+      (full.includes('build') && full.includes('reports') && full.includes('tests') && full.endsWith('.html')) ||
+      (full.includes('build') && full.includes('test-results') && full.endsWith('.xml')),
+    // `changed` ignores the glob filter — modules come from git diff so the
+    // measurement matches what `kmp-test changed` actually runs internally.
+    resolveModules: (projectRoot, opts) => modulesFromGitDiff(projectRoot, opts.changedRange || 'HEAD~1..HEAD'),
+  },
+  benchmark: {
+    cliSubcommand: 'benchmark',
+    gradleTasksForModules: (modules, opts) =>
+      modules.map((m) => `:${m}:${opts.benchmarkTask || 'jvmBenchmark'}`),
+    isReport: (full) =>
+      full.includes('build') && full.includes('reports') && full.includes('benchmarks') && full.endsWith('.json'),
+    resolveModules: (projectRoot, opts) => filterModulesByGlob(projectRoot, opts.moduleFilter),
+  },
+};
+
+export const VALID_FEATURES = Object.keys(FEATURES);
+
+// ---------------------------------------------------------------------------
+// Argument parsing
+// ---------------------------------------------------------------------------
+
 export function parseAnthropicModels(csv) {
   if (!csv) return [];
   return csv.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
 export function parseArgs(argv) {
-  // testTask: gradle task suffix appended to each matched module for approach A.
-  // KMP modules use ":desktopTest" / ":jvmTest"; plain JVM modules use ":test".
-  const out = { runs: 1, testTask: 'test', anthropicModels: [] };
+  // testTask: gradle task suffix appended to each matched module for approach A
+  // when the feature uses a generic test invocation (parallel, changed). KMP
+  // modules use ":desktopTest" / ":jvmTest"; plain JVM modules use ":test".
+  // benchmarkTask: same idea but for the benchmark feature (jvmBenchmark by
+  // default, can be overridden to nativeBenchmark or an Android variant).
+  // changedRange: git revision range fed to `git diff --name-only` for the
+  // changed feature. HEAD~1..HEAD by default — single-commit deltas.
+  const out = {
+    runs: 1,
+    testTask: 'test',
+    benchmarkTask: 'jvmBenchmark',
+    changedRange: 'HEAD~1..HEAD',
+    feature: 'parallel',
+    anthropicModels: [],
+  };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--project-root' && argv[i + 1]) { out.projectRoot = argv[++i]; continue; }
     if (argv[i] === '--module-filter' && argv[i + 1]) { out.moduleFilter = argv[++i]; continue; }
     if (argv[i] === '--test-task' && argv[i + 1]) { out.testTask = argv[++i]; continue; }
+    if (argv[i] === '--benchmark-task' && argv[i + 1]) { out.benchmarkTask = argv[++i]; continue; }
+    if (argv[i] === '--changed-range' && argv[i + 1]) { out.changedRange = argv[++i]; continue; }
+    if (argv[i] === '--feature' && argv[i + 1]) {
+      const f = argv[++i];
+      if (!VALID_FEATURES.includes(f)) {
+        console.error(`Error: --feature must be one of: ${VALID_FEATURES.join(', ')} (got: ${f})`);
+        process.exit(2);
+      }
+      out.feature = f;
+      continue;
+    }
     if (argv[i] === '--runs' && argv[i + 1]) { out.runs = parseInt(argv[++i], 10); continue; }
     if (argv[i] === '--anthropic-models' && argv[i + 1]) {
       out.anthropicModels = parseAnthropicModels(argv[++i]);
@@ -58,15 +134,19 @@ export function parseArgs(argv) {
     }
   }
   // --project-root is only required for the gradle mode. In cross-model mode
-  // we read existing captures from tools/runs/ instead.
+  // we read existing captures from tools/runs/<feature>/ instead.
   if (out.anthropicModels.length === 0 && !out.projectRoot) {
-    console.error('Usage: node tools/measure-token-cost.js --project-root <path> [--module-filter <pat>] [--test-task <name>] [--runs N]');
-    console.error('       node tools/measure-token-cost.js --anthropic-models <csv>   # re-tokenise existing captures');
+    console.error('Usage: node tools/measure-token-cost.js --project-root <path> [--feature parallel|coverage|changed|benchmark] [--module-filter <pat>] [--test-task <name>] [--benchmark-task <name>] [--changed-range <rev>] [--runs N]');
+    console.error('       node tools/measure-token-cost.js [--feature <name>] --anthropic-models <csv>   # re-tokenise existing captures');
     process.exit(2);
   }
   if (out.projectRoot) out.projectRoot = path.resolve(out.projectRoot);
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Tokenisation + summary helpers
+// ---------------------------------------------------------------------------
 
 export function countTokensCl100k(text) {
   return enc.encode(text || '').length;
@@ -88,32 +168,73 @@ function fmt(n) {
   return n.toString().padStart(6, ' ');
 }
 
-function readReportFiles(projectRoot, moduleFilter) {
-  // Walks <projectRoot>/<module>/build/reports/tests/test/index.html and
-  // build/test-results/test/*.xml — what an agent reading "the test reports"
-  // would consume after a raw gradle run. Limited to modules matching the
-  // filter so the comparison stays fair.
-  let collected = '';
+// ---------------------------------------------------------------------------
+// Module resolution — shared by features
+// ---------------------------------------------------------------------------
+
+export function filterModulesByGlob(projectRoot, moduleFilter) {
+  // Walks the project root one level deep and keeps directories that look
+  // like Gradle modules (own build.gradle.kts) and match the glob filter.
+  // Returns module simple names (no leading colon).
   const filterRe = moduleFilter
     ? new RegExp('^' + moduleFilter.replace(/\*/g, '.*') + '$')
     : /.*/;
-  function walk(dir, depth = 0) {
-    if (depth > 6) return;
+  const out = [];
+  let entries;
+  try { entries = readdirSync(projectRoot, { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    if (!filterRe.test(e.name)) continue;
+    if (existsSync(path.join(projectRoot, e.name, 'build.gradle.kts'))) {
+      out.push(e.name);
+    }
+  }
+  return out;
+}
+
+export function modulesFromGitDiff(projectRoot, range) {
+  // Returns the set of module simple names whose paths intersect the git diff
+  // for the given revision range. Modules are detected by the same heuristic
+  // as filterModulesByGlob (top-level dir with build.gradle.kts).
+  const allModules = new Set(
+    readdirSync(projectRoot, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && existsSync(path.join(projectRoot, e.name, 'build.gradle.kts')))
+      .map((e) => e.name)
+  );
+  const r = spawnSync('git', ['diff', '--name-only', range], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    shell: false,
+  });
+  const out = new Set();
+  const lines = ((r.stdout || '') + '').split(/\r?\n/).filter(Boolean);
+  for (const line of lines) {
+    const top = line.split(/[\\/]/)[0];
+    if (allModules.has(top)) out.add(top);
+  }
+  return [...out];
+}
+
+function readReportFiles(projectRoot, modules, isReport) {
+  // Slurps every file under <projectRoot>/<module>/build/... that matches the
+  // feature's `isReport` predicate. Limited to the resolved modules so the A
+  // capture is faithful to what an agent would read after a real run.
+  let collected = '';
+  const moduleSet = new Set(modules);
+  function walk(dir, depth = 0, topModule = null) {
+    if (depth > 8) return;
     let entries;
     try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const full = path.join(dir, e.name);
       if (e.isDirectory()) {
         if (['node_modules', '.gradle', '.git'].includes(e.name)) continue;
-        // Match `<projectRoot>/<simpleName>/build/...` against filter.
-        if (depth === 0 && !filterRe.test(e.name)) continue;
-        walk(full, depth + 1);
+        const nextTop = depth === 0 ? e.name : topModule;
+        if (depth === 0 && !moduleSet.has(e.name)) continue;
+        walk(full, depth + 1, nextTop);
       } else if (e.isFile()) {
-        const isReport =
-          (full.includes('build') && full.includes('reports') && full.endsWith('.html')) ||
-          (full.includes('build') && full.includes('test-results') && full.endsWith('.xml'));
-        if (isReport) {
-          try { collected += '\n=== ' + full + ' ===\n' + readFileSync(full, 'utf8'); } catch {}
+        if (isReport(full)) {
+          try { collected += '\n=== ' + full + ' ===\n' + readFileSync(full, 'utf8'); } catch { /* unreadable */ }
         }
       }
     }
@@ -121,6 +242,10 @@ function readReportFiles(projectRoot, moduleFilter) {
   walk(projectRoot);
   return collected;
 }
+
+// ---------------------------------------------------------------------------
+// Approach runners
+// ---------------------------------------------------------------------------
 
 function spawnCapture(cmd, args, opts = {}) {
   // Use shell:false + absolute paths to dodge cmd.exe / MinGW interpretation
@@ -135,26 +260,17 @@ function spawnCapture(cmd, args, opts = {}) {
   return (r.stdout || '') + (r.stderr || '');
 }
 
-function runApproachA(projectRoot, moduleFilter, testTask) {
-  // Raw gradle: invoke `gradlew :module:<testTask>` (or matching modules) with
-  // --console=plain so the agent gets the same noisy output it would in CI,
-  // PLUS read every generated report file.
+export function buildApproachAInvocation(opts) {
+  // Pure function: looks up the feature config and returns the spawn shape
+  // (command, argv, cwd, resolved modules) without actually invoking gradle.
+  // The runApproachA wrapper just adds spawnSync + report slurping on top.
+  const feature = FEATURES[opts.feature];
   const wrapperName = process.platform === 'win32' ? 'gradlew.bat' : 'gradlew';
-  const wrapper = path.join(projectRoot, wrapperName);
-  // Translate module-filter glob into one or more :module:<testTask> args.
-  const filterRe = moduleFilter
-    ? new RegExp('^' + moduleFilter.replace(/\*/g, '.*') + '$')
-    : /.*/;
-  const tasks = [];
-  for (const e of readdirSync(projectRoot, { withFileTypes: true })) {
-    if (e.isDirectory() && filterRe.test(e.name)
-        && existsSync(path.join(projectRoot, e.name, 'build.gradle.kts'))) {
-      tasks.push(`:${e.name}:${testTask}`);
-    }
-  }
-  if (tasks.length === 0) tasks.push(`:${testTask}`);
-  // On Unix gradlew is a shell script; spawn directly with absolute path.
-  // On Windows the .bat is invoked via cmd.exe to handle the .bat extension.
+  const wrapper = path.join(opts.projectRoot, wrapperName);
+  const modules = feature.resolveModules(opts.projectRoot, opts);
+  const tasks = modules.length > 0
+    ? feature.gradleTasksForModules(modules, opts)
+    : [`:${opts.testTask || 'test'}`]; // fall back to root-level task
   let cmd, cmdArgs;
   if (process.platform === 'win32') {
     cmd = process.env.COMSPEC || 'cmd.exe';
@@ -163,37 +279,57 @@ function runApproachA(projectRoot, moduleFilter, testTask) {
     cmd = wrapper;
     cmdArgs = [...tasks, '--console=plain'];
   }
-  const stdout = spawnCapture(cmd, cmdArgs, { cwd: projectRoot });
-  const reports = readReportFiles(projectRoot, moduleFilter);
+  return { cmd, args: cmdArgs, cwd: opts.projectRoot, modules };
+}
+
+export function buildKmpTestCliInvocation(opts, withJson) {
+  // Pure function: returns the spawn shape for `kmp-test <subcommand>
+  // [--json] --project-root <…> [--module-filter <…>]`. Used by approach
+  // B (withJson=false) and approach C (withJson=true).
+  const feature = FEATURES[opts.feature];
+  const cli = path.join(repoRoot, 'bin', 'kmp-test.js');
+  const args = [feature.cliSubcommand];
+  if (withJson) args.push('--json');
+  args.push('--project-root', opts.projectRoot);
+  if (opts.moduleFilter) args.push('--module-filter', opts.moduleFilter);
+  return { cmd: process.execPath, args: [cli, ...args] };
+}
+
+export function runApproachA(opts) {
+  const inv = buildApproachAInvocation(opts);
+  const stdout = spawnCapture(inv.cmd, inv.args, { cwd: inv.cwd });
+  const reports = inv.modules.length > 0
+    ? readReportFiles(opts.projectRoot, inv.modules, FEATURES[opts.feature].isReport)
+    : '';
   return stdout + reports;
 }
 
-function runApproachB(projectRoot, moduleFilter) {
-  const cli = path.join(repoRoot, 'bin', 'kmp-test.js');
-  const args = ['parallel', '--project-root', projectRoot];
-  if (moduleFilter) args.push('--module-filter', moduleFilter);
-  return spawnCapture(process.execPath, [cli, ...args]);
+export function runApproachB(opts) {
+  const inv = buildKmpTestCliInvocation(opts, false);
+  return spawnCapture(inv.cmd, inv.args);
 }
 
-function runApproachC(projectRoot, moduleFilter) {
-  const cli = path.join(repoRoot, 'bin', 'kmp-test.js');
-  const args = ['parallel', '--json', '--project-root', projectRoot];
-  if (moduleFilter) args.push('--module-filter', moduleFilter);
-  return spawnCapture(process.execPath, [cli, ...args]);
+export function runApproachC(opts) {
+  const inv = buildKmpTestCliInvocation(opts, true);
+  return spawnCapture(inv.cmd, inv.args);
 }
 
-// Cross-model helpers ---------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Capture I/O
+// ---------------------------------------------------------------------------
 
 const CAPTURE_RE = /^([ABC])-.*-run(\d+)\.txt$/;
+const CAPTURE_RE_SHORT = /^([ABC])-run(\d+)\.txt$/;
 
 export function loadCaptures(runsDir) {
-  // Returns [{ approach: 'A', file, runIndex, label, text }, …] sorted by
-  // (approach, runIndex). Only matches `<A|B|C>-<label>-run<N>.txt` so
-  // helper outputs like cross-model-results.txt are skipped.
+  // Returns [{ approach, file, runIndex, label, text }] sorted by
+  // (approach, runIndex). Accepts both legacy `<A|B|C>-<label>-run<N>.txt`
+  // and the cleaner per-feature subdir form `<A|B|C>-run<N>.txt`. Ignores
+  // helper files like cross-model-results-*.txt.
   if (!existsSync(runsDir)) return [];
   const captures = [];
   for (const name of readdirSync(runsDir)) {
-    const m = name.match(CAPTURE_RE);
+    const m = name.match(CAPTURE_RE) || name.match(CAPTURE_RE_SHORT);
     if (!m) continue;
     const fullPath = path.join(runsDir, name);
     let text;
@@ -202,7 +338,7 @@ export function loadCaptures(runsDir) {
       approach: m[1],
       runIndex: parseInt(m[2], 10),
       file: name,
-      label: name.replace(CAPTURE_RE, '$1'), // approach letter only; we keep file for display
+      label: name,
       text,
     });
   }
@@ -211,6 +347,14 @@ export function loadCaptures(runsDir) {
   );
   return captures;
 }
+
+export function featureRunsDir(feature) {
+  return path.join(repoRoot, 'tools', 'runs', feature);
+}
+
+// ---------------------------------------------------------------------------
+// Cross-model tokenisation
+// ---------------------------------------------------------------------------
 
 function simplifyAnthropicError(err) {
   // Normalise SDK errors into short reason strings for the table cell.
@@ -223,7 +367,6 @@ function simplifyAnthropicError(err) {
     if (err.status === 404) return 'model_not_found';
     if (err.status === 400) {
       const msg = err.message || 'bad_request';
-      // Trim long upstream messages so the table stays narrow.
       return 'bad_request: ' + msg.slice(0, 80);
     }
     if (err.message) return err.message.slice(0, 80);
@@ -250,7 +393,6 @@ export async function countTokensAnthropic(client, model, text) {
 }
 
 export function formatCrossModelTable(rows, models) {
-  // rows: [{ approach, file, cl100k, perModel: { [model]: number | "[error: ...]" } }]
   const headers = ['Approach', 'Capture', 'cl100k_base', ...models];
   const align = ['---', '---', '---:', ...models.map(() => '---:')];
   const lines = [];
@@ -272,15 +414,11 @@ export function formatCrossModelTable(rows, models) {
 }
 
 export function summariseCrossModelVariation(rows, models) {
-  // Per-approach: max(over models) / min(over models) - 1, expressed as %.
-  // Surfaces whether the family agrees within a tight band (low %) or
-  // diverges meaningfully (high %).
   const out = [];
   for (const row of rows) {
     const numeric = models
       .map((m) => row.perModel[m])
       .filter((v) => typeof v === 'number');
-    // Include cl100k as the baseline reference.
     if (typeof row.cl100k === 'number') numeric.push(row.cl100k);
     if (numeric.length < 2) {
       out.push({ approach: row.approach, file: row.file, spreadPct: null });
@@ -297,8 +435,8 @@ export function summariseCrossModelVariation(rows, models) {
 export async function runCrossModelMode(opts, sdkFactory, sink = console, runsDir) {
   // sink: { log, error } — injected for tests so we can capture stdout/stderr.
   // sdkFactory: () => Anthropic-like client. Defaults to a real one in main().
-  // runsDir: override for tests; defaults to <repoRoot>/tools/runs.
-  const dir = runsDir || path.join(repoRoot, 'tools', 'runs');
+  // runsDir: explicit override; when omitted, derived from opts.feature.
+  const dir = runsDir || featureRunsDir(opts.feature || 'parallel');
   const captures = loadCaptures(dir);
   if (captures.length === 0) {
     sink.error(
@@ -320,27 +458,25 @@ export async function runCrossModelMode(opts, sdkFactory, sink = console, runsDi
   }
 
   sink.log('');
-  sink.log('# Cross-model token-cost (re-tokenised existing captures)');
+  sink.log(`# Cross-model token-cost — feature: ${opts.feature || 'parallel'}`);
   sink.log('');
-  sink.log(`Captures: ${captures.length} from \`tools/runs/\``);
+  sink.log(`Captures: ${captures.length} from \`${path.relative(repoRoot, dir).replace(/\\/g, '/')}/\``);
   sink.log(`Models: ${opts.anthropicModels.join(', ')}`);
   sink.log('Tokenizer: cl100k_base baseline + Anthropic `messages.countTokens` per model');
   sink.log('');
   sink.log(formatCrossModelTable(rows, opts.anthropicModels));
   sink.log('');
 
-  // Cross-family variation footer
   const variation = summariseCrossModelVariation(rows, opts.anthropicModels);
   sink.log('## Cross-family variation');
   sink.log('');
-  sink.log('| Approach | Capture | spread (max/min − 1) |');
+  sink.log('| Approach | Capture | spread (max/min - 1) |');
   sink.log('|----------|---------|---------------------:|');
   for (const v of variation) {
     const cell = v.spreadPct == null ? 'n/a' : v.spreadPct + '%';
     sink.log(`| ${v.approach} | \`${v.file}\` | ${cell} |`);
   }
   sink.log('');
-  // Approach ratio across each model (vs C, like the cl100k table).
   const byApproach = { A: [], B: [], C: [] };
   for (const r of rows) byApproach[r.approach]?.push(r);
   const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
@@ -366,21 +502,24 @@ export async function runCrossModelMode(opts, sdkFactory, sink = console, runsDi
     sink.log('| ' + cells.join(' | ') + ' |');
   }
   sink.log('');
-  sink.log('Raw captures in `tools/runs/`. Re-run with the same flag to refresh.');
+  sink.log(`Raw captures in \`${path.relative(repoRoot, dir).replace(/\\/g, '/')}/\`. Re-run with the same flag to refresh.`);
 
   return { exitCode: 0, rows, variation };
 }
 
-// Default-mode (gradle) main loop --------------------------------------------
+// ---------------------------------------------------------------------------
+// Default-mode (gradle) main loop
+// ---------------------------------------------------------------------------
 
 function runGradleMode(opts) {
-  const runsDir = path.join(repoRoot, 'tools', 'runs');
+  const runsDir = featureRunsDir(opts.feature);
   if (!existsSync(runsDir)) mkdirSync(runsDir, { recursive: true });
 
+  const featureLabel = opts.feature;
   const approaches = [
-    { id: 'A', label: 'raw gradle + report parsing', run: (p, f) => runApproachA(p, f, opts.testTask) },
-    { id: 'B', label: 'kmp-test parallel (markdown)', run: runApproachB },
-    { id: 'C', label: 'kmp-test parallel --json', run: runApproachC },
+    { id: 'A', label: `raw gradle + ${featureLabel} report parsing`, run: () => runApproachA(opts) },
+    { id: 'B', label: `kmp-test ${featureLabel} (markdown)`,           run: () => runApproachB(opts) },
+    { id: 'C', label: `kmp-test ${featureLabel} --json`,               run: () => runApproachC(opts) },
   ];
 
   const results = {};
@@ -389,17 +528,17 @@ function runGradleMode(opts) {
     const bytes = [];
     const durations = [];
     for (let r = 1; r <= opts.runs; r++) {
-      const label = `${a.id}-${a.label.replace(/[^a-z0-9]+/gi, '_')}-run${r}.txt`;
+      const fname = `${a.id}-run${r}.txt`;
       const t0 = Date.now();
-      const output = a.run(opts.projectRoot, opts.moduleFilter);
+      const output = a.run();
       const elapsed = Date.now() - t0;
-      const outFile = path.join(runsDir, label);
+      const outFile = path.join(runsDir, fname);
       writeFileSync(outFile, output, 'utf8');
       const tok = countTokensCl100k(output);
       tokens.push(tok);
       bytes.push(Buffer.byteLength(output, 'utf8'));
       durations.push(elapsed);
-      console.error(`[run] ${a.id} run ${r}: ${tok} tokens, ${Buffer.byteLength(output, 'utf8')} bytes, ${(elapsed/1000).toFixed(1)}s → ${path.relative(repoRoot, outFile)}`);
+      console.error(`[run] ${a.id} run ${r}: ${tok} tokens, ${Buffer.byteLength(output, 'utf8')} bytes, ${(elapsed/1000).toFixed(1)}s → ${path.relative(repoRoot, outFile).replace(/\\/g, '/')}`);
     }
     results[a.id] = {
       label: a.label,
@@ -409,10 +548,9 @@ function runGradleMode(opts) {
     };
   }
 
-  // Markdown table on stdout
   const ratio = (a, b) => b > 0 ? (a / b).toFixed(1) + 'x' : 'n/a';
   console.log('');
-  console.log(`# Token-cost measurement (${opts.runs} run${opts.runs === 1 ? '' : 's'})`);
+  console.log(`# Token-cost measurement (${opts.runs} run${opts.runs === 1 ? '' : 's'}) — feature: ${featureLabel}`);
   console.log('');
   console.log(`Project: \`${opts.projectRoot}\``);
   if (opts.moduleFilter) console.log(`Module filter: \`${opts.moduleFilter}\``);
@@ -438,7 +576,7 @@ function runGradleMode(opts) {
     }
   }
   console.log('');
-  console.log('Raw run logs in `tools/runs/`.');
+  console.log(`Raw run logs in \`tools/runs/${featureLabel}/\`.`);
 }
 
 async function main() {
@@ -457,7 +595,6 @@ async function main() {
   runGradleMode(opts);
 }
 
-// Only auto-run when invoked directly (not when imported by tests).
 const invokedDirectly =
   process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 if (invokedDirectly) {
