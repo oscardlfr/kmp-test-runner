@@ -146,7 +146,7 @@ if (args[0] === '--help')    { console.log('kmp-test-runner help'); process.exit
         Set-Content -Path (Join-Path $stagingBin "kmp-test.js") -Value $binJs -Encoding UTF8
 
         # Placeholder LICENSE
-        Set-Content -Path (Join-Path $staging "LICENSE") -Value "Apache-2.0" -Encoding UTF8
+        Set-Content -Path (Join-Path $staging "LICENSE") -Value "MIT" -Encoding UTF8
 
         # Create zip archive
         $script:LocalArchive = Join-Path $script:E2ETmpDir "kmp-test-runner-$($script:ArtifactVer)-windows.zip"

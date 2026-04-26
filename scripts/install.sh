@@ -44,11 +44,16 @@ done
 
 # --------------------------------------------------------------------------
 # Platform detection (Node.js runtime is arch-agnostic — single artifact)
+#
+# DOWNLOAD_PLATFORM is the suffix used in the release archive name. Only
+# `linux` and `windows` artifacts are published per the single-artifact
+# policy in CLAUDE.md, so macOS reuses the `linux.tar.gz` (Node + bash
+# scripts only — no native binaries to differentiate).
 # --------------------------------------------------------------------------
 OS="$(uname -s)"
 case "$OS" in
-    Linux)  PLATFORM="linux" ;;
-    Darwin) PLATFORM="macos" ;;
+    Linux)  PLATFORM="linux";  DOWNLOAD_PLATFORM="linux" ;;
+    Darwin) PLATFORM="macos";  DOWNLOAD_PLATFORM="linux" ;;
     *)
         echo "Unsupported platform: $OS" >&2
         echo "Supported: Linux, macOS" >&2
@@ -109,7 +114,7 @@ echo "Installing $PACKAGE v$VERSION ($PLATFORM)..."
 # --------------------------------------------------------------------------
 # Download
 # --------------------------------------------------------------------------
-ARCHIVE_NAME="${PACKAGE}-${VERSION}-${PLATFORM}.tar.gz"
+ARCHIVE_NAME="${PACKAGE}-${VERSION}-${DOWNLOAD_PLATFORM}.tar.gz"
 PRIMARY_URL="https://github.com/$REPO/releases/latest/download/$ARCHIVE_NAME"
 VERSIONED_URL="https://github.com/$REPO/releases/download/v${VERSION}/$ARCHIVE_NAME"
 

@@ -33,6 +33,20 @@ Cleanup is automatic on:
 - `SIGTERM` — handler removes the lock, then exits 143.
 - `uncaughtException` — last-resort cleanup before exit 1.
 
+#### Signal delivery — when the handler actually fires
+
+The handlers above run only if the OS delivers the signal to Node. Delivery is OS- and shell-specific:
+
+| Environment                                                         | Result                                                                                       |
+|---------------------------------------------------------------------|----------------------------------------------------------------------------------------------|
+| Linux / macOS — any terminal, `Ctrl-C` or `kill <pid>`              | UNIX signals propagate normally. SIGINT + SIGTERM handlers fire, cleanup runs.               |
+| Windows native console (cmd, Windows Terminal, IDE, PowerShell)     | `Ctrl-C` produces `CTRL_C_EVENT`; libuv translates it to a JS `'SIGINT'`. Handler fires.     |
+| Windows under MinGW / Cygwin / Git Bash, `kill <pid>` (SIGTERM)     | MinGW invokes `TerminateProcess` with shutdown semantics. libuv emits `'SIGTERM'`. Handler fires. |
+| Windows under MinGW / Cygwin / Git Bash, `kill -INT $bg_pid`        | The `&`-backgrounded process is detached from bash's console group, so `CTRL_C_EVENT` can't reach it. Node never sees `'SIGINT'`. Handler does **not** fire — lockfile may remain stale. |
+| Process killed with `kill -9` / `taskkill /F` / power loss          | No signal delivered, no handler fires. Lockfile remains stale.                               |
+
+**Stale-lock reclaim is the safety net.** When the cleanup handler does not fire for any reason, the next `kmp-test` invocation reads the orphan lockfile, checks the holder PID via `process.kill(pid, 0)`, finds it dead, and reclaims silently. No manual cleanup is needed — concurrent safety self-heals on the next run.
+
 ### `--force` — deliberate concurrent runs
 
 When you actually want two runs to overlap (e.g. debug session alongside CI smoke), pass `--force`:

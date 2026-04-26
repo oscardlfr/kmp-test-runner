@@ -1,0 +1,419 @@
+
+======================================================================
+  BENCHMARK RUNNER
+======================================================================
+
+[>>] Config   : smoke
+[>>] Platform : all
+[>>] Project  : C:\Users\34645\AndroidStudioProjects\shared-kmp-libs
+
+PLATFORM             STATUS       DETAILS
+-------------------------------------------------------
+JVM                  available    Java 21, 32 cores
+Android              missing      no devices via adb
+
+[>>] Discovered 1 benchmark module(s):
+     - benchmark-crypto
+
+[>>] Running: benchmark-crypto [jvm/smoke]
+     Task   : :benchmark-crypto:desktopSmokeBenchmark 
+     To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/9.1.0/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+     Daemon will be stopped at the end of the build 
+     Reusing configuration cache.
+     > Task :core-result:desktopProcessResources NO-SOURCE
+     > Task :core-di-anvil:desktopProcessResources NO-SOURCE
+     > Task :benchmark-crypto:desktopProcessResources NO-SOURCE
+     > Task :core-logging:desktopProcessResources NO-SOURCE
+     > Task :core-encryption-envelope-api:desktopProcessResources NO-SOURCE
+     > Task :core-common:desktopProcessResources NO-SOURCE
+     > Task :core-encryption:desktopProcessResources NO-SOURCE
+     > Task :core-security-keys:desktopProcessResources NO-SOURCE
+     > Task :benchmark-infra:desktopProcessResources NO-SOURCE
+     > Task :core-encryption-envelope:desktopProcessResources NO-SOURCE
+     > Task :core-security-keys:processDesktopMainResources SKIPPED
+     > Task :core-di-anvil:processDesktopMainResources SKIPPED
+     > Task :core-common:processDesktopMainResources SKIPPED
+     > Task :benchmark-infra:processDesktopMainResources SKIPPED
+     > Task :core-encryption:processDesktopMainResources SKIPPED
+     > Task :benchmark-crypto:processDesktopMainResources SKIPPED
+     > Task :core-encryption-envelope:processDesktopMainResources SKIPPED
+     > Task :core-encryption-envelope-api:processDesktopMainResources SKIPPED
+     > Task :core-result:processDesktopMainResources SKIPPED
+     > Task :core-logging:processDesktopMainResources SKIPPED
+     > Task :core-logging:kmpPartiallyResolvedDependenciesChecker
+     > Task :core-security-keys:kmpPartiallyResolvedDependenciesChecker
+     > Task :core-encryption-envelope:kmpPartiallyResolvedDependenciesChecker
+     > Task :benchmark-infra:kmpPartiallyResolvedDependenciesChecker
+     > Task :benchmark-crypto:kmpPartiallyResolvedDependenciesChecker
+     > Task :core-encryption-envelope-api:kmpPartiallyResolvedDependenciesChecker
+     > Task :core-di-anvil:kmpPartiallyResolvedDependenciesChecker
+     > Task :core-encryption:kmpPartiallyResolvedDependenciesChecker
+     > Task :core-common:kmpPartiallyResolvedDependenciesChecker
+     > Task :core-result:kmpPartiallyResolvedDependenciesChecker
+     > Task :core-sdk:kmpPartiallyResolvedDependenciesChecker
+     > Task :core-di-anvil:checkKotlinGradlePluginConfigurationErrors SKIPPED
+     > Task :core-common:checkKotlinGradlePluginConfigurationErrors SKIPPED
+     > Task :benchmark-infra:checkKotlinGradlePluginConfigurationErrors SKIPPED
+     > Task :benchmark-crypto:checkKotlinGradlePluginConfigurationErrors SKIPPED
+     > Task :core-result:checkKotlinGradlePluginConfigurationErrors SKIPPED
+     > Task :core-encryption-envelope-api:checkKotlinGradlePluginConfigurationErrors SKIPPED
+     > Task :core-security-keys:checkKotlinGradlePluginConfigurationErrors SKIPPED
+     > Task :core-encryption-envelope:checkKotlinGradlePluginConfigurationErrors SKIPPED
+     > Task :core-sdk:checkKotlinGradlePluginConfigurationErrors SKIPPED
+     > Task :core-logging:checkKotlinGradlePluginConfigurationErrors SKIPPED
+     > Task :core-encryption:checkKotlinGradlePluginConfigurationErrors SKIPPED
+     > Task :benchmark-infra:compileKotlinDesktop UP-TO-DATE
+     > Task :core-di-anvil:compileKotlinDesktop UP-TO-DATE
+     > Task :core-security-keys:compileKotlinDesktop UP-TO-DATE
+     > Task :core-result:compileKotlinDesktop UP-TO-DATE
+     > Task :core-common:compileKotlinDesktop UP-TO-DATE
+     > Task :benchmark-infra:compileDesktopMainJava NO-SOURCE
+     > Task :benchmark-infra:desktopMainClasses UP-TO-DATE
+     > Task :core-security-keys:compileDesktopMainJava NO-SOURCE
+     > Task :core-common:compileDesktopMainJava NO-SOURCE
+     > Task :core-security-keys:desktopMainClasses UP-TO-DATE
+     > Task :core-common:desktopMainClasses UP-TO-DATE
+     > Task :core-result:compileDesktopMainJava NO-SOURCE
+     > Task :core-result:desktopMainClasses UP-TO-DATE
+     > Task :core-di-anvil:compileDesktopMainJava NO-SOURCE
+     > Task :core-di-anvil:desktopMainClasses UP-TO-DATE
+     > Task :core-result:desktopJar UP-TO-DATE
+     > Task :core-di-anvil:desktopJar UP-TO-DATE
+     > Task :benchmark-infra:desktopJar UP-TO-DATE
+     > Task :core-common:desktopJar UP-TO-DATE
+     > Task :core-security-keys:desktopJar UP-TO-DATE
+     > Task :core-encryption-envelope-api:compileKotlinDesktop UP-TO-DATE
+     > Task :core-encryption-envelope-api:compileDesktopMainJava NO-SOURCE
+     > Task :core-encryption-envelope-api:desktopMainClasses UP-TO-DATE
+     > Task :core-logging:compileKotlinDesktop UP-TO-DATE
+     > Task :core-encryption-envelope-api:desktopJar UP-TO-DATE
+     > Task :core-logging:compileDesktopMainJava NO-SOURCE
+     > Task :core-logging:desktopMainClasses UP-TO-DATE
+     > Task :core-logging:desktopJar UP-TO-DATE
+     > Task :core-sdk:kspKotlinDesktop SKIPPED
+     > Task :core-sdk:desktopProcessResources NO-SOURCE
+     > Task :core-sdk:processDesktopMainResources SKIPPED
+     > Task :core-sdk:compileKotlinDesktop UP-TO-DATE
+     > Task :core-sdk:compileDesktopMainJava NO-SOURCE
+     > Task :core-sdk:desktopMainClasses UP-TO-DATE
+     > Task :core-sdk:desktopJar UP-TO-DATE
+     > Task :core-encryption:compileKotlinDesktop UP-TO-DATE
+     > Task :core-encryption:compileDesktopMainJava NO-SOURCE
+     > Task :core-encryption:desktopMainClasses UP-TO-DATE
+     > Task :core-encryption:desktopJar UP-TO-DATE
+     > Task :core-encryption-envelope:compileKotlinDesktop UP-TO-DATE
+     > Task :core-encryption-envelope:compileDesktopMainJava NO-SOURCE
+     > Task :core-encryption-envelope:desktopMainClasses UP-TO-DATE
+     > Task :core-encryption-envelope:desktopJar UP-TO-DATE
+     > Task :benchmark-crypto:compileKotlinDesktop UP-TO-DATE
+     > Task :benchmark-crypto:compileDesktopMainJava NO-SOURCE
+     > Task :benchmark-crypto:desktopMainClasses UP-TO-DATE
+     > Task :benchmark-crypto:desktopBenchmarkGenerate UP-TO-DATE
+     > Task :benchmark-crypto:desktopBenchmarkCompile UP-TO-DATE
+     
+     > Task :benchmark-crypto:desktopSmokeBenchmark
+     Running 'smoke' benchmarks for 'desktop'
+     
+     � com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.decrypt | payloadSize=100
+     
+     WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+     Warm-up 1: 27,718 ms/op
+     Warm-up 2: 27,223 ms/op
+     Warm-up 3: 27,303 ms/op
+     Iteration 1: 27,267 ms/op
+     Iteration 2: 27,180 ms/op
+     Iteration 3: 27,216 ms/op
+     
+       Success: 27,221 �(99.9%) 0,791 ms/op [Average]
+       (min, avg, max) = (27,180, 27,221, 27,267), stdev = 0,043
+       CI (99.9%): [26,430, 28,012] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.decrypt | payloadSize=1024
+     
+     WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+     Warm-up 1: 27,537 ms/op
+     Warm-up 2: 26,901 ms/op
+     Warm-up 3: 26,888 ms/op
+     Iteration 1: 26,939 ms/op
+     Iteration 2: 26,776 ms/op
+     Iteration 3: 26,763 ms/op
+     
+       Success: 26,826 �(99.9%) 1,790 ms/op [Average]
+       (min, avg, max) = (26,763, 26,826, 26,939), stdev = 0,098
+       CI (99.9%): [25,037, 28,616] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.decrypt | payloadSize=65536
+     
+     WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+     Warm-up 1: 28,556 ms/op
+     Warm-up 2: 27,547 ms/op
+     Warm-up 3: 27,475 ms/op
+     Iteration 1: 27,609 ms/op
+     Iteration 2: 27,815 ms/op
+     Iteration 3: 27,360 ms/op
+     
+       Success: 27,594 �(99.9%) 4,159 ms/op [Average]
+       (min, avg, max) = (27,360, 27,594, 27,815), stdev = 0,228
+       CI (99.9%): [23,435, 31,753] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.encrypt | payloadSize=100
+     
+     WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+     Warm-up 1: 27,210 ms/op
+     Warm-up 2: 26,923 ms/op
+     Warm-up 3: 26,830 ms/op
+     Iteration 1: 26,814 ms/op
+     Iteration 2: 26,785 ms/op
+     Iteration 3: 26,779 ms/op
+     
+       Success: 26,793 �(99.9%) 0,343 ms/op [Average]
+       (min, avg, max) = (26,779, 26,793, 26,814), stdev = 0,019
+       CI (99.9%): [26,450, 27,136] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.encrypt | payloadSize=1024
+     
+     WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+     Warm-up 1: 27,394 ms/op
+     Warm-up 2: 26,874 ms/op
+     Warm-up 3: 26,862 ms/op
+     Iteration 1: 26,870 ms/op
+     Iteration 2: 26,755 ms/op
+     Iteration 3: 26,814 ms/op
+     
+       Success: 26,813 �(99.9%) 1,050 ms/op [Average]
+       (min, avg, max) = (26,755, 26,813, 26,870), stdev = 0,058
+       CI (99.9%): [25,763, 27,863] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.encrypt | payloadSize=65536
+     
+     WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+     Warm-up 1: 28,192 ms/op
+     Warm-up 2: 27,506 ms/op
+     Warm-up 3: 27,606 ms/op
+     Iteration 1: 27,888 ms/op
+     Iteration 2: 27,395 ms/op
+     Iteration 3: 27,420 ms/op
+     
+       Success: 27,567 �(99.9%) 5,063 ms/op [Average]
+       (min, avg, max) = (27,395, 27,567, 27,888), stdev = 0,278
+       CI (99.9%): [22,504, 32,630] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.roundTrip | payloadSize=100
+     
+     WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+     Warm-up 1: 55,016 ms/op
+     Warm-up 2: 53,685 ms/op
+     Warm-up 3: 53,797 ms/op
+     Iteration 1: 53,871 ms/op
+     Iteration 2: 53,769 ms/op
+     Iteration 3: 53,692 ms/op
+     
+       Success: 53,777 �(99.9%) 1,639 ms/op [Average]
+       (min, avg, max) = (53,692, 53,777, 53,871), stdev = 0,090
+       CI (99.9%): [52,138, 55,417] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.roundTrip | payloadSize=1024
+     
+     WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+     Warm-up 1: 55,222 ms/op
+     Warm-up 2: 53,662 ms/op
+     Warm-up 3: 53,649 ms/op
+     Iteration 1: 53,728 ms/op
+     Iteration 2: 53,701 ms/op
+     Iteration 3: 53,620 ms/op
+     
+       Success: 53,683 �(99.9%) 1,017 ms/op [Average]
+       (min, avg, max) = (53,620, 53,683, 53,728), stdev = 0,056
+       CI (99.9%): [52,666, 54,700] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.EncryptionServiceBenchmark.roundTrip | payloadSize=65536
+     
+     WARNING: Using default keystore password. Set GRINX_KEYSTORE_PASSWORD env var for production.
+     Warm-up 1: 57,228 ms/op
+     Warm-up 2: 55,166 ms/op
+     Warm-up 3: 55,008 ms/op
+     Iteration 1: 56,246 ms/op
+     Iteration 2: 54,854 ms/op
+     Iteration 3: 54,565 ms/op
+     
+       Success: 55,222 �(99.9%) 16,401 ms/op [Average]
+       (min, avg, max) = (54,565, 55,222, 56,246), stdev = 0,899
+       CI (99.9%): [38,821, 71,622] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.decrypt | payloadSize=1024
+     
+     Warm-up 1: 55,769 ms/op
+     Warm-up 2: 45,693 ms/op
+     Warm-up 3: 47,696 ms/op
+     Iteration 1: 47,485 ms/op
+     Iteration 2: 47,601 ms/op
+     Iteration 3: 44,674 ms/op
+     
+       Success: 46,587 �(99.9%) 30,237 ms/op [Average]
+       (min, avg, max) = (44,674, 46,587, 47,601), stdev = 1,657
+       CI (99.9%): [16,350, 76,824] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.decrypt | payloadSize=65536
+     
+     Warm-up 1: 48,809 ms/op
+     Warm-up 2: 45,240 ms/op
+     Warm-up 3: 46,605 ms/op
+     Iteration 1: 46,577 ms/op
+     Iteration 2: 45,969 ms/op
+     Iteration 3: 44,204 ms/op
+     
+       Success: 45,583 �(99.9%) 22,489 ms/op [Average]
+       (min, avg, max) = (44,204, 45,583, 46,577), stdev = 1,233
+       CI (99.9%): [23,095, 68,072] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.decrypt | payloadSize=1048576
+     
+     Warm-up 1: 58,218 ms/op
+     Warm-up 2: 53,587 ms/op
+     Warm-up 3: 54,343 ms/op
+     Iteration 1: 55,454 ms/op
+     Iteration 2: 54,957 ms/op
+     Iteration 3: 53,232 ms/op
+     
+       Success: 54,547 �(99.9%) 21,276 ms/op [Average]
+       (min, avg, max) = (53,232, 54,547, 55,454), stdev = 1,166
+       CI (99.9%): [33,271, 75,824] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.encrypt | payloadSize=1024
+     
+     Warm-up 1: 49,465 ms/op
+     Warm-up 2: 45,193 ms/op
+     Warm-up 3: 46,889 ms/op
+     Iteration 1: 46,876 ms/op
+     Iteration 2: 47,055 ms/op
+     Iteration 3: 44,305 ms/op
+     
+       Success: 46,078 �(99.9%) 28,070 ms/op [Average]
+       (min, avg, max) = (44,305, 46,078, 47,055), stdev = 1,539
+       CI (99.9%): [18,009, 74,148] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.encrypt | payloadSize=65536
+     
+     Warm-up 1: 58,176 ms/op
+     Warm-up 2: 46,051 ms/op
+     Warm-up 3: 47,363 ms/op
+     Iteration 1: 47,596 ms/op
+     Iteration 2: 47,609 ms/op
+     Iteration 3: 45,297 ms/op
+     
+       Success: 46,834 �(99.9%) 24,283 ms/op [Average]
+       (min, avg, max) = (45,297, 46,834, 47,609), stdev = 1,331
+       CI (99.9%): [22,551, 71,117] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.PasswordEncryptionBenchmark.encrypt | payloadSize=1048576
+     
+     Warm-up 1: 66,954 ms/op
+     Warm-up 2: 53,039 ms/op
+     Warm-up 3: 53,981 ms/op
+     Iteration 1: 54,543 ms/op
+     Iteration 2: 54,423 ms/op
+     Iteration 3: 52,800 ms/op
+     
+       Success: 53,922 �(99.9%) 17,757 ms/op [Average]
+       (min, avg, max) = (52,800, 53,922, 54,543), stdev = 0,973
+       CI (99.9%): [36,165, 71,679] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.StreamEncryptionBenchmark.decryptStream | fileSize=1048576
+     
+     Warm-up 1: 67,766 ms/op
+     Warm-up 2: 55,269 ms/op
+     Warm-up 3: 56,639 ms/op
+     Iteration 1: 56,399 ms/op
+     Iteration 2: 56,671 ms/op
+     Iteration 3: 54,791 ms/op
+     
+       Success: 55,954 �(99.9%) 18,540 ms/op [Average]
+       (min, avg, max) = (54,791, 55,954, 56,671), stdev = 1,016
+       CI (99.9%): [37,414, 74,494] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.StreamEncryptionBenchmark.decryptStream | fileSize=10485760
+     
+     Warm-up 1: 142,293 ms/op
+     Warm-up 2: 134,162 ms/op
+     Warm-up 3: 138,150 ms/op
+     Iteration 1: 132,809 ms/op
+     Iteration 2: 135,132 ms/op
+     Iteration 3: 138,124 ms/op
+     
+       Success: 135,355 �(99.9%) 48,609 ms/op [Average]
+       (min, avg, max) = (132,809, 135,355, 138,124), stdev = 2,664
+       CI (99.9%): [86,746, 183,964] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.StreamEncryptionBenchmark.encryptStream | fileSize=1048576
+     
+     Warm-up 1: 58,458 ms/op
+     Warm-up 2: 56,701 ms/op
+     Warm-up 3: 53,165 ms/op
+     Iteration 1: 49,503 ms/op
+     Iteration 2: 49,170 ms/op
+     Iteration 3: 48,279 ms/op
+     
+       Success: 48,984 �(99.9%) 11,548 ms/op [Average]
+       (min, avg, max) = (48,279, 48,984, 49,503), stdev = 0,633
+       CI (99.9%): [37,436, 60,532] (assumes normal distribution)
+     
+     � com.grinx.shared.benchmark.crypto.StreamEncryptionBenchmark.encryptStream | fileSize=10485760
+     
+     Warm-up 1: 75,531 ms/op
+     Warm-up 2: 60,717 ms/op
+     Warm-up 3: 61,113 ms/op
+     Iteration 1: 62,533 ms/op
+     Iteration 2: 60,613 ms/op
+     Iteration 3: 60,121 ms/op
+     
+       Success: 61,089 �(99.9%) 23,248 ms/op [Average]
+       (min, avg, max) = (60,121, 61,089, 62,533), stdev = 1,274
+       CI (99.9%): [37,840, 84,337] (assumes normal distribution)
+     
+     
+     desktop summary:
+     Benchmark                                (fileSize)  (payloadSize)  Mode  Cnt    Score    Error  Units
+     EncryptionServiceBenchmark.decrypt              N/A            100  avgt    3   27,221 �  0,791  ms/op
+     EncryptionServiceBenchmark.decrypt              N/A           1024  avgt    3   26,826 �  1,790  ms/op
+     EncryptionServiceBenchmark.decrypt              N/A          65536  avgt    3   27,594 �  4,159  ms/op
+     EncryptionServiceBenchmark.encrypt              N/A            100  avgt    3   26,793 �  0,343  ms/op
+     EncryptionServiceBenchmark.encrypt              N/A           1024  avgt    3   26,813 �  1,050  ms/op
+     EncryptionServiceBenchmark.encrypt              N/A          65536  avgt    3   27,567 �  5,063  ms/op
+     EncryptionServiceBenchmark.roundTrip            N/A            100  avgt    3   53,777 �  1,639  ms/op
+     EncryptionServiceBenchmark.roundTrip            N/A           1024  avgt    3   53,683 �  1,017  ms/op
+     EncryptionServiceBenchmark.roundTrip            N/A          65536  avgt    3   55,222 � 16,401  ms/op
+     PasswordEncryptionBenchmark.decrypt             N/A           1024  avgt    3   46,587 � 30,237  ms/op
+     PasswordEncryptionBenchmark.decrypt             N/A          65536  avgt    3   45,583 � 22,489  ms/op
+     PasswordEncryptionBenchmark.decrypt             N/A        1048576  avgt    3   54,547 � 21,276  ms/op
+     PasswordEncryptionBenchmark.encrypt             N/A           1024  avgt    3   46,078 � 28,070  ms/op
+     PasswordEncryptionBenchmark.encrypt             N/A          65536  avgt    3   46,834 � 24,283  ms/op
+     PasswordEncryptionBenchmark.encrypt             N/A        1048576  avgt    3   53,922 � 17,757  ms/op
+     StreamEncryptionBenchmark.decryptStream     1048576            N/A  avgt    3   55,954 � 18,540  ms/op
+     StreamEncryptionBenchmark.decryptStream    10485760            N/A  avgt    3  135,355 � 48,609  ms/op
+     StreamEncryptionBenchmark.encryptStream     1048576            N/A  avgt    3   48,984 � 11,548  ms/op
+     StreamEncryptionBenchmark.encryptStream    10485760            N/A  avgt    3   61,089 � 23,248  ms/op
+     
+     Analysing benchmark results is not always trivial,
+     please refer to https://github.com/Kotlin/kotlinx-benchmark/tree/master?tab=readme-ov-file#analyzing-results for details.
+     
+     
+     BUILD SUCCESSFUL in 1m 15s
+     35 actionable tasks: 12 executed, 23 up-to-date
+     Configuration cache entry reused.
+     Result : PASS (75.9s)
+
+
+======================================================================
+  BENCHMARK SUMMARY
+======================================================================
+
+Tasks: 1 total | 1 passed | 0 failed | 75.9s elapsed
+
+MODULE                                   PLATFORM   STATUS     DURATION
+----------------------------------------------------------------------
+benchmark-crypto                         jvm        PASS          75.9s
+
+[>>] Report saved to: C:\Users\34645\AndroidStudioProjects\shared-kmp-libs\benchmark-report-20260426-213808-027380.md
+    legacy alias: C:\Users\34645\AndroidStudioProjects\shared-kmp-libs\benchmark-report.md
+
+[OK] All benchmark tasks passed.

@@ -1,0 +1,10 @@
+# Force LF on the cross-model token-cost surface — vitest 2.1.x's
+# transformer chokes on CRLF + non-ASCII chars together when importing the
+# script, throwing a misleading "SyntaxError: Invalid or unexpected token"
+# at the import position. CRLF alone or non-ASCII alone is fine; only the
+# combination breaks. cli.test.js + lib/cli.js carry both and parse fine,
+# so the trigger appears to be position- or buffer-alignment-specific
+# inside vitest, not just the byte combination. Forcing LF is the cheapest
+# stable workaround.
+tools/measure-token-cost.js text eol=lf
+tests/vitest/measure-token-cost.test.js text eol=lf
