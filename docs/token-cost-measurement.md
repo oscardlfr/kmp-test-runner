@@ -6,21 +6,31 @@ suite in three different ways. Backs the qualitative claim in the README
 
 ```mermaid
 xychart-beta
-    title "Token cost per test-run iteration (claude-opus-4-7)"
+    title "Token cost per test-run iteration (bars: cl100k_base, opus-4-7, sonnet-4-6, haiku-4-5)"
     x-axis ["A. Raw gradle + reports", "B. kmp-test parallel", "C. kmp-test --json"]
     y-axis "Tokens" 0 --> 28000
+    bar [12807, 376, 101]
     bar [25780, 642, 187]
+    bar [19234, 444, 125]
+    bar [19234, 444, 125]
 ```
 
 <details>
 <summary>ASCII fallback (if Mermaid xychart-beta doesn't render)</summary>
 
 ```
-A. Raw gradle + reports  ████████████████████████████████████████  25,780 tokens
-B. kmp-test parallel     █                                            642 tokens
-C. kmp-test --json       ▏                                            187 tokens
-                         (claude-opus-4-7 tokenizer; A is ~138× C)
+                              cl100k_base   opus-4-7   sonnet-4-6   haiku-4-5
+A. Raw gradle + reports           12,807     25,780       19,234      19,234
+B. kmp-test parallel                 376        642          444         444
+C. kmp-test --json                   101        187          125         125
+
+A vs C ratio                         127×       138×         154×        154×
+B vs C ratio                         3.7×       3.4×         3.6×        3.6×
 ```
+
+Same captures, four tokenizers. A:B:C ratio holds in a 127×–154× /
+3.4×–3.7× band across all of them — that ratio is what the cost claim rests
+on, not the absolute counts (which differ by up to 101% across the family).
 
 </details>
 
