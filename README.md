@@ -10,16 +10,24 @@ For an AI coding agent re-running a workflow on every change, the cheapest path 
 - **B.** `kmp-test <feature>` — markdown-summarised stdout.
 - **C.** `kmp-test <feature> --json` — single-line JSON envelope (agentic mode).
 
-### Cross-feature summary (cl100k_base baseline, 1 run each on `shared-kmp-libs`)
+Measured against a representative KMP SDK module on Windows + JDK 21, single run per approach.
+
+### Cross-feature summary
+
+Three bars per feature — A (raw gradle), B (kmp-test markdown), C (`--json`). Lower is better.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'xyChart':{'plotColorPalette':'#1a237e, #00897b, #c62828'},'fontFamily':'monospace','fontSize':'14px'}}}%%
-xychart-beta horizontal
-    title "Tokens to read what each kmp-test feature produced (lower is better)"
-    x-axis ["benchmark · A", "benchmark · B", "benchmark · C", "changed · A", "changed · B", "changed · C", "coverage · A", "coverage · B", "coverage · C", "parallel · A", "parallel · B", "parallel · C"]
-    y-axis "Tokens" 0 --> 110000
-    bar [16083, 6211, 89, 12694, 466, 100, 108405, 273, 89, 12807, 376, 101]
+%%{init: {'theme':'base','themeVariables':{'xyChart':{'backgroundColor':'transparent','plotColorPalette':'#5e35b1, #00897b, #fb8c00','titleColor':'#1a237e','xAxisLabelColor':'#212121','yAxisLabelColor':'#212121','xAxisTitleColor':'#212121','yAxisTitleColor':'#212121','xAxisLineColor':'#616161','yAxisLineColor':'#616161','xAxisTickColor':'#616161','yAxisTickColor':'#616161','titleFontSize':'18'},'fontFamily':'system-ui, -apple-system, Segoe UI, sans-serif','fontSize':'13px'}}}%%
+xychart-beta
+    title "Tokens per approach × feature (cl100k_base)"
+    x-axis ["parallel", "coverage", "changed", "benchmark"]
+    y-axis "Tokens" 0 --> 130000
+    bar [12807, 108405, 12694, 16083]
+    bar [376, 273, 466, 6211]
+    bar [101, 89, 100, 89]
 ```
+
+> **Reading the chart:** each feature has 3 bars side-by-side. Left to right within a feature: 🟪 **A** (raw gradle + reports), 🟩 **B** (kmp-test markdown), 🟧 **C** (`--json`). The B and C bars are tiny next to A on this scale — that's the point.
 
 | Feature      | A. Raw gradle + reports | B. kmp-test markdown | C. `--json` | A:C ratio |
 |--------------|------------------------:|---------------------:|------------:|----------:|
@@ -28,78 +36,92 @@ xychart-beta horizontal
 | `changed`    |                  12,694 |                  466 |         100 |     127× |
 | `benchmark`  |                  16,083 |                6,211 |          89 |     181× |
 
-Reading the table: **C is consistently 89–101 tokens** regardless of feature — the agentic `--json` envelope is the cheapest path on every workflow. **B varies a lot**: tiny on coverage/parallel/changed (273–466 tokens), heavier on benchmark (6,211 — the markdown report inlines per-benchmark scores). **A always blows past 12 K**, and `coverage` blows past 100 K because Kover HTML reports include per-line annotated source pages.
+**C is consistently 89–101 tokens** regardless of feature — the agentic `--json` envelope is the cheapest path on every workflow. **B varies a lot**: tiny on coverage/parallel/changed (273–466 tokens), heavier on benchmark (6,211 — the markdown report inlines per-benchmark scores). **A always blows past 12 K**, and `coverage` blows past 100 K because Kover HTML reports include per-line annotated source pages.
 
-### Per-feature breakdown
+### Per-feature breakdown — same captures, four tokenizers
+
+Each per-feature chart shows 4 bars per approach group (A / B / C). The bars in each group are, left to right: 🟦 `cl100k_base` · 🟥 `claude-opus-4-7` · 🟩 `claude-sonnet-4-6` · 🟧 `claude-haiku-4-5`. Counts come from Anthropic's `messages.countTokens` API on the same byte-for-byte capture (`cl100k_base` is the OpenAI baseline via `js-tiktoken`).
 
 #### `parallel` — full test suite
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'xyChart':{'plotColorPalette':'#1a237e'},'fontFamily':'monospace','fontSize':'14px'}}}%%
-xychart-beta horizontal
-    title "parallel — cl100k_base tokens per approach"
-    x-axis ["A. raw gradle + reports", "B. kmp-test parallel", "C. kmp-test parallel --json"]
-    y-axis "Tokens" 0 --> 14000
+%%{init: {'theme':'base','themeVariables':{'xyChart':{'backgroundColor':'transparent','plotColorPalette':'#3949ab, #e53935, #43a047, #fb8c00','titleColor':'#1a237e','xAxisLabelColor':'#212121','yAxisLabelColor':'#212121','xAxisTitleColor':'#212121','yAxisTitleColor':'#212121','xAxisLineColor':'#616161','yAxisLineColor':'#616161','xAxisTickColor':'#616161','yAxisTickColor':'#616161','titleFontSize':'17'},'fontFamily':'system-ui, -apple-system, Segoe UI, sans-serif','fontSize':'13px'}}}%%
+xychart-beta
+    title "parallel — tokens per approach × tokenizer"
+    x-axis ["A. raw gradle", "B. kmp-test", "C. --json"]
+    y-axis "Tokens" 0 --> 27000
     bar [12807, 376, 101]
+    bar [25780, 642, 187]
+    bar [19234, 444, 125]
+    bar [19234, 444, 125]
 ```
 
-A:B = **34×**, A:C = **127×**, B:C = **3.7×**. Captures: [`tools/runs/parallel/`](tools/runs/parallel/). Cross-model validation across all four Claude tokenizers: [`tools/runs/cross-model-results-parallel.txt`](tools/runs/cross-model-results-parallel.txt).
+A:C ratio holds in a tight **127×–154×** band across all four tokenizers; B:C in **3.4×–3.7×**. `claude-sonnet-4-6` and `claude-haiku-4-5` share a tokenizer (identical counts to the unit). `claude-opus-4-7` ships a new tokenizer that produces 30–100% more tokens for the same input — most visibly on heavy XML/HTML payloads. Captures: [`tools/runs/parallel/`](tools/runs/parallel/) · evidence: [`tools/runs/cross-model-results-parallel.txt`](tools/runs/cross-model-results-parallel.txt).
 
 #### `coverage` — Kover XML + HTML reports
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'xyChart':{'plotColorPalette':'#c62828'},'fontFamily':'monospace','fontSize':'14px'}}}%%
-xychart-beta horizontal
-    title "coverage — cl100k_base tokens per approach"
-    x-axis ["A. raw gradle + kover reports", "B. kmp-test coverage", "C. kmp-test coverage --json"]
-    y-axis "Tokens" 0 --> 110000
+%%{init: {'theme':'base','themeVariables':{'xyChart':{'backgroundColor':'transparent','plotColorPalette':'#3949ab, #e53935, #43a047, #fb8c00','titleColor':'#b71c1c','xAxisLabelColor':'#212121','yAxisLabelColor':'#212121','xAxisTitleColor':'#212121','yAxisTitleColor':'#212121','xAxisLineColor':'#616161','yAxisLineColor':'#616161','xAxisTickColor':'#616161','yAxisTickColor':'#616161','titleFontSize':'17'},'fontFamily':'system-ui, -apple-system, Segoe UI, sans-serif','fontSize':'13px'}}}%%
+xychart-beta
+    title "coverage — tokens per approach × tokenizer"
+    x-axis ["A. raw gradle + kover", "B. kmp-test", "C. --json"]
+    y-axis "Tokens" 0 --> 130000
     bar [108405, 273, 89]
+    bar [123845, 482, 162]
+    bar [92940, 317, 109]
+    bar [92940, 317, 109]
 ```
 
-A:B = **397×**, A:C = **1218×**, B:C = **3.1×** — the largest savings of any feature, because Kover HTML reports include a fully annotated source page per file (line numbers, hit counts, branch summaries). Captures: [`tools/runs/coverage/`](tools/runs/coverage/).
+The largest savings of any feature: A:C = **765×–1218×** across tokenizers (cl100k 1218×, opus 765×, sonnet/haiku 853×). Kover HTML reports include a fully annotated source page per file — slurping `build/reports/kover/**` for one module gives the agent ~261 KB of HTML it has to scan to find one number. Captures: [`tools/runs/coverage/`](tools/runs/coverage/) · evidence: [`tools/runs/cross-model-results-coverage.txt`](tools/runs/cross-model-results-coverage.txt).
 
 #### `changed` — tests for modules touched since `HEAD~1`
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'xyChart':{'plotColorPalette':'#00897b'},'fontFamily':'monospace','fontSize':'14px'}}}%%
-xychart-beta horizontal
-    title "changed — cl100k_base tokens per approach"
-    x-axis ["A. raw gradle + reports", "B. kmp-test changed", "C. kmp-test changed --json"]
-    y-axis "Tokens" 0 --> 14000
+%%{init: {'theme':'base','themeVariables':{'xyChart':{'backgroundColor':'transparent','plotColorPalette':'#3949ab, #e53935, #43a047, #fb8c00','titleColor':'#004d40','xAxisLabelColor':'#212121','yAxisLabelColor':'#212121','xAxisTitleColor':'#212121','yAxisTitleColor':'#212121','xAxisLineColor':'#616161','yAxisLineColor':'#616161','xAxisTickColor':'#616161','yAxisTickColor':'#616161','titleFontSize':'17'},'fontFamily':'system-ui, -apple-system, Segoe UI, sans-serif','fontSize':'13px'}}}%%
+xychart-beta
+    title "changed — tokens per approach × tokenizer"
+    x-axis ["A. raw gradle", "B. kmp-test", "C. --json"]
+    y-axis "Tokens" 0 --> 27000
     bar [12694, 466, 100]
+    bar [25580, 787, 186]
+    bar [19098, 550, 125]
+    bar [19098, 550, 125]
 ```
 
-A:B = **27×**, A:C = **127×**, B:C = **4.7×**. Captures: [`tools/runs/changed/`](tools/runs/changed/). Note: B/C dispatch through the full parallel coverage suite (broader scope than A's single `:module:desktopTest`), so the wall-clock time difference is not apples-to-apples — the token count is.
+A:C = **127×–153×** band, B:C = **4.2×–4.7×**. B/C dispatch through the full parallel coverage suite (broader scope than A's single `:module:desktopTest`), so wall-clock time isn't apples-to-apples — token count is. Captures: [`tools/runs/changed/`](tools/runs/changed/) · evidence: [`tools/runs/cross-model-results-changed.txt`](tools/runs/cross-model-results-changed.txt).
 
 #### `benchmark` — JMH desktopSmokeBenchmark
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'xyChart':{'plotColorPalette':'#6a1b9a'},'fontFamily':'monospace','fontSize':'14px'}}}%%
-xychart-beta horizontal
-    title "benchmark — cl100k_base tokens per approach"
-    x-axis ["A. raw gradle + JSON reports", "B. kmp-test benchmark", "C. kmp-test benchmark --json"]
-    y-axis "Tokens" 0 --> 17000
+%%{init: {'theme':'base','themeVariables':{'xyChart':{'backgroundColor':'transparent','plotColorPalette':'#3949ab, #e53935, #43a047, #fb8c00','titleColor':'#e65100','xAxisLabelColor':'#212121','yAxisLabelColor':'#212121','xAxisTitleColor':'#212121','yAxisTitleColor':'#212121','xAxisLineColor':'#616161','yAxisLineColor':'#616161','xAxisTickColor':'#616161','yAxisTickColor':'#616161','titleFontSize':'17'},'fontFamily':'system-ui, -apple-system, Segoe UI, sans-serif','fontSize':'13px'}}}%%
+xychart-beta
+    title "benchmark — tokens per approach × tokenizer"
+    x-axis ["A. raw gradle + JSON", "B. kmp-test", "C. --json"]
+    y-axis "Tokens" 0 --> 25000
     bar [16083, 6211, 89]
+    bar [23527, 9916, 163]
+    bar [19266, 7596, 109]
+    bar [19266, 7596, 109]
 ```
 
-A:B = **2.6×**, A:C = **181×**, B:C = **70×** — the largest B:C gap because the markdown report keeps per-benchmark scores while the JSON envelope reduces to a single pass/fail line. If you want the scores, use B; if you only need to know whether benchmarks regressed, C is 70× cheaper. Captures: [`tools/runs/benchmark/`](tools/runs/benchmark/).
+A:C = **144×–181×**, B:C = **60×–70×** (the largest B:C gap of any feature). The markdown report keeps per-benchmark scores by design — useful when a human is reading the output to decide if a regression is real, expensive when the agent just wants a pass/fail signal. Captures: [`tools/runs/benchmark/`](tools/runs/benchmark/) · evidence: [`tools/runs/cross-model-results-benchmark.txt`](tools/runs/cross-model-results-benchmark.txt).
 
 ### How the numbers are produced
 
-For each feature, the script captures one A/B/C triplet under `tools/runs/<feature>/` — for **A**, gradle stdout (`./gradlew :module:<task> --console=plain`) **plus** every generated report file matched by the feature's predicate (test HTML/XML for parallel/changed, kover HTML/XML for coverage, kotlinx-benchmark JSON for benchmark); for **B** and **C**, the corresponding `kmp-test <feature> [--json]` stdout. The same byte-for-byte text is then re-tokenized two ways: offline via [`js-tiktoken`](https://www.npmjs.com/package/js-tiktoken) using `cl100k_base` (the baseline column), and online via Anthropic's [`messages.countTokens`](https://docs.anthropic.com/en/api/messages-count-tokens) API per Claude 4.x model (cross-model evidence files in `tools/runs/cross-model-results-<feature>.txt`). Reproduce with:
+For each feature, the script captures one A/B/C triplet under `tools/runs/<feature>/` — for **A**, gradle stdout (`./gradlew :module:<task> --console=plain`) **plus** every generated report file matched by the feature's predicate (test HTML/XML for parallel/changed, kover HTML/XML for coverage, kotlinx-benchmark JSON for benchmark); for **B** and **C**, the corresponding `kmp-test <feature> [--json]` stdout. The same byte-for-byte text is then re-tokenized two ways: offline via [`js-tiktoken`](https://www.npmjs.com/package/js-tiktoken) using `cl100k_base` (the baseline column), and online via Anthropic's [`messages.countTokens`](https://docs.anthropic.com/en/api/messages-count-tokens) API per Claude 4.x model (cross-model evidence files in `tools/runs/cross-model-results-<feature>.txt`). Reproduce against your own KMP project with:
 
 ```bash
 # Per-feature capture (writes tools/runs/<feature>/{A,B,C}-run1.txt)
 node tools/measure-token-cost.js --feature parallel \
-  --project-root /path/to/kmp/project --module-filter "<module>" --test-task desktopTest
+  --project-root /path/to/your/kmp/project --module-filter "<module>" --test-task desktopTest
 node tools/measure-token-cost.js --feature coverage \
-  --project-root /path/to/kmp/project --module-filter "<module>"
+  --project-root /path/to/your/kmp/project --module-filter "<module>"
 node tools/measure-token-cost.js --feature changed \
-  --project-root /path/to/kmp/project --test-task desktopTest --changed-range HEAD
+  --project-root /path/to/your/kmp/project --test-task desktopTest --changed-range HEAD
 node tools/measure-token-cost.js --feature benchmark \
-  --project-root /path/to/kmp/project --module-filter "<bench-module>" --benchmark-task desktopSmokeBenchmark
+  --project-root /path/to/your/kmp/project --module-filter "<bench-module>" --benchmark-task desktopSmokeBenchmark
 
-# Cross-model re-tokenize (free Anthropic count_tokens API; rate-limited only)
+# Cross-model re-tokenize (Anthropic count_tokens is free; rate-limited only)
 ANTHROPIC_API_KEY=sk-ant-... node tools/measure-token-cost.js --feature <name> \
   --anthropic-models claude-opus-4-7,claude-sonnet-4-6,claude-haiku-4-5
 ```
