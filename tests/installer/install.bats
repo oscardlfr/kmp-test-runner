@@ -153,6 +153,97 @@ teardown_e2e_archive() {
     [ ! -d "$E2E_PREFIX" ]
 }
 
+# --------------------------------------------------------------------------
+# Shell-detection tests (v0.5.0 Bug D) — point HOME and SHELL at a temp dir
+# and assert the installer wrote the expected rc file with the expected
+# syntax, and printed the expected per-shell hint.
+# --------------------------------------------------------------------------
+
+# Run install.sh in an isolated $HOME / $SHELL context against the local archive.
+# Sets E2E_TMPDIR / FAKE_HOME / E2E_PREFIX as side-effects + LOCAL_ARCHIVE.
+run_install_with_shell() {
+    local shell_name="$1"
+    setup_e2e_archive
+    FAKE_HOME="${E2E_TMPDIR}/home"
+    mkdir -p "$FAKE_HOME"
+    HOME="$FAKE_HOME" SHELL="/usr/bin/$shell_name" \
+        run bash "$INSTALL_SCRIPT" \
+            --version "$ARTIFACT_VER" \
+            --prefix  "$E2E_PREFIX" \
+            --archive "$LOCAL_ARCHIVE"
+}
+
+@test "E2E shell-detect: zsh writes ~/.zshrc with export PATH and prints zsh hint" {
+    run_install_with_shell zsh
+    [ "$status" -eq 0 ]
+    [ -f "${FAKE_HOME}/.zshrc" ]
+    grep -q 'export PATH=' "${FAKE_HOME}/.zshrc"
+    grep -q "${E2E_PREFIX}/lib/bin" "${FAKE_HOME}/.zshrc"
+    [[ "$output" == *"current shell (zsh)"* ]]
+    [[ "$output" == *"source ${FAKE_HOME}/.zshrc"* ]]
+    teardown_e2e_archive
+}
+
+@test "E2E shell-detect: bash writes ~/.bashrc with export PATH and prints bash hint" {
+    run_install_with_shell bash
+    [ "$status" -eq 0 ]
+    [ -f "${FAKE_HOME}/.bashrc" ]
+    grep -q 'export PATH=' "${FAKE_HOME}/.bashrc"
+    [[ "$output" == *"current shell (bash)"* ]]
+    [[ "$output" == *"source ${FAKE_HOME}/.bashrc"* ]]
+    teardown_e2e_archive
+}
+
+@test "E2E shell-detect: fish writes ~/.config/fish/config.fish with set -gx PATH (fish syntax)" {
+    run_install_with_shell fish
+    [ "$status" -eq 0 ]
+    local rc="${FAKE_HOME}/.config/fish/config.fish"
+    [ -f "$rc" ]
+    # fish uses `set -gx PATH ... $PATH` (no quotes, not export).
+    grep -q '^set -gx PATH ' "$rc"
+    [[ "$output" == *"current shell (fish)"* ]]
+    [[ "$output" == *"source ${rc}"* ]]
+    [[ "$output" == *"set -gx PATH ${E2E_PREFIX}/lib/bin"* ]]
+    teardown_e2e_archive
+}
+
+@test "E2E shell-detect: unknown shell falls back to ~/.profile + sh hint" {
+    run_install_with_shell tcsh
+    [ "$status" -eq 0 ]
+    [ -f "${FAKE_HOME}/.profile" ]
+    grep -q 'export PATH=' "${FAKE_HOME}/.profile"
+    [[ "$output" == *"current shell (sh)"* ]]
+    [[ "$output" == *"source ${FAKE_HOME}/.profile"* ]]
+    teardown_e2e_archive
+}
+
+@test "E2E shell-detect: prints 'open a new terminal' fallback for users who don't want to source" {
+    run_install_with_shell zsh
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"open a new terminal"* ]]
+    teardown_e2e_archive
+}
+
+@test "E2E shell-detect: re-running install on an already-configured rc does NOT duplicate the export line" {
+    run_install_with_shell zsh
+    [ "$status" -eq 0 ]
+    local rc="${FAKE_HOME}/.zshrc"
+    local first_count
+    first_count="$(grep -c "${E2E_PREFIX}/lib/bin" "$rc")"
+    [ "$first_count" -eq 1 ]
+    # Re-run with same HOME / SHELL — must be idempotent.
+    HOME="$FAKE_HOME" SHELL="/usr/bin/zsh" \
+        run bash "$INSTALL_SCRIPT" \
+            --version "$ARTIFACT_VER" \
+            --prefix  "$E2E_PREFIX" \
+            --archive "$LOCAL_ARCHIVE"
+    [ "$status" -eq 0 ]
+    local second_count
+    second_count="$(grep -c "${E2E_PREFIX}/lib/bin" "$rc")"
+    [ "$second_count" -eq 1 ]
+    teardown_e2e_archive
+}
+
 @test "E2E: install.sh fails when --archive file is missing" {
     E2E_TMPDIR="$(mktemp -d)"
     E2E_PREFIX="${E2E_TMPDIR}/prefix"

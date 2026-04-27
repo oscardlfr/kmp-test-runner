@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added shared helper `module_has_test_sources` in `scripts/sh/lib/script-utils.sh` and `Test-ModuleHasTestSources` inline in `scripts/ps1/run-parallel-coverage-suite.ps1`. Both `find_modules` (sh) and `Find-Modules` (ps1) honor the new flags. `changed.sh` / `changed.ps1` pass them through to the suite.
 
 ### Changed
+- **Installer per-shell PATH UX (`scripts/install.sh` + `install.ps1`)**. Previously `curl ... | bash` printed `kmp-test-runner v0.4.1 installed successfully` and added the `export PATH` line to `~/.zshrc`, but `kmp-test --version` immediately after returned `command not found` — users had to manually re-`export PATH` or restart the shell.
+  - sh installer: detects `$SHELL` and now writes the rc file with the right syntax for fish (`set -gx PATH …` to `~/.config/fish/config.fish`), zsh (`~/.zshrc`), bash (`~/.bashrc`), or `~/.profile` for unknown shells. Final hint personalizes per shell: shows both the literal `export`/`set` line for the current session AND the `source <rc-file>` shortcut.
+  - ps1 installer: clarified the final message — `$env:PATH` is already updated for the current PowerShell session (so `kmp-test --version` works immediately), and new sessions pick up the user PATH automatically. Only cmd.exe needs a restart.
+  - Tests: 6 new bats E2E in `tests/installer/install.bats` covering zsh / bash / fish / unknown-shell detection + idempotent re-runs.
+
 - **`[NOTICE]` prefix replaces `[!]` for the Gradle 9 deprecation handler line in markdown mode** (sh + ps1 parallel scripts). Distinct prefix lets humans tell benign deprecation noise from real `[!]` warnings at a glance, and lets the JSON parser route it correctly.
 - **PowerShell parallel script gains the missing JVM-error / deprecation 3-branch logic** that the bash sibling has had since the original v0.3.x. Previously the ps1 had a single coarse `if (testExitCode -ne 0 -and failureCount -eq 0)` that printed `[!]` for all non-zero exits, masking the JVM-level vs deprecation distinction on Windows.
 
