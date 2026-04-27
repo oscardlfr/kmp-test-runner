@@ -183,7 +183,9 @@ run_install_with_shell() {
     [ "$status" -eq 0 ]
     [ -f "${FAKE_HOME}/.zshrc" ]
     grep -q 'export PATH=' "${FAKE_HOME}/.zshrc"
-    grep -q "${E2E_PREFIX}/lib/bin" "${FAKE_HOME}/.zshrc"
+    # BIN_DIR is $PREFIX/bin (the symlink dir), NOT $PREFIX/lib/bin (which is
+    # INSTALL_DIR's bin/ subdir holding the unpacked kmp-test.js).
+    grep -q "${E2E_PREFIX}/bin" "${FAKE_HOME}/.zshrc"
     [[ "$output" == *"current shell (zsh)"* ]]
     [[ "$output" == *"source ${FAKE_HOME}/.zshrc"* ]]
     teardown_e2e_archive
@@ -208,7 +210,7 @@ run_install_with_shell() {
     grep -q '^set -gx PATH ' "$rc"
     [[ "$output" == *"current shell (fish)"* ]]
     [[ "$output" == *"source ${rc}"* ]]
-    [[ "$output" == *"set -gx PATH ${E2E_PREFIX}/lib/bin"* ]]
+    [[ "$output" == *"set -gx PATH ${E2E_PREFIX}/bin"* ]]
     teardown_e2e_archive
 }
 
@@ -234,7 +236,7 @@ run_install_with_shell() {
     [ "$status" -eq 0 ]
     local rc="${FAKE_HOME}/.zshrc"
     local first_count
-    first_count="$(grep -c "${E2E_PREFIX}/lib/bin" "$rc")"
+    first_count="$(grep -c "${E2E_PREFIX}/bin" "$rc")"
     [ "$first_count" -eq 1 ]
     # Re-run with same HOME / SHELL — must be idempotent.
     HOME="$FAKE_HOME" SHELL="/usr/bin/zsh" \
@@ -244,7 +246,7 @@ run_install_with_shell() {
             --archive "$LOCAL_ARCHIVE"
     [ "$status" -eq 0 ]
     local second_count
-    second_count="$(grep -c "${E2E_PREFIX}/lib/bin" "$rc")"
+    second_count="$(grep -c "${E2E_PREFIX}/bin" "$rc")"
     [ "$second_count" -eq 1 ]
     teardown_e2e_archive
 }
