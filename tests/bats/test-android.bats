@@ -43,3 +43,25 @@ teardown() {
         [[ "$sources" == *'$SCRIPT_DIR'* ]]
     fi
 }
+
+@test "android: emits === JSON SUMMARY === delimiter (parser contract for v0.5.1 Bug G)" {
+    # The cli.js parseAndroidSummary parser keys off the literal string
+    # "=== JSON SUMMARY ===" to locate the JSON envelope. If the script
+    # changes this delimiter, --json mode will silently fall back to
+    # bracket-table parsing. Pin it.
+    grep -F "=== JSON SUMMARY ===" "$SCRIPT"
+}
+
+@test "android: JSON SUMMARY exposes the fields parseAndroidSummary reads (Bug G contract)" {
+    # The cli.js parser maps these exact keys. If the script renames any of
+    # them, the envelope loses signal silently — this test catches that drift.
+    grep -F "'totalTests'" "$SCRIPT"
+    grep -F "'passedTests'" "$SCRIPT"
+    grep -F "'failedTests'" "$SCRIPT"
+    grep -F "'modules'" "$SCRIPT"
+    grep -F "'name'" "$SCRIPT"
+    grep -F "'status'" "$SCRIPT"
+    grep -F "'logFile'" "$SCRIPT"
+    grep -F "'logcatFile'" "$SCRIPT"
+    grep -F "'errorsFile'" "$SCRIPT"
+}

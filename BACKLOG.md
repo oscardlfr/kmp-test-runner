@@ -6,7 +6,54 @@
 
 ## ACTIVE
 
-_(none — v0.5.0 milestone shipped; pick from QUEUED below or open a new entry)_
+### Per-project config presets (post-v0.5.1 idea — needs design)
+
+The CLI currently expects each invocation to carry every flag verbatim — which becomes painful when running it against several real projects with different requirements. Examples surfaced 2026-04-27 while validating v0.5.1:
+
+- One KMP project compiles to `JvmTarget.JVM_21` → benchmarks need `JAVA_HOME=jdk21` to run; without it you hit `UnsupportedClassVersionError` (class file v65 vs runtime v61).
+- Another personal Android-only project pins `JavaVersion.VERSION_11` for `compileOptions` → fine on either JDK 17 or 21, but its benchmark module wants `--platform android --config smoke --test-filter '*Scale*'`.
+- A third heterogeneous KMP project on a different machine pins JDK 17 toolchain and wants `--coverage-tool none` (no kover/jacoco plugin applied per-module).
+
+Today every `kmp-test ...` invocation has to carry this knowledge as flags + env vars, by memory, every time.
+
+**Proposal sketch** (not yet a phase plan):
+- `~/.kmp-test/config.json` (or `.kmp-test.json` in project root) keyed by project name or git-remote, with a per-project preset:
+  ```json
+  {
+    "projects": {
+      "shared-kmp-libs": {
+        "java_home": "C:/Program Files/Zulu/zulu-21",
+        "benchmark": { "config": "main" }
+      },
+      "<personal-android-only>": {
+        "benchmark": { "platform": "android", "config": "smoke", "test_filter": "*Scale*" }
+      }
+    }
+  }
+  ```
+- `kmp-test benchmark --project shared-kmp-libs` reads the preset and applies env + flags.
+- Or auto-detect by `cwd` when no `--project` is passed.
+- Doctor extension (Bug F in v0.5.1 Phase 4) could write the JDK requirement back into the config when it detects `jvmTarget = JVM_N` so the next invocation Just Works.
+
+Open questions:
+- Schema validation — JSON Schema, or just permissive merge?
+- Precedence vs explicit CLI flags — flags always win? Always lose? Configurable per-key?
+- Security — `java_home` overrides `$JAVA_HOME`; do we let a checked-in `.kmp-test.json` mutate the spawn env, or only the user-global one?
+- Would this benefit from an `init` subcommand that templated the config from observed project state (`jvmTarget`, plugins applied, modules with tests)?
+
+Estimated effort: ~6–10h once the schema is designed. Probably a v0.6 milestone scope, not v0.5.1.
+
+### v0.5.1 — Real-world validation hardening, round 2
+
+After v0.5.0 shipped (2026-04-27), validating against (a) a 13-module Android-only Gradle 9 project on macOS and (b) `shared-kmp-libs` on Windows + S22 Ultra surfaced 6 second-order issues.
+
+- **Bug G — `--json` envelope swallows error detail for `android` + `benchmark`** _(in this PR)_. Refactor `parseScriptOutput` to dispatch per-subcommand. New `errors[].code` discriminators (`task_not_found`, `instrumented_setup_failed`, `unsupported_class_version`, `module_failed`). New top-level `benchmark` envelope field. PS1 parity for the benchmark per-task / tally lines.
+- **`--test-filter '*Foo*'` substring resolution** _(in this PR)_. Wildcards now interpret as wildcards: `*Scale*` → `ScaleBenchmark`. Surfaced 2026-04-27 running scale benchmarks against a personal Android benchmark project.
+- **Bug F — `JvmTarget.JVM_N` / `JavaVersion.VERSION_N` invisible to Bug A gate** _(in this PR)_. `findJvmToolchainVersion` extended → `findRequiredJdkVersion` detecting all three signals, taking MAX. SH/PS1 parity. Surfaced 2026-04-27 when shared-kmp-libs benchmarks (which pin `JvmTarget.JVM_21` in a convention plugin without `jvmToolchain`) crashed under JAVA_HOME=JDK 17 with `UnsupportedClassVersionError` instead of being blocked pre-flight.
+- Bug B' — `kmp-test android` hardcoded `connectedDebugAndroidTest` breaks KMP `androidLibrary { }` DSL (queued — Phase 3).
+- Bug B'' — `kmp-test parallel --coverage-tool auto` invokes `jacocoTestReport` on modules that don't have the plugin applied (queued — Phase 2).
+- Bug E — misleading "Full coverage report generated!" with 0% coverage (queued — Phase 2).
+- Bug C' — `[NOTICE]` deprecation handler doesn't cover the coverage-gen pass (queued — Phase 2).
 
 ### Deferred
 
@@ -28,7 +75,7 @@ Today's measurement (PRs #27–#29) covers **one** scenario: `kmp-test parallel`
 
 **Coverage-tool variation worth one extra column.** The default is Kover; JaCoCo is supported but currently undocumented in the README (separate quick-fix entry below). For one project run it twice (Kover, JaCoCo) and tabulate side-by-side — the A row will diverge (different XML schemas), B/C should be identical (CLI normalises). One row per coverage tool answers "does the savings claim depend on Kover?"
 
-**Reference projects.** Stick with `shared-kmp-libs` for v0.4 (consistent variables — same module count, same deps, same JDK). `dawsync` and `dipatternsdemo` are tempting cross-validation but `dipatternsdemo`'s 43-module discovery hung on Windows MinGW already (per current docs) — adding a third project doesn't validate the claim more, it just adds tokens spent.
+**Reference projects.** Stick with `shared-kmp-libs` for v0.4 (consistent variables — same module count, same deps, same JDK). Other personal KMP projects are tempting cross-validation but at least one larger one (43 modules) hung on Windows MinGW already (per current docs) — adding a third project doesn't validate the claim more, it just adds tokens spent.
 
 **Chart redesign (mandatory).** 4 features × 3 approaches × 4 tokenizers = 48 bars in one chart is unreadable. Two viable layouts:
 - **One chart per feature** at the top of `docs/token-cost-measurement.md`, then a single "summary" row in the README with feature on x-axis and `A:C ratio` on y-axis (one number per feature). README stays scannable, doc has the full breakdown.
@@ -118,7 +165,7 @@ Estimated effort per item: 1-3h each except the subcommand-grouping refactor (fu
 
 ### Use `android describe` JSON as module-discovery source (pending review)
 
-The official `android` CLI's `describe` subcommand emits a JSON document of build targets + APK paths for an Android project. Currently kmp-test does its own module discovery via bash filesystem walks (`scripts/sh/lib/script-utils.sh` etc.), which on Windows MinGW is the slow path that motivated the [concurrent-invocation safety entry](#concurrent-invocation-safety-multi-agent-scenarios) above and is the suspect for the 10+ min hang against `dipatternsdemo` (43-module project). Consider replacing or augmenting the bash discovery with an `android describe` invocation when the CLI is on PATH — gets the official Google schema, faster on Windows.
+The official `android` CLI's `describe` subcommand emits a JSON document of build targets + APK paths for an Android project. Currently kmp-test does its own module discovery via bash filesystem walks (`scripts/sh/lib/script-utils.sh` etc.), which on Windows MinGW is the slow path that motivated the [concurrent-invocation safety entry](#concurrent-invocation-safety-multi-agent-scenarios) above and is the suspect for the 10+ min hang against a 43-module personal project. Consider replacing or augmenting the bash discovery with an `android describe` invocation when the CLI is on PATH — gets the official Google schema, faster on Windows.
 
 Open questions: (1) does `describe` cover KMP-only (non-Android) modules, or only AGP-rooted ones? (2) what's the schema stability guarantee, esp. for multi-module multi-target KMP? (3) fallback path when `android` CLI isn't installed — keep bash discovery as default, opt-in via `--use-android-describe` flag.
 
@@ -158,7 +205,7 @@ Out of scope for this item: cross-host coordination (use a real lock manager), G
 
 ## DONE (recent — newest first)
 
-- 2026-04-27: **v0.5.0** — "Real-world Mac validation hardening." Four production bugs surfaced on a corporate Mac running v0.4.1 against a 20-module OpenNative project, all bundled into one milestone:
+- 2026-04-27: **v0.5.0** — "Real-world Mac validation hardening." Four production bugs surfaced on macOS running v0.4.1 against a 20-module Android-only KMP project, all bundled into one milestone:
   - **Bug A (#43)** — JDK toolchain mismatch becomes BLOCKING by default. Was: warning printed and script continued, then tests failed downstream with `UnsupportedClassVersionError`. Now: exits 3 with a per-OS `JAVA_HOME` hint; `--ignore-jdk-mismatch` / `-IgnoreJdkMismatch` downgrades to WARN; `gradle.properties` `org.gradle.java.home` bypasses the check (gradle's explicit override wins). 12 vitest + 9 bats + 6 Pester. Shared helpers `scripts/sh/lib/jdk-check.sh` + `scripts/ps1/lib/Jdk-Check.ps1`.
   - **Bug B (#44)** — modules without test source sets cause silent failures + misleading reports. Was: script invoked `:module:jacocoTestReport` blindly; api/build-logic modules failed with "task not found" but final output said `[OK] Full coverage report generated!` with 0% coverage. Now: auto-skip modules with no `src/*Test*` directory (9 KMP/Android source-set variants checked); `--exclude-modules "*:api,build-logic"` for explicit exclusion (matches `--module-filter` syntax); `--include-untested` to opt out of the auto-skip. 4 vitest + 10 bats + 9 Pester. Shared helper `module_has_test_sources` in `script-utils.sh`.
   - **Bug C (#46)** — Gradle 9 deprecation noise lumped into `errors[]`. Was: `[!]` prefix indistinguishable from real warnings; `BUILD FAILED` from the deprecation pile ended up in `errors[]`. Now: distinct `[NOTICE]` prefix (sh + ps1); JSON envelope grows `warnings: [{code: "gradle_deprecation", gradle_exit_code, tasks_passed}]`; `BUILD FAILED` suppressed in `errors[]` when paired with the deprecation notice; PowerShell script gains the 3-branch JVM-error/deprecation/per-module logic that bash already had. 10 vitest + 4 bats + 5 Pester.

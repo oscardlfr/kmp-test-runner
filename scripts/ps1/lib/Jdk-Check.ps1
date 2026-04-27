@@ -1,5 +1,5 @@
 # =============================================================================
-# Jdk-Check.ps1 — JDK toolchain pre-flight gate for any script that spawns gradle.
+# Jdk-Check.ps1 — JDK pre-flight gate for any script that spawns gradle.
 #
 # Dot-source this file and call:
 #   $rc = Invoke-JdkMismatchGate -ProjectRoot $ProjectRoot -IgnoreJdkMismatch:$IgnoreJdkMismatch
@@ -9,11 +9,13 @@
 #   1. If gradle.properties has `org.gradle.java.home` pointing to an existing
 #      directory: set $env:JAVA_HOME to that path and return 0 (gradle uses
 #      its own java home; no mismatch possible).
-#   2. Else: scan *.gradle.kts for `jvmToolchain(N)`. If found, compare N
-#      against current `java -version`.
+#   2. Else: scan *.gradle.kts and *.kt for any of these JDK requirement
+#      signals — `jvmToolchain(N)`, `JvmTarget.JVM_N`,
+#      `JavaVersion.VERSION_N` — and take the MAX. If found, compare against
+#      current `java -version`.
 #   3. On mismatch: print actionable error to stderr and return 3, unless
 #      -IgnoreJdkMismatch is set, in which case print a WARN and return 0.
-#   4. On no mismatch (or no jvmToolchain found, or no java on PATH): return 0.
+#   4. On no mismatch (or no signal found, or no java on PATH): return 0.
 #
 # Exit code 3 matches kmp-test's EXIT.ENV_ERROR convention.
 # =============================================================================
@@ -45,17 +47,38 @@ function Invoke-JdkMismatchGate {
         }
     }
 
-    # 2. Detect required jvmToolchain version (first match wins).
-    $jvmLine = Get-ChildItem -Path $ProjectRoot -Recurse -Include '*.gradle.kts' -ErrorAction SilentlyContinue |
-        Select-Object -First 50 |
-        ForEach-Object { Get-Content $_.FullName -ErrorAction SilentlyContinue } |
-        Where-Object { $_ -match 'jvmToolchain' } |
-        Select-Object -First 1
+    # 2. Detect required JDK version. Three signals — pick the max:
+    #    a) jvmToolchain(N)          — gradle compile/test toolchain
+    #    b) JvmTarget.JVM_N          — kotlin bytecode target
+    #    c) JavaVersion.VERSION_N    — Android source/target compatibility
+    # Scan both *.gradle.kts and *.kt (convention plugins live in build-logic/*.kt).
+    $skipDirs = @('build', '.gradle', 'node_modules', '.git', '.idea')
+    $signalRegexes = @(
+        @{ Pattern = 'jvmToolchain\s*\(\s*(\d+)' ; Group = 1 },
+        @{ Pattern = 'JvmTarget\.JVM_(\d+)\b'    ; Group = 1 },
+        @{ Pattern = 'JavaVersion\.VERSION_(\d+)\b' ; Group = 1 }
+    )
+    $required = 0
+    Get-ChildItem -Path $ProjectRoot -Recurse -Include '*.gradle.kts','*.kt' -ErrorAction SilentlyContinue |
+        Where-Object {
+            $segments = $_.FullName.Split([IO.Path]::DirectorySeparatorChar)
+            -not ($skipDirs | Where-Object { $segments -contains $_ })
+        } |
+        ForEach-Object {
+            $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+            if (-not $content) { return }
+            foreach ($sig in $signalRegexes) {
+                $matches_local = [regex]::Matches($content, $sig.Pattern)
+                foreach ($m in $matches_local) {
+                    $n = [int]$m.Groups[$sig.Group].Value
+                    if ($n -gt $required) { $required = $n }
+                }
+            }
+        }
 
-    if (-not $jvmLine -or $jvmLine -notmatch '(\d+)') {
+    if ($required -eq 0) {
         return 0
     }
-    $required = [int]$Matches[1]
 
     # 3. Read current `java -version` (works even if JAVA_HOME unset).
     $javaVersionLine = & java -version 2>&1 | Select-Object -First 1
