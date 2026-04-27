@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **JDK toolchain mismatch is now BLOCKING by default** (was: warning that printed and continued). When `jvmToolchain(N)` in any `*.gradle.kts` differs from the major version reported by `java -version`, kmp-test exits 3 (`EXIT.ENV_ERROR`) before spawning gradle, with an actionable per-OS hint for setting `JAVA_HOME`. Previously the script warned and proceeded, which caused tests to fail downstream with `UnsupportedClassVersionError` (real-world bug surfaced on a corporate Mac running v0.4.1 against a 20-module OpenNative project).
+  - Bypass with `--ignore-jdk-mismatch` (sh/cli) or `-IgnoreJdkMismatch` (ps1) — downgrades the block to a `WARN` line.
+  - The check is skipped when `gradle.properties` declares `org.gradle.java.home` pointing to an existing directory (gradle's explicit JDK override wins).
+  - JSON envelope: `errors[0]` carries `code: "jdk_mismatch"` plus `required_jdk` / `current_jdk` integer fields.
+  - Gates real runs **and** `--dry-run` so users see the mismatch before expecting a successful run.
+  - Added in `lib/cli.js` (covers all gradle-spawning subcommands), `scripts/sh/lib/jdk-check.sh`, and `scripts/ps1/lib/Jdk-Check.ps1`. Wired into `parallel` + `changed` scripts in both shells.
+
 ## [0.4.1] — 2026-04-27
 
 ### Added

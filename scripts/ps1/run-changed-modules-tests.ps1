@@ -67,11 +67,19 @@ param(
     [ValidateSet("jacoco", "kover", "auto", "none", "")]
     [string]$CoverageTool = "",
     [string]$ExcludeCoverage = "",
-    [string]$TestFilter = ""
+    [string]$TestFilter = "",
+    [switch]$IgnoreJdkMismatch
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+. "$ScriptRoot\lib\Jdk-Check.ps1"
+
+# Pre-flight JDK toolchain gate (mirrors run-parallel-coverage-suite.ps1).
+if (Test-Path $ProjectRoot) {
+    $gateRc = Invoke-JdkMismatchGate -ProjectRoot $ProjectRoot -IgnoreJdkMismatch:$IgnoreJdkMismatch
+    if ($gateRc -ne 0) { exit $gateRc }
+}
 
 # ============================================================================
 # GIT CHANGE DETECTION

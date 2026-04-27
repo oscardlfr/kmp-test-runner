@@ -6,7 +6,25 @@
 
 ## ACTIVE
 
-_(none — pick from QUEUED below or open a new entry)_
+### v0.5.0 — Real-world Mac validation hardening (in progress)
+
+4 production bugs surfaced when a user ran `kmp-test v0.4.1` on a corporate Mac against a 20-module OpenNative project. Bundled into milestone v0.5.0.
+
+- **Bug A — JDK toolchain mismatch is non-blocking, tests fail with `UnsupportedClassVersionError`** _(in this PR)_
+  - Was: warning printed and script continued.
+  - Now: BLOCKS by default with exit 3 and a per-OS hint for setting `JAVA_HOME`. `--ignore-jdk-mismatch` (sh/cli) / `-IgnoreJdkMismatch` (ps1) downgrades to a warning. `gradle.properties` `org.gradle.java.home` still bypasses the check (gradle's explicit override wins). Wired into cli.js (covers all gradle subcommands), `scripts/sh/lib/jdk-check.sh`, `scripts/ps1/lib/Jdk-Check.ps1`. Tests: 12 vitest + 9 bats + 6 Pester.
+
+- **Bug B — JaCoCo task auto-detection silently broken** _(queued)_
+  - Script invoked `:module:jacocoTestReport` even when modules don't define the task. All 20 modules failed with "task not found" but final output said `[OK] Full coverage report generated!` with 0% coverage. Fix: probe `gradlew :<module>:tasks --group=verification` before invoking; skip modules without coverage tasks; surface a prominent warning when 0 modules contributed.
+
+- **Bug C — Gradle 9 deprecation exit-code-1 noise mixed with stderr** _(queued)_
+  - Script already handles the case but `--json` mode lumps deprecation warnings into `errors[]`. Fix: split into `warnings: ["gradle_deprecation"]` so agents can branch on real failures vs noise. Use `[NOTICE]` prefix in markdown mode (distinct from `[!]`).
+
+- **Bug D — Installer macOS PATH UX: "installed successfully" but `kmp-test` not on PATH** _(queued)_
+  - `~/.zshrc` updated, but new shell required to pick it up. Fix: detect shell (`$SHELL`), suggest the explicit `source ~/.zshrc` or `~/.bashrc`, and print the literal `export PATH=...` line for use right now.
+
+- **Bonus — README hero banner** _(needs design decision)_
+  - Hand-drawn banner provided. Has typos ("CONTEXTUAUZATION", `"savings_rae"`); decide whether to ship as-is, regenerate, or commission cleaner version.
 
 ---
 
