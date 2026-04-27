@@ -87,7 +87,8 @@ param(
     [switch]$Benchmark,
     [ValidateSet("smoke", "main", "stress")]
     [string]$BenchmarkConfig = "smoke",
-    [string]$TestFilter = ""
+    [string]$TestFilter = "",
+    [switch]$IgnoreJdkMismatch
 )
 
 $ErrorActionPreference = "Continue"
@@ -107,6 +108,7 @@ $KmpRunId = $env:KMP_RUN_ID
 # Source coverage detection library
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 . "$scriptDir\lib\Coverage-Detect.ps1"
+. "$scriptDir\lib\Jdk-Check.ps1"
 
 # ============================================================================
 # CONFIGURATION
@@ -276,39 +278,13 @@ if ($JavaHome -and $JavaHome.Trim() -ne "") {
     Write-Host "Using JAVA_HOME override: $($env:JAVA_HOME)" -ForegroundColor Cyan
 }
 
-# Auto-detect required JDK version from project
+# Pre-flight JDK toolchain gate. Auto-detects JAVA_HOME from gradle.properties
+# (preserving prior behavior) and BLOCKS by default on jvmToolchain mismatch.
+# -IgnoreJdkMismatch downgrades the block to a warning. Skipped when the user
+# passed -JavaHome explicitly (their override wins).
 if (-not $JavaHome -and (Test-Path $ProjectRoot)) {
-    # Check gradle.properties
-    $gradleProps = Join-Path $ProjectRoot "gradle.properties"
-    if (Test-Path $gradleProps) {
-        $javaHomeLine = Get-Content $gradleProps -ErrorAction SilentlyContinue |
-            Where-Object { $_ -match "^org\.gradle\.java\.home" } |
-            Select-Object -First 1
-        if ($javaHomeLine) {
-            $gradleJava = ($javaHomeLine -split "=", 2)[1].Trim()
-            if (Test-Path $gradleJava) {
-                $env:JAVA_HOME = $gradleJava
-                Write-Host "Auto-detected JAVA_HOME from gradle.properties: $($env:JAVA_HOME)" -ForegroundColor Cyan
-            }
-        }
-    }
-    # Check jvmToolchain version mismatch
-    if (-not $javaHomeLine) {
-        $jvmLine = Get-ChildItem -Path $ProjectRoot -Recurse -Include "*.gradle.kts" -ErrorAction SilentlyContinue |
-            Select-Object -First 20 |
-            ForEach-Object { Get-Content $_.FullName -ErrorAction SilentlyContinue } |
-            Where-Object { $_ -match "jvmToolchain" } |
-            Select-Object -First 1
-        if ($jvmLine -match "(\d+)") {
-            $requiredVersion = $Matches[1]
-            $currentVersion = (java -version 2>&1 | Select-Object -First 1) -replace '.*"(\d+).*', '$1'
-            if ($currentVersion -and $requiredVersion -and $currentVersion -ne $requiredVersion) {
-                Write-Host "[!] Project requires JDK $requiredVersion but JAVA_HOME points to JDK $currentVersion" -ForegroundColor Yellow
-                Write-Host "    Use -JavaHome <path-to-jdk-$requiredVersion> or set JAVA_HOME before running" -ForegroundColor Yellow
-                Write-Host "    With -FreshDaemon this WILL cause UnsupportedClassVersionError" -ForegroundColor Yellow
-            }
-        }
-    }
+    $gateRc = Invoke-JdkMismatchGate -ProjectRoot $ProjectRoot -IgnoreJdkMismatch:$IgnoreJdkMismatch
+    if ($gateRc -ne 0) { exit $gateRc }
 }
 
 # Detect platform and test type

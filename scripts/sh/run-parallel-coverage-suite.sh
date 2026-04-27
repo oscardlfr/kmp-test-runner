@@ -59,6 +59,7 @@ COVERAGE_TOOL="auto"
 EXCLUDE_COVERAGE=""
 TIMEOUT=600
 TEST_FILTER=""
+IGNORE_JDK_MISMATCH=false
 
 # ---------------------------------------------------------------------------
 # USAGE
@@ -88,6 +89,7 @@ Options:
   --test-filter <pattern>     Filter tests to a single class (gradle --tests <pattern>). Globs OK.
   --benchmark                 Run benchmarks after tests/coverage (default: off).
   --benchmark-config <name>   Benchmark config: smoke (default) | main | stress
+  --ignore-jdk-mismatch       Bypass JDK toolchain mismatch check (default: BLOCK with exit 3).
   -h | --help                 Show this help.
 USAGE
     exit "${1:-0}"
@@ -116,6 +118,7 @@ while [[ $# -gt 0 ]]; do
         --test-filter)        TEST_FILTER="$2"; shift 2 ;;
         --benchmark)          BENCHMARK=true; shift ;;
         --benchmark-config)   BENCHMARK_CONFIG="$2"; shift 2 ;;
+        --ignore-jdk-mismatch) IGNORE_JDK_MISMATCH=true; shift ;;
         -h|--help)            usage ;;
         *) err "[ERROR] Unknown option: $1"; exit 1 ;;
     esac
@@ -152,6 +155,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/coverage-detect.sh"
 source "$SCRIPT_DIR/lib/audit-append.sh"
 source "$SCRIPT_DIR/lib/script-utils.sh"
+source "$SCRIPT_DIR/lib/jdk-check.sh"
 
 EXCLUSION_PATTERNS=(
     '*$DefaultImpls'
@@ -296,30 +300,12 @@ if [[ -n "$JAVA_HOME_OVERRIDE" ]]; then
     info "Using JAVA_HOME override: $JAVA_HOME"
 fi
 
-# Auto-detect required JDK version from project
+# Pre-flight JDK toolchain gate. Auto-detects JAVA_HOME from gradle.properties
+# (preserving prior behavior) and BLOCKS by default on jvmToolchain mismatch.
+# --ignore-jdk-mismatch downgrades the block to a warning. Skipped when the
+# user passed --java-home explicitly (their override wins).
 if [[ -z "$JAVA_HOME_OVERRIDE" && -d "$PROJECT_ROOT" ]]; then
-    required_jdk=""
-    gradle_java=""
-    # Check gradle.properties for org.gradle.java.home
-    if [[ -f "$PROJECT_ROOT/gradle.properties" ]]; then
-        gradle_java="$(grep "^org.gradle.java.home" "$PROJECT_ROOT/gradle.properties" 2>/dev/null | sed 's/.*=//' | tr -d ' \r' || true)"
-        if [[ -n "$gradle_java" && -d "$gradle_java" ]]; then
-            export JAVA_HOME="$gradle_java"
-            info "Auto-detected JAVA_HOME from gradle.properties: $JAVA_HOME"
-        fi
-    fi
-    # Check jvmToolchain version in build files
-    if [[ -z "$gradle_java" ]]; then
-        jvm_version="$(grep -rh "jvmToolchain" "$PROJECT_ROOT" --include="*.gradle.kts" 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1 || true)"
-        if [[ -n "$jvm_version" && -n "$JAVA_HOME" ]]; then
-            current_version="$(java -version 2>&1 | head -1 | grep -oE '"[0-9]+' | tr -d '"' || true)"
-            if [[ -n "$current_version" && "$current_version" != "$jvm_version" ]]; then
-                warn "[!] Project requires JDK $jvm_version but current JAVA_HOME points to JDK $current_version"
-                warn "    Use --java-home <path-to-jdk-$jvm_version> or set JAVA_HOME before running"
-                warn "    With --fresh-daemon this WILL cause UnsupportedClassVersionError"
-            fi
-        fi
-    fi
+    gate_jdk_mismatch "$PROJECT_ROOT" "$IGNORE_JDK_MISMATCH" || exit $?
 fi
 
 # Detect platform and test type
