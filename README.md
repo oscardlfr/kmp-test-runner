@@ -250,9 +250,40 @@ kmp-test benchmark --config smoke
 # Generate coverage report only (skip test run)
 kmp-test coverage
 
+# Skip api / build-logic modules explicitly (or just let auto-skip handle them — see below)
+kmp-test parallel --exclude-modules "*:api,build-logic"
+
 # Agentic mode: emit a single JSON object on stdout (see "Agentic usage" below)
 kmp-test parallel --json
 ```
+
+### Heterogeneous projects (modules without tests)
+
+Many real-world KMP/Android projects have modules that by convention contain no tests — `:api` interface modules, `:build-logic` convention plugins, parent aggregator modules, etc. `kmp-test` handles these automatically:
+
+- **Auto-skip (default)**: any module whose filesystem path has no `src/test`, `src/commonTest`, `src/jvmTest`, `src/desktopTest`, `src/androidUnitTest`, `src/androidInstrumentedTest`, `src/androidTest`, `src/iosTest`, or `src/nativeTest` directory is filtered out **before** gradle is invoked. Each skip prints `[SKIP] <module> (no test source set — pass --include-untested to override)` to stderr so the "Modules found" tally stays accurate.
+- **Explicit exclusion**: `--exclude-modules "*:api,build-logic"` (sh) / `-ExcludeModules` (ps1) accepts comma-separated globs (same syntax as `--module-filter`). Self-documenting in CI commands.
+- **Opt-out**: `--include-untested` / `-IncludeUntested` re-includes modules with no test source set (useful when a module exists but tests are still being added).
+
+Both flags work on `parallel` and `changed`. Without them, untested modules historically caused `Task 'jacocoTestReport' not found in project ':api'` errors followed by misleading `[OK] Full coverage report generated!` with 0% coverage — a v0.5.0 fix.
+
+### JDK toolchain mismatch (BLOCKING by default since v0.5.0)
+
+If your project's `jvmToolchain(N)` differs from the major version reported by `java -version`, `kmp-test` exits 3 **before** spawning gradle, with a per-OS hint for setting `JAVA_HOME`:
+
+```
+kmp-test: JDK mismatch — project requires JDK 17 but current is JDK 23
+          Tests will fail with UnsupportedClassVersionError if we proceed.
+
+          Fix: set JAVA_HOME to a JDK 17 install. Example:
+            JAVA_HOME=$(/usr/libexec/java_home -v 17) kmp-test parallel
+
+          Bypass (not recommended): pass --ignore-jdk-mismatch
+```
+
+The check is skipped when `gradle.properties` declares `org.gradle.java.home` pointing to an existing directory (gradle's explicit JDK override wins). Use `--ignore-jdk-mismatch` / `-IgnoreJdkMismatch` to downgrade the block to a `WARN` line.
+
+In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `required_jdk` / `current_jdk` integer fields so agents can branch on the specific failure.
 
 ### Exit codes
 
@@ -261,7 +292,7 @@ kmp-test parallel --json
 | `0` | Success — all tests passed |
 | `1` | Test failure — script ran, tests failed |
 | `2` | Config error — bad CLI usage (unknown subcommand, missing arg) |
-| `3` | Environment error — `gradlew` not found in `--project-root`, `bash`/`pwsh` missing on `PATH`, JDK absent |
+| `3` | Environment error — `gradlew` not found in `--project-root`, `bash`/`pwsh` missing on `PATH`, JDK absent, **JDK toolchain mismatch** (`errors[].code: jdk_mismatch` — bypass with `--ignore-jdk-mismatch`), or another `kmp-test` already running on the same project root (`errors[].code: lock_held` — bypass with `--force`) |
 
 ### Flag reference
 
@@ -269,9 +300,12 @@ kmp-test parallel --json
 |------|---------|-------------|
 | `--project-root` | `$PWD` | Path to the Gradle project root |
 | `--max-workers` | `4` | Maximum parallel Gradle workers |
-| `--coverage-tool` | `kover` | Coverage tool: `kover`, `jacoco`, or `none` |
+| `--coverage-tool` | `kover` | Coverage tool: `kover`, `jacoco`, `auto`, or `none` |
 | `--coverage-modules` | _(all)_ | Comma-separated module list for coverage aggregation |
 | `--min-missed-lines` | `0` | Fail if missed lines exceed this threshold |
+| `--exclude-modules` | _(none)_ | Comma-separated module globs to skip entirely (e.g. `"*:api,build-logic"`). See "Heterogeneous projects" above |
+| `--include-untested` | _(off)_ | Re-include modules with no `src/*Test*` directory (auto-skipped by default) |
+| `--ignore-jdk-mismatch` | _(off)_ | Bypass the project-vs-`JAVA_HOME` JDK toolchain check. Default behavior is `BLOCK` with exit 3 — see "JDK toolchain mismatch" above |
 | `--shared-project-name` | _(none)_ | Name of the shared KMP module (for Android test dispatch) |
 | `--json` / `--format json` | _(off)_ | Emit a single JSON object on stdout (see "Agentic usage" below). Suppresses human-readable output |
 
