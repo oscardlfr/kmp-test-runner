@@ -17,8 +17,9 @@
   - Was: script invoked `:module:jacocoTestReport` even when modules don't define the task; api/aggregator modules failed with "task not found" but final output said `[OK] Full coverage report generated!` with 0% coverage.
   - Now: **auto-skip modules with no `src/*Test*` directory** by default. Plus new `--exclude-modules <pattern>` for explicit exclusion (self-documenting). Opt-out via `--include-untested` for projects in early development. Tests: 4 vitest + 10 bats + 9 Pester.
 
-- **Bug C — Gradle 9 deprecation exit-code-1 noise mixed with stderr** _(queued)_
-  - Script already handles the case but `--json` mode lumps deprecation warnings into `errors[]`. Fix: split into `warnings: ["gradle_deprecation"]` so agents can branch on real failures vs noise. Use `[NOTICE]` prefix in markdown mode (distinct from `[!]`).
+- **Bug C — Gradle 9 deprecation exit-code-1 noise mixed with stderr** _(in this PR)_
+  - Was: `[!]` prefix indistinguishable from real warnings; `BUILD FAILED` from the deprecation pile ended up in `errors[]`.
+  - Now: distinct `[NOTICE]` prefix (sh + ps1) + JSON envelope grows `warnings: [{code: "gradle_deprecation", gradle_exit_code, tasks_passed}]`. PowerShell script gains the missing 3-branch JVM-error/deprecation/per-module logic that bash already had. Tests: 10 vitest + 4 bats + 5 Pester.
 
 - **Bug D — Installer macOS PATH UX: "installed successfully" but `kmp-test` not on PATH** _(queued)_
   - `~/.zshrc` updated, but new shell required to pick it up. Fix: detect shell (`$SHELL`), suggest the explicit `source ~/.zshrc` or `~/.bashrc`, and print the literal `export PATH=...` line for use right now.
