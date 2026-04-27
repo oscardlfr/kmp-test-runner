@@ -161,13 +161,18 @@ teardown_e2e_archive() {
 
 # Run install.sh in an isolated $HOME / $SHELL context against the local archive.
 # Sets E2E_TMPDIR / FAKE_HOME / E2E_PREFIX as side-effects + LOCAL_ARCHIVE.
+#
+# IMPORTANT: must use `env VAR=val cmd` (not the shell `VAR=val cmd` env-prefix
+# form) because `run` is a bats shell function — `VAR=val run cmd` sets VAR as
+# a local in `run`'s scope, NOT as an export to the subshell it spawns. The
+# `env` binary properly exports vars to its child process.
 run_install_with_shell() {
     local shell_name="$1"
     setup_e2e_archive
     FAKE_HOME="${E2E_TMPDIR}/home"
     mkdir -p "$FAKE_HOME"
-    HOME="$FAKE_HOME" SHELL="/usr/bin/$shell_name" \
-        run bash "$INSTALL_SCRIPT" \
+    run env HOME="$FAKE_HOME" SHELL="/usr/bin/$shell_name" \
+        bash "$INSTALL_SCRIPT" \
             --version "$ARTIFACT_VER" \
             --prefix  "$E2E_PREFIX" \
             --archive "$LOCAL_ARCHIVE"
