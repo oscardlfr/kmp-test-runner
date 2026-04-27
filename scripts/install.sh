@@ -162,35 +162,63 @@ ln -s "$INSTALL_DIR/bin/$BIN_NAME.js" "$SYMLINK"
 chmod +x "$SYMLINK"
 
 # --------------------------------------------------------------------------
-# PATH setup — append to shell rc if not already present
+# PATH setup — append to shell rc if not already present.
+# Honors the user's $SHELL: zsh → ~/.zshrc, bash → ~/.bashrc, fish →
+# ~/.config/fish/config.fish (different syntax!), other → ~/.profile.
 # --------------------------------------------------------------------------
 configure_path() {
     local rc_file="$1"
-    local export_line="export PATH=\"$BIN_DIR:\$PATH\""
+    local shell="$2"
+    local export_line
+    case "$shell" in
+        # fish uses set -gx, NOT export. Quoted "fish" detection on parent
+        # process avoids spurious matches against names containing "fish".
+        fish) export_line="set -gx PATH $BIN_DIR \$PATH" ;;
+        *)    export_line="export PATH=\"$BIN_DIR:\$PATH\"" ;;
+    esac
 
     if [[ -f "$rc_file" ]] && grep -qF "$BIN_DIR" "$rc_file" 2>/dev/null; then
         return 0
     fi
 
+    # Ensure parent dir exists (relevant for fish: ~/.config/fish/ may not).
+    mkdir -p "$(dirname "$rc_file")"
     printf '\n# kmp-test-runner\n%s\n' "$export_line" >> "$rc_file"
     echo "Added $BIN_DIR to PATH in $rc_file"
 }
 
 SHELL_NAME="$(basename "${SHELL:-/bin/sh}")"
 case "$SHELL_NAME" in
-    zsh)  configure_path "$HOME/.zshrc" ;;
-    bash) configure_path "$HOME/.bashrc" ;;
-    *)    configure_path "$HOME/.profile" ;;
+    zsh)  RC_FILE="$HOME/.zshrc";                  configure_path "$RC_FILE" zsh ;;
+    bash) RC_FILE="$HOME/.bashrc";                 configure_path "$RC_FILE" bash ;;
+    fish) RC_FILE="$HOME/.config/fish/config.fish"; configure_path "$RC_FILE" fish ;;
+    *)    RC_FILE="$HOME/.profile";                configure_path "$RC_FILE" sh
+          SHELL_NAME="sh" ;;
 esac
 
 # --------------------------------------------------------------------------
-# Done
+# Done — per-shell hint so users can use kmp-test in the CURRENT shell
+# without restarting. Bug D fix (v0.5.0): old behavior printed a generic
+# "Restart your shell or run: export PATH=..." line that didn't match the
+# user's shell (broken for fish, redundant for zsh/bash if they prefer
+# `source ~/.zshrc`).
 # --------------------------------------------------------------------------
 echo ""
 echo "kmp-test-runner v$VERSION installed successfully."
 echo "  Binary : $SYMLINK"
 echo "  Runtime: $INSTALL_DIR"
 echo ""
-echo "Restart your shell or run:"
-echo "  export PATH=\"$BIN_DIR:\$PATH\""
+echo "To use kmp-test in your current shell ($SHELL_NAME), run ONE of:"
+case "$SHELL_NAME" in
+    fish)
+        echo "  set -gx PATH $BIN_DIR \$PATH"
+        echo "  source $RC_FILE"
+        ;;
+    *)
+        echo "  export PATH=\"$BIN_DIR:\$PATH\""
+        echo "  source $RC_FILE"
+        ;;
+esac
+echo ""
+echo "Or open a new terminal — kmp-test will be on PATH automatically."
 echo "Then verify with: kmp-test --version"

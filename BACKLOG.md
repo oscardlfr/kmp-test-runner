@@ -21,8 +21,10 @@
   - Was: `[!]` prefix indistinguishable from real warnings; `BUILD FAILED` from the deprecation pile ended up in `errors[]`.
   - Now: distinct `[NOTICE]` prefix (sh + ps1) + JSON envelope grows `warnings: [{code: "gradle_deprecation", gradle_exit_code, tasks_passed}]`. PowerShell script gains the missing 3-branch JVM-error/deprecation/per-module logic that bash already had. Tests: 10 vitest + 4 bats + 5 Pester.
 
-- **Bug D — Installer macOS PATH UX: "installed successfully" but `kmp-test` not on PATH** _(queued)_
-  - `~/.zshrc` updated, but new shell required to pick it up. Fix: detect shell (`$SHELL`), suggest the explicit `source ~/.zshrc` or `~/.bashrc`, and print the literal `export PATH=...` line for use right now.
+- **Bug D — Installer macOS PATH UX: "installed successfully" but `kmp-test` not on PATH** _(in this PR)_
+  - install.sh: per-shell rc detection now covers fish (`~/.config/fish/config.fish` + `set -gx PATH` syntax) in addition to zsh / bash / sh. Final hint shows both the literal `export`/`set` line AND the `source <rc-file>` shortcut, personalized to the detected shell.
+  - install.ps1: clarified the final message — `kmp-test` is already on PATH in the current PowerShell session (script updated `$env:PATH` already); only cmd.exe needs a restart.
+  - Tests: 6 new bats E2E (zsh / bash / fish / unknown-shell + 'open new terminal' hint + idempotent re-run).
 
 - **Bonus — README hero banner** _(needs design decision)_
   - Hand-drawn banner provided. Has typos ("CONTEXTUAUZATION", `"savings_rae"`); decide whether to ship as-is, regenerate, or commission cleaner version.

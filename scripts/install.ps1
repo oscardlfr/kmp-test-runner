@@ -229,16 +229,22 @@ else {
     Write-Host "$BinDir is already in user PATH."
 }
 
-# Also update current session PATH so kmp-test is immediately usable
+# Also update current session PATH so kmp-test is immediately usable.
 $env:PATH = $BinDir + ";" + $env:PATH
 
 # --------------------------------------------------------------------------
-# Done
+# Done — Bug D fix (v0.5.0): old message said "Restart your shell to pick
+# up the PATH change" without acknowledging that this session is already
+# usable. Make the distinction explicit so users don't waste a shell
+# restart they don't need.
 # --------------------------------------------------------------------------
 Write-Host ""
 Write-Host "$Package v$Version installed successfully."
 Write-Host "  Wrapper : $WrapperPath"
 Write-Host "  Runtime : $InstallDir"
 Write-Host ""
-Write-Host "Restart your shell to pick up the PATH change, then verify with:"
+Write-Host "kmp-test is ready in this PowerShell session — verify with:"
 Write-Host "  kmp-test --version"
+Write-Host ""
+Write-Host "New PowerShell / cmd.exe sessions pick up the user PATH automatically."
+Write-Host "If you ran this from cmd.exe, restart cmd to refresh its PATH."
