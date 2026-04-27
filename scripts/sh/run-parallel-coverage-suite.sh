@@ -30,6 +30,11 @@ warn()   { color_print "$YELLOW" "$1"; }
 err()    { color_print "$RED"    "$1"; }
 gray()   { color_print "$GRAY"   "$1"; }
 white()  { color_print "$WHITE"  "$1"; }
+# notice() — non-fatal informational lines that are NOT failures (e.g. Gradle 9
+# deprecation warnings that surface as exit-code-1 with all tasks passing).
+# Distinct prefix `[NOTICE]` so the json parser and human readers can tell
+# them apart from `[!]` warnings (which are warnings about real problems).
+notice() { color_print "$CYAN"   "$1"; }
 
 # ---------------------------------------------------------------------------
 # RUN ID — concurrent-invocation safety (v0.3.8+)
@@ -840,8 +845,10 @@ if ! $SKIP_TESTS && [[ "${#ALL_TEST_TASKS[@]}" -gt 0 ]]; then
     elif [[ "$TEST_EXIT_CODE" -ne 0 && "$FAILURE_COUNT" -eq 0 && "$SUCCESS_COUNT" -gt 0 ]]; then
         # Gradle exit non-zero but individual tasks passed.
         # Likely deprecation warnings or non-fatal build issues (Gradle 9+).
-        warn "[!] Gradle exited with code $TEST_EXIT_CODE but all $SUCCESS_COUNT tasks passed individually."
-        warn "    This is likely deprecation warnings (Gradle 9+), not test failures."
+        # `[NOTICE]` (not `[!]`) so json parsers and humans can distinguish
+        # this benign signal from real failures.
+        notice "[NOTICE] Gradle exited with code $TEST_EXIT_CODE but all $SUCCESS_COUNT tasks passed individually."
+        notice "         This is likely deprecation warnings (Gradle 9+), not test failures."
     fi
     info "Test Duration: ${TEST_MINS}m ${TEST_SECS}s"
     echo ""

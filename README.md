@@ -353,7 +353,7 @@ BUILD SUCCESSFUL
 **Agentic (`--json`) output** — the entire response, on one line:
 
 ```json
-{"tool":"kmp-test","subcommand":"parallel","version":"0.3.8","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16},"errors":[]}
+{"tool":"kmp-test","subcommand":"parallel","version":"0.5.0","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16},"errors":[],"warnings":[]}
 ```
 
 That's ~300 bytes — roughly **80–200 tokens** vs. tens of thousands for approach A. For an agent running tests on every iteration of a coding loop, the difference compounds quickly. The full per-tokenizer table is at the [top of this README](#why-this-exists--token-cost-per-agent-test-run-iteration); methodology and the captured run output are in [`docs/token-cost-measurement.md`](docs/token-cost-measurement.md).
@@ -365,7 +365,8 @@ Google's [`android` CLI for agents](https://developer.android.com/tools/agents/a
 ### What the JSON guarantees
 
 - **Always valid JSON**, even if parsing the script output partially fails. Parse gaps are surfaced in the `errors[]` array rather than crashing the CLI.
-- **Stable schema**: `tool`, `subcommand`, `version`, `project_root`, `exit_code`, `duration_ms`, `tests {total/passed/failed/skipped}`, `modules[]`, `coverage {tool, missed_lines}`, `errors[]`.
+- **Stable schema**: `tool`, `subcommand`, `version`, `project_root`, `exit_code`, `duration_ms`, `tests {total/passed/failed/skipped}`, `modules[]`, `coverage {tool, missed_lines}`, `errors[]`, `warnings[]`.
+- **`errors` vs `warnings`**: `errors[]` carries fatal signals an agent must act on (`code: "lock_held"`, `"jdk_mismatch"`, BUILD FAILED, parse gaps). `warnings[]` carries non-fatal signals an agent can branch on differently — currently `code: "gradle_deprecation"` (gradle exit 1 caused solely by Gradle 9+ deprecation warnings while every task passed). The corresponding `BUILD FAILED` line is not duplicated to `errors[]` when paired with a deprecation notice.
 - **Single line on stdout** — no surrounding noise, suitable for `JSON.parse()` directly.
 - **Exit code matches `exit_code` field**, so an agent can branch on either.
 

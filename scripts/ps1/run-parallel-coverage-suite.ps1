@@ -794,9 +794,27 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
     $testDuration = (Get-Date) - $startTime
 
     Write-Host ""
-    if ($testExitCode -ne 0 -and $failureCount -eq 0) {
-        # Gradle failed but no specific task was identified - mark as general failure
-        Write-Host "[!] Gradle exited with code $testExitCode (some tasks may have failed)" -ForegroundColor Yellow
+    if ($testExitCode -ne 0 -and $failureCount -eq 0 -and $successCount -eq 0) {
+        # JVM-level error (UnsupportedClassVersionError, OOM, daemon crash) —
+        # gradle failed and no task results visible. Mark all as failed.
+        Write-Host "[!] Gradle exited with code $testExitCode and no task results found." -ForegroundColor Yellow
+        Write-Host "    This usually means a JVM-level error (wrong JAVA_HOME, OOM, daemon crash)." -ForegroundColor Yellow
+        Write-Host "    Marking all $($modules.Count) modules as failed." -ForegroundColor Yellow
+        $failureCount = $modules.Count
+        foreach ($module in $modules) {
+            $testResults[$module.Name] = @{ Status = "failed"; Coverage = $null }
+        }
+    }
+    elseif ($testExitCode -ne 0 -and $failureCount -eq 0 -and $successCount -gt 0) {
+        # Gradle exit non-zero but individual tasks passed. Likely deprecation
+        # warnings (Gradle 9+). `[NOTICE]` prefix (not `[!]`) so json parsers
+        # and humans can distinguish this benign signal from real failures.
+        Write-Host "[NOTICE] Gradle exited with code $testExitCode but all $successCount tasks passed individually." -ForegroundColor Cyan
+        Write-Host "         This is likely deprecation warnings (Gradle 9+), not test failures." -ForegroundColor Cyan
+    }
+    elseif ($testExitCode -ne 0 -and $failureCount -gt 0) {
+        # Some tasks failed individually — leave the per-module reporting to
+        # speak for itself. Don't double-count with a top-level [!] line.
     }
     Write-Host "Test Duration: $([int]$testDuration.TotalMinutes)m $($testDuration.Seconds)s" -ForegroundColor Cyan
     Write-Host ""

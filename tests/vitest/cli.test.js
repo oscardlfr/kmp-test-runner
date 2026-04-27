@@ -908,6 +908,100 @@ describe('main() — --test-filter passthrough', () => {
 });
 
 // ============================================================================
+// Gradle 9 deprecation notice → warnings[] (v0.5.0 — Bug C fix)
+// ============================================================================
+
+describe('parseScriptOutput — Gradle deprecation notice → warnings[]', () => {
+  it('extracts [NOTICE] line into warnings with code "gradle_deprecation"', () => {
+    const out = [
+      'Tests: 20 total | 20 passed | 0 failed | 0 skipped',
+      '[NOTICE] Gradle exited with code 1 but all 20 tasks passed individually.',
+      '         This is likely deprecation warnings (Gradle 9+), not test failures.',
+      'BUILD SUCCESSFUL in 1m',
+    ].join('\n');
+    const r = parseScriptOutput(out, '', []);
+    expect(r.warnings).toHaveLength(1);
+    expect(r.warnings[0].code).toBe('gradle_deprecation');
+    expect(r.warnings[0].gradle_exit_code).toBe(1);
+    expect(r.warnings[0].tasks_passed).toBe(20);
+    expect(r.warnings[0].message).toMatch(/all 20 tasks passed/);
+  });
+
+  it('does NOT push BUILD FAILED to errors[] when paired with the deprecation notice', () => {
+    const out = [
+      'Tests: 20 total | 20 passed | 0 failed | 0 skipped',
+      'BUILD FAILED in 791ms',
+      '[NOTICE] Gradle exited with code 1 but all 20 tasks passed individually.',
+    ].join('\n');
+    const r = parseScriptOutput(out, '', []);
+    // Deprecation went to warnings, BUILD FAILED was suppressed in errors.
+    expect(r.warnings.some(w => w.code === 'gradle_deprecation')).toBe(true);
+    expect(r.errors.find(e => /BUILD FAILED/.test(e.message))).toBeUndefined();
+  });
+
+  it('still surfaces BUILD FAILED in errors[] when there is no deprecation notice', () => {
+    const out = 'Tests: 20 total | 18 passed | 2 failed | 0 skipped\nBUILD FAILED in 1s';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.errors.some(e => /BUILD FAILED/.test(e.message))).toBe(true);
+    expect(r.warnings).toHaveLength(0);
+  });
+
+  it('warnings[] defaults to [] when no notice is present', () => {
+    const r = parseScriptOutput('BUILD SUCCESSFUL', '', []);
+    expect(Array.isArray(r.warnings)).toBe(true);
+    expect(r.warnings).toHaveLength(0);
+  });
+
+  it('also recognizes the legacy `[!]` prefix variant', () => {
+    // Pre-v0.5 scripts emitted `[!]` for the same notice. Anyone running an
+    // older script via direct invocation should still see the warning.
+    const out = '[!] Gradle exited with code 1 but all 5 tasks passed individually.';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.warnings[0]?.code).toBe('gradle_deprecation');
+  });
+
+  it('does NOT add the parse-gap error when only a deprecation notice is present', () => {
+    const out = '[NOTICE] Gradle exited with code 1 but all 5 tasks passed individually.';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.errors.find(e => /no recognizable/.test(e.message))).toBeUndefined();
+  });
+});
+
+describe('buildJsonReport / envErrorJson / buildDryRunReport — warnings[] in shape', () => {
+  it('buildJsonReport always emits warnings: [] in the envelope', () => {
+    const parsed = parseScriptOutput('BUILD SUCCESSFUL', '', []);
+    const obj = buildJsonReport({
+      subcommand: 'parallel', projectRoot: '/x', exitCode: 0, durationMs: 0, parsed,
+    });
+    expect(obj).toHaveProperty('warnings');
+    expect(Array.isArray(obj.warnings)).toBe(true);
+  });
+
+  it('buildJsonReport surfaces parsed.warnings when present', () => {
+    const parsed = parseScriptOutput(
+      '[NOTICE] Gradle exited with code 1 but all 3 tasks passed individually.', '', []);
+    const obj = buildJsonReport({
+      subcommand: 'parallel', projectRoot: '/x', exitCode: 0, durationMs: 0, parsed,
+    });
+    expect(obj.warnings[0].code).toBe('gradle_deprecation');
+  });
+
+  it('envErrorJson emits warnings: [] for shape consistency', () => {
+    const obj = envErrorJson({
+      subcommand: 'parallel', projectRoot: '/x', durationMs: 0, message: 'no gradlew',
+    });
+    expect(obj).toHaveProperty('warnings');
+    expect(obj.warnings).toEqual([]);
+  });
+
+  it('buildDryRunReport emits warnings: [] for shape consistency', () => {
+    const obj = buildDryRunReport({ subcommand: 'parallel', projectRoot: '/x', plan: {} });
+    expect(obj).toHaveProperty('warnings');
+    expect(obj.warnings).toEqual([]);
+  });
+});
+
+// ============================================================================
 // --exclude-modules / --include-untested passthrough (v0.5.0 — Bug B fix)
 // ============================================================================
 
