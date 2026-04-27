@@ -68,7 +68,9 @@ param(
     [string]$CoverageTool = "",
     [string]$ExcludeCoverage = "",
     [string]$TestFilter = "",
-    [switch]$IgnoreJdkMismatch
+    [switch]$IgnoreJdkMismatch,
+    [string]$ExcludeModules = "",
+    [switch]$IncludeUntested
 )
 
 $ErrorActionPreference = "Stop"
@@ -295,6 +297,18 @@ if ($ExcludeCoverage -ne "") {
 
 if ($TestFilter -ne "") {
     $params.TestFilter = $TestFilter
+}
+
+if ($ExcludeModules -ne "") {
+    $params.ExcludeModules = $ExcludeModules
+}
+
+if ($IncludeUntested) {
+    $params.IncludeUntested = $true
+}
+
+if ($IgnoreJdkMismatch) {
+    $params.IgnoreJdkMismatch = $true
 }
 
 & "$ScriptRoot/run-parallel-coverage-suite.ps1" @params

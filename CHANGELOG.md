@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`--exclude-modules <list>` and `--include-untested` flags** for `parallel` + `changed` (translated to `-ExcludeModules` / `-IncludeUntested` on PowerShell). Solves the "not all modules have tests" case in heterogeneous projects (e.g. corporate KMP setups where `:api`, `:build-logic`, and aggregator modules by convention have no test source set).
+  - **Auto-skip by default**: modules whose filesystem path contains no `src/test`, `src/commonTest`, `src/jvmTest`, `src/desktopTest`, `src/androidUnitTest`, `src/androidInstrumentedTest`, `src/androidTest`, `src/iosTest`, or `src/nativeTest` directory are silently filtered out before gradle is invoked. Each skip prints `[SKIP] <module> (no test source set — pass --include-untested to override)` to stderr so the tally stays honest.
+  - **Explicit exclusion**: `--exclude-modules "*:api,build-logic"` accepts comma-separated globs (matches `--module-filter` syntax). Excluded modules print `[SKIP] <module> (excluded by --exclude-modules)`.
+  - **Opt-out**: `--include-untested` re-includes modules with no test source set (for projects under early development where modules exist but tests don't yet).
+  - Real-world bug context: previously, an :api module with no test source set caused `BUILD FAILED in 791ms` ("Task 'jacocoTestReport' not found in project ':api'") followed by the misleading `[OK] Full coverage report generated!` with 0% coverage. The auto-skip catches this before gradle is invoked.
+  - Added shared helper `module_has_test_sources` in `scripts/sh/lib/script-utils.sh` and `Test-ModuleHasTestSources` inline in `scripts/ps1/run-parallel-coverage-suite.ps1`. Both `find_modules` (sh) and `Find-Modules` (ps1) honor the new flags. `changed.sh` / `changed.ps1` pass them through to the suite.
+
 ### Changed
 - **JDK toolchain mismatch is now BLOCKING by default** (was: warning that printed and continued). When `jvmToolchain(N)` in any `*.gradle.kts` differs from the major version reported by `java -version`, kmp-test exits 3 (`EXIT.ENV_ERROR`) before spawning gradle, with an actionable per-OS hint for setting `JAVA_HOME`. Previously the script warned and proceeded, which caused tests to fail downstream with `UnsupportedClassVersionError` (real-world bug surfaced on a corporate Mac running v0.4.1 against a 20-module OpenNative project).
   - Bypass with `--ignore-jdk-mismatch` (sh/cli) or `-IgnoreJdkMismatch` (ps1) — downgrades the block to a `WARN` line.

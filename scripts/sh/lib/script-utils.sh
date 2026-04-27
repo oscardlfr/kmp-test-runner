@@ -60,6 +60,29 @@ test_class_excluded() {
     return 1
 }
 
+# Check if a module directory contains any standard Kotlin/JVM/Android test
+# source set. Returns 0 (true) if any of these directories exist:
+#   src/test, src/commonTest, src/jvmTest, src/desktopTest,
+#   src/androidUnitTest, src/androidInstrumentedTest, src/androidTest,
+#   src/iosTest, src/nativeTest
+# Otherwise returns 1 (false). Used by the parallel/changed runners to skip
+# modules that by convention have no tests (e.g. :api modules, parent-only
+# aggregator modules) before invoking gradle and getting BUILD FAILED.
+# Usage: module_has_test_sources <module_filesystem_path>
+module_has_test_sources() {
+    local module_path="$1"
+    [[ -d "$module_path/src/test" ]] && return 0
+    [[ -d "$module_path/src/commonTest" ]] && return 0
+    [[ -d "$module_path/src/jvmTest" ]] && return 0
+    [[ -d "$module_path/src/desktopTest" ]] && return 0
+    [[ -d "$module_path/src/androidUnitTest" ]] && return 0
+    [[ -d "$module_path/src/androidInstrumentedTest" ]] && return 0
+    [[ -d "$module_path/src/androidTest" ]] && return 0
+    [[ -d "$module_path/src/iosTest" ]] && return 0
+    [[ -d "$module_path/src/nativeTest" ]] && return 0
+    return 1
+}
+
 # Format a sorted comma-separated list of line numbers into compact ranges.
 # E.g., "1,2,3,5,6,10" -> "1-3, 5-6, 10"
 # Usage: format_line_ranges <csv_string>
