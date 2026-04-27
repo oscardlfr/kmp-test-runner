@@ -111,6 +111,8 @@ $KmpRunId = $env:KMP_RUN_ID
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 . "$scriptDir\lib\Coverage-Detect.ps1"
 . "$scriptDir\lib\Jdk-Check.ps1"
+. "$scriptDir\lib\Script-Utils.ps1"
+. "$scriptDir\lib\Gradle-Tasks-Probe.ps1"
 
 # ============================================================================
 # CONFIGURATION
@@ -596,11 +598,23 @@ foreach ($module in $allModules) {
     if (-not $skipCov) {
         $covTaskName = Get-CoverageGradleTask -Tool $modCovTool -TestType $TestType -IsDesktop $Desktop
         if ($covTaskName) {
-            $covTask = "${gradlePath}:${covTaskName}"
-            if ($isShared) {
-                $covTasksShared.Add($covTask)
+            # Bug B'' (v0.5.1): probe gradle for task existence before queueing.
+            # Content-based detection (Detect-CoverageTool) returns false
+            # positives when the plugin appears in convention scaffolding but
+            # is NOT applied per-module. Probe is the source of truth.
+            $taskExists = Test-ModuleHasTask -ProjectRoot $module.ProjectRoot `
+                -Module $module.Name -Task $covTaskName
+            if ($taskExists -eq $false) {
+                Write-Host "  [SKIP coverage] $($module.Name) (no coverage plugin applied)" -ForegroundColor DarkGray
+                $module.CovTool = "none"
             } else {
-                $covTasks.Add($covTask)
+                # $true (confirmed) OR $null (probe unavailable, legacy fallback)
+                $covTask = "${gradlePath}:${covTaskName}"
+                if ($isShared) {
+                    $covTasksShared.Add($covTask)
+                } else {
+                    $covTasks.Add($covTask)
+                }
             }
         } else {
             $displayName = Get-CoverageDisplayName -Tool $modCovTool
@@ -794,27 +808,27 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
     $testDuration = (Get-Date) - $startTime
 
     Write-Host ""
-    if ($testExitCode -ne 0 -and $failureCount -eq 0 -and $successCount -eq 0) {
-        # JVM-level error (UnsupportedClassVersionError, OOM, daemon crash) —
-        # gradle failed and no task results visible. Mark all as failed.
-        Write-Host "[!] Gradle exited with code $testExitCode and no task results found." -ForegroundColor Yellow
-        Write-Host "    This usually means a JVM-level error (wrong JAVA_HOME, OOM, daemon crash)." -ForegroundColor Yellow
-        Write-Host "    Marking all $($modules.Count) modules as failed." -ForegroundColor Yellow
-        $failureCount = $modules.Count
-        foreach ($module in $modules) {
-            $testResults[$module.Name] = @{ Status = "failed"; Coverage = $null }
+    # Classify gradle exit via shared helper (Script-Utils.ps1). Same logic
+    # is reused for coverage-gen below — see Bug C' (v0.5.1).
+    $testGate = Invoke-GradleExitDeprecationGate `
+        -ExitCode $testExitCode `
+        -SuccessCount $successCount `
+        -FailureCount $failureCount `
+        -TotalCount $modules.Count `
+        -Context 'tests'
+    switch ($testGate.Verdict) {
+        'success' {
+            foreach ($line in $testGate.Lines) { Write-Host $line -ForegroundColor Cyan }
         }
-    }
-    elseif ($testExitCode -ne 0 -and $failureCount -eq 0 -and $successCount -gt 0) {
-        # Gradle exit non-zero but individual tasks passed. Likely deprecation
-        # warnings (Gradle 9+). `[NOTICE]` prefix (not `[!]`) so json parsers
-        # and humans can distinguish this benign signal from real failures.
-        Write-Host "[NOTICE] Gradle exited with code $testExitCode but all $successCount tasks passed individually." -ForegroundColor Cyan
-        Write-Host "         This is likely deprecation warnings (Gradle 9+), not test failures." -ForegroundColor Cyan
-    }
-    elseif ($testExitCode -ne 0 -and $failureCount -gt 0) {
-        # Some tasks failed individually — leave the per-module reporting to
-        # speak for itself. Don't double-count with a top-level [!] line.
+        'env_error' {
+            foreach ($line in $testGate.Lines) { Write-Host $line -ForegroundColor Yellow }
+            Write-Host "    Marking all $($modules.Count) modules as failed." -ForegroundColor Yellow
+            $failureCount = $modules.Count
+            foreach ($module in $modules) {
+                $testResults[$module.Name] = @{ Status = "failed"; Coverage = $null }
+            }
+        }
+        'partial' { }   # per-module FAILED reporting above already covered it
     }
     Write-Host "Test Duration: $([int]$testDuration.TotalMinutes)m $($testDuration.Seconds)s" -ForegroundColor Cyan
     Write-Host ""
@@ -849,6 +863,20 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
                 if (-not $modTool -or $modTool -eq "none") { continue }
                 $xmlCheck = Get-CoverageXmlPath -Tool $modTool -ModulePath $mod.Path -IsDesktop $Desktop
                 if ($xmlCheck) { $covXmlCount++ }
+            }
+
+            # Bug C': route deprecation-only coverage exit through the shared
+            # gate so it surfaces as warnings[].code = "gradle_deprecation"
+            # instead of being swallowed by the partial-recovery branch.
+            $covMissing = $covTasks.Count - $covXmlCount
+            $covGate = Invoke-GradleExitDeprecationGate `
+                -ExitCode $covExitCode `
+                -SuccessCount $covXmlCount `
+                -FailureCount $covMissing `
+                -TotalCount $covTasks.Count `
+                -Context 'coverage'
+            if ($covGate.Verdict -eq 'success' -and $covGate.Lines.Count -gt 0) {
+                foreach ($line in $covGate.Lines) { Write-Host $line -ForegroundColor Cyan }
             }
 
             if ($covXmlCount -gt 0) {
@@ -949,6 +977,19 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
                     if (-not $modTool -or $modTool -eq "none") { continue }
                     $xmlCheck = Get-CoverageXmlPath -Tool $modTool -ModulePath $mod.Path -IsDesktop $Desktop
                     if ($xmlCheck) { $covXmlCountS++ }
+                }
+
+                # Bug C': route deprecation-only shared coverage exit through
+                # the shared gate (same logic as main project above).
+                $covMissingS = $covTasksShared.Count - $covXmlCountS
+                $covGateS = Invoke-GradleExitDeprecationGate `
+                    -ExitCode $covExitCodeShared `
+                    -SuccessCount $covXmlCountS `
+                    -FailureCount $covMissingS `
+                    -TotalCount $covTasksShared.Count `
+                    -Context 'shared coverage'
+                if ($covGateS.Verdict -eq 'success' -and $covGateS.Lines.Count -gt 0) {
+                    foreach ($line in $covGateS.Lines) { Write-Host $line -ForegroundColor Cyan }
                 }
 
                 if ($covXmlCountS -gt 0) {
@@ -1075,6 +1116,10 @@ $grandMissed = ($moduleSummaries.Values | Measure-Object -Property Missed -Sum).
 $grandTotal = $grandCovered + $grandMissed
 $grandCoverage = if ($grandTotal -gt 0) { [math]::Round(($grandCovered / $grandTotal) * 100, 1) } else { 0 }
 
+# Bug E (v0.5.1): count modules that actually produced coverage data.
+# A module with Total > 0 had at least one parseable line in its XML.
+$modulesContributing = ($moduleSummaries.Values | Where-Object { $_.Total -gt 0 }).Count
+
 # ============================================================================
 # GENERATE MARKDOWN REPORT
 # ============================================================================
@@ -1173,7 +1218,16 @@ Copy-Item -Path $outputPath -Destination $outputLegacyPath -Force -ErrorAction S
 # ============================================================================
 
 Write-Host ""
-Write-Host "[OK] Full coverage report generated!" -ForegroundColor Green
+# Bug E (v0.5.1): if zero modules contributed real coverage data, the OK
+# banner is misleading. Replace with an actionable [!] message that the
+# JSON parser maps to warnings[].code = "no_coverage_data".
+if ($modulesContributing -gt 0) {
+    Write-Host "[OK] Full coverage report generated!" -ForegroundColor Green
+} else {
+    Write-Host "[!] No coverage data collected from any module - verify your project has kover/jacoco configured (see https://github.com/oscardlfr/kmp-test-runner#coverage-setup)" -ForegroundColor Yellow
+}
+# Machine-readable marker consumed by lib/cli.js parseScriptOutput.
+Write-Host "COVERAGE_MODULES_CONTRIBUTING: $modulesContributing"
 Write-Host "[>>] Report saved to: $outputPath" -ForegroundColor Cyan
 Write-Host "    legacy alias: $outputLegacyPath" -ForegroundColor DarkGray
 Write-Host ""

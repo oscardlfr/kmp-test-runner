@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/audit-append.sh"
+source "$SCRIPT_DIR/lib/gradle-tasks-probe.sh"
 
 # =============================================================================
 # Android Instrumented Tests Runner
@@ -38,6 +39,7 @@ AUTO_RETRY=false
 CLEAR_DATA=false
 LIST_ONLY=false
 TEST_FILTER=""
+DEVICE_TASK_OVERRIDE=""
 
 usage() {
     cat <<'USAGE'
@@ -58,6 +60,10 @@ Options:
                           Wildcards are not supported by the Android instrumentation
                           runner; pass a literal class FQN (the kmp-test CLI resolves
                           *Pattern* globs to FQNs by source scan before invoking this script).
+  --device-task <name>    Force a specific gradle task name (e.g. androidConnectedCheck).
+                          Useful for KMP modules with the new androidLibrary { } DSL
+                          where neither connectedDebugAndroidTest nor connectedAndroidTest
+                          exist. Defaults to auto-detect via gradle task probe.
 USAGE
     exit "${1:-0}"
 }
@@ -85,6 +91,8 @@ while [[ $# -gt 0 ]]; do
             LIST_ONLY=true; shift ;;
         --test-filter)
             TEST_FILTER="$2"; shift 2 ;;
+        --device-task)
+            DEVICE_TASK_OVERRIDE="$2"; shift 2 ;;
         *)
             shift ;;
     esac
@@ -309,20 +317,53 @@ while IFS='|' read -r module_name module_path has_flavor is_kmp description; do
     # Construct Gradle task
     formatted_module=":${module_name}"
 
-    if [[ "$is_kmp" == "true" ]]; then
+    # Bug B' (v0.5.1): probe gradle for the actual task set instead of
+    # hardcoding by is_kmp/has_flavor. The new KMP `androidLibrary { }` DSL
+    # exposes `androidConnectedCheck` rather than `connectedDebugAndroidTest`
+    # — old detection blew up with `Cannot locate tasks that match`.
+    # Priority order honors flavor when set, then falls through to the
+    # umbrella task name for the new DSL.
+    if [[ -n "$DEVICE_TASK_OVERRIDE" ]]; then
+        task="${formatted_module}:${DEVICE_TASK_OVERRIDE}"
+    else
+        candidates=()
         if [[ "$has_flavor" == "true" && -n "$FLAVOR" ]]; then
             flavor_cap="$(echo "${FLAVOR:0:1}" | tr '[:lower:]' '[:upper:]')${FLAVOR:1}"
-            task="${formatted_module}:connected${flavor_cap}DebugAndroidTest"
-        else
-            task="${formatted_module}:connectedDebugAndroidTest"
+            candidates+=("connected${flavor_cap}DebugAndroidTest")
         fi
-    elif [[ "$has_flavor" == "true" && -n "$FLAVOR" ]]; then
-        flavor_cap="$(echo "${FLAVOR:0:1}" | tr '[:lower:]' '[:upper:]')${FLAVOR:1}"
-        task="${formatted_module}:connected${flavor_cap}DebugAndroidTest"
-    elif [[ "$has_flavor" == "true" ]]; then
-        task="${formatted_module}:connectedDebugAndroidTest"
-    else
-        task="${formatted_module}:connectedAndroidTest"
+        candidates+=("connectedDebugAndroidTest" "connectedAndroidTest" "androidConnectedCheck")
+
+        set +e
+        selected_task="$(module_first_existing_task "$PROJECT_ROOT" "$module_name" "${candidates[@]}")"
+        probe_rc=$?
+        set -e
+
+        if [[ "$probe_rc" -eq 0 && -n "$selected_task" ]]; then
+            task="${formatted_module}:${selected_task}"
+        elif [[ "$probe_rc" -eq 1 ]]; then
+            # Probe healthy but module has none of the candidate tasks.
+            # Best-effort: try the umbrella task — gradle will surface a
+            # task_not_found error captured by the JSON envelope (Phase 1).
+            task="${formatted_module}:androidConnectedCheck"
+            echo -e "${color_yellow}[!] No standard android task found for ${module_name} — trying ${task} (override with --device-task)${color_reset}" >&2
+        else
+            # Probe unavailable — fall back to legacy hardcoded matrix.
+            if [[ "$is_kmp" == "true" ]]; then
+                if [[ "$has_flavor" == "true" && -n "$FLAVOR" ]]; then
+                    flavor_cap="$(echo "${FLAVOR:0:1}" | tr '[:lower:]' '[:upper:]')${FLAVOR:1}"
+                    task="${formatted_module}:connected${flavor_cap}DebugAndroidTest"
+                else
+                    task="${formatted_module}:connectedDebugAndroidTest"
+                fi
+            elif [[ "$has_flavor" == "true" && -n "$FLAVOR" ]]; then
+                flavor_cap="$(echo "${FLAVOR:0:1}" | tr '[:lower:]' '[:upper:]')${FLAVOR:1}"
+                task="${formatted_module}:connected${flavor_cap}DebugAndroidTest"
+            elif [[ "$has_flavor" == "true" ]]; then
+                task="${formatted_module}:connectedDebugAndroidTest"
+            else
+                task="${formatted_module}:connectedAndroidTest"
+            fi
+        fi
     fi
 
     # Log files for this module
