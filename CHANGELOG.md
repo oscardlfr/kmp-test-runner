@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] — 2026-04-27
+
+> **"Real-world Mac validation hardening"** — bundles 4 production bugs surfaced when a user ran `kmp-test v0.4.1` on a corporate Mac against a 20-module OpenNative project. Bug A (#43): JDK toolchain mismatch becomes blocking by default. Bug B (#44): auto-skip modules without test source sets + `--exclude-modules` flag for heterogeneous projects. Bug C (#46): Gradle 9 deprecation noise routed to `warnings[]` not `errors[]`. Bug D (#47): per-shell installer PATH detection (zsh / bash / fish / sh) + accurate post-install hint. Plus README docs (#45) for the new flags + JSON schema. Total: 50+ new tests across vitest, bats, Pester.
 
 ### Added
 - **`warnings[]` array in the `--json` envelope** for non-fatal signals that agents should branch on differently than `errors[]`. First entry: `gradle_deprecation` — emitted when gradle exits non-zero solely because of Gradle 9+ deprecation warnings while every individual task still passed. Includes `gradle_exit_code` and `tasks_passed` integer fields so callers can sanity-check.

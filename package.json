@@ -1,6 +1,6 @@
 {
   "name": "kmp-test-runner",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "type": "module",
   "description": "Parallel test runner for KMP and Android Gradle projects",
   "homepage": "https://github.com/oscardlfr/kmp-test-runner#readme",
