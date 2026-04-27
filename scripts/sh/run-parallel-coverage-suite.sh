@@ -30,6 +30,11 @@ warn()   { color_print "$YELLOW" "$1"; }
 err()    { color_print "$RED"    "$1"; }
 gray()   { color_print "$GRAY"   "$1"; }
 white()  { color_print "$WHITE"  "$1"; }
+# notice() — non-fatal informational lines that are NOT failures (e.g. Gradle 9
+# deprecation warnings that surface as exit-code-1 with all tasks passing).
+# Distinct prefix `[NOTICE]` so the json parser and human readers can tell
+# them apart from `[!]` warnings (which are warnings about real problems).
+notice() { color_print "$CYAN"   "$1"; }
 
 # ---------------------------------------------------------------------------
 # RUN ID — concurrent-invocation safety (v0.3.8+)
@@ -59,6 +64,9 @@ COVERAGE_TOOL="auto"
 EXCLUDE_COVERAGE=""
 TIMEOUT=600
 TEST_FILTER=""
+IGNORE_JDK_MISMATCH=false
+EXCLUDE_MODULES=""
+INCLUDE_UNTESTED=false
 
 # ---------------------------------------------------------------------------
 # USAGE
@@ -88,6 +96,10 @@ Options:
   --test-filter <pattern>     Filter tests to a single class (gradle --tests <pattern>). Globs OK.
   --benchmark                 Run benchmarks after tests/coverage (default: off).
   --benchmark-config <name>   Benchmark config: smoke (default) | main | stress
+  --ignore-jdk-mismatch       Bypass JDK toolchain mismatch check (default: BLOCK with exit 3).
+  --exclude-modules <list>    Comma-separated module globs to skip entirely (no test, no coverage).
+                              E.g. --exclude-modules "*:api,*-api,build-logic" for api/aggregator modules.
+  --include-untested          Include modules with no test source set (default: auto-skip them).
   -h | --help                 Show this help.
 USAGE
     exit "${1:-0}"
@@ -116,6 +128,9 @@ while [[ $# -gt 0 ]]; do
         --test-filter)        TEST_FILTER="$2"; shift 2 ;;
         --benchmark)          BENCHMARK=true; shift ;;
         --benchmark-config)   BENCHMARK_CONFIG="$2"; shift 2 ;;
+        --ignore-jdk-mismatch) IGNORE_JDK_MISMATCH=true; shift ;;
+        --exclude-modules)    EXCLUDE_MODULES="$2"; shift 2 ;;
+        --include-untested)   INCLUDE_UNTESTED=true; shift ;;
         -h|--help)            usage ;;
         *) err "[ERROR] Unknown option: $1"; exit 1 ;;
     esac
@@ -152,6 +167,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/coverage-detect.sh"
 source "$SCRIPT_DIR/lib/audit-append.sh"
 source "$SCRIPT_DIR/lib/script-utils.sh"
+source "$SCRIPT_DIR/lib/jdk-check.sh"
 
 EXCLUSION_PATTERNS=(
     '*$DefaultImpls'
@@ -167,10 +183,14 @@ EXCLUSION_PATTERNS=(
 # ---------------------------------------------------------------------------
 
 # Discover modules from settings.gradle.kts and build.gradle.kts.
-# Outputs one module per line.
+# Outputs one module per line on stdout. Skipped modules (excluded or untested)
+# go to stderr as `[SKIP] <module> (<reason>)` lines so the caller's tally
+# stays accurate.
 find_modules() {
     local project_path="$1"
     local filter="$2"
+    local exclude_filter="${3:-}"
+    local include_untested="${4:-false}"
 
     # Build set of modules from settings.gradle.kts (Bash 3.2 compatible — no declare -A)
     local settings_file="$project_path/settings.gradle.kts"
@@ -233,19 +253,63 @@ find_modules() {
     done
 
     # Remove parent-only modules
-    local final_modules=()
+    local after_parent=()
     for mod in "${matched_modules[@]}"; do
         local is_parent=false
         for pmod in $PARENT_ONLY_MODULES; do
             if [[ "$mod" == "$pmod" ]]; then is_parent=true; break; fi
         done
         if ! $is_parent; then
-            final_modules+=("$mod")
+            after_parent+=("$mod")
         fi
     done
 
+    # Apply --exclude-modules (comma-separated globs)
+    local after_exclude=()
+    local exclude_list=()
+    if [[ -n "$exclude_filter" ]]; then
+        IFS=',' read -ra exclude_list <<< "$exclude_filter"
+        # Trim whitespace
+        for i in "${!exclude_list[@]}"; do
+            local v="${exclude_list[$i]}"
+            v="${v#"${v%%[![:space:]]*}"}"
+            v="${v%"${v##*[![:space:]]}"}"
+            exclude_list[i]="$v"
+        done
+    fi
+    for mod in "${after_parent[@]}"; do
+        local excluded=false
+        for pat in "${exclude_list[@]+"${exclude_list[@]}"}"; do
+            [[ -z "$pat" ]] && continue
+            if glob_match "$pat" "$mod"; then
+                echo "[SKIP] $mod (excluded by --exclude-modules)" >&2
+                excluded=true
+                break
+            fi
+        done
+        $excluded || after_exclude+=("$mod")
+    done
+
+    # Auto-skip modules without any test source set (unless --include-untested).
+    # This catches the common "module by convention has no tests" case (e.g.
+    # :api, :model, build-logic) and avoids a downstream "Task 'test' not
+    # found in project ':X'" gradle error. Opt-out: --include-untested.
+    local final_modules=()
+    if [[ "$include_untested" == "true" ]]; then
+        final_modules=("${after_exclude[@]+"${after_exclude[@]}"}")
+    else
+        for mod in "${after_exclude[@]+"${after_exclude[@]}"}"; do
+            local fs_path="$project_path/${mod//:/\/}"
+            if module_has_test_sources "$fs_path"; then
+                final_modules+=("$mod")
+            else
+                echo "[SKIP] $mod (no test source set — pass --include-untested to override)" >&2
+            fi
+        done
+    fi
+
     # Output unique sorted
-    printf '%s\n' "${final_modules[@]}" | sort -u
+    printf '%s\n' "${final_modules[@]+"${final_modules[@]}"}" | sort -u
 }
 
 # Parse coverage XML report (Kover or JaCoCo) using shared Python parser.
@@ -296,30 +360,12 @@ if [[ -n "$JAVA_HOME_OVERRIDE" ]]; then
     info "Using JAVA_HOME override: $JAVA_HOME"
 fi
 
-# Auto-detect required JDK version from project
+# Pre-flight JDK toolchain gate. Auto-detects JAVA_HOME from gradle.properties
+# (preserving prior behavior) and BLOCKS by default on jvmToolchain mismatch.
+# --ignore-jdk-mismatch downgrades the block to a warning. Skipped when the
+# user passed --java-home explicitly (their override wins).
 if [[ -z "$JAVA_HOME_OVERRIDE" && -d "$PROJECT_ROOT" ]]; then
-    required_jdk=""
-    gradle_java=""
-    # Check gradle.properties for org.gradle.java.home
-    if [[ -f "$PROJECT_ROOT/gradle.properties" ]]; then
-        gradle_java="$(grep "^org.gradle.java.home" "$PROJECT_ROOT/gradle.properties" 2>/dev/null | sed 's/.*=//' | tr -d ' \r' || true)"
-        if [[ -n "$gradle_java" && -d "$gradle_java" ]]; then
-            export JAVA_HOME="$gradle_java"
-            info "Auto-detected JAVA_HOME from gradle.properties: $JAVA_HOME"
-        fi
-    fi
-    # Check jvmToolchain version in build files
-    if [[ -z "$gradle_java" ]]; then
-        jvm_version="$(grep -rh "jvmToolchain" "$PROJECT_ROOT" --include="*.gradle.kts" 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1 || true)"
-        if [[ -n "$jvm_version" && -n "$JAVA_HOME" ]]; then
-            current_version="$(java -version 2>&1 | head -1 | grep -oE '"[0-9]+' | tr -d '"' || true)"
-            if [[ -n "$current_version" && "$current_version" != "$jvm_version" ]]; then
-                warn "[!] Project requires JDK $jvm_version but current JAVA_HOME points to JDK $current_version"
-                warn "    Use --java-home <path-to-jdk-$jvm_version> or set JAVA_HOME before running"
-                warn "    With --fresh-daemon this WILL cause UnsupportedClassVersionError"
-            fi
-        fi
-    fi
+    gate_jdk_mismatch "$PROJECT_ROOT" "$IGNORE_JDK_MISMATCH" || exit $?
 fi
 
 # Detect platform and test type
@@ -437,7 +483,7 @@ for pi in "${!PROJ_NAMES[@]}"; do
         MOD_PROJ+=("$ppath")
         MOD_SHORT+=("$local_short")
         MOD_GRADLE+=("$mod")
-    done < <(find_modules "$ppath" "$MODULE_FILTER")
+    done < <(find_modules "$ppath" "$MODULE_FILTER" "$EXCLUDE_MODULES" "$INCLUDE_UNTESTED")
 done
 
 # Apply CoverageOnly filter
@@ -799,8 +845,10 @@ if ! $SKIP_TESTS && [[ "${#ALL_TEST_TASKS[@]}" -gt 0 ]]; then
     elif [[ "$TEST_EXIT_CODE" -ne 0 && "$FAILURE_COUNT" -eq 0 && "$SUCCESS_COUNT" -gt 0 ]]; then
         # Gradle exit non-zero but individual tasks passed.
         # Likely deprecation warnings or non-fatal build issues (Gradle 9+).
-        warn "[!] Gradle exited with code $TEST_EXIT_CODE but all $SUCCESS_COUNT tasks passed individually."
-        warn "    This is likely deprecation warnings (Gradle 9+), not test failures."
+        # `[NOTICE]` (not `[!]`) so json parsers and humans can distinguish
+        # this benign signal from real failures.
+        notice "[NOTICE] Gradle exited with code $TEST_EXIT_CODE but all $SUCCESS_COUNT tasks passed individually."
+        notice "         This is likely deprecation warnings (Gradle 9+), not test failures."
     fi
     info "Test Duration: ${TEST_MINS}m ${TEST_SECS}s"
     echo ""

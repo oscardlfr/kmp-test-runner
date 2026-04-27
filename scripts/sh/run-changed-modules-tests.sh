@@ -48,9 +48,13 @@ MIN_MISSED_LINES=0
 COVERAGE_TOOL=""
 EXCLUDE_COVERAGE=""
 TEST_FILTER=""
+IGNORE_JDK_MISMATCH=false
+EXCLUDE_MODULES=""
+INCLUDE_UNTESTED=false
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib/script-utils.sh"
+source "$SCRIPT_DIR/lib/jdk-check.sh"
 
 # ---------------------------------------------------------------------------
 # USAGE
@@ -72,6 +76,9 @@ Options:
   --coverage-tool <tool>      Coverage tool: jacoco | kover | auto | none. Default: jacoco
   --exclude-coverage <list>   Comma-separated modules to exclude from coverage.
   --test-filter <pattern>     Filter tests to a single class (forwarded to suite as --tests). Globs OK.
+  --ignore-jdk-mismatch       Bypass JDK toolchain mismatch check (default: BLOCK with exit 3).
+  --exclude-modules <list>    Comma-separated module globs to skip entirely (forwarded to suite).
+  --include-untested          Include modules with no test source set (default: auto-skip).
   -h | --help                 Show this help.
 USAGE
     exit "${1:-0}"
@@ -92,6 +99,9 @@ while [[ $# -gt 0 ]]; do
         --coverage-tool)      COVERAGE_TOOL="$2"; shift 2 ;;
         --exclude-coverage)   EXCLUDE_COVERAGE="$2"; shift 2 ;;
         --test-filter)        TEST_FILTER="$2"; shift 2 ;;
+        --ignore-jdk-mismatch) IGNORE_JDK_MISMATCH=true; shift ;;
+        --exclude-modules)    EXCLUDE_MODULES="$2"; shift 2 ;;
+        --include-untested)   INCLUDE_UNTESTED=true; shift ;;
         -h|--help)            usage ;;
         *) err "[ERROR] Unknown option: $1"; exit 1 ;;
     esac
@@ -169,6 +179,9 @@ if [[ ! -d "$PROJECT_ROOT" ]]; then
     err "[ERROR] Project path does not exist: $PROJECT_ROOT"
     exit 1
 fi
+
+# Pre-flight JDK toolchain gate (mirrors run-parallel-coverage-suite.sh).
+gate_jdk_mismatch "$PROJECT_ROOT" "$IGNORE_JDK_MISMATCH" || exit $?
 
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 
@@ -261,6 +274,18 @@ fi
 
 if [[ -n "$TEST_FILTER" ]]; then
     SUITE_ARGS+=(--test-filter "$TEST_FILTER")
+fi
+
+if [[ -n "$EXCLUDE_MODULES" ]]; then
+    SUITE_ARGS+=(--exclude-modules "$EXCLUDE_MODULES")
+fi
+
+if $INCLUDE_UNTESTED; then
+    SUITE_ARGS+=(--include-untested)
+fi
+
+if $IGNORE_JDK_MISMATCH; then
+    SUITE_ARGS+=(--ignore-jdk-mismatch)
 fi
 
 # Execute tests using the parallel coverage suite script

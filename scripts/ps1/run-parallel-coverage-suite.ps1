@@ -87,7 +87,10 @@ param(
     [switch]$Benchmark,
     [ValidateSet("smoke", "main", "stress")]
     [string]$BenchmarkConfig = "smoke",
-    [string]$TestFilter = ""
+    [string]$TestFilter = "",
+    [switch]$IgnoreJdkMismatch,
+    [string]$ExcludeModules = "",
+    [switch]$IncludeUntested
 )
 
 $ErrorActionPreference = "Continue"
@@ -107,6 +110,7 @@ $KmpRunId = $env:KMP_RUN_ID
 # Source coverage detection library
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 . "$scriptDir\lib\Coverage-Detect.ps1"
+. "$scriptDir\lib\Jdk-Check.ps1"
 
 # ============================================================================
 # CONFIGURATION
@@ -171,8 +175,34 @@ function Format-LineRanges {
     return $ranges -join ", "
 }
 
+function Test-ModuleHasTestSources {
+    <#
+    .SYNOPSIS
+        Returns $true if the module directory contains any standard Kotlin/JVM/Android
+        test source set: src/test, src/commonTest, src/jvmTest, src/desktopTest,
+        src/androidUnitTest, src/androidInstrumentedTest, src/androidTest,
+        src/iosTest, src/nativeTest. Used to skip api/aggregator modules that
+        by convention have no tests, before invoking gradle.
+    #>
+    param([string]$ModulePath)
+    $candidates = @(
+        'src\test', 'src\commonTest', 'src\jvmTest', 'src\desktopTest',
+        'src\androidUnitTest', 'src\androidInstrumentedTest', 'src\androidTest',
+        'src\iosTest', 'src\nativeTest'
+    )
+    foreach ($d in $candidates) {
+        if (Test-Path (Join-Path $ModulePath $d)) { return $true }
+    }
+    return $false
+}
+
 function Find-Modules {
-    param([string]$ProjectRoot, [string]$Filter)
+    param(
+        [string]$ProjectRoot,
+        [string]$Filter,
+        [string]$ExcludeFilter = "",
+        [bool]$IncludeUntested = $false
+    )
 
     # Build set of modules actually included in settings.gradle.kts
     $settingsFile = Join-Path $ProjectRoot "settings.gradle.kts"
@@ -211,7 +241,41 @@ function Find-Modules {
         $isMatched
     }
     $modules = $modules | Where-Object { $_ -notin $ParentOnlyModules }
-    return $modules
+
+    # Apply -ExcludeModules (comma-separated globs). Skipped → stderr.
+    $excludeList = @()
+    if ($ExcludeFilter) {
+        $excludeList = $ExcludeFilter.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    }
+    $afterExclude = @()
+    foreach ($mod in $modules) {
+        $excluded = $false
+        foreach ($pat in $excludeList) {
+            if ($mod -like $pat) {
+                [Console]::Error.WriteLine("[SKIP] $mod (excluded by -ExcludeModules)")
+                $excluded = $true
+                break
+            }
+        }
+        if (-not $excluded) { $afterExclude += $mod }
+    }
+
+    # Auto-skip modules without any test source set (unless -IncludeUntested).
+    # Catches the common "api / aggregator module by convention has no tests"
+    # case before gradle's "Task 'test' not found in project ':X'" error.
+    if ($IncludeUntested) {
+        return $afterExclude
+    }
+    $final = @()
+    foreach ($mod in $afterExclude) {
+        $modulePath = Join-Path $ProjectRoot ($mod -replace ':', [IO.Path]::DirectorySeparatorChar)
+        if (Test-ModuleHasTestSources -ModulePath $modulePath) {
+            $final += $mod
+        } else {
+            [Console]::Error.WriteLine("[SKIP] $mod (no test source set - pass -IncludeUntested to override)")
+        }
+    }
+    return $final
 }
 
 function Parse-CoverageReport {
@@ -276,39 +340,13 @@ if ($JavaHome -and $JavaHome.Trim() -ne "") {
     Write-Host "Using JAVA_HOME override: $($env:JAVA_HOME)" -ForegroundColor Cyan
 }
 
-# Auto-detect required JDK version from project
+# Pre-flight JDK toolchain gate. Auto-detects JAVA_HOME from gradle.properties
+# (preserving prior behavior) and BLOCKS by default on jvmToolchain mismatch.
+# -IgnoreJdkMismatch downgrades the block to a warning. Skipped when the user
+# passed -JavaHome explicitly (their override wins).
 if (-not $JavaHome -and (Test-Path $ProjectRoot)) {
-    # Check gradle.properties
-    $gradleProps = Join-Path $ProjectRoot "gradle.properties"
-    if (Test-Path $gradleProps) {
-        $javaHomeLine = Get-Content $gradleProps -ErrorAction SilentlyContinue |
-            Where-Object { $_ -match "^org\.gradle\.java\.home" } |
-            Select-Object -First 1
-        if ($javaHomeLine) {
-            $gradleJava = ($javaHomeLine -split "=", 2)[1].Trim()
-            if (Test-Path $gradleJava) {
-                $env:JAVA_HOME = $gradleJava
-                Write-Host "Auto-detected JAVA_HOME from gradle.properties: $($env:JAVA_HOME)" -ForegroundColor Cyan
-            }
-        }
-    }
-    # Check jvmToolchain version mismatch
-    if (-not $javaHomeLine) {
-        $jvmLine = Get-ChildItem -Path $ProjectRoot -Recurse -Include "*.gradle.kts" -ErrorAction SilentlyContinue |
-            Select-Object -First 20 |
-            ForEach-Object { Get-Content $_.FullName -ErrorAction SilentlyContinue } |
-            Where-Object { $_ -match "jvmToolchain" } |
-            Select-Object -First 1
-        if ($jvmLine -match "(\d+)") {
-            $requiredVersion = $Matches[1]
-            $currentVersion = (java -version 2>&1 | Select-Object -First 1) -replace '.*"(\d+).*', '$1'
-            if ($currentVersion -and $requiredVersion -and $currentVersion -ne $requiredVersion) {
-                Write-Host "[!] Project requires JDK $requiredVersion but JAVA_HOME points to JDK $currentVersion" -ForegroundColor Yellow
-                Write-Host "    Use -JavaHome <path-to-jdk-$requiredVersion> or set JAVA_HOME before running" -ForegroundColor Yellow
-                Write-Host "    With -FreshDaemon this WILL cause UnsupportedClassVersionError" -ForegroundColor Yellow
-            }
-        }
-    }
+    $gateRc = Invoke-JdkMismatchGate -ProjectRoot $ProjectRoot -IgnoreJdkMismatch:$IgnoreJdkMismatch
+    if ($gateRc -ne 0) { exit $gateRc }
 }
 
 # Detect platform and test type
@@ -408,7 +446,8 @@ $allModules = [System.Collections.Generic.List[object]]::new()
 foreach ($project in $projectsToProcess) {
     Write-Host "[>] Discovering modules in $($project.Name)..." -ForegroundColor Cyan
 
-    $modules = Find-Modules -ProjectRoot $project.Path -Filter $ModuleFilter
+    $modules = Find-Modules -ProjectRoot $project.Path -Filter $ModuleFilter `
+        -ExcludeFilter $ExcludeModules -IncludeUntested:$IncludeUntested
 
     foreach ($mod in $modules) {
         $moduleName = if ($project.Prefix) { "$($project.Prefix)$mod" } else { $mod }
@@ -755,9 +794,27 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
     $testDuration = (Get-Date) - $startTime
 
     Write-Host ""
-    if ($testExitCode -ne 0 -and $failureCount -eq 0) {
-        # Gradle failed but no specific task was identified - mark as general failure
-        Write-Host "[!] Gradle exited with code $testExitCode (some tasks may have failed)" -ForegroundColor Yellow
+    if ($testExitCode -ne 0 -and $failureCount -eq 0 -and $successCount -eq 0) {
+        # JVM-level error (UnsupportedClassVersionError, OOM, daemon crash) —
+        # gradle failed and no task results visible. Mark all as failed.
+        Write-Host "[!] Gradle exited with code $testExitCode and no task results found." -ForegroundColor Yellow
+        Write-Host "    This usually means a JVM-level error (wrong JAVA_HOME, OOM, daemon crash)." -ForegroundColor Yellow
+        Write-Host "    Marking all $($modules.Count) modules as failed." -ForegroundColor Yellow
+        $failureCount = $modules.Count
+        foreach ($module in $modules) {
+            $testResults[$module.Name] = @{ Status = "failed"; Coverage = $null }
+        }
+    }
+    elseif ($testExitCode -ne 0 -and $failureCount -eq 0 -and $successCount -gt 0) {
+        # Gradle exit non-zero but individual tasks passed. Likely deprecation
+        # warnings (Gradle 9+). `[NOTICE]` prefix (not `[!]`) so json parsers
+        # and humans can distinguish this benign signal from real failures.
+        Write-Host "[NOTICE] Gradle exited with code $testExitCode but all $successCount tasks passed individually." -ForegroundColor Cyan
+        Write-Host "         This is likely deprecation warnings (Gradle 9+), not test failures." -ForegroundColor Cyan
+    }
+    elseif ($testExitCode -ne 0 -and $failureCount -gt 0) {
+        # Some tasks failed individually — leave the per-module reporting to
+        # speak for itself. Don't double-count with a top-level [!] line.
     }
     Write-Host "Test Duration: $([int]$testDuration.TotalMinutes)m $($testDuration.Seconds)s" -ForegroundColor Cyan
     Write-Host ""

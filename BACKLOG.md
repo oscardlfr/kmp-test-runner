@@ -6,7 +6,11 @@
 
 ## ACTIVE
 
-_(none — pick from QUEUED below or open a new entry)_
+_(none — v0.5.0 milestone shipped; pick from QUEUED below or open a new entry)_
+
+### Deferred
+
+- **README hero banner** — hand-drawn banner from 2026-04-27 has typos (`CONTEXTUAUZATION`, `"savings_rae"`) and informal style that may not fit the "professional infra tool" positioning. Postponed past v0.5.0 pending a cleaner regeneration. File on user's Desktop: `FondoKMPtestRunner.jpeg`.
 
 ---
 
@@ -153,6 +157,14 @@ Out of scope for this item: cross-host coordination (use a real lock manager), G
 ---
 
 ## DONE (recent — newest first)
+
+- 2026-04-27: **v0.5.0** — "Real-world Mac validation hardening." Four production bugs surfaced on a corporate Mac running v0.4.1 against a 20-module OpenNative project, all bundled into one milestone:
+  - **Bug A (#43)** — JDK toolchain mismatch becomes BLOCKING by default. Was: warning printed and script continued, then tests failed downstream with `UnsupportedClassVersionError`. Now: exits 3 with a per-OS `JAVA_HOME` hint; `--ignore-jdk-mismatch` / `-IgnoreJdkMismatch` downgrades to WARN; `gradle.properties` `org.gradle.java.home` bypasses the check (gradle's explicit override wins). 12 vitest + 9 bats + 6 Pester. Shared helpers `scripts/sh/lib/jdk-check.sh` + `scripts/ps1/lib/Jdk-Check.ps1`.
+  - **Bug B (#44)** — modules without test source sets cause silent failures + misleading reports. Was: script invoked `:module:jacocoTestReport` blindly; api/build-logic modules failed with "task not found" but final output said `[OK] Full coverage report generated!` with 0% coverage. Now: auto-skip modules with no `src/*Test*` directory (9 KMP/Android source-set variants checked); `--exclude-modules "*:api,build-logic"` for explicit exclusion (matches `--module-filter` syntax); `--include-untested` to opt out of the auto-skip. 4 vitest + 10 bats + 9 Pester. Shared helper `module_has_test_sources` in `script-utils.sh`.
+  - **Bug C (#46)** — Gradle 9 deprecation noise lumped into `errors[]`. Was: `[!]` prefix indistinguishable from real warnings; `BUILD FAILED` from the deprecation pile ended up in `errors[]`. Now: distinct `[NOTICE]` prefix (sh + ps1); JSON envelope grows `warnings: [{code: "gradle_deprecation", gradle_exit_code, tasks_passed}]`; `BUILD FAILED` suppressed in `errors[]` when paired with the deprecation notice; PowerShell script gains the 3-branch JVM-error/deprecation/per-module logic that bash already had. 10 vitest + 4 bats + 5 Pester.
+  - **Bug D (#47)** — installer "installed successfully" but `kmp-test` not on PATH. Was: `~/.zshrc` updated but no `source` hint; broken outright for fish (wrote bash-syntax to `~/.profile`). Now: install.sh detects `$SHELL` and writes the right rc file with the right syntax (zsh / bash / fish via `set -gx PATH` to `~/.config/fish/config.fish` / sh fallback); per-shell hint shows both literal `export`/`set` line AND `source <rc-file>` shortcut. install.ps1: clarified that `$env:PATH` is already updated for the current session. 6 bats E2E (incl. idempotent re-run).
+  - **Docs (#45)** — README gains "Heterogeneous projects (modules without tests)" + "JDK toolchain mismatch" sections; flag-reference table + exit-code row updated; `errors` vs `warnings` distinction documented in agentic section.
+  - Suite totals at release: **221 vitest + 87 bats + 74 Pester**. README banner deferred per design decision.
 
 - 2026-04-26: **v0.3.8** — Tier 1 concurrent-invocation safety. Advisory lockfile at `<project>/.kmp-test-runner.lock` (`{schema:1, pid, start_time, subcommand, project_root, version}` JSON); `--force` global flag bypasses live lock; stale-PID reclaim is automatic; SIGINT/SIGTERM/uncaughtException cleanup hooks; `--json` mode emits `errors[].code = "lock_held"`. Run-id naming `YYYYMMDD-HHMMSS-PID6` for `coverage-full-report-<id>.md`, `benchmark-report-<id>.md`, and `gradle-parallel-tests-<id>.log`; legacy stable filenames retained as a last-finished mirror so existing consumers keep working. Tests: 121 vitest (96% line coverage on cli.js, +30 lockfile-specific cases) + 12 bats (`tests/bats/test-concurrency.bats`, 3 skipped under MinGW due to MSYS PID semantics — Linux CI runs all of them) + 10 Pester 5 (`tests/pester/Concurrency.Tests.ps1`). `doctor` and `--dry-run` skip the lock since they're read-only.
 - 2026-04-26: **Real token-cost metrics for the "Agentic usage" claim** — `tools/measure-token-cost.js` (Node + js-tiktoken; `--project-root`, `--module-filter`, `--test-task`, `--runs`) runs the three approaches (A: raw `./gradlew + read build/reports/**`, B: `kmp-test parallel`, C: `kmp-test parallel --json`) against any KMP project and emits a markdown table with token counts. First run against `shared-kmp-libs:core-result:desktopTest` produced **A 12,816 tok / B 376 tok / C 100 tok** — `--json` is **128× cheaper than raw gradle**. Captured run logs committed to `tools/runs/`; methodology + caveats in `docs/token-cost-measurement.md`; README "Agentic usage" section updated to link the doc. Replaces the prior qualitative claim with a self-auditable measurement.

@@ -19,6 +19,10 @@ import {
   consumeDryRunFlag,
   consumeForceFlag,
   consumeTestFilter,
+  getIgnoreJdkMismatch,
+  findJvmToolchainVersion,
+  preflightJdkCheck,
+  jdkMismatchHint,
   lockfilePath,
   isPidAlive,
   readLockfile,
@@ -899,6 +903,405 @@ describe('main() — --test-filter passthrough', () => {
       expect(i).toBeGreaterThan(-1);
       // Wildcards stripped + resolved to FQN
       expect(argList[i + 1]).toBe('app.WidgetTest');
+    });
+  });
+});
+
+// ============================================================================
+// Gradle 9 deprecation notice → warnings[] (v0.5.0 — Bug C fix)
+// ============================================================================
+
+describe('parseScriptOutput — Gradle deprecation notice → warnings[]', () => {
+  it('extracts [NOTICE] line into warnings with code "gradle_deprecation"', () => {
+    const out = [
+      'Tests: 20 total | 20 passed | 0 failed | 0 skipped',
+      '[NOTICE] Gradle exited with code 1 but all 20 tasks passed individually.',
+      '         This is likely deprecation warnings (Gradle 9+), not test failures.',
+      'BUILD SUCCESSFUL in 1m',
+    ].join('\n');
+    const r = parseScriptOutput(out, '', []);
+    expect(r.warnings).toHaveLength(1);
+    expect(r.warnings[0].code).toBe('gradle_deprecation');
+    expect(r.warnings[0].gradle_exit_code).toBe(1);
+    expect(r.warnings[0].tasks_passed).toBe(20);
+    expect(r.warnings[0].message).toMatch(/all 20 tasks passed/);
+  });
+
+  it('does NOT push BUILD FAILED to errors[] when paired with the deprecation notice', () => {
+    const out = [
+      'Tests: 20 total | 20 passed | 0 failed | 0 skipped',
+      'BUILD FAILED in 791ms',
+      '[NOTICE] Gradle exited with code 1 but all 20 tasks passed individually.',
+    ].join('\n');
+    const r = parseScriptOutput(out, '', []);
+    // Deprecation went to warnings, BUILD FAILED was suppressed in errors.
+    expect(r.warnings.some(w => w.code === 'gradle_deprecation')).toBe(true);
+    expect(r.errors.find(e => /BUILD FAILED/.test(e.message))).toBeUndefined();
+  });
+
+  it('still surfaces BUILD FAILED in errors[] when there is no deprecation notice', () => {
+    const out = 'Tests: 20 total | 18 passed | 2 failed | 0 skipped\nBUILD FAILED in 1s';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.errors.some(e => /BUILD FAILED/.test(e.message))).toBe(true);
+    expect(r.warnings).toHaveLength(0);
+  });
+
+  it('warnings[] defaults to [] when no notice is present', () => {
+    const r = parseScriptOutput('BUILD SUCCESSFUL', '', []);
+    expect(Array.isArray(r.warnings)).toBe(true);
+    expect(r.warnings).toHaveLength(0);
+  });
+
+  it('also recognizes the legacy `[!]` prefix variant', () => {
+    // Pre-v0.5 scripts emitted `[!]` for the same notice. Anyone running an
+    // older script via direct invocation should still see the warning.
+    const out = '[!] Gradle exited with code 1 but all 5 tasks passed individually.';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.warnings[0]?.code).toBe('gradle_deprecation');
+  });
+
+  it('does NOT add the parse-gap error when only a deprecation notice is present', () => {
+    const out = '[NOTICE] Gradle exited with code 1 but all 5 tasks passed individually.';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.errors.find(e => /no recognizable/.test(e.message))).toBeUndefined();
+  });
+});
+
+describe('buildJsonReport / envErrorJson / buildDryRunReport — warnings[] in shape', () => {
+  it('buildJsonReport always emits warnings: [] in the envelope', () => {
+    const parsed = parseScriptOutput('BUILD SUCCESSFUL', '', []);
+    const obj = buildJsonReport({
+      subcommand: 'parallel', projectRoot: '/x', exitCode: 0, durationMs: 0, parsed,
+    });
+    expect(obj).toHaveProperty('warnings');
+    expect(Array.isArray(obj.warnings)).toBe(true);
+  });
+
+  it('buildJsonReport surfaces parsed.warnings when present', () => {
+    const parsed = parseScriptOutput(
+      '[NOTICE] Gradle exited with code 1 but all 3 tasks passed individually.', '', []);
+    const obj = buildJsonReport({
+      subcommand: 'parallel', projectRoot: '/x', exitCode: 0, durationMs: 0, parsed,
+    });
+    expect(obj.warnings[0].code).toBe('gradle_deprecation');
+  });
+
+  it('envErrorJson emits warnings: [] for shape consistency', () => {
+    const obj = envErrorJson({
+      subcommand: 'parallel', projectRoot: '/x', durationMs: 0, message: 'no gradlew',
+    });
+    expect(obj).toHaveProperty('warnings');
+    expect(obj.warnings).toEqual([]);
+  });
+
+  it('buildDryRunReport emits warnings: [] for shape consistency', () => {
+    const obj = buildDryRunReport({ subcommand: 'parallel', projectRoot: '/x', plan: {} });
+    expect(obj).toHaveProperty('warnings');
+    expect(obj.warnings).toEqual([]);
+  });
+});
+
+// ============================================================================
+// --exclude-modules / --include-untested passthrough (v0.5.0 — Bug B fix)
+// ============================================================================
+
+describe('main() — --exclude-modules / --include-untested passthrough', () => {
+  it('parallel + --exclude-modules passes the value through to the script', () => {
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel',
+        '--exclude-modules', '*:api,build-logic', '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();
+      const argList = scriptCall[1].map(String);
+      const i = argList.findIndex(a => a === '--exclude-modules' || a === '-ExcludeModules');
+      expect(i).toBeGreaterThan(-1);
+      expect(argList[i + 1]).toBe('*:api,build-logic');
+    });
+  });
+
+  it('parallel + --include-untested reaches the script as a switch', () => {
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel',
+        '--include-untested', '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();
+      const argList = scriptCall[1].map(String);
+      expect(argList.some(a => a === '--include-untested' || a === '-IncludeUntested'))
+        .toBe(true);
+    });
+  });
+
+  it('changed + --exclude-modules + --include-untested both pass through', () => {
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'changed',
+        '--exclude-modules', 'api', '--include-untested',
+        '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      const argList = scriptCall[1].map(String);
+      const ei = argList.findIndex(a => a === '--exclude-modules' || a === '-ExcludeModules');
+      expect(ei).toBeGreaterThan(-1);
+      expect(argList[ei + 1]).toBe('api');
+      expect(argList.some(a => a === '--include-untested' || a === '-IncludeUntested'))
+        .toBe(true);
+    });
+  });
+
+  it('subcommand --help advertises both flags for parallel and changed', () => {
+    const writes = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { writes.push(String(chunk)); return true; };
+    try {
+      for (const sub of ['parallel', 'changed']) {
+        writes.length = 0;
+        process.argv = ['node', 'kmp-test.js', sub, '--help'];
+        main();
+        const out = writes.join('');
+        expect(out).toMatch(/--exclude-modules/);
+        expect(out).toMatch(/--include-untested/);
+      }
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+});
+
+// ============================================================================
+// JDK toolchain pre-flight gate (v0.5.0 — Bug A fix)
+// ============================================================================
+
+// Helper: write a build.gradle.kts with jvmToolchain(N) into a fake project.
+function withFakeKmpProject(jvmVersion, fn) {
+  withFakeGradleProject(dir => {
+    writeFileSync(path.join(dir, 'build.gradle.kts'),
+      `kotlin {\n    jvmToolchain(${jvmVersion})\n}\n`);
+    fn(dir);
+  });
+}
+
+// Helper: make spawnMock return a `java -version` stderr line for the given major.
+function mockJavaVersion(major) {
+  spawnMock.mockImplementation((cmd) => {
+    if (cmd === 'java') {
+      return { status: 0, stdout: '', stderr: `openjdk version "${major}.0.1" 2024-01-16\n` };
+    }
+    return { status: 0 };
+  });
+}
+
+describe('getIgnoreJdkMismatch', () => {
+  it('returns false when flag absent', () => {
+    expect(getIgnoreJdkMismatch(['--project-root', '/x'])).toBe(false);
+  });
+  it('returns true when flag present', () => {
+    expect(getIgnoreJdkMismatch(['--ignore-jdk-mismatch', '--project-root', '/x'])).toBe(true);
+  });
+  it('returns true regardless of position', () => {
+    expect(getIgnoreJdkMismatch(['--project-root', '/x', '--ignore-jdk-mismatch'])).toBe(true);
+  });
+});
+
+describe('findJvmToolchainVersion', () => {
+  it('extracts N from jvmToolchain(N) in build.gradle.kts at the root', () => {
+    withFakeKmpProject(17, dir => {
+      expect(findJvmToolchainVersion(dir)).toBe(17);
+    });
+  });
+  it('returns null when no *.gradle.kts contains jvmToolchain', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
+      expect(findJvmToolchainVersion(dir)).toBeNull();
+    });
+  });
+  it('walks subdirectories to find a nested jvmToolchain', () => {
+    withFakeGradleProject(dir => {
+      const sub = path.join(dir, 'core', 'json');
+      mkdirSync(sub, { recursive: true });
+      writeFileSync(path.join(sub, 'build.gradle.kts'),
+        'kotlin { jvmToolchain(21) }\n');
+      expect(findJvmToolchainVersion(dir)).toBe(21);
+    });
+  });
+  it('skips build/, .gradle/, node_modules/ when walking', () => {
+    withFakeGradleProject(dir => {
+      const skipped = path.join(dir, 'build', 'extracted');
+      mkdirSync(skipped, { recursive: true });
+      writeFileSync(path.join(skipped, 'build.gradle.kts'),
+        'kotlin { jvmToolchain(99) }\n');
+      // No real jvmToolchain anywhere except inside build/ — must return null.
+      expect(findJvmToolchainVersion(dir)).toBeNull();
+    });
+  });
+});
+
+describe('jdkMismatchHint', () => {
+  it('darwin → /usr/libexec/java_home -v N', () => {
+    expect(jdkMismatchHint(17, 'parallel', 'darwin'))
+      .toBe('JAVA_HOME=$(/usr/libexec/java_home -v 17) kmp-test parallel');
+  });
+  it('linux → /usr/lib/jvm/java-N path', () => {
+    expect(jdkMismatchHint(17, 'changed', 'linux'))
+      .toBe('JAVA_HOME=/usr/lib/jvm/java-17 kmp-test changed');
+  });
+  it('win32 → $env:JAVA_HOME powershell syntax', () => {
+    expect(jdkMismatchHint(17, 'parallel', 'win32'))
+      .toBe('$env:JAVA_HOME = "C:\\Program Files\\...\\jdk-17"; kmp-test parallel');
+  });
+  it('uses the supplied subcommand in the hint', () => {
+    expect(jdkMismatchHint(21, 'benchmark', 'linux'))
+      .toContain('kmp-test benchmark');
+  });
+});
+
+describe('preflightJdkCheck', () => {
+  it('returns null when no jvmToolchain present in project (no detection possible)', () => {
+    withFakeGradleProject(dir => {
+      mockJavaVersion(23);
+      expect(preflightJdkCheck(dir)).toBeNull();
+    });
+  });
+
+  it('returns null when gradle.properties has org.gradle.java.home pointing to existing dir', () => {
+    withFakeKmpProject(17, dir => {
+      // Use the project dir itself as a stand-in for an existing JDK directory.
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        `org.gradle.java.home=${dir}\n`);
+      mockJavaVersion(23);
+      // Should bail at gradle.properties check before consulting java -version.
+      expect(preflightJdkCheck(dir)).toBeNull();
+    });
+  });
+
+  it('returns null when gradle.properties path does NOT exist (falls through to java check)', () => {
+    withFakeKmpProject(17, dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=/nonexistent/path/to/jdk\n');
+      mockJavaVersion(17); // matches required → null
+      expect(preflightJdkCheck(dir)).toBeNull();
+    });
+  });
+
+  it('returns mismatch info when jvmToolchain != current java major', () => {
+    withFakeKmpProject(17, dir => {
+      mockJavaVersion(23);
+      const result = preflightJdkCheck(dir);
+      expect(result).toEqual({ required: 17, current: 23 });
+    });
+  });
+
+  it('returns null when java -version major matches jvmToolchain', () => {
+    withFakeKmpProject(17, dir => {
+      mockJavaVersion(17);
+      expect(preflightJdkCheck(dir)).toBeNull();
+    });
+  });
+
+  it('returns null when java -version output is unparseable', () => {
+    withFakeKmpProject(17, dir => {
+      spawnMock.mockReturnValue({ status: 0, stderr: 'garbled noise\n', stdout: '' });
+      expect(preflightJdkCheck(dir)).toBeNull();
+    });
+  });
+
+  it('returns null when `java` is not on PATH (spawnSync errors)', () => {
+    withFakeKmpProject(17, dir => {
+      spawnMock.mockReturnValue({ status: null, error: { code: 'ENOENT' } });
+      expect(preflightJdkCheck(dir)).toBeNull();
+    });
+  });
+
+  it('handles legacy "1.8" version strings as major 8', () => {
+    withFakeKmpProject(8, dir => {
+      spawnMock.mockImplementation((cmd) => {
+        if (cmd === 'java') {
+          return { status: 0, stdout: '', stderr: 'java version "1.8.0_321"\n' };
+        }
+        return { status: 0 };
+      });
+      // 1.8 → major 8, equals required → null
+      expect(preflightJdkCheck(dir)).toBeNull();
+    });
+  });
+});
+
+describe('main() — JDK gate integration', () => {
+  it('mismatch with no opt-out → returns ENV_ERROR (3) and does NOT spawn the script', () => {
+    withFakeKmpProject(17, dir => {
+      mockJavaVersion(23);
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      expect(main()).toBe(EXIT.ENV_ERROR);
+      // No script spawn happened (only the java -version probe).
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeUndefined();
+    });
+  });
+
+  it('mismatch + --ignore-jdk-mismatch → proceeds to spawn (flag passes through to script)', () => {
+    withFakeKmpProject(17, dir => {
+      mockJavaVersion(23);
+      process.argv = ['node', 'kmp-test.js', 'parallel',
+        '--ignore-jdk-mismatch', '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();
+      const argList = scriptCall[1].map(String);
+      // Flag must reach the script (translated to PascalCase on win32, lowercase otherwise).
+      expect(argList.some(a => a === '--ignore-jdk-mismatch' || a === '-IgnoreJdkMismatch'))
+        .toBe(true);
+    });
+  });
+
+  it('no jvmToolchain in project → no gate, proceeds normally', () => {
+    withFakeGradleProject(dir => {
+      mockJavaVersion(23);
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();
+    });
+  });
+
+  it('--json mode emits jdk_mismatch code with versions in errors[0]', () => {
+    withFakeKmpProject(17, dir => {
+      mockJavaVersion(23);
+      const writes = [];
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (chunk) => { writes.push(String(chunk)); return true; };
+      try {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+        expect(main()).toBe(EXIT.ENV_ERROR);
+      } finally {
+        process.stdout.write = origWrite;
+      }
+      const jsonLine = writes.find(w => w.trim().startsWith('{'));
+      expect(jsonLine).toBeTruthy();
+      const obj = JSON.parse(jsonLine);
+      expect(obj.exit_code).toBe(EXIT.ENV_ERROR);
+      expect(obj.errors[0].code).toBe('jdk_mismatch');
+      expect(obj.errors[0].required_jdk).toBe(17);
+      expect(obj.errors[0].current_jdk).toBe(23);
+    });
+  });
+
+  it('gates --dry-run too (so users see the mismatch before expecting success)', () => {
+    withFakeKmpProject(17, dir => {
+      mockJavaVersion(23);
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--project-root', dir];
+      expect(main()).toBe(EXIT.ENV_ERROR);
     });
   });
 });

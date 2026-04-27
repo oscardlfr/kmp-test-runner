@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-04-27
+
+> **"Real-world Mac validation hardening"** — bundles 4 production bugs surfaced when a user ran `kmp-test v0.4.1` on a corporate Mac against a 20-module OpenNative project. Bug A (#43): JDK toolchain mismatch becomes blocking by default. Bug B (#44): auto-skip modules without test source sets + `--exclude-modules` flag for heterogeneous projects. Bug C (#46): Gradle 9 deprecation noise routed to `warnings[]` not `errors[]`. Bug D (#47): per-shell installer PATH detection (zsh / bash / fish / sh) + accurate post-install hint. Plus README docs (#45) for the new flags + JSON schema. Total: 50+ new tests across vitest, bats, Pester.
+
+### Added
+- **`warnings[]` array in the `--json` envelope** for non-fatal signals that agents should branch on differently than `errors[]`. First entry: `gradle_deprecation` — emitted when gradle exits non-zero solely because of Gradle 9+ deprecation warnings while every individual task still passed. Includes `gradle_exit_code` and `tasks_passed` integer fields so callers can sanity-check.
+  - Old behavior: gradle's exit code 1 in this scenario ended up in `errors[]` alongside real test failures, forcing agents to do error-message regex to disambiguate.
+  - New behavior: parser detects the `[NOTICE] Gradle exited with code N but all M tasks passed individually` line and routes it to `warnings[]` with `code: "gradle_deprecation"`. The corresponding `BUILD FAILED` line is suppressed in `errors[]` when paired with the deprecation notice (it's the same signal).
+  - The legacy `[!]` prefix variant is still recognized by the parser for backward compatibility with older direct-script invocations.
+  - `warnings: []` is now part of the canonical envelope shape — emitted by `buildJsonReport`, `envErrorJson`, and `buildDryRunReport` (always-present, defaults to empty).
+
+- **`--exclude-modules <list>` and `--include-untested` flags** for `parallel` + `changed` (translated to `-ExcludeModules` / `-IncludeUntested` on PowerShell). Solves the "not all modules have tests" case in heterogeneous projects (e.g. corporate KMP setups where `:api`, `:build-logic`, and aggregator modules by convention have no test source set).
+  - **Auto-skip by default**: modules whose filesystem path contains no `src/test`, `src/commonTest`, `src/jvmTest`, `src/desktopTest`, `src/androidUnitTest`, `src/androidInstrumentedTest`, `src/androidTest`, `src/iosTest`, or `src/nativeTest` directory are silently filtered out before gradle is invoked. Each skip prints `[SKIP] <module> (no test source set — pass --include-untested to override)` to stderr so the tally stays honest.
+  - **Explicit exclusion**: `--exclude-modules "*:api,build-logic"` accepts comma-separated globs (matches `--module-filter` syntax). Excluded modules print `[SKIP] <module> (excluded by --exclude-modules)`.
+  - **Opt-out**: `--include-untested` re-includes modules with no test source set (for projects under early development where modules exist but tests don't yet).
+  - Real-world bug context: previously, an :api module with no test source set caused `BUILD FAILED in 791ms` ("Task 'jacocoTestReport' not found in project ':api'") followed by the misleading `[OK] Full coverage report generated!` with 0% coverage. The auto-skip catches this before gradle is invoked.
+  - Added shared helper `module_has_test_sources` in `scripts/sh/lib/script-utils.sh` and `Test-ModuleHasTestSources` inline in `scripts/ps1/run-parallel-coverage-suite.ps1`. Both `find_modules` (sh) and `Find-Modules` (ps1) honor the new flags. `changed.sh` / `changed.ps1` pass them through to the suite.
+
+### Changed
+- **Installer per-shell PATH UX (`scripts/install.sh` + `install.ps1`)**. Previously `curl ... | bash` printed `kmp-test-runner v0.4.1 installed successfully` and added the `export PATH` line to `~/.zshrc`, but `kmp-test --version` immediately after returned `command not found` — users had to manually re-`export PATH` or restart the shell.
+  - sh installer: detects `$SHELL` and now writes the rc file with the right syntax for fish (`set -gx PATH …` to `~/.config/fish/config.fish`), zsh (`~/.zshrc`), bash (`~/.bashrc`), or `~/.profile` for unknown shells. Final hint personalizes per shell: shows both the literal `export`/`set` line for the current session AND the `source <rc-file>` shortcut.
+  - ps1 installer: clarified the final message — `$env:PATH` is already updated for the current PowerShell session (so `kmp-test --version` works immediately), and new sessions pick up the user PATH automatically. Only cmd.exe needs a restart.
+  - Tests: 6 new bats E2E in `tests/installer/install.bats` covering zsh / bash / fish / unknown-shell detection + idempotent re-runs.
+
+- **`[NOTICE]` prefix replaces `[!]` for the Gradle 9 deprecation handler line in markdown mode** (sh + ps1 parallel scripts). Distinct prefix lets humans tell benign deprecation noise from real `[!]` warnings at a glance, and lets the JSON parser route it correctly.
+- **PowerShell parallel script gains the missing JVM-error / deprecation 3-branch logic** that the bash sibling has had since the original v0.3.x. Previously the ps1 had a single coarse `if (testExitCode -ne 0 -and failureCount -eq 0)` that printed `[!]` for all non-zero exits, masking the JVM-level vs deprecation distinction on Windows.
+
+- **JDK toolchain mismatch is now BLOCKING by default** (was: warning that printed and continued). When `jvmToolchain(N)` in any `*.gradle.kts` differs from the major version reported by `java -version`, kmp-test exits 3 (`EXIT.ENV_ERROR`) before spawning gradle, with an actionable per-OS hint for setting `JAVA_HOME`. Previously the script warned and proceeded, which caused tests to fail downstream with `UnsupportedClassVersionError` (real-world bug surfaced on a corporate Mac running v0.4.1 against a 20-module OpenNative project).
+  - Bypass with `--ignore-jdk-mismatch` (sh/cli) or `-IgnoreJdkMismatch` (ps1) — downgrades the block to a `WARN` line.
+  - The check is skipped when `gradle.properties` declares `org.gradle.java.home` pointing to an existing directory (gradle's explicit JDK override wins).
+  - JSON envelope: `errors[0]` carries `code: "jdk_mismatch"` plus `required_jdk` / `current_jdk` integer fields.
+  - Gates real runs **and** `--dry-run` so users see the mismatch before expecting a successful run.
+  - Added in `lib/cli.js` (covers all gradle-spawning subcommands), `scripts/sh/lib/jdk-check.sh`, and `scripts/ps1/lib/Jdk-Check.ps1`. Wired into `parallel` + `changed` scripts in both shells.
+
 ## [0.4.1] — 2026-04-27
 
 ### Added
