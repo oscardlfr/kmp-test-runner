@@ -908,6 +908,79 @@ describe('main() — --test-filter passthrough', () => {
 });
 
 // ============================================================================
+// --exclude-modules / --include-untested passthrough (v0.5.0 — Bug B fix)
+// ============================================================================
+
+describe('main() — --exclude-modules / --include-untested passthrough', () => {
+  it('parallel + --exclude-modules passes the value through to the script', () => {
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel',
+        '--exclude-modules', '*:api,build-logic', '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();
+      const argList = scriptCall[1].map(String);
+      const i = argList.findIndex(a => a === '--exclude-modules' || a === '-ExcludeModules');
+      expect(i).toBeGreaterThan(-1);
+      expect(argList[i + 1]).toBe('*:api,build-logic');
+    });
+  });
+
+  it('parallel + --include-untested reaches the script as a switch', () => {
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel',
+        '--include-untested', '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();
+      const argList = scriptCall[1].map(String);
+      expect(argList.some(a => a === '--include-untested' || a === '-IncludeUntested'))
+        .toBe(true);
+    });
+  });
+
+  it('changed + --exclude-modules + --include-untested both pass through', () => {
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'changed',
+        '--exclude-modules', 'api', '--include-untested',
+        '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      const argList = scriptCall[1].map(String);
+      const ei = argList.findIndex(a => a === '--exclude-modules' || a === '-ExcludeModules');
+      expect(ei).toBeGreaterThan(-1);
+      expect(argList[ei + 1]).toBe('api');
+      expect(argList.some(a => a === '--include-untested' || a === '-IncludeUntested'))
+        .toBe(true);
+    });
+  });
+
+  it('subcommand --help advertises both flags for parallel and changed', () => {
+    const writes = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { writes.push(String(chunk)); return true; };
+    try {
+      for (const sub of ['parallel', 'changed']) {
+        writes.length = 0;
+        process.argv = ['node', 'kmp-test.js', sub, '--help'];
+        main();
+        const out = writes.join('');
+        expect(out).toMatch(/--exclude-modules/);
+        expect(out).toMatch(/--include-untested/);
+      }
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+});
+
+// ============================================================================
 // JDK toolchain pre-flight gate (v0.5.0 — Bug A fix)
 // ============================================================================
 

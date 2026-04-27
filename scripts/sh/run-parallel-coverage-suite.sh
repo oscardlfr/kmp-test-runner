@@ -60,6 +60,8 @@ EXCLUDE_COVERAGE=""
 TIMEOUT=600
 TEST_FILTER=""
 IGNORE_JDK_MISMATCH=false
+EXCLUDE_MODULES=""
+INCLUDE_UNTESTED=false
 
 # ---------------------------------------------------------------------------
 # USAGE
@@ -90,6 +92,9 @@ Options:
   --benchmark                 Run benchmarks after tests/coverage (default: off).
   --benchmark-config <name>   Benchmark config: smoke (default) | main | stress
   --ignore-jdk-mismatch       Bypass JDK toolchain mismatch check (default: BLOCK with exit 3).
+  --exclude-modules <list>    Comma-separated module globs to skip entirely (no test, no coverage).
+                              E.g. --exclude-modules "*:api,*-api,build-logic" for api/aggregator modules.
+  --include-untested          Include modules with no test source set (default: auto-skip them).
   -h | --help                 Show this help.
 USAGE
     exit "${1:-0}"
@@ -119,6 +124,8 @@ while [[ $# -gt 0 ]]; do
         --benchmark)          BENCHMARK=true; shift ;;
         --benchmark-config)   BENCHMARK_CONFIG="$2"; shift 2 ;;
         --ignore-jdk-mismatch) IGNORE_JDK_MISMATCH=true; shift ;;
+        --exclude-modules)    EXCLUDE_MODULES="$2"; shift 2 ;;
+        --include-untested)   INCLUDE_UNTESTED=true; shift ;;
         -h|--help)            usage ;;
         *) err "[ERROR] Unknown option: $1"; exit 1 ;;
     esac
@@ -171,10 +178,14 @@ EXCLUSION_PATTERNS=(
 # ---------------------------------------------------------------------------
 
 # Discover modules from settings.gradle.kts and build.gradle.kts.
-# Outputs one module per line.
+# Outputs one module per line on stdout. Skipped modules (excluded or untested)
+# go to stderr as `[SKIP] <module> (<reason>)` lines so the caller's tally
+# stays accurate.
 find_modules() {
     local project_path="$1"
     local filter="$2"
+    local exclude_filter="${3:-}"
+    local include_untested="${4:-false}"
 
     # Build set of modules from settings.gradle.kts (Bash 3.2 compatible — no declare -A)
     local settings_file="$project_path/settings.gradle.kts"
@@ -237,19 +248,63 @@ find_modules() {
     done
 
     # Remove parent-only modules
-    local final_modules=()
+    local after_parent=()
     for mod in "${matched_modules[@]}"; do
         local is_parent=false
         for pmod in $PARENT_ONLY_MODULES; do
             if [[ "$mod" == "$pmod" ]]; then is_parent=true; break; fi
         done
         if ! $is_parent; then
-            final_modules+=("$mod")
+            after_parent+=("$mod")
         fi
     done
 
+    # Apply --exclude-modules (comma-separated globs)
+    local after_exclude=()
+    local exclude_list=()
+    if [[ -n "$exclude_filter" ]]; then
+        IFS=',' read -ra exclude_list <<< "$exclude_filter"
+        # Trim whitespace
+        for i in "${!exclude_list[@]}"; do
+            local v="${exclude_list[$i]}"
+            v="${v#"${v%%[![:space:]]*}"}"
+            v="${v%"${v##*[![:space:]]}"}"
+            exclude_list[i]="$v"
+        done
+    fi
+    for mod in "${after_parent[@]}"; do
+        local excluded=false
+        for pat in "${exclude_list[@]+"${exclude_list[@]}"}"; do
+            [[ -z "$pat" ]] && continue
+            if glob_match "$pat" "$mod"; then
+                echo "[SKIP] $mod (excluded by --exclude-modules)" >&2
+                excluded=true
+                break
+            fi
+        done
+        $excluded || after_exclude+=("$mod")
+    done
+
+    # Auto-skip modules without any test source set (unless --include-untested).
+    # This catches the common "module by convention has no tests" case (e.g.
+    # :api, :model, build-logic) and avoids a downstream "Task 'test' not
+    # found in project ':X'" gradle error. Opt-out: --include-untested.
+    local final_modules=()
+    if [[ "$include_untested" == "true" ]]; then
+        final_modules=("${after_exclude[@]+"${after_exclude[@]}"}")
+    else
+        for mod in "${after_exclude[@]+"${after_exclude[@]}"}"; do
+            local fs_path="$project_path/${mod//:/\/}"
+            if module_has_test_sources "$fs_path"; then
+                final_modules+=("$mod")
+            else
+                echo "[SKIP] $mod (no test source set — pass --include-untested to override)" >&2
+            fi
+        done
+    fi
+
     # Output unique sorted
-    printf '%s\n' "${final_modules[@]}" | sort -u
+    printf '%s\n' "${final_modules[@]+"${final_modules[@]}"}" | sort -u
 }
 
 # Parse coverage XML report (Kover or JaCoCo) using shared Python parser.
@@ -423,7 +478,7 @@ for pi in "${!PROJ_NAMES[@]}"; do
         MOD_PROJ+=("$ppath")
         MOD_SHORT+=("$local_short")
         MOD_GRADLE+=("$mod")
-    done < <(find_modules "$ppath" "$MODULE_FILTER")
+    done < <(find_modules "$ppath" "$MODULE_FILTER" "$EXCLUDE_MODULES" "$INCLUDE_UNTESTED")
 done
 
 # Apply CoverageOnly filter

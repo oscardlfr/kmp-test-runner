@@ -10,12 +10,12 @@
 
 4 production bugs surfaced when a user ran `kmp-test v0.4.1` on a corporate Mac against a 20-module OpenNative project. Bundled into milestone v0.5.0.
 
-- **Bug A — JDK toolchain mismatch is non-blocking, tests fail with `UnsupportedClassVersionError`** _(in this PR)_
-  - Was: warning printed and script continued.
-  - Now: BLOCKS by default with exit 3 and a per-OS hint for setting `JAVA_HOME`. `--ignore-jdk-mismatch` (sh/cli) / `-IgnoreJdkMismatch` (ps1) downgrades to a warning. `gradle.properties` `org.gradle.java.home` still bypasses the check (gradle's explicit override wins). Wired into cli.js (covers all gradle subcommands), `scripts/sh/lib/jdk-check.sh`, `scripts/ps1/lib/Jdk-Check.ps1`. Tests: 12 vitest + 9 bats + 6 Pester.
+- **Bug A — JDK toolchain mismatch is non-blocking, tests fail with `UnsupportedClassVersionError`** _(DONE — PR #43 merged d48c6e5)_
+  - BLOCKS by default with exit 3 and a per-OS hint for setting `JAVA_HOME`. `--ignore-jdk-mismatch` / `-IgnoreJdkMismatch` downgrades to a warning. `gradle.properties` `org.gradle.java.home` still bypasses the check.
 
-- **Bug B — JaCoCo task auto-detection silently broken** _(queued)_
-  - Script invoked `:module:jacocoTestReport` even when modules don't define the task. All 20 modules failed with "task not found" but final output said `[OK] Full coverage report generated!` with 0% coverage. Fix: probe `gradlew :<module>:tasks --group=verification` before invoking; skip modules without coverage tasks; surface a prominent warning when 0 modules contributed.
+- **Bug B — Modules without tests/coverage cause silent failures and misleading reports** _(in this PR)_
+  - Was: script invoked `:module:jacocoTestReport` even when modules don't define the task; api/aggregator modules failed with "task not found" but final output said `[OK] Full coverage report generated!` with 0% coverage.
+  - Now: **auto-skip modules with no `src/*Test*` directory** by default. Plus new `--exclude-modules <pattern>` for explicit exclusion (self-documenting). Opt-out via `--include-untested` for projects in early development. Tests: 4 vitest + 10 bats + 9 Pester.
 
 - **Bug C — Gradle 9 deprecation exit-code-1 noise mixed with stderr** _(queued)_
   - Script already handles the case but `--json` mode lumps deprecation warnings into `errors[]`. Fix: split into `warnings: ["gradle_deprecation"]` so agents can branch on real failures vs noise. Use `[NOTICE]` prefix in markdown mode (distinct from `[!]`).

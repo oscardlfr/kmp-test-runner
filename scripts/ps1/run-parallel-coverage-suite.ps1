@@ -88,7 +88,9 @@ param(
     [ValidateSet("smoke", "main", "stress")]
     [string]$BenchmarkConfig = "smoke",
     [string]$TestFilter = "",
-    [switch]$IgnoreJdkMismatch
+    [switch]$IgnoreJdkMismatch,
+    [string]$ExcludeModules = "",
+    [switch]$IncludeUntested
 )
 
 $ErrorActionPreference = "Continue"
@@ -173,8 +175,34 @@ function Format-LineRanges {
     return $ranges -join ", "
 }
 
+function Test-ModuleHasTestSources {
+    <#
+    .SYNOPSIS
+        Returns $true if the module directory contains any standard Kotlin/JVM/Android
+        test source set: src/test, src/commonTest, src/jvmTest, src/desktopTest,
+        src/androidUnitTest, src/androidInstrumentedTest, src/androidTest,
+        src/iosTest, src/nativeTest. Used to skip api/aggregator modules that
+        by convention have no tests, before invoking gradle.
+    #>
+    param([string]$ModulePath)
+    $candidates = @(
+        'src\test', 'src\commonTest', 'src\jvmTest', 'src\desktopTest',
+        'src\androidUnitTest', 'src\androidInstrumentedTest', 'src\androidTest',
+        'src\iosTest', 'src\nativeTest'
+    )
+    foreach ($d in $candidates) {
+        if (Test-Path (Join-Path $ModulePath $d)) { return $true }
+    }
+    return $false
+}
+
 function Find-Modules {
-    param([string]$ProjectRoot, [string]$Filter)
+    param(
+        [string]$ProjectRoot,
+        [string]$Filter,
+        [string]$ExcludeFilter = "",
+        [bool]$IncludeUntested = $false
+    )
 
     # Build set of modules actually included in settings.gradle.kts
     $settingsFile = Join-Path $ProjectRoot "settings.gradle.kts"
@@ -213,7 +241,41 @@ function Find-Modules {
         $isMatched
     }
     $modules = $modules | Where-Object { $_ -notin $ParentOnlyModules }
-    return $modules
+
+    # Apply -ExcludeModules (comma-separated globs). Skipped → stderr.
+    $excludeList = @()
+    if ($ExcludeFilter) {
+        $excludeList = $ExcludeFilter.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    }
+    $afterExclude = @()
+    foreach ($mod in $modules) {
+        $excluded = $false
+        foreach ($pat in $excludeList) {
+            if ($mod -like $pat) {
+                [Console]::Error.WriteLine("[SKIP] $mod (excluded by -ExcludeModules)")
+                $excluded = $true
+                break
+            }
+        }
+        if (-not $excluded) { $afterExclude += $mod }
+    }
+
+    # Auto-skip modules without any test source set (unless -IncludeUntested).
+    # Catches the common "api / aggregator module by convention has no tests"
+    # case before gradle's "Task 'test' not found in project ':X'" error.
+    if ($IncludeUntested) {
+        return $afterExclude
+    }
+    $final = @()
+    foreach ($mod in $afterExclude) {
+        $modulePath = Join-Path $ProjectRoot ($mod -replace ':', [IO.Path]::DirectorySeparatorChar)
+        if (Test-ModuleHasTestSources -ModulePath $modulePath) {
+            $final += $mod
+        } else {
+            [Console]::Error.WriteLine("[SKIP] $mod (no test source set - pass -IncludeUntested to override)")
+        }
+    }
+    return $final
 }
 
 function Parse-CoverageReport {
@@ -384,7 +446,8 @@ $allModules = [System.Collections.Generic.List[object]]::new()
 foreach ($project in $projectsToProcess) {
     Write-Host "[>] Discovering modules in $($project.Name)..." -ForegroundColor Cyan
 
-    $modules = Find-Modules -ProjectRoot $project.Path -Filter $ModuleFilter
+    $modules = Find-Modules -ProjectRoot $project.Path -Filter $ModuleFilter `
+        -ExcludeFilter $ExcludeModules -IncludeUntested:$IncludeUntested
 
     foreach ($mod in $modules) {
         $moduleName = if ($project.Prefix) { "$($project.Prefix)$mod" } else { $mod }
