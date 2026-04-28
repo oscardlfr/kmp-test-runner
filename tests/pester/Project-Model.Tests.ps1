@@ -259,3 +259,35 @@ Describe 'Test-ModuleHasTestSources (Phase 4 step 4 — model fast-path)' {
         } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
     }
 }
+
+# Phase 4 step 5 — run-android-tests.ps1 wires the ProjectModel fast-path
+# BEFORE the existing gradle-tasks probe, with the -DeviceTask override still
+# pre-empting both. Source-grep regression so accidental refactors don't
+# silently revert the tier ordering.
+Describe 'run-android-tests.ps1 — Phase 4 ProjectModel fast-path wiring' {
+
+    BeforeAll {
+        $script:RunAndroid = Join-Path $script:RepoRoot 'scripts\ps1\run-android-tests.ps1'
+        $script:RunAndroidText = Get-Content $script:RunAndroid -Raw
+    }
+
+    It 'dot-sources the ProjectModel.ps1 lib at startup' {
+        $script:RunAndroidText | Should -Match "ProjectModel\.ps1"
+    }
+
+    It 'consults Get-PmDeviceTestTask before Get-ModuleFirstExistingTask' {
+        $script:RunAndroidText | Should -Match 'Get-PmDeviceTestTask'
+        $script:RunAndroidText | Should -Match 'Get-ModuleFirstExistingTask'
+        $pmIndex    = $script:RunAndroidText.IndexOf('Get-PmDeviceTestTask')
+        $probeIndex = $script:RunAndroidText.IndexOf('Get-ModuleFirstExistingTask')
+        $pmIndex | Should -BeLessThan $probeIndex
+    }
+
+    It '-DeviceTask override still pre-empts both fast-path and probe' {
+        # The DeviceTask branch must occur strictly before the model check.
+        $deviceTaskIdx = $script:RunAndroidText.IndexOf('if ($DeviceTask) {')
+        $pmIndex       = $script:RunAndroidText.IndexOf('Get-PmDeviceTestTask')
+        $deviceTaskIdx | Should -BeGreaterOrEqual 0
+        $deviceTaskIdx | Should -BeLessThan $pmIndex
+    }
+}
