@@ -1559,6 +1559,28 @@ describe('findRequiredJdkVersion', () => {
       expect(findRequiredJdkVersion(dir)).toBe(21);
     });
   });
+
+  it('Phase 4 step 3: delegates to aggregateJdkSignals (returns min)', async () => {
+    // The function is now a thin wrapper around lib/project-model.js#aggregateJdkSignals.
+    // Verify both produce the same result for a non-trivial fixture so any
+    // regression that reinstates the inline walker is caught immediately.
+    const { aggregateJdkSignals } = await import('../../lib/project-model.js');
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-jdk-deleg-'));
+    try {
+      writeFileSync(path.join(dir, 'gradlew'), '#!/usr/bin/env bash\n');
+      writeFileSync(path.join(dir, 'gradlew.bat'), '@echo off\r\n');
+      mkdirSync(path.join(dir, 'build-logic'), { recursive: true });
+      writeFileSync(path.join(dir, 'build.gradle.kts'), 'kotlin { jvmToolchain(11) }');
+      writeFileSync(path.join(dir, 'build-logic', 'KmpConv.kt'),
+        'compilerOptions { jvmTarget.set(JvmTarget.JVM_21) }');
+      const wrapperResult = findRequiredJdkVersion(dir);
+      const directResult  = aggregateJdkSignals(dir).min;
+      expect(wrapperResult).toBe(directResult);
+      expect(wrapperResult).toBe(21);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('jdkMismatchHint', () => {
