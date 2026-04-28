@@ -1,5 +1,5 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, readFileSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -1003,6 +1003,39 @@ describe('main() — Bug Z (Windows pipe-inheritance deadlock with --json)', () 
     const opts = scriptCall[2];
     expect(opts.encoding).toBe('utf8');
     expect(opts.maxBuffer).toBe(64 * 1024 * 1024);
+  });
+});
+
+describe('main() — Phase 4 step 7 (eager ProjectModel build before spawn)', () => {
+  it('writes model-<sha>.json into the project cache before invoking the script', () => {
+    spawnMock.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    withFakeGradleProject(dir => {
+      // Add a settings.gradle.kts so parseSettingsIncludes has something to do.
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+      mkdirSync(path.join(dir, 'm'), { recursive: true });
+      writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), 'plugins { kotlin("jvm") }');
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      main();
+      const cacheDir = path.join(dir, '.kmp-test-runner-cache');
+      const modelFiles = readdirSync(cacheDir).filter(f => f.startsWith('model-') && f.endsWith('.json'));
+      expect(modelFiles.length).toBeGreaterThan(0);
+      const model = JSON.parse(readFileSync(path.join(cacheDir, modelFiles[0]), 'utf8'));
+      expect(model.schemaVersion).toBe(1);
+      expect(model.settingsIncludes).toEqual([':m']);
+      expect(model.modules[':m'].type).toBe('jvm');
+    });
+  });
+
+  it('eager build is best-effort: does not throw on a malformed settings.gradle.kts', () => {
+    spawnMock.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    withFakeGradleProject(dir => {
+      // Garbage settings file; aggregateJdkSignals + parseSettingsIncludes
+      // must swallow internal errors without aborting the run.
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), '\x00\x01\x02 invalid bytes');
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      const code = main();
+      expect(code).toBe(EXIT.SUCCESS);  // run still completed
+    });
   });
 });
 
