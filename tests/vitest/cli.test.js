@@ -1987,20 +1987,14 @@ describe('parseScriptOutput — v0.5.1 coverage layer (Bugs E + C\')', () => {
 });
 
 describe('android subcommand — v0.5.1 Bug B\' (--device-task flag)', () => {
-  it('--device-task <name> appears in `kmp-test android --help`', () => {
-    // Smoke check via help text constant (no spawn). `helpText.android` is
-    // the source of truth for documented flags.
-    const helpAndroid = require('../../lib/cli.js').helpText?.android;
-    if (helpAndroid) {
-      expect(helpAndroid).toMatch(/--device-task\s+<name>/);
-      expect(helpAndroid).toMatch(/androidConnectedCheck/);
-    } else {
-      // Help text is module-scoped; fall back to grepping the file.
-      const fs = require('fs');
-      const cliJs = fs.readFileSync(require.resolve('../../lib/cli.js'), 'utf8');
-      expect(cliJs).toMatch(/--device-task\s+<name>/);
-      expect(cliJs).toMatch(/androidConnectedCheck/);
-    }
+  it('--device-task <name> appears in `kmp-test android --help` source', () => {
+    // Source-grep via the already-imported `readFileSync` (top of file). Avoids
+    // `require()` on this ESM module, which double-loads cli.js and tanks v8
+    // coverage for every test in the same file.
+    const cliJsPath = path.join(__dirname, '..', '..', 'lib', 'cli.js');
+    const cliJs = readFileSync(cliJsPath, 'utf8');
+    expect(cliJs).toMatch(/--device-task\s+<name>/);
+    expect(cliJs).toMatch(/androidConnectedCheck/);
   });
 
   it('translateFlagForPowerShell: --device-task -> -DeviceTask', () => {
