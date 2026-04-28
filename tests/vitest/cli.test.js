@@ -1918,3 +1918,87 @@ describe('main() — lockfile integration', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// v0.5.1 Phase 2+3 — coverage layer (Bugs B''/E/C') + android task probe (B')
+// ---------------------------------------------------------------------------
+describe('parseScriptOutput — v0.5.1 coverage layer (Bugs E + C\')', () => {
+  it('Bug E: emits warnings[].code = "no_coverage_data" when banner present', () => {
+    const out = [
+      'Tests: 5 total | 5 passed | 0 failed | 0 skipped',
+      '[!] No coverage data collected from any module — verify your project has kover/jacoco configured (see https://github.com/oscardlfr/kmp-test-runner#coverage-setup)',
+      'COVERAGE_MODULES_CONTRIBUTING: 0',
+      'BUILD SUCCESSFUL',
+    ].join('\n');
+    const r = parseScriptOutput(out, '', []);
+    const noData = r.warnings.find(w => w.code === 'no_coverage_data');
+    expect(noData).toBeDefined();
+    expect(noData.message).toMatch(/No coverage data collected/);
+  });
+
+  it('Bug E: populates coverage.modules_contributing from machine marker', () => {
+    const out = 'Tests: 1 total | 1 passed | 0 failed | 0 skipped\nCOVERAGE_MODULES_CONTRIBUTING: 7\nBUILD SUCCESSFUL';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.coverage.modules_contributing).toBe(7);
+  });
+
+  it('Bug E: no_coverage_data warning absent when contributing > 0', () => {
+    const out = 'Tests: 1 total | 1 passed | 0 failed | 0 skipped\nCOVERAGE_MODULES_CONTRIBUTING: 3\n[OK] Full coverage report generated!\nBUILD SUCCESSFUL';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.warnings.find(w => w.code === 'no_coverage_data')).toBeUndefined();
+    expect(r.coverage.modules_contributing).toBe(3);
+  });
+
+  it('Bug C\': captures TWO deprecation warnings (one per pass) when both contexts emit', () => {
+    const out = [
+      'Tests: 5 total | 5 passed | 0 failed | 0 skipped',
+      '[NOTICE] Gradle (tests) exited with code 1 but all 5 tasks passed individually.',
+      '         This is likely deprecation warnings (Gradle 9+), not real failures.',
+      '[NOTICE] Gradle (coverage) exited with code 1 but all 4 tasks passed individually.',
+      '         This is likely deprecation warnings (Gradle 9+), not real failures.',
+      'COVERAGE_MODULES_CONTRIBUTING: 4',
+      'BUILD SUCCESSFUL',
+    ].join('\n');
+    const r = parseScriptOutput(out, '', []);
+    const deps = r.warnings.filter(w => w.code === 'gradle_deprecation');
+    expect(deps).toHaveLength(2);
+    expect(deps[0].context).toBe('tests');
+    expect(deps[0].tasks_passed).toBe(5);
+    expect(deps[1].context).toBe('coverage');
+    expect(deps[1].tasks_passed).toBe(4);
+  });
+
+  it('Bug C\': captures the optional context tag in the deprecation warning', () => {
+    const out = '[NOTICE] Gradle (shared coverage) exited with code 1 but all 3 tasks passed individually.';
+    const r = parseScriptOutput(out, '', []);
+    const dep = r.warnings.find(w => w.code === 'gradle_deprecation');
+    expect(dep).toBeDefined();
+    expect(dep.context).toBe('shared coverage');
+  });
+
+  it('regression: legacy NOTICE format (no context tag) still parses, no context field set', () => {
+    const out = '[NOTICE] Gradle exited with code 1 but all 5 tasks passed individually.';
+    const r = parseScriptOutput(out, '', []);
+    const dep = r.warnings.find(w => w.code === 'gradle_deprecation');
+    expect(dep).toBeDefined();
+    expect(dep.tasks_passed).toBe(5);
+    expect(dep.context).toBeUndefined();
+  });
+});
+
+describe('android subcommand — v0.5.1 Bug B\' (--device-task flag)', () => {
+  it('--device-task <name> appears in `kmp-test android --help` source', () => {
+    // Source-grep via the already-imported `readFileSync` (top of file). Avoids
+    // `require()` on this ESM module, which double-loads cli.js and tanks v8
+    // coverage for every test in the same file.
+    const cliJsPath = path.join(__dirname, '..', '..', 'lib', 'cli.js');
+    const cliJs = readFileSync(cliJsPath, 'utf8');
+    expect(cliJs).toMatch(/--device-task\s+<name>/);
+    expect(cliJs).toMatch(/androidConnectedCheck/);
+  });
+
+  it('translateFlagForPowerShell: --device-task -> -DeviceTask', () => {
+    expect(translateFlagForPowerShell('--device-task')).toBe('-DeviceTask');
+  });
+});
+

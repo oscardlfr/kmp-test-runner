@@ -22,10 +22,15 @@ param(
     [switch]$AutoRetry = $false,
     [switch]$ClearData = $false,
     [Alias("List")][switch]$ListOnly = $false,
-    [string]$TestFilter = ""
+    [string]$TestFilter = "",
+    [string]$DeviceTask = ""
 )
 
 $ErrorActionPreference = "Continue"
+
+# Source the shared gradle-tasks-probe library (Bug B' / Bug B'' / v0.5.1).
+$psScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $psScriptDir 'lib\Gradle-Tasks-Probe.ps1')
 
 # Color scheme
 $Colors = @{
@@ -226,30 +231,56 @@ foreach ($module in $modules) {
 
     # Construct Gradle task
     $formattedModule = ":$($moduleName.Replace(':', ':'))"
-
-    # For KMP modules, try androidConnectedCheck first (KMP uses different task names)
     $isKmpModule = $module.IsKmp
-    if ($isKmpModule) {
-        # KMP modules use androidConnectedCheck or connected*DebugAndroidTest
-        if ($hasFlavor -and $Flavor) {
-            $flavorCapitalized = $Flavor.Substring(0,1).ToUpper() + $Flavor.Substring(1)
-            $task = "$formattedModule`:connected${flavorCapitalized}DebugAndroidTest"
-        }
-        else {
-            # Try androidConnectedCheck for KMP modules
-            $task = "$formattedModule`:connectedDebugAndroidTest"
-        }
-    }
-    elseif ($hasFlavor -and $Flavor) {
-        $flavorCapitalized = $Flavor.Substring(0,1).ToUpper() + $Flavor.Substring(1)
-        $task = "$formattedModule`:connected${flavorCapitalized}DebugAndroidTest"
-    }
-    elseif ($hasFlavor) {
-        # Default to first flavor or debugAndroidTest
-        $task = "$formattedModule`:connectedDebugAndroidTest"
+
+    # Bug B' (v0.5.1): probe gradle for the actual task set instead of
+    # hardcoding by IsKmp/HasFlavor. The new KMP `androidLibrary { }` DSL
+    # exposes `androidConnectedCheck` rather than `connectedDebugAndroidTest`
+    # — old detection blew up with `Cannot locate tasks that match`.
+    if ($DeviceTask) {
+        $task = "$formattedModule`:$DeviceTask"
     }
     else {
-        $task = "$formattedModule`:connectedAndroidTest"
+        $candidates = @()
+        if ($hasFlavor -and $Flavor) {
+            $flavorCapitalized = $Flavor.Substring(0,1).ToUpper() + $Flavor.Substring(1)
+            $candidates += "connected${flavorCapitalized}DebugAndroidTest"
+        }
+        $candidates += @('connectedDebugAndroidTest', 'connectedAndroidTest', 'androidConnectedCheck')
+
+        $probeResult = Get-ModuleFirstExistingTask -ProjectRoot $ProjectRoot `
+            -Module $moduleName -Candidates $candidates
+
+        switch ($probeResult.Status) {
+            'found' {
+                $task = "$formattedModule`:$($probeResult.Task)"
+            }
+            'no_match' {
+                # Probe healthy but module has none of the candidate tasks.
+                # Best-effort: try the umbrella task — gradle will surface a
+                # task_not_found error captured by the JSON envelope (Phase 1).
+                $task = "$formattedModule`:androidConnectedCheck"
+                Write-Host "[!] No standard android task found for $moduleName - trying $task (override with -DeviceTask)" -ForegroundColor $Colors.Warning
+            }
+            default {
+                # Probe unavailable - fall back to legacy hardcoded matrix.
+                if ($isKmpModule) {
+                    if ($hasFlavor -and $Flavor) {
+                        $flavorCapitalized = $Flavor.Substring(0,1).ToUpper() + $Flavor.Substring(1)
+                        $task = "$formattedModule`:connected${flavorCapitalized}DebugAndroidTest"
+                    } else {
+                        $task = "$formattedModule`:connectedDebugAndroidTest"
+                    }
+                } elseif ($hasFlavor -and $Flavor) {
+                    $flavorCapitalized = $Flavor.Substring(0,1).ToUpper() + $Flavor.Substring(1)
+                    $task = "$formattedModule`:connected${flavorCapitalized}DebugAndroidTest"
+                } elseif ($hasFlavor) {
+                    $task = "$formattedModule`:connectedDebugAndroidTest"
+                } else {
+                    $task = "$formattedModule`:connectedAndroidTest"
+                }
+            }
+        }
     }
 
     # Log files for this module

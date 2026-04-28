@@ -10,9 +10,62 @@
 #   - get_module_from_file: map a file path to its Gradle module
 #   - get_changed_files: list changed files in a git repo
 #   - safe_rg: cross-platform ripgrep with find+grep fallback on Windows
+#   - gate_gradle_exit_for_deprecation: classify a non-zero gradle exit
 #
 # All functions are pure — no global side effects, no exit calls.
 # =============================================================================
+
+# Classify a gradle process exit code by comparing it against per-task
+# success / failure counters, and emit the matching message line(s) on stdout.
+# Used by both the test-execution pass and the coverage-generation pass:
+# gradle 9 deprecation warnings cause a non-zero exit even when every
+# requested task succeeded individually, and we want the runner to treat
+# that as a [NOTICE] (parsed into warnings[]) rather than a [!] failure.
+#
+# Usage (capture message, then color via caller's notice/warn helper):
+#   gate_msg="$(gate_gradle_exit_for_deprecation "$EXIT" "$OK" "$FAIL" "$TOTAL" "tests")"
+#   gate_rc=$?
+#   case "$gate_rc" in
+#       0) [[ -n "$gate_msg" ]] && notice "$gate_msg" ;;
+#       1) warn "$gate_msg"; mark_all_failed ;;
+#       2) ;;  # partial — per-module reporting already handles it
+#   esac
+#
+# Returns:
+#   0 = continue — exit was 0 (no message emitted), OR exit was nonzero but
+#       every task succeeded (deprecation noise; emits a [NOTICE] line that
+#       lib/cli.js maps to warnings[].code = "gradle_deprecation").
+#   1 = env error — exit was nonzero AND zero tasks succeeded. Emits a [!]
+#       line describing the JVM-level failure. Caller marks all modules failed.
+#   2 = partial — exit was nonzero AND some succeeded AND some failed. No
+#       message; caller's per-module FAILED reporting speaks for itself.
+gate_gradle_exit_for_deprecation() {
+    local exit_code="$1"
+    local success_count="$2"
+    local failure_count="$3"
+    local total_count="$4"
+    local context="${5:-gradle}"
+
+    if [[ "$exit_code" -eq 0 ]]; then
+        return 0
+    fi
+
+    if [[ "$failure_count" -eq 0 && "$success_count" -eq 0 ]]; then
+        printf '%s\n' \
+            "[!] Gradle ($context) exited with code $exit_code and no task results found." \
+            "    This usually means a JVM-level error (wrong JAVA_HOME, OOM, daemon crash)."
+        return 1
+    fi
+
+    if [[ "$failure_count" -eq 0 && "$success_count" -gt 0 ]]; then
+        printf '%s\n' \
+            "[NOTICE] Gradle ($context) exited with code $exit_code but all $success_count tasks passed individually." \
+            "         This is likely deprecation warnings (Gradle 9+), not real failures."
+        return 0
+    fi
+
+    return 2
+}
 
 # Check if a string matches a simple wildcard pattern (shell glob).
 # Usage: glob_match "pattern" "string"

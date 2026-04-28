@@ -65,3 +65,37 @@ teardown() {
     grep -F "'logcatFile'" "$SCRIPT"
     grep -F "'errorsFile'" "$SCRIPT"
 }
+
+# ---------------------------------------------------------------------------
+# v0.5.1 Bug B' — android task selection via gradle-tasks-probe
+# ---------------------------------------------------------------------------
+@test "android (Bug B'): script sources gradle-tasks-probe.sh" {
+    grep -q 'lib/gradle-tasks-probe.sh' "$SCRIPT"
+}
+
+@test "android (Bug B'): accepts --device-task <name> flag" {
+    grep -q -- '--device-task)' "$SCRIPT"
+    grep -q 'DEVICE_TASK_OVERRIDE=' "$SCRIPT"
+}
+
+@test "android (Bug B'): help text documents --device-task and androidConnectedCheck" {
+    grep -q -- '--device-task' "$SCRIPT"
+    grep -q 'androidConnectedCheck' "$SCRIPT"
+}
+
+@test "android (Bug B'): task selection probes via module_first_existing_task" {
+    grep -q 'module_first_existing_task' "$SCRIPT"
+    # Candidate priority must include the new umbrella task name.
+    grep -q '"connectedDebugAndroidTest" "connectedAndroidTest" "androidConnectedCheck"' "$SCRIPT"
+}
+
+@test "android (Bug B'): probe-unavailable path falls back to legacy hardcoded matrix" {
+    # The fallback branch must keep the old logic so probe failure doesn't brick the script.
+    grep -q 'Probe unavailable.*fall back to legacy' "$SCRIPT"
+}
+
+@test "android (Bug B'): override flag short-circuits probe entirely" {
+    # When DEVICE_TASK_OVERRIDE is set, probe is skipped entirely.
+    grep -B 0 -A 2 'if \[\[ -n "\$DEVICE_TASK_OVERRIDE" \]\]; then' "$SCRIPT" | \
+        grep -q 'task="\${formatted_module}:\${DEVICE_TASK_OVERRIDE}"'
+}

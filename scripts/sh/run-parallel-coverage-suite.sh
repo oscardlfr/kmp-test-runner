@@ -168,6 +168,7 @@ source "$SCRIPT_DIR/lib/coverage-detect.sh"
 source "$SCRIPT_DIR/lib/audit-append.sh"
 source "$SCRIPT_DIR/lib/script-utils.sh"
 source "$SCRIPT_DIR/lib/jdk-check.sh"
+source "$SCRIPT_DIR/lib/gradle-tasks-probe.sh"
 
 EXCLUSION_PATTERNS=(
     '*$DefaultImpls'
@@ -639,14 +640,41 @@ for mi in "${!MOD_NAMES[@]}"; do
 
     # Determine coverage task (only if not excluded)
     if ! $skip_cov; then
-        cov_task="$(get_coverage_gradle_task "$mod_cov_tool" "$TEST_TYPE" "$IS_DESKTOP")"
-        if [[ -n "$cov_task" ]]; then
-            cov_task="${gradle_path}:${cov_task}"
-            if $is_shared; then
-                COV_TASKS_SHARED+=("$cov_task")
-            else
-                COV_TASKS+=("$cov_task")
-            fi
+        cov_task_name="$(get_coverage_gradle_task "$mod_cov_tool" "$TEST_TYPE" "$IS_DESKTOP")"
+        if [[ -n "$cov_task_name" ]]; then
+            # Bug B'' (v0.5.1): probe gradle for task existence before queueing.
+            # Content-based detection (detect_coverage_tool) returns false
+            # positives when the plugin appears in convention scaffolding but
+            # is NOT applied per-module. Probe is the source of truth.
+            set +e
+            module_has_task "${MOD_PROJ[$mi]}" "${MOD_NAMES[$mi]}" "$cov_task_name"
+            cov_task_rc=$?
+            set -e
+            case "$cov_task_rc" in
+                0)
+                    # Confirmed present
+                    cov_task="${gradle_path}:${cov_task_name}"
+                    if $is_shared; then
+                        COV_TASKS_SHARED+=("$cov_task")
+                    else
+                        COV_TASKS+=("$cov_task")
+                    fi
+                    ;;
+                1)
+                    # Cache says task missing — coverage plugin not applied
+                    gray "  [SKIP coverage] ${MOD_NAMES[$mi]} (no coverage plugin applied)"
+                    MOD_COV_TOOL[$mi]="none"
+                    ;;
+                *)
+                    # Probe unavailable — fall back to legacy "always queue" behavior
+                    cov_task="${gradle_path}:${cov_task_name}"
+                    if $is_shared; then
+                        COV_TASKS_SHARED+=("$cov_task")
+                    else
+                        COV_TASKS+=("$cov_task")
+                    fi
+                    ;;
+            esac
         else
             gray "  [INFO] ${MOD_NAMES[$mi]} - no coverage ($(get_coverage_display_name "$mod_cov_tool")), skipping"
         fi
@@ -831,25 +859,30 @@ if ! $SKIP_TESTS && [[ "${#ALL_TEST_TASKS[@]}" -gt 0 ]]; then
     TEST_SECS=$((TEST_DURATION % 60))
 
     echo ""
-    if [[ "$TEST_EXIT_CODE" -ne 0 && "$FAILURE_COUNT" -eq 0 && "$SUCCESS_COUNT" -eq 0 ]]; then
-        # Gradle failed AND no individual task results detected at all.
-        # This happens with JVM-level errors (UnsupportedClassVersionError,
-        # OOM, daemon crash) where task output is missing entirely.
-        warn "[!] Gradle exited with code $TEST_EXIT_CODE and no task results found."
-        warn "    This usually means a JVM-level error (wrong JAVA_HOME, OOM, daemon crash)."
-        warn "    Marking all ${#TESTABLE_INDICES[@]} modules as failed."
-        FAILURE_COUNT="${#TESTABLE_INDICES[@]}"
-        for idx in "${TESTABLE_INDICES[@]}"; do
-            RESULT_STATUS[$idx]="failed"
-        done
-    elif [[ "$TEST_EXIT_CODE" -ne 0 && "$FAILURE_COUNT" -eq 0 && "$SUCCESS_COUNT" -gt 0 ]]; then
-        # Gradle exit non-zero but individual tasks passed.
-        # Likely deprecation warnings or non-fatal build issues (Gradle 9+).
-        # `[NOTICE]` (not `[!]`) so json parsers and humans can distinguish
-        # this benign signal from real failures.
-        notice "[NOTICE] Gradle exited with code $TEST_EXIT_CODE but all $SUCCESS_COUNT tasks passed individually."
-        notice "         This is likely deprecation warnings (Gradle 9+), not test failures."
-    fi
+    # Classify gradle exit via shared helper (script-utils.sh). Same logic
+    # is reused for coverage-gen below — see Bug C' (v0.5.1).
+    set +e
+    TEST_GATE_MSG="$(gate_gradle_exit_for_deprecation \
+        "$TEST_EXIT_CODE" "$SUCCESS_COUNT" "$FAILURE_COUNT" \
+        "${#TESTABLE_INDICES[@]}" "tests")"
+    TEST_GATE_RC=$?
+    set -e
+    case "$TEST_GATE_RC" in
+        0)
+            [[ -n "$TEST_GATE_MSG" ]] && notice "$TEST_GATE_MSG"
+            ;;
+        1)
+            warn "$TEST_GATE_MSG"
+            warn "    Marking all ${#TESTABLE_INDICES[@]} modules as failed."
+            FAILURE_COUNT="${#TESTABLE_INDICES[@]}"
+            for idx in "${TESTABLE_INDICES[@]}"; do
+                RESULT_STATUS[$idx]="failed"
+            done
+            ;;
+        2)
+            : # Mixed pass/fail — per-module FAILED reporting above already covered it.
+            ;;
+    esac
     info "Test Duration: ${TEST_MINS}m ${TEST_SECS}s"
     echo ""
 
@@ -880,6 +913,20 @@ if ! $SKIP_TESTS && [[ "${#ALL_TEST_TASKS[@]}" -gt 0 ]]; then
                 xml_check="$(get_coverage_xml_path "$mod_tool" "${MOD_PATHS[$idx]}" "$IS_DESKTOP" 2>/dev/null)" || true
                 [[ -n "$xml_check" ]] && COV_XML_COUNT=$((COV_XML_COUNT + 1))
             done
+
+            # Bug C': route deprecation-only coverage exit through the shared
+            # gate so it surfaces as warnings[].code = "gradle_deprecation"
+            # instead of being swallowed by the partial-recovery branch.
+            COV_MISSING_COUNT=$((${#COV_TASKS[@]} - COV_XML_COUNT))
+            set +e
+            COV_GATE_MSG="$(gate_gradle_exit_for_deprecation \
+                "$COV_EXIT" "$COV_XML_COUNT" "$COV_MISSING_COUNT" \
+                "${#COV_TASKS[@]}" "coverage")"
+            COV_GATE_RC=$?
+            set -e
+            if [[ "$COV_GATE_RC" -eq 0 && -n "$COV_GATE_MSG" ]]; then
+                notice "$COV_GATE_MSG"
+            fi
 
             if [[ "$COV_XML_COUNT" -gt 0 ]]; then
                 # --continue worked: some tasks succeeded, some failed — reports exist
@@ -980,6 +1027,19 @@ if ! $SKIP_TESTS && [[ "${#ALL_TEST_TASKS[@]}" -gt 0 ]]; then
                     xml_check="$(get_coverage_xml_path "$mod_tool" "${MOD_PATHS[$idx]}" "$IS_DESKTOP" 2>/dev/null)" || true
                     [[ -n "$xml_check" ]] && COV_XML_COUNT_S=$((COV_XML_COUNT_S + 1))
                 done
+
+                # Bug C': route deprecation-only shared coverage exit through
+                # the shared gate (same logic as main project above).
+                COV_MISSING_S=$((${#COV_TASKS_SHARED[@]} - COV_XML_COUNT_S))
+                set +e
+                COV_GATE_MSG_S="$(gate_gradle_exit_for_deprecation \
+                    "$COV_EXIT_SHARED" "$COV_XML_COUNT_S" "$COV_MISSING_S" \
+                    "${#COV_TASKS_SHARED[@]}" "shared coverage")"
+                COV_GATE_RC_S=$?
+                set -e
+                if [[ "$COV_GATE_RC_S" -eq 0 && -n "$COV_GATE_MSG_S" ]]; then
+                    notice "$COV_GATE_MSG_S"
+                fi
 
                 if [[ "$COV_XML_COUNT_S" -gt 0 ]]; then
                     warn "  [!] Shared coverage had errors (exit $COV_EXIT_SHARED) but $COV_XML_COUNT_S reports generated (--continue saved partial results)"
@@ -1111,10 +1171,16 @@ fi
 GRAND_COVERED=0
 GRAND_MISSED=0
 MODULES_SCANNED=0
-while IFS='|' read -r _name covered missed _total _pct; do
+MODULES_CONTRIBUTING=0
+while IFS='|' read -r _name covered missed total _pct; do
     GRAND_COVERED=$((GRAND_COVERED + covered))
     GRAND_MISSED=$((GRAND_MISSED + missed))
     MODULES_SCANNED=$((MODULES_SCANNED + 1))
+    # Bug E (v0.5.1): count modules that actually produced coverage data.
+    # A module with total > 0 had at least one parseable line in its XML.
+    if [[ "$total" -gt 0 ]]; then
+        MODULES_CONTRIBUTING=$((MODULES_CONTRIBUTING + 1))
+    fi
 done < "$MODULE_SUMMARIES_FILE"
 
 GRAND_TOTAL=$((GRAND_COVERED + GRAND_MISSED))
@@ -1242,7 +1308,17 @@ cp -f "$REPORT_FILE" "$REPORT_FILE_LEGACY" 2>/dev/null || true
 # ============================================================================
 
 echo ""
-ok "[OK] Full coverage report generated!"
+# Bug E (v0.5.1): if zero modules contributed real coverage data (e.g. all
+# modules had no kover/jacoco plugin applied — see Bug B''), the OK banner
+# is misleading. Replace it with an actionable [!] message that the JSON
+# parser maps to warnings[].code = "no_coverage_data".
+if [[ "$MODULES_CONTRIBUTING" -gt 0 ]]; then
+    ok "[OK] Full coverage report generated!"
+else
+    warn "[!] No coverage data collected from any module — verify your project has kover/jacoco configured (see https://github.com/oscardlfr/kmp-test-runner#coverage-setup)"
+fi
+# Machine-readable marker consumed by lib/cli.js parseScriptOutput.
+echo "COVERAGE_MODULES_CONTRIBUTING: $MODULES_CONTRIBUTING"
 info "[>>] Report saved to: $REPORT_FILE"
 gray "    legacy alias: $REPORT_FILE_LEGACY"
 echo ""
