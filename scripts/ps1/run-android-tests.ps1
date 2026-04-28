@@ -137,10 +137,18 @@ if ($SkipApp) {
 if ($ModuleFilter) {
     $filterList = $ModuleFilter.Split(',') | ForEach-Object { $_.Trim() }
     Write-Host "Filtering modules: $($filterList -join ', ')" -ForegroundColor $Colors.Warning
-    $modules = $modules | Where-Object {
+    # WRAP IN @() so a single match doesn't collapse to a hashtable. Without
+    # this wrap, `$modules.Count` returned the number of KEYS in the matched
+    # module hashtable (5: Name, Path, HasFlavor, IsKmp, Description) instead
+    # of the array length 1, propagating into summary.json as `totalModules: 5`.
+    $modules = @($modules | Where-Object {
         $mod = $_
-        $filterList | Where-Object { $mod.Name -like $_ } | Select-Object -First 1
-    }
+        $matched = $false
+        foreach ($f in $filterList) {
+            if ($mod.Name -like $f) { $matched = $true; break }
+        }
+        $matched
+    })
 }
 
 if ($modules.Count -eq 0) {
@@ -503,8 +511,14 @@ Write-Host "  SUMMARY" -ForegroundColor $Colors.Header
 Write-Host "========================================" -ForegroundColor $Colors.Header
 Write-Host ""
 
-$totalSuccess = ($results | Where-Object { $_.Success }).Count
-$totalFailure = ($results | Where-Object { -not $_.Success }).Count
+# Same single-item-pipeline-collapse pitfall as the $modules filter above:
+# without `@(...)`, a single matching result becomes a hashtable and `.Count`
+# returns the number of result-hashtable keys (11: Module, Status, Duration,
+# Success, TestsPassed, TestsFailed, TestsSkipped, LogFile, LogcatFile,
+# ErrorsFile, Retried) rather than the array length 1. That misreporting
+# propagated into summary.json as `passedModules: 11` for single-module runs.
+$totalSuccess = @($results | Where-Object { $_.Success }).Count
+$totalFailure = @($results | Where-Object { -not $_.Success }).Count
 
 # Calculate totals safely
 $totalTests = 0
