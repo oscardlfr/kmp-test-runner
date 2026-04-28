@@ -207,3 +207,55 @@ Describe 'Fail-soft on malformed JSON' {
         } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
     }
 }
+
+# Phase 4 step 4 — Test-ModuleHasTestSources lives in lib/Script-Utils.ps1
+# now and supports two parameter sets: ByPath (legacy filesystem walk) and
+# ByModelName (prefers the ProjectModel JSON, falls back to FS walk).
+Describe 'Test-ModuleHasTestSources (Phase 4 step 4 — model fast-path)' {
+
+    BeforeAll {
+        . (Join-Path $script:RepoRoot 'scripts\ps1\lib\Script-Utils.ps1')
+    }
+
+    It 'returns $true when model says module has tests' {
+        $dir = New-PmFixture
+        try {
+            # Filesystem has NO src/* dirs — so a $true answer proves the
+            # model path was taken (fixture sets commonTest = $true).
+            (Test-ModuleHasTestSources -ProjectRoot $dir -Module 'core-encryption') | Should -BeTrue
+        } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
+    }
+
+    It 'returns $false when model says no test sources' {
+        $dir = New-PmFixture
+        try {
+            # Patch the model to flip all sourceSets to $false.
+            $cacheDir = Join-Path $dir '.kmp-test-runner-cache'
+            $file = (Get-ChildItem $cacheDir -Filter 'model-*.json')[0].FullName
+            $obj = ConvertFrom-Json (Get-Content $file -Raw)
+            foreach ($prop in $obj.modules.':core-encryption'.sourceSets.PSObject.Properties) {
+                $prop.Value = $false
+            }
+            Set-Content -Path $file -Value (ConvertTo-Json $obj -Depth 10) -Encoding UTF8
+            (Test-ModuleHasTestSources -ProjectRoot $dir -Module 'core-encryption') | Should -BeFalse
+        } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
+    }
+
+    It 'falls back to filesystem walk when model absent' {
+        $dir = New-PmFixture
+        try {
+            Remove-Item -Recurse -Force (Join-Path $dir '.kmp-test-runner-cache') -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Path (Join-Path $dir 'core-encryption\src\commonTest') -Force | Out-Null
+            (Test-ModuleHasTestSources -ProjectRoot $dir -Module 'core-encryption') | Should -BeTrue
+        } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
+    }
+
+    It 'legacy -ModulePath form still works (filesystem walk only)' {
+        $dir = New-PmFixture
+        try {
+            $modPath = Join-Path $dir 'legacy-mod'
+            New-Item -ItemType Directory -Path (Join-Path $modPath 'src\jvmTest') -Force | Out-Null
+            (Test-ModuleHasTestSources -ModulePath $modPath) | Should -BeTrue
+        } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
+    }
+}

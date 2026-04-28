@@ -113,16 +113,49 @@ test_class_excluded() {
     return 1
 }
 
-# Check if a module directory contains any standard Kotlin/JVM/Android test
-# source set. Returns 0 (true) if any of these directories exist:
-#   src/test, src/commonTest, src/jvmTest, src/desktopTest,
-#   src/androidUnitTest, src/androidInstrumentedTest, src/androidTest,
-#   src/iosTest, src/nativeTest
-# Otherwise returns 1 (false). Used by the parallel/changed runners to skip
-# modules that by convention have no tests (e.g. :api modules, parent-only
-# aggregator modules) before invoking gradle and getting BUILD FAILED.
-# Usage: module_has_test_sources <module_filesystem_path>
+# Check if a module contains any standard Kotlin/JVM/Android test source set.
+# Returns 0 (true) when the model says it does OR when any of the 9 standard
+# test directories exist on disk. Returns 1 (false) otherwise.
+#
+# Two call shapes are supported (we keep both for backwards compatibility):
+#   module_has_test_sources <module_filesystem_path>            (legacy)
+#   module_has_test_sources <project_root> <module_name>        (Phase 4)
+#
+# The two-arg form prefers the ProjectModel JSON via pm_module_has_tests
+# (Phase 4 step 4 — single source of truth), falling back to the filesystem
+# walk when the model is absent. The one-arg form skips the model lookup
+# entirely (callers without a project_root context).
 module_has_test_sources() {
+    if [[ $# -ge 2 ]]; then
+        local project_root="$1"
+        local module_name="$2"
+        # Try the model first (fast, cached, content-keyed). Source the readers
+        # lazily so callers that haven't sourced project-model.sh keep working.
+        if ! type pm_module_has_tests >/dev/null 2>&1; then
+            local _pm_lib_dir
+            _pm_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+            # shellcheck source=./project-model.sh
+            [[ -f "$_pm_lib_dir/project-model.sh" ]] && source "$_pm_lib_dir/project-model.sh"
+        fi
+        if type pm_module_has_tests >/dev/null 2>&1; then
+            local model_answer
+            model_answer="$(pm_module_has_tests "$project_root" "$module_name")"
+            case "$model_answer" in
+                true)  return 0 ;;
+                false) return 1 ;;
+                # empty → model absent / unreadable → fall through to filesystem walk
+            esac
+        fi
+        local module_path="$project_root/${module_name#:}"
+        module_path="${module_path//:/\/}"
+        _module_has_test_sources_fs "$module_path"
+        return $?
+    fi
+    _module_has_test_sources_fs "$1"
+}
+
+# Internal: filesystem-walk fallback. Checks the 9 standard directories.
+_module_has_test_sources_fs() {
     local module_path="$1"
     [[ -d "$module_path/src/test" ]] && return 0
     [[ -d "$module_path/src/commonTest" ]] && return 0

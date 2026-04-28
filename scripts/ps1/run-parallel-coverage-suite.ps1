@@ -177,26 +177,9 @@ function Format-LineRanges {
     return $ranges -join ", "
 }
 
-function Test-ModuleHasTestSources {
-    <#
-    .SYNOPSIS
-        Returns $true if the module directory contains any standard Kotlin/JVM/Android
-        test source set: src/test, src/commonTest, src/jvmTest, src/desktopTest,
-        src/androidUnitTest, src/androidInstrumentedTest, src/androidTest,
-        src/iosTest, src/nativeTest. Used to skip api/aggregator modules that
-        by convention have no tests, before invoking gradle.
-    #>
-    param([string]$ModulePath)
-    $candidates = @(
-        'src\test', 'src\commonTest', 'src\jvmTest', 'src\desktopTest',
-        'src\androidUnitTest', 'src\androidInstrumentedTest', 'src\androidTest',
-        'src\iosTest', 'src\nativeTest'
-    )
-    foreach ($d in $candidates) {
-        if (Test-Path (Join-Path $ModulePath $d)) { return $true }
-    }
-    return $false
-}
+# Phase 4 step 4 (v0.5.1): Test-ModuleHasTestSources moved to
+# scripts/ps1/lib/Script-Utils.ps1 (parallel to sh script-utils.sh) so the
+# function lives in lib alongside the gate helpers.
 
 function Find-Modules {
     param(
@@ -270,8 +253,9 @@ function Find-Modules {
     }
     $final = @()
     foreach ($mod in $afterExclude) {
-        $modulePath = Join-Path $ProjectRoot ($mod -replace ':', [IO.Path]::DirectorySeparatorChar)
-        if (Test-ModuleHasTestSources -ModulePath $modulePath) {
+        # Phase 4 step 4 (v0.5.1): pass -ProjectRoot + -Module so the helper
+        # can prefer the ProjectModel fast-path before walking the filesystem.
+        if (Test-ModuleHasTestSources -ProjectRoot $ProjectRoot -Module $mod) {
             $final += $mod
         } else {
             [Console]::Error.WriteLine("[SKIP] $mod (no test source set - pass -IncludeUntested to override)")

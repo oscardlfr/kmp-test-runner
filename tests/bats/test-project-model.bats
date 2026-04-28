@@ -180,3 +180,61 @@ PY
     # And the function still exits 0 — caller doesn't need to error-trap.
     pm_get_unit_test_task "$WORK_DIR" "core-encryption"
 }
+
+# Phase 4 step 4 — module_has_test_sources two-arg form prefers the model.
+@test "module_has_test_sources (2-arg form): rc 0 when model says module has tests" {
+    # shellcheck disable=SC1090
+    source "scripts/sh/lib/script-utils.sh"
+    # Model fixture (set up in setup()) says core-encryption has commonTest.
+    # Filesystem fallback would say NO (no src/* dirs created) — proving the
+    # model fast-path is used.
+    set +e
+    module_has_test_sources "$WORK_DIR" "core-encryption"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ]
+}
+
+@test "module_has_test_sources (2-arg form): rc 1 when model says no test sources" {
+    # shellcheck disable=SC1090
+    source "scripts/sh/lib/script-utils.sh"
+    # Patch model to set all sourceSets to false for core-encryption.
+    python3 - "$WORK_DIR/.kmp-test-runner-cache/model-${SHA}.json" << 'PY'
+import json, sys
+with open(sys.argv[1], 'r', encoding='utf-8') as f: m = json.load(f)
+for k in m['modules'][':core-encryption']['sourceSets']:
+    m['modules'][':core-encryption']['sourceSets'][k] = False
+with open(sys.argv[1], 'w', encoding='utf-8') as f: json.dump(m, f)
+PY
+    set +e
+    module_has_test_sources "$WORK_DIR" "core-encryption"
+    rc=$?
+    set -e
+    [ "$rc" -eq 1 ]
+}
+
+@test "module_has_test_sources (2-arg form): falls back to filesystem walk when model absent" {
+    # shellcheck disable=SC1090
+    source "scripts/sh/lib/script-utils.sh"
+    # No model JSON → must walk the filesystem.
+    rm -rf "$WORK_DIR/.kmp-test-runner-cache"
+    mkdir -p "$WORK_DIR/core-encryption/src/commonTest"
+    set +e
+    module_has_test_sources "$WORK_DIR" "core-encryption"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ]
+}
+
+@test "module_has_test_sources (1-arg form): legacy filesystem walk still works" {
+    # shellcheck disable=SC1090
+    source "scripts/sh/lib/script-utils.sh"
+    # Legacy single-arg form takes a filesystem path directly — used by older
+    # callers that don't have a project_root context.
+    mkdir -p "$WORK_DIR/legacy-mod/src/jvmTest"
+    set +e
+    module_has_test_sources "$WORK_DIR/legacy-mod"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ]
+}

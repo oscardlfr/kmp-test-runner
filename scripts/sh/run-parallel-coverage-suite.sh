@@ -300,8 +300,10 @@ find_modules() {
         final_modules=("${after_exclude[@]+"${after_exclude[@]}"}")
     else
         for mod in "${after_exclude[@]+"${after_exclude[@]}"}"; do
-            local fs_path="$project_path/${mod//:/\/}"
-            if module_has_test_sources "$fs_path"; then
+            # Phase 4 step 4 (v0.5.1): pass project_root + module name so
+            # module_has_test_sources can prefer the ProjectModel fast-path
+            # before walking the filesystem.
+            if module_has_test_sources "$project_path" "$mod"; then
                 final_modules+=("$mod")
             else
                 echo "[SKIP] $mod (no test source set — pass --include-untested to override)" >&2
