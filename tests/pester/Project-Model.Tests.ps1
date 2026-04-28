@@ -291,3 +291,26 @@ Describe 'run-android-tests.ps1 — Phase 4 ProjectModel fast-path wiring' {
         $deviceTaskIdx | Should -BeLessThan $pmIndex
     }
 }
+
+# Phase 4 step 6 — run-parallel-coverage-suite.ps1 wires the ProjectModel
+# fast-path BEFORE the existing detect_coverage_tool + Test-ModuleHasTask
+# chain. Source-grep regression for the layer ordering.
+Describe 'run-parallel-coverage-suite.ps1 — Phase 4 ProjectModel coverage fast-path' {
+
+    BeforeAll {
+        $script:Parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
+        $script:ParallelText = Get-Content $script:Parallel -Raw
+    }
+
+    It 'dot-sources the ProjectModel.ps1 lib' {
+        $script:ParallelText | Should -Match "ProjectModel\.ps1"
+    }
+
+    It 'consults Get-PmCoverageTask before Get-CoverageGradleTask' {
+        $script:ParallelText | Should -Match 'Get-PmCoverageTask'
+        $pmIndex    = $script:ParallelText.IndexOf('Get-PmCoverageTask')
+        $legacyIdx  = $script:ParallelText.IndexOf('Get-CoverageGradleTask -Tool $modCovTool')
+        $pmIndex | Should -BeGreaterOrEqual 0
+        $pmIndex | Should -BeLessThan $legacyIdx
+    }
+}
