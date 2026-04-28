@@ -40,6 +40,8 @@ import {
   resolveAndroidTestFilter,
   resolvePatternForSubcommand,
   runDoctorChecks,
+  parseGradleTimeoutMs,
+  DEFAULT_GRADLE_TIMEOUT_MS,
 } from '../../lib/cli.js';
 
 beforeEach(() => spawnMock.mockReset().mockReturnValue({ status: 0 }));
@@ -841,6 +843,166 @@ describe('runDoctorChecks', () => {
       const gw = checks.find(c => c.name === 'gradlew');
       expect(gw.status).toBe('OK');
     });
+  });
+});
+
+describe('parseGradleTimeoutMs (Bug H — gradle watchdog)', () => {
+  it('returns 30 minute default when env var unset', () => {
+    expect(parseGradleTimeoutMs(undefined)).toBe(30 * 60 * 1000);
+    expect(parseGradleTimeoutMs('')).toBe(30 * 60 * 1000);
+    expect(DEFAULT_GRADLE_TIMEOUT_MS).toBe(30 * 60 * 1000);
+  });
+
+  it('parses positive integer env values', () => {
+    expect(parseGradleTimeoutMs('60000')).toBe(60000);
+    expect(parseGradleTimeoutMs('3600000')).toBe(3600000);
+  });
+
+  it('falls back to default on garbage / non-positive values', () => {
+    expect(parseGradleTimeoutMs('not-a-number')).toBe(DEFAULT_GRADLE_TIMEOUT_MS);
+    expect(parseGradleTimeoutMs('0')).toBe(DEFAULT_GRADLE_TIMEOUT_MS);
+    expect(parseGradleTimeoutMs('-100')).toBe(DEFAULT_GRADLE_TIMEOUT_MS);
+  });
+});
+
+describe('main() — gradle timeout (Bug H)', () => {
+  it('--json mode surfaces gradle_timeout error code on SIGTERM', () => {
+    // spawnSync returns { status: null, signal: 'SIGTERM' } when the timeout
+    // option fires. The CLI must classify this as a gradle_timeout env error
+    // (not a generic test failure) so agents can distinguish hung-daemon from
+    // failing-tests.
+    spawnMock.mockReturnValue({ status: null, signal: 'SIGTERM' });
+    const captured = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+    try {
+      withFakeGradleProject(dir => {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+        const code = main();
+        expect(code).toBe(EXIT.TEST_FAIL);
+      });
+      process.stdout.write = origWrite;
+      const json = JSON.parse(captured.join('').trim());
+      expect(json.errors).toBeTruthy();
+      expect(Array.isArray(json.errors)).toBe(true);
+      const timeoutErr = json.errors.find(e => e.code === 'gradle_timeout');
+      expect(timeoutErr).toBeTruthy();
+      expect(timeoutErr.message).toMatch(/exceeded.*timeout/);
+      expect(timeoutErr.message).toMatch(/KMP_GRADLE_TIMEOUT_MS/);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+
+  it('--json mode does NOT classify normal exits as gradle_timeout', () => {
+    // status=0, no signal → just a successful run, no timeout error.
+    spawnMock.mockReturnValue({
+      status: 0,
+      stdout: 'Tests: 1 total | 1 passed | 0 failed | 0 skipped\nBUILD SUCCESSFUL\n',
+      stderr: '',
+    });
+    const captured = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+    try {
+      withFakeGradleProject(dir => {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+        main();
+      });
+      process.stdout.write = origWrite;
+      const json = JSON.parse(captured.join('').trim());
+      const timeoutErr = (json.errors || []).find(e => e.code === 'gradle_timeout');
+      expect(timeoutErr).toBeFalsy();
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+
+  it('non-json mode prints timeout message to stderr', () => {
+    spawnMock.mockReturnValue({ status: null, signal: 'SIGTERM' });
+    const stderrCaptured = [];
+    const origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => { stderrCaptured.push(String(chunk)); return true; };
+    try {
+      withFakeGradleProject(dir => {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+        const code = main();
+        expect(code).toBe(EXIT.TEST_FAIL);
+      });
+      process.stderr.write = origStderrWrite;
+      const text = stderrCaptured.join('');
+      expect(text).toMatch(/exceeded.*timeout/);
+    } finally {
+      process.stderr.write = origStderrWrite;
+    }
+  });
+
+  it('passes timeout + killSignal options through to spawnSync', () => {
+    // Verify the spawn call carries the watchdog config so a real run will
+    // actually time out instead of hanging forever (regression test for the
+    // v0.5.0 zombie-process scenario).
+    spawnMock.mockReturnValue({ status: 0 });
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      main();
+    });
+    const scriptCall = spawnMock.mock.calls.find(
+      c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+    );
+    expect(scriptCall).toBeTruthy();
+    const opts = scriptCall[2];
+    expect(opts.timeout).toBeGreaterThan(0);
+    expect(opts.killSignal).toBe('SIGTERM');
+  });
+});
+
+describe('main() — Bug Z (Windows pipe-inheritance deadlock with --json)', () => {
+  it('on Windows + --json passes file descriptors instead of pipes to spawn', () => {
+    // The whole point of Bug Z fix: spawn opts on Windows + jsonMode use FDs
+    // for stdout/stderr (not 'pipe') so the gradle daemon's pipe inheritance
+    // can't keep spawnSync waiting forever after pwsh.exe exits.
+    if (process.platform !== 'win32') return;  // POSIX uses default pipes; OK.
+    spawnMock.mockReturnValue({
+      status: 0,
+      stdout: 'Tests: 1 total | 1 passed | 0 failed | 0 skipped\nBUILD SUCCESSFUL\n',
+      stderr: '',
+    });
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+      main();
+    });
+    const scriptCall = spawnMock.mock.calls.find(
+      c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+    );
+    expect(scriptCall).toBeTruthy();
+    const opts = scriptCall[2];
+    // On Windows + jsonMode, stdio must be ['ignore', <fd>, <fd>] rather than
+    // the default 'pipe'. Pipes inherit to grandchildren and cause the v0.5.0
+    // 41-minute hang.
+    expect(Array.isArray(opts.stdio)).toBe(true);
+    expect(opts.stdio[0]).toBe('ignore');
+    expect(typeof opts.stdio[1]).toBe('number');
+    expect(typeof opts.stdio[2]).toBe('number');
+  });
+
+  it('non-Windows + --json keeps legacy buffered-pipe contract', () => {
+    if (process.platform === 'win32') return;
+    spawnMock.mockReturnValue({
+      status: 0,
+      stdout: 'Tests: 1 total | 1 passed | 0 failed | 0 skipped\nBUILD SUCCESSFUL\n',
+      stderr: '',
+    });
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+      main();
+    });
+    const scriptCall = spawnMock.mock.calls.find(
+      c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+    );
+    expect(scriptCall).toBeTruthy();
+    const opts = scriptCall[2];
+    expect(opts.encoding).toBe('utf8');
+    expect(opts.maxBuffer).toBe(64 * 1024 * 1024);
   });
 });
 
