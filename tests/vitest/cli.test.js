@@ -20,7 +20,7 @@ import {
   consumeForceFlag,
   consumeTestFilter,
   getIgnoreJdkMismatch,
-  findJvmToolchainVersion,
+  findRequiredJdkVersion,
   preflightJdkCheck,
   jdkMismatchHint,
   lockfilePath,
@@ -607,6 +607,63 @@ describe('findFirstClassFqn', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('substring pattern *Foo* matches a class whose name contains the core', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-class-substr-'));
+    try {
+      const src = path.join(dir, 'src', 'androidTest', 'kotlin', 'com', 'example');
+      mkdirSync(src, { recursive: true });
+      writeFileSync(path.join(src, 'ScaleBenchmark.kt'),
+        'package com.example\n\nclass ScaleBenchmark {}\n');
+      expect(findFirstClassFqn(dir, '*Scale*')).toBe('com.example.ScaleBenchmark');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prefix pattern Foo* matches a class starting with the core', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-class-prefix-'));
+    try {
+      const src = path.join(dir, 'src', 'main', 'kotlin', 'p');
+      mkdirSync(src, { recursive: true });
+      writeFileSync(path.join(src, 'ScaleBenchmark.kt'),
+        'package p\n\nclass ScaleBenchmark {}\n');
+      expect(findFirstClassFqn(dir, 'Scale*')).toBe('p.ScaleBenchmark');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('suffix pattern *Foo matches a class ending with the core', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-class-suffix-'));
+    try {
+      const src = path.join(dir, 'src', 'main', 'kotlin', 'p');
+      mkdirSync(src, { recursive: true });
+      writeFileSync(path.join(src, 'ScaleBenchmark.kt'),
+        'package p\n\nclass ScaleBenchmark {}\n');
+      expect(findFirstClassFqn(dir, '*Benchmark')).toBe('p.ScaleBenchmark');
+      // suffix must NOT match a class that has trailing chars after the core
+      expect(findFirstClassFqn(dir, '*Bench')).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('exact pattern (no wildcards) preserves word-boundary behavior — *Scale* matches ScaleBenchmark but Scale alone does not', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-class-exact-'));
+    try {
+      const src = path.join(dir, 'src', 'main', 'kotlin', 'p');
+      mkdirSync(src, { recursive: true });
+      writeFileSync(path.join(src, 'ScaleBenchmark.kt'),
+        'package p\n\nclass ScaleBenchmark {}\n');
+      // Exact match — boundary after `Scale` would land on `B` (word char), so no match.
+      expect(findFirstClassFqn(dir, 'Scale')).toBeNull();
+      // Substring with wildcards finds it.
+      expect(findFirstClassFqn(dir, '*Scale*')).toBe('p.ScaleBenchmark');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('resolveAndroidTestFilter', () => {
@@ -629,6 +686,22 @@ describe('resolveAndroidTestFilter', () => {
       writeFileSync(path.join(src, 'ScaleBenchmark.kt'),
         'package com.demo\n\nclass ScaleBenchmark {}\n');
       expect(resolveAndroidTestFilter('*ScaleBenchmark*', dir)).toBe('com.demo.ScaleBenchmark');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves *Scale* (substring of class name) to FQN — regression for v0.5.1 wildcard fix', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-resolve-substr-'));
+    try {
+      const src = path.join(dir, 'benchmark', 'src', 'androidTest', 'kotlin', 'com', 'demo');
+      mkdirSync(src, { recursive: true });
+      writeFileSync(path.join(src, 'ScaleBenchmark.kt'),
+        'package com.demo\n\nclass ScaleBenchmark {}\n');
+      // Pre-fix bug: `*Scale*` stripped wildcards → searched `class Scale\b` → no match
+      // (because `B` in `ScaleBenchmark` is a word char) → returned `*Scale*` literal,
+      // which gradle then rejected with "Failed loading specified test class '*Scale*'".
+      expect(resolveAndroidTestFilter('*Scale*', dir)).toBe('com.demo.ScaleBenchmark');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1002,6 +1075,150 @@ describe('buildJsonReport / envErrorJson / buildDryRunReport — warnings[] in s
 });
 
 // ============================================================================
+// Per-subcommand JSON envelope parsing (v0.5.1 — Bug G fix)
+// ============================================================================
+
+describe('parseScriptOutput — android subcommand summary', () => {
+  it('parses === JSON SUMMARY === into tests + modules + per-failed-module errors', () => {
+    const summary = {
+      timestamp: '2026-04-27_10:00:00',
+      device: 'emulator-5554',
+      packageName: 'com.example.app',
+      totalModules: 2,
+      passedModules: 1,
+      failedModules: 1,
+      totalTests: 25,
+      passedTests: 23,
+      failedTests: 2,
+      logsDir: 'androidtest-logs/2026-04-27_10:00:00',
+      modules: [
+        {
+          name: 'core:db', status: 'PASS', duration: '01:30',
+          testsPassed: 20, testsFailed: 0, testsSkipped: 1,
+          logFile: 'androidtest-logs/2026-04-27_10:00:00/core_db.log',
+          logcatFile: 'androidtest-logs/2026-04-27_10:00:00/core_db_logcat.log',
+          errorsFile: null, retried: false,
+        },
+        {
+          name: 'core:net', status: 'FAIL', duration: '00:45',
+          testsPassed: 3, testsFailed: 2, testsSkipped: 0,
+          logFile: 'androidtest-logs/2026-04-27_10:00:00/core_net.log',
+          logcatFile: 'androidtest-logs/2026-04-27_10:00:00/core_net_logcat.log',
+          errorsFile: 'androidtest-logs/2026-04-27_10:00:00/core_net_errors.json',
+          retried: false,
+        },
+      ],
+    };
+    const stdout = `Test run starting...\n\n=== JSON SUMMARY ===\n${JSON.stringify(summary, null, 2)}\n\nBUILD FAILED - 1 module(s) failed\n`;
+    const r = parseScriptOutput(stdout, '', [], 'android');
+    expect(r.tests).toEqual({ total: 25, passed: 23, failed: 2, skipped: 1 });
+    expect(r.modules).toEqual(['core:db', 'core:net']);
+    const failed = r.errors.find(e => e.code === 'module_failed');
+    expect(failed).toBeDefined();
+    expect(failed.module).toBe('core:net');
+    expect(failed.log_file).toBe('androidtest-logs/2026-04-27_10:00:00/core_net.log');
+    expect(failed.logcat_file).toBe('androidtest-logs/2026-04-27_10:00:00/core_net_logcat.log');
+    expect(failed.errors_file).toBe('androidtest-logs/2026-04-27_10:00:00/core_net_errors.json');
+  });
+
+  it('falls back to [PASS]/[FAIL] table when the JSON SUMMARY block is missing', () => {
+    const stdout = [
+      'Test run starting...',
+      '  [PASS] core:db                (01:30) - 20 tests',
+      '  [FAIL] core:net               (00:45) - 5 tests, 2 failed',
+      'BUILD FAILED',
+    ].join('\n');
+    const r = parseScriptOutput(stdout, '', [], 'android');
+    expect(r.modules).toEqual(['core:db', 'core:net']);
+    const failed = r.errors.find(e => e.code === 'module_failed');
+    expect(failed).toBeDefined();
+    expect(failed.module).toBe('core:net');
+  });
+
+  it('emits json_summary_parse_failed warning when the JSON SUMMARY block is malformed', () => {
+    const stdout = '=== JSON SUMMARY ===\n{ this is not valid JSON\n';
+    const r = parseScriptOutput(stdout, '', [], 'android');
+    expect(r.warnings.some(w => w.code === 'json_summary_parse_failed')).toBe(true);
+  });
+});
+
+describe('parseScriptOutput — benchmark subcommand summary', () => {
+  it('parses [OK]/[FAIL] per-module markers + Result tally + emits top-level benchmark field', () => {
+    const stdout = [
+      '  [>>] core:jvm-perf (jvm) -> :core:jvm-perf:desktopBench',
+      '  [OK] core:jvm-perf (jvm) completed successfully.',
+      '  [>>] core:android-bench (android) -> :core:android-bench:androidBench',
+      '  [FAIL] core:android-bench (android) failed with exit code 1.',
+      '',
+      'Result: 1 passed, 1 failed',
+    ].join('\n');
+    const r = parseScriptOutput(stdout, '', [], 'benchmark');
+    expect(r.tests).toEqual({ total: 2, passed: 1, failed: 1, skipped: 0 });
+    expect(r.modules).toEqual(['core:jvm-perf', 'core:android-bench']);
+    expect(r.benchmark).toEqual({ config: null, total: 2, passed: 1, failed: 1 });
+    const failed = r.errors.find(e => e.code === 'module_failed');
+    expect(failed).toBeDefined();
+    expect(failed.module).toBe('core:android-bench');
+    expect(failed.platform).toBe('android');
+  });
+
+  it('reads --config value from args into benchmark.config', () => {
+    const stdout = [
+      '  [OK] core:bench (jvm) completed successfully.',
+      'Result: 1 passed, 0 failed',
+    ].join('\n');
+    const r = parseScriptOutput(stdout, '', ['--config', 'main'], 'benchmark');
+    expect(r.benchmark.config).toBe('main');
+    expect(r.benchmark.passed).toBe(1);
+  });
+});
+
+describe('parseScriptOutput — error code discriminators', () => {
+  it('extracts code "task_not_found" from "Cannot locate tasks" gradle error', () => {
+    const stderr = "Cannot locate tasks that match ':core-encryption:connectedDebugAndroidTest' as task 'connectedDebugAndroidTest' not found in project ':core-encryption'.";
+    const r = parseScriptOutput('', stderr, [], 'android');
+    const tnf = r.errors.find(e => e.code === 'task_not_found');
+    expect(tnf).toBeDefined();
+    expect(tnf.message).toMatch(/Cannot locate tasks/);
+  });
+
+  it('extracts code "unsupported_class_version" with class_file_version + runtime_version captured', () => {
+    const stderr = 'java.lang.UnsupportedClassVersionError: org/openjdk/jmh/Main has been compiled by a more recent version of the Java Runtime (class file version 65.0), this version of the Java Runtime only recognizes class file versions up to 61.0';
+    const r = parseScriptOutput('Result: 0 passed, 1 failed', stderr, [], 'benchmark');
+    const ucv = r.errors.find(e => e.code === 'unsupported_class_version');
+    expect(ucv).toBeDefined();
+    expect(ucv.class_file_version).toBe(65);
+    expect(ucv.runtime_version).toBe(61);
+  });
+});
+
+describe('parseScriptOutput — subcommand-aware fallback', () => {
+  it('android: does NOT add parse-gap error when [FAIL] markers are seen but no JSON SUMMARY', () => {
+    const stdout = '  [FAIL] core:net (00:45) - 5 tests, 2 failed';
+    const r = parseScriptOutput(stdout, '', [], 'android');
+    expect(r.errors.find(e => /no recognizable/.test(e.message))).toBeUndefined();
+    expect(r.errors.some(e => e.code === 'module_failed')).toBe(true);
+  });
+});
+
+describe('buildJsonReport — optional benchmark field', () => {
+  it('forwards parsed.benchmark only when present (omitted on non-benchmark subcommands)', () => {
+    const parsedNoBench = parseScriptOutput('BUILD SUCCESSFUL', '', [], 'parallel');
+    const objNoBench = buildJsonReport({
+      subcommand: 'parallel', projectRoot: '/x', exitCode: 0, durationMs: 0, parsed: parsedNoBench,
+    });
+    expect(objNoBench).not.toHaveProperty('benchmark');
+
+    const stdout = '[OK] mod (jvm) completed successfully.\nResult: 1 passed, 0 failed';
+    const parsedBench = parseScriptOutput(stdout, '', ['--config', 'main'], 'benchmark');
+    const objBench = buildJsonReport({
+      subcommand: 'benchmark', projectRoot: '/x', exitCode: 0, durationMs: 0, parsed: parsedBench,
+    });
+    expect(objBench.benchmark).toEqual({ config: 'main', total: 1, passed: 1, failed: 0 });
+  });
+});
+
+// ============================================================================
 // --exclude-modules / --include-untested passthrough (v0.5.0 — Bug B fix)
 // ============================================================================
 
@@ -1109,16 +1326,16 @@ describe('getIgnoreJdkMismatch', () => {
   });
 });
 
-describe('findJvmToolchainVersion', () => {
+describe('findRequiredJdkVersion', () => {
   it('extracts N from jvmToolchain(N) in build.gradle.kts at the root', () => {
     withFakeKmpProject(17, dir => {
-      expect(findJvmToolchainVersion(dir)).toBe(17);
+      expect(findRequiredJdkVersion(dir)).toBe(17);
     });
   });
-  it('returns null when no *.gradle.kts contains jvmToolchain', () => {
+  it('returns null when no JDK signal found anywhere', () => {
     withFakeGradleProject(dir => {
       writeFileSync(path.join(dir, 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
-      expect(findJvmToolchainVersion(dir)).toBeNull();
+      expect(findRequiredJdkVersion(dir)).toBeNull();
     });
   });
   it('walks subdirectories to find a nested jvmToolchain', () => {
@@ -1127,7 +1344,7 @@ describe('findJvmToolchainVersion', () => {
       mkdirSync(sub, { recursive: true });
       writeFileSync(path.join(sub, 'build.gradle.kts'),
         'kotlin { jvmToolchain(21) }\n');
-      expect(findJvmToolchainVersion(dir)).toBe(21);
+      expect(findRequiredJdkVersion(dir)).toBe(21);
     });
   });
   it('skips build/, .gradle/, node_modules/ when walking', () => {
@@ -1136,8 +1353,48 @@ describe('findJvmToolchainVersion', () => {
       mkdirSync(skipped, { recursive: true });
       writeFileSync(path.join(skipped, 'build.gradle.kts'),
         'kotlin { jvmToolchain(99) }\n');
-      // No real jvmToolchain anywhere except inside build/ — must return null.
-      expect(findJvmToolchainVersion(dir)).toBeNull();
+      // No real signal anywhere except inside build/ — must return null.
+      expect(findRequiredJdkVersion(dir)).toBeNull();
+    });
+  });
+
+  it('detects JvmTarget.JVM_N in convention plugins under build-logic/', () => {
+    // Real-world case (v0.5.1 Bug F): a project with no jvmToolchain anywhere
+    // but its KmpBenchmarkConventionPlugin sets jvmTarget = JvmTarget.JVM_21,
+    // which makes the compiled bytecode require JDK 21+ at runtime.
+    withFakeGradleProject(dir => {
+      const conv = path.join(dir, 'build-logic', 'src', 'main', 'kotlin');
+      mkdirSync(conv, { recursive: true });
+      writeFileSync(path.join(conv, 'KmpBenchmarkConventionPlugin.kt'),
+        'import org.jetbrains.kotlin.gradle.dsl.JvmTarget\n\n' +
+        'class KmpBenchmarkConventionPlugin {\n' +
+        '  fun apply() {\n' +
+        '    jvm("desktop") { compilerOptions { jvmTarget.set(JvmTarget.JVM_21) } }\n' +
+        '  }\n}\n');
+      expect(findRequiredJdkVersion(dir)).toBe(21);
+    });
+  });
+
+  it('detects JavaVersion.VERSION_N in compileOptions blocks (Android source/target compatibility)', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'android {\n' +
+        '  compileOptions {\n' +
+        '    sourceCompatibility = JavaVersion.VERSION_17\n' +
+        '    targetCompatibility = JavaVersion.VERSION_17\n' +
+        '  }\n}\n');
+      expect(findRequiredJdkVersion(dir)).toBe(17);
+    });
+  });
+
+  it('returns the MAXIMUM across mixed signals (jvmToolchain 17 + JvmTarget.JVM_21 → 21)', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin {\n' +
+        '  jvmToolchain(17)\n' +
+        '  jvm("desktop") { compilerOptions { jvmTarget.set(JvmTarget.JVM_21) } }\n' +
+        '}\n');
+      expect(findRequiredJdkVersion(dir)).toBe(21);
     });
   });
 });

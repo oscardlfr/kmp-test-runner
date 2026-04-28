@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# jdk-check.sh — JDK toolchain pre-flight gate for any script that spawns gradle.
+# jdk-check.sh — JDK pre-flight gate for any script that spawns gradle.
 #
 # Source this file and call:
 #   gate_jdk_mismatch "$PROJECT_ROOT" "$IGNORE_JDK_MISMATCH" || exit $?
@@ -9,11 +9,13 @@
 #   1. If gradle.properties has `org.gradle.java.home` pointing to an existing
 #      directory: export JAVA_HOME to that path and return 0 (gradle uses its
 #      own java home; no mismatch possible).
-#   2. Else: scan *.gradle.kts for `jvmToolchain(N)`. If found, compare N
-#      against current `java -version`.
+#   2. Else: scan *.gradle.kts and *.kt for any of these JDK requirement
+#      signals — `jvmToolchain(N)`, `JvmTarget.JVM_N`,
+#      `JavaVersion.VERSION_N` — and take the MAX. If found, compare against
+#      current `java -version`.
 #   3. On mismatch: print actionable error to stderr and return 3, unless
 #      $IGNORE_JDK_MISMATCH == "true", in which case print a WARN and return 0.
-#   4. On no mismatch (or no jvmToolchain found, or no java on PATH): return 0.
+#   4. On no mismatch (or no signal found, or no java on PATH): return 0.
 #
 # Exit code 3 matches kmp-test's EXIT.ENV_ERROR convention.
 # =============================================================================
@@ -45,11 +47,30 @@ gate_jdk_mismatch() {
         fi
     fi
 
-    # 2. Detect required jvmToolchain version.
-    local jvm_version
-    jvm_version="$(grep -rh "jvmToolchain" "$project_root" --include="*.gradle.kts" 2>/dev/null \
-        | head -1 | grep -oE '[0-9]+' | head -1 || true)"
-    if [[ -z "$jvm_version" ]]; then
+    # 2. Detect required JDK version. Three signals — pick the max:
+    #    a) jvmToolchain(N)          — gradle compile/test toolchain
+    #    b) JvmTarget.JVM_N          — kotlin bytecode target
+    #    c) JavaVersion.VERSION_N    — Android source/target compatibility
+    # Scan both *.gradle.kts and *.kt (convention plugins live in build-logic/*.kt).
+    local jvm_version=0
+    local n
+    while IFS= read -r n; do
+        [[ -n "$n" && "$n" -gt "$jvm_version" ]] && jvm_version="$n"
+    done < <(
+        grep -rhE 'jvmToolchain[[:space:]]*\([[:space:]]*[0-9]+' "$project_root" \
+            --include="*.gradle.kts" --include="*.kt" \
+            --exclude-dir=build --exclude-dir=.gradle --exclude-dir=node_modules --exclude-dir=.git \
+            2>/dev/null | grep -oE '[0-9]+' || true
+        grep -rhE 'JvmTarget\.JVM_[0-9]+' "$project_root" \
+            --include="*.gradle.kts" --include="*.kt" \
+            --exclude-dir=build --exclude-dir=.gradle --exclude-dir=node_modules --exclude-dir=.git \
+            2>/dev/null | grep -oE 'JVM_[0-9]+' | grep -oE '[0-9]+' || true
+        grep -rhE 'JavaVersion\.VERSION_[0-9]+' "$project_root" \
+            --include="*.gradle.kts" --include="*.kt" \
+            --exclude-dir=build --exclude-dir=.gradle --exclude-dir=node_modules --exclude-dir=.git \
+            2>/dev/null | grep -oE 'VERSION_[0-9]+' | grep -oE '[0-9]+' || true
+    )
+    if [[ "$jvm_version" -eq 0 ]]; then
         return 0
     fi
 

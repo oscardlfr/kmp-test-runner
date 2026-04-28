@@ -5,9 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`--json` envelope now surfaces real signal for `android` and `benchmark` failures (Bug G).** Previously a failed `kmp-test android --json` or `kmp-test benchmark --json` returned `{"errors": [{"message": "Build failed with an exception."}]}` and dropped per-module detail on the floor — even though the underlying script wrote a fully structured summary to stdout. `parseScriptOutput` now dispatches per-subcommand: android parses the `=== JSON SUMMARY ===` JSON block (per-module status, log file paths, retry flag); benchmark parses the `[OK]/[FAIL] <module> (<platform>) completed/failed` lines plus the `Result: X passed, Y failed` tally; parallel/changed/coverage keep the legacy `Tests: X total | …` shape. Backward compatible — when subcommand is omitted (e.g. internal callers, downstream consumers), the legacy parser runs.
+
+- **`--test-filter '*Foo*'` now substring-matches Android instrumented test classes (`*Scale*` → `ScaleBenchmark`).** `findFirstClassFqn` previously stripped wildcards and searched for the literal core with a regex word boundary (`class\s+Scale\b`), which failed to match `class ScaleBenchmark` because `B` is a word char and breaks the boundary. The function now interprets wildcards as wildcards: `*Foo*` (substring), `Foo*` (prefix), `*Foo` (suffix), `Foo` (exact, preserves prior behavior). Real-world reproducer: `kmp-test benchmark --platform android --test-filter '*Scale*'` now correctly resolves to a class FQN and runs; before, gradle received the literal `*Scale*` and the instrumentation runner errored with `Failed loading specified test class '*Scale*'`.
+
+- **JDK toolchain pre-flight gate (Bug A) now also detects `JvmTarget.JVM_N` and `JavaVersion.VERSION_N` declarations (Bug F).** Previously `findJvmToolchainVersion` only scanned for `jvmToolchain(N)` calls. Projects that pin `compilerOptions { jvmTarget.set(JvmTarget.JVM_21) }` in a convention plugin under `build-logic/` (without declaring `jvmToolchain`) slipped through the gate, then crashed at runtime with `UnsupportedClassVersionError class file v65 vs runtime v61` when the gradle worker used a JDK 17 JAVA_HOME. Three signals are now recognized — `jvmToolchain(N)`, `JvmTarget.JVM_N`, `JavaVersion.VERSION_N` — and the MAX is taken as the project's effective JDK requirement. Function renamed to `findRequiredJdkVersion`. SH/PS1 parity: `scripts/sh/lib/jdk-check.sh` and `scripts/ps1/lib/Jdk-Check.ps1` updated symmetrically. Real-world impact: a project compiling to JVM 21 bytecode is now blocked at pre-flight in <1s instead of failing 10+ minutes into a benchmark run.
+
+### Added
+- **`errors[].code` discriminators** so agents can branch on failure cause without regex on `message`. New codes:
+  - `task_not_found` — gradle "Cannot locate tasks that match" (e.g. KMP `androidLibrary{}` DSL has no `connectedDebugAndroidTest`).
+  - `unsupported_class_version` — `UnsupportedClassVersionError` with `class_file_version` + `runtime_version` integer fields (e.g. kotlinx-benchmark internals require JDK 21+ on a JDK 17 toolchain).
+  - `instrumented_setup_failed` — android emulator/device couldn't host instrumented tests.
+  - `module_failed` — per-module failure in android/benchmark output, with `module`, `platform` (benchmark), `log_file`, `logcat_file`, `errors_file` paths so agents can `Read` the full detail without re-running.
+- **`warnings[].code = "json_summary_parse_failed"`** when the android script's JSON SUMMARY block is present but malformed (truncated stdout, JSON parse error). Parser falls back to scanning the bracket-table.
+- **Top-level `benchmark` field on the JSON envelope** for `kmp-test benchmark --json`: `{ config, total, passed, failed }`. Conditionally included — non-benchmark subcommands keep the existing envelope shape unchanged.
+- **PowerShell benchmark script (`scripts/ps1/run-benchmarks.ps1`) now emits the bash-parity `[OK]/[FAIL] <module> (<platform>) completed/failed` per-task lines and `Result: X passed, Y failed` tally** so the parser handles Windows output identically to Linux/macOS.
+
+### Tests
+- 17 new vitest tests across 8 describe blocks: android/benchmark summary parsing (5), error-code discriminators (2), subcommand-aware fallback (1), optional `benchmark` envelope field (1), wildcard test-filter resolution (4: substring/prefix/suffix/exact-boundary), extended JDK signal detection (3: jvmTarget, JavaVersion, MAX-of-mixed), regression for `*Scale*` against `ScaleBenchmark` (1).
+- 6 new bats tests: 4 pinning script-source contracts (`=== JSON SUMMARY ===` delimiter + JSON field names + `Result:` tally + `[OK]/[FAIL]` per-task format), 2 covering the extended JDK gate (`JvmTarget.JVM_N` in build-logic + MAX-of-signals).
+- 5 new Pester tests: 3 for the script-source contracts on the ps1 side, 2 for the extended JDK gate.
+
 ## [0.5.0] — 2026-04-27
 
-> **"Real-world Mac validation hardening"** — bundles 4 production bugs surfaced when a user ran `kmp-test v0.4.1` on a corporate Mac against a 20-module OpenNative project. Bug A (#43): JDK toolchain mismatch becomes blocking by default. Bug B (#44): auto-skip modules without test source sets + `--exclude-modules` flag for heterogeneous projects. Bug C (#46): Gradle 9 deprecation noise routed to `warnings[]` not `errors[]`. Bug D (#47): per-shell installer PATH detection (zsh / bash / fish / sh) + accurate post-install hint. Plus README docs (#45) for the new flags + JSON schema. Total: 50+ new tests across vitest, bats, Pester.
+> **"Real-world Mac validation hardening"** — bundles 4 production bugs surfaced when running `kmp-test v0.4.1` on macOS against a 20-module Android-only KMP project. Bug A (#43): JDK toolchain mismatch becomes blocking by default. Bug B (#44): auto-skip modules without test source sets + `--exclude-modules` flag for heterogeneous projects. Bug C (#46): Gradle 9 deprecation noise routed to `warnings[]` not `errors[]`. Bug D (#47): per-shell installer PATH detection (zsh / bash / fish / sh) + accurate post-install hint. Plus README docs (#45) for the new flags + JSON schema. Total: 50+ new tests across vitest, bats, Pester.
 
 ### Added
 - **`warnings[]` array in the `--json` envelope** for non-fatal signals that agents should branch on differently than `errors[]`. First entry: `gradle_deprecation` — emitted when gradle exits non-zero solely because of Gradle 9+ deprecation warnings while every individual task still passed. Includes `gradle_exit_code` and `tasks_passed` integer fields so callers can sanity-check.
@@ -16,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The legacy `[!]` prefix variant is still recognized by the parser for backward compatibility with older direct-script invocations.
   - `warnings: []` is now part of the canonical envelope shape — emitted by `buildJsonReport`, `envErrorJson`, and `buildDryRunReport` (always-present, defaults to empty).
 
-- **`--exclude-modules <list>` and `--include-untested` flags** for `parallel` + `changed` (translated to `-ExcludeModules` / `-IncludeUntested` on PowerShell). Solves the "not all modules have tests" case in heterogeneous projects (e.g. corporate KMP setups where `:api`, `:build-logic`, and aggregator modules by convention have no test source set).
+- **`--exclude-modules <list>` and `--include-untested` flags** for `parallel` + `changed` (translated to `-ExcludeModules` / `-IncludeUntested` on PowerShell). Solves the "not all modules have tests" case in heterogeneous projects (e.g. KMP setups where `:api`, `:build-logic`, and aggregator modules by convention have no test source set).
   - **Auto-skip by default**: modules whose filesystem path contains no `src/test`, `src/commonTest`, `src/jvmTest`, `src/desktopTest`, `src/androidUnitTest`, `src/androidInstrumentedTest`, `src/androidTest`, `src/iosTest`, or `src/nativeTest` directory are silently filtered out before gradle is invoked. Each skip prints `[SKIP] <module> (no test source set — pass --include-untested to override)` to stderr so the tally stays honest.
   - **Explicit exclusion**: `--exclude-modules "*:api,build-logic"` accepts comma-separated globs (matches `--module-filter` syntax). Excluded modules print `[SKIP] <module> (excluded by --exclude-modules)`.
   - **Opt-out**: `--include-untested` re-includes modules with no test source set (for projects under early development where modules exist but tests don't yet).
@@ -32,7 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`[NOTICE]` prefix replaces `[!]` for the Gradle 9 deprecation handler line in markdown mode** (sh + ps1 parallel scripts). Distinct prefix lets humans tell benign deprecation noise from real `[!]` warnings at a glance, and lets the JSON parser route it correctly.
 - **PowerShell parallel script gains the missing JVM-error / deprecation 3-branch logic** that the bash sibling has had since the original v0.3.x. Previously the ps1 had a single coarse `if (testExitCode -ne 0 -and failureCount -eq 0)` that printed `[!]` for all non-zero exits, masking the JVM-level vs deprecation distinction on Windows.
 
-- **JDK toolchain mismatch is now BLOCKING by default** (was: warning that printed and continued). When `jvmToolchain(N)` in any `*.gradle.kts` differs from the major version reported by `java -version`, kmp-test exits 3 (`EXIT.ENV_ERROR`) before spawning gradle, with an actionable per-OS hint for setting `JAVA_HOME`. Previously the script warned and proceeded, which caused tests to fail downstream with `UnsupportedClassVersionError` (real-world bug surfaced on a corporate Mac running v0.4.1 against a 20-module OpenNative project).
+- **JDK toolchain mismatch is now BLOCKING by default** (was: warning that printed and continued). When `jvmToolchain(N)` in any `*.gradle.kts` differs from the major version reported by `java -version`, kmp-test exits 3 (`EXIT.ENV_ERROR`) before spawning gradle, with an actionable per-OS hint for setting `JAVA_HOME`. Previously the script warned and proceeded, which caused tests to fail downstream with `UnsupportedClassVersionError` (real-world bug surfaced on macOS running v0.4.1 against a 20-module Android-only project).
   - Bypass with `--ignore-jdk-mismatch` (sh/cli) or `-IgnoreJdkMismatch` (ps1) — downgrades the block to a `WARN` line.
   - The check is skipped when `gradle.properties` declares `org.gradle.java.home` pointing to an existing directory (gradle's explicit JDK override wins).
   - JSON envelope: `errors[0]` carries `code: "jdk_mismatch"` plus `required_jdk` / `current_jdk` integer fields.
@@ -208,8 +232,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `.gradle/`, `node_modules/`, `.git/`). If no match is found, the original
     pattern is forwarded — gradle/Android then surfaces a clear error rather
     than the CLI guessing.
-  Caught while validating v0.3.4 against `dipatternsdemo` (3 benchmark classes,
-  user wanted to filter to a single one).
+  Caught while validating v0.3.4 against a personal benchmark project
+  (3 benchmark classes, user wanted to filter to a single one).
 - Conventional Commits enforcement on PR titles via
   `.github/workflows/commit-lint.yml`. Adapted inline from
   AndroidCommonDoc/reusable-commit-lint.yml so the repo stays standalone (per
@@ -346,8 +370,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the runner skips modules that don't declare the requested platform with a
   `[SKIP]` warning. If every module/platform combination is skipped, the
   script exits `3` (env error) with a useful hint instead of pretending success.
-  Discovered while validating v0.3.4 against `dipatternsdemo` (an
-  `androidx.benchmark`-only project).
+  Discovered while validating v0.3.4 against an `androidx.benchmark`-only
+  personal project.
 - `detect_benchmark_modules` (sh) now correctly handles the default
   `--module-filter "*"`. Previously the filter check used a literal substring
   match (`[[ "$mod" != *"*"* ]]`), so passing `*` filtered EVERY module out
