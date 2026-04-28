@@ -149,8 +149,13 @@ function Test-ModuleHasTask {
     $cache = Invoke-GradleTasksProbe -ProjectRoot $ProjectRoot
     if (-not $cache) { return $null }
 
+    # `gradlew tasks --all` emits `module:task - description` (NO leading
+    # colon) at column 0. Earlier versions of this probe required a `:`
+    # prefix in the needle, which never matched and caused every probe to
+    # fall back to the legacy umbrella task (Bug observed in shared-kmp-libs:
+    # `core-encryption:androidConnectedCheck` was in cache but probe rc=1).
     $mod = $Module.TrimStart(':')
-    $needle = ":${mod}:${Task}"
+    $needle = "${mod}:${Task}"
     $pattern = "(^|\s)" + [regex]::Escape($needle) + "(\s|$)"
 
     if (Select-String -Path $cache -Pattern $pattern -Quiet -ErrorAction SilentlyContinue) {
@@ -178,9 +183,10 @@ function Get-ModuleFirstExistingTask {
     $cache = Invoke-GradleTasksProbe -ProjectRoot $ProjectRoot
     if (-not $cache) { return @{ Task = $null; Status = 'probe_unavailable' } }
 
+    # See Test-ModuleHasTask for cache-format rationale (no leading colon).
     $mod = $Module.TrimStart(':')
     foreach ($t in $Candidates) {
-        $needle = ":${mod}:${t}"
+        $needle = "${mod}:${t}"
         $pattern = "(^|\s)" + [regex]::Escape($needle) + "(\s|$)"
         if (Select-String -Path $cache -Pattern $pattern -Quiet -ErrorAction SilentlyContinue) {
             return @{ Task = $t; Status = 'found' }

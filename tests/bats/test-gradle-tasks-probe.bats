@@ -11,16 +11,20 @@ setup() {
     echo 'rootProject.name = "probe-test"' > "$WORK_DIR/settings.gradle.kts"
 
     # Stub gradlew that emits a canned task-set output.
+    # Format mirrors REAL `gradlew tasks --all --quiet` output:
+    #   `module:task - description` (NO leading colon at column 0).
+    # An earlier version of this fixture used `:core-foo:test` (synthetic
+    # leading colon) and accidentally validated a probe regex that never
+    # matched real gradle output — see the cache-format fix in this PR.
     cat > "$WORK_DIR/gradlew" << 'EOF'
 #!/usr/bin/env bash
-# Mimics `gradlew tasks --all --quiet` output for the probe.
 cat <<TASKS
-:core-foo:test
-:core-foo:jacocoTestReport
-:core-bar:test
-:core-bar:connectedAndroidTest
-:core-bar:androidConnectedCheck
-:legacy-only:connectedDebugAndroidTest
+core-foo:test - Runs the unit tests.
+core-foo:jacocoTestReport - Generates code coverage report for the test task.
+core-bar:test - Runs the unit tests.
+core-bar:connectedAndroidTest - Installs and runs instrumentation tests on connected devices.
+core-bar:androidConnectedCheck - Runs all device checks on currently connected devices.
+legacy-only:connectedDebugAndroidTest - Installs and runs the tests for debug on connected devices.
 TASKS
 exit 0
 EOF
@@ -137,6 +141,69 @@ teardown() {
     set -e
     rm -rf "$empty_dir"
     [ "$rc" -eq 2 ]
+}
+
+@test "module_has_task: matches real gradle format (no leading colon) — regression for probe-cache miss" {
+    # The bug: when gradle emits `core-bar:androidConnectedCheck - Runs ...`
+    # at column 0, an earlier needle of `:core-bar:androidConnectedCheck`
+    # never matched because the line didn't start with `:`. Real-world impact
+    # against shared-kmp-libs: probe rc=1 + fallback to umbrella task even
+    # though `androidConnectedCheck` was right there in the cache.
+    # shellcheck disable=SC1090
+    source "$PROBE_LIB"
+    set +e
+    module_has_task "$WORK_DIR" "core-bar" "androidConnectedCheck"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ]
+}
+
+@test "module_has_task: caller-supplied leading colon is stripped (backward compat)" {
+    # Even though gradle output never has a leading colon, callers in the
+    # codebase sometimes pass `:module` (gradle invocation syntax). Verify
+    # we strip it cleanly so both forms work.
+    # shellcheck disable=SC1090
+    source "$PROBE_LIB"
+    set +e
+    module_has_task "$WORK_DIR" ":core-foo" "jacocoTestReport"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ]
+}
+
+@test "module_first_existing_task: prefers earlier candidates (KMP androidLibrary{} priority)" {
+    # Bug B' fallback: when both connectedDebugAndroidTest AND
+    # androidConnectedCheck exist (rare but possible), pick the FIRST in
+    # priority. core-bar has both connectedAndroidTest and androidConnectedCheck;
+    # query with both candidates → must pick the first one in our list.
+    # shellcheck disable=SC1090
+    source "$PROBE_LIB"
+    local picked
+    picked="$(module_first_existing_task "$WORK_DIR" "core-bar" \
+        "connectedAndroidTest" "androidConnectedCheck")"
+    [ "$picked" = "connectedAndroidTest" ]
+}
+
+@test "module_first_existing_task: falls back to umbrella when only that exists" {
+    # The KMP `androidLibrary{}` DSL: only androidConnectedCheck is defined.
+    # Verify we walk the candidate list and pick the umbrella.
+    # shellcheck disable=SC1090
+    source "$PROBE_LIB"
+    # Override the gradlew stub to simulate a KMP-only module.
+    cat > "$WORK_DIR/gradlew" << 'EOF'
+#!/usr/bin/env bash
+cat <<TASKS
+kmp-module:androidConnectedCheck - Runs all device checks on currently connected devices.
+TASKS
+exit 0
+EOF
+    chmod +x "$WORK_DIR/gradlew"
+    # Force a fresh cache (settings.gradle.kts mtime change to trigger key change).
+    echo '# touch' >> "$WORK_DIR/settings.gradle.kts"
+    local picked
+    picked="$(module_first_existing_task "$WORK_DIR" "kmp-module" \
+        "connectedDebugAndroidTest" "connectedAndroidTest" "androidConnectedCheck")"
+    [ "$picked" = "androidConnectedCheck" ]
 }
 
 @test "clear_gradle_tasks_cache: removes cache files" {

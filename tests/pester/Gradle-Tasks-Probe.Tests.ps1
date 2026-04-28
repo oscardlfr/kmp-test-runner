@@ -13,13 +13,18 @@ BeforeAll {
     # that emits a canned `tasks --all --quiet` task list.
     function script:New-ProbeFixture {
         param(
+            # Format mirrors REAL `gradlew tasks --all --quiet` output:
+            # `module:task - description` (NO leading colon at column 0). An
+            # earlier fixture used `:core-foo:test` with a synthetic leading
+            # colon, which paired with a probe regex that never matched real
+            # gradle output — see the cache-format fix in this PR.
             [string[]]$Tasks = @(
-                ':core-foo:test',
-                ':core-foo:jacocoTestReport',
-                ':core-bar:test',
-                ':core-bar:connectedAndroidTest',
-                ':core-bar:androidConnectedCheck',
-                ':legacy-only:connectedDebugAndroidTest'
+                'core-foo:test - Runs the unit tests.',
+                'core-foo:jacocoTestReport - Generates code coverage report for the test task.',
+                'core-bar:test - Runs the unit tests.',
+                'core-bar:connectedAndroidTest - Installs and runs instrumentation tests on connected devices.',
+                'core-bar:androidConnectedCheck - Runs all device checks on currently connected devices.',
+                'legacy-only:connectedDebugAndroidTest - Installs and runs the tests for debug on connected devices.'
             )
         )
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("probe-fixture-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
@@ -175,6 +180,77 @@ Describe 'Get-ModuleFirstExistingTask: candidate priority' {
         } finally {
             Remove-Item -Recurse -Force $emptyDir -ErrorAction SilentlyContinue
         }
+    }
+}
+
+Describe 'Cache format regression — module:task without leading colon' {
+
+    It 'Test-ModuleHasTask returns $true for androidConnectedCheck (KMP umbrella)' {
+        # Bug observed against shared-kmp-libs: probe rc=$false even though
+        # `core-bar:androidConnectedCheck` was in the cache. Cause: needle
+        # was `:core-bar:androidConnectedCheck` but cache emitted no leading
+        # colon. Fixed by aligning the needle to real gradle output format.
+        $dir = New-ProbeFixture
+        try {
+            Test-ModuleHasTask -ProjectRoot $dir -Module 'core-bar' -Task 'androidConnectedCheck' | Should -BeTrue
+        } finally {
+            Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'Test-ModuleHasTask: caller-supplied leading colon is stripped' {
+        # Some callers in the codebase pass `:module` (gradle invocation
+        # syntax). Verify both `:module` and bare `module` work.
+        $dir = New-ProbeFixture
+        try {
+            Test-ModuleHasTask -ProjectRoot $dir -Module ':core-foo' -Task 'jacocoTestReport' | Should -BeTrue
+            Test-ModuleHasTask -ProjectRoot $dir -Module 'core-foo' -Task 'jacocoTestReport' | Should -BeTrue
+        } finally {
+            Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'Get-ModuleFirstExistingTask: picks androidConnectedCheck on KMP-only modules' {
+        # Real-world repro: a fresh KMP module with `androidLibrary { }` DSL
+        # only exposes `androidConnectedCheck`. Probe must walk the candidate
+        # list and pick that umbrella task.
+        $kmpFixture = New-ProbeFixture -Tasks @(
+            'kmp-only:androidConnectedCheck - Runs all device checks on currently connected devices.'
+        )
+        try {
+            $r = Get-ModuleFirstExistingTask -ProjectRoot $kmpFixture -Module 'kmp-only' `
+                -Candidates @('connectedDebugAndroidTest', 'connectedAndroidTest', 'androidConnectedCheck')
+            $r.Status | Should -Be 'found'
+            $r.Task   | Should -Be 'androidConnectedCheck'
+        } finally {
+            Remove-Item -Recurse -Force $kmpFixture -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+Describe 'run-android-tests.ps1 — single-item pipeline collapse (summary.json counts)' {
+
+    BeforeAll {
+        $script:RunAndroid = Join-Path $script:RepoRoot 'scripts\ps1\run-android-tests.ps1'
+        $script:RunAndroidText = Get-Content $script:RunAndroid -Raw
+    }
+
+    It 'wraps $modules filter result in @(...) so .Count is the array length' {
+        # Without @(...) the single-item Where-Object pipeline collapses to a
+        # hashtable and $modules.Count returned the number of HASHTABLE KEYS
+        # (5: Name, Path, HasFlavor, IsKmp, Description) instead of array
+        # length 1, propagating into summary.json as `totalModules: 5` for
+        # single-module runs.
+        $script:RunAndroidText | Should -Match '\$modules\s*=\s*@\(\s*\$modules\s*\|\s*Where-Object'
+    }
+
+    It 'wraps $totalSuccess and $totalFailure in @(...) for the same reason' {
+        # Single-result runs would otherwise report `passedModules: 11` (the
+        # 11 keys in the per-module result hashtable: Module, Status, Duration,
+        # Success, TestsPassed, TestsFailed, TestsSkipped, LogFile, LogcatFile,
+        # ErrorsFile, Retried).
+        $script:RunAndroidText | Should -Match '\$totalSuccess\s*=\s*@\(\$results\s*\|\s*Where-Object'
+        $script:RunAndroidText | Should -Match '\$totalFailure\s*=\s*@\(\$results\s*\|\s*Where-Object'
     }
 }
 

@@ -148,9 +148,13 @@ module_has_task() {
     local cache_file
     cache_file="$(probe_gradle_tasks "$project_root")" || return 2
 
-    # Normalize module: strip leading colon, then prepend single colon
+    # `gradlew tasks --all` emits `module:task - description` (NO leading colon)
+    # at column 0. Earlier versions of this probe required a `:` prefix in the
+    # needle, which never matched and caused every probe to fall back to the
+    # legacy umbrella task. Strip any caller-supplied colon and match the
+    # actual cache format.
     module="${module#:}"
-    local needle=":${module}:${task}"
+    local needle="${module}:${task}"
 
     grep -qE "(^|[[:space:]])${needle}([[:space:]]|$)" "$cache_file" 2>/dev/null
     # grep returns 0 (found) or 1 (missing), which matches our contract.
@@ -172,10 +176,11 @@ module_first_existing_task() {
     local cache_file
     cache_file="$(probe_gradle_tasks "$project_root")" || return 2
 
+    # See `module_has_task` for cache-format rationale (no leading colon).
     module="${module#:}"
     local task
     for task in "$@"; do
-        local needle=":${module}:${task}"
+        local needle="${module}:${task}"
         if grep -qE "(^|[[:space:]])${needle}([[:space:]]|$)" "$cache_file" 2>/dev/null; then
             echo "$task"
             return 0
