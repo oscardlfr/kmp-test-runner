@@ -407,23 +407,32 @@ Pair with `--json` for a structured plan:
 
 `--dry-run` still validates `gradlew` (so a missing wrapper still exits `3`). It just stops before spawning the script.
 
-### `--test-filter <pattern>` — single-class scope
+### `--test-filter <pattern>` — single-class or single-method scope
 
-Cuts a multi-module suite down to one test class without forcing the agent to bypass the CLI:
+Cuts a multi-module suite down to one test class — or one method — without forcing the agent to bypass the CLI:
 
 ```sh
 # JVM gradle tasks — gradle's --tests handles globs natively
 kmp-test parallel --test-filter "*FooServiceTest"
+kmp-test parallel --test-filter "com.example.FooServiceTest.shouldFooBar"
 
 # Android instrumented — CLI resolves *Pattern* to FQN by source scan
 # (the Android runner doesn't accept wildcards, so this resolution is required)
 kmp-test android --test-filter "*WidgetTest*"
 
+# Android method-level (v0.5.2): both forms accepted
+kmp-test android --test-filter "com.example.WidgetTest#shouldRenderEmpty"
+kmp-test android --test-filter "*WidgetTest*#shouldRenderEmpty"   # wildcard + method
+kmp-test android --test-filter "com.example.WidgetTest.shouldRenderEmpty"   # `.method` heuristic
+
 # Benchmark — same translation, per-platform
 kmp-test benchmark --platform android --test-filter "*ScaleBenchmark*"
+kmp-test benchmark --platform android --test-filter "*ScaleBenchmark*#fastPath"
 ```
 
 When the pattern contains `*`, the CLI walks the project sources (skipping `build/`, `.gradle/`, `node_modules/`, `.git/`) for a `class <stripped>` declaration and substitutes the FQN. If no match is found, the original pattern is forwarded — gradle/Android then surfaces a clear error rather than the CLI guessing.
+
+**Method-level filtering on Android** (v0.5.2): when the pattern carries a method portion (`#method` or `.method` heuristic — last segment lowercase implies method, classes are conventionally UpperCamelCase), the CLI splits class+method, resolves the class, and emits BOTH `-Pandroid.testInstrumentationRunnerArguments.class=<FQN>` AND `-Pandroid.testInstrumentationRunnerArguments.method=<method>` to AndroidJUnitRunner (which accepts both runner-args together). Use `#` if your class names happen to start with lowercase to avoid the heuristic.
 
 ### `kmp-test doctor` — environment diagnosis
 
