@@ -894,6 +894,35 @@ describe('main() — gradle timeout (Bug H)', () => {
     }
   });
 
+  it('--json mode surfaces gradle_timeout on Windows ETIMEDOUT error path (Bug H gap)', () => {
+    // On Windows the spawn timeout doesn't surface as result.signal=SIGTERM —
+    // it bubbles up as result.error.code='ETIMEDOUT'. Both paths must
+    // converge on the same gradle_timeout envelope so agents don't see a
+    // different shape across platforms.
+    spawnMock.mockReturnValue({
+      status: null,
+      signal: null,
+      error: Object.assign(new Error('spawnSync pwsh ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+    });
+    const captured = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+    try {
+      withFakeGradleProject(dir => {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+        const code = main();
+        expect(code).toBe(EXIT.TEST_FAIL);
+      });
+      process.stdout.write = origWrite;
+      const json = JSON.parse(captured.join('').trim());
+      const timeoutErr = (json.errors || []).find(e => e.code === 'gradle_timeout');
+      expect(timeoutErr).toBeTruthy();
+      expect(timeoutErr.message).toMatch(/exceeded.*timeout/);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+
   it('--json mode does NOT classify normal exits as gradle_timeout', () => {
     // status=0, no signal → just a successful run, no timeout error.
     spawnMock.mockReturnValue({
