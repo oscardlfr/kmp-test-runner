@@ -257,6 +257,19 @@ kmp-test parallel --exclude-modules "*:api,build-logic"
 kmp-test parallel --json
 ```
 
+### Coverage tools
+
+`kmp-test` supports both [**Kover**](https://github.com/Kotlin/kotlinx-kover) (Kotlin's official, KMP-native) and [**JaCoCo**](https://www.jacoco.org/jacoco/) (the JVM standard). Pick one with `--coverage-tool` / `-CoverageTool`:
+
+| Value | Behavior |
+|-------|----------|
+| `auto` _(default since v0.5.1 for parallel/coverage paths via the gradle-tasks probe)_ | Per-module detection — picks `koverXmlReport` / `jacocoTestReport` based on which plugin the module actually applies. Modules with no plugin emit `[SKIP coverage]` and tests still run. |
+| `kover` | Force Kover; assumes `org.jetbrains.kotlinx.kover` is applied per-module (or via convention plugin). Generates `koverXmlReportDesktop` / `koverXmlReportDebug`. |
+| `jacoco` | Force JaCoCo; assumes the `jacoco` plugin is applied. Generates `jacocoTestReport`. |
+| `none` | Skip coverage entirely — run tests only. Useful on heterogeneous projects where coverage isn't configured everywhere. |
+
+Heterogeneous projects (some modules with kover, some with jacoco, some with neither) are first-class — the `auto` mode + per-module probe will pick the right task per module and skip cleanly when none is applied. The aggregated report still works across mixed tools.
+
 ### Heterogeneous projects (modules without tests)
 
 Many real-world KMP/Android projects have modules that by convention contain no tests — `:api` interface modules, `:build-logic` convention plugins, parent aggregator modules, etc. `kmp-test` handles these automatically:
@@ -394,23 +407,32 @@ Pair with `--json` for a structured plan:
 
 `--dry-run` still validates `gradlew` (so a missing wrapper still exits `3`). It just stops before spawning the script.
 
-### `--test-filter <pattern>` — single-class scope
+### `--test-filter <pattern>` — single-class or single-method scope
 
-Cuts a multi-module suite down to one test class without forcing the agent to bypass the CLI:
+Cuts a multi-module suite down to one test class — or one method — without forcing the agent to bypass the CLI:
 
 ```sh
 # JVM gradle tasks — gradle's --tests handles globs natively
 kmp-test parallel --test-filter "*FooServiceTest"
+kmp-test parallel --test-filter "com.example.FooServiceTest.shouldFooBar"
 
 # Android instrumented — CLI resolves *Pattern* to FQN by source scan
 # (the Android runner doesn't accept wildcards, so this resolution is required)
 kmp-test android --test-filter "*WidgetTest*"
 
+# Android method-level (v0.5.2): both forms accepted
+kmp-test android --test-filter "com.example.WidgetTest#shouldRenderEmpty"
+kmp-test android --test-filter "*WidgetTest*#shouldRenderEmpty"   # wildcard + method
+kmp-test android --test-filter "com.example.WidgetTest.shouldRenderEmpty"   # `.method` heuristic
+
 # Benchmark — same translation, per-platform
 kmp-test benchmark --platform android --test-filter "*ScaleBenchmark*"
+kmp-test benchmark --platform android --test-filter "*ScaleBenchmark*#fastPath"
 ```
 
 When the pattern contains `*`, the CLI walks the project sources (skipping `build/`, `.gradle/`, `node_modules/`, `.git/`) for a `class <stripped>` declaration and substitutes the FQN. If no match is found, the original pattern is forwarded — gradle/Android then surfaces a clear error rather than the CLI guessing.
+
+**Method-level filtering on Android** (v0.5.2): when the pattern carries a method portion (`#method` or `.method` heuristic — last segment lowercase implies method, classes are conventionally UpperCamelCase), the CLI splits class+method, resolves the class, and emits BOTH `-Pandroid.testInstrumentationRunnerArguments.class=<FQN>` AND `-Pandroid.testInstrumentationRunnerArguments.method=<method>` to AndroidJUnitRunner (which accepts both runner-args together). Use `#` if your class names happen to start with lowercase to avoid the heuristic.
 
 ### `kmp-test doctor` — environment diagnosis
 

@@ -241,10 +241,18 @@ foreach ($mod in $modules) {
 
         # Per-platform translation of -TestFilter so a glob like *ScaleBenchmark*
         # produces gradle --tests for jvm and -Pandroid.test...class= for android.
+        # v0.5.2 Gap E: on android, a `#` in TestFilter means method-level filter
+        # — split class#method and emit BOTH runner-argument flags.
         $extraArgs = @()
         if ($TestFilter) {
             if ($plat -eq "jvm") {
                 $extraArgs += @("--tests", $TestFilter)
+            } elseif ($TestFilter -match '#') {
+                $hashIdx = $TestFilter.IndexOf('#')
+                $classPart = $TestFilter.Substring(0, $hashIdx)
+                $methodPart = $TestFilter.Substring($hashIdx + 1)
+                $extraArgs += "-Pandroid.testInstrumentationRunnerArguments.class=$classPart"
+                $extraArgs += "-Pandroid.testInstrumentationRunnerArguments.method=$methodPart"
             } else {
                 $extraArgs += "-Pandroid.testInstrumentationRunnerArguments.class=$TestFilter"
             }

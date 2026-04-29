@@ -134,6 +134,60 @@ EOF
 }
 
 # -----------------------------------------------------------------------------
+# v0.5.2 Gap B — ProjectModel fast-path consultation
+# -----------------------------------------------------------------------------
+# When .kmp-test-runner-cache/model-<sha>.json exists with a numeric
+# jdkRequirement.min, the gate must consult the model FIRST (broader 9-dir
+# walker, depth=12). The legacy walker (4-dir exclude, unbounded depth)
+# only runs when the model is absent.
+# -----------------------------------------------------------------------------
+
+@test "jdk-check lib (Gap B): fast-path uses model.json jdkRequirement.min when no walker signal exists" {
+    # Build.gradle.kts has NO jvmToolchain / JvmTarget / JavaVersion signals
+    # — the legacy walker would return 0 (no mismatch detected). But the
+    # model file declares jdkRequirement.min=21 (e.g. derived from
+    # build-logic convention plugins the walker missed) → gate must fire.
+    rm "$WORK_DIR/build.gradle.kts"
+    echo 'plugins { kotlin("jvm") }' > "$WORK_DIR/build.gradle.kts"
+
+    # Compute the cache key the same way the model lib does.
+    source scripts/sh/lib/gradle-tasks-probe.sh
+    local sha
+    sha="$(_kmp_compute_cache_key "$WORK_DIR")"
+    [ -n "$sha" ]
+
+    mkdir -p "$WORK_DIR/.kmp-test-runner-cache"
+    cat > "$WORK_DIR/.kmp-test-runner-cache/model-${sha}.json" <<EOF
+{
+  "schemaVersion": 1,
+  "projectRoot": "$WORK_DIR",
+  "generatedAt": "2026-04-29T00:00:00Z",
+  "cacheKey": "$sha",
+  "jdkRequirement": { "min": 21, "signals": ["build-logic-convention-plugin"] },
+  "settingsIncludes": [],
+  "modules": {}
+}
+EOF
+
+    source "$LIB"
+    run gate_jdk_mismatch "$WORK_DIR" "false"
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"requires JDK 21"* ]]
+    [[ "$output" == *"current JDK is 23"* ]]
+}
+
+@test "jdk-check lib (Gap B): falls back to legacy walker when model.json is absent" {
+    # No .kmp-test-runner-cache dir → model fast-path returns empty →
+    # walker scans build.gradle.kts (jvmToolchain(17) from setup) → mismatch fires.
+    [ ! -d "$WORK_DIR/.kmp-test-runner-cache" ]
+
+    source "$LIB"
+    run gate_jdk_mismatch "$WORK_DIR" "false"
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"requires JDK 17"* ]]
+}
+
+# -----------------------------------------------------------------------------
 # End-to-end: invoke the production parallel script and verify the gate fires
 # -----------------------------------------------------------------------------
 

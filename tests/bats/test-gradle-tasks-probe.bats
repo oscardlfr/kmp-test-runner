@@ -215,3 +215,65 @@ EOF
     clear_gradle_tasks_cache "$WORK_DIR"
     [ "$(find "$WORK_DIR/.kmp-test-runner-cache" -name 'tasks-*.txt' 2>/dev/null | wc -l)" -eq 0 ]
 }
+
+# v0.5.2 Gap C — cross-platform cache-key SHA byte parity.
+# Strategy: all three walkers (JS / bash / PS1) normalize content by stripping
+# ALL `\r` then trailing `\n+` before hashing, so files with identical
+# logical content but different line endings (CRLF vs LF) hash to the SAME
+# SHA on every platform. Fixtures + expected SHAs mirrored in
+# tests/vitest/project-model.test.js and
+# tests/pester/Gradle-Tasks-Probe.Tests.ps1.
+
+@test "_kmp_compute_cache_key (Gap C): LF fixture produces canonical SHA" {
+    local fix
+    fix="$(mktemp -d)"
+    printf 'rootProject.name = "x"\nplugins { kotlin("jvm") }\n' > "$fix/settings.gradle.kts"
+    printf 'plugins { kotlin("jvm") }\n' > "$fix/build.gradle.kts"
+    source "$PROBE_LIB"
+    local sha
+    sha="$(_kmp_compute_cache_key "$fix")"
+    [ "$sha" = "0939412f62e3d3480919e52e477d01063d948cdd" ]
+    rm -rf "$fix"
+}
+
+@test "_kmp_compute_cache_key (Gap C): CRLF fixture produces SAME canonical SHA (cross-platform parity)" {
+    local fix
+    fix="$(mktemp -d)"
+    printf 'rootProject.name = "x"\r\nplugins { kotlin("jvm") }\r\n' > "$fix/settings.gradle.kts"
+    printf 'plugins { kotlin("jvm") }\r\n' > "$fix/build.gradle.kts"
+    source "$PROBE_LIB"
+    local sha
+    sha="$(_kmp_compute_cache_key "$fix")"
+    # Same logical content as LF fixture; line-ending normalization via
+    # `tr -d '\r'` aligns bash with JS `s.replace(/\r/g, '')` and PS1
+    # `-replace '\r', ''`.
+    [ "$sha" = "0939412f62e3d3480919e52e477d01063d948cdd" ]
+    rm -rf "$fix"
+}
+
+@test "_kmp_compute_cache_key (Gap C): mixed CRLF+LF fixture produces SAME canonical SHA" {
+    local fix
+    fix="$(mktemp -d)"
+    printf 'rootProject.name = "x"\r\nplugins { kotlin("jvm") }\r\n' > "$fix/settings.gradle.kts"  # CRLF
+    printf 'plugins { kotlin("jvm") }\n' > "$fix/build.gradle.kts"                                 # LF
+    source "$PROBE_LIB"
+    local sha
+    sha="$(_kmp_compute_cache_key "$fix")"
+    [ "$sha" = "0939412f62e3d3480919e52e477d01063d948cdd" ]
+    rm -rf "$fix"
+}
+
+@test "_kmp_compute_cache_key (Gap C): multiple trailing newlines fold to same SHA" {
+    local a b sha_a sha_b
+    a="$(mktemp -d)"
+    b="$(mktemp -d)"
+    printf 'rootProject.name = "x"\nplugins { kotlin("jvm") }\n' > "$a/settings.gradle.kts"
+    printf 'plugins { kotlin("jvm") }\n' > "$a/build.gradle.kts"
+    printf 'rootProject.name = "x"\nplugins { kotlin("jvm") }\n\n\n' > "$b/settings.gradle.kts"
+    printf 'plugins { kotlin("jvm") }\n\n' > "$b/build.gradle.kts"
+    source "$PROBE_LIB"
+    sha_a="$(_kmp_compute_cache_key "$a")"
+    sha_b="$(_kmp_compute_cache_key "$b")"
+    [ "$sha_a" = "$sha_b" ]
+    rm -rf "$a" "$b"
+}

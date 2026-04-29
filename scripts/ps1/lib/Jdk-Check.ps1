@@ -9,16 +9,29 @@
 #   1. If gradle.properties has `org.gradle.java.home` pointing to an existing
 #      directory: set $env:JAVA_HOME to that path and return 0 (gradle uses
 #      its own java home; no mismatch possible).
-#   2. Else: scan *.gradle.kts and *.kt for any of these JDK requirement
-#      signals — `jvmToolchain(N)`, `JvmTarget.JVM_N`,
-#      `JavaVersion.VERSION_N` — and take the MAX. If found, compare against
-#      current `java -version`.
-#   3. On mismatch: print actionable error to stderr and return 3, unless
+#   2. Else, consult ProjectModel via `Get-PmJdkRequirement` (v0.5.2 Gap B
+#      fast-path) — JS canonical walker, 9-dir exclude list + depth=12.
+#   3. Else (model absent), fall back to the legacy walker that scans
+#      *.gradle.kts and *.kt for any of these JDK requirement signals —
+#      `jvmToolchain(N)`, `JvmTarget.JVM_N`, `JavaVersion.VERSION_N` — and
+#      takes the MAX. Legacy walker exclusion list is narrower (5 dirs) than
+#      the JS canonical (9 dirs) by design — kept for the no-model
+#      scenario only.
+#   4. If a required version was found, compare against current `java -version`.
+#   5. On mismatch: print actionable error to stderr and return 3, unless
 #      -IgnoreJdkMismatch is set, in which case print a WARN and return 0.
-#   4. On no mismatch (or no signal found, or no java on PATH): return 0.
+#   6. On no mismatch (or no signal found, or no java on PATH): return 0.
 #
 # Exit code 3 matches kmp-test's EXIT.ENV_ERROR convention.
 # =============================================================================
+
+# Lazy dot-source the ProjectModel reader. Sibling helper file lives next to us;
+# it itself dot-sources Gradle-Tasks-Probe.ps1 for the cache-key algorithm.
+if (-not (Get-Command -Name 'Get-PmJdkRequirement' -ErrorAction SilentlyContinue)) {
+    $jdkLibDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $pmFile = Join-Path $jdkLibDir 'ProjectModel.ps1'
+    if (Test-Path $pmFile) { . $pmFile }
+}
 
 function Get-JdkMismatchHint {
     param([int]$Required)
@@ -47,34 +60,54 @@ function Invoke-JdkMismatchGate {
         }
     }
 
-    # 2. Detect required JDK version. Three signals — pick the max:
+    # 2. ProjectModel fast-path (v0.5.2 Gap B). The JS canonical walker
+    #    (lib/project-model.js) writes the MAX-of-signals into the model
+    #    JSON's `jdkRequirement.min` field, scanning 9 excluded dirs at
+    #    depth ≤ 12 — strictly broader coverage than this script's legacy
+    #    walker (5 dirs). When the model exists, trust it.
+    $required = 0
+    if (Get-Command -Name 'Get-PmJdkRequirement' -ErrorAction SilentlyContinue) {
+        try {
+            $modelValue = Get-PmJdkRequirement -ProjectRoot $ProjectRoot
+            if ($modelValue -and ($modelValue -match '^\d+$')) {
+                $required = [int]$modelValue
+            }
+        } catch {
+            # Fail-soft — drop into legacy walker below.
+            $required = 0
+        }
+    }
+
+    # 3. Legacy walker fallback — only runs when the model is absent or didn't
+    #    yield a numeric jvmTarget. Three signals — pick the max:
     #    a) jvmToolchain(N)          — gradle compile/test toolchain
     #    b) JvmTarget.JVM_N          — kotlin bytecode target
     #    c) JavaVersion.VERSION_N    — Android source/target compatibility
     # Scan both *.gradle.kts and *.kt (convention plugins live in build-logic/*.kt).
-    $skipDirs = @('build', '.gradle', 'node_modules', '.git', '.idea')
-    $signalRegexes = @(
-        @{ Pattern = 'jvmToolchain\s*\(\s*(\d+)' ; Group = 1 },
-        @{ Pattern = 'JvmTarget\.JVM_(\d+)\b'    ; Group = 1 },
-        @{ Pattern = 'JavaVersion\.VERSION_(\d+)\b' ; Group = 1 }
-    )
-    $required = 0
-    Get-ChildItem -Path $ProjectRoot -Recurse -Include '*.gradle.kts','*.kt' -ErrorAction SilentlyContinue |
-        Where-Object {
-            $segments = $_.FullName.Split([IO.Path]::DirectorySeparatorChar)
-            -not ($skipDirs | Where-Object { $segments -contains $_ })
-        } |
-        ForEach-Object {
-            $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
-            if (-not $content) { return }
-            foreach ($sig in $signalRegexes) {
-                $matches_local = [regex]::Matches($content, $sig.Pattern)
-                foreach ($m in $matches_local) {
-                    $n = [int]$m.Groups[$sig.Group].Value
-                    if ($n -gt $required) { $required = $n }
+    if ($required -eq 0) {
+        $skipDirs = @('build', '.gradle', 'node_modules', '.git', '.idea')
+        $signalRegexes = @(
+            @{ Pattern = 'jvmToolchain\s*\(\s*(\d+)' ; Group = 1 },
+            @{ Pattern = 'JvmTarget\.JVM_(\d+)\b'    ; Group = 1 },
+            @{ Pattern = 'JavaVersion\.VERSION_(\d+)\b' ; Group = 1 }
+        )
+        Get-ChildItem -Path $ProjectRoot -Recurse -Include '*.gradle.kts','*.kt' -ErrorAction SilentlyContinue |
+            Where-Object {
+                $segments = $_.FullName.Split([IO.Path]::DirectorySeparatorChar)
+                -not ($skipDirs | Where-Object { $segments -contains $_ })
+            } |
+            ForEach-Object {
+                $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+                if (-not $content) { return }
+                foreach ($sig in $signalRegexes) {
+                    $matches_local = [regex]::Matches($content, $sig.Pattern)
+                    foreach ($m in $matches_local) {
+                        $n = [int]$m.Groups[$sig.Group].Value
+                        if ($n -gt $required) { $required = $n }
+                    }
                 }
             }
-        }
+    }
 
     if ($required -eq 0) {
         return 0
