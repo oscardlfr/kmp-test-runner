@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-04-30
+
 ### Added
 - **Build-logic convention-plugin coverage detection in JS (v0.5.2 Gap A pre-work).** `lib/project-model.js#detectBuildLogicCoverageHints` walks `<projectRoot>/build-logic/**/*.{gradle.kts,kt}` for `kover` / `jacoco` / `testCoverageEnabled` signals — previously only the bash `detect_coverage_tool` scanned this location. `analyzeModule` now ORs the per-module signal with the project-wide hint, so modules that consume a kover convention plugin without a per-module reference still get `coveragePlugin: 'kover'` populated. Closes the gap where shared-kmp-libs and similar build-logic-driven projects had `coveragePlugin` correctly identified per-module but `resolved.coverageTask` unset.
 - **Coverage-task prediction in `resolveTasksFor` (v0.5.2 Gap A pre-work).** When `gradleTasks` is null (probe didn't run / timed out) but `analysis.coveragePlugin` is non-null, the resolver now predicts the canonical task name from `(coveragePlugin, type)`: `kover + kmp` → `koverXmlReportDesktop`, `kover + android` → `koverXmlReportDebug`, `kover + jvm` → `koverXmlReport`, `jacoco + *` → `jacocoTestReport`. Replaces the legacy `get_coverage_gradle_task` mapping when the model fast-path is available. Real-world impact: shared-kmp-libs went from 0/71 modules with `resolved.coverageTask` populated to 69/71, so the v0.5.1 model fast-path tier 1 actually fires in production instead of always falling through to the legacy chain. Tests: +16 vitest covering build-logic detection, per-module signal precedence, prediction matrix, and end-to-end model assembly.
