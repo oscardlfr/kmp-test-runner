@@ -319,10 +319,21 @@ foreach ($module in $modules) {
     $moduleLogcatFile = "$logsDir\${safeName}_logcat.log"
     $moduleErrorsFile = "$logsDir\${safeName}_errors.json"
 
-    # Per-module gradle args, optionally a test-filter passthrough
+    # Per-module gradle args, optionally a test-filter passthrough.
+    # v0.5.2 Gap E: a `#` in TestFilter means method-level filter — split
+    # class#method and emit BOTH runner-argument flags (AndroidJUnitRunner
+    # accepts class= and method= together).
     $gradleFilterArgs = @()
     if ($TestFilter) {
-        $gradleFilterArgs += "-Pandroid.testInstrumentationRunnerArguments.class=$TestFilter"
+        if ($TestFilter -match '#') {
+            $hashIdx = $TestFilter.IndexOf('#')
+            $classPart = $TestFilter.Substring(0, $hashIdx)
+            $methodPart = $TestFilter.Substring($hashIdx + 1)
+            $gradleFilterArgs += "-Pandroid.testInstrumentationRunnerArguments.class=$classPart"
+            $gradleFilterArgs += "-Pandroid.testInstrumentationRunnerArguments.method=$methodPart"
+        } else {
+            $gradleFilterArgs += "-Pandroid.testInstrumentationRunnerArguments.class=$TestFilter"
+        }
     }
 
     Write-Host "Running: .\gradlew.bat $task $($gradleFilterArgs -join ' ')" -ForegroundColor $Colors.Info

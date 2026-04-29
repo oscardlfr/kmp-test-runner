@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Android `--test-filter` method-level filtering (v0.5.2 Gap E).** `kmp-test android --test-filter "FQN#method"` and `kmp-test android --test-filter "FQN.method"` now run a single test method via AndroidJUnitRunner — `cli.js` splits class+method, resolves wildcards in the class part as before, and recombines as `<resolvedClass>#<method>` on the wire. Platform scripts (`run-android-tests.{sh,ps1}` + `run-benchmarks.{sh,ps1}`) detect the `#` separator and emit BOTH `-Pandroid.testInstrumentationRunnerArguments.class=<class>` AND `-Pandroid.testInstrumentationRunnerArguments.method=<method>` (AndroidJUnitRunner accepts both runner-args together). Same gap closed for `kmp-test benchmark --platform android`. JVM-side (`parallel`/`changed`/`coverage`/`benchmark --platform jvm`) was already supported via Gradle's native `--tests "FQN.method"` pattern — that path stays untouched. The `.method` form uses a heuristic (last `.`-segment lowercase, ≥ 2 segments) since `#` is the only unambiguous separator; classes with lowerCamelCase names should use `#` to disambiguate.
+
 ## [0.5.1] — 2026-04-29
 
 ### Added

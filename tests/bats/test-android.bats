@@ -111,3 +111,15 @@ teardown() {
     probe_line="$(grep -n 'module_first_existing_task "\$PROJECT_ROOT"' "$SCRIPT" | head -1 | cut -d: -f1)"
     [ "$pm_line" -lt "$probe_line" ]
 }
+
+# ---------------------------------------------------------------------------
+# v0.5.2 Gap E — Android method-level filter
+# ---------------------------------------------------------------------------
+@test "android (Gap E): method-level filter splits on # and emits both runner-argument flags" {
+    # When TEST_FILTER contains #, the script must emit BOTH
+    # -P...class=<class> AND -P...method=<method> for AndroidJUnitRunner.
+    # Source-grep contract check (full E2E covered by vitest CLI tests).
+    grep -q '"\$TEST_FILTER" == \*"#"\*' "$SCRIPT"
+    grep -q 'testInstrumentationRunnerArguments\.class=\$_kmp_class_part' "$SCRIPT"
+    grep -q 'testInstrumentationRunnerArguments\.method=\$_kmp_method_part' "$SCRIPT"
+}
