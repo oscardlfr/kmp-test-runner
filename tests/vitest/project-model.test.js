@@ -80,6 +80,82 @@ describe('computeCacheKey', () => {
     const k2 = computeCacheKey(dir);
     expect(k1).toBe(k2);
   });
+
+  // v0.5.2 Gap C — cross-platform cache-key parity.
+  //
+  // Strategy: all three walkers (JS / bash / PS1) normalize content by
+  // stripping ALL `\r` then trailing `\n+` before hashing, so files with
+  // identical logical content but different line endings (CRLF vs LF)
+  // hash to the SAME SHA on every platform. Fixtures and expected SHAs
+  // below are mirrored in tests/bats/test-gradle-tasks-probe.bats and
+  // tests/pester/Gradle-Tasks-Probe.Tests.ps1; any future divergence
+  // breaks at least one of the three suites.
+  describe('cross-platform parity (Gap C)', () => {
+    const lfContent = 'rootProject.name = "x"\nplugins { kotlin("jvm") }\n';
+    const crlfContent = 'rootProject.name = "x"\r\nplugins { kotlin("jvm") }\r\n';
+    const buildLf = 'plugins { kotlin("jvm") }\n';
+    const buildCrlf = 'plugins { kotlin("jvm") }\r\n';
+    const canonicalSha = '0939412f62e3d3480919e52e477d01063d948cdd';
+
+    it('LF fixture produces the canonical SHA', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), lfContent);
+      writeFileSync(path.join(dir, 'build.gradle.kts'), buildLf);
+      expect(computeCacheKey(dir)).toBe(canonicalSha);
+    });
+
+    it('CRLF fixture produces the SAME canonical SHA (cross-platform parity)', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), crlfContent);
+      writeFileSync(path.join(dir, 'build.gradle.kts'), buildCrlf);
+      // Same content as the LF case but with \r\n line endings — must hash
+      // identically. Pre-fix Linux bash kept the trailing \r on each chunk
+      // and diverged from Windows Git Bash; post-fix `tr -d '\r'` (bash) /
+      // `s.replace(/\r/g, '')` (JS) / `-replace '\r', ''` (PS1) all converge.
+      expect(computeCacheKey(dir)).toBe(canonicalSha);
+    });
+
+    it('mixed CRLF + LF fixture produces the SAME canonical SHA', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), crlfContent); // CRLF
+      writeFileSync(path.join(dir, 'build.gradle.kts'), buildLf);        // LF
+      expect(computeCacheKey(dir)).toBe(canonicalSha);
+    });
+
+    it('different logical content produces a different SHA', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "y"\n');
+      writeFileSync(path.join(dir, 'build.gradle.kts'), buildLf);
+      expect(computeCacheKey(dir)).not.toBe(canonicalSha);
+    });
+
+    it('multiple trailing newlines fold to a single SHA (LF-only invariant)', () => {
+      const dirA = makeProject();
+      writeFileSync(path.join(dirA, 'settings.gradle.kts'), lfContent);
+      writeFileSync(path.join(dirA, 'build.gradle.kts'), buildLf);
+      const a = computeCacheKey(dirA);
+
+      const dirB = mkdtempSync(path.join(tmpdir(), 'kmp-pm-test-multi-'));
+      writeFileSync(path.join(dirB, 'gradlew'), '#!/usr/bin/env bash\nexit 1\n');
+      writeFileSync(path.join(dirB, 'gradlew.bat'), '@echo off\r\nexit /b 1\r\n');
+      try {
+        writeFileSync(path.join(dirB, 'settings.gradle.kts'), lfContent + '\n\n');
+        writeFileSync(path.join(dirB, 'build.gradle.kts'), buildLf + '\n');
+        expect(computeCacheKey(dirB)).toBe(a);
+      } finally {
+        rmSync(dirB, { recursive: true, force: true });
+      }
+    });
+
+    it('bare trailing CR is stripped (matches `tr -d \\r` semantics)', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"\r');
+      const withCR = computeCacheKey(dir);
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+      const withoutCR = computeCacheKey(dir);
+      expect(withCR).toBe(withoutCR);
+    });
+  });
 });
 
 // ------------------------------------------------------------------

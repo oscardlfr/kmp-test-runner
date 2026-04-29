@@ -326,3 +326,79 @@ Describe 'parallel.ps1 (Bug E): no-coverage-data banner + machine marker' {
         $script:ParallelText | Should -Match 'COVERAGE_MODULES_CONTRIBUTING:'
     }
 }
+
+# ----------------------------------------------------------------------------
+# v0.5.2 Gap C — cross-platform cache-key SHA byte parity
+# ----------------------------------------------------------------------------
+# These fixtures + expected SHAs are the canonical reference for ALL three
+# walkers (JS lib/project-model.js#computeCacheKey, bash
+# scripts/sh/lib/gradle-tasks-probe.sh:_kmp_compute_cache_key, and this
+# file's Get-KmpCacheKey). Sibling vitest + bats tests assert the same hex
+# strings - any divergence breaks one of the three suites.
+# ----------------------------------------------------------------------------
+
+Describe 'Get-KmpCacheKey: cross-platform parity (Gap C)' {
+    # Strategy: all three walkers (JS / bash / PS1) normalize content by
+    # stripping ALL `\r` then trailing `\n+` before hashing, so files with
+    # identical logical content but different line endings (CRLF vs LF)
+    # hash to the SAME SHA on every platform. Fixtures + expected SHAs
+    # mirrored in tests/vitest/project-model.test.js and
+    # tests/bats/test-gradle-tasks-probe.bats.
+
+    BeforeEach {
+        $script:WorkDir = Join-Path $TestDrive ("ck-parity-" + [guid]::NewGuid().ToString('N').Substring(0,8))
+        New-Item -ItemType Directory -Path $script:WorkDir -Force | Out-Null
+        # gradlew stub so any consumer of the probe doesn't bail early on missing wrapper.
+        New-Item -ItemType File -Path (Join-Path $script:WorkDir 'gradlew') -Force | Out-Null
+    }
+
+    It 'LF fixture produces canonical SHA 0939412...' {
+        # Use [IO.File]::WriteAllText to control bytes exactly (Set-Content
+        # would re-encode and may add a BOM/CRLF).
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'settings.gradle.kts'), "rootProject.name = `"x`"`nplugins { kotlin(`"jvm`") }`n")
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'build.gradle.kts'), "plugins { kotlin(`"jvm`") }`n")
+        $sha = Get-KmpCacheKey -ProjectRoot $script:WorkDir
+        $sha | Should -Be '0939412f62e3d3480919e52e477d01063d948cdd'
+    }
+
+    It 'CRLF fixture produces SAME canonical SHA (cross-platform parity)' {
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'settings.gradle.kts'), "rootProject.name = `"x`"`r`nplugins { kotlin(`"jvm`") }`r`n")
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'build.gradle.kts'), "plugins { kotlin(`"jvm`") }`r`n")
+        # Same logical content as LF case but with \r\n line endings -- must
+        # hash identically. Pre-fix Get-Content -Raw preserved \r and PS1
+        # diverged from bash on Linux; post-fix `-replace '\r', ''` then
+        # `-replace '\n+$', ''` aligns with bash `tr -d '\r'` + subshell.
+        $sha = Get-KmpCacheKey -ProjectRoot $script:WorkDir
+        $sha | Should -Be '0939412f62e3d3480919e52e477d01063d948cdd'
+    }
+
+    It 'mixed CRLF + LF fixture produces SAME canonical SHA' {
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'settings.gradle.kts'), "rootProject.name = `"x`"`r`nplugins { kotlin(`"jvm`") }`r`n")
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'build.gradle.kts'), "plugins { kotlin(`"jvm`") }`n")
+        $sha = Get-KmpCacheKey -ProjectRoot $script:WorkDir
+        $sha | Should -Be '0939412f62e3d3480919e52e477d01063d948cdd'
+    }
+
+    It 'multiple trailing newlines fold to same SHA' {
+        $other = Join-Path $TestDrive ("ck-parity-multi-" + [guid]::NewGuid().ToString('N').Substring(0,8))
+        New-Item -ItemType Directory -Path $other -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $other 'gradlew') -Force | Out-Null
+
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'settings.gradle.kts'), "rootProject.name = `"x`"`nplugins { kotlin(`"jvm`") }`n")
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'build.gradle.kts'), "plugins { kotlin(`"jvm`") }`n")
+        [IO.File]::WriteAllText((Join-Path $other 'settings.gradle.kts'), "rootProject.name = `"x`"`nplugins { kotlin(`"jvm`") }`n`n`n")
+        [IO.File]::WriteAllText((Join-Path $other 'build.gradle.kts'), "plugins { kotlin(`"jvm`") }`n`n")
+
+        $shaA = Get-KmpCacheKey -ProjectRoot $script:WorkDir
+        $shaB = Get-KmpCacheKey -ProjectRoot $other
+        $shaA | Should -Be $shaB
+    }
+
+    It 'bare trailing CR is stripped (matches `tr -d \r` semantics)' {
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'settings.gradle.kts'), "rootProject.name = `"x`"`r")
+        $withCR = Get-KmpCacheKey -ProjectRoot $script:WorkDir
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'settings.gradle.kts'), "rootProject.name = `"x`"")
+        $withoutCR = Get-KmpCacheKey -ProjectRoot $script:WorkDir
+        $withCR | Should -Be $withoutCR
+    }
+}

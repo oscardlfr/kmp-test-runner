@@ -45,11 +45,16 @@ _kmp_compute_cache_key() {
     local project_root="$1"
     local concat=""
 
+    # v0.5.2 Gap C: strip all CR via `tr -d '\r'` so CRLF and LF files hash
+    # identically across Windows / Linux / macOS runners. Subshell `$(...)`
+    # then strips trailing LF the same way it always has. JS sibling does
+    # `s.replace(/\r/g, '').replace(/\n+$/, '')`; PS1 sibling does
+    # `-replace '\r', ''` then `-replace '\n+$', ''`. All three converge.
     if [[ -f "$project_root/settings.gradle.kts" ]]; then
-        concat="${concat}$(cat "$project_root/settings.gradle.kts" 2>/dev/null)"
+        concat="${concat}$(tr -d '\r' < "$project_root/settings.gradle.kts" 2>/dev/null)"
     fi
     if [[ -f "$project_root/gradle.properties" ]]; then
-        concat="${concat}$(cat "$project_root/gradle.properties" 2>/dev/null)"
+        concat="${concat}$(tr -d '\r' < "$project_root/gradle.properties" 2>/dev/null)"
     fi
 
     # Find all build.gradle.kts up to depth 4, excluding build/ and .gradle/
@@ -59,7 +64,7 @@ _kmp_compute_cache_key() {
     local f
     while IFS= read -r f; do
         [[ -z "$f" ]] && continue
-        concat="${concat}$(cat "$f" 2>/dev/null)"
+        concat="${concat}$(tr -d '\r' < "$f" 2>/dev/null)"
     done <<< "$found"
 
     _kmp_hash "$concat"
