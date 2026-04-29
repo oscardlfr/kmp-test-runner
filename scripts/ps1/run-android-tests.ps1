@@ -22,10 +22,19 @@ param(
     [switch]$AutoRetry = $false,
     [switch]$ClearData = $false,
     [Alias("List")][switch]$ListOnly = $false,
-    [string]$TestFilter = ""
+    [string]$TestFilter = "",
+    [string]$DeviceTask = ""
 )
 
 $ErrorActionPreference = "Continue"
+
+# Source the shared gradle-tasks-probe library (Bug B' / Bug B'' / v0.5.1).
+$psScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $psScriptDir 'lib\Gradle-Tasks-Probe.ps1')
+# Phase 4 (v0.5.1): ProjectModel readers — used by the device-task selector
+# below to short-circuit the gradle-tasks probe when the model JSON is fresh.
+$pmLib = Join-Path $psScriptDir 'lib\ProjectModel.ps1'
+if (Test-Path $pmLib) { . $pmLib }
 
 # Color scheme
 $Colors = @{
@@ -132,10 +141,18 @@ if ($SkipApp) {
 if ($ModuleFilter) {
     $filterList = $ModuleFilter.Split(',') | ForEach-Object { $_.Trim() }
     Write-Host "Filtering modules: $($filterList -join ', ')" -ForegroundColor $Colors.Warning
-    $modules = $modules | Where-Object {
+    # WRAP IN @() so a single match doesn't collapse to a hashtable. Without
+    # this wrap, `$modules.Count` returned the number of KEYS in the matched
+    # module hashtable (5: Name, Path, HasFlavor, IsKmp, Description) instead
+    # of the array length 1, propagating into summary.json as `totalModules: 5`.
+    $modules = @($modules | Where-Object {
         $mod = $_
-        $filterList | Where-Object { $mod.Name -like $_ } | Select-Object -First 1
-    }
+        $matched = $false
+        foreach ($f in $filterList) {
+            if ($mod.Name -like $f) { $matched = $true; break }
+        }
+        $matched
+    })
 }
 
 if ($modules.Count -eq 0) {
@@ -226,30 +243,74 @@ foreach ($module in $modules) {
 
     # Construct Gradle task
     $formattedModule = ":$($moduleName.Replace(':', ':'))"
-
-    # For KMP modules, try androidConnectedCheck first (KMP uses different task names)
     $isKmpModule = $module.IsKmp
-    if ($isKmpModule) {
-        # KMP modules use androidConnectedCheck or connected*DebugAndroidTest
-        if ($hasFlavor -and $Flavor) {
-            $flavorCapitalized = $Flavor.Substring(0,1).ToUpper() + $Flavor.Substring(1)
-            $task = "$formattedModule`:connected${flavorCapitalized}DebugAndroidTest"
-        }
-        else {
-            # Try androidConnectedCheck for KMP modules
-            $task = "$formattedModule`:connectedDebugAndroidTest"
-        }
-    }
-    elseif ($hasFlavor -and $Flavor) {
-        $flavorCapitalized = $Flavor.Substring(0,1).ToUpper() + $Flavor.Substring(1)
-        $task = "$formattedModule`:connected${flavorCapitalized}DebugAndroidTest"
-    }
-    elseif ($hasFlavor) {
-        # Default to first flavor or debugAndroidTest
-        $task = "$formattedModule`:connectedDebugAndroidTest"
+
+    # Bug B' (v0.5.1): probe gradle for the actual task set instead of
+    # hardcoding by IsKmp/HasFlavor. The new KMP `androidLibrary { }` DSL
+    # exposes `androidConnectedCheck` rather than `connectedDebugAndroidTest`
+    # — old detection blew up with `Cannot locate tasks that match`.
+    if ($DeviceTask) {
+        $task = "$formattedModule`:$DeviceTask"
     }
     else {
-        $task = "$formattedModule`:connectedAndroidTest"
+        # Phase 4 step 5 (v0.5.1) — three fallback tiers:
+        #   (1) ProjectModel fast-path: Get-PmDeviceTestTask reads
+        #       resolved.deviceTestTask from model-<sha>.json.
+        #   (2) Get-ModuleFirstExistingTask: walks candidates against the
+        #       gradle-tasks probe cache (used when model is absent but
+        #       probe cache is warm).
+        #   (3) Legacy hardcoded matrix: probe also unavailable.
+        # `-DeviceTask` override pre-empts ALL three tiers (above).
+        $modelTask = $null
+        if (Get-Command Get-PmDeviceTestTask -ErrorAction SilentlyContinue) {
+            try {
+                $modelTask = Get-PmDeviceTestTask -ProjectRoot $ProjectRoot -Module $moduleName
+            } catch { $modelTask = $null }
+        }
+        if ($modelTask) {
+            $task = "$formattedModule`:$modelTask"
+        } else {
+        $candidates = @()
+        if ($hasFlavor -and $Flavor) {
+            $flavorCapitalized = $Flavor.Substring(0,1).ToUpper() + $Flavor.Substring(1)
+            $candidates += "connected${flavorCapitalized}DebugAndroidTest"
+        }
+        $candidates += @('connectedDebugAndroidTest', 'connectedAndroidTest', 'androidConnectedCheck')
+
+        $probeResult = Get-ModuleFirstExistingTask -ProjectRoot $ProjectRoot `
+            -Module $moduleName -Candidates $candidates
+
+        switch ($probeResult.Status) {
+            'found' {
+                $task = "$formattedModule`:$($probeResult.Task)"
+            }
+            'no_match' {
+                # Probe healthy but module has none of the candidate tasks.
+                # Best-effort: try the umbrella task — gradle will surface a
+                # task_not_found error captured by the JSON envelope (Phase 1).
+                $task = "$formattedModule`:androidConnectedCheck"
+                Write-Host "[!] No standard android task found for $moduleName - trying $task (override with -DeviceTask)" -ForegroundColor $Colors.Warning
+            }
+            default {
+                # Probe unavailable - fall back to legacy hardcoded matrix.
+                if ($isKmpModule) {
+                    if ($hasFlavor -and $Flavor) {
+                        $flavorCapitalized = $Flavor.Substring(0,1).ToUpper() + $Flavor.Substring(1)
+                        $task = "$formattedModule`:connected${flavorCapitalized}DebugAndroidTest"
+                    } else {
+                        $task = "$formattedModule`:connectedDebugAndroidTest"
+                    }
+                } elseif ($hasFlavor -and $Flavor) {
+                    $flavorCapitalized = $Flavor.Substring(0,1).ToUpper() + $Flavor.Substring(1)
+                    $task = "$formattedModule`:connected${flavorCapitalized}DebugAndroidTest"
+                } elseif ($hasFlavor) {
+                    $task = "$formattedModule`:connectedDebugAndroidTest"
+                } else {
+                    $task = "$formattedModule`:connectedAndroidTest"
+                }
+            }
+        }
+        }  # close the model-fast-path else (Phase 4 step 5)
     }
 
     # Log files for this module
@@ -472,8 +533,14 @@ Write-Host "  SUMMARY" -ForegroundColor $Colors.Header
 Write-Host "========================================" -ForegroundColor $Colors.Header
 Write-Host ""
 
-$totalSuccess = ($results | Where-Object { $_.Success }).Count
-$totalFailure = ($results | Where-Object { -not $_.Success }).Count
+# Same single-item-pipeline-collapse pitfall as the $modules filter above:
+# without `@(...)`, a single matching result becomes a hashtable and `.Count`
+# returns the number of result-hashtable keys (11: Module, Status, Duration,
+# Success, TestsPassed, TestsFailed, TestsSkipped, LogFile, LogcatFile,
+# ErrorsFile, Retried) rather than the array length 1. That misreporting
+# propagated into summary.json as `passedModules: 11` for single-module runs.
+$totalSuccess = @($results | Where-Object { $_.Success }).Count
+$totalFailure = @($results | Where-Object { -not $_.Success }).Count
 
 # Calculate totals safely
 $totalTests = 0

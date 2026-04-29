@@ -10,9 +10,62 @@
 #   - get_module_from_file: map a file path to its Gradle module
 #   - get_changed_files: list changed files in a git repo
 #   - safe_rg: cross-platform ripgrep with find+grep fallback on Windows
+#   - gate_gradle_exit_for_deprecation: classify a non-zero gradle exit
 #
 # All functions are pure — no global side effects, no exit calls.
 # =============================================================================
+
+# Classify a gradle process exit code by comparing it against per-task
+# success / failure counters, and emit the matching message line(s) on stdout.
+# Used by both the test-execution pass and the coverage-generation pass:
+# gradle 9 deprecation warnings cause a non-zero exit even when every
+# requested task succeeded individually, and we want the runner to treat
+# that as a [NOTICE] (parsed into warnings[]) rather than a [!] failure.
+#
+# Usage (capture message, then color via caller's notice/warn helper):
+#   gate_msg="$(gate_gradle_exit_for_deprecation "$EXIT" "$OK" "$FAIL" "$TOTAL" "tests")"
+#   gate_rc=$?
+#   case "$gate_rc" in
+#       0) [[ -n "$gate_msg" ]] && notice "$gate_msg" ;;
+#       1) warn "$gate_msg"; mark_all_failed ;;
+#       2) ;;  # partial — per-module reporting already handles it
+#   esac
+#
+# Returns:
+#   0 = continue — exit was 0 (no message emitted), OR exit was nonzero but
+#       every task succeeded (deprecation noise; emits a [NOTICE] line that
+#       lib/cli.js maps to warnings[].code = "gradle_deprecation").
+#   1 = env error — exit was nonzero AND zero tasks succeeded. Emits a [!]
+#       line describing the JVM-level failure. Caller marks all modules failed.
+#   2 = partial — exit was nonzero AND some succeeded AND some failed. No
+#       message; caller's per-module FAILED reporting speaks for itself.
+gate_gradle_exit_for_deprecation() {
+    local exit_code="$1"
+    local success_count="$2"
+    local failure_count="$3"
+    local total_count="$4"
+    local context="${5:-gradle}"
+
+    if [[ "$exit_code" -eq 0 ]]; then
+        return 0
+    fi
+
+    if [[ "$failure_count" -eq 0 && "$success_count" -eq 0 ]]; then
+        printf '%s\n' \
+            "[!] Gradle ($context) exited with code $exit_code and no task results found." \
+            "    This usually means a JVM-level error (wrong JAVA_HOME, OOM, daemon crash)."
+        return 1
+    fi
+
+    if [[ "$failure_count" -eq 0 && "$success_count" -gt 0 ]]; then
+        printf '%s\n' \
+            "[NOTICE] Gradle ($context) exited with code $exit_code but all $success_count tasks passed individually." \
+            "         This is likely deprecation warnings (Gradle 9+), not real failures."
+        return 0
+    fi
+
+    return 2
+}
 
 # Check if a string matches a simple wildcard pattern (shell glob).
 # Usage: glob_match "pattern" "string"
@@ -60,16 +113,49 @@ test_class_excluded() {
     return 1
 }
 
-# Check if a module directory contains any standard Kotlin/JVM/Android test
-# source set. Returns 0 (true) if any of these directories exist:
-#   src/test, src/commonTest, src/jvmTest, src/desktopTest,
-#   src/androidUnitTest, src/androidInstrumentedTest, src/androidTest,
-#   src/iosTest, src/nativeTest
-# Otherwise returns 1 (false). Used by the parallel/changed runners to skip
-# modules that by convention have no tests (e.g. :api modules, parent-only
-# aggregator modules) before invoking gradle and getting BUILD FAILED.
-# Usage: module_has_test_sources <module_filesystem_path>
+# Check if a module contains any standard Kotlin/JVM/Android test source set.
+# Returns 0 (true) when the model says it does OR when any of the 9 standard
+# test directories exist on disk. Returns 1 (false) otherwise.
+#
+# Two call shapes are supported (we keep both for backwards compatibility):
+#   module_has_test_sources <module_filesystem_path>            (legacy)
+#   module_has_test_sources <project_root> <module_name>        (Phase 4)
+#
+# The two-arg form prefers the ProjectModel JSON via pm_module_has_tests
+# (Phase 4 step 4 — single source of truth), falling back to the filesystem
+# walk when the model is absent. The one-arg form skips the model lookup
+# entirely (callers without a project_root context).
 module_has_test_sources() {
+    if [[ $# -ge 2 ]]; then
+        local project_root="$1"
+        local module_name="$2"
+        # Try the model first (fast, cached, content-keyed). Source the readers
+        # lazily so callers that haven't sourced project-model.sh keep working.
+        if ! type pm_module_has_tests >/dev/null 2>&1; then
+            local _pm_lib_dir
+            _pm_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+            # shellcheck source=./project-model.sh
+            [[ -f "$_pm_lib_dir/project-model.sh" ]] && source "$_pm_lib_dir/project-model.sh"
+        fi
+        if type pm_module_has_tests >/dev/null 2>&1; then
+            local model_answer
+            model_answer="$(pm_module_has_tests "$project_root" "$module_name")"
+            case "$model_answer" in
+                true)  return 0 ;;
+                false) return 1 ;;
+                # empty → model absent / unreadable → fall through to filesystem walk
+            esac
+        fi
+        local module_path="$project_root/${module_name#:}"
+        module_path="${module_path//:/\/}"
+        _module_has_test_sources_fs "$module_path"
+        return $?
+    fi
+    _module_has_test_sources_fs "$1"
+}
+
+# Internal: filesystem-walk fallback. Checks the 9 standard directories.
+_module_has_test_sources_fs() {
     local module_path="$1"
     [[ -d "$module_path/src/test" ]] && return 0
     [[ -d "$module_path/src/commonTest" ]] && return 0

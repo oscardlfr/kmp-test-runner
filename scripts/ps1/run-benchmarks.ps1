@@ -255,6 +255,14 @@ foreach ($mod in $modules) {
         $success = $result.ExitCode -eq 0
         $statusText = if ($success) { "PASS" } else { "FAIL" }
         $color      = if ($success) { "Green" } else { "Red" }
+        # Per-module status line in the bash-parity format that
+        # parseBenchmarkSummary in cli.js depends on
+        # (/\[(OK|FAIL)\]\s+(\S+)\s+\(([\w-]+)\)\s+(completed|failed)/).
+        if ($success) {
+            Write-Host "  [OK] $mod ($plat) completed successfully." -ForegroundColor Green
+        } else {
+            Write-Host "  [FAIL] $mod ($plat) failed with exit code $($result.ExitCode)." -ForegroundColor Red
+        }
         Write-Host "     Result : $statusText ($([math]::Round($result.Duration.TotalSeconds, 1))s)" -ForegroundColor $color
         Write-Host ""
 
@@ -336,6 +344,10 @@ Write-Host ("=" * 70) -ForegroundColor Cyan
 Write-Host ""
 
 Write-Host "Tasks: $($taskResults.Count) total | $passCount passed | $failCount failed | $([math]::Round($totalTime.TotalSeconds, 1))s elapsed" -ForegroundColor White
+# Bash-parity tally line that parseBenchmarkSummary in cli.js depends on
+# (/Result:\s*(\d+)\s+passed,\s+(\d+)\s+failed/).
+$resultColor = if ($failCount -gt 0) { "Red" } else { "Green" }
+Write-Host "Result: $passCount passed, $failCount failed" -ForegroundColor $resultColor
 Write-Host ""
 
 # Task results table

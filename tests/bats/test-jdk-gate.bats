@@ -96,6 +96,43 @@ EOF
     [ "$status" -eq 0 ]
 }
 
+@test "jdk-check lib: detects JvmTarget.JVM_N in build-logic/*.kt convention plugin (Bug F regression)" {
+    # Real-world scenario surfaced 2026-04-27: a project with no jvmToolchain
+    # anywhere has a convention plugin in build-logic/ that pins
+    # `jvmTarget.set(JvmTarget.JVM_21)`. Bytecode v65 won't load on JDK 17
+    # at runtime → gate must fire.
+    rm "$WORK_DIR/build.gradle.kts"
+    echo 'plugins { kotlin("jvm") }' > "$WORK_DIR/build.gradle.kts"
+    mkdir -p "$WORK_DIR/build-logic/src/main/kotlin"
+    cat > "$WORK_DIR/build-logic/src/main/kotlin/KmpBenchmarkConventionPlugin.kt" <<'EOF'
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+class KmpBenchmarkConventionPlugin {
+    fun apply() {
+        jvm("desktop") { compilerOptions { jvmTarget.set(JvmTarget.JVM_21) } }
+    }
+}
+EOF
+    source "$LIB"
+    run gate_jdk_mismatch "$WORK_DIR" "false"
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"requires JDK 21"* ]]
+    [[ "$output" == *"current JDK is 23"* ]]
+}
+
+@test "jdk-check lib: takes MAX across mixed signals (jvmToolchain 17 + JvmTarget.JVM_21 → 21)" {
+    cat > "$WORK_DIR/build.gradle.kts" <<'EOF'
+kotlin {
+    jvmToolchain(17)
+    jvm("desktop") { compilerOptions { jvmTarget.set(JvmTarget.JVM_21) } }
+}
+EOF
+    source "$LIB"
+    run gate_jdk_mismatch "$WORK_DIR" "false"
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"requires JDK 21"* ]]
+}
+
 # -----------------------------------------------------------------------------
 # End-to-end: invoke the production parallel script and verify the gate fires
 # -----------------------------------------------------------------------------
