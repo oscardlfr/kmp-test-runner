@@ -303,3 +303,10 @@ EOF
     # Critically: stub gradlew must NOT have been invoked
     [[ "$output" != *"STUB GRADLEW INVOKED"* ]]
 }
+
+# v0.5.2 Gap E — Android method-level filter on benchmark
+@test "benchmark (Gap E): method-level filter splits on # and emits both runner-argument flags (android plat)" {
+    grep -q "TEST_FILTER\" == \*\"#\"\*" "$SCRIPT"
+    grep -q "testInstrumentationRunnerArguments\.class=\$_kmp_class_part" "$SCRIPT"
+    grep -q "testInstrumentationRunnerArguments\.method=\$_kmp_method_part" "$SCRIPT"
+}

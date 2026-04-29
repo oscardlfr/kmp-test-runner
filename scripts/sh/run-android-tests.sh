@@ -391,10 +391,20 @@ while IFS='|' read -r module_name module_path has_flavor is_kmp description; do
     module_logcat_file="${logs_dir}/${safe_name}_logcat.log"
     module_errors_file="${logs_dir}/${safe_name}_errors.json"
 
-    # Build per-module gradle args, optionally with a test-filter passthrough
+    # Build per-module gradle args, optionally with a test-filter passthrough.
+    # v0.5.2 Gap E: a `#` in TEST_FILTER means method-level filter — split
+    # class#method and emit BOTH runner-argument flags (AndroidJUnitRunner
+    # accepts class= and method= together).
     gradle_filter_args=()
     if [[ -n "$TEST_FILTER" ]]; then
-        gradle_filter_args+=("-Pandroid.testInstrumentationRunnerArguments.class=$TEST_FILTER")
+        if [[ "$TEST_FILTER" == *"#"* ]]; then
+            _kmp_class_part="${TEST_FILTER%%#*}"
+            _kmp_method_part="${TEST_FILTER#*#}"
+            gradle_filter_args+=("-Pandroid.testInstrumentationRunnerArguments.class=$_kmp_class_part")
+            gradle_filter_args+=("-Pandroid.testInstrumentationRunnerArguments.method=$_kmp_method_part")
+        else
+            gradle_filter_args+=("-Pandroid.testInstrumentationRunnerArguments.class=$TEST_FILTER")
+        fi
     fi
 
     echo -e "${color_gray}Running: ./gradlew ${task} ${gradle_filter_args[*]:-}${color_reset}"
