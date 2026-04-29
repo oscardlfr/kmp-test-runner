@@ -879,7 +879,10 @@ describe('main() — gradle timeout (Bug H)', () => {
       withFakeGradleProject(dir => {
         process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
         const code = main();
-        expect(code).toBe(EXIT.TEST_FAIL);
+        // Phase 4 step 9: gradle_timeout returns ENV_ERROR (3) — same class as
+        // JDK mismatch and missing shell. Process exit and JSON envelope
+        // exit_code now agree (both 3).
+        expect(code).toBe(EXIT.ENV_ERROR);
       });
       process.stdout.write = origWrite;
       const json = JSON.parse(captured.join('').trim());
@@ -911,7 +914,7 @@ describe('main() — gradle timeout (Bug H)', () => {
       withFakeGradleProject(dir => {
         process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
         const code = main();
-        expect(code).toBe(EXIT.TEST_FAIL);
+        expect(code).toBe(EXIT.ENV_ERROR);  // Phase 4 step 9
       });
       process.stdout.write = origWrite;
       const json = JSON.parse(captured.join('').trim());
@@ -956,7 +959,7 @@ describe('main() — gradle timeout (Bug H)', () => {
       withFakeGradleProject(dir => {
         process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
         const code = main();
-        expect(code).toBe(EXIT.TEST_FAIL);
+        expect(code).toBe(EXIT.ENV_ERROR);  // Phase 4 step 9
       });
       process.stderr.write = origStderrWrite;
       const text = stderrCaptured.join('');
@@ -1053,6 +1056,30 @@ describe('main() — Phase 4 step 7 (eager ProjectModel build before spawn)', ()
       expect(model.settingsIncludes).toEqual([':m']);
       expect(model.modules[':m'].type).toBe('jvm');
     });
+  });
+
+  it('--dry-run does NOT trigger eager model build (kept instant)', () => {
+    spawnMock.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    const captured = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+    try {
+      withFakeGradleProject(dir => {
+        writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--project-root', dir];
+        const code = main();
+        expect(code).toBe(EXIT.SUCCESS);
+        // The eager build call lives AFTER the dry-run early return, so no
+        // model JSON should appear on disk after a --dry-run invocation.
+        const cacheDir = path.join(dir, '.kmp-test-runner-cache');
+        if (existsSync(cacheDir)) {
+          const files = readdirSync(cacheDir).filter(f => f.startsWith('model-'));
+          expect(files).toEqual([]);
+        }
+      });
+    } finally {
+      process.stdout.write = origWrite;
+    }
   });
 
   it('eager build is best-effort: does not throw on a malformed settings.gradle.kts', () => {
