@@ -20,6 +20,7 @@ import {
   parseGradleTasksOutput,
   buildProjectModel,
   clearProjectModelCache,
+  detectBuildLogicCoverageHints,
 } from '../../lib/project-model.js';
 
 let workDir;
@@ -499,5 +500,152 @@ describe('buildProjectModel', () => {
     await new Promise(r => setTimeout(r, 5));
     const b = buildProjectModel(dir, { skipProbe: true, useCache: false });
     expect(b.generatedAt).not.toBe(a.generatedAt);
+  });
+});
+
+// ------------------------------------------------------------------
+// v0.5.2 Gap A — build-logic coverage hints + coverageTask prediction
+// ------------------------------------------------------------------
+describe('detectBuildLogicCoverageHints (Gap A)', () => {
+  it('returns {hasKover:false, hasJacoco:false} when build-logic/ is absent', () => {
+    const dir = makeProject();
+    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: false, hasJacoco: false });
+  });
+
+  it('detects kover via build-logic convention plugin in *.kt', () => {
+    const dir = makeProject();
+    const conv = path.join(dir, 'build-logic', 'src', 'main', 'kotlin');
+    mkdirSync(conv, { recursive: true });
+    writeFileSync(
+      path.join(conv, 'KoverConventionPlugin.kt'),
+      'class KoverConventionPlugin : Plugin<Project> { override fun apply(target: Project) { target.pluginManager.apply("org.jetbrains.kotlinx.kover") } }\n'
+    );
+    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: true, hasJacoco: false });
+  });
+
+  it('detects jacoco via build-logic convention plugin in *.gradle.kts', () => {
+    const dir = makeProject();
+    const conv = path.join(dir, 'build-logic');
+    mkdirSync(conv, { recursive: true });
+    writeFileSync(path.join(conv, 'jacoco-convention.gradle.kts'), 'plugins { id("jacoco") }\n');
+    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: false, hasJacoco: true });
+  });
+
+  it('detects both signals when build-logic configures both plugins', () => {
+    const dir = makeProject();
+    const conv = path.join(dir, 'build-logic', 'src', 'main', 'kotlin');
+    mkdirSync(conv, { recursive: true });
+    writeFileSync(path.join(conv, 'Kover.kt'), 'apply("org.jetbrains.kotlinx.kover")\n');
+    writeFileSync(path.join(conv, 'Jacoco.kt'), 'apply("jacoco")\n');
+    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: true, hasJacoco: true });
+  });
+});
+
+describe('analyzeModule build-logic inheritance (Gap A)', () => {
+  it('module with no per-module signal inherits kover from build-logic hint', () => {
+    const dir = makeProject();
+    const moduleDir = path.join(dir, 'core-foo');
+    mkdirSync(moduleDir, { recursive: true });
+    // Per-module build file has NO kover/jacoco mention.
+    writeFileSync(path.join(moduleDir, 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
+    const hint = { hasKover: true, hasJacoco: false };
+    const a = analyzeModule(dir, ':core-foo', hint);
+    expect(a.coveragePlugin).toBe('kover');
+  });
+
+  it('module with no per-module signal inherits jacoco from build-logic hint', () => {
+    const dir = makeProject();
+    const moduleDir = path.join(dir, 'core-bar');
+    mkdirSync(moduleDir, { recursive: true });
+    writeFileSync(path.join(moduleDir, 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
+    const hint = { hasKover: false, hasJacoco: true };
+    const a = analyzeModule(dir, ':core-bar', hint);
+    expect(a.coveragePlugin).toBe('jacoco');
+  });
+
+  it('per-module signal wins over build-logic hint (kover beats jacoco hint)', () => {
+    const dir = makeProject();
+    const moduleDir = path.join(dir, 'core-baz');
+    mkdirSync(moduleDir, { recursive: true });
+    writeFileSync(path.join(moduleDir, 'build.gradle.kts'), 'plugins { id("org.jetbrains.kotlinx.kover") }\n');
+    const hint = { hasKover: false, hasJacoco: true };
+    const a = analyzeModule(dir, ':core-baz', hint);
+    expect(a.coveragePlugin).toBe('kover');
+  });
+
+  it('module with no per-module signal AND no hint returns null', () => {
+    const dir = makeProject();
+    const moduleDir = path.join(dir, 'core-qux');
+    mkdirSync(moduleDir, { recursive: true });
+    writeFileSync(path.join(moduleDir, 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
+    const a = analyzeModule(dir, ':core-qux');
+    expect(a.coveragePlugin).toBeNull();
+  });
+});
+
+describe('resolveTasksFor coverage prediction (Gap A)', () => {
+  it('predicts koverXmlReportDesktop when gradleTasks null + coveragePlugin kover + type kmp', () => {
+    const r = resolveTasksFor(':m', null, { coveragePlugin: 'kover', type: 'kmp' });
+    expect(r.coverageTask).toBe('koverXmlReportDesktop');
+  });
+
+  it('predicts koverXmlReportDebug when gradleTasks null + coveragePlugin kover + type android', () => {
+    const r = resolveTasksFor(':m', null, { coveragePlugin: 'kover', type: 'android' });
+    expect(r.coverageTask).toBe('koverXmlReportDebug');
+  });
+
+  it('predicts koverXmlReport when gradleTasks null + coveragePlugin kover + type jvm', () => {
+    const r = resolveTasksFor(':m', null, { coveragePlugin: 'kover', type: 'jvm' });
+    expect(r.coverageTask).toBe('koverXmlReport');
+  });
+
+  it('predicts jacocoTestReport when gradleTasks null + coveragePlugin jacoco', () => {
+    const r = resolveTasksFor(':m', null, { coveragePlugin: 'jacoco', type: 'android' });
+    expect(r.coverageTask).toBe('jacocoTestReport');
+  });
+
+  it('returns null when gradleTasks null + no coveragePlugin', () => {
+    const r = resolveTasksFor(':m', null, { coveragePlugin: null, type: 'jvm' });
+    expect(r.coverageTask).toBeNull();
+  });
+
+  it('probed task wins over predicted when both available', () => {
+    // Probed list contains the actual task; analysis says kover+kmp would predict
+    // koverXmlReportDesktop but probed list also has it → probed wins (same value).
+    const r = resolveTasksFor(':m', ['koverXmlReportDebug'], { coveragePlugin: 'kover', type: 'kmp' });
+    // Probed picks koverXmlReportDebug (in candidates, present in list).
+    expect(r.coverageTask).toBe('koverXmlReportDebug');
+  });
+
+  it('still returns null unitTestTask/deviceTestTask when gradleTasks is null (only coverage predicted)', () => {
+    const r = resolveTasksFor(':m', null, { coveragePlugin: 'kover', type: 'kmp' });
+    expect(r.unitTestTask).toBeNull();
+    expect(r.deviceTestTask).toBeNull();
+    expect(r.coverageTask).toBe('koverXmlReportDesktop');
+  });
+});
+
+describe('buildProjectModel applies build-logic hints (Gap A integration)', () => {
+  it('module without per-module kover signal inherits via build-logic hint and predicts coverageTask', () => {
+    const dir = makeProject();
+    // build-logic with kover convention plugin
+    const conv = path.join(dir, 'build-logic', 'src', 'main', 'kotlin');
+    mkdirSync(conv, { recursive: true });
+    writeFileSync(
+      path.join(conv, 'KoverConventionPlugin.kt'),
+      'apply("org.jetbrains.kotlinx.kover")\n'
+    );
+    // Module with NO per-module kover reference, but it's a KMP module
+    const modDir = path.join(dir, 'core-foo');
+    mkdirSync(modDir, { recursive: true });
+    writeFileSync(
+      path.join(modDir, 'build.gradle.kts'),
+      'plugins { kotlin("multiplatform") }\n'
+    );
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":core-foo")\n');
+
+    const m = buildProjectModel(dir, { skipProbe: true });
+    expect(m.modules[':core-foo'].coveragePlugin).toBe('kover');
+    expect(m.modules[':core-foo'].resolved.coverageTask).toBe('koverXmlReportDesktop');
   });
 });
