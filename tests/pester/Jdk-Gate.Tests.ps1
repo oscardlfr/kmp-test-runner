@@ -100,6 +100,52 @@ Describe 'Jdk-Check lib: Invoke-JdkMismatchGate' {
         }
         $rc | Should -Be 0
     }
+
+    It 'detects JvmTarget.JVM_N in build-logic\*.kt convention plugin (Bug F regression)' {
+        # No jvmToolchain anywhere; the only JDK signal is a convention plugin
+        # in build-logic/ pinning jvmTarget = JVM_21. Bytecode v65 won't load
+        # on JDK 17 → gate must fire even though jvmToolchain is absent.
+        Set-Content -Path (Join-Path $script:WorkDir 'build.gradle.kts') -Value 'plugins { kotlin("jvm") }'
+        $convDir = Join-Path $script:WorkDir 'build-logic\src\main\kotlin'
+        New-Item -ItemType Directory -Path $convDir -Force | Out-Null
+        $convText = @'
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+class KmpBenchmarkConventionPlugin {
+    fun apply() {
+        jvm("desktop") { compilerOptions { jvmTarget.set(JvmTarget.JVM_21) } }
+    }
+}
+'@
+        Set-Content -Path (Join-Path $convDir 'KmpBenchmarkConventionPlugin.kt') -Value $convText
+
+        $libPath = $script:JdkLib
+        $work = $script:WorkDir
+        $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
+            & pwsh -NoLogo -NoProfile -Command ". '$libPath'; exit (Invoke-JdkMismatchGate -ProjectRoot '$work')" 2>&1
+            $LASTEXITCODE
+        }
+        ($output | Select-Object -Last 1) | Should -Be 3
+        ($output -join "`n") | Should -Match 'requires JDK 21'
+    }
+
+    It 'takes MAX across mixed signals (jvmToolchain 17 + JvmTarget.JVM_21 -> 21)' {
+        $build = @'
+kotlin {
+    jvmToolchain(17)
+    jvm("desktop") { compilerOptions { jvmTarget.set(JvmTarget.JVM_21) } }
+}
+'@
+        Set-Content -Path (Join-Path $script:WorkDir 'build.gradle.kts') -Value $build
+        $libPath = $script:JdkLib
+        $work = $script:WorkDir
+        $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
+            & pwsh -NoLogo -NoProfile -Command ". '$libPath'; exit (Invoke-JdkMismatchGate -ProjectRoot '$work')" 2>&1
+            $LASTEXITCODE
+        }
+        ($output | Select-Object -Last 1) | Should -Be 3
+        ($output -join "`n") | Should -Match 'requires JDK 21'
+    }
 }
 
 # ----------------------------------------------------------------------------

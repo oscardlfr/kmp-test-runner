@@ -45,6 +45,21 @@ teardown() {
     fi
 }
 
+@test "benchmark: emits 'Result: X passed, Y failed' tally (parser contract for v0.5.1 Bug G)" {
+    # parseBenchmarkSummary in cli.js matches /Result:\s*(\d+)\s+passed,\s+(\d+)\s+failed/
+    # for the totals. Pin the literal format.
+    grep -E "Result: \\\$\\{?TOTAL_PASS\\}? passed, \\\$\\{?TOTAL_FAIL\\}? failed" "$SCRIPT"
+}
+
+@test "benchmark: emits '[OK|FAIL] <module> (<platform>) completed|failed' lines (Bug G contract)" {
+    # parseBenchmarkSummary matches /\[(OK|FAIL)\]\s+(\S+)\s+\(([\w-]+)\)\s+(completed|failed)/
+    # for per-module status. Pin the format the parser depends on. The script
+    # uses $mod / $plat as the variable names — the format itself is what
+    # matters, not the names.
+    grep -E '\[OK\][^"]*\$mod \(\$plat\) completed successfully' "$SCRIPT"
+    grep -E '\[FAIL\][^"]*\$mod \(\$plat\) failed' "$SCRIPT"
+}
+
 @test "benchmark-detect: detect_module_benchmark_platforms returns 'android' for androidx.benchmark module" {
     # Simulate an Android-only benchmark module
     mkdir -p "$WORK_DIR/benchmark"

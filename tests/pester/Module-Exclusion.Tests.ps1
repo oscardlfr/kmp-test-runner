@@ -70,18 +70,18 @@ include(":build-logic")
 # dot-source it whole.)
 # ----------------------------------------------------------------------------
 
-Describe 'Test-ModuleHasTestSources (extracted from parallel.ps1)' {
+Describe 'Test-ModuleHasTestSources (lib/Script-Utils.ps1)' {
 
     BeforeAll {
-        # Read the function body from the parallel script and define it in
-        # this Pester runspace. Pattern matches the function header through
-        # the first matching `}` at column 0.
-        $scriptText = Get-Content -Path $script:Parallel -Raw
-        if ($scriptText -match '(?s)function Test-ModuleHasTestSources \{.*?\n\}') {
-            Invoke-Expression $Matches[0]
-        } else {
-            throw 'could not extract Test-ModuleHasTestSources from parallel.ps1'
+        # Phase 4 step 4 (v0.5.1): Test-ModuleHasTestSources moved from
+        # run-parallel-coverage-suite.ps1 to scripts/ps1/lib/Script-Utils.ps1
+        # to mirror the sh layout. Dot-source the lib directly so this test
+        # exercises the shipping function (not a regex-extracted copy).
+        $scriptUtils = Join-Path $script:RepoRoot 'scripts\ps1\lib\Script-Utils.ps1'
+        if (-not (Test-Path $scriptUtils)) {
+            throw "Script-Utils.ps1 not found at $scriptUtils"
         }
+        . $scriptUtils
     }
 
     BeforeEach {
