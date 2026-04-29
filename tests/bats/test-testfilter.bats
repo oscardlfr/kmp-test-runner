@@ -64,3 +64,42 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"--test-filter"* ]]
 }
+
+# v0.5.2 Gap E — Android method-level filter wire format.
+# CLI normalizes both `FQN#method` and `FQN.method` into `FQN#method`
+# on the wire to platform scripts; scripts split on `#` and emit two
+# AndroidJUnitRunner runner-argument flags.
+
+@test "android --test-filter FQN#method preserves wire format" {
+    run node "$CLI" android --test-filter "com.example.WidgetTest#testFoo" --dry-run --json --project-root "$WORK_DIR"
+    [ "$status" -eq 0 ]
+    first_line=$(echo "$output" | grep -m1 '^{' || true)
+    [ -n "$first_line" ]
+    [[ "$first_line" == *'"test_filter":"com.example.WidgetTest#testFoo"'* ]]
+}
+
+@test "android --test-filter FQN.method normalizes to FQN#method on wire" {
+    run node "$CLI" android --test-filter "com.example.WidgetTest.testFoo" --dry-run --json --project-root "$WORK_DIR"
+    [ "$status" -eq 0 ]
+    first_line=$(echo "$output" | grep -m1 '^{' || true)
+    [ -n "$first_line" ]
+    [[ "$first_line" == *'"test_filter":"com.example.WidgetTest#testFoo"'* ]]
+}
+
+@test "android --test-filter resolves wildcard class with #method portion" {
+    SRC="$WORK_DIR/app/src/androidTest/kotlin/app"
+    mkdir -p "$SRC"
+    cat > "$SRC/WidgetTest.kt" << 'EOF'
+package app
+
+class WidgetTest {
+    fun foo() {}
+}
+EOF
+
+    run node "$CLI" android --test-filter "*WidgetTest*#testFoo" --dry-run --json --project-root "$WORK_DIR"
+    [ "$status" -eq 0 ]
+    first_line=$(echo "$output" | grep -m1 '^{' || true)
+    [ -n "$first_line" ]
+    [[ "$first_line" == *'"test_filter":"app.WidgetTest#testFoo"'* ]]
+}

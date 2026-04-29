@@ -279,10 +279,17 @@ for mod in "${BENCHMARK_MODULES[@]}"; do
         task=$(get_benchmark_gradle_task "$actual_mod" "$plat" "$CONFIG")
         # Per-platform translation of --test-filter so a glob like *ScaleBenchmark*
         # produces gradle --tests for jvm and -Pandroid.test...class= for android.
+        # v0.5.2 Gap E: on android, a `#` in TEST_FILTER means method-level filter
+        # — split class#method and emit BOTH runner-argument flags.
         gradle_filter_args=()
         if [[ -n "$TEST_FILTER" ]]; then
             if [[ "$plat" == "jvm" ]]; then
                 gradle_filter_args+=("--tests" "$TEST_FILTER")
+            elif [[ "$TEST_FILTER" == *"#"* ]]; then
+                _kmp_class_part="${TEST_FILTER%%#*}"
+                _kmp_method_part="${TEST_FILTER#*#}"
+                gradle_filter_args+=("-Pandroid.testInstrumentationRunnerArguments.class=$_kmp_class_part")
+                gradle_filter_args+=("-Pandroid.testInstrumentationRunnerArguments.method=$_kmp_method_part")
             else
                 gradle_filter_args+=("-Pandroid.testInstrumentationRunnerArguments.class=$TEST_FILTER")
             fi

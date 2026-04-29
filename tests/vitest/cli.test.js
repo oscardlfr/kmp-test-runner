@@ -37,6 +37,7 @@ import {
   envErrorJson,
   translateFlagForPowerShell,
   findFirstClassFqn,
+  splitClassMethod,
   resolveAndroidTestFilter,
   resolvePatternForSubcommand,
   runDoctorChecks,
@@ -668,6 +669,55 @@ describe('findFirstClassFqn', () => {
   });
 });
 
+describe('splitClassMethod (Gap E v0.5.2)', () => {
+  it('returns class only when no method portion', () => {
+    expect(splitClassMethod('com.example.FooTest')).toEqual({
+      cls: 'com.example.FooTest',
+      method: null,
+    });
+  });
+  it('splits on # (preferred form)', () => {
+    expect(splitClassMethod('com.example.FooTest#testBar')).toEqual({
+      cls: 'com.example.FooTest',
+      method: 'testBar',
+    });
+  });
+  it('splits on .method via heuristic when last segment lowercase', () => {
+    expect(splitClassMethod('com.example.FooTest.testBar')).toEqual({
+      cls: 'com.example.FooTest',
+      method: 'testBar',
+    });
+  });
+  it('does NOT split when last segment is uppercase (bare FQN)', () => {
+    expect(splitClassMethod('com.example.FooTest')).toEqual({
+      cls: 'com.example.FooTest',
+      method: null,
+    });
+  });
+  it('preserves wildcard in class part when # form used', () => {
+    expect(splitClassMethod('*FooTest*#testBar')).toEqual({
+      cls: '*FooTest*',
+      method: 'testBar',
+    });
+  });
+  it('preserves wildcard in class part when .method form used (heuristic)', () => {
+    expect(splitClassMethod('*FooTest*.testBar')).toEqual({
+      cls: '*FooTest*',
+      method: 'testBar',
+    });
+  });
+  it('handles null/empty input', () => {
+    expect(splitClassMethod(null)).toEqual({ cls: null, method: null });
+    expect(splitClassMethod('')).toEqual({ cls: '', method: null });
+  });
+  it('returns method:null when # has no method after it', () => {
+    expect(splitClassMethod('FooTest#')).toEqual({ cls: 'FooTest', method: null });
+  });
+  it('keeps remainder past second # in method portion (forwarded as-is)', () => {
+    expect(splitClassMethod('Foo#bar#baz')).toEqual({ cls: 'Foo', method: 'bar#baz' });
+  });
+});
+
 describe('resolveAndroidTestFilter', () => {
   it('passes pattern through unchanged when no wildcards', () => {
     expect(resolveAndroidTestFilter('com.example.Foo', '/nope')).toBe('com.example.Foo');
@@ -711,6 +761,42 @@ describe('resolveAndroidTestFilter', () => {
   it('returns null/empty input unchanged', () => {
     expect(resolveAndroidTestFilter(null, '/x')).toBeNull();
     expect(resolveAndroidTestFilter('', '/x')).toBe('');
+  });
+
+  // Gap E (v0.5.2) — method-level filtering for Android
+  it('forwards literal FQN#method as-is (wire format)', () => {
+    expect(resolveAndroidTestFilter('com.example.FooTest#testBar', '/nope'))
+      .toBe('com.example.FooTest#testBar');
+  });
+  it('normalizes FQN.method to FQN#method on the wire (heuristic)', () => {
+    expect(resolveAndroidTestFilter('com.example.FooTest.testBar', '/nope'))
+      .toBe('com.example.FooTest#testBar');
+  });
+  it('resolves wildcard class part and recombines with method via #', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-resolve-method-hash-'));
+    try {
+      const src = path.join(dir, 'src', 'androidTest', 'kotlin', 'com', 'demo');
+      mkdirSync(src, { recursive: true });
+      writeFileSync(path.join(src, 'WidgetTest.kt'),
+        'package com.demo\n\nclass WidgetTest {}\n');
+      expect(resolveAndroidTestFilter('*WidgetTest*#testFoo', dir))
+        .toBe('com.demo.WidgetTest#testFoo');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('resolves wildcard class part and recombines with method via .heuristic', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-resolve-method-dot-'));
+    try {
+      const src = path.join(dir, 'src', 'androidTest', 'kotlin', 'com', 'demo');
+      mkdirSync(src, { recursive: true });
+      writeFileSync(path.join(src, 'WidgetTest.kt'),
+        'package com.demo\n\nclass WidgetTest {}\n');
+      expect(resolveAndroidTestFilter('*WidgetTest*.testFoo', dir))
+        .toBe('com.demo.WidgetTest#testFoo');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

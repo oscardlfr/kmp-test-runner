@@ -235,6 +235,26 @@ Describe 'TestFilter parameter wiring' {
     }
 }
 
+Describe 'TestFilter method-level split (v0.5.2 Gap E)' {
+    # When TestFilter contains '#', the script must split class#method and
+    # emit BOTH `-Pandroid.testInstrumentationRunnerArguments.class=<class>`
+    # AND `-Pandroid.testInstrumentationRunnerArguments.method=<method>`
+    # (AndroidJUnitRunner accepts both runner-args together).
+    # Source-grep contract (full E2E covered by vitest CLI tests).
+    It '<_> contains the # branch emitting both class= and method= flags' -ForEach @(
+        'run-android-tests.ps1',
+        'run-benchmarks.ps1'
+    ) {
+        $scriptPath = Join-Path $PSScriptRoot '..\..\scripts\ps1' $_
+        $content = Get-Content $scriptPath -Raw
+        # Conditional that detects the # form
+        $content | Should -Match '\$TestFilter\s+-match\s+''#'''
+        # Both runner-argument flags emitted in the # branch
+        $content | Should -Match 'testInstrumentationRunnerArguments\.class=\$classPart'
+        $content | Should -Match 'testInstrumentationRunnerArguments\.method=\$methodPart'
+    }
+}
+
 Describe 'run-benchmarks.ps1 invokes gradlew with the project root as cwd' {
     # v0.4 regression: Invoke-Gradle called `& $gradlew $Task` without changing
     # directory first. gradle uses the *current* working directory as the

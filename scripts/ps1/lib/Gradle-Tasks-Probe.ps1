@@ -36,13 +36,27 @@ function Get-KmpCacheKey {
     param([Parameter(Mandatory)][string]$ProjectRoot)
     $sb = New-Object System.Text.StringBuilder
 
+    # v0.5.2 Gap C: strip ALL `\r` then trailing `\n+` from each chunk to
+    # match the JS sibling `s.replace(/\r/g, '').replace(/\n+$/, '')` and
+    # the bash sibling `tr -d '\r'` + subshell `$(cat)`. This normalizes
+    # CRLF and LF into the same hash regardless of which platform authored
+    # the file, so a project pulled with autocrlf=true on Windows and
+    # autocrlf=input on Linux still produces a single canonical cache key.
+    $appendNormalized = {
+        param($content)
+        if ($null -ne $content) {
+            $normalized = ($content -replace '\r', '') -replace '\n+$', ''
+            [void]$sb.Append($normalized)
+        }
+    }
+
     $settings = Join-Path $ProjectRoot 'settings.gradle.kts'
     if (Test-Path $settings) {
-        [void]$sb.Append((Get-Content $settings -Raw -ErrorAction SilentlyContinue))
+        & $appendNormalized (Get-Content $settings -Raw -ErrorAction SilentlyContinue)
     }
     $props = Join-Path $ProjectRoot 'gradle.properties'
     if (Test-Path $props) {
-        [void]$sb.Append((Get-Content $props -Raw -ErrorAction SilentlyContinue))
+        & $appendNormalized (Get-Content $props -Raw -ErrorAction SilentlyContinue)
     }
 
     $buildFiles = Get-ChildItem -Path $ProjectRoot -Recurse -Filter 'build.gradle.kts' `
@@ -54,7 +68,7 @@ function Get-KmpCacheKey {
         Sort-Object FullName
 
     foreach ($f in $buildFiles) {
-        [void]$sb.Append((Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue))
+        & $appendNormalized (Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue)
     }
 
     return Get-KmpHashString -Text $sb.ToString()
