@@ -1,5 +1,5 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, readFileSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -879,7 +879,10 @@ describe('main() — gradle timeout (Bug H)', () => {
       withFakeGradleProject(dir => {
         process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
         const code = main();
-        expect(code).toBe(EXIT.TEST_FAIL);
+        // Phase 4 step 9: gradle_timeout returns ENV_ERROR (3) — same class as
+        // JDK mismatch and missing shell. Process exit and JSON envelope
+        // exit_code now agree (both 3).
+        expect(code).toBe(EXIT.ENV_ERROR);
       });
       process.stdout.write = origWrite;
       const json = JSON.parse(captured.join('').trim());
@@ -889,6 +892,35 @@ describe('main() — gradle timeout (Bug H)', () => {
       expect(timeoutErr).toBeTruthy();
       expect(timeoutErr.message).toMatch(/exceeded.*timeout/);
       expect(timeoutErr.message).toMatch(/KMP_GRADLE_TIMEOUT_MS/);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+
+  it('--json mode surfaces gradle_timeout on Windows ETIMEDOUT error path (Bug H gap)', () => {
+    // On Windows the spawn timeout doesn't surface as result.signal=SIGTERM —
+    // it bubbles up as result.error.code='ETIMEDOUT'. Both paths must
+    // converge on the same gradle_timeout envelope so agents don't see a
+    // different shape across platforms.
+    spawnMock.mockReturnValue({
+      status: null,
+      signal: null,
+      error: Object.assign(new Error('spawnSync pwsh ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+    });
+    const captured = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+    try {
+      withFakeGradleProject(dir => {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+        const code = main();
+        expect(code).toBe(EXIT.ENV_ERROR);  // Phase 4 step 9
+      });
+      process.stdout.write = origWrite;
+      const json = JSON.parse(captured.join('').trim());
+      const timeoutErr = (json.errors || []).find(e => e.code === 'gradle_timeout');
+      expect(timeoutErr).toBeTruthy();
+      expect(timeoutErr.message).toMatch(/exceeded.*timeout/);
     } finally {
       process.stdout.write = origWrite;
     }
@@ -927,7 +959,7 @@ describe('main() — gradle timeout (Bug H)', () => {
       withFakeGradleProject(dir => {
         process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
         const code = main();
-        expect(code).toBe(EXIT.TEST_FAIL);
+        expect(code).toBe(EXIT.ENV_ERROR);  // Phase 4 step 9
       });
       process.stderr.write = origStderrWrite;
       const text = stderrCaptured.join('');
@@ -1003,6 +1035,63 @@ describe('main() — Bug Z (Windows pipe-inheritance deadlock with --json)', () 
     const opts = scriptCall[2];
     expect(opts.encoding).toBe('utf8');
     expect(opts.maxBuffer).toBe(64 * 1024 * 1024);
+  });
+});
+
+describe('main() — Phase 4 step 7 (eager ProjectModel build before spawn)', () => {
+  it('writes model-<sha>.json into the project cache before invoking the script', () => {
+    spawnMock.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    withFakeGradleProject(dir => {
+      // Add a settings.gradle.kts so parseSettingsIncludes has something to do.
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+      mkdirSync(path.join(dir, 'm'), { recursive: true });
+      writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), 'plugins { kotlin("jvm") }');
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      main();
+      const cacheDir = path.join(dir, '.kmp-test-runner-cache');
+      const modelFiles = readdirSync(cacheDir).filter(f => f.startsWith('model-') && f.endsWith('.json'));
+      expect(modelFiles.length).toBeGreaterThan(0);
+      const model = JSON.parse(readFileSync(path.join(cacheDir, modelFiles[0]), 'utf8'));
+      expect(model.schemaVersion).toBe(1);
+      expect(model.settingsIncludes).toEqual([':m']);
+      expect(model.modules[':m'].type).toBe('jvm');
+    });
+  });
+
+  it('--dry-run does NOT trigger eager model build (kept instant)', () => {
+    spawnMock.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    const captured = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+    try {
+      withFakeGradleProject(dir => {
+        writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--project-root', dir];
+        const code = main();
+        expect(code).toBe(EXIT.SUCCESS);
+        // The eager build call lives AFTER the dry-run early return, so no
+        // model JSON should appear on disk after a --dry-run invocation.
+        const cacheDir = path.join(dir, '.kmp-test-runner-cache');
+        if (existsSync(cacheDir)) {
+          const files = readdirSync(cacheDir).filter(f => f.startsWith('model-'));
+          expect(files).toEqual([]);
+        }
+      });
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+
+  it('eager build is best-effort: does not throw on a malformed settings.gradle.kts', () => {
+    spawnMock.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    withFakeGradleProject(dir => {
+      // Garbage settings file; aggregateJdkSignals + parseSettingsIncludes
+      // must swallow internal errors without aborting the run.
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), '\x00\x01\x02 invalid bytes');
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      const code = main();
+      expect(code).toBe(EXIT.SUCCESS);  // run still completed
+    });
   });
 });
 
@@ -1558,6 +1647,28 @@ describe('findRequiredJdkVersion', () => {
         '}\n');
       expect(findRequiredJdkVersion(dir)).toBe(21);
     });
+  });
+
+  it('Phase 4 step 3: delegates to aggregateJdkSignals (returns min)', async () => {
+    // The function is now a thin wrapper around lib/project-model.js#aggregateJdkSignals.
+    // Verify both produce the same result for a non-trivial fixture so any
+    // regression that reinstates the inline walker is caught immediately.
+    const { aggregateJdkSignals } = await import('../../lib/project-model.js');
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-jdk-deleg-'));
+    try {
+      writeFileSync(path.join(dir, 'gradlew'), '#!/usr/bin/env bash\n');
+      writeFileSync(path.join(dir, 'gradlew.bat'), '@echo off\r\n');
+      mkdirSync(path.join(dir, 'build-logic'), { recursive: true });
+      writeFileSync(path.join(dir, 'build.gradle.kts'), 'kotlin { jvmToolchain(11) }');
+      writeFileSync(path.join(dir, 'build-logic', 'KmpConv.kt'),
+        'compilerOptions { jvmTarget.set(JvmTarget.JVM_21) }');
+      const wrapperResult = findRequiredJdkVersion(dir);
+      const directResult  = aggregateJdkSignals(dir).min;
+      expect(wrapperResult).toBe(directResult);
+      expect(wrapperResult).toBe(21);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

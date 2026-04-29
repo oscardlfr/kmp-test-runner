@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/audit-append.sh"
 source "$SCRIPT_DIR/lib/gradle-tasks-probe.sh"
+# Phase 4 (v0.5.1): ProjectModel readers — used by the device-task selector
+# below to short-circuit the gradle-tasks probe when the model JSON is fresh.
+[[ -f "$SCRIPT_DIR/lib/project-model.sh" ]] && source "$SCRIPT_DIR/lib/project-model.sh"
 
 # =============================================================================
 # Android Instrumented Tests Runner
@@ -326,6 +329,21 @@ while IFS='|' read -r module_name module_path has_flavor is_kmp description; do
     if [[ -n "$DEVICE_TASK_OVERRIDE" ]]; then
         task="${formatted_module}:${DEVICE_TASK_OVERRIDE}"
     else
+        # Phase 4 step 5 (v0.5.1) — three fallback tiers:
+        #   (1) ProjectModel fast-path: pm_get_device_test_task reads the
+        #       resolved.deviceTestTask field from model-<sha>.json.
+        #   (2) module_first_existing_task: walks candidates against the
+        #       gradle-tasks probe cache directly (used when model is absent
+        #       but probe cache is warm).
+        #   (3) Legacy hardcoded matrix: probe also unavailable.
+        # `--device-task` override pre-empts ALL three tiers (above).
+        model_task=""
+        if type pm_get_device_test_task >/dev/null 2>&1; then
+            model_task="$(pm_get_device_test_task "$PROJECT_ROOT" "$module_name" 2>/dev/null)"
+        fi
+        if [[ -n "$model_task" ]]; then
+            task="${formatted_module}:${model_task}"
+        else
         candidates=()
         if [[ "$has_flavor" == "true" && -n "$FLAVOR" ]]; then
             flavor_cap="$(echo "${FLAVOR:0:1}" | tr '[:lower:]' '[:upper:]')${FLAVOR:1}"
@@ -364,6 +382,7 @@ while IFS='|' read -r module_name module_path has_flavor is_kmp description; do
                 task="${formatted_module}:connectedAndroidTest"
             fi
         fi
+        fi  # close the model-fast-path else (Phase 4 step 5)
     fi
 
     # Log files for this module

@@ -169,6 +169,10 @@ source "$SCRIPT_DIR/lib/audit-append.sh"
 source "$SCRIPT_DIR/lib/script-utils.sh"
 source "$SCRIPT_DIR/lib/jdk-check.sh"
 source "$SCRIPT_DIR/lib/gradle-tasks-probe.sh"
+# Phase 4 (v0.5.1): ProjectModel readers — used by the coverage-task selector
+# below to short-circuit the legacy detect_coverage_tool + module_has_task
+# chain when the model JSON is fresh. Best-effort source.
+[[ -f "$SCRIPT_DIR/lib/project-model.sh" ]] && source "$SCRIPT_DIR/lib/project-model.sh"
 
 EXCLUSION_PATTERNS=(
     '*$DefaultImpls'
@@ -300,8 +304,10 @@ find_modules() {
         final_modules=("${after_exclude[@]+"${after_exclude[@]}"}")
     else
         for mod in "${after_exclude[@]+"${after_exclude[@]}"}"; do
-            local fs_path="$project_path/${mod//:/\/}"
-            if module_has_test_sources "$fs_path"; then
+            # Phase 4 step 4 (v0.5.1): pass project_root + module name so
+            # module_has_test_sources can prefer the ProjectModel fast-path
+            # before walking the filesystem.
+            if module_has_test_sources "$project_path" "$mod"; then
                 final_modules+=("$mod")
             else
                 echo "[SKIP] $mod (no test source set — pass --include-untested to override)" >&2
@@ -640,6 +646,26 @@ for mi in "${!MOD_NAMES[@]}"; do
 
     # Determine coverage task (only if not excluded)
     if ! $skip_cov; then
+        # Phase 4 step 6 (v0.5.1): try the ProjectModel fast-path first. If
+        # the model's resolved.coverageTask is non-empty, treat it as
+        # confirmed present (the model is content-keyed, so a stale plugin
+        # would have invalidated the cache). Falls through to the legacy
+        # detect_coverage_tool + get_coverage_gradle_task + module_has_task
+        # chain when the model is absent or the module isn't in it.
+        model_cov_task=""
+        if type pm_get_coverage_task >/dev/null 2>&1; then
+            model_cov_task="$(pm_get_coverage_task "${MOD_PROJ[$mi]}" "${MOD_NAMES[$mi]}" 2>/dev/null)"
+        fi
+        if [[ -n "$model_cov_task" ]]; then
+            cov_task="${gradle_path}:${model_cov_task}"
+            if $is_shared; then
+                COV_TASKS_SHARED+=("$cov_task")
+            else
+                COV_TASKS+=("$cov_task")
+            fi
+            continue
+        fi
+
         cov_task_name="$(get_coverage_gradle_task "$mod_cov_tool" "$TEST_TYPE" "$IS_DESKTOP")"
         if [[ -n "$cov_task_name" ]]; then
             # Bug B'' (v0.5.1): probe gradle for task existence before queueing.

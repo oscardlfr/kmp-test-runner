@@ -86,3 +86,13 @@ teardown() {
     # The [OK] banner must be inside an `if MODULES_CONTRIBUTING -gt 0` branch.
     grep -B 1 -A 1 '"\[OK\] Full coverage report generated' "$SCRIPT" | grep -q 'MODULES_CONTRIBUTING'
 }
+
+@test "coverage (Phase 4 step 6): ProjectModel fast-path tier 1 wired before legacy chain" {
+    # The script must source project-model.sh + consult pm_get_coverage_task
+    # BEFORE the existing get_coverage_gradle_task + module_has_task chain.
+    grep -q 'lib/project-model.sh' "$SCRIPT"
+    grep -q 'pm_get_coverage_task' "$SCRIPT"
+    pm_line="$(grep -n 'pm_get_coverage_task' "$SCRIPT" | head -1 | cut -d: -f1)"
+    legacy_line="$(grep -n 'get_coverage_gradle_task "\$mod_cov_tool"' "$SCRIPT" | head -1 | cut -d: -f1)"
+    [ "$pm_line" -lt "$legacy_line" ]
+}

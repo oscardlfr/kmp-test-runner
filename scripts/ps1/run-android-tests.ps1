@@ -31,6 +31,10 @@ $ErrorActionPreference = "Continue"
 # Source the shared gradle-tasks-probe library (Bug B' / Bug B'' / v0.5.1).
 $psScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $psScriptDir 'lib\Gradle-Tasks-Probe.ps1')
+# Phase 4 (v0.5.1): ProjectModel readers — used by the device-task selector
+# below to short-circuit the gradle-tasks probe when the model JSON is fresh.
+$pmLib = Join-Path $psScriptDir 'lib\ProjectModel.ps1'
+if (Test-Path $pmLib) { . $pmLib }
 
 # Color scheme
 $Colors = @{
@@ -249,6 +253,23 @@ foreach ($module in $modules) {
         $task = "$formattedModule`:$DeviceTask"
     }
     else {
+        # Phase 4 step 5 (v0.5.1) — three fallback tiers:
+        #   (1) ProjectModel fast-path: Get-PmDeviceTestTask reads
+        #       resolved.deviceTestTask from model-<sha>.json.
+        #   (2) Get-ModuleFirstExistingTask: walks candidates against the
+        #       gradle-tasks probe cache (used when model is absent but
+        #       probe cache is warm).
+        #   (3) Legacy hardcoded matrix: probe also unavailable.
+        # `-DeviceTask` override pre-empts ALL three tiers (above).
+        $modelTask = $null
+        if (Get-Command Get-PmDeviceTestTask -ErrorAction SilentlyContinue) {
+            try {
+                $modelTask = Get-PmDeviceTestTask -ProjectRoot $ProjectRoot -Module $moduleName
+            } catch { $modelTask = $null }
+        }
+        if ($modelTask) {
+            $task = "$formattedModule`:$modelTask"
+        } else {
         $candidates = @()
         if ($hasFlavor -and $Flavor) {
             $flavorCapitalized = $Flavor.Substring(0,1).ToUpper() + $Flavor.Substring(1)
@@ -289,6 +310,7 @@ foreach ($module in $modules) {
                 }
             }
         }
+        }  # close the model-fast-path else (Phase 4 step 5)
     }
 
     # Log files for this module

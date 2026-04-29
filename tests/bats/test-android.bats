@@ -99,3 +99,15 @@ teardown() {
     grep -B 0 -A 2 'if \[\[ -n "\$DEVICE_TASK_OVERRIDE" \]\]; then' "$SCRIPT" | \
         grep -q 'task="\${formatted_module}:\${DEVICE_TASK_OVERRIDE}"'
 }
+
+@test "android (Phase 4 step 5): ProjectModel fast-path tier 1 is wired before probe" {
+    # The script must source project-model.sh so pm_get_device_test_task is
+    # available, and the device-task selector must consult it BEFORE
+    # invoking module_first_existing_task.
+    grep -q 'source "\$SCRIPT_DIR/lib/project-model.sh"' "$SCRIPT"
+    grep -q 'pm_get_device_test_task' "$SCRIPT"
+    # The model check must appear before the probe call in the source.
+    pm_line="$(grep -n 'pm_get_device_test_task' "$SCRIPT" | head -1 | cut -d: -f1)"
+    probe_line="$(grep -n 'module_first_existing_task "\$PROJECT_ROOT"' "$SCRIPT" | head -1 | cut -d: -f1)"
+    [ "$pm_line" -lt "$probe_line" ]
+}

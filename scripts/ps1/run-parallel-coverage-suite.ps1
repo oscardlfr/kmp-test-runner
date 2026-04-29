@@ -113,6 +113,11 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 . "$scriptDir\lib\Jdk-Check.ps1"
 . "$scriptDir\lib\Script-Utils.ps1"
 . "$scriptDir\lib\Gradle-Tasks-Probe.ps1"
+# Phase 4 (v0.5.1): ProjectModel readers — used by the coverage-task selector
+# below to short-circuit detect_coverage_tool + module_has_task when the
+# model JSON is fresh. Best-effort source: works without it.
+$_pmLib = "$scriptDir\lib\ProjectModel.ps1"
+if (Test-Path $_pmLib) { . $_pmLib }
 
 # ============================================================================
 # CONFIGURATION
@@ -177,26 +182,9 @@ function Format-LineRanges {
     return $ranges -join ", "
 }
 
-function Test-ModuleHasTestSources {
-    <#
-    .SYNOPSIS
-        Returns $true if the module directory contains any standard Kotlin/JVM/Android
-        test source set: src/test, src/commonTest, src/jvmTest, src/desktopTest,
-        src/androidUnitTest, src/androidInstrumentedTest, src/androidTest,
-        src/iosTest, src/nativeTest. Used to skip api/aggregator modules that
-        by convention have no tests, before invoking gradle.
-    #>
-    param([string]$ModulePath)
-    $candidates = @(
-        'src\test', 'src\commonTest', 'src\jvmTest', 'src\desktopTest',
-        'src\androidUnitTest', 'src\androidInstrumentedTest', 'src\androidTest',
-        'src\iosTest', 'src\nativeTest'
-    )
-    foreach ($d in $candidates) {
-        if (Test-Path (Join-Path $ModulePath $d)) { return $true }
-    }
-    return $false
-}
+# Phase 4 step 4 (v0.5.1): Test-ModuleHasTestSources moved to
+# scripts/ps1/lib/Script-Utils.ps1 (parallel to sh script-utils.sh) so the
+# function lives in lib alongside the gate helpers.
 
 function Find-Modules {
     param(
@@ -270,8 +258,9 @@ function Find-Modules {
     }
     $final = @()
     foreach ($mod in $afterExclude) {
-        $modulePath = Join-Path $ProjectRoot ($mod -replace ':', [IO.Path]::DirectorySeparatorChar)
-        if (Test-ModuleHasTestSources -ModulePath $modulePath) {
+        # Phase 4 step 4 (v0.5.1): pass -ProjectRoot + -Module so the helper
+        # can prefer the ProjectModel fast-path before walking the filesystem.
+        if (Test-ModuleHasTestSources -ProjectRoot $ProjectRoot -Module $mod) {
             $final += $mod
         } else {
             [Console]::Error.WriteLine("[SKIP] $mod (no test source set - pass -IncludeUntested to override)")
@@ -596,6 +585,28 @@ foreach ($module in $allModules) {
 
     # Get coverage task (only if not excluded)
     if (-not $skipCov) {
+        # Phase 4 step 6 (v0.5.1): try the ProjectModel fast-path first. If
+        # the model's resolved.coverageTask is non-empty, treat it as
+        # confirmed present (the model is content-keyed, so a stale plugin
+        # would have invalidated the cache). Falls through to the legacy
+        # Detect-CoverageTool + Get-CoverageGradleTask + Test-ModuleHasTask
+        # chain when the model is absent or the module isn't in it.
+        $modelCovTask = $null
+        if (Get-Command Get-PmCoverageTask -ErrorAction SilentlyContinue) {
+            try {
+                $modelCovTask = Get-PmCoverageTask -ProjectRoot $module.ProjectRoot -Module $module.Name
+            } catch { $modelCovTask = $null }
+        }
+        if ($modelCovTask) {
+            $covTask = "${gradlePath}:${modelCovTask}"
+            if ($isShared) {
+                $covTasksShared.Add($covTask)
+            } else {
+                $covTasks.Add($covTask)
+            }
+            continue
+        }
+
         $covTaskName = Get-CoverageGradleTask -Tool $modCovTool -TestType $TestType -IsDesktop $Desktop
         if ($covTaskName) {
             # Bug B'' (v0.5.1): probe gradle for task existence before queueing.
