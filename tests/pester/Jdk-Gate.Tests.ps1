@@ -146,6 +146,68 @@ kotlin {
         ($output | Select-Object -Last 1) | Should -Be 3
         ($output -join "`n") | Should -Match 'requires JDK 21'
     }
+
+    # -------------------------------------------------------------------------
+    # v0.5.2 Gap B — ProjectModel fast-path consultation
+    # -------------------------------------------------------------------------
+    # When .kmp-test-runner-cache\model-<sha>.json exists with a numeric
+    # jdkRequirement.min, the gate must consult the model FIRST (broader
+    # 9-dir walker, depth=12). The legacy walker (5-dir exclude, unbounded
+    # depth) only runs when the model is absent.
+    # -------------------------------------------------------------------------
+
+    It '(Gap B) fast-path uses model.json jdkRequirement.min when no walker signal exists' {
+        # Build.gradle.kts has NO walker-detectable signal -> legacy walker
+        # would return 0. But model declares jdkRequirement.min=21 ->
+        # gate must fire from the model.
+        Set-Content -Path (Join-Path $script:WorkDir 'build.gradle.kts') -Value 'plugins { kotlin("jvm") }'
+
+        # Compute the cache key the same way the model lib does.
+        $probeFile = Join-Path $script:RepoRoot 'scripts\ps1\lib\Gradle-Tasks-Probe.ps1'
+        . $probeFile
+        $sha = Get-KmpCacheKey -ProjectRoot $script:WorkDir
+        $sha | Should -Not -BeNullOrEmpty
+
+        $cacheDir = Join-Path $script:WorkDir '.kmp-test-runner-cache'
+        New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+        $model = @"
+{
+  "schemaVersion": 1,
+  "projectRoot": "$($script:WorkDir.Replace('\','/'))",
+  "generatedAt": "2026-04-29T00:00:00Z",
+  "cacheKey": "$sha",
+  "jdkRequirement": { "min": 21, "signals": ["build-logic-convention-plugin"] },
+  "settingsIncludes": [],
+  "modules": {}
+}
+"@
+        Set-Content -Path (Join-Path $cacheDir "model-$sha.json") -Value $model
+
+        $libPath = $script:JdkLib
+        $work = $script:WorkDir
+        $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
+            & pwsh -NoLogo -NoProfile -Command ". '$libPath'; exit (Invoke-JdkMismatchGate -ProjectRoot '$work')" 2>&1
+            $LASTEXITCODE
+        }
+        ($output | Select-Object -Last 1) | Should -Be 3
+        ($output -join "`n") | Should -Match 'requires JDK 21'
+        ($output -join "`n") | Should -Match 'current JDK is 23'
+    }
+
+    It '(Gap B) falls back to legacy walker when model.json is absent' {
+        # Setup leaves no .kmp-test-runner-cache dir. Walker scans
+        # build.gradle.kts (jvmToolchain(17) from setup) -> mismatch fires.
+        (Test-Path (Join-Path $script:WorkDir '.kmp-test-runner-cache')) | Should -BeFalse
+
+        $libPath = $script:JdkLib
+        $work = $script:WorkDir
+        $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
+            & pwsh -NoLogo -NoProfile -Command ". '$libPath'; exit (Invoke-JdkMismatchGate -ProjectRoot '$work')" 2>&1
+            $LASTEXITCODE
+        }
+        ($output | Select-Object -Last 1) | Should -Be 3
+        ($output -join "`n") | Should -Match 'requires JDK 17'
+    }
 }
 
 # ----------------------------------------------------------------------------
