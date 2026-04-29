@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-04-29
+
 ### Added
 - **`errors[].code` discriminators** so agents can branch on failure cause without regex on `message`. New codes:
   - `task_not_found` — gradle "Cannot locate tasks that match" (e.g. KMP `androidLibrary{}` DSL has no `connectedDebugAndroidTest`).
