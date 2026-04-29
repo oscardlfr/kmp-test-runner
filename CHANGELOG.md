@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **JDK mismatch gate now consults ProjectModel fast-path before legacy walker (v0.5.2 Gap B).** `gate_jdk_mismatch` (sh) and `Invoke-JdkMismatchGate` (ps1) read `pm_get_jdk_requirement` / `Get-PmJdkRequirement` first when `<project>/.kmp-test-runner-cache/model-<sha>.json` exists; the model's `jdkRequirement.min` is the MAX-of-signals computed by the JS canonical walker (lib/project-model.js — 9-dir exclude list + depth=12). Legacy walker (sh: 4 dirs unbounded depth, ps1: 5 dirs unbounded depth) is preserved as fallback when the model is absent. Eliminates exclusion-list drift between sh/ps1/JS for projects with a generated model. End-to-end validated 2026-04-29 against `shared-kmp-libs` (model says JDK 21, current JDK 21 → no false-positive; model fast-path engaged per `_pm_locate_model_file` log).
+
 ### Tests
 - **Regression coverage for `summary.json` counter shape on single-module Android runs (v0.5.2 Gap D).** PR #54 fixed PowerShell single-item-pipeline collapse where `$modules.Count` returned hashtable key count (5/11) instead of array length (1) on single-module runs. The bash side was audited clean (uses explicit loop counters via `${!result_names[@]}` indexed iteration, not `${#hash[@]}` on associative arrays). New `tests/bats/test-android-summary-counts.bats` (5 tests) locks the bash counter-math invariants; new `tests/pester/Android-Summary-Counts.Tests.ps1` (9 tests) locks PR #54's `@(...)` array-forcing wrappers + a negative guard that prevents the bug-pattern from being reintroduced. End-to-end validated 2026-04-29 on S22 Ultra against `shared-kmp-libs:core-encryption` — single-module run produced `totalModules:1, passedModules:1, modules.length:1`.
 
