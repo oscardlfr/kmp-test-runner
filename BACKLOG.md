@@ -6,6 +6,20 @@
 
 ## ACTIVE
 
+### Multi-JDK auto-selection per project (research — surfaced 2026-04-30 v0.6 wide smoke)
+
+When running `kmp-test parallel` against many KMP projects in one session, each project may require a different JDK (KaMPKit JDK 11 / nav3-recipes JDK 11 / Confetti JDK 17 / shared-kmp-libs JDK 21). Today the user must restart the shell with a different `JAVA_HOME` between projects, or pass `--ignore-jdk-mismatch` to bypass the gate. Wide-smoke surface 2026-04-30: 4/20 surveyed projects exited 3 with `jdk_mismatch` because the host's `java -version` was 21.
+
+Investigation questions:
+1. **Detect installed JDKs** — common locations on each platform (Eclipse Adoptium / Zulu / Microsoft Build / SAP / `/usr/libexec/java_home -V` on macOS / `update-alternatives --list java` on Linux / `where java` + Registry on Windows). Build a catalogue at startup.
+2. **Match required JDK** — when `findRequiredJdkVersion` returns N and the catalogue has a matching install, use it for the spawn (export `JAVA_HOME=<path>` to the gradle subprocess). Bypass the gate.
+3. **Surface in `kmp-test doctor`** — list installed JDKs + show which one would be chosen for the current project.
+4. **`--java-home <path>`** flag already exists in `scripts/{sh,ps1}` (added v0.5.1 Bug F). Hoist it to the CLI layer so users can override the auto-detected pick.
+5. **Per-project config presets** (sister entry below) could pin a specific JDK path — useful when auto-detection picks the wrong major (e.g. project tests fail under JDK 21 even though it satisfies the toolchain version).
+6. **`gradle.properties` precedence** — `org.gradle.java.home=<path>` already bypasses the gate; the auto-selection should respect this when present.
+
+Estimated effort: ~3-4h for catalogue + match + doctor surfacing. Probably v0.6.x or v0.7.
+
 ### Per-project config presets (post-v0.5.1 idea — needs design)
 
 The CLI currently expects each invocation to carry every flag verbatim — which becomes painful when running it against several real projects with different requirements. Examples surfaced 2026-04-27 while validating v0.5.1:
