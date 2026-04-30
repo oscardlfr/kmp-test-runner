@@ -19,6 +19,7 @@ import {
   consumeDryRunFlag,
   consumeForceFlag,
   consumeTestFilter,
+  expandNoCoverageAlias,
   getIgnoreJdkMismatch,
   findRequiredJdkVersion,
   preflightJdkCheck,
@@ -124,6 +125,23 @@ describe('getCoverageToolFromArgs', () => {
   it('returns the explicit value', () => {
     expect(getCoverageToolFromArgs(['--coverage-tool', 'kover'])).toBe('kover');
     expect(getCoverageToolFromArgs(['--coverage-tool', 'jacoco'])).toBe('jacoco');
+  });
+});
+
+describe('expandNoCoverageAlias (v0.6 Bug 5)', () => {
+  it('returns args unchanged when --no-coverage is absent', () => {
+    expect(expandNoCoverageAlias(['parallel', '--project-root', '/x']))
+      .toEqual(['parallel', '--project-root', '/x']);
+  });
+
+  it('replaces --no-coverage with --coverage-tool none', () => {
+    expect(expandNoCoverageAlias(['parallel', '--no-coverage']))
+      .toEqual(['parallel', '--coverage-tool', 'none']);
+  });
+
+  it('drops --no-coverage when --coverage-tool is already explicit (explicit wins)', () => {
+    expect(expandNoCoverageAlias(['parallel', '--no-coverage', '--coverage-tool', 'kover']))
+      .toEqual(['parallel', '--coverage-tool', 'kover']);
   });
 });
 
@@ -1279,6 +1297,27 @@ describe('main() — --dry-run', () => {
   });
 });
 
+describe('main() — --no-coverage alias (v0.6 Bug 5)', () => {
+  it('--no-coverage propagates as --coverage-tool none, NOT as --no-coverage / -NoCoverage', () => {
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--no-coverage', '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();
+      const argList = scriptCall[1].map(String);
+      // Final argv must NOT carry --no-coverage or its PowerShell-translated form.
+      expect(argList).not.toContain('--no-coverage');
+      expect(argList).not.toContain('-NoCoverage');
+      // Must carry --coverage-tool none (or PS1-translated -CoverageTool none).
+      const i = argList.findIndex(a => a === '--coverage-tool' || a === '-CoverageTool');
+      expect(i).toBeGreaterThan(-1);
+      expect(argList[i + 1]).toBe('none');
+    });
+  });
+});
+
 describe('main() — --test-filter passthrough', () => {
   it('parallel + --test-filter <pattern> appends --test-filter to script args', () => {
     withFakeGradleProject(dir => {
@@ -1913,11 +1952,35 @@ describe('main() — JDK gate integration', () => {
     });
   });
 
-  it('gates --dry-run too (so users see the mismatch before expecting success)', () => {
+  it('--dry-run BYPASSES the gate (planning is safe even on a mismatched JDK)', () => {
     withFakeKmpProject(17, dir => {
       mockJavaVersion(23);
       process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--project-root', dir];
-      expect(main()).toBe(EXIT.ENV_ERROR);
+      expect(main()).toBe(EXIT.SUCCESS);
+      const ranScript = spawnMock.mock.calls.some(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(ranScript).toBe(false);
+    });
+  });
+
+  it('--dry-run --json on mismatched JDK emits a plan, NOT a jdk_mismatch error', () => {
+    withFakeKmpProject(17, dir => {
+      mockJavaVersion(23);
+      const writes = [];
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (chunk) => { writes.push(String(chunk)); return true; };
+      try {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--json', '--project-root', dir];
+        expect(main()).toBe(EXIT.SUCCESS);
+      } finally {
+        process.stdout.write = origWrite;
+      }
+      const json = JSON.parse(writes.join('').trim());
+      expect(json.dry_run).toBe(true);
+      expect(json.exit_code).toBe(0);
+      expect(json.plan).toBeTypeOf('object');
+      expect(Array.isArray(json.errors) ? json.errors : []).toHaveLength(0);
     });
   });
 });

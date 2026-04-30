@@ -144,6 +144,20 @@ pm_get_coverage_task() {
     _pm_json_get "$model_file" module_field "$module" resolved coverageTask
 }
 
+# Public: echo the resolved web (JS / Wasm) test task for a module — usually
+# `jsTest` or `wasmJsTest` (v0.6 Bug 3). Empty when the module has no
+# JS/Wasm targets, when the model is missing, or when the probe didn't see
+# the candidate task. Parallel to `pm_get_device_test_task` for Android —
+# scripts opt in by reading this when they want web-side test invocation.
+pm_get_web_test_task() {
+    local project_root="$1"
+    local module
+    module="$(_pm_norm_module "$2")"
+    local model_file
+    model_file="$(_pm_locate_model_file "$project_root")" || { echo ""; return 0; }
+    _pm_json_get "$model_file" module_field "$module" resolved webTestTask
+}
+
 # Public: echo the module type (`kmp` | `android` | `jvm` | `unknown`).
 # Empty when model is missing.
 pm_module_type() {

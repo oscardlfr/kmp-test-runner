@@ -312,16 +312,72 @@ describe('analyzeModule', () => {
     expect(a.androidDsl).toBeNull();
   });
 
-  it('detects all 9 source-set directories independently', () => {
+  // v0.6 Bug 2: pre-fix `(library|application)` missed `com.android.test`,
+  // and the kotlin-android plugin (`kotlin("android")` / `org.jetbrains.kotlin.android`)
+  // had no detection at all. Modules using these patterns showed `type=unknown`
+  // (caught in real-world smoke against Confetti/nav3-recipes/DroidconKotlin).
+  it('classifies com.android.test modules as android (v0.6 Bug 2)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'androidBenchmark'), { recursive: true });
+    writeFileSync(path.join(dir, 'androidBenchmark', 'build.gradle.kts'),
+      'plugins {\n  kotlin("android")\n  id("com.android.test")\n}');
+    const a = analyzeModule(dir, ':androidBenchmark');
+    expect(a.type).toBe('android');
+    expect(a.androidDsl).toBeNull();
+  });
+
+  it('classifies kotlin("android") modules as android (v0.6 Bug 2)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'),
+      'plugins { kotlin("android") }');
+    const a = analyzeModule(dir, ':m');
+    expect(a.type).toBe('android');
+  });
+
+  it('classifies long-form org.jetbrains.kotlin.android plugin id as android (v0.6 Bug 2)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'),
+      'plugins { id("org.jetbrains.kotlin.android") }');
+    const a = analyzeModule(dir, ':m');
+    expect(a.type).toBe('android');
+  });
+
+  it('still classifies AGP+kotlin-android pair as android (regression — pre-fix path also worked here)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins {\n  id("com.android.application")\n  kotlin("android")\n}');
+    const a = analyzeModule(dir, ':app');
+    expect(a.type).toBe('android');
+  });
+
+  it('detects all 12 source-set directories independently', () => {
+    // 9 baseline + 3 added in v0.6 Bug 3 (jsTest / wasmJsTest / wasmWasiTest).
     const dir = makeProject();
     mkdirSync(path.join(dir, 'm', 'src', 'commonTest'), { recursive: true });
     mkdirSync(path.join(dir, 'm', 'src', 'androidInstrumentedTest'), { recursive: true });
+    mkdirSync(path.join(dir, 'm', 'src', 'jsTest'), { recursive: true });
     writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), '');
     const a = analyzeModule(dir, ':m');
     expect(a.sourceSets.commonTest).toBe(true);
     expect(a.sourceSets.androidInstrumentedTest).toBe(true);
+    expect(a.sourceSets.jsTest).toBe(true);
+    expect(a.sourceSets.wasmJsTest).toBe(false);
+    expect(a.sourceSets.wasmWasiTest).toBe(false);
     expect(a.sourceSets.test).toBe(false);
     expect(a.sourceSets.iosTest).toBe(false);
+  });
+
+  it('detects wasmJsTest and wasmWasiTest source-set dirs (v0.6 Bug 3)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'wasm', 'src', 'wasmJsTest'), { recursive: true });
+    mkdirSync(path.join(dir, 'wasm', 'src', 'wasmWasiTest'), { recursive: true });
+    writeFileSync(path.join(dir, 'wasm', 'build.gradle.kts'), '');
+    const a = analyzeModule(dir, ':wasm');
+    expect(a.sourceSets.wasmJsTest).toBe(true);
+    expect(a.sourceSets.wasmWasiTest).toBe(true);
   });
 
   it('detects hasFlavor when productFlavors is present', () => {
@@ -369,6 +425,47 @@ describe('resolveTasksFor', () => {
     expect(r.unitTestTask).toBeNull();
     expect(r.deviceTestTask).toBeNull();
     expect(r.coverageTask).toBeNull();
+    expect(r.webTestTask).toBeNull();
+  });
+
+  // v0.6 Bug 3 — JS / Wasm support.
+  describe('JS / Wasm task resolution (v0.6 Bug 3)', () => {
+    it('picks jsTest as webTestTask when present', () => {
+      const r = resolveTasksFor(':m', ['jsTest', 'wasmJsTest']);
+      expect(r.webTestTask).toBe('jsTest');
+    });
+
+    it('picks wasmJsTest as webTestTask when only Wasm is present', () => {
+      const r = resolveTasksFor(':m', ['wasmJsTest']);
+      expect(r.webTestTask).toBe('wasmJsTest');
+    });
+
+    it('returns webTestTask null when no JS/Wasm tasks exist', () => {
+      const r = resolveTasksFor(':m', ['desktopTest', 'jvmTest']);
+      expect(r.webTestTask).toBeNull();
+    });
+
+    it('JS-only module: unitTestTask falls back to jsTest when no JVM tasks present', () => {
+      // KMP module that only declares js() target — no jvmTest, no desktopTest,
+      // no test. Pre-fix unitTestTask was null and the script had nothing to run.
+      const r = resolveTasksFor(':m', ['jsTest', 'wasmJsTest']);
+      expect(r.unitTestTask).toBe('jsTest');
+    });
+
+    it('KMP+JS module: unitTestTask still picks jvmTest first (JS does NOT win the candidate race)', () => {
+      // Regression: a KMP module with BOTH jvmTest and jsTest must keep
+      // selecting jvmTest as the unit test task — the JS candidates are only
+      // a fallback for JS-only modules.
+      const r = resolveTasksFor(':m', ['jvmTest', 'jsTest']);
+      expect(r.unitTestTask).toBe('jvmTest');
+      expect(r.webTestTask).toBe('jsTest');
+    });
+
+    it('desktopTest still wins over jvmTest and jsTest (regression)', () => {
+      const r = resolveTasksFor(':m', ['desktopTest', 'jvmTest', 'jsTest']);
+      expect(r.unitTestTask).toBe('desktopTest');
+      expect(r.webTestTask).toBe('jsTest');
+    });
   });
 });
 
@@ -506,13 +603,13 @@ describe('buildProjectModel', () => {
 // ------------------------------------------------------------------
 // v0.5.2 Gap A — build-logic coverage hints + coverageTask prediction
 // ------------------------------------------------------------------
-describe('detectBuildLogicCoverageHints (Gap A)', () => {
-  it('returns {hasKover:false, hasJacoco:false} when build-logic/ is absent', () => {
+describe('detectBuildLogicCoverageHints (Gap A + v0.6 Bug 6)', () => {
+  it('returns {hasKover:null, hasJacoco:null} when build-logic/ is absent', () => {
     const dir = makeProject();
-    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: false, hasJacoco: false });
+    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: null, hasJacoco: null });
   });
 
-  it('detects kover via build-logic convention plugin in *.kt', () => {
+  it('detects kover as CONVENTION via build-logic Plugin<Project> source under src/main/kotlin', () => {
     const dir = makeProject();
     const conv = path.join(dir, 'build-logic', 'src', 'main', 'kotlin');
     mkdirSync(conv, { recursive: true });
@@ -520,45 +617,90 @@ describe('detectBuildLogicCoverageHints (Gap A)', () => {
       path.join(conv, 'KoverConventionPlugin.kt'),
       'class KoverConventionPlugin : Plugin<Project> { override fun apply(target: Project) { target.pluginManager.apply("org.jetbrains.kotlinx.kover") } }\n'
     );
-    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: true, hasJacoco: false });
+    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: 'convention', hasJacoco: null });
   });
 
-  it('detects jacoco via build-logic convention plugin in *.gradle.kts', () => {
+  it('detects jacoco as CONVENTION via precompiled script under src/main/kotlin', () => {
     const dir = makeProject();
-    const conv = path.join(dir, 'build-logic');
+    const conv = path.join(dir, 'build-logic', 'src', 'main', 'kotlin');
     mkdirSync(conv, { recursive: true });
     writeFileSync(path.join(conv, 'jacoco-convention.gradle.kts'), 'plugins { id("jacoco") }\n');
-    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: false, hasJacoco: true });
+    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: null, hasJacoco: 'convention' });
   });
 
-  it('detects both signals when build-logic configures both plugins', () => {
+  it('detects both signals as CONVENTION when build-logic configures both plugins', () => {
     const dir = makeProject();
     const conv = path.join(dir, 'build-logic', 'src', 'main', 'kotlin');
     mkdirSync(conv, { recursive: true });
     writeFileSync(path.join(conv, 'Kover.kt'), 'apply("org.jetbrains.kotlinx.kover")\n');
     writeFileSync(path.join(conv, 'Jacoco.kt'), 'apply("jacoco")\n');
-    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: true, hasJacoco: true });
+    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: 'convention', hasJacoco: 'convention' });
+  });
+
+  // v0.6 Bug 6 — distinguish convention vs self.
+  it('detects jacoco as SELF when only build-logic/build.gradle.kts uses it (no consumer-facing convention)', () => {
+    const dir = makeProject();
+    const conv = path.join(dir, 'build-logic');
+    mkdirSync(conv, { recursive: true });
+    writeFileSync(path.join(conv, 'build.gradle.kts'),
+      'plugins {\n  `kotlin-dsl`\n  jacoco\n}\n');
+    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: null, hasJacoco: 'self' });
+  });
+
+  it('treats nowinandroid-style register("...Jacoco...") as NO signal (registration noise stripped)', () => {
+    // build-logic/<module>/build.gradle.kts that only NAMES jacoco-related
+    // convention plugins via gradlePlugin {} register() blocks. Pre-fix
+    // raised a false-positive jacoco signal; post-fix strips the noise.
+    const dir = makeProject();
+    const conv = path.join(dir, 'build-logic', 'convention');
+    mkdirSync(conv, { recursive: true });
+    writeFileSync(path.join(conv, 'build.gradle.kts'),
+      'plugins {\n  `kotlin-dsl`\n}\n' +
+      'gradlePlugin {\n' +
+      '  plugins {\n' +
+      '    register("androidApplicationJacoco") {\n' +
+      '      id = libs.plugins.x.android.application.jacoco.get().pluginId\n' +
+      '      implementationClass = "AndroidApplicationJacocoConventionPlugin"\n' +
+      '    }\n' +
+      '  }\n' +
+      '}\n');
+    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: null, hasJacoco: null });
+  });
+
+  it('CONVENTION wins over SELF when both fire on the same plugin', () => {
+    // build-logic/build.gradle.kts uses `plugins { jacoco }` for self-compile
+    // AND build-logic/src/main/kotlin/Foo.kt is a real convention plugin
+    // applying jacoco. Result: jacoco='convention' (consumer-facing wins).
+    const dir = makeProject();
+    const root = path.join(dir, 'build-logic');
+    const conv = path.join(root, 'src', 'main', 'kotlin');
+    mkdirSync(conv, { recursive: true });
+    writeFileSync(path.join(root, 'build.gradle.kts'),
+      'plugins { `kotlin-dsl`\n  jacoco\n}\n');
+    writeFileSync(path.join(conv, 'JacocoConventionPlugin.kt'),
+      'class JacocoConventionPlugin : Plugin<Project> { override fun apply(t: Project) { t.pluginManager.apply("jacoco") } }\n');
+    expect(detectBuildLogicCoverageHints(dir)).toEqual({ hasKover: null, hasJacoco: 'convention' });
   });
 });
 
-describe('analyzeModule build-logic inheritance (Gap A)', () => {
-  it('module with no per-module signal inherits kover from build-logic hint', () => {
+describe('analyzeModule build-logic inheritance (Gap A + v0.6 Bug 6)', () => {
+  it('module with no per-module signal inherits kover from build-logic CONVENTION hint', () => {
     const dir = makeProject();
     const moduleDir = path.join(dir, 'core-foo');
     mkdirSync(moduleDir, { recursive: true });
     // Per-module build file has NO kover/jacoco mention.
     writeFileSync(path.join(moduleDir, 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
-    const hint = { hasKover: true, hasJacoco: false };
+    const hint = { hasKover: 'convention', hasJacoco: null };
     const a = analyzeModule(dir, ':core-foo', hint);
     expect(a.coveragePlugin).toBe('kover');
   });
 
-  it('module with no per-module signal inherits jacoco from build-logic hint', () => {
+  it('module with no per-module signal inherits jacoco from build-logic CONVENTION hint', () => {
     const dir = makeProject();
     const moduleDir = path.join(dir, 'core-bar');
     mkdirSync(moduleDir, { recursive: true });
     writeFileSync(path.join(moduleDir, 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
-    const hint = { hasKover: false, hasJacoco: true };
+    const hint = { hasKover: null, hasJacoco: 'convention' };
     const a = analyzeModule(dir, ':core-bar', hint);
     expect(a.coveragePlugin).toBe('jacoco');
   });
@@ -568,7 +710,7 @@ describe('analyzeModule build-logic inheritance (Gap A)', () => {
     const moduleDir = path.join(dir, 'core-baz');
     mkdirSync(moduleDir, { recursive: true });
     writeFileSync(path.join(moduleDir, 'build.gradle.kts'), 'plugins { id("org.jetbrains.kotlinx.kover") }\n');
-    const hint = { hasKover: false, hasJacoco: true };
+    const hint = { hasKover: null, hasJacoco: 'convention' };
     const a = analyzeModule(dir, ':core-baz', hint);
     expect(a.coveragePlugin).toBe('kover');
   });
@@ -579,6 +721,29 @@ describe('analyzeModule build-logic inheritance (Gap A)', () => {
     mkdirSync(moduleDir, { recursive: true });
     writeFileSync(path.join(moduleDir, 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
     const a = analyzeModule(dir, ':core-qux');
+    expect(a.coveragePlugin).toBeNull();
+  });
+
+  // v0.6 Bug 6: SELF signals must NOT propagate. nowinandroid surfaced the
+  // false positive — build-logic compiled itself with jacoco, model declared
+  // every consumer module had jacoco, real coverage run found 0 contributors.
+  it('module does NOT inherit jacoco when build-logic hint is SELF only', () => {
+    const dir = makeProject();
+    const moduleDir = path.join(dir, 'core-self');
+    mkdirSync(moduleDir, { recursive: true });
+    writeFileSync(path.join(moduleDir, 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
+    const hint = { hasKover: null, hasJacoco: 'self' };
+    const a = analyzeModule(dir, ':core-self', hint);
+    expect(a.coveragePlugin).toBeNull();
+  });
+
+  it('module does NOT inherit kover when build-logic hint is SELF only', () => {
+    const dir = makeProject();
+    const moduleDir = path.join(dir, 'core-self-k');
+    mkdirSync(moduleDir, { recursive: true });
+    writeFileSync(path.join(moduleDir, 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
+    const hint = { hasKover: 'self', hasJacoco: null };
+    const a = analyzeModule(dir, ':core-self-k', hint);
     expect(a.coveragePlugin).toBeNull();
   });
 });
