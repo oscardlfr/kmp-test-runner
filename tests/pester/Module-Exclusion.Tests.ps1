@@ -180,3 +180,44 @@ Describe 'parallel.ps1: Find-Modules filtering (end-to-end)' {
         $output | Should -Match 'No modules found'
     }
 }
+
+# ----------------------------------------------------------------------------
+# v0.6.2 Gap 1.2: --json envelope surfaces state.skipped[] from [SKIP] lines
+# v0.6.2 Gap 1.1: --json envelope carries code:"no_test_modules" discriminator
+# ----------------------------------------------------------------------------
+
+Describe 'kmp-test --json: skipped[] and no_test_modules envelope' {
+
+    BeforeEach {
+        $script:WorkDir = Join-Path $TestDrive ("envelope-" + [guid]::NewGuid().ToString('N').Substring(0,8))
+        New-FakeMultiModuleProject -Path $script:WorkDir
+    }
+
+    It 'skipped[] populated for auto-skipped untested modules' {
+        $cli = Join-Path $script:RepoRoot 'bin\kmp-test.js'
+        $work = $script:WorkDir
+        $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
+            (& node $cli --json parallel --project-root $work --module-filter '*' 2>&1) -join "`n"
+        }
+        $firstLine = ($output -split "`n" | Where-Object { $_ -match '^\{' } | Select-Object -First 1)
+        $firstLine | Should -Not -BeNullOrEmpty
+        $firstLine | Should -Match '"skipped":'
+        $firstLine | Should -Match '"module":"api"'
+        $firstLine | Should -Match '"module":"build-logic"'
+        $firstLine | Should -Match '"reason":"no test source set'
+    }
+
+    It 'no_test_modules code fires when filter excludes all' {
+        $cli = Join-Path $script:RepoRoot 'bin\kmp-test.js'
+        $work = $script:WorkDir
+        $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
+            (& node $cli --json parallel --project-root $work --module-filter '*' `
+                --exclude-modules 'core-*,feature-*' 2>&1) -join "`n"
+        }
+        $LASTEXITCODE | Should -Be 3
+        $firstLine = ($output -split "`n" | Where-Object { $_ -match '^\{' } | Select-Object -First 1)
+        $firstLine | Should -Not -BeNullOrEmpty
+        $firstLine | Should -Match '"code":"no_test_modules"'
+        $firstLine | Should -Not -Match '"code":"no_summary"'
+    }
+}

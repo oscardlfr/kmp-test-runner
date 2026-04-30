@@ -17,6 +17,10 @@ echo "BUILD SUCCESSFUL (stub): $*"
 exit 0
 EOF
     chmod +x "$WORK_DIR/bin/gradlew"
+    # Also drop a gradlew + gradlew.bat at project root — the CLI's pre-flight
+    # check looks there before dispatching to the wrapper script.
+    cp "$WORK_DIR/bin/gradlew" "$WORK_DIR/gradlew"
+    printf '@echo off\r\nexit /b 0\r\n' > "$WORK_DIR/gradlew.bat"
 
     # Stub java that reports JDK 17 (matches typical jvmToolchain so the
     # JDK gate from Bug A doesn't fire mid-test).
@@ -159,4 +163,30 @@ extract_modules_found() {
         --exclude-modules "core-*,feature-*"
     [ "$status" -eq 3 ]
     [[ "$output" == *"No modules found"* ]]
+}
+
+# v0.6.2 Gap 1.2: --json envelope surfaces state.skipped[] from [SKIP] lines.
+@test "kmp-test --json parallel: skipped[] populated for auto-skipped untested modules" {
+    run node bin/kmp-test.js --json parallel --project-root "$WORK_DIR" --module-filter "*"
+    # Wrapper exits 3 (no test modules survive) but --json envelope still surfaces.
+    first_line=$(echo "$output" | grep -m1 '^{' || true)
+    [ -n "$first_line" ]
+    # api + build-logic should appear in skipped[] with the canonical reason.
+    [[ "$first_line" == *'"skipped":'* ]]
+    [[ "$first_line" == *'"module":"api"'* ]]
+    [[ "$first_line" == *'"module":"build-logic"'* ]]
+    [[ "$first_line" == *'"reason":"no test source set'* ]]
+}
+
+# v0.6.2 Gap 1.1: --json envelope carries code:"no_test_modules" when filter
+# yields zero modules. Discriminates the parse-gap fallback.
+@test "kmp-test --json parallel: no_test_modules code fires when filter excludes all" {
+    run node bin/kmp-test.js --json parallel --project-root "$WORK_DIR" --module-filter "*" \
+        --exclude-modules "core-*,feature-*"
+    [ "$status" -eq 3 ]
+    first_line=$(echo "$output" | grep -m1 '^{' || true)
+    [ -n "$first_line" ]
+    [[ "$first_line" == *'"code":"no_test_modules"'* ]]
+    # Generic no_summary fallback must NOT also fire when the discriminator hits.
+    [[ "$first_line" != *'"code":"no_summary"'* ]]
 }
