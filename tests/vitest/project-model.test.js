@@ -353,16 +353,31 @@ describe('analyzeModule', () => {
     expect(a.type).toBe('android');
   });
 
-  it('detects all 9 source-set directories independently', () => {
+  it('detects all 12 source-set directories independently', () => {
+    // 9 baseline + 3 added in v0.6 Bug 3 (jsTest / wasmJsTest / wasmWasiTest).
     const dir = makeProject();
     mkdirSync(path.join(dir, 'm', 'src', 'commonTest'), { recursive: true });
     mkdirSync(path.join(dir, 'm', 'src', 'androidInstrumentedTest'), { recursive: true });
+    mkdirSync(path.join(dir, 'm', 'src', 'jsTest'), { recursive: true });
     writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), '');
     const a = analyzeModule(dir, ':m');
     expect(a.sourceSets.commonTest).toBe(true);
     expect(a.sourceSets.androidInstrumentedTest).toBe(true);
+    expect(a.sourceSets.jsTest).toBe(true);
+    expect(a.sourceSets.wasmJsTest).toBe(false);
+    expect(a.sourceSets.wasmWasiTest).toBe(false);
     expect(a.sourceSets.test).toBe(false);
     expect(a.sourceSets.iosTest).toBe(false);
+  });
+
+  it('detects wasmJsTest and wasmWasiTest source-set dirs (v0.6 Bug 3)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'wasm', 'src', 'wasmJsTest'), { recursive: true });
+    mkdirSync(path.join(dir, 'wasm', 'src', 'wasmWasiTest'), { recursive: true });
+    writeFileSync(path.join(dir, 'wasm', 'build.gradle.kts'), '');
+    const a = analyzeModule(dir, ':wasm');
+    expect(a.sourceSets.wasmJsTest).toBe(true);
+    expect(a.sourceSets.wasmWasiTest).toBe(true);
   });
 
   it('detects hasFlavor when productFlavors is present', () => {
@@ -410,6 +425,47 @@ describe('resolveTasksFor', () => {
     expect(r.unitTestTask).toBeNull();
     expect(r.deviceTestTask).toBeNull();
     expect(r.coverageTask).toBeNull();
+    expect(r.webTestTask).toBeNull();
+  });
+
+  // v0.6 Bug 3 — JS / Wasm support.
+  describe('JS / Wasm task resolution (v0.6 Bug 3)', () => {
+    it('picks jsTest as webTestTask when present', () => {
+      const r = resolveTasksFor(':m', ['jsTest', 'wasmJsTest']);
+      expect(r.webTestTask).toBe('jsTest');
+    });
+
+    it('picks wasmJsTest as webTestTask when only Wasm is present', () => {
+      const r = resolveTasksFor(':m', ['wasmJsTest']);
+      expect(r.webTestTask).toBe('wasmJsTest');
+    });
+
+    it('returns webTestTask null when no JS/Wasm tasks exist', () => {
+      const r = resolveTasksFor(':m', ['desktopTest', 'jvmTest']);
+      expect(r.webTestTask).toBeNull();
+    });
+
+    it('JS-only module: unitTestTask falls back to jsTest when no JVM tasks present', () => {
+      // KMP module that only declares js() target — no jvmTest, no desktopTest,
+      // no test. Pre-fix unitTestTask was null and the script had nothing to run.
+      const r = resolveTasksFor(':m', ['jsTest', 'wasmJsTest']);
+      expect(r.unitTestTask).toBe('jsTest');
+    });
+
+    it('KMP+JS module: unitTestTask still picks jvmTest first (JS does NOT win the candidate race)', () => {
+      // Regression: a KMP module with BOTH jvmTest and jsTest must keep
+      // selecting jvmTest as the unit test task — the JS candidates are only
+      // a fallback for JS-only modules.
+      const r = resolveTasksFor(':m', ['jvmTest', 'jsTest']);
+      expect(r.unitTestTask).toBe('jvmTest');
+      expect(r.webTestTask).toBe('jsTest');
+    });
+
+    it('desktopTest still wins over jvmTest and jsTest (regression)', () => {
+      const r = resolveTasksFor(':m', ['desktopTest', 'jvmTest', 'jsTest']);
+      expect(r.unitTestTask).toBe('desktopTest');
+      expect(r.webTestTask).toBe('jsTest');
+    });
   });
 });
 

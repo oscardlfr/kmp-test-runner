@@ -121,6 +121,23 @@ function Get-PmCoverageTask {
     return (_Get-PmField -Root $data -Path @('modules', $m, 'resolved', 'coverageTask'))
 }
 
+# v0.6 Bug 3: JS / Wasm test task — typically jsTest or wasmJsTest. Returns
+# $null when the module has no JS/Wasm targets, when the model is missing,
+# or when the probe didn't see the candidate task. Parallel to
+# Get-PmDeviceTestTask for Android — scripts opt in by reading this when
+# they want web-side test invocation.
+function Get-PmWebTestTask {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [Parameter(Mandatory)][string]$Module
+    )
+    $data = _Get-PmModelData -ProjectRoot $ProjectRoot
+    if (-not $data) { return $null }
+    $m = _Normalize-PmModule -Module $Module
+    return (_Get-PmField -Root $data -Path @('modules', $m, 'resolved', 'webTestTask'))
+}
+
 function Get-PmModuleType {
     [CmdletBinding()]
     param(
