@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`alias(libs.plugins.<X>)` plugin reference resolution in module-type detection (v0.6.x Gap 3).** `analyzeModule` now recognizes the version-catalog DSL form alongside the existing literal `id("...")` and `kotlin("...")` forms. New `parseVersionCatalog(projectRoot)` helper reads `gradle/libs.versions.toml` and parses the `[plugins]` section into a `Map<dottedKey, pluginId>` (table-form `key = { id = "...", ... }` and string-form `key = "id:version"` both supported; TOML keys' `-` become `.` so the consumer's `alias(libs.plugins.kotlin.multiplatform)` matches a TOML `kotlin-multiplatform = ...` entry). When the catalog is missing or doesn't contain the alias key, a small suffix heuristic resolves namespaced aliases (e.g. `libs.plugins.nowinandroid.android.application` → `com.android.application`). The resolved plugin ids participate in the existing booleans (`hasAndroidPlugin || hasAndroidViaAlias`, etc.) so all four type categories (kmp/android/jvm) classify correctly. Wide-smoke 2026-04-30 surfaced nav3-recipes, Compose Multiplatform's modern modules, and Confetti as projects where alias-only modules previously classified `unknown`. Tests: +6 vitest in `analyzeModule` (TOML table-form per type + string-form + heuristic fallback + namespaced + literal regression), +5 vitest covering `parseVersionCatalog` directly (table form, string form, no `[plugins]`, malformed, section bleed-through guard). New CI fixture `tests/fixtures/version-catalog-alias-plugins/` with 4 modules (`:app` AGP-alias, `:shared` KMP-alias, `:jvm-lib` JVM-alias-string-form, `:namespaced-app` heuristic-only) loaded by `tests/bats/test-version-catalog-alias.bats` (4 tests) and `tests/pester/Version-Catalog-Alias.Tests.ps1` (4 tests).
+
 ## [0.6.0] — 2026-04-30
 
 ### Changed

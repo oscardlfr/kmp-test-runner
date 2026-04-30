@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Test stub. Tests pre-write the .kmp-test-runner-cache/tasks-<sha>.txt file
+# before invoking buildProjectModel, so this stub is never actually called
+# during the bats / Pester runs. Kept here so the `path.exists(gradlew)` gate
+# in probeGradleTasksCached doesn't bail early.
+exit 0

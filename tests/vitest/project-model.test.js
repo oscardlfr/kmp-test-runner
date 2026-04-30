@@ -21,6 +21,7 @@ import {
   buildProjectModel,
   clearProjectModelCache,
   detectBuildLogicCoverageHints,
+  parseVersionCatalog,
 } from '../../lib/project-model.js';
 
 let workDir;
@@ -399,6 +400,137 @@ describe('analyzeModule', () => {
     expect(analyzeModule(dir, ':k').coveragePlugin).toBe('kover');
     expect(analyzeModule(dir, ':j').coveragePlugin).toBe('jacoco');
     expect(analyzeModule(dir, ':n').coveragePlugin).toBeNull();
+  });
+
+  // v0.6.x Gap 3: alias(libs.plugins.<X>) resolution via version catalog.
+  // nav3-recipes / Compose Multiplatform / Confetti modern modules use this
+  // form exclusively; pre-fix they all classified as `unknown`.
+  it('classifies alias(libs.plugins.android.application) as android via TOML catalog (v0.6.x Gap 3)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nandroid-application = { id = "com.android.application", version = "8.5.0" }\n');
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins { alias(libs.plugins.android.application) }');
+    const a = analyzeModule(dir, ':app');
+    expect(a.type).toBe('android');
+  });
+
+  it('classifies alias(libs.plugins.kotlin.multiplatform) as kmp via TOML catalog (v0.6.x Gap 3)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nkotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version = "2.0.0" }\n');
+    mkdirSync(path.join(dir, 'shared'), { recursive: true });
+    writeFileSync(path.join(dir, 'shared', 'build.gradle.kts'),
+      'plugins { alias(libs.plugins.kotlin.multiplatform) }');
+    const a = analyzeModule(dir, ':shared');
+    expect(a.type).toBe('kmp');
+  });
+
+  it('classifies alias(libs.plugins.kotlin.jvm) as jvm via TOML catalog (v0.6.x Gap 3)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nkotlin-jvm = "org.jetbrains.kotlin.jvm:2.0.0"\n');
+    mkdirSync(path.join(dir, 'lib'), { recursive: true });
+    writeFileSync(path.join(dir, 'lib', 'build.gradle.kts'),
+      'plugins { alias(libs.plugins.kotlin.jvm) }');
+    const a = analyzeModule(dir, ':lib');
+    expect(a.type).toBe('jvm');
+  });
+
+  it('falls back to heuristic resolution when libs.versions.toml is missing (v0.6.x Gap 3)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins { alias(libs.plugins.android.application) }');
+    const a = analyzeModule(dir, ':app');
+    expect(a.type).toBe('android');
+  });
+
+  it('handles namespaced alias keys via heuristic suffix matching (v0.6.x Gap 3)', () => {
+    // nowinandroid-style: alias(libs.plugins.nowinandroid.android.application)
+    // resolves heuristically because catalog likely maps to internal convention
+    // plugin ids that aren't AGP/kotlin literals.
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins { alias(libs.plugins.nowinandroid.android.application) }');
+    const a = analyzeModule(dir, ':app');
+    expect(a.type).toBe('android');
+  });
+
+  it('regression: literal id("com.android.application") still classifies as android (v0.6.x Gap 3)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nandroid-application = { id = "com.android.application", version = "8.5.0" }\n');
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins { id("com.android.application") }');
+    const a = analyzeModule(dir, ':app');
+    expect(a.type).toBe('android');
+  });
+});
+
+// ------------------------------------------------------------------
+// parseVersionCatalog (v0.6.x Gap 3)
+// ------------------------------------------------------------------
+describe('parseVersionCatalog (v0.6.x Gap 3)', () => {
+  it('returns null when libs.versions.toml is absent', () => {
+    const dir = makeProject();
+    expect(parseVersionCatalog(dir)).toBeNull();
+  });
+
+  it('returns empty Map when [plugins] section is absent', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[versions]\nkotlin = "2.0.0"\n[libraries]\ncore = { module = "io.x:y", version.ref = "kotlin" }\n');
+    const cat = parseVersionCatalog(dir);
+    expect(cat).toBeInstanceOf(Map);
+    expect(cat.size).toBe(0);
+  });
+
+  it('parses [plugins] table form with id field', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nkotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }\nandroid-application = { id = "com.android.application", version = "8.5.0" }\n');
+    const cat = parseVersionCatalog(dir);
+    expect(cat.get('kotlin.multiplatform')).toBe('org.jetbrains.kotlin.multiplatform');
+    expect(cat.get('android.application')).toBe('com.android.application');
+  });
+
+  it('parses [plugins] string form (id:version)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nkotlin-jvm = "org.jetbrains.kotlin.jvm:2.0.0"\n');
+    const cat = parseVersionCatalog(dir);
+    expect(cat.get('kotlin.jvm')).toBe('org.jetbrains.kotlin.jvm');
+  });
+
+  it('skips malformed entries silently and keeps valid ones', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\n# this is a comment\nbroken =\nvalid = { id = "com.example.valid", version = "1.0" }\n');
+    const cat = parseVersionCatalog(dir);
+    expect(cat.get('valid')).toBe('com.example.valid');
+    expect(cat.has('broken')).toBe(false);
+  });
+
+  it('stops at next section header — does not bleed [libraries] entries', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nkotlin-jvm = "org.jetbrains.kotlin.jvm:2.0.0"\n[libraries]\ncore = { module = "io.x:y", version = "1.0" }\n');
+    const cat = parseVersionCatalog(dir);
+    expect(cat.get('kotlin.jvm')).toBe('org.jetbrains.kotlin.jvm');
+    expect(cat.has('core')).toBe(false);
   });
 });
 
