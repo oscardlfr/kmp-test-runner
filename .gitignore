@@ -8,6 +8,8 @@ dist/
 .gradle/
 build/
 .idea/
+# Build cache artefacts produced when fixtures are exercised by tests
+**/.kmp-test-runner-cache/
 **/gradle.properties
 *.log
 .DS_Store
