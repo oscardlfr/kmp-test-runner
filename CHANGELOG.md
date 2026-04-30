@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-04-30
+
 ### Changed
 - **`detectBuildLogicCoverageHints` now distinguishes CONVENTION vs SELF kover/jacoco signals (v0.6 Bug 6).** The v0.5.2 Gap A pre-work added a naive `\bjacoco\b` (and `\bkover\b`) scan over every file under `build-logic/`. nowinandroid surfaced the false positive: `build-logic/convention/build.gradle.kts` only NAMES jacoco-related convention plugins via `gradlePlugin { plugins { register("androidApplicationJacoco") { id = libs.plugins.<...>.jacoco.get().pluginId; implementationClass = "AndroidApplicationJacocoConventionPlugin" } } }` — the substring "jacoco" appears multiple times but jacoco is never APPLIED to build-logic itself or to consumer modules from this file. Pre-fix, `analyzeModule` propagated `coveragePlugin: 'jacoco'` to all 35 nowinandroid modules; the actual `kmp-test parallel --coverage-tool jacoco` run reported `modules_contributing: 0` because no module had jacoco apply for its own tests. Discrimination now uses two signals:
   - **CONVENTION**: any file under `build-logic/<X>/src/main/...` mentioning kover/jacoco. Precompiled-script plugins (`*.gradle.kts` under `src/main/kotlin/`) and `Plugin<Project>` class sources both apply effects to consumer modules from this location.

@@ -2,11 +2,11 @@
 
 > Standalone parallel test runner for Kotlin Multiplatform and Android Gradle projects. npm CLI + Gradle plugin + shell installers. MIT.
 
-## Repo state (2026-04-26)
+## Repo state (2026-04-30)
 
-- npm: `kmp-test-runner@0.3.7` (Trusted Publisher OIDC; auto-publishes on push to `main`)
-- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.3.7` (GitHub Packages; auto-publishes on push to `main`)
-- GitHub Releases: `v0.3.7` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
+- npm: `kmp-test-runner@0.6.0` (Trusted Publisher OIDC; auto-publishes on push to `main`)
+- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.6.0` (GitHub Packages; auto-publishes on push to `main`)
+- GitHub Releases: `v0.6.0` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
 - All 3 shapes share the same source-of-truth version (`package.json`), bumped together per release.
 
 ## Layout
