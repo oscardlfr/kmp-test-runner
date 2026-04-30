@@ -312,6 +312,47 @@ describe('analyzeModule', () => {
     expect(a.androidDsl).toBeNull();
   });
 
+  // v0.6 Bug 2: pre-fix `(library|application)` missed `com.android.test`,
+  // and the kotlin-android plugin (`kotlin("android")` / `org.jetbrains.kotlin.android`)
+  // had no detection at all. Modules using these patterns showed `type=unknown`
+  // (caught in real-world smoke against Confetti/nav3-recipes/DroidconKotlin).
+  it('classifies com.android.test modules as android (v0.6 Bug 2)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'androidBenchmark'), { recursive: true });
+    writeFileSync(path.join(dir, 'androidBenchmark', 'build.gradle.kts'),
+      'plugins {\n  kotlin("android")\n  id("com.android.test")\n}');
+    const a = analyzeModule(dir, ':androidBenchmark');
+    expect(a.type).toBe('android');
+    expect(a.androidDsl).toBeNull();
+  });
+
+  it('classifies kotlin("android") modules as android (v0.6 Bug 2)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'),
+      'plugins { kotlin("android") }');
+    const a = analyzeModule(dir, ':m');
+    expect(a.type).toBe('android');
+  });
+
+  it('classifies long-form org.jetbrains.kotlin.android plugin id as android (v0.6 Bug 2)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'),
+      'plugins { id("org.jetbrains.kotlin.android") }');
+    const a = analyzeModule(dir, ':m');
+    expect(a.type).toBe('android');
+  });
+
+  it('still classifies AGP+kotlin-android pair as android (regression — pre-fix path also worked here)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins {\n  id("com.android.application")\n  kotlin("android")\n}');
+    const a = analyzeModule(dir, ':app');
+    expect(a.type).toBe('android');
+  });
+
   it('detects all 9 source-set directories independently', () => {
     const dir = makeProject();
     mkdirSync(path.join(dir, 'm', 'src', 'commonTest'), { recursive: true });
