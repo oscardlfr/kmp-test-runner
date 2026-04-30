@@ -258,6 +258,27 @@ describe('parseScriptOutput', () => {
     expect(r.errors.find(e => /no recognizable/.test(e.message))).toBeUndefined();
   });
 
+  it('discriminates code: no_test_modules on wrapper [ERROR] No modules line', () => {
+    const out = '[SKIP] composeApp (no test source set - pass --include-untested to override)\n[ERROR] No modules found matching filter: *\n';
+    const r = parseScriptOutput(out, '', []);
+    const e = r.errors.find(x => x.code === 'no_test_modules');
+    expect(e).toBeDefined();
+    expect(e.message).toMatch(/^\[ERROR\] No modules found matching filter/);
+  });
+
+  it('does NOT fire no_test_modules when the line is in a quoted gradle log body', () => {
+    const out = 'gradle log: "[ERROR] No modules found matching filter: foo" (was a comment)\nBUILD SUCCESSFUL\n';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.errors.find(e => e.code === 'no_test_modules')).toBeUndefined();
+  });
+
+  it('no_test_modules discriminator preempts no_summary fallback', () => {
+    const out = '[ERROR] No modules found matching filter: *\n';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.errors.find(e => e.code === 'no_test_modules')).toBeDefined();
+    expect(r.errors.find(e => e.code === 'no_summary')).toBeUndefined();
+  });
+
   it('strips ANSI codes before parsing', () => {
     const out = '\x1b[31mTests:\x1b[0m 5 total | 5 passed | 0 failed | 0 skipped';
     const r = parseScriptOutput(out, '', []);
