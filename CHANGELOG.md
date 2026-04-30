@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`errors[].code = "no_summary"` for parse-gap fallback envelope (v0.6.x Gap 1).** When `parseScriptOutput` runs every recognizer (legacy/Android/benchmark) AND every shared signal (BUILD SUCCESSFUL/FAILED, deprecation warnings) without finding anything actionable, it pushes a fallback `errors[]` entry. Pre-fix the entry only had a `message`, leaving downstream agents unable to discriminate this path from other error states without string-matching on `message`. Every other error path already carries a `code` field (`jdk_mismatch`, `lock_held`, `gradle_timeout`, `task_not_found`, `unsupported_class_version`, `instrumented_setup_failed`, `module_failed`, `gradle_deprecation`, `no_coverage_data`, `json_summary_parse_failed`, `lock_write_error`); this fallback now does too. Wide-smoke 2026-04-30 surfaced 4/20 projects (DroidconKotlin-main, kotlinconf-app-main, androidify-main, OFFICIAL/OmniSound) hitting this path. Tests: +1 vitest (empty output asserts `code === 'no_summary'`); existing parse-gap test strengthened to assert the new field.
+
 ## [0.6.0] — 2026-04-30
 
 ### Changed
