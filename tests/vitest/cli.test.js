@@ -316,6 +316,38 @@ describe('parseScriptOutput', () => {
     expect(r.skipped).toEqual([]);
   });
 
+  // v0.6.2 Gap 1.3: regression guard — when applyErrorCodeDiscriminators
+  // already filled state.errors, the no_summary fallback must NOT also fire.
+  // sawAnything check already covers this via `state.errors.length > 0`, but
+  // we lock the contract with explicit tests so refactors can't regress.
+  it('Gap 1.3 guard: task_not_found discriminator suppresses no_summary fallback', () => {
+    const out = 'Cannot locate tasks that match \':app:connectedDebugAndroidTest\'';
+    const r = parseScriptOutput(out, '', [], 'android');
+    expect(r.errors.find(e => e.code === 'task_not_found')).toBeDefined();
+    expect(r.errors.find(e => e.code === 'no_summary')).toBeUndefined();
+  });
+
+  it('Gap 1.3 guard: unsupported_class_version discriminator suppresses no_summary', () => {
+    const out = 'java.lang.UnsupportedClassVersionError: foo class file version 65.0, this version of the Java Runtime only recognizes class file versions up to 61.0';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.errors.find(e => e.code === 'unsupported_class_version')).toBeDefined();
+    expect(r.errors.find(e => e.code === 'no_summary')).toBeUndefined();
+  });
+
+  it('Gap 1.3 guard: instrumented_setup_failed suppresses no_summary', () => {
+    const out = 'Failed to install instrumentation on emulator-5554: device offline';
+    const r = parseScriptOutput(out, '', [], 'android');
+    expect(r.errors.find(e => e.code === 'instrumented_setup_failed')).toBeDefined();
+    expect(r.errors.find(e => e.code === 'no_summary')).toBeUndefined();
+  });
+
+  it('Gap 1.3 guard: no_test_modules discriminator suppresses no_summary (matches Gap 1.1 contract)', () => {
+    const out = '[ERROR] No modules found matching filter: *\n';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.errors.find(e => e.code === 'no_test_modules')).toBeDefined();
+    expect(r.errors.find(e => e.code === 'no_summary')).toBeUndefined();
+  });
+
   it('strips ANSI codes before parsing', () => {
     const out = '\x1b[31mTests:\x1b[0m 5 total | 5 passed | 0 failed | 0 skipped';
     const r = parseScriptOutput(out, '', []);
