@@ -1913,11 +1913,35 @@ describe('main() — JDK gate integration', () => {
     });
   });
 
-  it('gates --dry-run too (so users see the mismatch before expecting success)', () => {
+  it('--dry-run BYPASSES the gate (planning is safe even on a mismatched JDK)', () => {
     withFakeKmpProject(17, dir => {
       mockJavaVersion(23);
       process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--project-root', dir];
-      expect(main()).toBe(EXIT.ENV_ERROR);
+      expect(main()).toBe(EXIT.SUCCESS);
+      const ranScript = spawnMock.mock.calls.some(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(ranScript).toBe(false);
+    });
+  });
+
+  it('--dry-run --json on mismatched JDK emits a plan, NOT a jdk_mismatch error', () => {
+    withFakeKmpProject(17, dir => {
+      mockJavaVersion(23);
+      const writes = [];
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (chunk) => { writes.push(String(chunk)); return true; };
+      try {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--json', '--project-root', dir];
+        expect(main()).toBe(EXIT.SUCCESS);
+      } finally {
+        process.stdout.write = origWrite;
+      }
+      const json = JSON.parse(writes.join('').trim());
+      expect(json.dry_run).toBe(true);
+      expect(json.exit_code).toBe(0);
+      expect(json.plan).toBeTypeOf('object');
+      expect(Array.isArray(json.errors) ? json.errors : []).toHaveLength(0);
     });
   });
 });

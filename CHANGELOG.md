@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`--dry-run` no longer blocks on JDK toolchain mismatch (v0.6 Bug 1).** The pre-flight gate added in v0.5.0 (Bug A) gated both real runs AND `--dry-run`, on the rationale of "users see the mismatch before expecting success." In practice this defeats the whole point of `--dry-run`: the dry-run path doesn't spawn gradle, doesn't read tests, doesn't even acquire the lockfile — it just prints the resolved plan and exits 0. Gating it on JDK version blocks legitimate plan inspection on misconfigured hosts (13/17 official KMP projects in the v0.6 smoke survey hit this). Now `preflightJdkCheck` is skipped when `dryRun === true`; real runs (`parallel`/`changed`/`android`/`benchmark`/`coverage` without `--dry-run`) still gate as before. `--ignore-jdk-mismatch` continues to bypass for non-dry-run cases. Tests: existing "gates --dry-run too" test inverted; +1 vitest verifies `--dry-run --json` on a mismatched JDK emits a plan with empty `errors[]` (NOT a `jdk_mismatch` error envelope).
+
 ## [0.5.2] — 2026-04-30
 
 ### Added
