@@ -19,6 +19,7 @@ import {
   consumeDryRunFlag,
   consumeForceFlag,
   consumeTestFilter,
+  expandNoCoverageAlias,
   getIgnoreJdkMismatch,
   findRequiredJdkVersion,
   preflightJdkCheck,
@@ -124,6 +125,23 @@ describe('getCoverageToolFromArgs', () => {
   it('returns the explicit value', () => {
     expect(getCoverageToolFromArgs(['--coverage-tool', 'kover'])).toBe('kover');
     expect(getCoverageToolFromArgs(['--coverage-tool', 'jacoco'])).toBe('jacoco');
+  });
+});
+
+describe('expandNoCoverageAlias (v0.6 Bug 5)', () => {
+  it('returns args unchanged when --no-coverage is absent', () => {
+    expect(expandNoCoverageAlias(['parallel', '--project-root', '/x']))
+      .toEqual(['parallel', '--project-root', '/x']);
+  });
+
+  it('replaces --no-coverage with --coverage-tool none', () => {
+    expect(expandNoCoverageAlias(['parallel', '--no-coverage']))
+      .toEqual(['parallel', '--coverage-tool', 'none']);
+  });
+
+  it('drops --no-coverage when --coverage-tool is already explicit (explicit wins)', () => {
+    expect(expandNoCoverageAlias(['parallel', '--no-coverage', '--coverage-tool', 'kover']))
+      .toEqual(['parallel', '--coverage-tool', 'kover']);
   });
 });
 
@@ -1276,6 +1294,27 @@ describe('main() — --dry-run', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('main() — --no-coverage alias (v0.6 Bug 5)', () => {
+  it('--no-coverage propagates as --coverage-tool none, NOT as --no-coverage / -NoCoverage', () => {
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--no-coverage', '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();
+      const argList = scriptCall[1].map(String);
+      // Final argv must NOT carry --no-coverage or its PowerShell-translated form.
+      expect(argList).not.toContain('--no-coverage');
+      expect(argList).not.toContain('-NoCoverage');
+      // Must carry --coverage-tool none (or PS1-translated -CoverageTool none).
+      const i = argList.findIndex(a => a === '--coverage-tool' || a === '-CoverageTool');
+      expect(i).toBeGreaterThan(-1);
+      expect(argList[i + 1]).toBe('none');
+    });
   });
 });
 
