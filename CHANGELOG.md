@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`errors[].code = "no_test_modules"` discriminator (v0.6.2 Gap 1.1).** v0.6.1 Phase J stress test against 9 ex-AMBER-JDK projects (post Adoptium 11 install) surfaced 3 distinct real-world causes that all collapsed to the generic `code: "no_summary"` parse-gap fallback. The most common — Nav3Guide-scenes, kmp-production-sample-master — emits `[ERROR] No modules found matching filter: <pat>` after `[SKIP] composeApp (no test source set ...)`. New discriminator in `applyErrorCodeDiscriminators` matches the wrapper's literal stdout line and pushes `{ code: 'no_test_modules' }` on `state.errors`. The existing `sawAnything` check already suppresses the no_summary fallback once any discriminated code fires, so Gap 1.1 + Gap 1.3 work together: agents can branch on `errors[0].code === 'no_test_modules'` to suggest `--include-untested` instead of bug-reporting "the script crashed". Tests: +3 vitest (literal line / quoted-in-log false-negative / preempts no_summary) + 1 bats + 1 Pester end-to-end.
+- **`skipped: [{module, reason}]` array on JSON envelope (v0.6.2 Gap 1.2).** The legacy wrapper script (`run-parallel-coverage-suite.{sh,ps1}`) emits `[SKIP] <module> (<reason>)` lines as it discovers modules to test — discovery-time skips on stderr (`excluded by --exclude-modules`, `no test source set`), test-task-time skips on stdout (`no jvmTest tests`). Pre-fix this was just noise; agents had to re-parse the wrapper's stdout to know what got skipped. Now `parseSkippedModules` runs over stdout+stderr and surfaces a structured array, so agents can suggest `--include-untested` when the user expected tests, TSV summaries can show `skipped:N` alongside `tests:N`, and CI dashboards can audit module-filter mistakes. Additive field; existing JSON consumers ignore unknown keys. Tests: +6 vitest (single SKIP / multi stdout+stderr / malformed reject / dedup / empty-on-clean-runs / envelope surfacing) + 1 bats + 1 Pester end-to-end.
+
+### Changed
+- **No-summary discrimination contract locked (v0.6.2 Gap 1.3).** The behavior already worked — `parseScriptOutput`'s `sawAnything` check includes `state.errors.length > 0`, so once any of `task_not_found` / `unsupported_class_version` / `instrumented_setup_failed` / `no_test_modules` / `module_failed` / etc. fires, the generic `no_summary` fallback skips. But the contract lived on a single condition; a future refactor could regress without ripping the cover off any feature test. +4 vitest regression guards lock the discriminate-or-fallback (never both) contract for each of the four discriminated codes. Test-only change.
+
 ## [0.6.1] — 2026-04-30
 
 ### Added
