@@ -4,10 +4,17 @@
 
 ## Repo state (2026-04-30)
 
-- npm: `kmp-test-runner@0.6.1` (Trusted Publisher OIDC; auto-publishes on push to `main`)
-- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.6.1` (GitHub Packages; auto-publishes on push to `main`)
-- GitHub Releases: `v0.6.1` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
+- npm: `kmp-test-runner@0.6.2` (Trusted Publisher OIDC; auto-publishes on push to `main`)
+- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.6.2` (GitHub Packages; auto-publishes on push to `main`)
+- GitHub Releases: `v0.6.2` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
 - All 3 shapes share the same source-of-truth version (`package.json`), bumped together per release.
+
+### v0.6.2 surface (no-summary discrimination + README v0.6.x light pass)
+
+- **Gap 1.1**: `errors[].code = "no_test_modules"` discriminator on the parse-gap fallback envelope. `applyErrorCodeDiscriminators` matches the wrapper's literal `[ERROR] No modules found matching filter:` line (stdout) and pushes `{ code: 'no_test_modules' }` on `state.errors`. `sawAnything` check already suppresses `no_summary` when any discriminated code fires, so no double-emit. Wide-smoke 2026-04-30 ALL-phase validated 5/5 expected wild hits: DroidconKotlin, KMedia, NYTimes-KMP, Nav3Guide-scenes, kmp-production-sample-master (all `no_summary` → `no_test_modules`)
+- **Gap 1.2**: `state.skipped: [{module, reason}]` array on the JSON envelope. New `parseSkippedModules` helper matches the canonical `[SKIP] <module> (<reason>)` shape against stdout+stderr (handles both discovery-time skips on stderr and test-task-time skips on stdout); deduplicates by `module|reason` key. Surfaced via `parsed.skipped` through `parseScriptOutput` / `buildJsonReport` / `envErrorJson` / `buildDryRunReport` for envelope-shape consistency
+- **Gap 1.3**: regression-guard tests lock the discriminate-or-fallback contract. +4 vitest verifying that each of `task_not_found` / `unsupported_class_version` / `instrumented_setup_failed` / `no_test_modules` preempts the generic `no_summary` fallback. Test-only change; locks the behavior so a future refactor of the `sawAnything` chain can't regress
+- **README**: light pass — adds "What's new in v0.6.x" section + JDK precedence chain doc + `--java-home` / `--no-jdk-autoselect` / `--no-coverage` flag table rows + JDK catalogue row in `kmp-test doctor` example. Pre-v0.7 full revamp deferred. Hits ~9 v0.6.x features in 1-line bullets
 
 ### v0.6.1 surface (precision pass)
 
