@@ -6,6 +6,11 @@ import path from 'node:path';
 const spawnMock = vi.hoisted(() => vi.fn(() => ({ status: 0 })));
 vi.mock('node:child_process', () => ({ spawnSync: spawnMock }));
 
+// v0.6.x Gap 2: mock the JDK catalogue so tests can control which installs
+// the auto-select sees. Default empty (the gate fires unless tests override).
+const discoverInstalledJdksMock = vi.hoisted(() => vi.fn(() => []));
+vi.mock('../../lib/jdk-catalogue.js', () => ({ discoverInstalledJdks: discoverInstalledJdksMock }));
+
 import {
   main,
   EXIT,
@@ -46,7 +51,10 @@ import {
   DEFAULT_GRADLE_TIMEOUT_MS,
 } from '../../lib/cli.js';
 
-beforeEach(() => spawnMock.mockReset().mockReturnValue({ status: 0 }));
+beforeEach(() => {
+  spawnMock.mockReset().mockReturnValue({ status: 0 });
+  discoverInstalledJdksMock.mockReset().mockReturnValue([]);
+});
 
 // Build a temp dir with a stub gradlew so the pre-flight check passes.
 function withFakeGradleProject(fn) {
@@ -1897,10 +1905,14 @@ describe('preflightJdkCheck', () => {
 });
 
 describe('main() — JDK gate integration', () => {
-  it('mismatch with no opt-out → returns ENV_ERROR (3) and does NOT spawn the script', () => {
+  it('mismatch with no opt-out and --no-jdk-autoselect → returns ENV_ERROR (3) and does NOT spawn the script', () => {
+    // v0.6.x Gap 2: default behavior now consults the JDK catalogue and
+    // auto-selects a matching install. To exercise the gate-fires path
+    // explicitly (independent of which JDKs the test host has installed),
+    // pass --no-jdk-autoselect.
     withFakeKmpProject(17, dir => {
       mockJavaVersion(23);
-      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--no-jdk-autoselect', '--project-root', dir];
       expect(main()).toBe(EXIT.ENV_ERROR);
       // No script spawn happened (only the java -version probe).
       const scriptCall = spawnMock.mock.calls.find(
@@ -1939,14 +1951,14 @@ describe('main() — JDK gate integration', () => {
     });
   });
 
-  it('--json mode emits jdk_mismatch code with versions in errors[0]', () => {
+  it('--json + --no-jdk-autoselect on mismatch → emits jdk_mismatch code with versions in errors[0]', () => {
     withFakeKmpProject(17, dir => {
       mockJavaVersion(23);
       const writes = [];
       const origWrite = process.stdout.write.bind(process.stdout);
       process.stdout.write = (chunk) => { writes.push(String(chunk)); return true; };
       try {
-        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--no-jdk-autoselect', '--project-root', dir];
         expect(main()).toBe(EXIT.ENV_ERROR);
       } finally {
         process.stdout.write = origWrite;
@@ -1958,6 +1970,101 @@ describe('main() — JDK gate integration', () => {
       expect(obj.errors[0].code).toBe('jdk_mismatch');
       expect(obj.errors[0].required_jdk).toBe(17);
       expect(obj.errors[0].current_jdk).toBe(23);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // v0.6.x Gap 2 — JDK catalogue auto-selection
+  // ------------------------------------------------------------------
+  it('catalogue match → auto-selects matching JDK and bypasses gate (Gap 2)', () => {
+    withFakeKmpProject(17, dir => {
+      mockJavaVersion(23);
+      // mockJavaVersion replaces all spawn (including the script). Re-arrange
+      // so `java -version` returns 23 but the script spawn returns success.
+      spawnMock.mockImplementation((cmd) => {
+        if (cmd === 'java') {
+          return { status: 0, stdout: '', stderr: 'openjdk version "23.0.1" 2024-01-16\n' };
+        }
+        return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
+      });
+      discoverInstalledJdksMock.mockReturnValue([
+        { majorVersion: 11, vendor: 'Eclipse Adoptium', path: '/fake/jdk-11' },
+        { majorVersion: 17, vendor: 'Eclipse Adoptium', path: '/fake/jdk-17' },
+        { majorVersion: 23, vendor: 'Azul Zulu', path: '/fake/jdk-23' },
+      ]);
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      const code = main();
+      expect(code).toBe(EXIT.SUCCESS);
+      // The script call carried a JAVA_HOME env override.
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();
+      const opts = scriptCall[2];
+      expect(opts.env).toBeTruthy();
+      expect(opts.env.JAVA_HOME).toBe('/fake/jdk-17');
+      // PATH prefix is `path.join(JAVA_HOME, 'bin') + path.delimiter`. Use
+      // path.join + path.delimiter for cross-platform parity (Windows
+      // substitutes \ for / and uses ; not :).
+      expect(opts.env.PATH.startsWith(path.join('/fake/jdk-17', 'bin') + path.delimiter)).toBe(true);
+    });
+  });
+
+  it('--java-home overrides catalogue auto-select (Gap 2)', () => {
+    withFakeKmpProject(17, dir => {
+      spawnMock.mockImplementation((cmd) => {
+        if (cmd === 'java') {
+          return { status: 0, stdout: '', stderr: 'openjdk version "23.0.1" 2024-01-16\n' };
+        }
+        return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
+      });
+      discoverInstalledJdksMock.mockReturnValue([
+        { majorVersion: 17, vendor: 'Catalogue', path: '/from/catalogue' },
+      ]);
+      process.argv = ['node', 'kmp-test.js', 'parallel',
+        '--java-home', '/explicit/user/jdk-17', '--project-root', dir];
+      expect(main()).toBe(EXIT.SUCCESS);
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();
+      expect(scriptCall[2].env.JAVA_HOME).toBe('/explicit/user/jdk-17');
+    });
+  });
+
+  it('--no-jdk-autoselect prevents catalogue lookup → gate fires (Gap 2)', () => {
+    withFakeKmpProject(17, dir => {
+      mockJavaVersion(23);
+      // Even if catalogue HAS a match, --no-jdk-autoselect disables the lookup.
+      discoverInstalledJdksMock.mockReturnValue([
+        { majorVersion: 17, vendor: 'Eclipse Adoptium', path: '/would-match' },
+      ]);
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--no-jdk-autoselect', '--project-root', dir];
+      expect(main()).toBe(EXIT.ENV_ERROR);
+      // Catalogue MUST NOT be consulted (the flag short-circuits before discoverInstalledJdks runs).
+      expect(discoverInstalledJdksMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('catalogue empty (no installs) → gate fires as today (Gap 2)', () => {
+    withFakeKmpProject(17, dir => {
+      mockJavaVersion(23);
+      discoverInstalledJdksMock.mockReturnValue([]);
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      expect(main()).toBe(EXIT.ENV_ERROR);
+      expect(discoverInstalledJdksMock).toHaveBeenCalled();
+    });
+  });
+
+  it('catalogue has only non-matching versions → gate fires (Gap 2)', () => {
+    withFakeKmpProject(17, dir => {
+      mockJavaVersion(23);
+      discoverInstalledJdksMock.mockReturnValue([
+        { majorVersion: 11, vendor: 'Adoptium', path: '/fake/jdk-11' },
+        { majorVersion: 23, vendor: 'Zulu', path: '/fake/jdk-23' },
+      ]);
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      expect(main()).toBe(EXIT.ENV_ERROR);
     });
   });
 

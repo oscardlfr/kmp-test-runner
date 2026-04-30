@@ -48,3 +48,18 @@ CLI="bin/kmp-test.js"
     [[ "$output" == *"doctor"* ]]
     [[ "$output" == *"Diagnose"* ]]
 }
+
+# v0.6.x Gap 2: doctor surfaces installed JDKs from the catalogue so users
+# can see which auto-select candidates are available.
+@test "doctor (human): includes 'JDK catalogue' check row" {
+    run node "$CLI" doctor
+    [ "$status" -eq 0 ] || [ "$status" -eq 3 ]
+    [[ "$output" == *"JDK catalogue"* ]]
+}
+
+@test "doctor --json: checks[] includes 'JDK catalogue' entry" {
+    run node "$CLI" doctor --json
+    first_line=$(echo "$output" | grep -m1 '^{' || true)
+    [ -n "$first_line" ]
+    [[ "$first_line" == *'"name":"JDK catalogue"'* ]]
+}
