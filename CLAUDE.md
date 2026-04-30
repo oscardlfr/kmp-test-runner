@@ -4,10 +4,18 @@
 
 ## Repo state (2026-04-30)
 
-- npm: `kmp-test-runner@0.6.0` (Trusted Publisher OIDC; auto-publishes on push to `main`)
-- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.6.0` (GitHub Packages; auto-publishes on push to `main`)
-- GitHub Releases: `v0.6.0` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
+- npm: `kmp-test-runner@0.6.1` (Trusted Publisher OIDC; auto-publishes on push to `main`)
+- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.6.1` (GitHub Packages; auto-publishes on push to `main`)
+- GitHub Releases: `v0.6.1` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
 - All 3 shapes share the same source-of-truth version (`package.json`), bumped together per release.
+
+### v0.6.1 surface (precision pass)
+
+- **Gap 1**: `errors[].code = "no_summary"` discriminator on parse-gap fallback so agents can branch on this case
+- **Gap 2**: Multi-JDK auto-select via `lib/jdk-catalogue.js` — when project requires a different JDK than host default, scans common install locations (Adoptium / Zulu / Microsoft / Semeru / BellSoft on Win; `/Library/Java/JavaVirtualMachines/` on macOS; `/usr/lib/jvm` + `/opt/{java,jdk}` on Linux) and injects `JAVA_HOME` + prepended `PATH` into the gradle subprocess. New flags `--java-home <path>` / `--no-jdk-autoselect`. `kmp-test doctor` surfaces "JDK catalogue" check row
+- **Gap 3**: `analyzeModule` resolves `alias(libs.plugins.<X>)` via `gradle/libs.versions.toml` parsing (table-form `{ id = "...", ... }` + string-form `"id:version"`); suffix heuristic fallback for namespaced aliases (e.g. `libs.plugins.nowinandroid.android.application` → `com.android.application`)
+- **Gap 4**: Per-module convention-plugin coverage detection — `parseBuildLogicPluginDescriptors` walks `build-logic/<X>/build.gradle.kts` for `gradlePlugin { plugins { register("<key>") { id = ...; implementationClass = "<Class>" } } }` blocks; class-name heuristic `/Jacoco|Kover/i` decides `addsCoverage`. Only modules that APPLY a coverage-adding convention plugin inherit `coveragePlugin`. Backwards-compat: when descriptors empty (pure `Plugin<Project>` setups), falls through to v0.6.0 broad inheritance via `buildLogicHints`
+- v0.6.1 wide-smoke validation: 17 projects, 4 gaps validated live (Gap 1 hits 5+ projects with `no_summary`, Gap 2 7+ auto-selects, Gap 3 + 4 work end-to-end on nowinandroid + nav3-recipes)
 
 ## Layout
 
