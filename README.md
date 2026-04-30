@@ -125,6 +125,22 @@ ANTHROPIC_API_KEY=sk-ant-... node tools/measure-token-cost.js --feature <name> \
 
 > **Practical impact across features.** A 5-iteration agent loop reading raw gradle output burns ~64 K tokens for `parallel`/`changed`, ~80 K for `benchmark`, and **~542 K for `coverage`** (more than two full 200 K contexts). The same loops on `--json` burn ~500 tokens each. The agent's working memory stays focused on the code instead of log noise.
 
+## What's new in v0.6.x
+
+The 0.6 line hardened `kmp-test` against ~28 real-world KMP/Android projects (KaMPKit, Confetti, nowinandroid, DroidconKotlin, Compose Multiplatform, nav3-recipes, Nav3Guide, kmp-production-sample, etc.). Highlights:
+
+- **Multi-JDK auto-selection (v0.6.1+).** When the project requires a JDK version different from the host default, `kmp-test` consults a system-wide JDK catalogue (`Adoptium / Zulu / Microsoft / Semeru / BellSoft` on Windows, `/Library/Java/JavaVirtualMachines/` on macOS, `/usr/lib/jvm` + `/opt/{java,jdk}` on Linux) and auto-selects a matching install — no more manual `JAVA_HOME` dance between projects. New flags `--java-home <path>` (explicit override) and `--no-jdk-autoselect` (disable catalogue). See [JDK toolchain mismatch](#jdk-toolchain-mismatch-auto-resolved-when-possible-since-v061).
+- **Precise no-summary discrimination (v0.6.2+).** When the wrapper exits without producing a recognizable summary, the JSON envelope now carries a specific `errors[].code` instead of the generic `no_summary` fallback: `no_test_modules` (project has no test source sets — Nav3Guide-scenes, kmp-production-sample), plus the existing `task_not_found` / `unsupported_class_version` / `instrumented_setup_failed` / `module_failed`. Real-world stress test 2026-04-30 hit `no_test_modules` on 5 projects (DroidconKotlin / KMedia / NYTimes-KMP / Nav3Guide-scenes / kmp-production-sample), each previously surfacing as `no_summary`. Agents can now branch on the specific cause.
+- **`skipped: [{module, reason}]` envelope field (v0.6.2+).** The wrapper has always emitted `[SKIP] <mod> (<reason>)` lines for modules without test source sets or hit by `--exclude-modules`; pre-fix this was just stdout noise. The JSON envelope now surfaces a structured array so agents can suggest `--include-untested` when the user expected tests, and CI dashboards can audit module-filter mistakes.
+- **`--no-coverage` alias (v0.6.0+).** Natural shorthand for `--coverage-tool none`. Works on both Linux and Windows (was rejected by both pre-fix).
+- **JS / Wasm source-set + task support (v0.6.0+).** The project model now enumerates `jsTest` / `wasmJsTest` / `wasmWasiTest` source sets and exposes a `webTestTask` field. JS-only KMP modules (Compose Multiplatform's `html/`, KaMPKit web examples) become visible to the model; KMP+JS modules continue to pick `jvmTest` for `unitTestTask`.
+- **Per-module convention-plugin coverage detection (v0.6.1+).** Only modules that explicitly apply a coverage-adding convention plugin (e.g. `nowinandroid.android.application.jacoco`) inherit `coveragePlugin`. nowinandroid drops from "all 35 modules report jacoco" to the 13 that actually apply it. Pre-v0.6.1 broad inheritance preserved as a fallback for `Plugin<Project>` setups without a `gradlePlugin{}` block (shared-kmp-libs's kover continues to work unchanged).
+- **`alias(libs.plugins.<X>)` plugin reference resolution (v0.6.1+).** Module-type detection now reads `gradle/libs.versions.toml` and resolves version-catalog plugin aliases to plugin ids; namespaced aliases (`libs.plugins.nowinandroid.android.application`) fall back to a suffix heuristic. nav3-recipes, modern Confetti modules, and Compose Multiplatform's catalog-based modules classify correctly without hand-listing plugin ids.
+- **`--dry-run` no longer blocks on JDK mismatch (v0.6.0+).** Plan inspection works on misconfigured hosts; real runs still gate.
+- **`com.android.test` + `kotlin("android")` recognised as Android (v0.6.0+).** Confetti's `androidBenchmark` and similar test-fixture modules classify correctly.
+
+Full per-version detail: [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Quick Start
 
 **Linux / macOS**
@@ -162,6 +178,8 @@ It's also the testing piece that's missing from Google's [official `android` CLI
 - Node.js 18+
 - bash (Linux/macOS) or PowerShell 5.1+ (Windows)
 - JDK 17+ and Gradle 8+ (Gradle plugin shape only)
+
+> **Multi-JDK hosts.** Since v0.6.1 `kmp-test` auto-detects JDKs from `Adoptium / Zulu / Microsoft / Semeru / BellSoft` on Windows, `/Library/Java/JavaVirtualMachines/` on macOS, and `/usr/lib/jvm` + `/opt/{java,jdk}` on Linux. If your project requires a JDK version different from the host default, the matching install is selected automatically — no manual `JAVA_HOME` dance between projects. See the [JDK toolchain section](#jdk-toolchain-mismatch-auto-resolved-when-possible-since-v061) for the precedence chain and override flags.
 
 ### Option 1 — Shell installer (recommended)
 
@@ -270,6 +288,8 @@ kmp-test parallel --json
 
 Heterogeneous projects (some modules with kover, some with jacoco, some with neither) are first-class — the `auto` mode + per-module probe will pick the right task per module and skip cleanly when none is applied. The aggregated report still works across mixed tools.
 
+> **Convention-plugin coverage detection (v0.6.1+).** Projects that distribute coverage via a convention plugin (`build-logic/<X>/` registers `Plugin<Project>` classes or precompiled-script plugins) get per-module inheritance: only modules that explicitly apply a coverage-adding convention plugin id are reported as having `coveragePlugin: 'kover' | 'jacoco'`. Detection is heuristic-first via the convention class / filename (`/Jacoco|Kover/i`); pre-v0.6.1 broad inheritance is preserved as a fallback for `Plugin<Project>` setups without a `gradlePlugin{}` block (shared-kmp-libs's kover and similar setups continue to work unchanged). Concretely: nowinandroid drops from "all 35 modules report jacoco" to the 13 that actually apply it.
+
 ### Heterogeneous projects (modules without tests)
 
 Many real-world KMP/Android projects have modules that by convention contain no tests — `:api` interface modules, `:build-logic` convention plugins, parent aggregator modules, etc. `kmp-test` handles these automatically:
@@ -280,23 +300,36 @@ Many real-world KMP/Android projects have modules that by convention contain no 
 
 Both flags work on `parallel` and `changed`. Without them, untested modules historically caused `Task 'jacocoTestReport' not found in project ':api'` errors followed by misleading `[OK] Full coverage report generated!` with 0% coverage — a v0.5.0 fix.
 
-### JDK toolchain mismatch (BLOCKING by default since v0.5.0)
+### JDK toolchain mismatch (auto-resolved when possible since v0.6.1)
 
-If your project's `jvmToolchain(N)` differs from the major version reported by `java -version`, `kmp-test` exits 3 **before** spawning gradle, with a per-OS hint for setting `JAVA_HOME`:
+`kmp-test` reads the project's required JDK from `jvmToolchain(N)` / `JvmTarget.JVM_N` / `JavaVersion.VERSION_N` (taking the MAX of all signals). When that differs from `java -version`, the resolution follows this precedence chain:
+
+1. **`--java-home <path>`** (explicit CLI override) — wins over everything; skips the catalogue and the gate.
+2. **`gradle.properties` `org.gradle.java.home=<path>`** — gradle's explicit override; bypasses the gate.
+3. **JDK catalogue auto-select (v0.6.1+)** — if a system-wide JDK matching the required version is installed in a known location (`Adoptium / Zulu / Microsoft / Semeru / BellSoft` on Windows, `/Library/Java/JavaVirtualMachines/` on macOS, `/usr/lib/jvm` + `/opt/{java,jdk}` on Linux), `kmp-test` injects `JAVA_HOME` and a prepended `PATH` into the gradle subprocess and proceeds. Disable with `--no-jdk-autoselect`.
+4. **`--ignore-jdk-mismatch`** (or `-IgnoreJdkMismatch`) — downgrades the block to a `WARN` line; tests then run under the host default.
+5. **Host default `java`** — if none of the above resolves a matching JDK, the gate fires and `kmp-test` exits 3 with a per-OS `JAVA_HOME` hint.
+
+When the catalogue auto-selects, you'll see a `[NOTICE]` line on stderr:
+
+```
+[NOTICE] auto-selecting JDK 17 from C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot (Eclipse Adoptium; host default is JDK 21)
+```
+
+When the gate fires (step 5), the human-readable error looks like:
 
 ```
 kmp-test: JDK mismatch — project requires JDK 17 but current is JDK 23
           Tests will fail with UnsupportedClassVersionError if we proceed.
 
-          Fix: set JAVA_HOME to a JDK 17 install. Example:
+          Fix: set JAVA_HOME to a JDK 17 install, or install one and let
+          --no-jdk-autoselect off (default) pick it up. Example:
             JAVA_HOME=$(/usr/libexec/java_home -v 17) kmp-test parallel
 
           Bypass (not recommended): pass --ignore-jdk-mismatch
 ```
 
-The check is skipped when `gradle.properties` declares `org.gradle.java.home` pointing to an existing directory (gradle's explicit JDK override wins). Use `--ignore-jdk-mismatch` / `-IgnoreJdkMismatch` to downgrade the block to a `WARN` line.
-
-In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `required_jdk` / `current_jdk` integer fields so agents can branch on the specific failure.
+In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `required_jdk` / `current_jdk` integer fields so agents can branch on the specific failure. `--dry-run` skips this gate entirely (since v0.6.0) — plan inspection works on misconfigured hosts.
 
 ### Exit codes
 
@@ -319,6 +352,9 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--exclude-modules` | _(none)_ | Comma-separated module globs to skip entirely (e.g. `"*:api,build-logic"`). See "Heterogeneous projects" above |
 | `--include-untested` | _(off)_ | Re-include modules with no `src/*Test*` directory (auto-skipped by default) |
 | `--ignore-jdk-mismatch` | _(off)_ | Bypass the project-vs-`JAVA_HOME` JDK toolchain check. Default behavior is `BLOCK` with exit 3 — see "JDK toolchain mismatch" above |
+| `--java-home <path>` _(v0.6.1+)_ | _(none)_ | Explicit JDK install to use; wins over catalogue auto-select and `gradle.properties org.gradle.java.home`. See "JDK toolchain mismatch" |
+| `--no-jdk-autoselect` _(v0.6.1+)_ | _(off)_ | Disable catalogue auto-select; fall through directly to the gate (pre-v0.6.1 behavior) |
+| `--no-coverage` _(v0.6.0+)_ | _(off)_ | Alias for `--coverage-tool none`; runs tests only without generating coverage |
 | `--shared-project-name` | _(none)_ | Name of the shared KMP module (for Android test dispatch) |
 | `--json` / `--format json` | _(off)_ | Emit a single JSON object on stdout (see "Agentic usage" below). Suppresses human-readable output |
 
@@ -436,22 +472,23 @@ When the pattern contains `*`, the CLI walks the project sources (skipping `buil
 
 ### `kmp-test doctor` — environment diagnosis
 
-Five quick checks that catch the usual "why isn't this running" suspects:
+Six quick checks that catch the usual "why isn't this running" suspects:
 
 ```sh
 kmp-test doctor
-# CHECK    STATUS  VALUE      MESSAGE
-# Node     OK      v22.5.0    >=18 required
-# bash     OK      available  shell present
-# gradlew  OK      present    /path/to/project
-# JDK      OK      17.0.10    >=17 recommended
-# ADB      WARN    not found  install Android SDK platform-tools to run android subcommand
+# CHECK          STATUS  VALUE       MESSAGE
+# Node           OK      v22.5.0     >=18 required
+# bash           OK      available   shell present
+# gradlew        OK      present     /path/to/project
+# JDK            OK      21.0.10     >=17 recommended
+# JDK catalogue  OK      3 installs  JDK 11 (Adoptium), JDK 17 (Adoptium), JDK 21 (Azul Zulu)
+# ADB            WARN    not found   install Android SDK platform-tools to run android subcommand
 ```
 
-Exit `0` if every check is OK or WARN; exit `3` if any FAIL (Node <18, missing shell, missing JDK). `--json` emits the same data as a structured array for agents:
+Exit `0` if every check is OK or WARN; exit `3` if any FAIL (Node <18, missing shell, missing JDK). The "JDK catalogue" row (v0.6.1+) lists every JDK detected in the system locations consulted by the [auto-select chain](#jdk-toolchain-mismatch-auto-resolved-when-possible-since-v061) — empty catalogue → WARN ("auto-select disabled, gate will fire on JDK mismatch"). `--json` emits the same data as a structured array for agents:
 
 ```json
-{"tool":"kmp-test","subcommand":"doctor","exit_code":0,"checks":[{"name":"Node","status":"OK","value":"v22.5.0","message":">=18 required"},…]}
+{"tool":"kmp-test","subcommand":"doctor","exit_code":0,"checks":[{"name":"Node","status":"OK","value":"v22.5.0","message":">=18 required"},…,{"name":"JDK catalogue","status":"OK","value":"3 installs","message":"JDK 11 (Eclipse Adoptium), JDK 17 (Eclipse Adoptium), JDK 21 (Azul Systems, Inc.)"}]}
 ```
 
 ### Composing them

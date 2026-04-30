@@ -258,6 +258,96 @@ describe('parseScriptOutput', () => {
     expect(r.errors.find(e => /no recognizable/.test(e.message))).toBeUndefined();
   });
 
+  it('discriminates code: no_test_modules on wrapper [ERROR] No modules line', () => {
+    const out = '[SKIP] composeApp (no test source set - pass --include-untested to override)\n[ERROR] No modules found matching filter: *\n';
+    const r = parseScriptOutput(out, '', []);
+    const e = r.errors.find(x => x.code === 'no_test_modules');
+    expect(e).toBeDefined();
+    expect(e.message).toMatch(/^\[ERROR\] No modules found matching filter/);
+  });
+
+  it('does NOT fire no_test_modules when the line is in a quoted gradle log body', () => {
+    const out = 'gradle log: "[ERROR] No modules found matching filter: foo" (was a comment)\nBUILD SUCCESSFUL\n';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.errors.find(e => e.code === 'no_test_modules')).toBeUndefined();
+  });
+
+  it('no_test_modules discriminator preempts no_summary fallback', () => {
+    const out = '[ERROR] No modules found matching filter: *\n';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.errors.find(e => e.code === 'no_test_modules')).toBeDefined();
+    expect(r.errors.find(e => e.code === 'no_summary')).toBeUndefined();
+  });
+
+  it('captures [SKIP] mod (reason) lines into skipped[]', () => {
+    const out = '[SKIP] composeApp (no test source set - pass --include-untested to override)\nBUILD SUCCESSFUL\n';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.skipped).toEqual([
+      { module: 'composeApp', reason: 'no test source set - pass --include-untested to override' },
+    ]);
+  });
+
+  it('accumulates multiple [SKIP] lines across stdout and stderr', () => {
+    const stdout = '  [SKIP] core-foo (no jvmTest tests)\nBUILD SUCCESSFUL\n';
+    const stderr = '[SKIP] core-bar (excluded by --exclude-modules)\n';
+    const r = parseScriptOutput(stdout, stderr, []);
+    expect(r.skipped).toContainEqual({ module: 'core-foo', reason: 'no jvmTest tests' });
+    expect(r.skipped).toContainEqual({ module: 'core-bar', reason: 'excluded by --exclude-modules' });
+    expect(r.skipped.length).toBe(2);
+  });
+
+  it('rejects malformed [SKIP] patterns (no parens, wrong shape)', () => {
+    const out = '[SKIP]:foo\n[SKIP] bare-mod-no-paren\n[SKIP] missing-close (oops\nBUILD SUCCESSFUL\n';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.skipped).toEqual([]);
+  });
+
+  it('deduplicates identical [SKIP] entries from stdout+stderr overlap', () => {
+    const line = '[SKIP] core-result (no test source set)\n';
+    const r = parseScriptOutput(line, line, []);
+    expect(r.skipped).toEqual([
+      { module: 'core-result', reason: 'no test source set' },
+    ]);
+  });
+
+  it('skipped[] is empty array (not missing) for clean runs', () => {
+    const r = parseScriptOutput('Tests: 1 total | 1 passed | 0 failed | 0 skipped\nBUILD SUCCESSFUL', '', []);
+    expect(Array.isArray(r.skipped)).toBe(true);
+    expect(r.skipped).toEqual([]);
+  });
+
+  // v0.6.2 Gap 1.3: regression guard — when applyErrorCodeDiscriminators
+  // already filled state.errors, the no_summary fallback must NOT also fire.
+  // sawAnything check already covers this via `state.errors.length > 0`, but
+  // we lock the contract with explicit tests so refactors can't regress.
+  it('Gap 1.3 guard: task_not_found discriminator suppresses no_summary fallback', () => {
+    const out = 'Cannot locate tasks that match \':app:connectedDebugAndroidTest\'';
+    const r = parseScriptOutput(out, '', [], 'android');
+    expect(r.errors.find(e => e.code === 'task_not_found')).toBeDefined();
+    expect(r.errors.find(e => e.code === 'no_summary')).toBeUndefined();
+  });
+
+  it('Gap 1.3 guard: unsupported_class_version discriminator suppresses no_summary', () => {
+    const out = 'java.lang.UnsupportedClassVersionError: foo class file version 65.0, this version of the Java Runtime only recognizes class file versions up to 61.0';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.errors.find(e => e.code === 'unsupported_class_version')).toBeDefined();
+    expect(r.errors.find(e => e.code === 'no_summary')).toBeUndefined();
+  });
+
+  it('Gap 1.3 guard: instrumented_setup_failed suppresses no_summary', () => {
+    const out = 'Failed to install instrumentation on emulator-5554: device offline';
+    const r = parseScriptOutput(out, '', [], 'android');
+    expect(r.errors.find(e => e.code === 'instrumented_setup_failed')).toBeDefined();
+    expect(r.errors.find(e => e.code === 'no_summary')).toBeUndefined();
+  });
+
+  it('Gap 1.3 guard: no_test_modules discriminator suppresses no_summary (matches Gap 1.1 contract)', () => {
+    const out = '[ERROR] No modules found matching filter: *\n';
+    const r = parseScriptOutput(out, '', []);
+    expect(r.errors.find(e => e.code === 'no_test_modules')).toBeDefined();
+    expect(r.errors.find(e => e.code === 'no_summary')).toBeUndefined();
+  });
+
   it('strips ANSI codes before parsing', () => {
     const out = '\x1b[31mTests:\x1b[0m 5 total | 5 passed | 0 failed | 0 skipped';
     const r = parseScriptOutput(out, '', []);
@@ -292,10 +382,23 @@ describe('buildJsonReport', () => {
     expect(obj.duration_ms).toBe(1234);
     expect(obj.tests).toEqual({ total: 1, passed: 1, failed: 0, skipped: 0 });
     expect(Array.isArray(obj.modules)).toBe(true);
+    expect(Array.isArray(obj.skipped)).toBe(true);
     expect(obj.coverage).toBeTypeOf('object');
     expect(Array.isArray(obj.errors)).toBe(true);
     // Entire object must round-trip through JSON without loss.
     expect(JSON.parse(JSON.stringify(obj))).toEqual(obj);
+  });
+
+  it('surfaces parsed.skipped on the JSON envelope', () => {
+    const parsed = parseScriptOutput('[SKIP] core-foo (no test source set)\nBUILD SUCCESSFUL', '', []);
+    const obj = buildJsonReport({
+      subcommand: 'parallel',
+      projectRoot: '/abs/p',
+      exitCode: 0,
+      durationMs: 1,
+      parsed,
+    });
+    expect(obj.skipped).toEqual([{ module: 'core-foo', reason: 'no test source set' }]);
   });
 });
 
