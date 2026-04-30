@@ -233,7 +233,16 @@ describe('parseScriptOutput', () => {
   it('records a parse-gap error when no recognizable summary present', () => {
     const r = parseScriptOutput('completely opaque output', '', []);
     expect(r.errors.length).toBeGreaterThan(0);
-    expect(r.errors.some(e => /no recognizable/.test(e.message))).toBe(true);
+    const fallback = r.errors.find(e => /no recognizable/.test(e.message));
+    expect(fallback).toBeDefined();
+    expect(fallback.code).toBe('no_summary');
+  });
+
+  it('fallback error carries code: no_summary when output is empty', () => {
+    const r = parseScriptOutput('', '', []);
+    const fallback = r.errors.find(e => e.code === 'no_summary');
+    expect(fallback).toBeDefined();
+    expect(fallback.message).toMatch(/no recognizable/);
   });
 
   it('does NOT add parse-gap error when BUILD SUCCESSFUL present', () => {
