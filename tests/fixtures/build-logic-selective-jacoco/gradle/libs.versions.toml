@@ -1,0 +1,3 @@
+[plugins]
+myproj-android-jacoco = { id = "myproj.android.jacoco", version = "1.0" }
+myproj-android-noop = { id = "myproj.android.noop", version = "1.0" }

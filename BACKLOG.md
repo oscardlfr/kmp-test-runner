@@ -6,6 +6,59 @@
 
 ## ACTIVE
 
+### v0.6.2 / pre-v0.7 — Update README to reflect post-v0.6.x feature surface
+
+The README has not been touched since v0.5.x. v0.6.0 + v0.6.x added significant surface that should be documented before v0.7 (where API breaks may land):
+
+- **v0.6 Bug 2** — `kotlin("android")` + `com.android.test` plugin detection
+- **v0.6 Bug 3** — JS / Wasm source-set + task support (`webTestTask` field)
+- **v0.6 Bug 5** — `--no-coverage` alias
+- **v0.6 Bug 6** — CONVENTION vs SELF coverage hint discrimination
+- **v0.6.x Gap 1** — `errors[].code = "no_summary"` discriminator
+- **v0.6.x Gap 2** — Multi-JDK auto-select catalogue + `--java-home` / `--no-jdk-autoselect` flags + `kmp-test doctor` "JDK catalogue" surface
+- **v0.6.x Gap 3** — `alias(libs.plugins.<X>)` resolution via version catalogue (+ heuristic fallback)
+- **v0.6.x Gap 4** — Per-module convention-plugin coverage detection (heuristic-first via class name)
+
+Two slots:
+
+1. **v0.6.2 (light pass)**: add a "What's new in v0.6.x" section + flag table (`--java-home`, `--no-jdk-autoselect`, `--no-coverage`). Update the `kmp-test doctor` example output to show the new "JDK catalogue" row. Estimate: 30-45min.
+2. **Pre-v0.7 (full revamp)**: regenerate the entire README structure — quick-start, install paths (npm + Gradle plugin + GH Release archives), CLI surface table, decision matrix for `parallel` vs `changed` vs `android` vs `benchmark` vs `coverage`, troubleshooting (mismatched JDK, no coverage data, locked daemon, etc.), and a "How the project model works" diagram. Estimate: 2-3h.
+
+The pre-v0.7 pass is critical — v0.7 introduces iOS support (Bug 4 deferred) which is a major surface change and the README must be coherent for new users.
+
+### v0.6.2 — Refine `no_summary` discrimination into specific sub-codes (surfaced 2026-04-30 v0.6.x stress test)
+
+`no_summary` (added in v0.6.x Gap 1) is a defensive catch-all for "the script ran but produced no recognizable test/build summary". Phase J stress test against 9 ex-AMBER-JDK projects post-Adoptium-11-install surfaced 3 distinct real-world causes that all collapse to `no_summary` today:
+
+1. **Project has no test source sets** — Nav3Guide-scenes, kmp-production-sample-master. Wrapper emits `[ERROR] No modules found matching filter: *` after `[SKIP] composeApp (no test source set)`. Currently `no_summary`.
+2. **Build fail before tests** (gradle compile error / dep resolution failure) where the script doesn't propagate `BUILD FAILED` to stdout — KMedia-main pattern.
+3. **Filter excludes everything** — `--changed-since` with zero changes, `--test-filter` not matching any class. Currently `no_summary`.
+
+Refinements (each ~30-60min, all additive — no API break):
+
+- **Gap 1.1**: discriminator for `[ERROR] No modules found matching filter` → `code: "no_test_modules"`. Reads stdout for the wrapper's literal string.
+- **Gap 1.2**: parse `[SKIP] <module> (no test source set)` lines into `state.skipped[]` array on the envelope so agents can suggest `--include-untested`.
+- **Gap 1.3**: when `state.errors` already has a discriminated code AND the parse-gap fallback would also fire, prefer the specific code (don't double-emit `no_summary`).
+- **Gap 1.4** (out of scope without protocol break): the wrapper script could emit a structured `[KMP_TEST_EXIT_REASON] <code>` line that the parser captures verbatim. Defer to v0.7+ when we control both ends.
+
+Wide-smoke evidence files (already on disk locally): `.smoke/stress-J/OFFICIAL_PROJECTS_*.json` for the 3 Phase J reds.
+
+Estimated effort: 2-3h total for Gaps 1.1-1.3. Patch bump (no API break, additive codes/fields).
+
+### Multi-JDK auto-selection per project (research — surfaced 2026-04-30 v0.6 wide smoke)
+
+When running `kmp-test parallel` against many KMP projects in one session, each project may require a different JDK (KaMPKit JDK 11 / nav3-recipes JDK 11 / Confetti JDK 17 / shared-kmp-libs JDK 21). Today the user must restart the shell with a different `JAVA_HOME` between projects, or pass `--ignore-jdk-mismatch` to bypass the gate. Wide-smoke surface 2026-04-30: 4/20 surveyed projects exited 3 with `jdk_mismatch` because the host's `java -version` was 21.
+
+Investigation questions:
+1. **Detect installed JDKs** — common locations on each platform (Eclipse Adoptium / Zulu / Microsoft Build / SAP / `/usr/libexec/java_home -V` on macOS / `update-alternatives --list java` on Linux / `where java` + Registry on Windows). Build a catalogue at startup.
+2. **Match required JDK** — when `findRequiredJdkVersion` returns N and the catalogue has a matching install, use it for the spawn (export `JAVA_HOME=<path>` to the gradle subprocess). Bypass the gate.
+3. **Surface in `kmp-test doctor`** — list installed JDKs + show which one would be chosen for the current project.
+4. **`--java-home <path>`** flag already exists in `scripts/{sh,ps1}` (added v0.5.1 Bug F). Hoist it to the CLI layer so users can override the auto-detected pick.
+5. **Per-project config presets** (sister entry below) could pin a specific JDK path — useful when auto-detection picks the wrong major (e.g. project tests fail under JDK 21 even though it satisfies the toolchain version).
+6. **`gradle.properties` precedence** — `org.gradle.java.home=<path>` already bypasses the gate; the auto-selection should respect this when present.
+
+Estimated effort: ~3-4h for catalogue + match + doctor surfacing. Probably v0.6.x or v0.7.
+
 ### Per-project config presets (post-v0.5.1 idea — needs design)
 
 The CLI currently expects each invocation to carry every flag verbatim — which becomes painful when running it against several real projects with different requirements. Examples surfaced 2026-04-27 while validating v0.5.1:

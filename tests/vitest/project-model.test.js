@@ -21,6 +21,8 @@ import {
   buildProjectModel,
   clearProjectModelCache,
   detectBuildLogicCoverageHints,
+  parseVersionCatalog,
+  parseBuildLogicPluginDescriptors,
 } from '../../lib/project-model.js';
 
 let workDir;
@@ -399,6 +401,371 @@ describe('analyzeModule', () => {
     expect(analyzeModule(dir, ':k').coveragePlugin).toBe('kover');
     expect(analyzeModule(dir, ':j').coveragePlugin).toBe('jacoco');
     expect(analyzeModule(dir, ':n').coveragePlugin).toBeNull();
+  });
+
+  // v0.6.x Gap 3: alias(libs.plugins.<X>) resolution via version catalog.
+  // nav3-recipes / Compose Multiplatform / Confetti modern modules use this
+  // form exclusively; pre-fix they all classified as `unknown`.
+  it('classifies alias(libs.plugins.android.application) as android via TOML catalog (v0.6.x Gap 3)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nandroid-application = { id = "com.android.application", version = "8.5.0" }\n');
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins { alias(libs.plugins.android.application) }');
+    const a = analyzeModule(dir, ':app');
+    expect(a.type).toBe('android');
+  });
+
+  it('classifies alias(libs.plugins.kotlin.multiplatform) as kmp via TOML catalog (v0.6.x Gap 3)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nkotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version = "2.0.0" }\n');
+    mkdirSync(path.join(dir, 'shared'), { recursive: true });
+    writeFileSync(path.join(dir, 'shared', 'build.gradle.kts'),
+      'plugins { alias(libs.plugins.kotlin.multiplatform) }');
+    const a = analyzeModule(dir, ':shared');
+    expect(a.type).toBe('kmp');
+  });
+
+  it('classifies alias(libs.plugins.kotlin.jvm) as jvm via TOML catalog (v0.6.x Gap 3)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nkotlin-jvm = "org.jetbrains.kotlin.jvm:2.0.0"\n');
+    mkdirSync(path.join(dir, 'lib'), { recursive: true });
+    writeFileSync(path.join(dir, 'lib', 'build.gradle.kts'),
+      'plugins { alias(libs.plugins.kotlin.jvm) }');
+    const a = analyzeModule(dir, ':lib');
+    expect(a.type).toBe('jvm');
+  });
+
+  it('falls back to heuristic resolution when libs.versions.toml is missing (v0.6.x Gap 3)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins { alias(libs.plugins.android.application) }');
+    const a = analyzeModule(dir, ':app');
+    expect(a.type).toBe('android');
+  });
+
+  it('handles namespaced alias keys via heuristic suffix matching (v0.6.x Gap 3)', () => {
+    // nowinandroid-style: alias(libs.plugins.nowinandroid.android.application)
+    // resolves heuristically because catalog likely maps to internal convention
+    // plugin ids that aren't AGP/kotlin literals.
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins { alias(libs.plugins.nowinandroid.android.application) }');
+    const a = analyzeModule(dir, ':app');
+    expect(a.type).toBe('android');
+  });
+
+  it('regression: literal id("com.android.application") still classifies as android (v0.6.x Gap 3)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nandroid-application = { id = "com.android.application", version = "8.5.0" }\n');
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins { id("com.android.application") }');
+    const a = analyzeModule(dir, ':app');
+    expect(a.type).toBe('android');
+  });
+});
+
+// ------------------------------------------------------------------
+// parseVersionCatalog (v0.6.x Gap 3)
+// ------------------------------------------------------------------
+describe('parseVersionCatalog (v0.6.x Gap 3)', () => {
+  it('returns null when libs.versions.toml is absent', () => {
+    const dir = makeProject();
+    expect(parseVersionCatalog(dir)).toBeNull();
+  });
+
+  it('returns empty Map when [plugins] section is absent', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[versions]\nkotlin = "2.0.0"\n[libraries]\ncore = { module = "io.x:y", version.ref = "kotlin" }\n');
+    const cat = parseVersionCatalog(dir);
+    expect(cat).toBeInstanceOf(Map);
+    expect(cat.size).toBe(0);
+  });
+
+  it('parses [plugins] table form with id field', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nkotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }\nandroid-application = { id = "com.android.application", version = "8.5.0" }\n');
+    const cat = parseVersionCatalog(dir);
+    expect(cat.get('kotlin.multiplatform')).toBe('org.jetbrains.kotlin.multiplatform');
+    expect(cat.get('android.application')).toBe('com.android.application');
+  });
+
+  it('parses [plugins] string form (id:version)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nkotlin-jvm = "org.jetbrains.kotlin.jvm:2.0.0"\n');
+    const cat = parseVersionCatalog(dir);
+    expect(cat.get('kotlin.jvm')).toBe('org.jetbrains.kotlin.jvm');
+  });
+
+  it('skips malformed entries silently and keeps valid ones', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\n# this is a comment\nbroken =\nvalid = { id = "com.example.valid", version = "1.0" }\n');
+    const cat = parseVersionCatalog(dir);
+    expect(cat.get('valid')).toBe('com.example.valid');
+    expect(cat.has('broken')).toBe(false);
+  });
+
+  it('stops at next section header — does not bleed [libraries] entries', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\nkotlin-jvm = "org.jetbrains.kotlin.jvm:2.0.0"\n[libraries]\ncore = { module = "io.x:y", version = "1.0" }\n');
+    const cat = parseVersionCatalog(dir);
+    expect(cat.get('kotlin.jvm')).toBe('org.jetbrains.kotlin.jvm');
+    expect(cat.has('core')).toBe(false);
+  });
+});
+
+// ------------------------------------------------------------------
+// parseBuildLogicPluginDescriptors (v0.6.x Gap 4)
+// ------------------------------------------------------------------
+describe('parseBuildLogicPluginDescriptors (v0.6.x Gap 4)', () => {
+  it('returns empty array when build-logic/ is absent', () => {
+    const dir = makeProject();
+    expect(parseBuildLogicPluginDescriptors(dir)).toEqual([]);
+  });
+
+  it('parses gradlePlugin{} register{} blocks with literal id strings', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'build-logic', 'convention'), { recursive: true });
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'build.gradle.kts'),
+      `gradlePlugin {
+        plugins {
+          register("foo") {
+            id = "com.example.foo"
+            implementationClass = "FooConventionPlugin"
+          }
+          register("bar") {
+            id = "com.example.bar.jacoco"
+            implementationClass = "BarJacocoConventionPlugin"
+          }
+        }
+      }`);
+    const ds = parseBuildLogicPluginDescriptors(dir);
+    expect(ds).toHaveLength(2);
+    expect(ds.find(d => d.pluginId === 'com.example.foo')).toEqual({
+      pluginId: 'com.example.foo',
+      className: 'FooConventionPlugin',
+      addsCoverage: null,
+    });
+    expect(ds.find(d => d.pluginId === 'com.example.bar.jacoco')).toEqual({
+      pluginId: 'com.example.bar.jacoco',
+      className: 'BarJacocoConventionPlugin',
+      addsCoverage: 'jacoco',
+    });
+  });
+
+  it('resolves libs.plugins.<X>.get().pluginId via the version catalog (nowinandroid pattern)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      `[plugins]
+nowinandroid-android-application-jacoco = { id = "myproj.android.application.jacoco", version = "1.0" }
+`);
+    mkdirSync(path.join(dir, 'build-logic', 'convention'), { recursive: true });
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'build.gradle.kts'),
+      `gradlePlugin {
+        plugins {
+          register("androidApplicationJacoco") {
+            id = libs.plugins.nowinandroid.android.application.jacoco.get().pluginId
+            implementationClass = "AndroidApplicationJacocoConventionPlugin"
+          }
+        }
+      }`);
+    const ds = parseBuildLogicPluginDescriptors(dir);
+    expect(ds).toHaveLength(1);
+    expect(ds[0].pluginId).toBe('myproj.android.application.jacoco');
+    expect(ds[0].className).toBe('AndroidApplicationJacocoConventionPlugin');
+    expect(ds[0].addsCoverage).toBe('jacoco');
+  });
+
+  it('detects addsCoverage="kover" from class-name pattern', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'build-logic', 'convention'), { recursive: true });
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'build.gradle.kts'),
+      `gradlePlugin {
+        plugins {
+          register("kover") {
+            id = "com.example.kover"
+            implementationClass = "KoverConventionPlugin"
+          }
+        }
+      }`);
+    const ds = parseBuildLogicPluginDescriptors(dir);
+    expect(ds).toHaveLength(1);
+    expect(ds[0].addsCoverage).toBe('kover');
+  });
+
+  it('handles precompiled-script-plugin pattern (filename = plugin id)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin'), { recursive: true });
+    writeFileSync(
+      path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin', 'myproj.android-jacoco.gradle.kts'),
+      'apply { plugin("jacoco") }');
+    writeFileSync(
+      path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin', 'myproj.no-coverage.gradle.kts'),
+      'plugins { kotlin("jvm") }');
+    const ds = parseBuildLogicPluginDescriptors(dir);
+    expect(ds).toHaveLength(2);
+    expect(ds.find(d => d.pluginId === 'myproj.android-jacoco').addsCoverage).toBe('jacoco');
+    expect(ds.find(d => d.pluginId === 'myproj.no-coverage').addsCoverage).toBeNull();
+  });
+
+  it('skips register{} blocks without resolvable id', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'build-logic', 'convention'), { recursive: true });
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'build.gradle.kts'),
+      `gradlePlugin {
+        plugins {
+          register("unresolved") {
+            id = libs.plugins.does.not.exist.get().pluginId
+            implementationClass = "FooConventionPlugin"
+          }
+        }
+      }`);
+    // No catalog → libs.plugins.<X> can't resolve → skip silently.
+    const ds = parseBuildLogicPluginDescriptors(dir);
+    expect(ds).toHaveLength(0);
+  });
+
+  it('dedups by pluginId', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'build-logic', 'a'), { recursive: true });
+    mkdirSync(path.join(dir, 'build-logic', 'b'), { recursive: true });
+    const block = `gradlePlugin {
+      plugins {
+        register("foo") {
+          id = "com.example.foo"
+          implementationClass = "FooConventionPlugin"
+        }
+      }
+    }`;
+    writeFileSync(path.join(dir, 'build-logic', 'a', 'build.gradle.kts'), block);
+    writeFileSync(path.join(dir, 'build-logic', 'b', 'build.gradle.kts'), block);
+    const ds = parseBuildLogicPluginDescriptors(dir);
+    expect(ds).toHaveLength(1);
+    expect(ds[0].pluginId).toBe('com.example.foo');
+  });
+});
+
+// ------------------------------------------------------------------
+// analyzeModule per-module convention-plugin detection (v0.6.x Gap 4)
+// ------------------------------------------------------------------
+describe('analyzeModule per-module convention application (v0.6.x Gap 4)', () => {
+  function setupNowinandroidStyleFixture() {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      `[plugins]
+myproj-android-jacoco = { id = "myproj.android.jacoco", version = "1.0" }
+myproj-android-noop = { id = "myproj.android.noop", version = "1.0" }
+`);
+    mkdirSync(path.join(dir, 'build-logic', 'convention'), { recursive: true });
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'build.gradle.kts'),
+      `gradlePlugin {
+        plugins {
+          register("androidJacoco") {
+            id = libs.plugins.myproj.android.jacoco.get().pluginId
+            implementationClass = "AndroidApplicationJacocoConventionPlugin"
+          }
+          register("androidNoop") {
+            id = libs.plugins.myproj.android.noop.get().pluginId
+            implementationClass = "AndroidApplicationNoopConventionPlugin"
+          }
+        }
+      }`);
+    return dir;
+  }
+
+  it('module that applies a Jacoco convention plugin via id() inherits coveragePlugin="jacoco"', () => {
+    const dir = setupNowinandroidStyleFixture();
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins { id("myproj.android.jacoco") }');
+    expect(analyzeModule(dir, ':app').coveragePlugin).toBe('jacoco');
+  });
+
+  it('module that applies a Jacoco convention plugin via alias() inherits coveragePlugin="jacoco"', () => {
+    const dir = setupNowinandroidStyleFixture();
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins { alias(libs.plugins.myproj.android.jacoco) }');
+    expect(analyzeModule(dir, ':app').coveragePlugin).toBe('jacoco');
+  });
+
+  it('module that applies a NON-coverage convention plugin gets coveragePlugin=null', () => {
+    const dir = setupNowinandroidStyleFixture();
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins { id("myproj.android.noop") }');
+    expect(analyzeModule(dir, ':app').coveragePlugin).toBeNull();
+  });
+
+  it('module that does NOT apply any convention plugin gets coveragePlugin=null', () => {
+    const dir = setupNowinandroidStyleFixture();
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins { kotlin("jvm") }');
+    expect(analyzeModule(dir, ':app').coveragePlugin).toBeNull();
+  });
+
+  it('regression: nowinandroid-style noise (gradlePlugin register only, no consumer apply) → null', () => {
+    // Same as build-logic-noise-jacoco fixture from Bug 6: gradlePlugin{}
+    // names jacoco-related plugins via class names, but no consumer applies
+    // them. Pre-fix Bug 6 over-predicted because of the substring scan;
+    // post-fix Gap 4 correctly returns null because the descriptor lookup
+    // requires the consumer to APPLY the plugin id.
+    const dir = setupNowinandroidStyleFixture();
+    mkdirSync(path.join(dir, 'core-baz'), { recursive: true });
+    writeFileSync(path.join(dir, 'core-baz', 'build.gradle.kts'),
+      'plugins { kotlin("jvm") }');
+    expect(analyzeModule(dir, ':core-baz').coveragePlugin).toBeNull();
+  });
+
+  it('backwards-compat: project with NO descriptors but hint=convention still inherits (build-logic-convention-jacoco fixture)', () => {
+    // Pure Plugin<Project> setup: no gradlePlugin{} block, just a .kt file
+    // under build-logic/convention/src/main/kotlin/. parseBuildLogicPluginDescriptors
+    // returns [] → fall through to the hint fallback. v0.6.0 broad inheritance.
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin'), { recursive: true });
+    writeFileSync(
+      path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin', 'JacocoConventionPlugin.kt'),
+      `class JacocoConventionPlugin : org.gradle.api.Plugin<org.gradle.api.Project> {
+        override fun apply(target: org.gradle.api.Project) {
+          target.pluginManager.apply("jacoco")
+        }
+      }`);
+    mkdirSync(path.join(dir, 'core-foo'), { recursive: true });
+    writeFileSync(path.join(dir, 'core-foo', 'build.gradle.kts'),
+      'plugins { kotlin("jvm") }');
+    expect(analyzeModule(dir, ':core-foo').coveragePlugin).toBe('jacoco');
+  });
+
+  it('per-module signal still wins over descriptor-based inheritance', () => {
+    const dir = setupNowinandroidStyleFixture();
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+      'plugins { id("kover") }');
+    expect(analyzeModule(dir, ':app').coveragePlugin).toBe('kover');
   });
 });
 

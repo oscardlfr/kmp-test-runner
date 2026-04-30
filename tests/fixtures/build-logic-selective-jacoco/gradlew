@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Test stub. Tests pre-write the .kmp-test-runner-cache/tasks-<sha>.txt cache
+# before invoking buildProjectModel; this stub never actually runs.
+exit 0

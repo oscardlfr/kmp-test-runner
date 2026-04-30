@@ -1,0 +1,9 @@
+# v0.6.x Gap 3 fixture catalogue.
+[versions]
+agp = "8.5.0"
+kotlin = "2.0.0"
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlin-jvm = "org.jetbrains.kotlin.jvm:2.0.0"
