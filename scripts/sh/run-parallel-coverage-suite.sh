@@ -80,7 +80,7 @@ Required:
 
 Options:
   --include-shared            Include sibling shared-libs modules (requires SHARED_PROJECT_NAME).
-  --test-type <type>          all | common | androidUnit | androidInstrumented | desktop
+  --test-type <type>          all | common | androidUnit | androidInstrumented | desktop | ios | macos
   --module-filter <pattern>   Filter modules (wildcards/comma-separated). Default: *
   --skip-tests                Skip test execution, regenerate coverage only.
   --min-missed-lines <N>      Min missed lines to include in gaps. Default: 0
@@ -146,6 +146,8 @@ fi
 # ---------------------------------------------------------------------------
 SKIP_DESKTOP_MODULES="${SKIP_DESKTOP_MODULES:-}"
 SKIP_ANDROID_MODULES="${SKIP_ANDROID_MODULES:-}"
+SKIP_IOS_MODULES="${SKIP_IOS_MODULES:-}"
+SKIP_MACOS_MODULES="${SKIP_MACOS_MODULES:-}"
 PARENT_ONLY_MODULES="${PARENT_ONLY_MODULES:-}"
 SHARED_PROJECT_NAME="${SHARED_PROJECT_NAME:-}"
 SHARED_ROOT="${SHARED_ROOT:-}"
@@ -387,8 +389,14 @@ if [[ -z "$TEST_TYPE" ]]; then
 fi
 
 IS_DESKTOP=false
+IS_IOS=false
+IS_MACOS=false
 if [[ "$TEST_TYPE" == "common" || "$TEST_TYPE" == "desktop" ]]; then
     IS_DESKTOP=true
+elif [[ "$TEST_TYPE" == "ios" ]]; then
+    IS_IOS=true
+elif [[ "$TEST_TYPE" == "macos" ]]; then
+    IS_MACOS=true
 fi
 
 case "$TEST_TYPE" in
@@ -396,6 +404,8 @@ case "$TEST_TYPE" in
     desktop)             PLATFORM_NAME="desktop (desktopTest)" ;;
     androidUnit)         PLATFORM_NAME="android (androidUnitTest)" ;;
     androidInstrumented) PLATFORM_NAME="android (instrumented)" ;;
+    ios)                 PLATFORM_NAME="per-module iosTestTask" ;;
+    macos)               PLATFORM_NAME="per-module macosTestTask, host-native" ;;
     all)                 PLATFORM_NAME="all test types" ;;
     *)
         if $IS_DESKTOP; then PLATFORM_NAME="desktop"
@@ -560,6 +570,14 @@ for mi in "${!MOD_NAMES[@]}"; do
         for skip_mod in $SKIP_DESKTOP_MODULES; do
             if [[ "$short_name" == "$skip_mod" ]]; then should_skip=true; break; fi
         done
+    elif $IS_IOS; then
+        for skip_mod in $SKIP_IOS_MODULES; do
+            if [[ "$short_name" == "$skip_mod" ]]; then should_skip=true; break; fi
+        done
+    elif $IS_MACOS; then
+        for skip_mod in $SKIP_MACOS_MODULES; do
+            if [[ "$short_name" == "$skip_mod" ]]; then should_skip=true; break; fi
+        done
     else
         for skip_mod in $SKIP_ANDROID_MODULES; do
             if [[ "$short_name" == "$skip_mod" ]]; then should_skip=true; break; fi
@@ -587,6 +605,34 @@ for mi in "${!MOD_NAMES[@]}"; do
         common|desktop|all) test_task="${gradle_path}:desktopTest" ;;
         androidUnit)        test_task="${gradle_path}:testDebugUnitTest" ;;
         androidInstrumented) test_task="${gradle_path}:connectedDebugAndroidTest" ;;
+        ios)
+            # Per-module lookup via project model — iOS task name varies by
+            # declared targets (iosSimulatorArm64Test on Apple-silicon hosts,
+            # iosX64Test on Intel hosts/CI, iosArm64Test for device runs).
+            # Fallback to iosSimulatorArm64Test when the model is absent.
+            ios_task=""
+            if type pm_get_ios_test_task >/dev/null 2>&1; then
+                ios_task="$(pm_get_ios_test_task "${MOD_PROJ[$mi]}" "$short_mod" 2>/dev/null || true)"
+            fi
+            if [[ -n "$ios_task" ]]; then
+                test_task="${gradle_path}:${ios_task}"
+            else
+                test_task="${gradle_path}:iosSimulatorArm64Test"
+            fi
+            ;;
+        macos)
+            # macOS dispatches host-natively (no simulator boot); per-module
+            # lookup picks among macosArm64Test / macosX64Test / macosTest.
+            macos_task=""
+            if type pm_get_macos_test_task >/dev/null 2>&1; then
+                macos_task="$(pm_get_macos_test_task "${MOD_PROJ[$mi]}" "$short_mod" 2>/dev/null || true)"
+            fi
+            if [[ -n "$macos_task" ]]; then
+                test_task="${gradle_path}:${macos_task}"
+            else
+                test_task="${gradle_path}:macosArm64Test"
+            fi
+            ;;
         *)
             if $IS_DESKTOP; then test_task="${gradle_path}:desktopTest"
             else test_task="${gradle_path}:testDebugUnitTest"; fi
@@ -860,6 +906,28 @@ if ! $SKIP_TESTS && [[ "${#ALL_TEST_TASKS[@]}" -gt 0 ]]; then
         case "$TEST_TYPE" in
             common|desktop) task_name="${gradle_path}:desktopTest" ;;
             androidUnit)    task_name="${gradle_path}:testDebugUnitTest" ;;
+            ios)
+                ios_task=""
+                if type pm_get_ios_test_task >/dev/null 2>&1; then
+                    ios_task="$(pm_get_ios_test_task "${MOD_PROJ[$idx]}" "$short_mod" 2>/dev/null || true)"
+                fi
+                if [[ -n "$ios_task" ]]; then
+                    task_name="${gradle_path}:${ios_task}"
+                else
+                    task_name="${gradle_path}:iosSimulatorArm64Test"
+                fi
+                ;;
+            macos)
+                macos_task=""
+                if type pm_get_macos_test_task >/dev/null 2>&1; then
+                    macos_task="$(pm_get_macos_test_task "${MOD_PROJ[$idx]}" "$short_mod" 2>/dev/null || true)"
+                fi
+                if [[ -n "$macos_task" ]]; then
+                    task_name="${gradle_path}:${macos_task}"
+                else
+                    task_name="${gradle_path}:macosArm64Test"
+                fi
+                ;;
             *)
                 if $IS_DESKTOP; then task_name="${gradle_path}:desktopTest"
                 else task_name="${gradle_path}:testDebugUnitTest"; fi

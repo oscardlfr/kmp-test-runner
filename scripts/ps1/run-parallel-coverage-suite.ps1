@@ -22,8 +22,10 @@
     Include sibling shared-libs modules in test execution and coverage report (requires SHARED_PROJECT_NAME env var).
 
 .PARAMETER TestType
-    Test type: "common", "desktop", "androidUnit", "androidInstrumented", "all".
-    Default: auto-detect based on project type.
+    Test type: "common", "desktop", "androidUnit", "androidInstrumented",
+    "ios", "macos", "all". Default: auto-detect based on project type.
+    "ios" / "macos" (v0.7.0) consult the project model for per-module iOS /
+    macOS task names (iosSimulatorArm64Test / macosArm64Test / etc.).
 
 .PARAMETER ModuleFilter
     Filter modules by pattern. Supports wildcards and comma-separated values.
@@ -69,7 +71,7 @@ param(
     [string]$ProjectRoot,
 
     [switch]$IncludeShared,
-    [ValidateSet("all", "common", "androidUnit", "androidInstrumented", "desktop")]
+    [ValidateSet("all", "common", "androidUnit", "androidInstrumented", "desktop", "ios", "macos")]
     [string]$TestType = "",
     [string]$ModuleFilter = "*",
     [switch]$SkipTests,
@@ -125,6 +127,8 @@ if (Test-Path $_pmLib) { . $_pmLib }
 
 $SkipDesktopModules = if ($env:SKIP_DESKTOP_MODULES) { $env:SKIP_DESKTOP_MODULES.Split(",") | ForEach-Object { $_.Trim() } } else { @() }
 $SkipAndroidModules = if ($env:SKIP_ANDROID_MODULES) { $env:SKIP_ANDROID_MODULES.Split(",") | ForEach-Object { $_.Trim() } } else { @() }
+$SkipIosModules = if ($env:SKIP_IOS_MODULES) { $env:SKIP_IOS_MODULES.Split(",") | ForEach-Object { $_.Trim() } } else { @() }
+$SkipMacosModules = if ($env:SKIP_MACOS_MODULES) { $env:SKIP_MACOS_MODULES.Split(",") | ForEach-Object { $_.Trim() } } else { @() }
 $ParentOnlyModules = if ($env:PARENT_ONLY_MODULES) { $env:PARENT_ONLY_MODULES.Split(",") | ForEach-Object { $_.Trim() } } else { @() }
 $CoreOnlyModules = $CoverageModules.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
 
@@ -352,12 +356,16 @@ if ($TestType -eq "") {
 }
 
 $Desktop = ($TestType -eq "common" -or $TestType -eq "desktop")
+$IsIos = ($TestType -eq "ios")
+$IsMacos = ($TestType -eq "macos")
 
 $platformName = switch ($TestType) {
     "common" { "desktop (commonTest)" }
     "desktop" { "desktop (desktopTest)" }
     "androidUnit" { "android (androidUnitTest)" }
     "androidInstrumented" { "android (instrumented)" }
+    "ios" { "per-module iosTestTask" }
+    "macos" { "per-module macosTestTask, host-native" }
     "all" { "all test types" }
     default { if ($Desktop) { "desktop" } else { "android" } }
 }
@@ -507,8 +515,12 @@ foreach ($module in $allModules) {
     $shouldSkip = $false
     if ($Desktop -and $SkipDesktopModules -contains $module.ShortName) {
         $shouldSkip = $true
-    }
-    if (-not $Desktop -and $SkipAndroidModules -contains $module.ShortName) {
+    } elseif ($IsIos -and $SkipIosModules -contains $module.ShortName) {
+        $shouldSkip = $true
+    } elseif ($IsMacos -and $SkipMacosModules -contains $module.ShortName) {
+        $shouldSkip = $true
+    } elseif (-not $Desktop -and -not $IsIos -and -not $IsMacos `
+              -and $SkipAndroidModules -contains $module.ShortName) {
         $shouldSkip = $true
     }
 
@@ -530,6 +542,26 @@ foreach ($module in $allModules) {
         "desktop" { "${gradlePath}:desktopTest" }
         "androidUnit" { "${gradlePath}:testDebugUnitTest" }
         "androidInstrumented" { "${gradlePath}:connectedDebugAndroidTest" }
+        "ios" {
+            # v0.7.0: per-module lookup via project model — iOS task name
+            # varies by declared targets (iosSimulatorArm64Test on
+            # Apple-silicon, iosX64Test on Intel/CI, iosArm64Test for device).
+            $iosTask = $null
+            if (Get-Command Get-PmIosTestTask -ErrorAction SilentlyContinue) {
+                $iosTask = Get-PmIosTestTask -ProjectRoot $module.ProjectRoot -Module $shortMod
+            }
+            if ($iosTask) { "${gradlePath}:${iosTask}" } else { "${gradlePath}:iosSimulatorArm64Test" }
+        }
+        "macos" {
+            # v0.7.0: macOS dispatches host-natively (no simulator boot);
+            # per-module lookup picks among macosArm64Test / macosX64Test /
+            # macosTest. Fallback to macosArm64Test when model is absent.
+            $macosTask = $null
+            if (Get-Command Get-PmMacosTestTask -ErrorAction SilentlyContinue) {
+                $macosTask = Get-PmMacosTestTask -ProjectRoot $module.ProjectRoot -Module $shortMod
+            }
+            if ($macosTask) { "${gradlePath}:${macosTask}" } else { "${gradlePath}:macosArm64Test" }
+        }
         "all" { "${gradlePath}:desktopTest" }
         default {
             if ($Desktop) { "${gradlePath}:desktopTest" } else { "${gradlePath}:testDebugUnitTest" }
@@ -800,6 +832,20 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
             "common" { "${gradlePath}:desktopTest" }
             "desktop" { "${gradlePath}:desktopTest" }
             "androidUnit" { "${gradlePath}:testDebugUnitTest" }
+            "ios" {
+                $iosTask = $null
+                if (Get-Command Get-PmIosTestTask -ErrorAction SilentlyContinue) {
+                    $iosTask = Get-PmIosTestTask -ProjectRoot $module.ProjectRoot -Module $shortMod
+                }
+                if ($iosTask) { "${gradlePath}:${iosTask}" } else { "${gradlePath}:iosSimulatorArm64Test" }
+            }
+            "macos" {
+                $macosTask = $null
+                if (Get-Command Get-PmMacosTestTask -ErrorAction SilentlyContinue) {
+                    $macosTask = Get-PmMacosTestTask -ProjectRoot $module.ProjectRoot -Module $shortMod
+                }
+                if ($macosTask) { "${gradlePath}:${macosTask}" } else { "${gradlePath}:macosArm64Test" }
+            }
             default { if ($Desktop) { "${gradlePath}:desktopTest" } else { "${gradlePath}:testDebugUnitTest" } }
         }
 

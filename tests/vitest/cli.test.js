@@ -1438,6 +1438,80 @@ describe('main() — --no-coverage alias (v0.6 Bug 5)', () => {
   });
 });
 
+describe('main() — --test-type ios | macos passthrough (v0.7.0)', () => {
+  it('parallel + --test-type ios passes through to wrapper unchanged on POSIX', () => {
+    if (process.platform === 'win32') return; // PS1 translation covered separately
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel',
+        '--test-type', 'ios', '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh'))
+      );
+      expect(scriptCall).toBeTruthy();
+      const argList = scriptCall[1].map(String);
+      const i = argList.findIndex(a => a === '--test-type');
+      expect(i).toBeGreaterThan(-1);
+      expect(argList[i + 1]).toBe('ios');
+    });
+  });
+
+  it('parallel + --test-type macos passes through to wrapper unchanged on POSIX', () => {
+    if (process.platform === 'win32') return;
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel',
+        '--test-type', 'macos', '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh'))
+      );
+      expect(scriptCall).toBeTruthy();
+      const argList = scriptCall[1].map(String);
+      const i = argList.findIndex(a => a === '--test-type');
+      expect(i).toBeGreaterThan(-1);
+      expect(argList[i + 1]).toBe('macos');
+    });
+  });
+
+  it('parallel + --test-type ios translates to -TestType ios on Windows (PS1)', () => {
+    if (process.platform !== 'win32') return;
+    withFakeGradleProject(dir => {
+      process.argv = ['node', 'kmp-test.js', 'parallel',
+        '--test-type', 'ios', '--project-root', dir];
+      main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();
+      const argList = scriptCall[1].map(String);
+      const i = argList.findIndex(a => a === '-TestType');
+      expect(i).toBeGreaterThan(-1);
+      expect(argList[i + 1]).toBe('ios');
+    });
+  });
+
+  it('--dry-run --json with --test-type macos surfaces the value in spawn_args', () => {
+    const captured = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+    try {
+      withFakeGradleProject(dir => {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--json',
+          '--test-type', 'macos', '--project-root', dir];
+        main();
+      });
+    } finally {
+      process.stdout.write = origWrite;
+    }
+    const json = JSON.parse(captured.join('').trim());
+    const args = json.plan.spawn_args.map(String);
+    // Either POSIX (--test-type) or PS1 (-TestType) form.
+    const flagIdx = args.findIndex(a => a === '--test-type' || a === '-TestType');
+    expect(flagIdx).toBeGreaterThan(-1);
+    expect(args[flagIdx + 1]).toBe('macos');
+  });
+});
+
 describe('main() — --test-filter passthrough', () => {
   it('parallel + --test-filter <pattern> appends --test-filter to script args', () => {
     withFakeGradleProject(dir => {

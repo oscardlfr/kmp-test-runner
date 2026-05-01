@@ -55,10 +55,14 @@ function Test-ModuleHasTestSources {
         $ModulePath = Join-Path $ProjectRoot $rel
     }
 
+    # 9 baseline + 3 JS/Wasm (v0.6 Bug 3) + 6 iOS-arch/macOS (v0.7.0).
     $candidates = @(
         'src\test', 'src\commonTest', 'src\jvmTest', 'src\desktopTest',
         'src\androidUnitTest', 'src\androidInstrumentedTest', 'src\androidTest',
-        'src\iosTest', 'src\nativeTest'
+        'src\iosTest', 'src\nativeTest',
+        'src\jsTest', 'src\wasmJsTest', 'src\wasmWasiTest',
+        'src\iosX64Test', 'src\iosArm64Test', 'src\iosSimulatorArm64Test',
+        'src\macosTest', 'src\macosX64Test', 'src\macosArm64Test'
     )
     foreach ($d in $candidates) {
         if (Test-Path (Join-Path $ModulePath $d)) { return $true }

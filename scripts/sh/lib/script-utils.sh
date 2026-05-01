@@ -154,7 +154,8 @@ module_has_test_sources() {
     _module_has_test_sources_fs "$1"
 }
 
-# Internal: filesystem-walk fallback. Checks the 9 standard directories.
+# Internal: filesystem-walk fallback. Checks the 18 standard directories
+# (9 baseline + 3 from v0.6 Bug 3 JS/Wasm + 6 from v0.7.0 iOS-arch/macOS).
 _module_has_test_sources_fs() {
     local module_path="$1"
     [[ -d "$module_path/src/test" ]] && return 0
@@ -166,6 +167,15 @@ _module_has_test_sources_fs() {
     [[ -d "$module_path/src/androidTest" ]] && return 0
     [[ -d "$module_path/src/iosTest" ]] && return 0
     [[ -d "$module_path/src/nativeTest" ]] && return 0
+    [[ -d "$module_path/src/jsTest" ]] && return 0
+    [[ -d "$module_path/src/wasmJsTest" ]] && return 0
+    [[ -d "$module_path/src/wasmWasiTest" ]] && return 0
+    [[ -d "$module_path/src/iosX64Test" ]] && return 0
+    [[ -d "$module_path/src/iosArm64Test" ]] && return 0
+    [[ -d "$module_path/src/iosSimulatorArm64Test" ]] && return 0
+    [[ -d "$module_path/src/macosTest" ]] && return 0
+    [[ -d "$module_path/src/macosX64Test" ]] && return 0
+    [[ -d "$module_path/src/macosArm64Test" ]] && return 0
     return 1
 }
 
