@@ -2,12 +2,20 @@
 
 > Standalone parallel test runner for Kotlin Multiplatform and Android Gradle projects. npm CLI + Gradle plugin + shell installers. MIT.
 
-## Repo state (2026-04-30)
+## Repo state (2026-05-01)
 
-- npm: `kmp-test-runner@0.6.2` (Trusted Publisher OIDC; auto-publishes on push to `main`)
-- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.6.2` (GitHub Packages; auto-publishes on push to `main`)
-- GitHub Releases: `v0.6.2` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
+- npm: `kmp-test-runner@0.7.0` (Trusted Publisher OIDC; auto-publishes on push to `main`)
+- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.7.0` (GitHub Packages; auto-publishes on push to `main`)
+- GitHub Releases: `v0.7.0` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
 - All 3 shapes share the same source-of-truth version (`package.json`), bumped together per release.
+
+### v0.7.0 surface (iOS / macOS support + Gradle plugin testType + macOS CI smoke + README v0.7 surface)
+
+- **Phase 1 — project-model iOS / macOS source-set + task fields.** `lib/project-model.js` `sourceSetNames` grows from 12 → 18 entries (+`iosX64Test` / `iosArm64Test` / `iosSimulatorArm64Test` / `macosTest` / `macosX64Test` / `macosArm64Test`). `resolveTasksFor` returns 2 new fields: `iosTestTask` (candidates `iosSimulatorArm64Test` → `iosX64Test` → `iosArm64Test` → `iosTest`) and `macosTestTask` (candidates `macosArm64Test` → `macosX64Test` → `macosTest`). Both are independent of `unitTestTask` — KMP modules with `jvmTest + iosSimulatorArm64Test` still pick `jvmTest` for unit tests; iOS surfaces only via `iosTestTask`. Sh + ps1 readers grow `pm_get_ios_test_task` / `pm_get_macos_test_task` and `Get-PmIosTestTask` / `Get-PmMacosTestTask` (mirrors v0.6 Bug 3 webTestTask shape). New CI fixture `tests/fixtures/kmp-with-ios/` with 3 modules (`:ios-only`, `:macos-only`, `:kmp-multi`)
+- **Phase 2 — wrapper iOS / macOS dispatch.** `scripts/{sh,ps1}/run-parallel-coverage-suite.{sh,ps1}` accept new `--test-type ios|macos` values. Per-module lookup via the project model selects the right gradle task; fallback to `iosSimulatorArm64Test` / `macosArm64Test` (most-portable defaults) when the model is absent. New `SKIP_IOS_MODULES` / `SKIP_MACOS_MODULES` env vars mirror the existing skip-list shape. PowerShell ValidateSet extended; bash case statements grow new arms. Configuration banner reflects new platform names: `Test Type: ios (per-module iosTestTask)` / `macos (per-module macosTestTask, host-native)`. macOS dispatches host-natively (no simulator boot orchestration); iOS leans on Gradle's built-in simulator boot since AGP/KMP 1.9+. Legacy filesystem walker (`_module_has_test_sources_fs` + ps1 candidates list) extends from 9 → 18 directories so iOS-only modules without an umbrella `iosTest/` still register as testable when the model JSON is absent
+- **Phase 3 — Gradle plugin `testType` property + macOS CI smoke job.** `KmpTestRunnerExtension.testType: String = ""` (empty default = wrapper auto-detect; preserves existing behavior). When set, `parallelTests` / `changedTests` / `coverageTask` propagate `--test-type <value>` to the bundled wrapper. New `gradle-plugin-test-ios` CI job runs the existing TestKit suite on `macos-latest` (informational by default; promote to required in branch protection when v0.7 line stabilises). Catches mac-specific build/test regressions (BSD vs GNU shell tooling, JDK locator differences, gradle daemon quirks)
+- **Phase 4 — README v0.7.0 surface (surgical update).** New "Platforms supported" table covering JVM/Desktop, Android (unit + instrumented), iOS, macOS, JS/Wasm with per-target gradle task names + where each runs. New "Multi-platform test dispatch" section explains the candidate chain `iosSimulatorArm64Test → iosX64Test → iosArm64Test → iosTest` and the macOS analogue, per-platform notes, fallback behavior, env-var skip docs. Flag reference table grows `--test-type <type>` row + new env-var sub-table (SKIP_IOS_MODULES / SKIP_MACOS_MODULES / PARENT_ONLY_MODULES). Gradle plugin DSL example bumps to `version "0.7.0"` and shows the new `testType` property. "What's new" leads with v0.7.0
+- **BACKLOG addition.** "Buildable cross-platform E2E fixture project" — captures the largest known testing-debt item (synthetic Kotlin Multiplatform fixture with iosX64() + iosSimulatorArm64() + macosArm64() + jvm() + js() + android targets, plus a CI matrix workflow that runs `kmp-test parallel --test-type {ios,macos,...}` against it on macos-latest). Risk + cost + ship-when criteria documented for v0.7.x / v0.8
 
 ### v0.6.2 surface (no-summary discrimination + README v0.6.x light pass)
 

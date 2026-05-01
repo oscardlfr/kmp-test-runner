@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-05-01
+
 ### Documentation
 - **README v0.7.0 surface (Phase 4).** Surgical update — adds a new "Platforms supported" table covering JVM/Desktop, Android (unit + instrumented), iOS, macOS, JS/Wasm with per-target gradle task names and where each runs. New "Multi-platform test dispatch" section explains how `--test-type ios|macos` consults the project model per module to pick `iosSimulatorArm64Test` (Apple-silicon) → `iosX64Test` (Intel/CI) → `iosArm64Test` (device) → `iosTest` (umbrella) and the analogous macOS chain, plus when to use `SKIP_IOS_MODULES` / `SKIP_MACOS_MODULES` env vars. Flag reference table grows a `--test-type <type>` row and a new env-var sub-table. Gradle plugin DSL example bumps to `version "0.7.0"` and shows the new `testType` property. "What's new" leads with v0.7.0 (iOS / macOS) followed by v0.6.x. Test-count notes in CONTRIBUTING-style block updated to current values.
 - **Backlog entry: buildable cross-platform E2E fixture project.** Added a v0.7.x / v0.8 candidate that captures the largest known testing-debt item — building a real Kotlin Multiplatform fixture (gradle wrapper + iosX64() + iosSimulatorArm64() + macosArm64() + jvm() + js() + android targets) plus a CI matrix workflow that runs `kmp-test parallel --test-type {ios,macos,common,...}` against it on macos-latest / ubuntu-latest / windows-latest. Captures risk + cost + ship-when criteria so the work has a clear shape when we pick it up.
