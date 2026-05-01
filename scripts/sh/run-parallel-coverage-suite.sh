@@ -776,7 +776,7 @@ done
 
 # Mark skipped — string-based lookup for Bash 3.2 compatibility
 skipped_list=""
-for skipped in "${SKIPPED_MODULES[@]}"; do
+for skipped in "${SKIPPED_MODULES[@]+"${SKIPPED_MODULES[@]}"}"; do
     skipped_list="${skipped_list}|${skipped}|"
 done
 for mi in "${!MOD_NAMES[@]}"; do
