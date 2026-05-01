@@ -190,3 +190,22 @@ extract_modules_found() {
     # Generic no_summary fallback must NOT also fire when the discriminator hits.
     [[ "$first_line" != *'"code":"no_summary"'* ]]
 }
+
+# v0.7.x regression: empty SKIPPED_MODULES under macOS Bash 3.2 set -u.
+# Pre-fix, expanding "${SKIPPED_MODULES[@]}" when the array is empty crashed
+# with "unbound variable" before the script reached the test/coverage stages.
+# Post-fix uses the ${arr[@]+"${arr[@]}"} idiom (already used at line 792 for
+# TEST_TASKS) which expands cleanly to nothing on empty arrays.
+# Trigger condition: --include-untested re-includes every untested module so
+# SKIPPED_MODULES stays empty, exercising the failing expansion.
+# Note: Bash 4.4+ does not exhibit the unbound-variable behavior on empty array
+# expansion, so on Linux CI this test passes trivially; it is a real regression
+# guard only on Bash 3.2 / 4.0–4.3 (notably the macOS host default).
+@test "parallel.sh: empty SKIPPED_MODULES does not crash under Bash 3.2 set -u (--include-untested)" {
+    run bash "$PARALLEL" --project-root "$WORK_DIR" --module-filter "*" --include-untested
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"unbound variable"* ]]
+    # Marker that prints AFTER the SKIPPED_MODULES loop (line 779) — proves
+    # the script survived past the failing expansion.
+    [[ "$output" == *"Parsing Coverage Reports"* ]]
+}
