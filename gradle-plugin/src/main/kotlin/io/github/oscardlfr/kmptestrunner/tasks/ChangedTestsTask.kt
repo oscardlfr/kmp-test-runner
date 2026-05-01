@@ -24,6 +24,9 @@ open class ChangedTestsTask : DefaultTask() {
                 "--min-missed-lines", extension.minMissedLines.toString(),
                 "--coverage-tool", extension.coverageTool
             )
+            if (extension.testType.isNotEmpty()) {
+                cmd += listOf("--test-type", extension.testType)
+            }
             val pb = ProcessBuilder(cmd).redirectErrorStream(true)
             if (extension.sharedProjectName.isNotEmpty()) {
                 pb.environment()["SHARED_PROJECT_NAME"] = extension.sharedProjectName

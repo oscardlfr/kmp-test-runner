@@ -28,6 +28,9 @@ open class ParallelTestsTask : DefaultTask() {
             if (extension.coverageModules.isNotEmpty()) {
                 cmd += listOf("--coverage-modules", extension.coverageModules)
             }
+            if (extension.testType.isNotEmpty()) {
+                cmd += listOf("--test-type", extension.testType)
+            }
             val pb = ProcessBuilder(cmd).redirectErrorStream(true)
             if (extension.sharedProjectName.isNotEmpty()) {
                 pb.environment()["SHARED_PROJECT_NAME"] = extension.sharedProjectName
