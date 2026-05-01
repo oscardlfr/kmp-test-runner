@@ -6,6 +6,80 @@
 
 ## ACTIVE
 
+### v0.7.x — Wide-smoke validation findings (mom's MacBook session, 2026-05-01)
+
+**Surfaced 2026-05-01 during cross-project wide-smoke validation against PeopleInSpace, Confetti (multi-module ~13 subprojects), and KaMPKit at `/Volumes/XcodeOscar/kmp-test-workspace/`. Validation hardware: Galaxy S22 Ultra (SM-S908B, Android 16, arm64-v8a, instrumented tests), iOS 26.4 Simulator runtime (10 devices: iPhone 17 Pro/Air/17e, iPad Pro M5, etc.), JDK catalogue 11/17/21, host JDK 21 default.** Eleven issues uncovered (twelfth `SKIPPED_MODULES` fix tracked separately below). Target: clear ALL before v0.8.0.
+
+The session ran an end-to-end reproducible matrix: every `--test-type {common,androidUnit,androidInstrumented,desktop,macos,ios,all}` × {PeopleInSpace, Confetti, KaMPKit} plus all five subcommands (`parallel`, `android`, `changed`, `coverage`, `benchmark`). Logs preserved at `/tmp/kmp-{pis,conf,kk}-*.log` on the host machine for evidence. The whole-session HANDOFF lives at `/Volumes/XcodeOscar/HANDOFF.md`.
+
+**🔴 Critical (false-positive PASS / broken subcommand):**
+
+- **Bug WS-1 — PASS fantasma when Gradle reports "task not found".** `scripts/sh/run-parallel-coverage-suite.sh` interprets ANY `gradle exit 1` as "deprecation warning + tasks passed individually" (the v0.5.0 Bug C workaround). When exit 1 is from `Cannot locate tasks that match ':moduleX:iosSimulatorArm64Test'` (module without that KMP target), the script reports `[PASS] moduleX` and the JSON envelope says `tests.passed = N, errors = []`. Confirmed reproducer: `cd Confetti && kmp-test parallel --test-type ios` reports 4 PASS in 15s (identical with/without iOS Simulator runtime installed); direct `./gradlew :androidApp:iosSimulatorArm64Test` immediately returns `BUILD FAILED in 981ms` with "task not found". Same false-positive applies to `--test-type macos` (4 PASS in 16s on modules without `macosArm64()`). Fix direction: the `gate_gradle_exit_for_deprecation` path (sh + ps1) must distinguish `BUILD FAILED ... Cannot locate tasks that match` from `Deprecated Gradle features were used` before counting un-named tasks as pass. Concrete signal: presence of `Cannot locate tasks that match` substring in stdout/stderr → real failure, emit `errors[].code = "task_not_found"` (already a defined code, just not wired here) and reflect in exit code. **Effort: 2-3h** (sh + ps1 + tests). Risk: the per-task PASS/FAIL parsing today is line-prefix-based; need to anchor task-not-found detection to the gradle exception block.
+
+- **Bug WS-2 — `run-benchmarks.sh` uses `declare -A` (Bash 4+) on macOS Bash 3.2.** Lines 242, 338, 339 declare associative arrays `MODULE_STATUS`, `MODULE_BENCHMARK_COUNT`, `MODULE_AVG_SCORE`; macOS default Bash 3.2.57 fails immediately with `declare: -A: invalid option`. `kmp-test benchmark` is broken on every macOS without `brew install bash` first. Sister scripts already document this as a known gotcha (`run-changed-modules-tests.sh:133` "Use temp file instead of declare -A for Bash 3.2 compatibility"; `run-parallel-coverage-suite.sh:202` "Build set of modules from settings.gradle.kts (Bash 3.2 compatible — no declare -A)"). The benchmark script slipped through. Reproducer: `cd Confetti && kmp-test benchmark --config smoke` → exit 2, `errors[0].code:"no_summary"` after 368ms; module discovery and platform detection had succeeded (logged "Found 2 benchmark module(s): androidBenchmark, wearBenchmark", "JVM Desktop OK", "Android — SM_S908B (physical) OK"). Fix: port the same parallel-strings-array workaround used in `run-parallel-coverage-suite.sh` (lookup via `module_status_<i>` indexed scalars + `string|key|string` join). **Effort: 1-2h** for all three usages + a Bash-3.2 syntax-only smoke test in CI on `macos-latest`.
+
+**🟠 High (agent / automation impact):**
+
+- **Bug WS-3 — `kmp-test android` subcommand finds 0 modules where `parallel --test-type androidInstrumented` finds 4** in the same project root. Reproducer: `cd Confetti && kmp-test android` → "ERROR: No modules found with androidTest directory" exit 1; `kmp-test parallel --test-type androidInstrumented` → 4 PASS (`:androidApp:`, `:backend:service-import:`, `:shared:`, `:wearApp:connectedDebugAndroidTest`) in 17s on S22 Ultra. Plus `kmp-test android --list-only` reports "Android Test Modules (1):" with the listed name empty (`-  -`). Three different module-detection paths with three different criteria: (a) `parallel --test-type androidInstrumented` uses gradle task probe (works), (b) `android` subcommand looks for literal `src/androidTest/` directory (misses KMP `androidTarget()` modules where the source set is `androidInstrumentedTest/` or implied by KMP DSL), (c) `android --list-only` somewhere counts but doesn't render. Fix: consolidate Android detection through the project-model fast path (`pm_get_*_test_task` style — already proven in v0.5.1 Phase 4 refactor) so all three callers see the same module set. **Effort: 3-4h** (model.json field if missing + sh/ps1 readers + cli wiring + tests). Cross-references v0.7.0 surface (Bug B' / B'' from v0.5.1).
+
+- **Bug WS-4 — `kmp-test changed` does not detect modifications under module source-set directories.** Reproducer: in Confetti `git status -s` showed `M shared/src/commonMain/kotlin/dev/johnoreilly/confetti/Model.kt` (clean modify). `kmp-test changed --show-modules-only` reported "No modules with uncommitted changes detected" + JSON `errors[0].code:"no_summary"` with `exit_code:0`. The `:shared` module clearly contains the file. Suspected: `scripts/sh/run-changed-modules-tests.sh` git-diff-to-module mapping does not enumerate KMP source-set subdirs (commonMain/androidMain/iosMain/etc.) under `<module>/src/`, only top-level module-root paths. Plus envelope inconsistency: human-readable output produced a recognizable "No modules…" line but the wrapper Node parser still flagged `no_summary` (treating "no detected modules" as an error rather than a clean zero-set). Fix: (a) module-mapping must walk all source-set leaves (the same 18-entry sourceSetNames list from v0.7.0 Phase 1); (b) parser must recognize "No modules with uncommitted changes detected" as a clean exit (similar to v0.6.2 Gap 1.1's `no_test_modules` discriminator). **Effort: 2-3h** (mapping fix + new discriminator + tests). Tagentially related to v0.6.2 Gap 1 hierarchy.
+
+- **Bug WS-5 — `errors[]` populated while `exit_code:0`.** Confetti `--test-type common --json` returned `errors[0].code:"task_not_found", message:"Cannot locate tasks that match ':androidApp:jacocoTestReport'..."` AND `exit_code:0` simultaneously. Either the task-not-found is a real failure (and exit must be ≠0) or it's a recoverable warning (and belongs in `warnings[]`, not `errors[]`). Today both can fire and an agent reading `errors.length > 0` to branch on failure will get false positives on a passing run. Same root issue surfaces with WS-1 from a different angle. Fix: define the contract — anything in `errors[]` MUST correspond to non-zero exit; recoverable should move to `warnings[]`. **Effort: ~1h** once WS-1 is in flight (likely same PR).
+
+- **HANDOFF UX-1 (still alive in v0.7) — modules with `commonTest` but no `jvm()`/`androidTarget()` go invisible.** KaMPKit `:shared` declares `commonTest`, `androidHostTest`, `iosTest` source sets per `settings.gradle.kts include(":shared")` and on-disk `shared/src/{commonTest,androidHostTest,iosTest}` — yet `kmp-test parallel --test-type common --json` returns `modules:[]` AND `skipped:[{module:"app", ...}]`: `:shared` appears in **neither** array. Today users see "no modules ran" with no clue why. Fix: when filesystem walker observes a test source set on a module that lacks the requested test-type's target, emit `skipped[{module, reason: "no <target>() target for --test-type <X>"}]` instead of dropping the module entirely. **Effort: 1-2h.** Also addresses HANDOFF UX-2 (below) by giving the user real signal instead of the misleading default error.
+
+**🟡 Medium (DX / observability):**
+
+- **Bug WS-6 — `--test-type all` does not span all types.** Both PeopleInSpace and Confetti runs of `--test-type all` invoke only `:*:desktopTest` (4 tasks, identical to `--test-type desktop`); androidUnit / androidInstrumented / common / macos / ios are NOT ALSO dispatched. Either the flag is misnamed or the dispatch is incomplete. If "all" is supposed to span every supported type, the fix is wide (sh + ps1 dispatch one set per type, parallel across types). If "all" is "auto-pick the best fit per module", the rename is `--test-type auto` and that's a CLI surface change. **Effort: 1h** for design clarification + 2-4h once direction is chosen.
+
+- **Bug WS-7 — `--test-type common` maps to `desktopTest`** (not to a true `commonTest`-source-set runner). Functionally OK in pure-KMP modules where common tests are inherited by JVM target, but the naming surprises new users who pass `--test-type common` expecting "run only the common source set". Document explicitly OR rename to `--test-type jvm` to align with the gradle task name. **Effort: 30min** (docs-only fix in `parallel --help` + flag-reference table) or 2-3h if renamed (alias + deprecation path + tests).
+
+- **Bug WS-8 — `tests.total` counts gradle tasks, not individual tests.** Across all matrix runs `tests.total` equals `count(gradle test tasks invoked)` — `:app:testDebugUnitTest` reports 1 even when its junit-XML has 5 method results. For an agent budgeting on test counts (e.g. CI sharding, regression blast-radius assessment) this is wrong by 1-2 orders of magnitude. Fix: parse junit XML reports under `<module>/build/test-results/<task>/TEST-*.xml` post-run, sum `<testsuite tests="N">` per task. **Effort: 3-4h** (reports walker + per-OS path quirks + tests + JSON envelope shape addition `tests.tasks` vs `tests.total`).
+
+- **Bug WS-9 — `modules:[]` JSON envelope empty even when `tests.passed > 0`.** Across PeopleInSpace runs with 3 PASS, the `modules` array stayed `[]`. The agent today has to infer module names from `skipped[]` complement against `settings.gradle.kts`. Fix: per-module result entries must populate `modules[]` regardless of coverage data presence. Likely a one-line fix in the report-builder. **Effort: 1h.**
+
+- **Bug WS-10 — `kmp-test android --list-only` shows "Android Test Modules (1):" with empty name.** Renderer prints the count from one source and the names from another (and the names path resolves to "" or whitespace). Fix: align rendered list with the count-source; use the project-model fast path. Pairs with WS-3. **Effort: ~1h** (likely subsumed by WS-3).
+
+- **HANDOFF UX-2 (still alive in v0.7) — misleading "No modules found matching filter: *" when `--test-type` is the filter that rejected.** KaMPKit `kmp-test parallel --test-type common` (no `--module-filter`) returns `errors[0].code:"no_test_modules", message:"No modules found matching filter: *"`. The literal filter `*` is correct; what filtered everything out was the test-type. Cross-references v0.6.2 Gap 1.1 (the `no_test_modules` discriminator was added but the message text retained from before). Fix: change message to "No modules support the requested --test-type=<X>" when the cause is type filtering vs the `*` filter. **Effort: 1h** (message wording + test).
+
+**Out of scope for this entry:**
+- The `SKIPPED_MODULES[@]` unbound fix — handled in its own backlog entry below (patch already validated, awaiting first PR).
+- Re-measuring token-cost tables to capture iOS / macOS dispatch cost — already a separate backlog entry.
+- Any new feature work (WS-* are all bugs, not features).
+
+**Aggregate effort estimate:** ~20-25h to clear all 11 (sequential), or 3-4 PRs of 5-7h each if grouped: PR1 (WS-1 + WS-5 + UX-2) — error/exit-code consistency; PR2 (WS-2) — benchmark Bash 3.2; PR3 (WS-3 + WS-10 + UX-1) — Android detection + invisible-module fix; PR4 (WS-4 + WS-6 + WS-7 + WS-8 + WS-9) — DX cleanup. Suggested order by user-impact: WS-1 → WS-2 → WS-3/UX-1 → WS-4 → DX bundle.
+
+**Wide-smoke evidence:** logs at `/tmp/kmp-{pis,conf,kk}-*.{log,json}` on mom's MacBook (2026-05-01); npm-link active there (global `kmp-test` → `/Volumes/XcodeOscar/kmp-test-workspace/kmp-test-runner`). Direct gradle reproductions captured for WS-1 evidence.
+
+### v0.7.x — Fix `SKIPPED_MODULES[@]` unbound under Bash 3.2 set -u (patch validated locally, awaiting first PR)
+
+**Surfaced 2026-04-30 (HANDOFF.md, sesión previa). Validated 2026-05-01 with reverted-then-restored A/B experiment.**
+
+`scripts/sh/run-parallel-coverage-suite.sh:779` references `"${SKIPPED_MODULES[@]}"` directly. macOS Bash 3.2.57 (default) treats expansion of an empty array as unbound under `set -u`, so the script crashes BEFORE producing any test/build summary whenever no module is skipped (e.g. when `--include-untested` overrides every auto-skip, or when the project happens to have zero skip candidates).
+
+Reproducer (validated this session): `cd /Volumes/XcodeOscar/kmp-test-workspace/PeopleInSpace && kmp-test parallel --test-type common --include-untested --json`
+- **Without fix**: `exit_code:1, duration_ms:1348, errors[0].code:"no_summary", tests.total:0` (script dies in ~1.3s, before gradle).
+- **With fix**: `exit_code:0, duration_ms:16581, tests.passed:7, skipped:[]` (script proceeds normally; with `--include-untested` 7 tasks run end-to-end).
+
+Fix is **one line**, applied locally on mom's MacBook but **NOT committed**:
+
+```diff
+-for skipped in "${SKIPPED_MODULES[@]}"; do
++for skipped in "${SKIPPED_MODULES[@]+"${SKIPPED_MODULES[@]}"}"; do
+     skipped_list="${skipped_list}|${skipped}|"
+ done
+```
+
+Pattern is the **idiomatic one already used in this same file at line 792** for `TEST_TASKS` / `TEST_TASKS_SHARED`. Preferred over `${arr[@]:-}` (HANDOFF's first instinct) because `:-` introduces a phantom empty-string element when the array is empty (`for` runs once with `skipped=""` and pollutes `skipped_list` with `||`). The `${arr[@]+"${arr[@]}"}` form expands to nothing on empty arrays — clean.
+
+**Test coverage gap to close in same PR:**
+- bats test: assert exit 0 when `SKIPPED_MODULES` is empty (use a fixture project where every module has test sources, or use `--include-untested`).
+- Pester equivalent N/A — PowerShell associative arrays don't have this Bash-3.2 specific semantics (script runs Windows path).
+
+**Effort: 30-45 min** (1-line code fix, 1-2 bats tests, 1 vitest if the JS layer touches the codepath, PR description with the A/B evidence above).
+
+**Suggested first PR for the v0.7.x patch run** — small, isolated, evidence-rich, high signal-to-effort. Good warm-up before tackling WS-1 (which is the architecturally trickiest of the wide-smoke findings).
+
 ### v0.7.x / v0.8 — Community standards (issue + PR templates)
 
 **Surfaced 2026-05-01.** GitHub flags the repo as missing two community-standards files:
