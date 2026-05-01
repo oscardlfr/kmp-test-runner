@@ -7,6 +7,9 @@
 #   pm_get_unit_test_task "$PROJECT_ROOT" "$module_name"
 #   pm_get_device_test_task "$PROJECT_ROOT" "$module_name"
 #   pm_get_coverage_task "$PROJECT_ROOT" "$module_name"
+#   pm_get_web_test_task "$PROJECT_ROOT" "$module_name"     # v0.6 Bug 3
+#   pm_get_ios_test_task "$PROJECT_ROOT" "$module_name"     # v0.7.0
+#   pm_get_macos_test_task "$PROJECT_ROOT" "$module_name"   # v0.7.0
 #   pm_module_type "$PROJECT_ROOT" "$module_name"
 #   pm_module_has_tests "$PROJECT_ROOT" "$module_name"
 #
@@ -156,6 +159,36 @@ pm_get_web_test_task() {
     local model_file
     model_file="$(_pm_locate_model_file "$project_root")" || { echo ""; return 0; }
     _pm_json_get "$model_file" module_field "$module" resolved webTestTask
+}
+
+# Public: echo the resolved iOS test task for a module (v0.7.0) — typically
+# `iosSimulatorArm64Test` (Apple-silicon hosts), `iosX64Test` (Intel hosts /
+# CI), `iosArm64Test` (device), or `iosTest` (umbrella). Empty when the
+# module has no iOS targets, when the model is missing, or when the probe
+# didn't see the candidate task. Parallel to `pm_get_web_test_task` for
+# JS/Wasm — scripts opt in by reading this when they want iOS dispatch.
+pm_get_ios_test_task() {
+    local project_root="$1"
+    local module
+    module="$(_pm_norm_module "$2")"
+    local model_file
+    model_file="$(_pm_locate_model_file "$project_root")" || { echo ""; return 0; }
+    _pm_json_get "$model_file" module_field "$module" resolved iosTestTask
+}
+
+# Public: echo the resolved macOS test task for a module (v0.7.0) — typically
+# `macosArm64Test` (Apple-silicon hosts), `macosX64Test` (Intel hosts), or
+# `macosTest` (umbrella). Empty when the module has no macOS targets, when
+# the model is missing, or when the probe didn't see the candidate task.
+# macOS runs natively on host (no simulator boot); separate from
+# pm_get_ios_test_task because the dispatch flow differs.
+pm_get_macos_test_task() {
+    local project_root="$1"
+    local module
+    module="$(_pm_norm_module "$2")"
+    local model_file
+    model_file="$(_pm_locate_model_file "$project_root")" || { echo ""; return 0; }
+    _pm_json_get "$model_file" module_field "$module" resolved macosTestTask
 }
 
 # Public: echo the module type (`kmp` | `android` | `jvm` | `unknown`).
