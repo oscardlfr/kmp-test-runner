@@ -6,6 +6,37 @@
 
 ## ACTIVE
 
+### v0.7.x / v0.8 — Buildable cross-platform E2E fixture project
+
+**Surfaced 2026-05-01 during v0.7.0 Phase 3 review.** The current iOS / macOS test coverage is the same shape as JS/Wasm/Android — model unit tests, wrapper integration tests with stub `gradlew`, Gradle TestKit acceptance — but **no real iOS / macOS test execution in CI**. This is in parity with the rest of the platforms (Android instrumented + JS/Wasm also lack real-task CI runs), so v0.7.0 ships honestly. But it's the largest single piece of testing debt the project carries: every "iOS support works" claim today rests on wide-smoke validation against the user's local KMP projects, which doesn't survive in green/red CI history.
+
+**Proposal**: build a **minimum-viable buildable Kotlin Multiplatform fixture** under `tests/fixtures/kmp-cross-platform-e2e/` with:
+- Real `gradle/wrapper/` (gradle-wrapper.jar + properties pinning a stable Gradle 8.x or 9.x)
+- Real `gradlew` + `gradlew.bat`
+- Root `build.gradle.kts` with kotlin-multiplatform plugin
+- One module exercising **every supported target**: `jvm()`, `js(IR)`, `wasmJs()`, `iosX64()` + `iosSimulatorArm64()`, `macosArm64()`, `androidLibrary { }` (or `androidTarget()`)
+- Trivial passing test in each test source set (`commonTest`, `jvmTest`, `jsTest`, `wasmJsTest`, `iosX64Test`, `iosSimulatorArm64Test`, `macosArm64Test`, `androidUnitTest`)
+- Pinned Kotlin + AGP versions in `gradle/libs.versions.toml`
+
+**CI matrix** (new workflow `e2e-cross-platform.yml`):
+- `e2e (ubuntu-latest)`: runs `kmp-test parallel --test-type common` + `--test-type androidUnit` + `--test-type ios` (dispatch only — no simulator) + `--test-type macos` (dispatch only) + JS-via-jvmTest fallback. Verifies the wrapper picks the right per-module task in the JSON envelope (no real test execution beyond JVM).
+- `e2e (windows-latest)`: same as ubuntu — Pester / bash-via-Git-Bash parity check.
+- `e2e (macos-latest)`: full iOS + macOS execution. Boots simulator (Approach B fallback if needed), runs `:module:iosSimulatorArm64Test` and `:module:macosArm64Test` for real. This is the only place where iOS actually runs.
+
+**Risk + cost:**
+- **Risk**: high CI flakiness from network deps (Maven plugin downloads), Xcode version drift on macos-latest, simulator boot races. Initial implementation could spend 50% of effort fighting infrastructure.
+- **Cost**: ~6-10h to build a working fixture + reliable CI. Net new bytes in the repo: ~70KB for `gradle-wrapper.jar` (binary).
+- **Per-run CI cost**: macOS minutes are 10× ubuntu minutes — full E2E job could add 5-10 min per CI run, ~50 min macOS-equivalent per PR.
+
+**When to ship:**
+- v0.7.x patch — if a v0.7 user surfaces an iOS regression that the unit/integration suite missed, this becomes urgent.
+- v0.8.0 minor — if v0.7 ships clean, defer to a dedicated milestone where we can budget the CI flakiness work properly.
+- v1.0.0 — if v0.7 + v0.8 hold up, the bar for v1.0 is "no major iOS regressions in 3+ months", and this fixture is part of the v1.0 stability claim.
+
+**Out of scope for this entry:**
+- Re-using an existing real-world OSS KMP project (Confetti / KaMPKit) as the fixture — version drift makes our CI flakier than a pinned synthetic; only revisit if synthetic proves too much work.
+- Replacing the wide-smoke local validation gate (`feedback_release_wide_smoke.md`). Both should coexist: wide-smoke catches integration-level bugs against real projects; the synthetic E2E catches regressions deterministically.
+
 ### v0.6.2 / pre-v0.7 — Update README to reflect post-v0.6.x feature surface
 
 The README has not been touched since v0.5.x. v0.6.0 + v0.6.x added significant surface that should be documented before v0.7 (where API breaks may land):

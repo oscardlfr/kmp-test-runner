@@ -125,6 +125,16 @@ ANTHROPIC_API_KEY=sk-ant-... node tools/measure-token-cost.js --feature <name> \
 
 > **Practical impact across features.** A 5-iteration agent loop reading raw gradle output burns ~64 K tokens for `parallel`/`changed`, ~80 K for `benchmark`, and **~542 K for `coverage`** (more than two full 200 K contexts). The same loops on `--json` burn ~500 tokens each. The agent's working memory stays focused on the code instead of log noise.
 
+## What's new in v0.7.0
+
+The headline of the v0.7 line is **first-class iOS / macOS support**. KMP modules declaring `iosX64()`, `iosSimulatorArm64()`, `iosArm64()`, `macosArm64()`, or `macosX64()` are now visible to the project model, surface their per-target test source sets (`iosX64Test` / `iosSimulatorArm64Test` / etc.), and can be dispatched directly via `kmp-test parallel --test-type ios` (or `--test-type macos`). The CLI consults the project model per module to pick the right gradle task — `iosSimulatorArm64Test` on Apple-silicon hosts, `iosX64Test` on Intel hosts and CI, `iosArm64Test` for device runs, with `iosTest` (umbrella) as a last-fallback. macOS dispatches host-natively (no simulator boot dance); iOS leans on Gradle's built-in simulator orchestration since AGP/KMP 1.9+.
+
+- **`--test-type ios | macos`** (v0.7.0) — adds two new dispatch modes to `parallel` / `changed` / `coverage`. See [Multi-platform test dispatch](#multi-platform-test-dispatch) below.
+- **Project-model `iosTestTask` + `macosTestTask` fields** (v0.7.0) — exposed alongside the existing `unitTestTask` / `webTestTask` / `deviceTestTask`. Independent of `unitTestTask`'s candidate race so KMP modules with `jvmTest + iosSimulatorArm64Test` still pick `jvmTest` for unit tests; iOS surfaces only via the explicit `iosTestTask` field. `pm_get_ios_test_task` / `pm_get_macos_test_task` (sh) and `Get-PmIosTestTask` / `Get-PmMacosTestTask` (ps1) are the corresponding script-side readers.
+- **`SKIP_IOS_MODULES` / `SKIP_MACOS_MODULES`** env vars (v0.7.0) mirror the existing `SKIP_DESKTOP_MODULES` / `SKIP_ANDROID_MODULES` shape — comma-separated short module names.
+- **Gradle plugin `testType` property** (v0.7.0) — `kmpTestRunner { testType = "ios" }` propagates `--test-type ios` to the bundled wrapper. Empty default preserves auto-detect.
+- **Source-set discovery extends to 18 directories** (12 from v0.6.x baseline + 6 new iOS-arch / macOS variants). The legacy filesystem walker (when the project-model JSON is absent) is in lockstep, so iOS-only modules without an umbrella `src/iosTest/` directory still register as testable.
+
 ## What's new in v0.6.x
 
 The 0.6 line hardened `kmp-test` against ~28 real-world KMP/Android projects (KaMPKit, Confetti, nowinandroid, DroidconKotlin, Compose Multiplatform, nav3-recipes, Nav3Guide, kmp-production-sample, etc.). Highlights:
@@ -225,6 +235,19 @@ kmp-test parallel
 
 Pass `--project-root <path>` explicitly when scripting from a different directory.
 
+### Platforms supported
+
+| Target | Default `--test-type` | Underlying gradle task | Where it runs |
+|--------|---------------------|------------------------|---------------|
+| **JVM / Desktop** | `common` / `desktop` (auto-detect) | `:module:desktopTest` | host (Linux / macOS / Windows) |
+| **Android (unit)** | `androidUnit` (auto-detect) | `:module:testDebugUnitTest` | host JVM |
+| **Android (instrumented)** | `androidInstrumented` (or `kmp-test android`) | `:module:connectedDebugAndroidTest` | connected device or emulator |
+| **iOS** _(v0.7.0)_ | `ios` | `:module:iosSimulatorArm64Test` (Apple-silicon), `iosX64Test` (Intel/CI), `iosArm64Test` (device) — picked per-module from the project model | macOS host with Xcode + simulator (Gradle handles simulator boot since AGP/KMP 1.9+) |
+| **macOS** _(v0.7.0)_ | `macos` | `:module:macosArm64Test` / `macosX64Test` / `macosTest` — picked per-module | macOS host (host-native; no simulator) |
+| **JS / Wasm** | _model-only_ (`webTestTask` field) | `:module:jsTest` / `:module:wasmJsTest` | host Node — wrapper-side dispatch deferred to v0.7.x |
+
+`kmp-test` auto-detects the project type (`kmp-desktop` → `common`, otherwise `androidUnit`) when `--test-type` is omitted. iOS / macOS / `androidInstrumented` are opt-in — the wrapper does not switch to them implicitly because they require platform-specific runners (simulator / connected device).
+
 ### Subcommands
 
 | Subcommand | Description |
@@ -273,7 +296,37 @@ kmp-test parallel --exclude-modules "*:api,build-logic"
 
 # Agentic mode: emit a single JSON object on stdout (see "Agentic usage" below)
 kmp-test parallel --json
+
+# Run iOS tests against KMP modules with iosX64() / iosSimulatorArm64() targets (v0.7.0)
+kmp-test parallel --test-type ios --module-filter ":mySharedKmp"
+
+# macOS host-native — no simulator (v0.7.0)
+kmp-test parallel --test-type macos
 ```
+
+### Multi-platform test dispatch
+
+When `--test-type ios` is set (v0.7.0), `kmp-test` consults the project model **per module** to pick the right gradle task. The model's `iosTestTask` field is the candidate-ordered output of:
+
+```
+iosSimulatorArm64Test  →  iosX64Test  →  iosArm64Test  →  iosTest
+       (Apple silicon)        (Intel / CI)    (device run)    (umbrella fallback)
+```
+
+The first entry that's actually present in the gradle task graph wins. macOS (`--test-type macos`) follows the same shape:
+
+```
+macosArm64Test  →  macosX64Test  →  macosTest
+```
+
+**Per-platform notes:**
+
+- **iOS** dispatches `:module:iosSimulatorArm64Test` (or whatever the model picked). On macos-latest CI runners this typically boots a pre-installed simulator automatically — no `xcrun simctl` orchestration required at the wrapper level since KMP 1.9+ / AGP 9. On Intel hosts the model returns `iosX64Test` instead. Real-device runs (`iosArm64Test`) need a connected iPhone — out of scope for the wrapper, which doesn't manage devices.
+- **macOS** dispatches host-natively (no simulator). On Apple-silicon you get `macosArm64Test`; on Intel, `macosX64Test`. macOS is **not** auto-detected — `--test-type macos` is opt-in.
+- **Fallback when the model is absent**: the wrapper picks `iosSimulatorArm64Test` / `macosArm64Test` (most-portable defaults). Pre-build the model with any prior `kmp-test parallel` invocation against the project for content-keyed cache to populate.
+- **Skip env vars**: `SKIP_IOS_MODULES="composeApp,iosApp"` excludes specific modules from iOS dispatch (mirrors the existing `SKIP_DESKTOP_MODULES` / `SKIP_ANDROID_MODULES` shape). Same for `SKIP_MACOS_MODULES`.
+
+The `unitTestTask` field stays separate — KMP modules with both `jvmTest` and `iosSimulatorArm64Test` continue to pick `jvmTest` for `--test-type common` / auto-detect, while `--test-type ios` opts into the explicit iOS path.
 
 ### Coverage tools
 
@@ -346,6 +399,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 |------|---------|-------------|
 | `--project-root` | `$PWD` | Path to the Gradle project root |
 | `--max-workers` | `4` | Maximum parallel Gradle workers |
+| `--test-type <type>` _(v0.7.0)_ | _(auto-detect)_ | `common` \| `desktop` \| `androidUnit` \| `androidInstrumented` \| `ios` \| `macos` \| `all`. iOS / macOS pick the per-module task from the project model. See [Multi-platform test dispatch](#multi-platform-test-dispatch) |
 | `--coverage-tool` | `kover` | Coverage tool: `kover`, `jacoco`, `auto`, or `none` |
 | `--coverage-modules` | _(all)_ | Comma-separated module list for coverage aggregation |
 | `--min-missed-lines` | `0` | Fail if missed lines exceed this threshold |
@@ -357,6 +411,16 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--no-coverage` _(v0.6.0+)_ | _(off)_ | Alias for `--coverage-tool none`; runs tests only without generating coverage |
 | `--shared-project-name` | _(none)_ | Name of the shared KMP module (for Android test dispatch) |
 | `--json` / `--format json` | _(off)_ | Emit a single JSON object on stdout (see "Agentic usage" below). Suppresses human-readable output |
+
+**Env vars (skip-list):**
+
+| Variable | Applies when | Effect |
+|----------|--------------|--------|
+| `SKIP_DESKTOP_MODULES` | `--test-type common` / `desktop` | Comma-separated short module names skipped from the desktop test pass |
+| `SKIP_ANDROID_MODULES` | `--test-type androidUnit` (default) | Same shape, for Android-side dispatch |
+| `SKIP_IOS_MODULES` _(v0.7.0)_ | `--test-type ios` | Same shape, for iOS dispatch |
+| `SKIP_MACOS_MODULES` _(v0.7.0)_ | `--test-type macos` | Same shape, for macOS dispatch |
+| `PARENT_ONLY_MODULES` | always | Comma-separated module names that are aggregator-only (skipped at discovery time) |
 
 ## Agentic usage — token-cost rationale
 
@@ -528,7 +592,7 @@ pluginManagement {
 In `build.gradle.kts`:
 ```kotlin
 plugins {
-    id("io.github.oscardlfr.kmp-test-runner") version "0.3.7"
+    id("io.github.oscardlfr.kmp-test-runner") version "0.7.0"
 }
 
 kmpTestRunner {
@@ -538,6 +602,9 @@ kmpTestRunner {
     coverageModules = ":core,:app"
     minMissedLines = 0
     sharedProjectName = "my-shared-lib"
+    // v0.7.0: opt into a specific test type. Empty = wrapper auto-detects.
+    // Accepts: "common" | "desktop" | "androidUnit" | "androidInstrumented" | "ios" | "macos" | "all".
+    testType = ""
 }
 ```
 
@@ -584,6 +651,7 @@ A token with `read:packages` scope is sufficient for consumers. Maven Central wi
 | `coverageModules` | `String` | _(all)_ | Colon-prefixed module list (e.g. `":core,:app"`) |
 | `minMissedLines` | `Int` | `0` | Fail threshold for missed lines |
 | `sharedProjectName` | `String` | _(none)_ | Shared KMP module name |
+| `testType` _(v0.7.0)_ | `String` | `""` (wrapper auto-detect) | `"common"` \| `"desktop"` \| `"androidUnit"` \| `"androidInstrumented"` \| `"ios"` \| `"macos"` \| `"all"`. Propagated as `--test-type <value>` to `parallelTests` / `changedTests` / `coverageTask` |
 
 ## Architecture
 
@@ -596,9 +664,9 @@ Open issues and pull requests are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.
 Quick check before a PR:
 
 ```bash
-npm test                                       # vitest (183+ tests)
-npx bats tests/bats/ tests/installer/          # bats (Linux/macOS)
-cd gradle-plugin && ./gradlew test && cd ..    # Gradle TestKit
+npm test                                       # vitest (~424 tests at v0.7.0)
+npx bats tests/bats/ tests/installer/          # bats (~197 tests, Linux/macOS)
+cd gradle-plugin && ./gradlew test && cd ..    # Gradle TestKit (~12 tests)
 npm run shellcheck                             # POSIX script lint (0 warnings required)
 ```
 
