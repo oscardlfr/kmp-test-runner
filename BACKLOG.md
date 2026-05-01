@@ -6,6 +6,58 @@
 
 ## ACTIVE
 
+### v0.7.x / v0.8 — Community standards (issue + PR templates)
+
+**Surfaced 2026-05-01.** GitHub flags the repo as missing two community-standards files:
+
+- `.github/ISSUE_TEMPLATE/` — at minimum a `bug_report.md` and `feature_request.md` (or YAML form templates). The README's "How to file an issue" path today is implicit; templates make first-time contributors land on a structured form.
+- `.github/PULL_REQUEST_TEMPLATE.md` — a single-file template that pre-fills the PR description with the standard sections we already use ad-hoc (Summary, What changed, Tests, Out of scope, Test plan). Today every PR copies the shape from a previous PR's description; codifying it in a template removes that drift.
+
+Both are tiny single-file additions (~50-100 lines each). Pair with a CONTRIBUTING.md cross-reference (already exists). Estimated effort: 30-45 min total.
+
+### v0.7.x / v0.8 — Refresh token-cost measurement tables
+
+**Surfaced 2026-05-01 during v0.7.0 README revamp.** The token-cost numbers in the README were captured at v0.5.0. The JSON envelope shape barely changed since (additive fields only — `skipped[]` in v0.6.2, `iosTestTask` / `macosTestTask` in v0.7.0 when those test types are picked), so the numbers remain representative within ±5%. But the date is now stale.
+
+Refresh approach:
+- Re-run `tools/measure-token-cost.js` against `shared-kmp-libs` for all 4 features × 3 approaches × cross-model. ~$10-15 USD in Anthropic API calls.
+- Add a new column / row showing iOS or macOS dispatch token cost (different envelope content vs JVM).
+- Update the timestamp note in the README (currently absent — should say "Measured at v0.X.Y on YYYY-MM-DD").
+- Optional: bump bar resolution / column widths if the new layout (post-v0.7.0 redesign) exposes any awkward wraps.
+
+Effort: ~2-3h total (1h re-running, 1h reviewing, 30-45 min editing the tables). Defer to v0.8 unless a v0.7.x bug pushes the JSON envelope shape (in which case re-measure becomes load-bearing).
+
+### v0.7.x / v0.8 — Buildable cross-platform E2E fixture project
+
+**Surfaced 2026-05-01 during v0.7.0 Phase 3 review.** The current iOS / macOS test coverage is the same shape as JS/Wasm/Android — model unit tests, wrapper integration tests with stub `gradlew`, Gradle TestKit acceptance — but **no real iOS / macOS test execution in CI**. This is in parity with the rest of the platforms (Android instrumented + JS/Wasm also lack real-task CI runs), so v0.7.0 ships honestly. But it's the largest single piece of testing debt the project carries: every "iOS support works" claim today rests on wide-smoke validation against the user's local KMP projects, which doesn't survive in green/red CI history.
+
+**Proposal**: build a **minimum-viable buildable Kotlin Multiplatform fixture** under `tests/fixtures/kmp-cross-platform-e2e/` with:
+- Real `gradle/wrapper/` (gradle-wrapper.jar + properties pinning a stable Gradle 8.x or 9.x)
+- Real `gradlew` + `gradlew.bat`
+- Root `build.gradle.kts` with kotlin-multiplatform plugin
+- One module exercising **every supported target**: `jvm()`, `js(IR)`, `wasmJs()`, `iosX64()` + `iosSimulatorArm64()`, `macosArm64()`, `androidLibrary { }` (or `androidTarget()`)
+- Trivial passing test in each test source set (`commonTest`, `jvmTest`, `jsTest`, `wasmJsTest`, `iosX64Test`, `iosSimulatorArm64Test`, `macosArm64Test`, `androidUnitTest`)
+- Pinned Kotlin + AGP versions in `gradle/libs.versions.toml`
+
+**CI matrix** (new workflow `e2e-cross-platform.yml`):
+- `e2e (ubuntu-latest)`: runs `kmp-test parallel --test-type common` + `--test-type androidUnit` + `--test-type ios` (dispatch only — no simulator) + `--test-type macos` (dispatch only) + JS-via-jvmTest fallback. Verifies the wrapper picks the right per-module task in the JSON envelope (no real test execution beyond JVM).
+- `e2e (windows-latest)`: same as ubuntu — Pester / bash-via-Git-Bash parity check.
+- `e2e (macos-latest)`: full iOS + macOS execution. Boots simulator (Approach B fallback if needed), runs `:module:iosSimulatorArm64Test` and `:module:macosArm64Test` for real. This is the only place where iOS actually runs.
+
+**Risk + cost:**
+- **Risk**: high CI flakiness from network deps (Maven plugin downloads), Xcode version drift on macos-latest, simulator boot races. Initial implementation could spend 50% of effort fighting infrastructure.
+- **Cost**: ~6-10h to build a working fixture + reliable CI. Net new bytes in the repo: ~70KB for `gradle-wrapper.jar` (binary).
+- **Per-run CI cost**: macOS minutes are 10× ubuntu minutes — full E2E job could add 5-10 min per CI run, ~50 min macOS-equivalent per PR.
+
+**When to ship:**
+- v0.7.x patch — if a v0.7 user surfaces an iOS regression that the unit/integration suite missed, this becomes urgent.
+- v0.8.0 minor — if v0.7 ships clean, defer to a dedicated milestone where we can budget the CI flakiness work properly.
+- v1.0.0 — if v0.7 + v0.8 hold up, the bar for v1.0 is "no major iOS regressions in 3+ months", and this fixture is part of the v1.0 stability claim.
+
+**Out of scope for this entry:**
+- Re-using an existing real-world OSS KMP project (Confetti / KaMPKit) as the fixture — version drift makes our CI flakier than a pinned synthetic; only revisit if synthetic proves too much work.
+- Replacing the wide-smoke local validation gate (`feedback_release_wide_smoke.md`). Both should coexist: wide-smoke catches integration-level bugs against real projects; the synthetic E2E catches regressions deterministically.
+
 ### v0.6.2 / pre-v0.7 — Update README to reflect post-v0.6.x feature surface
 
 The README has not been touched since v0.5.x. v0.6.0 + v0.6.x added significant surface that should be documented before v0.7 (where API breaks may land):

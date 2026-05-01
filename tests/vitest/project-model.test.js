@@ -355,8 +355,10 @@ describe('analyzeModule', () => {
     expect(a.type).toBe('android');
   });
 
-  it('detects all 12 source-set directories independently', () => {
-    // 9 baseline + 3 added in v0.6 Bug 3 (jsTest / wasmJsTest / wasmWasiTest).
+  it('detects all 18 source-set directories independently', () => {
+    // 9 baseline + 3 added in v0.6 Bug 3 (jsTest / wasmJsTest / wasmWasiTest)
+    // + 6 added in v0.7.0 (iosX64Test / iosArm64Test / iosSimulatorArm64Test
+    //   / macosTest / macosX64Test / macosArm64Test).
     const dir = makeProject();
     mkdirSync(path.join(dir, 'm', 'src', 'commonTest'), { recursive: true });
     mkdirSync(path.join(dir, 'm', 'src', 'androidInstrumentedTest'), { recursive: true });
@@ -370,6 +372,12 @@ describe('analyzeModule', () => {
     expect(a.sourceSets.wasmWasiTest).toBe(false);
     expect(a.sourceSets.test).toBe(false);
     expect(a.sourceSets.iosTest).toBe(false);
+    expect(a.sourceSets.iosX64Test).toBe(false);
+    expect(a.sourceSets.iosArm64Test).toBe(false);
+    expect(a.sourceSets.iosSimulatorArm64Test).toBe(false);
+    expect(a.sourceSets.macosTest).toBe(false);
+    expect(a.sourceSets.macosX64Test).toBe(false);
+    expect(a.sourceSets.macosArm64Test).toBe(false);
   });
 
   it('detects wasmJsTest and wasmWasiTest source-set dirs (v0.6 Bug 3)', () => {
@@ -380,6 +388,24 @@ describe('analyzeModule', () => {
     const a = analyzeModule(dir, ':wasm');
     expect(a.sourceSets.wasmJsTest).toBe(true);
     expect(a.sourceSets.wasmWasiTest).toBe(true);
+  });
+
+  it('detects iOS-arch + macOS source-set dirs (v0.7.0)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'apple', 'src', 'iosX64Test'), { recursive: true });
+    mkdirSync(path.join(dir, 'apple', 'src', 'iosArm64Test'), { recursive: true });
+    mkdirSync(path.join(dir, 'apple', 'src', 'iosSimulatorArm64Test'), { recursive: true });
+    mkdirSync(path.join(dir, 'apple', 'src', 'macosX64Test'), { recursive: true });
+    mkdirSync(path.join(dir, 'apple', 'src', 'macosArm64Test'), { recursive: true });
+    writeFileSync(path.join(dir, 'apple', 'build.gradle.kts'), '');
+    const a = analyzeModule(dir, ':apple');
+    expect(a.sourceSets.iosX64Test).toBe(true);
+    expect(a.sourceSets.iosArm64Test).toBe(true);
+    expect(a.sourceSets.iosSimulatorArm64Test).toBe(true);
+    expect(a.sourceSets.macosX64Test).toBe(true);
+    expect(a.sourceSets.macosArm64Test).toBe(true);
+    // Umbrella iosTest stays independent of arch-specific sets.
+    expect(a.sourceSets.iosTest).toBe(false);
   });
 
   it('detects hasFlavor when productFlavors is present', () => {
@@ -793,6 +819,8 @@ describe('resolveTasksFor', () => {
     expect(r.deviceTestTask).toBeNull();
     expect(r.coverageTask).toBeNull();
     expect(r.webTestTask).toBeNull();
+    expect(r.iosTestTask).toBeNull();
+    expect(r.macosTestTask).toBeNull();
   });
 
   // v0.6 Bug 3 — JS / Wasm support.
@@ -832,6 +860,85 @@ describe('resolveTasksFor', () => {
       const r = resolveTasksFor(':m', ['desktopTest', 'jvmTest', 'jsTest']);
       expect(r.unitTestTask).toBe('desktopTest');
       expect(r.webTestTask).toBe('jsTest');
+    });
+  });
+
+  // v0.7.0 — iOS / macOS support.
+  describe('iOS / macOS task resolution (v0.7.0)', () => {
+    it('picks iosSimulatorArm64Test as iosTestTask when present', () => {
+      const r = resolveTasksFor(':m', ['iosSimulatorArm64Test', 'iosX64Test', 'iosArm64Test']);
+      expect(r.iosTestTask).toBe('iosSimulatorArm64Test');
+    });
+
+    it('falls back to iosX64Test when iosSimulatorArm64Test is absent', () => {
+      const r = resolveTasksFor(':m', ['iosX64Test', 'iosArm64Test']);
+      expect(r.iosTestTask).toBe('iosX64Test');
+    });
+
+    it('falls back to iosArm64Test when only device target is declared', () => {
+      const r = resolveTasksFor(':m', ['iosArm64Test']);
+      expect(r.iosTestTask).toBe('iosArm64Test');
+    });
+
+    it('falls back to umbrella iosTest when no arch-specific iOS task exists', () => {
+      const r = resolveTasksFor(':m', ['iosTest']);
+      expect(r.iosTestTask).toBe('iosTest');
+    });
+
+    it('returns iosTestTask null when no iOS tasks exist', () => {
+      const r = resolveTasksFor(':m', ['desktopTest', 'jvmTest']);
+      expect(r.iosTestTask).toBeNull();
+    });
+
+    it('picks macosArm64Test as macosTestTask when present', () => {
+      const r = resolveTasksFor(':m', ['macosArm64Test', 'macosX64Test']);
+      expect(r.macosTestTask).toBe('macosArm64Test');
+    });
+
+    it('falls back to macosX64Test when only Intel macOS target is declared', () => {
+      const r = resolveTasksFor(':m', ['macosX64Test']);
+      expect(r.macosTestTask).toBe('macosX64Test');
+    });
+
+    it('returns macosTestTask null when no macOS tasks exist', () => {
+      const r = resolveTasksFor(':m', ['desktopTest', 'iosX64Test']);
+      expect(r.macosTestTask).toBeNull();
+    });
+
+    it('iOS-only module: iosTestTask resolves but unitTestTask stays null (iOS does NOT win the candidate race)', () => {
+      // KMP module that only declares iosX64() — no jvmTest, no desktopTest.
+      // unitTestTask must NOT silently pick an iOS task; consumers must opt in
+      // via iosTestTask explicitly.
+      const r = resolveTasksFor(':m', ['iosX64Test']);
+      expect(r.unitTestTask).toBeNull();
+      expect(r.iosTestTask).toBe('iosX64Test');
+    });
+
+    it('KMP+iOS module: unitTestTask still picks jvmTest first (iOS does NOT win)', () => {
+      // Regression: a KMP module with BOTH jvmTest and iosSimulatorArm64Test
+      // must keep selecting jvmTest as the unit test task — iOS surfaces only
+      // via iosTestTask.
+      const r = resolveTasksFor(':m', ['jvmTest', 'iosSimulatorArm64Test']);
+      expect(r.unitTestTask).toBe('jvmTest');
+      expect(r.iosTestTask).toBe('iosSimulatorArm64Test');
+    });
+
+    it('macOS-only module: macosTestTask resolves but unitTestTask stays null', () => {
+      const r = resolveTasksFor(':m', ['macosArm64Test']);
+      expect(r.unitTestTask).toBeNull();
+      expect(r.macosTestTask).toBe('macosArm64Test');
+    });
+
+    it('desktopTest still wins over jvmTest and macOS tasks (macOS does NOT collapse into desktop)', () => {
+      const r = resolveTasksFor(':m', ['desktopTest', 'jvmTest', 'macosArm64Test']);
+      expect(r.unitTestTask).toBe('desktopTest');
+      expect(r.macosTestTask).toBe('macosArm64Test');
+    });
+
+    it('iosTestTask and macosTestTask are independent fields (multi-Apple module)', () => {
+      const r = resolveTasksFor(':m', ['iosSimulatorArm64Test', 'macosArm64Test']);
+      expect(r.iosTestTask).toBe('iosSimulatorArm64Test');
+      expect(r.macosTestTask).toBe('macosArm64Test');
     });
   });
 });

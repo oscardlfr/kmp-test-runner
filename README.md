@@ -14,25 +14,22 @@ Measured against a representative KMP SDK module on Windows + JDK 21, single run
 
 ### Cross-feature summary — 4 features × 3 approaches × 4 tokenizers
 
-Bars scaled to the global table max (`coverage · A · opus-4-7` = **123,845 tokens** = 10 chars wide). `sonnet-4-6` and `haiku-4-5` share a tokenizer (identical counts to the unit on every cell) so they're merged into a single column here.
+🟢 marks `kmp-test` rows (B = default markdown output, C = `--json` agentic envelope). Approach A is the raw `./gradlew + report parsing` baseline an agent does without `kmp-test`. `sonnet-4-6` and `haiku-4-5` share a tokenizer (identical counts on every cell) so they're merged into a single column. Per-feature visual bars are in the [drill-down tables](#per-feature-drill-down) below — this view is numbers only for scannability.
 
-| Feature · Approach    | 🟦 cl100k_base       | 🟥 opus-4-7          | 🟩🟧 sonnet · haiku   |
-|-----------------------|----------------------|----------------------|-----------------------|
-| `parallel`  · A. raw  | ` 12,807 █`          | ` 25,780 ██`         | ` 19,234 ██`          |
-| `parallel`  · B. md   | `    376 ▏`          | `    642 ▏`          | `    444 ▏`           |
-| `parallel`  · C. json | `    101 ▏`          | `    187 ▏`          | `    125 ▏`           |
-| ─────────             | ──────────────────── | ──────────────────── | ───────────────────── |
-| `coverage`  · A. raw  | `108,405 █████████`  | `123,845 ██████████` | ` 92,940 ████████`    |
-| `coverage`  · B. md   | `    273 ▏`          | `    482 ▏`          | `    317 ▏`           |
-| `coverage`  · C. json | `     89 ▏`          | `    162 ▏`          | `    109 ▏`           |
-| ─────────             | ──────────────────── | ──────────────────── | ───────────────────── |
-| `changed`   · A. raw  | ` 12,694 █`          | ` 25,580 ██`         | ` 19,098 ██`          |
-| `changed`   · B. md   | `    466 ▏`          | `    787 ▏`          | `    550 ▏`           |
-| `changed`   · C. json | `    100 ▏`          | `    186 ▏`          | `    125 ▏`           |
-| ─────────             | ──────────────────── | ──────────────────── | ───────────────────── |
-| `benchmark` · A. raw  | ` 16,083 █`          | ` 23,527 ██`         | ` 19,266 ██`          |
-| `benchmark` · B. md   | `  6,211 █`          | `  9,916 █`          | `  7,596 █`           |
-| `benchmark` · C. json | `     89 ▏`          | `    163 ▏`          | `    109 ▏`           |
+| Feature · Approach                       | 🟦 cl100k_base | 🟥 opus-4-7 | 🟩🟧 sonnet · haiku |
+|------------------------------------------|---------------:|------------:|--------------------:|
+| `parallel`  · A. raw `./gradlew`         |         12,807 |      25,780 |              19,234 |
+| 🟢 `parallel`  · B. `kmp-test`           |            376 |         642 |                 444 |
+| 🟢 `parallel`  · C. `kmp-test --json`    |        **101** |     **187** |             **125** |
+| `coverage`  · A. raw `./gradlew`         |        108,405 |     123,845 |              92,940 |
+| 🟢 `coverage`  · B. `kmp-test`           |            273 |         482 |                 317 |
+| 🟢 `coverage`  · C. `kmp-test --json`    |         **89** |     **162** |             **109** |
+| `changed`   · A. raw `./gradlew`         |         12,694 |      25,580 |              19,098 |
+| 🟢 `changed`   · B. `kmp-test`           |            466 |         787 |                 550 |
+| 🟢 `changed`   · C. `kmp-test --json`    |        **100** |     **186** |             **125** |
+| `benchmark` · A. raw `./gradlew`         |         16,083 |      23,527 |              19,266 |
+| 🟢 `benchmark` · B. `kmp-test`           |          6,211 |       9,916 |               7,596 |
+| 🟢 `benchmark` · C. `kmp-test --json`    |         **89** |     **163** |             **109** |
 
 A:C savings ratio per feature, per tokenizer:
 
@@ -49,57 +46,57 @@ Two observations carry across every feature:
 
 ### Per-feature drill-down
 
-Each per-feature table is scaled to its own max (so the bar visualisation maximises within the feature). Bars in column A always dominate; B/C are sub-1-char unicode blocks that visually disappear — that's the savings story.
+Each per-feature table is scaled to its own max for the A column (raw `./gradlew`). 🟢 columns are `kmp-test`-driven (B = markdown stdout, C = `--json` envelope); shown as numbers only since the bars would be sub-1-char anyway — the visual asymmetry between A and 🟢 B/C is the savings story.
 
 #### `parallel` — full test suite
 
-Bars scaled to `25,780` (opus, A).
+A bars scaled to `25,780` (opus).
 
-| Model               | A. raw                              | B. md         | C. --json     | A:C   |
-|---------------------|-------------------------------------|---------------|---------------|-------|
-| 🟦 `cl100k_base`    | ` 12,807 ██████████`                | `   376 ▏`    | `   101 ▏`    | 127×  |
-| 🟥 `opus-4-7`       | ` 25,780 ████████████████████`      | `   642 █`    | `   187 ▏`    | 138×  |
-| 🟩 `sonnet-4-6`     | ` 19,234 ███████████████`           | `   444 ▏`    | `   125 ▏`    | 154×  |
-| 🟧 `haiku-4-5`      | ` 19,234 ███████████████`           | `   444 ▏`    | `   125 ▏`    | 154×  |
+| Model            | A. raw `./gradlew`             | 🟢 B. `kmp-test` | 🟢 C. `--json` |   A:C |
+|------------------|--------------------------------|-----------------:|---------------:|------:|
+| 🟦 `cl100k_base` | `12,807 ██████████`            |              376 |        **101** |  127× |
+| 🟥 `opus-4-7`    | `25,780 ████████████████████`  |              642 |        **187** |  138× |
+| 🟩 `sonnet-4-6`  | `19,234 ███████████████`       |              444 |        **125** |  154× |
+| 🟧 `haiku-4-5`   | `19,234 ███████████████`       |              444 |        **125** |  154× |
 
 Captures: [`tools/runs/parallel/`](tools/runs/parallel/) · evidence: [`tools/runs/cross-model-results-parallel.txt`](tools/runs/cross-model-results-parallel.txt).
 
 #### `coverage` — Kover XML + HTML reports
 
-Bars scaled to `123,845` (opus, A) — the largest cell across the whole measurement.
+A bars scaled to `123,845` (opus) — the largest cell across the whole measurement.
 
-| Model               | A. raw                                    | B. md         | C. --json     | A:C       |
-|---------------------|-------------------------------------------|---------------|---------------|-----------|
-| 🟦 `cl100k_base`    | `108,405 ██████████████████`              | `   273 ▏`    | `    89 ▏`    | **1218×** |
-| 🟥 `opus-4-7`       | `123,845 ████████████████████`            | `   482 ▏`    | `   162 ▏`    | 765×      |
-| 🟩 `sonnet-4-6`     | ` 92,940 ███████████████`                 | `   317 ▏`    | `   109 ▏`    | 853×      |
-| 🟧 `haiku-4-5`      | ` 92,940 ███████████████`                 | `   317 ▏`    | `   109 ▏`    | 853×      |
+| Model            | A. raw `./gradlew`                | 🟢 B. `kmp-test` | 🟢 C. `--json` |       A:C |
+|------------------|-----------------------------------|-----------------:|---------------:|----------:|
+| 🟦 `cl100k_base` | `108,405 ██████████████████`      |              273 |         **89** | **1218×** |
+| 🟥 `opus-4-7`    | `123,845 ████████████████████`    |              482 |        **162** |      765× |
+| 🟩 `sonnet-4-6`  | ` 92,940 ███████████████`         |              317 |        **109** |      853× |
+| 🟧 `haiku-4-5`   | ` 92,940 ███████████████`         |              317 |        **109** |      853× |
 
 The largest savings of any feature. Kover HTML reports include a fully annotated source page per file — slurping `build/reports/kover/**` for one module gives the agent ~261 KB of HTML it has to scan to find one number. Captures: [`tools/runs/coverage/`](tools/runs/coverage/) · evidence: [`tools/runs/cross-model-results-coverage.txt`](tools/runs/cross-model-results-coverage.txt).
 
 #### `changed` — tests for modules touched since `HEAD~1`
 
-Bars scaled to `25,580` (opus, A).
+A bars scaled to `25,580` (opus).
 
-| Model               | A. raw                              | B. md         | C. --json     | A:C   |
-|---------------------|-------------------------------------|---------------|---------------|-------|
-| 🟦 `cl100k_base`    | ` 12,694 ██████████`                | `   466 ▏`    | `   100 ▏`    | 127×  |
-| 🟥 `opus-4-7`       | ` 25,580 ████████████████████`      | `   787 █`    | `   186 ▏`    | 138×  |
-| 🟩 `sonnet-4-6`     | ` 19,098 ███████████████`           | `   550 ▏`    | `   125 ▏`    | 153×  |
-| 🟧 `haiku-4-5`      | ` 19,098 ███████████████`           | `   550 ▏`    | `   125 ▏`    | 153×  |
+| Model            | A. raw `./gradlew`             | 🟢 B. `kmp-test` | 🟢 C. `--json` |   A:C |
+|------------------|--------------------------------|-----------------:|---------------:|------:|
+| 🟦 `cl100k_base` | `12,694 ██████████`            |              466 |        **100** |  127× |
+| 🟥 `opus-4-7`    | `25,580 ████████████████████`  |              787 |        **186** |  138× |
+| 🟩 `sonnet-4-6`  | `19,098 ███████████████`       |              550 |        **125** |  153× |
+| 🟧 `haiku-4-5`   | `19,098 ███████████████`       |              550 |        **125** |  153× |
 
 B/C dispatch through the full parallel coverage suite (broader scope than A's single `:module:desktopTest`), so wall-clock time isn't apples-to-apples — token count is. Captures: [`tools/runs/changed/`](tools/runs/changed/) · evidence: [`tools/runs/cross-model-results-changed.txt`](tools/runs/cross-model-results-changed.txt).
 
 #### `benchmark` — JMH desktopSmokeBenchmark
 
-Bars scaled to `23,527` (opus, A). B is unusually heavy here (`6,211`–`9,916`) — the markdown report inlines per-benchmark scores by design.
+A bars scaled to `23,527` (opus). B is unusually heavy here (`6,211`–`9,916`) — the markdown report inlines per-benchmark scores by design, so B is the only feature where 🟢 B isn't tiny vs A.
 
-| Model               | A. raw                              | B. md             | C. --json     | A:C   |
-|---------------------|-------------------------------------|-------------------|---------------|-------|
-| 🟦 `cl100k_base`    | ` 16,083 ██████████████`            | ` 6,211 █████`    | `    89 ▏`    | 181×  |
-| 🟥 `opus-4-7`       | ` 23,527 ████████████████████`      | ` 9,916 ████████` | `   163 ▏`    | 144×  |
-| 🟩 `sonnet-4-6`     | ` 19,266 ████████████████`          | ` 7,596 ██████`   | `   109 ▏`    | 177×  |
-| 🟧 `haiku-4-5`      | ` 19,266 ████████████████`          | ` 7,596 ██████`   | `   109 ▏`    | 177×  |
+| Model            | A. raw `./gradlew`             | 🟢 B. `kmp-test` | 🟢 C. `--json` |   A:C |
+|------------------|--------------------------------|-----------------:|---------------:|------:|
+| 🟦 `cl100k_base` | `16,083 ██████████████`        |            6,211 |         **89** |  181× |
+| 🟥 `opus-4-7`    | `23,527 ████████████████████`  |            9,916 |        **163** |  144× |
+| 🟩 `sonnet-4-6`  | `19,266 ████████████████`      |            7,596 |        **109** |  177× |
+| 🟧 `haiku-4-5`   | `19,266 ████████████████`      |            7,596 |        **109** |  177× |
 
 Largest B:C gap of any feature (60×–70×). If you want the per-benchmark scores, use B; if you only need to know whether benchmarks regressed, C is 70× cheaper. Captures: [`tools/runs/benchmark/`](tools/runs/benchmark/) · evidence: [`tools/runs/cross-model-results-benchmark.txt`](tools/runs/cross-model-results-benchmark.txt).
 
@@ -124,6 +121,16 @@ ANTHROPIC_API_KEY=sk-ant-... node tools/measure-token-cost.js --feature <name> \
 ```
 
 > **Practical impact across features.** A 5-iteration agent loop reading raw gradle output burns ~64 K tokens for `parallel`/`changed`, ~80 K for `benchmark`, and **~542 K for `coverage`** (more than two full 200 K contexts). The same loops on `--json` burn ~500 tokens each. The agent's working memory stays focused on the code instead of log noise.
+
+## What's new in v0.7.0
+
+The headline of the v0.7 line is **first-class iOS / macOS support**. KMP modules declaring `iosX64()`, `iosSimulatorArm64()`, `iosArm64()`, `macosArm64()`, or `macosX64()` are now visible to the project model, surface their per-target test source sets (`iosX64Test` / `iosSimulatorArm64Test` / etc.), and can be dispatched directly via `kmp-test parallel --test-type ios` (or `--test-type macos`). The CLI consults the project model per module to pick the right gradle task — `iosSimulatorArm64Test` on Apple-silicon hosts, `iosX64Test` on Intel hosts and CI, `iosArm64Test` for device runs, with `iosTest` (umbrella) as a last-fallback. macOS dispatches host-natively (no simulator boot dance); iOS leans on Gradle's built-in simulator orchestration since AGP/KMP 1.9+.
+
+- **`--test-type ios | macos`** (v0.7.0) — adds two new dispatch modes to `parallel` / `changed` / `coverage`. See [Multi-platform test dispatch](#multi-platform-test-dispatch) below.
+- **Project-model `iosTestTask` + `macosTestTask` fields** (v0.7.0) — exposed alongside the existing `unitTestTask` / `webTestTask` / `deviceTestTask`. Independent of `unitTestTask`'s candidate race so KMP modules with `jvmTest + iosSimulatorArm64Test` still pick `jvmTest` for unit tests; iOS surfaces only via the explicit `iosTestTask` field. `pm_get_ios_test_task` / `pm_get_macos_test_task` (sh) and `Get-PmIosTestTask` / `Get-PmMacosTestTask` (ps1) are the corresponding script-side readers.
+- **`SKIP_IOS_MODULES` / `SKIP_MACOS_MODULES`** env vars (v0.7.0) mirror the existing `SKIP_DESKTOP_MODULES` / `SKIP_ANDROID_MODULES` shape — comma-separated short module names.
+- **Gradle plugin `testType` property** (v0.7.0) — `kmpTestRunner { testType = "ios" }` propagates `--test-type ios` to the bundled wrapper. Empty default preserves auto-detect.
+- **Source-set discovery extends to 18 directories** (12 from v0.6.x baseline + 6 new iOS-arch / macOS variants). The legacy filesystem walker (when the project-model JSON is absent) is in lockstep, so iOS-only modules without an umbrella `src/iosTest/` directory still register as testable.
 
 ## What's new in v0.6.x
 
@@ -225,6 +232,19 @@ kmp-test parallel
 
 Pass `--project-root <path>` explicitly when scripting from a different directory.
 
+### Platforms supported
+
+| Target | Default `--test-type` | Underlying gradle task | Where it runs |
+|--------|---------------------|------------------------|---------------|
+| **JVM / Desktop** | `common` / `desktop` (auto-detect) | `:module:desktopTest` | host (Linux / macOS / Windows) |
+| **Android (unit)** | `androidUnit` (auto-detect) | `:module:testDebugUnitTest` | host JVM |
+| **Android (instrumented)** | `androidInstrumented` (or `kmp-test android`) | `:module:connectedDebugAndroidTest` | connected device or emulator |
+| **iOS** _(v0.7.0)_ | `ios` | `:module:iosSimulatorArm64Test` (Apple-silicon), `iosX64Test` (Intel/CI), `iosArm64Test` (device) — picked per-module from the project model | macOS host with Xcode + simulator (Gradle handles simulator boot since AGP/KMP 1.9+) |
+| **macOS** _(v0.7.0)_ | `macos` | `:module:macosArm64Test` / `macosX64Test` / `macosTest` — picked per-module | macOS host (host-native; no simulator) |
+| **JS / Wasm** | _model-only_ (`webTestTask` field) | `:module:jsTest` / `:module:wasmJsTest` | host Node — wrapper-side dispatch deferred to v0.7.x |
+
+`kmp-test` auto-detects the project type (`kmp-desktop` → `common`, otherwise `androidUnit`) when `--test-type` is omitted. iOS / macOS / `androidInstrumented` are opt-in — the wrapper does not switch to them implicitly because they require platform-specific runners (simulator / connected device).
+
 ### Subcommands
 
 | Subcommand | Description |
@@ -273,7 +293,37 @@ kmp-test parallel --exclude-modules "*:api,build-logic"
 
 # Agentic mode: emit a single JSON object on stdout (see "Agentic usage" below)
 kmp-test parallel --json
+
+# Run iOS tests against KMP modules with iosX64() / iosSimulatorArm64() targets (v0.7.0)
+kmp-test parallel --test-type ios --module-filter ":mySharedKmp"
+
+# macOS host-native — no simulator (v0.7.0)
+kmp-test parallel --test-type macos
 ```
+
+### Multi-platform test dispatch
+
+When `--test-type ios` is set (v0.7.0), `kmp-test` consults the project model **per module** to pick the right gradle task. The model's `iosTestTask` field is the candidate-ordered output of:
+
+```
+iosSimulatorArm64Test  →  iosX64Test  →  iosArm64Test  →  iosTest
+       (Apple silicon)        (Intel / CI)    (device run)    (umbrella fallback)
+```
+
+The first entry that's actually present in the gradle task graph wins. macOS (`--test-type macos`) follows the same shape:
+
+```
+macosArm64Test  →  macosX64Test  →  macosTest
+```
+
+**Per-platform notes:**
+
+- **iOS** dispatches `:module:iosSimulatorArm64Test` (or whatever the model picked). On macos-latest CI runners this typically boots a pre-installed simulator automatically — no `xcrun simctl` orchestration required at the wrapper level since KMP 1.9+ / AGP 9. On Intel hosts the model returns `iosX64Test` instead. Real-device runs (`iosArm64Test`) need a connected iPhone — out of scope for the wrapper, which doesn't manage devices.
+- **macOS** dispatches host-natively (no simulator). On Apple-silicon you get `macosArm64Test`; on Intel, `macosX64Test`. macOS is **not** auto-detected — `--test-type macos` is opt-in.
+- **Fallback when the model is absent**: the wrapper picks `iosSimulatorArm64Test` / `macosArm64Test` (most-portable defaults). Pre-build the model with any prior `kmp-test parallel` invocation against the project for content-keyed cache to populate.
+- **Skip env vars**: `SKIP_IOS_MODULES="composeApp,iosApp"` excludes specific modules from iOS dispatch (mirrors the existing `SKIP_DESKTOP_MODULES` / `SKIP_ANDROID_MODULES` shape). Same for `SKIP_MACOS_MODULES`.
+
+The `unitTestTask` field stays separate — KMP modules with both `jvmTest` and `iosSimulatorArm64Test` continue to pick `jvmTest` for `--test-type common` / auto-detect, while `--test-type ios` opts into the explicit iOS path.
 
 ### Coverage tools
 
@@ -346,6 +396,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 |------|---------|-------------|
 | `--project-root` | `$PWD` | Path to the Gradle project root |
 | `--max-workers` | `4` | Maximum parallel Gradle workers |
+| `--test-type <type>` _(v0.7.0)_ | _(auto-detect)_ | `common` \| `desktop` \| `androidUnit` \| `androidInstrumented` \| `ios` \| `macos` \| `all`. iOS / macOS pick the per-module task from the project model. See [Multi-platform test dispatch](#multi-platform-test-dispatch) |
 | `--coverage-tool` | `kover` | Coverage tool: `kover`, `jacoco`, `auto`, or `none` |
 | `--coverage-modules` | _(all)_ | Comma-separated module list for coverage aggregation |
 | `--min-missed-lines` | `0` | Fail if missed lines exceed this threshold |
@@ -357,6 +408,16 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--no-coverage` _(v0.6.0+)_ | _(off)_ | Alias for `--coverage-tool none`; runs tests only without generating coverage |
 | `--shared-project-name` | _(none)_ | Name of the shared KMP module (for Android test dispatch) |
 | `--json` / `--format json` | _(off)_ | Emit a single JSON object on stdout (see "Agentic usage" below). Suppresses human-readable output |
+
+**Env vars (skip-list):**
+
+| Variable | Applies when | Effect |
+|----------|--------------|--------|
+| `SKIP_DESKTOP_MODULES` | `--test-type common` / `desktop` | Comma-separated short module names skipped from the desktop test pass |
+| `SKIP_ANDROID_MODULES` | `--test-type androidUnit` (default) | Same shape, for Android-side dispatch |
+| `SKIP_IOS_MODULES` _(v0.7.0)_ | `--test-type ios` | Same shape, for iOS dispatch |
+| `SKIP_MACOS_MODULES` _(v0.7.0)_ | `--test-type macos` | Same shape, for macOS dispatch |
+| `PARENT_ONLY_MODULES` | always | Comma-separated module names that are aggregator-only (skipped at discovery time) |
 
 ## Agentic usage — token-cost rationale
 
@@ -528,7 +589,7 @@ pluginManagement {
 In `build.gradle.kts`:
 ```kotlin
 plugins {
-    id("io.github.oscardlfr.kmp-test-runner") version "0.3.7"
+    id("io.github.oscardlfr.kmp-test-runner") version "0.7.0"
 }
 
 kmpTestRunner {
@@ -538,6 +599,9 @@ kmpTestRunner {
     coverageModules = ":core,:app"
     minMissedLines = 0
     sharedProjectName = "my-shared-lib"
+    // v0.7.0: opt into a specific test type. Empty = wrapper auto-detects.
+    // Accepts: "common" | "desktop" | "androidUnit" | "androidInstrumented" | "ios" | "macos" | "all".
+    testType = ""
 }
 ```
 
@@ -584,6 +648,7 @@ A token with `read:packages` scope is sufficient for consumers. Maven Central wi
 | `coverageModules` | `String` | _(all)_ | Colon-prefixed module list (e.g. `":core,:app"`) |
 | `minMissedLines` | `Int` | `0` | Fail threshold for missed lines |
 | `sharedProjectName` | `String` | _(none)_ | Shared KMP module name |
+| `testType` _(v0.7.0)_ | `String` | `""` (wrapper auto-detect) | `"common"` \| `"desktop"` \| `"androidUnit"` \| `"androidInstrumented"` \| `"ios"` \| `"macos"` \| `"all"`. Propagated as `--test-type <value>` to `parallelTests` / `changedTests` / `coverageTask` |
 
 ## Architecture
 
@@ -596,9 +661,9 @@ Open issues and pull requests are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.
 Quick check before a PR:
 
 ```bash
-npm test                                       # vitest (183+ tests)
-npx bats tests/bats/ tests/installer/          # bats (Linux/macOS)
-cd gradle-plugin && ./gradlew test && cd ..    # Gradle TestKit
+npm test                                       # vitest (~424 tests at v0.7.0)
+npx bats tests/bats/ tests/installer/          # bats (~197 tests, Linux/macOS)
+cd gradle-plugin && ./gradlew test && cd ..    # Gradle TestKit (~12 tests)
 npm run shellcheck                             # POSIX script lint (0 warnings required)
 ```
 

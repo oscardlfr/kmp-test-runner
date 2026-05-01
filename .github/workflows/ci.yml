@@ -85,3 +85,19 @@ jobs:
           distribution: 'temurin'
       - name: Test Gradle plugin
         run: cd gradle-plugin && ./gradlew test
+  # v0.7.0 Phase 3 — verify the gradle plugin builds + TestKit suite passes
+  # on macOS. Catches mac-specific build/test regressions in the plugin
+  # (BSD vs GNU shell tooling, JDK locator differences, etc.) before they
+  # reach iOS users. This is informational by default; promote to required
+  # in branch protection when the v0.7 line stabilises.
+  gradle-plugin-test-ios:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Test Gradle plugin (macOS)
+        run: cd gradle-plugin && ./gradlew test

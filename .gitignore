@@ -14,3 +14,5 @@ build/
 *.log
 .DS_Store
 Thumbs.db
+# Pester -CI emits this NUnit XML at repo root
+testResults.xml

@@ -6,6 +6,9 @@
 #   $unit   = Get-PmUnitTestTask        -ProjectRoot $PR -Module 'core-foo'
 #   $device = Get-PmDeviceTestTask      -ProjectRoot $PR -Module ':core-foo'
 #   $cov    = Get-PmCoverageTask        -ProjectRoot $PR -Module 'core-foo'
+#   $web    = Get-PmWebTestTask         -ProjectRoot $PR -Module 'core-foo'   # v0.6 Bug 3
+#   $ios    = Get-PmIosTestTask         -ProjectRoot $PR -Module 'core-foo'   # v0.7.0
+#   $macos  = Get-PmMacosTestTask       -ProjectRoot $PR -Module 'core-foo'   # v0.7.0
 #   $type   = Get-PmModuleType          -ProjectRoot $PR -Module 'core-foo'
 #   $hasT   = Get-PmModuleHasTests      -ProjectRoot $PR -Module 'core-foo'
 #
@@ -136,6 +139,41 @@ function Get-PmWebTestTask {
     if (-not $data) { return $null }
     $m = _Normalize-PmModule -Module $Module
     return (_Get-PmField -Root $data -Path @('modules', $m, 'resolved', 'webTestTask'))
+}
+
+# v0.7.0: iOS test task — typically iosSimulatorArm64Test (Apple-silicon
+# hosts), iosX64Test (Intel hosts / CI), iosArm64Test (device runs), or
+# iosTest (umbrella). Returns $null when the module has no iOS targets,
+# when the model is missing, or when the probe didn't see the candidate
+# task. Parallel to Get-PmWebTestTask for JS/Wasm — scripts opt in when
+# they want iOS dispatch.
+function Get-PmIosTestTask {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [Parameter(Mandatory)][string]$Module
+    )
+    $data = _Get-PmModelData -ProjectRoot $ProjectRoot
+    if (-not $data) { return $null }
+    $m = _Normalize-PmModule -Module $Module
+    return (_Get-PmField -Root $data -Path @('modules', $m, 'resolved', 'iosTestTask'))
+}
+
+# v0.7.0: macOS test task — typically macosArm64Test (Apple-silicon hosts),
+# macosX64Test (Intel hosts), or macosTest (umbrella). Returns $null when
+# the module has no macOS targets. macOS runs natively on host (no
+# simulator boot); separate from Get-PmIosTestTask because the dispatch
+# flow differs.
+function Get-PmMacosTestTask {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [Parameter(Mandatory)][string]$Module
+    )
+    $data = _Get-PmModelData -ProjectRoot $ProjectRoot
+    if (-not $data) { return $null }
+    $m = _Normalize-PmModule -Module $Module
+    return (_Get-PmField -Root $data -Path @('modules', $m, 'resolved', 'macosTestTask'))
 }
 
 function Get-PmModuleType {
