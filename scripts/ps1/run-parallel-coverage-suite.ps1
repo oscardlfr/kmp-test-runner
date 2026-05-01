@@ -479,7 +479,18 @@ if ($CoverageOnly) {
 }
 
 if ($allModules.Count -eq 0) {
-    Write-Host "[ERROR] No modules found matching filter: $ModuleFilter" -ForegroundColor Red
+    # UX-2: when -ModuleFilter was left at the default `*` AND the user
+    # explicitly passed -TestType AND -ExcludeModules wasn't used, the
+    # literal-glob framing is misleading — the filter that actually rejected
+    # everything is -TestType (no module declares the requested target).
+    # Word the message to point at the real cause; the parser treats both
+    # lines as the same `no_test_modules` discriminator.
+    $testTypeExplicit = $PSBoundParameters.ContainsKey('TestType')
+    if ($ModuleFilter -eq '*' -and $testTypeExplicit -and [string]::IsNullOrEmpty($ExcludeModules)) {
+        Write-Host "[ERROR] No modules support the requested --test-type=$TestType" -ForegroundColor Red
+    } else {
+        Write-Host "[ERROR] No modules found matching filter: $ModuleFilter" -ForegroundColor Red
+    }
     exit 3
 }
 
@@ -528,6 +539,24 @@ foreach ($module in $allModules) {
         $skippedModules.Add($module)
         Write-Host "  [SKIP] $($module.Name) (no $TestType tests)" -ForegroundColor DarkYellow
         continue
+    }
+
+    # UX-1 (v0.7.x): require the module to actually declare a target for
+    # the requested test type before queuing the gradle task. Without this
+    # filter the wrapper would queue a non-existent task (e.g.
+    # :androidApp:iosSimulatorArm64Test on an Android-only module, or
+    # :androidApp:desktopTest on a module without a jvm target), and gradle
+    # would abort the entire invocation at task-graph resolution, taking
+    # down even modules that DO support the target. Source of truth is the
+    # project model (Get-Pm*TestTask) with a filesystem fallback.
+    if ($TestType -in @('ios', 'macos', 'common', 'desktop')) {
+        if (-not (Test-ModuleSupportsTestType -ProjectRoot $module.ProjectRoot `
+                                              -Module $module.Name `
+                                              -TestType $TestType)) {
+            $skippedModules.Add($module)
+            Write-Host "  [SKIP] $($module.Name) (no $TestType target)" -ForegroundColor DarkYellow
+            continue
+        }
     }
 
     $testableModules.Add($module)
@@ -818,6 +847,27 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
 
     # Parse output to determine per-module results
     $testOutputStr = $testOutput -join "`n"
+    # WS-1: gradle's "Cannot locate tasks that match" message can land on
+    # either stream depending on gradle version and configuration, so
+    # per-task detection scans stdout + stderr combined.
+    $testOutputCombined = $testOutputStr + "`n" + ([string]$stderrContent)
+
+    # WS-1: when gradle could not locate one or more requested tasks (e.g.
+    # -TestType ios on a JVM-only module), the entire build aborts at
+    # task-graph resolution time BEFORE any task runs — so zero per-task
+    # FAILED markers appear in stdout, and the legacy default-to-PASS path
+    # below would mis-report every module as passed. Detect this once and
+    # mark ALL testable modules failed in the per-task loop. Also surface
+    # gradle's canonical "Cannot locate" line(s) on the wrapper's stderr so
+    # the CLI parser's task_not_found discriminator fires.
+    $gradleResolutionFailed = $false
+    $cannotLocateLines = ($testOutputCombined -split "`n") | Where-Object { $_ -match 'Cannot locate tasks? that match' }
+    if ($cannotLocateLines) {
+        $gradleResolutionFailed = $true
+        foreach ($line in $cannotLocateLines) {
+            [Console]::Error.WriteLine($line)
+        }
+    }
 
     # Clean up temp log
     Remove-Item $tempLog -Force -ErrorAction SilentlyContinue
@@ -853,6 +903,16 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
         $failedPattern = [regex]::Escape($taskName) + " FAILED"
         if ($testOutputStr -match $failedPattern) {
             Write-Host "  [FAIL] $($module.Name)" -ForegroundColor Red
+            $testResults[$module.Name] = @{ Status = "failed"; Coverage = $null }
+            $failureCount++
+        } elseif ($gradleResolutionFailed) {
+            # WS-1: gradle aborted at task-graph resolution (some requested
+            # task didn't exist on its project — e.g. iosSimulatorArm64Test
+            # on a JVM-only module). The build never reached execution, so
+            # NO module's task ran. Mark every testable module failed; gradle
+            # only names the FIRST missing task in its error, but every other
+            # task in the same invocation also did not run.
+            Write-Host "  [FAIL] $($module.Name) (task not found / build aborted at resolution)" -ForegroundColor Red
             $testResults[$module.Name] = @{ Status = "failed"; Coverage = $null }
             $failureCount++
         } else {
