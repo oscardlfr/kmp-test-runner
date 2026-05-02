@@ -52,20 +52,102 @@ Once `PRODUCT.md` exists, this entry expands into a per-feature migration plan (
 
 **Approach (incremental, per-feature):**
 
-Each feature migrates in a single PR:
-1. New `lib/<feature>-orchestrator.js` implementing the discovery + parallel dispatch + output parsing logic (already partly exists for parsing in `lib/cli.js`).
-2. `scripts/sh/run-<feature>.sh` shrinks to a thin wrapper that invokes `node lib/runner.js <feature> ...` (passes args through, returns exit code).
-3. `scripts/ps1/run-<feature>.ps1` shrinks identically.
-4. New vitest in `tests/vitest/<feature>-orchestrator.test.js` covers the migrated logic on all 3 OSes (Linux/Mac/Win runners).
-5. Existing bats + Pester tests of the SCRIPT shrink to "wrapper invokes node correctly" tests; the LOGIC tests live in vitest.
-6. `bats-macos` informational job stays during transition (catches Bash-3.2 regressions in any remaining `run-*.sh` plumbing); removed once all features migrated.
+Each feature migrates in a single PR following the same shape:
+1. New `lib/<feature>-orchestrator.js` implementing discovery + parallel dispatch + output parsing logic (parsers already partly exist in `lib/cli.js`).
+2. `scripts/sh/run-<feature>.sh` and `scripts/ps1/run-<feature>.ps1` shrink to thin wrappers that `exec node lib/runner.js <feature> ...`. Per `PRODUCT.md` architecture principle: ≤100 LOC each (realistic 40-80), no associative arrays, no parallel loops, no output parsing.
+3. New `tests/vitest/<feature>-orchestrator.test.js` covers the migrated logic on all 3 OSes (Linux/Mac/Win — the existing `build` matrix).
+4. Existing bats + Pester tests of the SCRIPT shrink to "wrapper invokes node correctly" contracts; LOGIC tests live in vitest.
+5. `bats-macos` informational job stays during transition (catches Bash-3.2 regressions in remaining `run-*.sh` plumbing); removed in the PR that completes the migration (sub-entry 5).
 
-**Migration order (smallest blast radius first):**
-1. `benchmark` — already touched in PR #105, smallest LOC count, good warm-up
-2. `changed` — single-purpose, isolated git diff logic
-3. `android` — touches WS-3 + WS-10, kills 2 backlog bugs in the migration
-4. `coverage` — Kover/JaCoCo discrimination, kills the 4 build-logic backlog entries
-5. `parallel` — largest, most complex, kills WS-4 / WS-6 / WS-7 / WS-8 / WS-9 + jvm()→jvmTest in the migration
+LOC baseline (source of truth — feeds the per-entry LOC delta below):
+
+| Script                              | LOC    |
+|-------------------------------------|-------:|
+| `run-benchmarks.sh`                 |   538  |
+| `run-benchmarks.ps1`                |   471  |
+| `run-changed-modules-tests.sh`      |   292  |
+| `run-changed-modules-tests.ps1`     |   314  |
+| `run-android-tests.sh`              |   784  |
+| `run-android-tests.ps1`             |   649  |
+| `run-parallel-coverage-suite.sh`    | 1,685  |
+| `run-parallel-coverage-suite.ps1`   | 1,463  |
+| **TOTAL bash + ps1**                | **6,196** |
+
+Post-migration target: ~470 LOC of residual shell across 8 wrapper files (12× reduction) + ~1,800-2,400 LOC of new `lib/<feature>-orchestrator.js` covered by a single vitest matrix vs three test runners today.
+
+**Cross-cutting decisions (locked 2026-05-02):**
+- Coverage and parallel share the file `run-parallel-coverage-suite.{sh,ps1}` (per `lib/cli.js:45`, `coverage` = `parallel --skip-tests`). Migration is two phased PRs: PR4 extracts the coverage codepath into `lib/coverage-orchestrator.js` (small, low-risk pattern validator); PR5 then migrates the rest into `lib/parallel-orchestrator.js` and the wrapper becomes thin.
+- The "4 build-logic backlog entries" bash-side coverage helpers are: `detect_coverage_tool` (sh) + `get_coverage_gradle_task` (sh) + ps1 mirrors of both. Their deletion was deferred from the v0.5.2 Gap A scope reduction; the coverage migration (sub-entry 4) finally executes it.
+- WS-8 (`tests.total` = task count) ships as **additive `tests.individual_total`** in v0.8 (no major version bump). CHANGELOG carries a forward-rename note: "v1.0 will rename `tests.total` → `tests.tasks` and promote `tests.individual_total` → `tests.total`." Preserves PRODUCT success criterion 4.
+
+**Migration order with per-feature acceptance criteria** (smallest blast radius first):
+
+---
+
+#### Sub-entry 1 — `benchmark` migration (warm-up; smallest blast radius)
+
+**Migration PR title:** `feat(node): migrate benchmark orchestrator to lib/benchmark-orchestrator.js`
+
+1. **Input contracts (wrapper passes through verbatim):** flags `--project-root`, `--config {smoke|main|stress}`, `--platform {all|jvm|android}`, `--module-filter`, `--include-shared`, `--test-filter`, `--ignore-jdk-mismatch`, `--java-home`, `--no-jdk-autoselect`, `--dry-run`, `--json`, `--force`. Env vars `JAVA_HOME`, `KMP_TEST_SKIP_ADB`, `KMP_GRADLE_TIMEOUT_MS`. No `SKIP_*_MODULES` apply.
+2. **Output contract:** preserves the unique top-level `benchmark:{config,total,passed,failed}` envelope field (parsed today by `parseBenchmarkSummary`); preserves per-subcommand envelope `{tests,modules,skipped,coverage,errors,warnings}`. **Adds:** `benchmark.platforms:["jvm","android"]` enum array reflecting which legs ran.
+3. **Test plan:** `tests/vitest/benchmark-orchestrator.test.js` snapshots for `--platform jvm` task dispatch, `--platform android` adb resolution + `instrumented_setup_failed` error; contract that no benchmark module → `errors[].code:"no_test_modules"` (NOT `no_summary`); regression that empty result sets do not throw. **e2e on mom's MacBook:** `cd Confetti && kmp-test benchmark --config smoke` exits 0 (today: WS-2 crashes with `declare -A`); `cd PeopleInSpace && kmp-test benchmark --json` round-trips through `JSON.parse`.
+4. **Bugs closed by construction:** **WS-2** (`declare -A` Bash 4+ crash on macOS Bash 3.2.57 — JS has no Bash version dependency); empty-array under `set -u` landmines surfaced during PR #105 (same bug class).
+5. **LOC delta:** 538 (sh) + 471 (ps1) = **1,009** today → ≤50 + ≤50 wrappers + ~250-350 in `lib/benchmark-orchestrator.js`. **Net: ~-600 LOC (40% reduction).**
+6. **Risks / gotchas:** `tests/bats/test-benchmark.bats` + `tests/pester/Benchmark-Detect.Tests.ps1` shrink to wrapper-invocation contracts. Preserve `[OK] / [FAIL]` per-module banner lines (humans grep these). No cross-feature coupling — benchmark dispatches its own `:module:jvmBenchmark` / `:module:android*Benchmark` tasks.
+
+---
+
+#### Sub-entry 2 — `changed` migration
+
+**Migration PR title:** `feat(node): migrate changed orchestrator to lib/changed-orchestrator.js`
+
+1. **Input contracts:** flags `--project-root`, `--include-shared`, `--test-type {all|common|androidUnit|androidInstrumented|desktop|ios|macos}`, `--staged-only`, `--show-modules-only`, `--max-failures`, `--min-missed-lines`, `--coverage-tool`, `--exclude-coverage`, `--exclude-modules`, `--include-untested`, `--test-filter`, `--ignore-jdk-mismatch`, `--java-home`, `--no-jdk-autoselect`, `--no-coverage`, `--dry-run`, `--json`, `--force`. Env vars: benchmark set + `SKIP_DESKTOP_MODULES` / `SKIP_ANDROID_MODULES` / `SKIP_IOS_MODULES` / `SKIP_MACOS_MODULES` / `PARENT_ONLY_MODULES` (consumer-config API per `CLAUDE.md` "Decouple from L0" exemption — must remain stable).
+2. **Output contract:** standard envelope. **Adds:** `changed:{detected_modules:[], staged_only:bool, base_ref:"HEAD"}` top-level field giving agents structured visibility into git-diff-to-module mapping. **Adds discriminator:** `errors[].code:"no_changed_modules"` (clean zero-set, distinct from `no_test_modules` "filter rejected everything").
+3. **Test plan:** `tests/vitest/changed-orchestrator.test.js` contracts that git-diff-to-module mapping walks all 18 source-set leaves from `lib/project-model.js#sourceSetNames` (the v0.7.0 walker); `--staged-only` uses `git diff --cached`; zero detected modules → `no_changed_modules` + `exit_code:0`. **e2e:** `cd Confetti && touch shared/src/commonMain/kotlin/dev/johnoreilly/confetti/Model.kt && kmp-test changed --show-modules-only --json` → `changed.detected_modules:["shared"]` (today WS-4 reproducer returns `[]`); `cd PeopleInSpace && git stash && kmp-test changed --json` → `errors[0].code:"no_changed_modules"`, `exit_code:0`.
+4. **Bugs closed by construction:** **WS-4** (changed does not detect modifications under source-set dirs); **half of UX-1** (modules with `commonTest` but no `jvm()`/`androidTarget()` — emits `skipped[]` with reason instead of dropping silently; full fix in sub-entry 5); jvm()→jvmTest fallback consumed from project-model fix.
+5. **LOC delta:** 292 (sh) + 314 (ps1) = **606** today → ≤40 + ≤40 wrappers + ~200-300 in `lib/changed-orchestrator.js`. **Net: ~-280 LOC (46% reduction).**
+6. **Risks / gotchas:** `tests/bats/test-changed.bats` shrinks to wrapper contract. **No dedicated Pester test** for `changed` exists today (only implicit via `Invoke-ScriptSmoke.Tests.ps1`); migration adds vitest as primary suite, removing the implicit Pester gap. Preserve `[SKIP] <module>` stdout banners + `--staged-only` semantics + `SKIP_*_MODULES` env API. **Cross-feature coupling:** changed delegates execution to the parallel suite. PR2 keeps the subprocess invocation initially; PR5 refactors to direct in-process call.
+
+---
+
+#### Sub-entry 3 — `android` migration
+
+**Migration PR title:** `feat(node): migrate android orchestrator to lib/android-orchestrator.js`
+
+1. **Input contracts:** flags `--project-root`, `--device <serial>`, `--module-filter`, `--skip-app`, `--verbose`, `--flavor`, `--auto-retry`, `--clear-data`, `--list | --list-only`, `--test-filter`, `--device-task <name>` (KMP `androidLibrary { }` DSL escape hatch), `--ignore-jdk-mismatch`, `--java-home`, `--no-jdk-autoselect`, `--dry-run`, `--json`, `--force`. Env vars: `JAVA_HOME`, `KMP_TEST_SKIP_ADB`, `KMP_GRADLE_TIMEOUT_MS`.
+2. **Output contract:** standard envelope; `parseAndroidSummary` (`lib/cli.js:878`) already in Node and stays put. **Adds:** `android:{device_serial, device_task, flavor, instrumented_modules:[]}` top-level field (closes WS-10's empty-name renderer by construction — orchestrator builds the rendered list from the same data the count derives from). Preserves discriminators `instrumented_setup_failed` / `task_not_found` / `unsupported_class_version`.
+3. **Test plan:** `tests/vitest/android-orchestrator.test.js` contracts that module detection consolidates through `lib/project-model.js#resolveTasksFor` `deviceTestTask` (same source as `parallel --test-type androidInstrumented` — closes WS-3); `--list-only` never renders empty names (closes WS-10); no adb device → `errors[].code:"instrumented_setup_failed"`, `exit_code:3` (NOT silent pass — per PRODUCT criterion 5); `--device-task` override propagates verbatim. **e2e on mom's MacBook** (S22 Ultra `R3CT30KAMEH`): `cd Confetti && kmp-test android --json` → 4 modules detected (matches `parallel --test-type androidInstrumented`); `--list-only` renders 4 non-empty names; `adb kill-server; cd KaMPKit && kmp-test android` → `instrumented_setup_failed`.
+4. **Bugs closed by construction:** **WS-3** (`kmp-test android` finds 0 modules where `parallel` finds 4 — single source of truth via project model); **WS-10** (`--list-only` empty-name renderer). **Adb-orphan flake** in `tests/installer/install.bats` on macos-latest may close as a side-effect (orchestrator honors `KMP_TEST_SKIP_ADB=1`); defer formal closure until empirically validated post-migration.
+5. **LOC delta:** 784 (sh) + 649 (ps1) = **1,433** today → ≤50 + ≤50 wrappers + ~400-500 in `lib/android-orchestrator.js`. **Net: ~-880 LOC (61% reduction — largest single drop, due to accumulated KMP DSL detection complexity in bash).**
+6. **Risks / gotchas:** `tests/bats/test-android.bats` + `test-android-summary-counts.bats` and `tests/pester/Android-Summary-Counts.Tests.ps1` shrink to wrapper contracts. `parseAndroidSummary` + `parseAndroidModuleTableFallback` stay put (orchestrator emits the same banner shape). Preserve `JSON SUMMARY` block on stdout, per-module log files at `<project>/build/logcat/<run-id>/` surfaced via `errors[].log_file` / `logcat_file` / `errors_file` (Bug G v0.5.2), and the `--device-task` escape hatch.
+
+---
+
+#### Sub-entry 4 — `coverage` migration (script not yet thin — see sub-entry 5)
+
+**Migration PR title:** `feat(node): migrate coverage orchestrator to lib/coverage-orchestrator.js`
+
+> Note: `coverage` and `parallel` share `run-parallel-coverage-suite.{sh,ps1}` (per `lib/cli.js:45`, `coverage` = `parallel --skip-tests`). This PR migrates only the coverage-only codepath (`--skip-tests` branch + Kover/JaCoCo discrimination + report aggregation). The wrapper becomes fully thin only after sub-entry 5.
+
+1. **Input contracts:** flags `--project-root`, `--coverage-tool {auto|jacoco|kover|none}`, `--coverage-modules`, `--min-missed-lines`, `--exclude-coverage`, `--output-file <name>` (default `coverage-full-report.md`), `--ignore-jdk-mismatch`, `--java-home`, `--no-jdk-autoselect`, `--no-coverage`, `--dry-run`, `--json`, `--force`. Env vars: same as benchmark.
+2. **Output contract:** preserves `coverage:{tool, missed_lines, modules_contributing}`. **Adds:** `coverage.modules_with_kover_plugin:[]` and `coverage.modules_with_jacoco_plugin:[]` (consumes `lib/project-model.js#detectBuildLogicCoverageHints` already there). **Adds:** `warnings[].code:"coverage_aggregation_skipped"` when `--coverage-tool none` (today logged-only).
+3. **Test plan:** `tests/vitest/coverage-orchestrator.test.js` contracts that Kover/JaCoCo plugin discrimination consumes existing CONVENTION-vs-SELF detection (v0.6 Bug 6) without behavior change; `--skip-tests` skips the dispatch loop entirely; zero coverage data → `warnings[].code:"no_coverage_data"` (existing v0.5.2 Bug E). **e2e:** `cd Confetti && kmp-test coverage --json` after a prior `parallel` run → `coverage.modules_contributing > 0`, `errors:[]`; `cd KaMPKit && kmp-test coverage --no-coverage --json` → `warnings[0].code:"coverage_aggregation_skipped"`, `exit_code:0`.
+4. **Bugs closed by construction:** the **4 bash-side coverage helpers** deferred from Gap A scope-reduction at PR #67 — `detect_coverage_tool` (sh) + `get_coverage_gradle_task` (sh) + ps1 mirrors of both. The legacy chain was kept "load-bearing for projects without a model.json"; `lib/project-model.js` now carries that fallback path, so the helpers can finally be deleted.
+5. **LOC delta** (within `run-parallel-coverage-suite.{sh,ps1}` only — script is not yet thin): coverage-specific subset ~300 LOC (sh) + ~280 LOC (ps1) = **~580** today → ~50 LOC of pass-through inside the script + ~150-200 in `lib/coverage-orchestrator.js`. **Net this PR: ~-300 LOC inside the parallel script.**
+6. **Risks / gotchas:** `tests/bats/test-coverage.bats`, `test-build-logic-coverage-kind.bats`, `test-build-logic-selective-jacoco.bats` keep their behavioral contracts (project-model JS unchanged) — they shift from "tested via shell stub" to "tested via vitest stub" patterns. Pester equivalents same shape shrink. Preserve `coverage-full-report.md` filename + run-id naming (`coverage-full-report-<id>.md` per v0.3.8 lockfile work) and Markdown report structure (humans render this). **Cross-feature coupling — heavy:** must ship this PR before sub-entry 5; otherwise parallel-orchestrator subsumes everything and there is nothing to migrate.
+
+---
+
+#### Sub-entry 5 — `parallel` migration (largest; completes v0.8 PIVOT)
+
+**Migration PR title:** `feat(node): migrate parallel orchestrator to lib/parallel-orchestrator.js`
+
+1. **Input contracts (full set):** flags `--project-root`, `--include-shared`, `--test-type {all|common|androidUnit|androidInstrumented|desktop|ios|macos}`, `--module-filter`, `--test-filter`, `--max-workers`, `--coverage-tool`, `--coverage-modules`, `--min-missed-lines`, `--exclude-coverage`, `--exclude-modules`, `--include-untested`, `--timeout`, `--ignore-jdk-mismatch`, `--java-home`, `--no-jdk-autoselect`, `--no-coverage`, `--skip-tests` (used by coverage subcommand), `--dry-run`, `--json`, `--force`. Env vars: `JAVA_HOME`, `KMP_TEST_SKIP_ADB`, `KMP_GRADLE_TIMEOUT_MS`, `SKIP_DESKTOP_MODULES`, `SKIP_ANDROID_MODULES`, `SKIP_IOS_MODULES`, `SKIP_MACOS_MODULES`, `PARENT_ONLY_MODULES`, `FRESH_DAEMON`.
+2. **Output contract:** full envelope `{tool, subcommand, version, project_root, exit_code, duration_ms, tests:{total,passed,failed,skipped}, modules:[], skipped:[], coverage:{...}, errors:[], warnings:[], gradle_config?:{...}}`. **Critical fix:** `modules:[]` populated when `tests.passed > 0` (closes WS-9 — today empty even on passing runs because the report-builder is keyed off coverage data presence, not test execution). **Additive WS-8 fix:** new field `tests.individual_total` aggregated from junit-XML walk under `<module>/build/test-results/<task>/TEST-*.xml`. `tests.total` keeps task-count semantic untouched (no major bump). **Discriminator fix (UX-2):** message text "No modules found matching filter: *" → "No modules support the requested --test-type=<X>" when filter is `*` AND `--test-type` is the cause. **Discriminator addition:** `errors[].code:"platform_unsupported"` when `--test-type ios|macos` is invoked on Windows/Linux (per PRODUCT.md "platform-aware behavior" bullet 1).
+3. **Test plan:** `tests/vitest/parallel-orchestrator.test.js` contracts: `--test-type all` dispatches one set per supported type and aggregates (closes WS-6); `--test-type common` design decision (alias-with-doc OR `--test-type jvm` rename with deprecation; lands in PR description); `tests.individual_total` populates from junit-XML walking (closes WS-8); `modules[]` populated even with zero coverage data (closes WS-9); empty array under strict mode does not throw (locks v0.7.x SKIPPED_MODULES Bash-3.2 fix into JS forever); `--test-type ios` on Linux/Windows → `errors[].code:"platform_unsupported"`. **e2e on mom's MacBook:** `cd Confetti && kmp-test parallel --test-type ios --json` → PASS only on iOS-capable modules + rest emit `skipped[]` with reason "no iosX64()/iosSimulatorArm64() target" (closes UX-1 fully); `cd PeopleInSpace && kmp-test parallel --test-type all` → all 5+ test types invoked (closes WS-6); `cd KaMPKit && kmp-test parallel --test-type common --json` → "No modules support the requested --test-type=common" message text (closes UX-2); `--test-type ios` on Windows host → `errors[0].code:"platform_unsupported"`, `exit_code:3`.
+4. **Bugs closed by construction:** **WS-4** (changed delegates to parallel-orchestrator — closed here at the execution layer); **WS-6** (`--test-type all` does not span all types); **WS-7** (`--test-type common` maps to desktopTest — design decision); **WS-8** (additive `tests.individual_total`); **WS-9** (`modules:[]` empty when `tests.passed > 0`); **UX-1** full fix (the partial sub-entry 2 fix at the changed layer becomes complete here); **UX-2** (misleading filter message); **jvm()→jvmTest fallback** (BACKLOG entry 133-162; orchestrator consumes `unitTestTask` from resolved project-model instead of hardcoding `desktopTest`); **PRODUCT charter alignment** via `platform_unsupported` error code.
+5. **LOC delta** (residual after PR4 coverage extraction): `run-parallel-coverage-suite.sh` ~1,400 LOC + `.ps1` ~1,200 LOC = **~2,600** at start of PR5 → ≤80 LOC + ≤80 LOC wrappers + ~600-800 in `lib/parallel-orchestrator.js`. **Net this PR: ~-1,740 LOC (largest single migration delta).** **Cumulative across all 5 sub-entries:** bash + ps1 6,196 → ~470 (12× reduction); new `lib/<feature>-orchestrator.js` aggregate ~1,800-2,400 LOC covered by a single vitest matrix on Linux+Mac+Windows. **Net product LOC reduction: ~3,200-3,800 LOC, ~50%, with the bug-prone half eliminated.**
+6. **Risks / gotchas:** the largest test surface in the repo lives here. `tests/bats/test-parallel.bats`, `test-parallel-ios-dispatch.bats`, `test-task-not-found.bats`, `test-module-exclusion.bats`, `test-ios-macos-support.bats`, `test-js-wasm-support.bats`, `test-jdk-gate.bats`, `test-deprecation-notice.bats`, `test-gradle-tasks-probe.bats`, `test-version-catalog-alias.bats` and Pester mirrors all shrink to wrapper-invocation contracts. `gradle-plugin/src/test/kotlin/` TestKit suite (9 tests including parameterized `CrossShapeParityTest`) **must not change** — plugin-side contracts (task names, property names, exit codes) stay identical. Preserve all 6 envelope fields (additions OK; renames forbidden without major bump per PRODUCT criterion 4); banner shape `[OK] / [FAIL] / [SKIP]`; lockfile `.kmp-test-runner.lock` shape (already in `lib/cli.js#acquireLock` — preserved by construction); `--coverage-tool auto` Kover/JaCoCo discrimination chain; run-id naming (`gradle-parallel-tests-<id>.log`). **Terminal cross-feature coupling:** this is the LAST migration. After it lands, `bats-macos` informational job can be removed (no remaining Bash plumbing) and `gradle-plugin-test-ios` can be promoted from informational to required (no remaining BSD-vs-GNU shell drift surface).
 
 **Effort:** ~2-4 weeks of focused work (rough). Each feature migration is 1-3 days. Spread across v0.8.0 milestone.
 
