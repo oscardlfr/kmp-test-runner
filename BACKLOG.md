@@ -262,6 +262,41 @@ Same symptom referenced in pre-existing comment at `.github/workflows/ci.yml:70-
 
 **Effort: 1-2h** to identify the exact test (run install.bats one test at a time on macos-latest with `--filter` until the hang triggers), confirm the adb hypothesis, and pick a fix. Likely option 1 is the minimal change.
 
+### v0.7.x — `bats-macos` job hangs in `tests/bats/` on macos-latest (PR #105 workaround incomplete; surfaced 2026-05-02 by PR #108)
+
+**Surfaced 2026-05-02 in PR #108** (`docs(backlog): expand v0.8 STRATEGIC PIVOT per-feature migration plan`, doc-only — no `.sh` / `.js` / test changes). The `bats-macos` CI job was cancelled at 15m17s (job `timeout-minutes: 15` at `.github/workflows/ci.yml:124`). The cancelled step is `bats (macOS — Bash 3.2 regression coverage)` which executes `npx bats --timing tests/bats/` (`.github/workflows/ci.yml:131-132`).
+
+**This is a NEW finding distinct from the `tests/installer/install.bats` adb-orphan hang** documented in the entry above:
+- The PR #105 workaround (BACKLOG entry above, "Workaround in flight") explicitly scoped `bats-macos` to `tests/bats/` only, claiming "the 216 tests in that directory exercise the WS-2 regression coverage and pass in ~3 min." That assumption no longer holds: the same scope now hangs >15 min.
+- This PR (#108) modified only `BACKLOG.md`. No script, lib, or test files changed. The hang was therefore present in `develop` HEAD `d02b2f7` already and was not surfaced because PR #105's `bats-macos` introduction predated this run.
+
+**Evidence:**
+- Run URL: `https://github.com/oscardlfr/kmp-test-runner/actions/runs/25251117434/job/74043227381`
+- Job conclusion: `cancelled` (15m17s wall time)
+- Steps before the cancelled bats step: `Set up job` / `actions/checkout` / `actions/setup-node` / `npm ci` — all `success` → setup is not the culprit, the hang is in `npx bats tests/bats/` itself.
+- Other macOS jobs in the same run completed cleanly: `build (macos-latest)` 12s pass, `installer-e2e (macos-latest)` 12s pass, `gradle-plugin-test-ios` 3m pass. None of them invoke `bats tests/bats/`.
+
+**Reproducer (when bats is installed locally on macos-latest):** `cd kmp-test-runner && /bin/bash -c 'npx bats --timing tests/bats/'`. If hangs >5 min, reproduces. To bisect to the specific file: run each `tests/bats/test-*.bats` individually with `npx bats --timing <file>` and identify which one hangs. Suspects (priority by likelihood of spawning lingering processes / sub-shells):
+1. `tests/bats/test-concurrency.bats` — already known macOS-flaky per the original comment at `.github/workflows/ci.yml:70-72` ("the wider tests/bats/ suite has a hang on macos-latest" + the BSD-vs-Linux SIGINT delivery hypothesis surfaced in PR #30 deferred entry, BACKLOG line ~404). Forks stub `gradlew` that `sleep 30`s, sends SIGINT to parent, then `wait $cli_pid` — could leak children under BSD signal-delivery semantics.
+2. `tests/bats/test-android.bats` / `test-android-summary-counts.bats` / `test-parallel-ios-dispatch.bats` — invoke wrappers that may spawn `adb` (same class of orphan as the install.bats hang above).
+3. `tests/bats/test-doctor.bats` — runs `kmp-test doctor` which probes adb directly (`lib/cli.js:1306`'s `spawnSync('adb', ['version'], ...)`) — same pattern as the install.bats root cause.
+
+**Hypothesis:** likely the same adb-daemon-leak root cause as the install.bats entry above, just from a different test file in `tests/bats/`. The `KMP_TEST_SKIP_ADB=1` env opt-out documented as fix candidate 2 in the install.bats entry would address both hangs simultaneously if implemented in `lib/cli.js#runDoctorChecks` and exported to bats's setup_file(). Could ALTERNATIVELY be the BSD signal-delivery flake from `test-concurrency.bats` — those are different bug classes and need separate confirmation.
+
+**Fix candidates** (mostly subsume into the install.bats entry's fix, but with broader scope):
+1. Implement `KMP_TEST_SKIP_ADB=1` opt-out in `lib/cli.js#runDoctorChecks` (already referenced in PRODUCT.md OS matrix bullets and BACKLOG line 176); set it in BOTH `tests/installer/install.bats` and `tests/bats/` setup hooks. Single fix, both hangs closed.
+2. Bisect first via `--filter` on macos-latest to pin down the exact bats file → if it's `test-concurrency.bats`, fix is the BSD-signal-delivery option from PR #30 deferred entry; if it's a different file, fix is option 1.
+3. Mark `bats-macos` as `continue-on-error: true` until root cause confirmed (already done by branch-protection treating it as informational; document explicitly in `.github/workflows/ci.yml` for clarity).
+
+**Impact assessment:** the `bats-macos` job remains informational (NOT in the 7 required CI checks per `CLAUDE.md` "Daily workflow" bullet — required set is `build x2`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e x2`, `commit-lint`). PR #108 merged with the failure; future doc-only and code-only PRs will continue to merge despite the hang as long as the 7 required checks pass. **No release blocker.** Quality concern: bash 3.2 regression coverage is currently de facto disabled on macOS, leaving WS-2 (`declare -A`)-class bugs unchecked at the CI level. The 2-3h migration of `benchmark` to Node (Sub-entry 1 of v0.8 PIVOT) closes WS-2's specific bug class by construction, partially compensating for the gap until this hang is fixed.
+
+**Effort: 2-3h.** Bisect (1h) + fix (1h via option 1, otherwise 1-2h via option 2) + CI re-run validation (30min). Recommended order: ship the v0.8 PIVOT benchmark migration first (closes the WS-2 surface that `bats-macos` is supposed to guard), then fix this hang to restore the regression-coverage net for the remaining bash plumbing across the migration window.
+
+**Cross-references:**
+- BACKLOG entry above (`tests/installer/install.bats` adb-orphan hang) — likely shared root cause; fixes should be coordinated.
+- BACKLOG entry below in the QUEUED section (`macOS bats end-to-end validation (deuda from PR #30)`, line ~404) — original BSD-signal hypothesis for `test-concurrency.bats`; possibly the same bug as this one or a sibling.
+- PR #105 BACKLOG entry "Workaround in flight" claim ("tests/bats/ passes in ~3 min") — invalidated by this finding; the workaround scope reduction did not actually deliver a passing macOS bats job.
+
 ### v0.7.x — Fix `SKIPPED_MODULES[@]` unbound under Bash 3.2 set -u (patch validated locally, awaiting first PR)
 
 **Surfaced 2026-04-30 (HANDOFF.md, sesión previa). Validated 2026-05-01 with reverted-then-restored A/B experiment.**
