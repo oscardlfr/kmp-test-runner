@@ -5,123 +5,12 @@
 # Dot-source this file from any PowerShell script that needs coverage support.
 # =============================================================================
 
-function Detect-CoverageTool {
-    <#
-    .SYNOPSIS
-        Inspects a module's build.gradle.kts to determine which coverage tool is configured.
-    .OUTPUTS
-        "kover" | "jacoco" | "none"
-    #>
-    param([string]$BuildFilePath)
-
-    if (-not (Test-Path $BuildFilePath)) {
-        return "none"
-    }
-
-    $content = Get-Content $BuildFilePath -Raw -ErrorAction SilentlyContinue
-    if (-not $content) { return "none" }
-
-    # Check for Kover plugin
-    if ($content -match "kover") {
-        return "kover"
-    }
-
-    # Check for JaCoCo plugin or AGP testCoverageEnabled
-    if ($content -match "jacoco") {
-        return "jacoco"
-    }
-    if ($content -match "testCoverageEnabled") {
-        return "jacoco"
-    }
-
-    # Check if coverage report directories exist from previous runs
-    $moduleDir = Split-Path $BuildFilePath -Parent
-    if (Test-Path (Join-Path $moduleDir "build/reports/kover")) {
-        return "kover"
-    }
-    if (Test-Path (Join-Path $moduleDir "build/reports/jacoco")) {
-        return "jacoco"
-    }
-
-    # Check root/parent buildscripts for convention plugin applying kover
-    $rootBuild = $null
-    $parentBuild = Join-Path $moduleDir "../build.gradle.kts"
-    $grandBuild = Join-Path $moduleDir "../../build.gradle.kts"
-    if (Test-Path $parentBuild) { $rootBuild = $parentBuild }
-    elseif (Test-Path $grandBuild) { $rootBuild = $grandBuild }
-
-    if ($rootBuild) {
-        $rootContent = Get-Content $rootBuild -Raw -ErrorAction SilentlyContinue
-        if ($rootContent -match "kover") { return "kover" }
-    }
-
-    # Check build-logic convention plugins for kover
-    $projectRoot = $null
-    $parentSettings = Join-Path $moduleDir "../settings.gradle.kts"
-    $grandSettings = Join-Path $moduleDir "../../settings.gradle.kts"
-    if (Test-Path $parentSettings) { $projectRoot = (Resolve-Path (Join-Path $moduleDir "..")).Path }
-    elseif (Test-Path $grandSettings) { $projectRoot = (Resolve-Path (Join-Path $moduleDir "../..")).Path }
-
-    if ($projectRoot) {
-        # Check build-logic/ directory
-        $buildLogicDir = Join-Path $projectRoot "build-logic"
-        if (Test-Path $buildLogicDir) {
-            $koverFiles = Get-ChildItem -Path $buildLogicDir -Recurse -Include "*.gradle.kts","*.kt" -ErrorAction SilentlyContinue |
-                Where-Object { (Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue) -match "kover" } |
-                Select-Object -First 1
-            if ($koverFiles) { return "kover" }
-        }
-
-        # Check version catalog for kover plugin declaration
-        $versionCatalog = Join-Path $projectRoot "gradle/libs.versions.toml"
-        if (Test-Path $versionCatalog) {
-            $catalogContent = Get-Content $versionCatalog -Raw -ErrorAction SilentlyContinue
-            if ($catalogContent -match "kover") { return "kover" }
-        }
-    }
-
-    return "jacoco"
-}
-
-function Get-CoverageGradleTask {
-    <#
-    .SYNOPSIS
-        Returns the Gradle task name for generating coverage, or "" if not applicable.
-    .PARAMETER Tool
-        Coverage tool: "kover", "jacoco", "none"
-    .PARAMETER TestType
-        Test type: "common", "desktop", "androidUnit", "androidInstrumented", "all"
-    .PARAMETER IsDesktop
-        Whether this is a desktop/KMP build
-    #>
-    param(
-        [string]$Tool,
-        [string]$TestType,
-        [bool]$IsDesktop
-    )
-
-    switch ($Tool) {
-        "kover" {
-            switch ($TestType) {
-                "common"              { return "koverXmlReportDesktop" }
-                "desktop"             { return "koverXmlReportDesktop" }
-                "all"                 { return "koverXmlReportDesktop" }
-                "androidUnit"         { return "koverXmlReportDebug" }
-                "androidInstrumented" { return "koverXmlReportDebug" }
-                default {
-                    if ($IsDesktop) { return "koverXmlReportDesktop" }
-                    else { return "koverXmlReportDebug" }
-                }
-            }
-        }
-        "jacoco" {
-            return "jacocoTestReport"
-        }
-        default {
-            return ""
-        }
-    }
-}
+# v0.8 sub-entry 4: Detect-CoverageTool + Get-CoverageGradleTask removed.
+# Their logic was a duplicate of lib/project-model.js#analyzeModule's
+# coveragePlugin field + resolveTasksFor's coverageTask. The Node side
+# (lib/project-model.js + lib/coverage-orchestrator.js + scripts/ps1/lib/
+# Project-Model.ps1's Get-PmCoverageTask) is now the single source of truth.
+# Carry-over from v0.5.2 Gap A (PR #67).
 
 function Get-CoverageXmlPath {
     <#

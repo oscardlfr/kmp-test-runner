@@ -267,10 +267,11 @@ Describe 'Test-ModuleHasTestSources (Phase 4 step 4 — model fast-path)' {
 # tests/vitest/android-orchestrator.test.js cases 1 (WS-3) + 4 (--device-task
 # escape hatch).
 
-# Phase 4 step 6 — run-parallel-coverage-suite.ps1 wires the ProjectModel
-# fast-path BEFORE the existing detect_coverage_tool + Test-ModuleHasTask
-# chain. Source-grep regression for the layer ordering.
-Describe 'run-parallel-coverage-suite.ps1 — Phase 4 ProjectModel coverage fast-path' {
+# v0.8 sub-entry 4 — run-parallel-coverage-suite.ps1 wires Get-PmCoverageTask
+# as the SINGLE source for coverage discrimination. The Gap A legacy helpers
+# (Detect-CoverageTool, Get-CoverageGradleTask) were removed; the ordering
+# regression test that gated the legacy fallback is now an "absence" check.
+Describe 'run-parallel-coverage-suite.ps1 — sub-entry 4 ProjectModel coverage path' {
 
     BeforeAll {
         $script:Parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
@@ -281,11 +282,17 @@ Describe 'run-parallel-coverage-suite.ps1 — Phase 4 ProjectModel coverage fast
         $script:ParallelText | Should -Match "ProjectModel\.ps1"
     }
 
-    It 'consults Get-PmCoverageTask before Get-CoverageGradleTask' {
+    It 'consults Get-PmCoverageTask' {
         $script:ParallelText | Should -Match 'Get-PmCoverageTask'
-        $pmIndex    = $script:ParallelText.IndexOf('Get-PmCoverageTask')
-        $legacyIdx  = $script:ParallelText.IndexOf('Get-CoverageGradleTask -Tool $modCovTool')
-        $pmIndex | Should -BeGreaterOrEqual 0
-        $pmIndex | Should -BeLessThan $legacyIdx
+    }
+
+    It 'no longer references the deleted Gap A helpers in any executable line' {
+        # Comments may still mention the deleted helpers (documentation of
+        # the removal); ensure no executable line invokes them.
+        foreach ($pattern in 'Detect-CoverageTool', 'Get-CoverageGradleTask') {
+            $matches = ($script:ParallelText -split "`n") |
+                Where-Object { $_ -match $pattern -and $_ -notmatch '^\s*#' }
+            $matches.Count | Should -Be 0
+        }
     }
 }

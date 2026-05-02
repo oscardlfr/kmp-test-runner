@@ -256,15 +256,14 @@ Describe 'parallel.ps1 (Bug B'') and run-android-tests.ps1 (Bug B'') wiring' {
         (Get-Content $parallel -Raw) | Should -Match 'Gradle-Tasks-Probe\.ps1'
     }
 
-    It "parallel.ps1 module-classification calls Test-ModuleHasTask" {
+    # v0.8 sub-entry 4: the per-module Test-ModuleHasTask probe + [SKIP coverage]
+    # banner lived only in the coverage-task selection block, which was lifted
+    # into lib/coverage-orchestrator.js. The parallel codepath retains the
+    # tasks-probe library for non-coverage probing; the coverage-specific
+    # contracts moved to tests/vitest/coverage-orchestrator.test.js.
+    It "parallel.ps1 retains the tasks-probe sourcing for non-coverage probing" {
         $parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
-        (Get-Content $parallel -Raw) | Should -Match 'Test-ModuleHasTask'
-    }
-
-    It "parallel.ps1 emits [SKIP coverage] when probe says task missing" {
-        $parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
-        (Get-Content $parallel -Raw) | Should -Match '\[SKIP coverage\]'
-        (Get-Content $parallel -Raw) | Should -Match 'no coverage plugin applied'
+        (Get-Content $parallel -Raw) | Should -Match 'Gradle-Tasks-Probe\.ps1'
     }
 
     # run-android-tests.ps1 wiring tests deleted in v0.8 sub-entry 3 — the
