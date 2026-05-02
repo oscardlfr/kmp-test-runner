@@ -24,9 +24,22 @@ teardown() {
 
 @test "coverage: --skip-tests flag accepted without error" {
     run bash "$SCRIPT" --project-root "$WORK_DIR" --skip-tests --module-filter "nonexistent-module-xyz"
-    # --skip-tests must not produce an unknown-option error
+    # v0.8 sub-entry 4: --skip-tests now exec's lib/runner.js coverage. Either
+    # path (legacy or migrated) must NOT bail with the "unknown option" or
+    # "--project-root is required" errors.
     [[ "$output" != *"Unknown option"* ]]
     [[ "$output" != *"--project-root is required"* ]]
+}
+
+@test "coverage (sub-entry 4): --skip-tests delegates to lib/runner.js coverage" {
+    # The wrapper must exec node BEFORE doing any of the legacy bash work
+    # so coverage runs even when the parallel codepath is irrelevant.
+    grep -q 'exec node.*lib/runner.js.*coverage' "$SCRIPT"
+}
+
+@test "coverage (sub-entry 4): bash Gap A helpers detect_coverage_tool / get_coverage_gradle_task removed from coverage-detect.sh" {
+    ! grep -qE '^\s*detect_coverage_tool\(\)' scripts/sh/lib/coverage-detect.sh
+    ! grep -qE '^\s*get_coverage_gradle_task\(\)' scripts/sh/lib/coverage-detect.sh
 }
 
 @test "coverage: error path exits 1 when --project-root is missing" {
@@ -47,20 +60,13 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# v0.5.1 Bug B'' — per-module coverage-task probe
+# v0.5.1 Bug B'' — per-module coverage-task probe (parallel codepath only)
+# v0.8 sub-entry 4: the coverage codepath no longer reaches this probe (it
+# exec's lib/runner.js). The parallel codepath still sources gradle-tasks-probe
+# for non-coverage probing; sub-entry 5 will lift the rest.
 # ---------------------------------------------------------------------------
 @test "coverage (Bug B''): script sources gradle-tasks-probe.sh" {
     grep -q 'lib/gradle-tasks-probe.sh' "$SCRIPT"
-}
-
-@test "coverage (Bug B''): module-classification loop calls module_has_task" {
-    grep -q 'module_has_task' "$SCRIPT"
-}
-
-@test "coverage (Bug B''): emits [SKIP coverage] when probe says task missing" {
-    # The skip line is the user-visible signal that B'' triggered.
-    grep -q '\[SKIP coverage\]' "$SCRIPT"
-    grep -q 'no coverage plugin applied' "$SCRIPT"
 }
 
 # ---------------------------------------------------------------------------
@@ -87,12 +93,14 @@ teardown() {
     grep -B 1 -A 1 '"\[OK\] Full coverage report generated' "$SCRIPT" | grep -q 'MODULES_CONTRIBUTING'
 }
 
-@test "coverage (Phase 4 step 6): ProjectModel fast-path tier 1 wired before legacy chain" {
-    # The script must source project-model.sh + consult pm_get_coverage_task
-    # BEFORE the existing get_coverage_gradle_task + module_has_task chain.
+@test "coverage (sub-entry 4): pm_get_coverage_task is the only coverage-tool source in the wrapper" {
+    # The legacy detect_coverage_tool / get_coverage_gradle_task fallback was
+    # removed in sub-entry 4. project-model is now the single source of truth
+    # for the wrapper's parallel codepath; coverage codepath is migrated to
+    # lib/coverage-orchestrator.js.
     grep -q 'lib/project-model.sh' "$SCRIPT"
     grep -q 'pm_get_coverage_task' "$SCRIPT"
-    pm_line="$(grep -n 'pm_get_coverage_task' "$SCRIPT" | head -1 | cut -d: -f1)"
-    legacy_line="$(grep -n 'get_coverage_gradle_task "\$mod_cov_tool"' "$SCRIPT" | head -1 | cut -d: -f1)"
-    [ "$pm_line" -lt "$legacy_line" ]
+    # The legacy callers must be gone (only comments may mention the helpers).
+    ! grep -qE '^\s*[^#]*\bdetect_coverage_tool\b' "$SCRIPT"
+    ! grep -qE '^\s*[^#]*\bget_coverage_gradle_task\b' "$SCRIPT"
 }

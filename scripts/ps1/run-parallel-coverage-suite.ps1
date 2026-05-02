@@ -98,6 +98,26 @@ param(
 $ErrorActionPreference = "Continue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# v0.8 PIVOT (sub-entry 4): the -SkipTests codepath now lives in
+# lib/coverage-orchestrator.js. When the switch is bound, reconstruct the
+# kebab-case argv from the bound params and exec the Node runner. The
+# parallel codepath stays in this script until sub-entry 5.
+if ($SkipTests) {
+    $kmpArgv = @('--skip-tests')
+    if ($ProjectRoot)        { $kmpArgv += @('--project-root', $ProjectRoot) }
+    if ($CoverageTool)       { $kmpArgv += @('--coverage-tool', $CoverageTool) }
+    if ($CoverageModules)    { $kmpArgv += @('--coverage-modules', $CoverageModules) }
+    if ($ExcludeCoverage)    { $kmpArgv += @('--exclude-coverage', $ExcludeCoverage) }
+    if ($MinMissedLines -gt 0) { $kmpArgv += @('--min-missed-lines', "$MinMissedLines") }
+    if ($OutputFile)         { $kmpArgv += @('--output-file', $OutputFile) }
+    if ($IgnoreJdkMismatch)  { $kmpArgv += @('--ignore-jdk-mismatch') }
+    if ($JavaHome)           { $kmpArgv += @('--java-home', $JavaHome) }
+    $kmpScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+    $kmpRunner = Join-Path $kmpScriptDir '..\..\lib\runner.js'
+    & node $kmpRunner coverage @kmpArgv
+    exit $LASTEXITCODE
+}
+
 # ----------------------------------------------------------------------------
 # RUN ID — concurrent-invocation safety (v0.3.8+)
 # Format: YYYYMMDD-HHMMSS-PID6 (zero-padded last 6 digits of PID). Used to
@@ -634,7 +654,17 @@ foreach ($module in $allModules) {
         $modCovTool = "none"
         Write-Host "  [INFO] $($module.Name) - excluded from coverage (--ExcludeCoverage)" -ForegroundColor DarkGray
     } elseif ($CoverageTool -eq "auto") {
-        $modCovTool = Detect-CoverageTool -BuildFilePath $buildFile
+        # v0.8 sub-entry 4: project-model is the single source of truth for
+        # plugin discrimination. Get-PmCoverageTask consumes the JSON model;
+        # the Gap A bash helper Detect-CoverageTool has been removed.
+        $modCovTool = "none"
+        if (Get-Command Get-PmCoverageTask -ErrorAction SilentlyContinue) {
+            try {
+                $_pmTask = Get-PmCoverageTask -ProjectRoot $module.ProjectRoot -Module $module.Name
+                if ($_pmTask -like 'kover*')      { $modCovTool = "kover" }
+                elseif ($_pmTask -like 'jacoco*') { $modCovTool = "jacoco" }
+            } catch { $modCovTool = "none" }
+        }
     } elseif ($CoverageTool -eq "none") {
         $modCovTool = "none"
     } else {
@@ -646,12 +676,10 @@ foreach ($module in $allModules) {
 
     # Get coverage task (only if not excluded)
     if (-not $skipCov) {
-        # Phase 4 step 6 (v0.5.1): try the ProjectModel fast-path first. If
-        # the model's resolved.coverageTask is non-empty, treat it as
-        # confirmed present (the model is content-keyed, so a stale plugin
-        # would have invalidated the cache). Falls through to the legacy
-        # Detect-CoverageTool + Get-CoverageGradleTask + Test-ModuleHasTask
-        # chain when the model is absent or the module isn't in it.
+        # v0.8 sub-entry 4: Get-PmCoverageTask is the single source of truth
+        # (the legacy Detect-CoverageTool + Get-CoverageGradleTask fallback
+        # was removed; lib/project-model.js now carries that logic). Model
+        # is content-keyed — a stale plugin invalidates the cache.
         $modelCovTask = $null
         if (Get-Command Get-PmCoverageTask -ErrorAction SilentlyContinue) {
             try {
@@ -668,30 +696,12 @@ foreach ($module in $allModules) {
             continue
         }
 
-        $covTaskName = Get-CoverageGradleTask -Tool $modCovTool -TestType $TestType -IsDesktop $Desktop
-        if ($covTaskName) {
-            # Bug B'' (v0.5.1): probe gradle for task existence before queueing.
-            # Content-based detection (Detect-CoverageTool) returns false
-            # positives when the plugin appears in convention scaffolding but
-            # is NOT applied per-module. Probe is the source of truth.
-            $taskExists = Test-ModuleHasTask -ProjectRoot $module.ProjectRoot `
-                -Module $module.Name -Task $covTaskName
-            if ($taskExists -eq $false) {
-                Write-Host "  [SKIP coverage] $($module.Name) (no coverage plugin applied)" -ForegroundColor DarkGray
-                $module.CovTool = "none"
-            } else {
-                # $true (confirmed) OR $null (probe unavailable, legacy fallback)
-                $covTask = "${gradlePath}:${covTaskName}"
-                if ($isShared) {
-                    $covTasksShared.Add($covTask)
-                } else {
-                    $covTasks.Add($covTask)
-                }
-            }
-        } else {
-            $displayName = Get-CoverageDisplayName -Tool $modCovTool
-            Write-Host "  [INFO] $($module.Name) - no coverage ($displayName), skipping" -ForegroundColor DarkGray
-        }
+        # v0.8 sub-entry 4: legacy Get-CoverageGradleTask fallback removed.
+        # When Get-PmCoverageTask returned empty (modelCovTask above), the
+        # module has no coverage plugin detected and we skip queueing.
+        $displayName = Get-CoverageDisplayName -Tool $modCovTool
+        Write-Host "  [INFO] $($module.Name) - no coverage ($displayName), skipping" -ForegroundColor DarkGray
+        $module.CovTool = "none"
     }
 }
 
@@ -1007,8 +1017,20 @@ if (-not $SkipTests -and $allTestTasks.Count -gt 0) {
                     if (-not $xmlCheck) {
                         $modName = $mod.Name.TrimStart(':')
                         $gpath = ":$modName"
-                        $missingTaskName = Get-CoverageGradleTask -Tool $modTool -TestType $TestType -IsDesktop $Desktop
-                        $missingTasks.Add("${gpath}:${missingTaskName}")
+                        # v0.8 sub-entry 4: inline task-name resolution.
+                        # modTool is already known (kover|jacoco); pick the
+                        # canonical task name without the Gap A helper.
+                        $missingTaskName = ""
+                        if ($modTool -eq "kover") {
+                            if ($Desktop -or $TestType -in @("common","desktop","all")) {
+                                $missingTaskName = "koverXmlReportDesktop"
+                            } else {
+                                $missingTaskName = "koverXmlReportDebug"
+                            }
+                        } elseif ($modTool -eq "jacoco") {
+                            $missingTaskName = "jacocoTestReport"
+                        }
+                        if ($missingTaskName) { $missingTasks.Add("${gpath}:${missingTaskName}") }
                     }
                 }
                 $missingCov = $missingTasks.Count
@@ -1174,9 +1196,24 @@ foreach ($module in $allModules) {
     # Resolve coverage tool for this module
     $modTool = if ($module.PSObject.Properties['CovTool']) { $module.CovTool } else { "" }
     if (-not $modTool -or $modTool -eq "none") {
+        # v0.8 sub-entry 4: skip-tests mode no longer reaches this block (the
+        # wrapper exec's lib/runner.js coverage at the top). The fallback path
+        # here covers parallel-mode modules whose upstream tier-1 discovery
+        # missed. Use Get-PmCoverageTask — Gap A helper Detect-CoverageTool
+        # was removed.
         if ($CoverageTool -eq "auto") {
-            $buildFile = Join-Path $module.Path "build.gradle.kts"
-            $modTool = Detect-CoverageTool -BuildFilePath $buildFile
+            $modTool = "none"
+            if (Get-Command Get-PmCoverageTask -ErrorAction SilentlyContinue) {
+                try {
+                    $_pmTask = Get-PmCoverageTask -ProjectRoot $module.ProjectRoot -Module $module.Name
+                    if ($_pmTask -like 'kover*')      { $modTool = "kover" }
+                    elseif ($_pmTask -like 'jacoco*') { $modTool = "jacoco" }
+                } catch { $modTool = "none" }
+            }
+            if ($modTool -eq "none") {
+                Write-Host "  [!] No coverage data: $($module.Name)" -ForegroundColor DarkYellow
+                continue
+            }
         } elseif ($CoverageTool -ne "none") {
             $modTool = $CoverageTool
         } else {

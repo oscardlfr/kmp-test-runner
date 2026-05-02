@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# v0.8 PIVOT (sub-entry 4): the --skip-tests codepath now lives in
+# lib/coverage-orchestrator.js. Detect the flag before doing any of the
+# legacy bash work and exec the Node runner. The parallel codepath stays
+# bash here until sub-entry 5 lands lib/parallel-orchestrator.js.
+for _kmp_arg in "$@"; do
+  if [[ "$_kmp_arg" == "--skip-tests" ]]; then
+    _KMP_SD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    exec node "$_KMP_SD/../../lib/runner.js" coverage "$@"
+  fi
+done
+
 # =============================================================================
 # Run all tests in parallel using a SINGLE Gradle invocation with full coverage.
 #
@@ -712,7 +723,18 @@ for mi in "${!MOD_NAMES[@]}"; do
 
     if ! $skip_cov; then
         if [[ "$COVERAGE_TOOL" == "auto" ]]; then
-            mod_cov_tool="$(detect_coverage_tool "$build_file")"
+            # v0.8 sub-entry 4: project-model is the single source of truth for
+            # plugin discrimination. The Gap A bash helper detect_coverage_tool
+            # has been removed; pm_get_coverage_task (which canonicalizes
+            # CONVENTION-vs-SELF detection from v0.6 Bug 6) is the only path.
+            mod_cov_tool="none"
+            if type pm_get_coverage_task >/dev/null 2>&1; then
+                _pm_task="$(pm_get_coverage_task "${MOD_PROJ[$mi]}" "${MOD_NAMES[$mi]}" 2>/dev/null)"
+                case "$_pm_task" in
+                    kover*)  mod_cov_tool="kover" ;;
+                    jacoco*) mod_cov_tool="jacoco" ;;
+                esac
+            fi
         elif [[ "$COVERAGE_TOOL" == "none" ]]; then
             mod_cov_tool="none"
         else
@@ -723,12 +745,11 @@ for mi in "${!MOD_NAMES[@]}"; do
 
     # Determine coverage task (only if not excluded)
     if ! $skip_cov; then
-        # Phase 4 step 6 (v0.5.1): try the ProjectModel fast-path first. If
-        # the model's resolved.coverageTask is non-empty, treat it as
-        # confirmed present (the model is content-keyed, so a stale plugin
-        # would have invalidated the cache). Falls through to the legacy
-        # detect_coverage_tool + get_coverage_gradle_task + module_has_task
-        # chain when the model is absent or the module isn't in it.
+        # v0.8 sub-entry 4: pm_get_coverage_task is the single source of
+        # truth (the legacy detect_coverage_tool + get_coverage_gradle_task
+        # fallback that lived here was removed; lib/project-model.js now
+        # carries that logic). Model is content-keyed — a stale plugin
+        # invalidates the cache.
         model_cov_task=""
         if type pm_get_coverage_task >/dev/null 2>&1; then
             model_cov_task="$(pm_get_coverage_task "${MOD_PROJ[$mi]}" "${MOD_NAMES[$mi]}" 2>/dev/null)"
@@ -743,44 +764,14 @@ for mi in "${!MOD_NAMES[@]}"; do
             continue
         fi
 
-        cov_task_name="$(get_coverage_gradle_task "$mod_cov_tool" "$TEST_TYPE" "$IS_DESKTOP")"
-        if [[ -n "$cov_task_name" ]]; then
-            # Bug B'' (v0.5.1): probe gradle for task existence before queueing.
-            # Content-based detection (detect_coverage_tool) returns false
-            # positives when the plugin appears in convention scaffolding but
-            # is NOT applied per-module. Probe is the source of truth.
-            set +e
-            module_has_task "${MOD_PROJ[$mi]}" "${MOD_NAMES[$mi]}" "$cov_task_name"
-            cov_task_rc=$?
-            set -e
-            case "$cov_task_rc" in
-                0)
-                    # Confirmed present
-                    cov_task="${gradle_path}:${cov_task_name}"
-                    if $is_shared; then
-                        COV_TASKS_SHARED+=("$cov_task")
-                    else
-                        COV_TASKS+=("$cov_task")
-                    fi
-                    ;;
-                1)
-                    # Cache says task missing — coverage plugin not applied
-                    gray "  [SKIP coverage] ${MOD_NAMES[$mi]} (no coverage plugin applied)"
-                    MOD_COV_TOOL[$mi]="none"
-                    ;;
-                *)
-                    # Probe unavailable — fall back to legacy "always queue" behavior
-                    cov_task="${gradle_path}:${cov_task_name}"
-                    if $is_shared; then
-                        COV_TASKS_SHARED+=("$cov_task")
-                    else
-                        COV_TASKS+=("$cov_task")
-                    fi
-                    ;;
-            esac
-        else
-            gray "  [INFO] ${MOD_NAMES[$mi]} - no coverage ($(get_coverage_display_name "$mod_cov_tool")), skipping"
-        fi
+        # v0.8 sub-entry 4: legacy `get_coverage_gradle_task` fallback removed.
+        # When pm_get_coverage_task returned empty (model_cov_task above), the
+        # module has no coverage plugin detected in the project model and we
+        # skip queueing rather than guessing a task name (the guessed task was
+        # probed via module_has_task today; sub-entry 5 lifts this entirely
+        # into lib/parallel-orchestrator.js).
+        gray "  [INFO] ${MOD_NAMES[$mi]} - no coverage ($(get_coverage_display_name "$mod_cov_tool")), skipping"
+        MOD_COV_TOOL[$mi]="none"
     fi
 done
 
@@ -1098,8 +1089,21 @@ if ! $SKIP_TESTS && [[ "${#ALL_TEST_TASKS[@]}" -gt 0 ]]; then
                         short_mod="${MOD_NAMES[$idx]}"
                         short_mod="${short_mod#:}"
                         gpath=":${short_mod}"
-                        cov_task_name="$(get_coverage_gradle_task "$mod_tool" "$TEST_TYPE" "$IS_DESKTOP")"
-                        MISSING_TASKS+=("${gpath}:${cov_task_name}")
+                        # v0.8 sub-entry 4: inline task-name resolution.
+                        # mod_tool is already known (kover|jacoco); pick the
+                        # canonical task name without the Gap A helper.
+                        case "$mod_tool" in
+                            kover)
+                                if [[ "$IS_DESKTOP" == "true" || "$TEST_TYPE" == "common" || "$TEST_TYPE" == "desktop" || "$TEST_TYPE" == "all" ]]; then
+                                    cov_task_name="koverXmlReportDesktop"
+                                else
+                                    cov_task_name="koverXmlReportDebug"
+                                fi
+                                ;;
+                            jacoco) cov_task_name="jacocoTestReport" ;;
+                            *)      cov_task_name="" ;;
+                        esac
+                        [[ -n "$cov_task_name" ]] && MISSING_TASKS+=("${gpath}:${cov_task_name}")
                     fi
                 done
                 MISSING_COV="${#MISSING_TASKS[@]}"
@@ -1265,10 +1269,22 @@ for mi in "${!MOD_NAMES[@]}"; do
     # Resolve coverage tool for this module
     mod_tool="${MOD_COV_TOOL[$mi]:-}"
     if [[ -z "$mod_tool" || "$mod_tool" == "none" ]]; then
-        # Try auto-detect if MOD_COV_TOOL wasn't set (e.g. skip-tests mode)
+        # v0.8 sub-entry 4: skip-tests mode no longer reaches this block (the
+        # wrapper exec's lib/runner.js coverage at the top). The fallback path
+        # here only covers parallel-mode modules whose upstream tier-1
+        # discovery missed (e.g. shared modules on a non-cached run). Use
+        # pm_get_coverage_task — Gap A bash helper detect_coverage_tool was
+        # removed.
         if [[ "$COVERAGE_TOOL" == "auto" ]]; then
-            build_file="${MOD_PATHS[$mi]}/build.gradle.kts"
-            mod_tool="$(detect_coverage_tool "$build_file")"
+            mod_tool="none"
+            if type pm_get_coverage_task >/dev/null 2>&1; then
+                _pm_task="$(pm_get_coverage_task "${MOD_PROJ[$mi]}" "${MOD_NAMES[$mi]}" 2>/dev/null)"
+                case "$_pm_task" in
+                    kover*)  mod_tool="kover" ;;
+                    jacoco*) mod_tool="jacoco" ;;
+                esac
+            fi
+            [[ "$mod_tool" == "none" ]] && continue
         elif [[ "$COVERAGE_TOOL" != "none" ]]; then
             mod_tool="$COVERAGE_TOOL"
         else
