@@ -238,8 +238,6 @@ echo ""
 info "[>>] Running benchmarks (config=$CONFIG, platform=$PLATFORM)..."
 echo ""
 
-# shellcheck disable=SC2034
-declare -A MODULE_STATUS
 TOTAL_PASS=0
 TOTAL_FAIL=0
 
@@ -256,7 +254,9 @@ fi
 
 SKIPPED_INCOMPAT=0
 for mod in "${BENCHMARK_MODULES[@]}"; do
-    for plat in "${PLATFORMS_TO_RUN[@]}"; do
+    # Guarded expansion: PLATFORMS_TO_RUN is empty when --platform=all but
+    # neither JVM nor Android were detected (Bash 3.2 + set -u would fail).
+    for plat in "${PLATFORMS_TO_RUN[@]+"${PLATFORMS_TO_RUN[@]}"}"; do
         # Resolve the actual module name and project root for this module
         actual_mod="$mod"
         gradle_root="$PROJECT_ROOT"
@@ -303,13 +303,10 @@ for mod in "${BENCHMARK_MODULES[@]}"; do
         exit_code=${PIPESTATUS[0]}
         set -e
 
-        key="${mod}|${plat}"
         if [[ $exit_code -eq 0 ]]; then
-            MODULE_STATUS["$key"]="pass"
             TOTAL_PASS=$((TOTAL_PASS + 1))
             ok "  [OK] $mod ($plat) completed successfully."
         else
-            MODULE_STATUS["$key"]="fail"
             TOTAL_FAIL=$((TOTAL_FAIL + 1))
             err "  [FAIL] $mod ($plat) failed with exit code $exit_code."
         fi
@@ -335,10 +332,17 @@ echo ""
 
 # Collect all benchmark results: "module|benchmark_name|mode|score|error|units"
 ALL_RESULTS=()
-declare -A MODULE_BENCHMARK_COUNT
-declare -A MODULE_AVG_SCORE
 
-for mod in "${BENCHMARK_MODULES[@]}"; do
+# Per-module aggregates kept in parallel indexed arrays correlated with the
+# BENCHMARK_MODULES index. Bash 3.2 (still the macOS system shell) lacks
+# `declare -A`, so the natural "associative array keyed by module name" is
+# expressed as two indexed arrays whose i-th slot belongs to BENCHMARK_MODULES[i].
+# Same pattern used in scripts/sh/run-parallel-coverage-suite.sh:445-450.
+MODULE_BENCHMARK_COUNT=()
+MODULE_AVG_SCORE=()
+
+for i in "${!BENCHMARK_MODULES[@]}"; do
+    mod="${BENCHMARK_MODULES[$i]}"
     actual_mod="$mod"
     gradle_root="$PROJECT_ROOT"
     shared_prefix="${SHARED_LIBS_PREFIX:-${SHARED_PROJECT_NAME:-}}"
@@ -369,11 +373,11 @@ for mod in "${BENCHMARK_MODULES[@]}"; do
         done < <(find "$report_dir" -name "*.json" -type f 2>/dev/null)
     fi
 
-    MODULE_BENCHMARK_COUNT["$mod"]=$count
+    MODULE_BENCHMARK_COUNT[$i]=$count
     if [[ $count -gt 0 ]]; then
-        MODULE_AVG_SCORE["$mod"]=$(echo "scale=1; $total_score / $count" | bc 2>/dev/null || echo "N/A")
+        MODULE_AVG_SCORE[$i]=$(echo "scale=1; $total_score / $count" | bc 2>/dev/null || echo "N/A")
     else
-        MODULE_AVG_SCORE["$mod"]="N/A"
+        MODULE_AVG_SCORE[$i]="N/A"
     fi
 done
 
@@ -404,9 +408,10 @@ echo ""
 printf "${WHITE}%-48s %12s %10s${RESET}\n" "MODULE" "BENCHMARKS" "AVG TIME"
 gray "$(printf -- '-%.0s' {1..70})"
 
-for mod in "${BENCHMARK_MODULES[@]}"; do
-    count="${MODULE_BENCHMARK_COUNT[$mod]:-0}"
-    avg="${MODULE_AVG_SCORE[$mod]:-N/A}"
+for i in "${!BENCHMARK_MODULES[@]}"; do
+    mod="${BENCHMARK_MODULES[$i]}"
+    count="${MODULE_BENCHMARK_COUNT[$i]:-0}"
+    avg="${MODULE_AVG_SCORE[$i]:-N/A}"
 
     # Determine units suffix
     units_suffix="ms"
@@ -418,8 +423,10 @@ for mod in "${BENCHMARK_MODULES[@]}"; do
 
     printf "${WHITE}%-48s %12s %10s${RESET}\n" "$mod" "$count" "$avg_display"
 
-    # Print individual benchmarks for this module
-    for result in "${ALL_RESULTS[@]}"; do
+    # Print individual benchmarks for this module.
+    # Guarded expansion: ALL_RESULTS is empty when no JSON benchmark reports
+    # were found (Bash 3.2 + set -u would fail on `"${ALL_RESULTS[@]}"`).
+    for result in "${ALL_RESULTS[@]+"${ALL_RESULTS[@]}"}"; do
         IFS='|' read -r r_mod r_bench r_mode r_score r_error r_units <<< "$result"
         if [[ "$r_mod" == "$mod" ]]; then
             # Shorten benchmark name: strip class prefix, keep method
@@ -504,9 +511,10 @@ REPORT_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
     echo "| Module | Benchmarks | Avg Score |"
     echo "|--------|----------:|----------:|"
 
-    for mod in "${BENCHMARK_MODULES[@]}"; do
-        count="${MODULE_BENCHMARK_COUNT[$mod]:-0}"
-        avg="${MODULE_AVG_SCORE[$mod]:-N/A}"
+    for i in "${!BENCHMARK_MODULES[@]}"; do
+        mod="${BENCHMARK_MODULES[$i]}"
+        count="${MODULE_BENCHMARK_COUNT[$i]:-0}"
+        avg="${MODULE_AVG_SCORE[$i]:-N/A}"
         echo "| ${mod} | ${count} | ${avg} |"
     done
 

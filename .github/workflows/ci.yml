@@ -101,3 +101,24 @@ jobs:
           distribution: 'temurin'
       - name: Test Gradle plugin (macOS)
         run: cd gradle-plugin && ./gradlew test
+  # v0.7.x WS-2 — bats parity on macOS. macOS ships /bin/bash 3.2.57 (Apple
+  # froze it for licensing). Bash 3.2 lacks `declare -A` and is strict about
+  # `"${arr[@]}"` over empty arrays under set -u. The ubuntu-only bats job
+  # (line 26-28 above) cannot catch these regressions because Linux runners
+  # use bash 5.x. This job mirrors the ubuntu invocation against the system
+  # bash on macos-latest. Generous 15-min timeout because some bats tests
+  # spin up subprocess-heavy fixtures; if a specific test hangs, identify
+  # it from the --timing output and skip it on macOS in a follow-up PR.
+  # Informational by default; promote to required in branch protection
+  # alongside gradle-plugin-test-ios when the v0.7 line stabilises.
+  bats-macos:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: bats (macOS — Bash 3.2 regression coverage)
+        run: npx bats --timing tests/bats/ tests/installer/
