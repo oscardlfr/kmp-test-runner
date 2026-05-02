@@ -1,125 +1,63 @@
 #!/usr/bin/env bats
-# Tests for scripts/sh/run-android-tests.sh
+# Wrapper-invocation contracts for scripts/sh/run-android-tests.sh.
+#
+# Behavioral coverage moved to tests/vitest/android-orchestrator.test.js in
+# v0.8 sub-entry 3 (PRODUCT.md "logic in Node, plumbing in shell"). This
+# file's job is to lock the wrapper shape so the android feature never
+# re-grows bash plumbing under shellcheck's blind spots.
 
 SCRIPT="scripts/sh/run-android-tests.sh"
 
-setup() {
-    WORK_DIR="$(mktemp -d)"
-    mkdir -p "$WORK_DIR"
-    echo 'rootProject.name = "test-project"' > "$WORK_DIR/settings.gradle.kts"
-    mkdir -p "$WORK_DIR/bin"
-    cat > "$WORK_DIR/bin/gradlew" << 'EOF'
-#!/usr/bin/env bash
-echo "BUILD SUCCESSFUL (stub): $*"
-exit 0
-EOF
-    chmod +x "$WORK_DIR/bin/gradlew"
-    export PATH="$WORK_DIR/bin:$PATH"
+@test "android wrapper: exec's into node lib/runner.js android" {
+    grep -qE 'exec node ' "$SCRIPT"
+    grep -qE 'lib/runner\.js' "$SCRIPT"
+    grep -qE ' android ' "$SCRIPT"
 }
 
-teardown() {
-    rm -rf "$WORK_DIR"
+@test "android wrapper: ≤50 LOC (BACKLOG sub-entry 3 cap, target ≤10)" {
+    local lines
+    lines=$(wc -l < "$SCRIPT")
+    [[ "$lines" -le 50 ]]
 }
 
-@test "android: --list-only exits 0 without requiring ADB" {
-    run bash "$SCRIPT" --project-root "$WORK_DIR" --list-only
-    [ "$status" -eq 0 ]
-    [[ "$output" != *"ADB not found"* ]]
+@test "android wrapper: no associative arrays (declare -A)" {
+    ! grep -q 'declare -A' "$SCRIPT"
 }
 
-@test "android: error path exits 1 when --project-root missing" {
-    run bash "$SCRIPT"
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"--project-root is required"* ]]
+@test "android wrapper: no parallel loops (no trailing & or wait)" {
+    ! grep -qE '^\s*[^#]*&\s*$' "$SCRIPT"
+    ! grep -qE '^\s*wait\s*$' "$SCRIPT"
 }
 
-@test "android: lib sourcing uses SCRIPT_DIR not absolute paths" {
-    local sources
-    sources=$(grep -E '^source ' "$SCRIPT" || true)
-    [[ "$sources" != *"/Users/"* ]]
-    [[ "$sources" != *"/home/"* ]]
-    [[ "$sources" != *"/root/"* ]]
-    if [[ -n "$sources" ]]; then
-        [[ "$sources" == *'$SCRIPT_DIR'* ]]
-    fi
+@test "android wrapper: passes argv through verbatim" {
+    grep -qE '"\$@"' "$SCRIPT"
 }
 
-@test "android: emits === JSON SUMMARY === delimiter (parser contract for v0.5.1 Bug G)" {
-    # The cli.js parseAndroidSummary parser keys off the literal string
-    # "=== JSON SUMMARY ===" to locate the JSON envelope. If the script
-    # changes this delimiter, --json mode will silently fall back to
-    # bracket-table parsing. Pin it.
-    grep -F "=== JSON SUMMARY ===" "$SCRIPT"
+@test "android wrapper: no output parsing (no awk/sed/cut/grep on gradle output)" {
+    # Wrappers must not try to parse what gradle prints — that's the
+    # orchestrator's job. Fail if we see piped data extraction commands.
+    ! grep -qE '\| (awk|sed|cut|grep)\b' "$SCRIPT"
 }
 
-@test "android: JSON SUMMARY exposes the fields parseAndroidSummary reads (Bug G contract)" {
-    # The cli.js parser maps these exact keys. If the script renames any of
-    # them, the envelope loses signal silently — this test catches that drift.
-    grep -F "'totalTests'" "$SCRIPT"
-    grep -F "'passedTests'" "$SCRIPT"
-    grep -F "'failedTests'" "$SCRIPT"
-    grep -F "'modules'" "$SCRIPT"
-    grep -F "'name'" "$SCRIPT"
-    grep -F "'status'" "$SCRIPT"
-    grep -F "'logFile'" "$SCRIPT"
-    grep -F "'logcatFile'" "$SCRIPT"
-    grep -F "'errorsFile'" "$SCRIPT"
+@test "android wrapper: uses set -euo pipefail (safe defaults)" {
+    grep -qE '^set -euo pipefail' "$SCRIPT"
 }
 
-# ---------------------------------------------------------------------------
-# v0.5.1 Bug B' — android task selection via gradle-tasks-probe
-# ---------------------------------------------------------------------------
-@test "android (Bug B'): script sources gradle-tasks-probe.sh" {
-    grep -q 'lib/gradle-tasks-probe.sh' "$SCRIPT"
+@test "android wrapper: SCRIPT_DIR resolution is portable (no /Users/, /home/)" {
+    ! grep -qE '/Users/|/home/|/root/' "$SCRIPT"
+    grep -q 'SCRIPT_DIR=' "$SCRIPT"
 }
 
-@test "android (Bug B'): accepts --device-task <name> flag" {
-    grep -q -- '--device-task)' "$SCRIPT"
-    grep -q 'DEVICE_TASK_OVERRIDE=' "$SCRIPT"
+@test "android wrapper: no adb / find walkers in shell (orchestrator owns discovery)" {
+    # WS-3 root cause was a hand-rolled find -name androidTest discovery
+    # in the wrapper. The Node orchestrator owns this now via lib/project-model.js.
+    ! grep -qE 'find .* -name "androidTest"' "$SCRIPT"
+    ! grep -qE 'discover_android_test_modules' "$SCRIPT"
 }
 
-@test "android (Bug B'): help text documents --device-task and androidConnectedCheck" {
-    grep -q -- '--device-task' "$SCRIPT"
-    grep -q 'androidConnectedCheck' "$SCRIPT"
-}
-
-@test "android (Bug B'): task selection probes via module_first_existing_task" {
-    grep -q 'module_first_existing_task' "$SCRIPT"
-    # Candidate priority must include the new umbrella task name.
-    grep -q '"connectedDebugAndroidTest" "connectedAndroidTest" "androidConnectedCheck"' "$SCRIPT"
-}
-
-@test "android (Bug B'): probe-unavailable path falls back to legacy hardcoded matrix" {
-    # The fallback branch must keep the old logic so probe failure doesn't brick the script.
-    grep -q 'Probe unavailable.*fall back to legacy' "$SCRIPT"
-}
-
-@test "android (Bug B'): override flag short-circuits probe entirely" {
-    # When DEVICE_TASK_OVERRIDE is set, probe is skipped entirely.
-    grep -B 0 -A 2 'if \[\[ -n "\$DEVICE_TASK_OVERRIDE" \]\]; then' "$SCRIPT" | \
-        grep -q 'task="\${formatted_module}:\${DEVICE_TASK_OVERRIDE}"'
-}
-
-@test "android (Phase 4 step 5): ProjectModel fast-path tier 1 is wired before probe" {
-    # The script must source project-model.sh so pm_get_device_test_task is
-    # available, and the device-task selector must consult it BEFORE
-    # invoking module_first_existing_task.
-    grep -q 'source "\$SCRIPT_DIR/lib/project-model.sh"' "$SCRIPT"
-    grep -q 'pm_get_device_test_task' "$SCRIPT"
-    # The model check must appear before the probe call in the source.
-    pm_line="$(grep -n 'pm_get_device_test_task' "$SCRIPT" | head -1 | cut -d: -f1)"
-    probe_line="$(grep -n 'module_first_existing_task "\$PROJECT_ROOT"' "$SCRIPT" | head -1 | cut -d: -f1)"
-    [ "$pm_line" -lt "$probe_line" ]
-}
-
-# ---------------------------------------------------------------------------
-# v0.5.2 Gap E — Android method-level filter
-# ---------------------------------------------------------------------------
-@test "android (Gap E): method-level filter splits on # and emits both runner-argument flags" {
-    # When TEST_FILTER contains #, the script must emit BOTH
-    # -P...class=<class> AND -P...method=<method> for AndroidJUnitRunner.
-    # Source-grep contract check (full E2E covered by vitest CLI tests).
-    grep -q '"\$TEST_FILTER" == \*"#"\*' "$SCRIPT"
-    grep -q 'testInstrumentationRunnerArguments\.class=\$_kmp_class_part' "$SCRIPT"
-    grep -q 'testInstrumentationRunnerArguments\.method=\$_kmp_method_part' "$SCRIPT"
+@test "android wrapper: no inline-Python summary builder (orchestrator emits via JSON.stringify)" {
+    # The 784-LOC bash wrapper used inline `python3 -c '...'` to write summary.json.
+    # The orchestrator emits the same shape via JSON.stringify. Lock the
+    # bash-side absence so a future refactor can't re-introduce it.
+    ! grep -qE 'python3? -c' "$SCRIPT"
 }

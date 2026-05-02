@@ -135,12 +135,11 @@ Describe 'TestFilter parameter wiring' {
     # Uses Pester 5's `-ForEach` so $_ binds at run time (a plain `foreach` block
     # captures the loop variable late and resolves to empty during execution).
     It '<_> declares a -TestFilter param' -ForEach @(
-        'run-parallel-coverage-suite.ps1',
-        'run-android-tests.ps1'
+        'run-parallel-coverage-suite.ps1'
         # run-benchmarks.ps1 omitted: v0.8 sub-entry 1 thinned it to a node-launcher.
-        # TestFilter argv pass-through is covered by tests/vitest/benchmark-orchestrator.test.js.
         # run-changed-modules-tests.ps1 omitted: v0.8 sub-entry 2 thinned it to a node-launcher.
-        # TestFilter argv pass-through is covered by tests/vitest/changed-orchestrator.test.js.
+        # run-android-tests.ps1 omitted: v0.8 sub-entry 3 thinned it to a node-launcher.
+        # All three TestFilter argv pass-throughs covered by their respective vitest suites.
     ) {
         $scriptPath = Join-Path $PSScriptRoot '..\..\scripts\ps1' $_
         $content = Get-Content $scriptPath -Raw
@@ -149,26 +148,11 @@ Describe 'TestFilter parameter wiring' {
     }
 }
 
-Describe 'TestFilter method-level split (v0.5.2 Gap E)' {
-    # When TestFilter contains '#', the script must split class#method and
-    # emit BOTH `-Pandroid.testInstrumentationRunnerArguments.class=<class>`
-    # AND `-Pandroid.testInstrumentationRunnerArguments.method=<method>`
-    # (AndroidJUnitRunner accepts both runner-args together).
-    # Source-grep contract (full E2E covered by vitest CLI tests).
-    It '<_> contains the # branch emitting both class= and method= flags' -ForEach @(
-        'run-android-tests.ps1'
-        # run-benchmarks.ps1 omitted: v0.8 sub-entry 1 moved the # split to
-        # lib/benchmark-orchestrator.js#buildFilterArgs (covered by vitest).
-    ) {
-        $scriptPath = Join-Path $PSScriptRoot '..\..\scripts\ps1' $_
-        $content = Get-Content $scriptPath -Raw
-        # Conditional that detects the # form
-        $content | Should -Match '\$TestFilter\s+-match\s+''#'''
-        # Both runner-argument flags emitted in the # branch
-        $content | Should -Match 'testInstrumentationRunnerArguments\.class=\$classPart'
-        $content | Should -Match 'testInstrumentationRunnerArguments\.method=\$methodPart'
-    }
-}
+# TestFilter method-level split (v0.5.2 Gap E) describe block deleted in
+# v0.8 sub-entry 3. The # → class+method split now lives in
+# lib/android-orchestrator.js#buildFilterArgs (covered by vitest case 14
+# in tests/vitest/android-orchestrator.test.js); the legacy
+# run-benchmarks.ps1 / run-android-tests.ps1 implementations are gone.
 
 # Removed in v0.8 sub-entry 1: the gradlew-cwd contract for run-benchmarks.ps1
 # moved from the wrapper to lib/benchmark-orchestrator.js#runBenchmark, which
