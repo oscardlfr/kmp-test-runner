@@ -261,11 +261,8 @@ describe('runChanged no_changed_modules discriminator', () => {
     expect(exitCode).toBe(0);
 
     // No parallel-suite dispatch when zero modules.
-    const suiteCalls = spawn.calls.filter(c =>
-      String(c.cmd).includes('run-parallel-coverage-suite') ||
-      (c.args[0] || '').includes('run-parallel-coverage-suite')
-    );
-    expect(suiteCalls).toHaveLength(0);
+    const nonGit = spawn.calls.filter(c => c.cmd !== 'git');
+    expect(nonGit).toHaveLength(0);
   });
 
   it('files only outside any module → no_changed_modules', async () => {
@@ -318,6 +315,27 @@ describe('runChanged --show-modules-only', () => {
 // ---------------------------------------------------------------------------
 // Case 7 — Multi-module dispatch + --module-filter shape
 // ---------------------------------------------------------------------------
+// Find the parallel-suite spawn call. The orchestrator picks `bash` on
+// Linux/macOS and `powershell` on Windows, with the script path landing at
+// different argv positions in each shape — search all args for robustness.
+function findSuiteCall(spawn) {
+  return spawn.calls.find(c =>
+    c.cmd !== 'git' &&
+    c.args.some(a => String(a).includes('run-parallel-coverage-suite'))
+  );
+}
+
+// The PS1 wrapper takes `-ModuleFilter <X>`; the bash wrapper takes
+// `--module-filter <X>`. Walk argv for either shape and return the value.
+function extractModuleFilter(args) {
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === '--module-filter' || args[i] === '-ModuleFilter') {
+      return args[i + 1];
+    }
+  }
+  return null;
+}
+
 describe('runChanged multi-module dispatch', () => {
   it('passes detected modules as comma-separated --module-filter', async () => {
     const dir = makeProject(['core', 'feature']);
@@ -331,17 +349,11 @@ describe('runChanged multi-module dispatch', () => {
 
     await runChanged({ projectRoot: dir, args: [], spawn });
 
-    // Find the parallel-suite call.
-    const suiteCall = spawn.calls.find(c =>
-      String(c.cmd).includes('run-parallel-coverage-suite') ||
-      (c.args[0] || '').includes('run-parallel-coverage-suite')
-    );
+    const suiteCall = findSuiteCall(spawn);
     expect(suiteCall).toBeDefined();
 
-    // The args must include --module-filter <core>,<feature> (order-insensitive).
-    const i = suiteCall.args.indexOf('--module-filter');
-    expect(i).toBeGreaterThanOrEqual(0);
-    const filterValue = suiteCall.args[i + 1];
+    const filterValue = extractModuleFilter(suiteCall.args);
+    expect(filterValue).not.toBeNull();
     const mods = filterValue.split(',').sort();
     expect(mods).toEqual(['core', 'feature']);
   });
