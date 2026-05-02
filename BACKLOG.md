@@ -196,6 +196,70 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 - Re-using an existing OSS KMP project as the cross-platform E2E fixture — see Buildable cross-platform E2E fixture entry below for that decision.
 - New CLI features. v0.8.0 is "migrate plumbing + lock the cross-platform contract"; new flags / envelope shapes go in v0.9 / v0.8.x patches.
 
+### v0.8 — KMP target tier intel for iOS/macOS strategy (surfaced 2026-05-02 during sub-entry 3 validation in shared-kmp-libs)
+
+**Source:** repo owner's investigation in shared-kmp-libs while validating sub-entry 3 (PR #113). Captures the current Kotlin/Native target tier status that affects (a) the v0.7.0 `resolveTasksFor` candidate-chain design (`iosX64Test → iosArm64Test → iosSimulatorArm64Test` for `iosTestTask`; `macosX64Test → macosArm64Test → macosTest` for `macosTestTask`), (b) the v0.8.0 release-readiness gate's "Buildable cross-platform E2E fixture" target matrix, and (c) the `gradle-plugin-test-ios` informational job's promotion criteria.
+
+**Tier table (Kotlin 2.x current state):**
+
+| Target | Tier | Status | Action for kmp-test-runner |
+|---|---|---|---|
+| `macosArm64` | Tier 1 | Active, tested every Kotlin release | **Primary macOS target.** First in `macosTestTask` candidate chain (line 738). |
+| `iosSimulatorArm64` | Tier 1 | Active | **Primary iOS test target.** First in `iosTestTask` chain. |
+| `iosArm64` | Tier 2 | Active (physical device, publish-time) | Keep in chain for device runs; not test-runtime on Apple Silicon hosts. |
+| `iosX64` | Tier 2 | Active (Intel sim — won't execute on Apple Silicon hosts) | Keep in chain BUT document the Apple Silicon caveat. |
+| `macosX64` | Deprecated | Removed in Kotlin 2.4.0 | **Drop from `macosTestTask` candidates** when the v0.8.0 fixture pins Kotlin 2.4+. Keep in v0.7.x for back-compat. |
+
+**Implications for the v0.8.0 release-readiness gate's E2E fixture (BACKLOG entry "Buildable cross-platform E2E fixture project"):**
+
+- Fixture target list: `jvm()`, `js(IR)`, `wasmJs()`, `iosSimulatorArm64()` + `iosArm64()` (NOT `iosX64()` — won't execute on the macos-latest CI runner which is Apple Silicon since 2024). Drop `macosX64()` (deprecated, gone in 2.4).
+- Pin Kotlin 2.4+ AGP 8.x — captures the post-`macosX64` shape that ships with v0.8.0.
+- `e2e (macos-latest)` job runs `:module:macosArm64Test` + `:module:iosSimulatorArm64Test` — these are the two Tier 1 paths and the only ones that ACTUALLY execute on the runner.
+- `gradle-plugin-test-ios` promotion (currently informational) gets the same tier-1-only test list.
+
+**What's testable on the maintainer's Apple Silicon Mac WITHOUT a physical iPhone (per repo owner's research):**
+
+| Test type | How |
+|---|---|
+| `commonTest` unit | `:module:macosArm64Test` + `:module:iosSimulatorArm64Test` — same `commonMain` runs in both K/N runtimes |
+| iOS-specific unit | `:module:iosSimulatorArm64Test` — simulator is a real iOS runtime (same K/N, same Foundation/UIKit) |
+| macOS-specific unit | `:module:macosArm64Test` — native on host |
+| Compose UI Desktop | native on macOS |
+| Compose UI iOS | XCUITest on simulator |
+| Producer ↔ Consumer integration | macOS process + iOS Simulator process share `localhost`/`127.0.0.1` loopback (simulator shares host network) |
+| Deep links / Universal Links | `xcrun simctl openurl` on simulator |
+| Push notifications | `xcrun simctl push` on iOS 16+ simulator |
+| Foundation / UIKit / CoreData APIs | all functional on simulator |
+
+**What requires a physical device (out of scope for kmp-test-runner CI; deferred to TestFlight / Firebase Test Lab / BrowserStack farms):**
+
+- Bluetooth / MultipeerConnectivity (no simulation, hardware only)
+- Camera / Mic with real data (simulator injects fake video)
+- HealthKit, sensors (accelerometer, precise GPS) — limited or stub
+- Performance characterization (simulator uses Mac CPU, not A-series chip)
+- Battery / thermal throttling
+- Realistic memory pressure / OOM (simulator inherits host GB)
+- App Store / TestFlight signing flow
+- iOS sandbox-specific bugs (simulator sandbox is more permissive)
+
+**Producer ↔ consumer integration test pattern (no physical device required):**
+
+1. Gradle test target arranges the producer macOS process via `exec` task.
+2. `xcrun simctl boot` + `xcrun simctl launch` boots the iOS Simulator from Gradle.
+3. JVM-side test driver (`junit` / `kotlin-test`) asserts on observable behavior (HTTP requests, files, sockets, IPC).
+4. Producer ↔ consumer comms over `localhost` / `127.0.0.1` (simulator shares host loopback).
+
+This pattern covers ~90-95% of integration bugs. The remaining 5% (hardware/performance) is industry-standard "TestFlight beta + device farm" territory — outside this product's scope.
+
+**Action items (defer to v0.8.0 release-readiness work, after sub-entries 4+5 close):**
+
+1. Update `lib/project-model.js#resolveTasksFor` `macosTestTask` candidate chain (line 742) to drop `macosX64Test` once the v0.8.0 fixture pins Kotlin 2.4+. Pre-2.4 users still get the candidate via the legacy ordering.
+2. v0.8.0 fixture targets: `jvm`, `js(IR)`, `wasmJs`, `iosSimulatorArm64`, `iosArm64`, `macosArm64`, `androidLibrary` / `androidTarget` — drop `iosX64` + `macosX64`.
+3. README "Multi-platform test dispatch" section (v0.7.0): add an explicit note that `iosX64Test` / `macosX64Test` won't execute on Apple Silicon hosts (only show up via cross-compilation publish). Document the test-time vs publish-time distinction.
+4. `gradle-plugin-test-ios` promotion: same tier-1-only test list as the E2E fixture — `:module:macosArm64Test` + `:module:iosSimulatorArm64Test` are the only two that execute on the runner.
+
+**Effort:** ~2-3h folded into v0.8.0 release-readiness gate (1) cross-OS parity workflow + (2) fixture build. Documentation update lands as a follow-up README polish PR pre-tag.
+
 ### v0.7.x — Wide-smoke validation findings (mom's MacBook session, 2026-05-01)
 
 **Surfaced 2026-05-01 during cross-project wide-smoke validation against PeopleInSpace, Confetti (multi-module ~13 subprojects), and KaMPKit at `/Volumes/XcodeOscar/kmp-test-workspace/`. Validation hardware: Galaxy S22 Ultra (SM-S908B, Android 16, arm64-v8a, instrumented tests), iOS 26.4 Simulator runtime (10 devices: iPhone 17 Pro/Air/17e, iPad Pro M5, etc.), JDK catalogue 11/17/21, host JDK 21 default.** Eleven issues uncovered (twelfth `SKIPPED_MODULES` fix tracked separately below). Target: clear ALL before v0.8.0.
