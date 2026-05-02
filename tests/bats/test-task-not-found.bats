@@ -108,6 +108,7 @@ teardown_ux1() {
 }
 
 @test "UX-1: --test-type ios skips Android-only module before gradle dispatch" {
+    [[ "$(uname)" == "Darwin" ]] || skip "--test-type ios requires macOS host (platform_unsupported on Win/Linux)"
     setup_ux1
     run bash "$PARALLEL" --project-root "$WORK_DIR" --module-filter "*" --test-type ios
     [ "$status" -eq 0 ]
@@ -121,6 +122,7 @@ teardown_ux1() {
 }
 
 @test "UX-1: src/iosMain alone (no iosTest) lets the module through (gradle no-op task)" {
+    [[ "$(uname)" == "Darwin" ]] || skip "--test-type ios requires macOS host"
     # Confetti's :shared shape: declares iosX64()/iosSimulatorArm64() in
     # build.gradle.kts (evidenced on disk by src/iosMain) but has no iosTest
     # source set yet. The gradle task :module:iosSimulatorArm64Test still
@@ -138,6 +140,7 @@ teardown_ux1() {
 }
 
 @test "UX-1 + parser: skipped[] envelope carries the disambiguated reason" {
+    [[ "$(uname)" == "Darwin" ]] || skip "--test-type ios requires macOS host"
     setup_ux1
     run node bin/kmp-test.js --json parallel --project-root "$WORK_DIR" --module-filter "*" --test-type ios
     first_line=$(echo "$output" | grep -m1 '^{' || true)
@@ -223,6 +226,7 @@ teardown_ws1() {
 }
 
 @test "WS-1: gradle 'Cannot locate' marks ALL testable modules as FAIL (not just the named one)" {
+    [[ "$(uname)" == "Darwin" ]] || skip "--test-type ios requires macOS host"
     setup_ws1
     run bash "$PARALLEL" --project-root "$WORK_DIR" --module-filter "*" --test-type ios
     [ "$status" -eq 1 ]
@@ -239,6 +243,7 @@ teardown_ws1() {
 }
 
 @test "WS-1: gradle 'Cannot locate' line is forwarded to wrapper stderr" {
+    [[ "$(uname)" == "Darwin" ]] || skip "--test-type ios requires macOS host"
     # Without the WS-1 stderr forwarding, the parser cannot fire the
     # task_not_found discriminator (gradle's stderr is captured into a
     # temp log and never re-emitted).
@@ -250,6 +255,7 @@ teardown_ws1() {
 }
 
 @test "WS-1 + WS-5: JSON envelope has exit_code = 1 AND errors[].code = 'task_not_found'" {
+    [[ "$(uname)" == "Darwin" ]] || skip "--test-type ios requires macOS host"
     setup_ws1
     run node bin/kmp-test.js --json parallel --project-root "$WORK_DIR" --module-filter "*" --test-type ios
     first_line=$(echo "$output" | grep -m1 '^{' || true)
