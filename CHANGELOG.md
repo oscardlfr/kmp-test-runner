@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`benchmark` orchestrator migrated from bash/ps1 to Node** — first sub-entry of the v0.8 STRATEGIC PIVOT (4 more sub-entries pending: `changed`, `android`, `coverage`, `parallel`). Logic now lives in `lib/benchmark-orchestrator.js` (~290 LOC) per PRODUCT.md "logic in Node, plumbing in shell". The orchestrator owns module discovery (kotlinx-benchmark / androidx.benchmark plugin detection via `build.gradle.kts` scan), per-platform task dispatch (`:<mod>:desktop{Smoke|Stress|}Benchmark` for JVM, `:<mod>:connectedAndroidTest` for Android), adb device probe (`KMP_TEST_SKIP_ADB=1` opt-out preserved), and envelope construction. Reuses `buildJsonReport` / `envErrorJson` / `resolveAndroidTestFilter` / `splitClassMethod` from `lib/cli.js` — no parser duplication. New `lib/runner.js` entrypoint dispatcher (invoked by the thin shell wrappers; emits sentinel-bracketed envelope when `--json`). `lib/cli.js#main()` grows a small migrated-subcommand short-circuit (`COMMANDS.benchmark.migrated = true`) that uses the orchestrator's envelope directly when `--json`; non-migrated subcommands flow through the existing parser path unchanged. **No version bump** — this lands in `[Unreleased]` and the version stays at 0.7.0 until all 5 sub-entries have landed.
+- **Wrapper shrink:** `scripts/sh/run-benchmarks.sh` 538 → 7 LOC; `scripts/ps1/run-benchmarks.ps1` 471 → 7 LOC. Both `exec node lib/runner.js benchmark "$@"`. PRODUCT.md non-negotiables: no associative arrays, no parallel loops, no output parsing in any wrapper. `scripts/sh/lib/benchmark-detect.sh` (281 LOC) and `scripts/ps1/lib/Benchmark-Detect.ps1` (306 LOC) deleted — logic moved to the orchestrator.
+- **Gradle plugin `BenchmarkTestsTask` updated** to extract the bundled `lib/` tree and invoke `node lib/runner.js benchmark` directly (bypassing the shell hop entirely for this consumer shape). New `syncLib` + `syncPackageJson` Gradle tasks bundle the lib/ files and `package.json` into the published JAR resources. Requires `node` on PATH for gradle-plugin users.
+
+### Added
+- **`benchmark.platforms: ["jvm" | "android"]`** envelope field reflects which legs actually ran (sorted alphabetically). Additive, non-breaking per PRODUCT criterion 4.
+
+### Tests
+- New `tests/vitest/benchmark-orchestrator.test.js` — 15 cases: jvm dispatch + config variants, android adb resolution + `KMP_TEST_SKIP_ADB` opt-out, `no_test_modules` discrimination, empty-result regression (locks the WS-2 / Bash-3.2 bug class into JS by construction), `--test-filter` jvm pass-through + android FQN + `#` method split, banner shape, envelope schema.
+- `tests/bats/test-benchmark.bats` shrinks 346 → 8 wrapper-invocation contracts.
+- `tests/pester/Benchmark-Detect.Tests.ps1` shrinks 141 → 7 wrapper-invocation contracts.
+- New fixture `tests/fixtures/kmp-with-benchmark/` (3 modules: `bench-jvm` + `bench-android` + `no-bench` negative).
+
+### Fixed
+- **WS-2 (`declare -A` Bash 4+ crash on macOS Bash 3.2.57)** and the empty-array `set -u` landmine class — closed **by construction** for the benchmark feature. JS has no Bash version dependency, so those failure modes cannot exist in the new orchestrator. The bug class returns for the other 4 features until their respective sub-entries migrate.
+- **Discovery comment-strip bug** — the legacy bash regex matched `include(":foo")` even when prefixed by `//` (commented out in `settings.gradle.kts`), causing gradle to fail with `Cannot locate tasks that match ':foo:...'`. The new orchestrator strips Kotlin-style `//` line comments and `/* … */` block comments before matchAll, so commented-out includes are correctly ignored. Surfaced in real-workspace E2E validation.
+- **Per-module discriminator pass** — orchestrator now feeds the union of per-module gradle stdout+stderr through `applyErrorCodeDiscriminators` after dispatch, upgrading the generic `module_failed` code to the more specific `task_not_found` / `unsupported_class_version` / `instrumented_setup_failed` / `no_test_modules` when gradle's output matches those signatures.
+- **Gradle plugin task properties: missing `@get:Internal` annotation** — Gradle 9.x rejects `lateinit var extension: KmpTestRunnerExtension` on `DefaultTask` subclasses with "property 'extension' is missing an input or output annotation". All 5 task classes (`AndroidTestsTask`, `BenchmarkTestsTask`, `ChangedTestsTask`, `CoverageTask`, `ParallelTestsTask`) now annotate the field as `@get:Internal` since it's wired by the plugin, not by Gradle's task graph. CoverageTask's `koverDetected` property gets the same treatment.
+
+### Internal
+- **`KMP_TEST_RUNNER_EMIT_ENVELOPE=1`** — env var injected by `lib/cli.js` into the wrapper's spawn when the subcommand is `migrated:true` AND `--json` was requested. `lib/runner.js` honors either `--json` on its argv OR this env var to decide whether to emit the sentinel-bracketed envelope. Closes the discovered gap where `lib/cli.js#consumeJsonFlag` strips `--json` upstream, leaving the wrapper unable to know it was invoked in JSON mode.
+- **`applyErrorCodeDiscriminators` is now exported** from `lib/cli.js` so the orchestrator can reuse it directly without falling back to a no-op stub.
+
 ## [0.7.0] — 2026-05-01
 
 ### Documentation

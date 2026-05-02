@@ -1,141 +1,47 @@
 #Requires -Modules Pester
-# Tests for scripts/ps1/lib/Benchmark-Detect.ps1 helpers
-#   - Get-ModuleBenchmarkPlatforms (categorize a module's benchmark capability)
-#   - Test-ModuleSupportsPlatform (predicate used by run-benchmarks.ps1)
-#   - Get-BenchmarkGradleTask (task name resolution)
+# Wrapper-invocation contracts for scripts/ps1/run-benchmarks.ps1.
+#
+# Behavioral coverage moved to tests/vitest/benchmark-orchestrator.test.js
+# in v0.8 (PRODUCT.md "logic in Node, plumbing in shell"). This file's job
+# is to lock the wrapper shape so the benchmark feature never re-grows
+# powershell plumbing.
+#
+# (Filename retained for git history; the prior Get-ModuleBenchmarkPlatforms
+# / Test-ModuleSupportsPlatform / Get-BenchmarkGradleTask helpers were
+# deleted alongside scripts/ps1/lib/Benchmark-Detect.ps1.)
 
 BeforeAll {
-    $script:LibPath = Join-Path $PSScriptRoot '..\..\scripts\ps1\lib\Benchmark-Detect.ps1'
-    . $script:LibPath
+    $script:WrapperPath = Join-Path $PSScriptRoot '..\..\scripts\ps1\run-benchmarks.ps1'
+    $script:Content = Get-Content -Raw -Path $script:WrapperPath
+    $script:LineCount = (Get-Content -Path $script:WrapperPath).Count
 }
 
-Describe 'Get-ModuleBenchmarkPlatforms' {
-    BeforeEach {
-        $script:ProjRoot = New-Item -ItemType Directory -Path (Join-Path $TestDrive ([Guid]::NewGuid().ToString()))
+Describe 'benchmark wrapper contract' {
+    It "exec's into node lib/runner.js benchmark" {
+        $script:Content | Should -Match 'node.*lib[\\/]runner\.js.*benchmark'
     }
 
-    It 'returns "android" for an androidx.benchmark-only module' {
-        $modDir = New-Item -ItemType Directory -Path (Join-Path $script:ProjRoot 'benchmark')
-        Set-Content -Path (Join-Path $modDir 'build.gradle.kts') -Value @'
-plugins { id("com.android.library") }
-android {
-    defaultConfig {
-        testInstrumentationRunner = "androidx.benchmark.junit4.AndroidBenchmarkRunner"
-    }
-}
-'@
-        $platforms = Get-ModuleBenchmarkPlatforms -ProjectRoot $script:ProjRoot -Module 'benchmark'
-        $platforms | Should -Contain 'android'
-        $platforms | Should -Not -Contain 'jvm'
+    It "stays under 50 LOC (PRODUCT.md cap, target ~10)" {
+        $script:LineCount | Should -BeLessOrEqual 50
     }
 
-    It 'returns "jvm" for a kotlinx.benchmark-only module' {
-        $modDir = New-Item -ItemType Directory -Path (Join-Path $script:ProjRoot 'perf')
-        Set-Content -Path (Join-Path $modDir 'build.gradle.kts') -Value @'
-plugins { id("org.jetbrains.kotlinx.benchmark") version "0.4.10" }
-benchmark { targets { register("jvm") } }
-'@
-        $platforms = Get-ModuleBenchmarkPlatforms -ProjectRoot $script:ProjRoot -Module 'perf'
-        $platforms | Should -Contain 'jvm'
-        $platforms | Should -Not -Contain 'android'
+    It "uses no associative arrays (no @{}-keyed lookup patterns for state)" {
+        $script:Content | Should -Not -Match '\$MODULE_STATUS|\$MODULE_BENCHMARK_COUNT|\$MODULE_AVG_SCORE'
     }
 
-    It 'returns both for a KMP module declaring both benchmark plugins' {
-        $modDir = New-Item -ItemType Directory -Path (Join-Path $script:ProjRoot 'multi')
-        Set-Content -Path (Join-Path $modDir 'build.gradle.kts') -Value @'
-plugins {
-    id("org.jetbrains.kotlinx.benchmark")
-    id("com.android.library")
-}
-android {
-    defaultConfig {
-        testInstrumentationRunner = "androidx.benchmark.junit4.AndroidBenchmarkRunner"
-    }
-}
-'@
-        $platforms = Get-ModuleBenchmarkPlatforms -ProjectRoot $script:ProjRoot -Module 'multi'
-        $platforms | Should -Contain 'jvm'
-        $platforms | Should -Contain 'android'
-        $platforms.Count | Should -Be 2
+    It "passes argv through verbatim (uses @args splat)" {
+        $script:Content | Should -Match '@args'
     }
 
-    It 'returns empty array when no recognized benchmark plugin' {
-        $modDir = New-Item -ItemType Directory -Path (Join-Path $script:ProjRoot 'plain')
-        Set-Content -Path (Join-Path $modDir 'build.gradle.kts') -Value '// no benchmark plugin'
-        $platforms = @(Get-ModuleBenchmarkPlatforms -ProjectRoot $script:ProjRoot -Module 'plain')
-        $platforms.Count | Should -Be 0
+    It "uses ErrorActionPreference = Stop (safe default)" {
+        $script:Content | Should -Match "ErrorActionPreference\s*=\s*'Stop'"
     }
 
-    It 'returns empty array when module dir does not exist' {
-        $platforms = @(Get-ModuleBenchmarkPlatforms -ProjectRoot $script:ProjRoot -Module 'nonexistent')
-        $platforms.Count | Should -Be 0
+    It "propagates LASTEXITCODE so kmp-test sees the orchestrator's status" {
+        $script:Content | Should -Match 'exit\s+\$LASTEXITCODE'
     }
 
-    It 'returns empty array for an empty build.gradle.kts' {
-        $modDir = New-Item -ItemType Directory -Path (Join-Path $script:ProjRoot 'empty')
-        Set-Content -Path (Join-Path $modDir 'build.gradle.kts') -Value ''
-        $platforms = @(Get-ModuleBenchmarkPlatforms -ProjectRoot $script:ProjRoot -Module 'empty')
-        $platforms.Count | Should -Be 0
-    }
-
-    It 'resolves nested-colon module path (sdk:wiring-e) correctly' {
-        $modDir = New-Item -ItemType Directory -Path (Join-Path $script:ProjRoot 'sdk\wiring-e') -Force
-        Set-Content -Path (Join-Path $modDir 'build.gradle.kts') -Value @'
-plugins { id("org.jetbrains.kotlinx.benchmark") }
-'@
-        $platforms = @(Get-ModuleBenchmarkPlatforms -ProjectRoot $script:ProjRoot -Module 'sdk:wiring-e')
-        $platforms | Should -Contain 'jvm'
-    }
-}
-
-Describe 'Test-ModuleSupportsPlatform' {
-    BeforeEach {
-        $script:ProjRoot = New-Item -ItemType Directory -Path (Join-Path $TestDrive ([Guid]::NewGuid().ToString()))
-    }
-
-    It 'returns $true for jvm on a kotlinx.benchmark module' {
-        $modDir = New-Item -ItemType Directory -Path (Join-Path $script:ProjRoot 'perf')
-        Set-Content -Path (Join-Path $modDir 'build.gradle.kts') -Value 'id("org.jetbrains.kotlinx.benchmark")'
-        Test-ModuleSupportsPlatform -ProjectRoot $script:ProjRoot -Module 'perf' -Platform 'jvm' | Should -BeTrue
-    }
-
-    It 'returns $false for jvm on an androidx.benchmark-only module' {
-        $modDir = New-Item -ItemType Directory -Path (Join-Path $script:ProjRoot 'bench')
-        Set-Content -Path (Join-Path $modDir 'build.gradle.kts') -Value 'androidx.benchmark.junit4.AndroidBenchmarkRunner'
-        Test-ModuleSupportsPlatform -ProjectRoot $script:ProjRoot -Module 'bench' -Platform 'jvm' | Should -BeFalse
-    }
-
-    It 'returns $true for android on an androidx.benchmark-only module' {
-        $modDir = New-Item -ItemType Directory -Path (Join-Path $script:ProjRoot 'bench')
-        Set-Content -Path (Join-Path $modDir 'build.gradle.kts') -Value 'androidx.benchmark.junit4.AndroidBenchmarkRunner'
-        Test-ModuleSupportsPlatform -ProjectRoot $script:ProjRoot -Module 'bench' -Platform 'android' | Should -BeTrue
-    }
-
-    It 'is permissive ($true) when no benchmark plugin detected (preserves non-standard setups)' {
-        $modDir = New-Item -ItemType Directory -Path (Join-Path $script:ProjRoot 'plain')
-        Set-Content -Path (Join-Path $modDir 'build.gradle.kts') -Value '// no benchmark plugin'
-        Test-ModuleSupportsPlatform -ProjectRoot $script:ProjRoot -Module 'plain' -Platform 'jvm' | Should -BeTrue
-        Test-ModuleSupportsPlatform -ProjectRoot $script:ProjRoot -Module 'plain' -Platform 'android' | Should -BeTrue
-    }
-
-    It 'is permissive ($true) when module dir does not exist' {
-        Test-ModuleSupportsPlatform -ProjectRoot $script:ProjRoot -Module 'nonexistent' -Platform 'jvm' | Should -BeTrue
-    }
-}
-
-Describe 'Get-BenchmarkGradleTask' {
-    It 'maps jvm/smoke to :module:desktopSmokeBenchmark' {
-        Get-BenchmarkGradleTask -Module 'foo' -Platform 'jvm' -Config 'smoke' | Should -Be ':foo:desktopSmokeBenchmark'
-    }
-    It 'maps jvm/stress to :module:desktopStressBenchmark' {
-        Get-BenchmarkGradleTask -Module 'foo' -Platform 'jvm' -Config 'stress' | Should -Be ':foo:desktopStressBenchmark'
-    }
-    It 'maps jvm/main to :module:desktopBenchmark' {
-        Get-BenchmarkGradleTask -Module 'foo' -Platform 'jvm' -Config 'main' | Should -Be ':foo:desktopBenchmark'
-    }
-    It 'maps android (any config) to :module:connectedAndroidTest' {
-        Get-BenchmarkGradleTask -Module 'foo' -Platform 'android' -Config 'smoke' | Should -Be ':foo:connectedAndroidTest'
-        Get-BenchmarkGradleTask -Module 'foo' -Platform 'android' -Config 'main' | Should -Be ':foo:connectedAndroidTest'
-        Get-BenchmarkGradleTask -Module 'foo' -Platform 'android' -Config 'stress' | Should -Be ':foo:connectedAndroidTest'
+    It "no output parsing (no Select-String / -match on gradle output piped in)" {
+        $script:Content | Should -Not -Match '\| (Select-String|Where-Object|ForEach-Object)'
     }
 }

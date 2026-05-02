@@ -59,4 +59,22 @@ val syncScripts by tasks.registering(Sync::class) {
     from("../scripts/sh")
     into(layout.buildDirectory.dir("resources/main/scripts/sh"))
 }
-tasks.named("processResources") { dependsOn(syncScripts) }
+
+// v0.8 STRATEGIC PIVOT: bundle lib/ + package.json for migrated subcommands.
+// Tasks (BenchmarkTestsTask + future ChangedTestsTask, AndroidTestsTask, etc.)
+// extract this tree to a temp dir at runtime and invoke `node lib/runner.js
+// <feature>` directly. Sub-entry 1 (benchmark) is the first consumer.
+val syncLib by tasks.registering(Sync::class) {
+    from("../lib")
+    into(layout.buildDirectory.dir("resources/main/lib"))
+}
+val syncPackageJson by tasks.registering(Sync::class) {
+    from("..") {
+        include("package.json")
+    }
+    into(layout.buildDirectory.dir("resources/main"))
+}
+
+tasks.named("processResources") {
+    dependsOn(syncScripts, syncLib, syncPackageJson)
+}
