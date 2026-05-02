@@ -167,6 +167,35 @@ Stays in CI as a regression-guard against Bash 3.2 patterns in the remaining bas
 2. Refine this BACKLOG entry into a per-feature migration plan with concrete acceptance criteria.
 3. Open first migration PR: `feat(node): migrate benchmark orchestrator to lib/benchmark-orchestrator.js`. Validates the pattern end-to-end before committing to the larger features.
 
+---
+
+#### v0.8.0 — Release readiness gate (post Sub-entry 5)
+
+Once Sub-entries 1-5 land, the v0.8.0 stamp does NOT ship until the four gates below are green. Surfaced 2026-05-02 during Sub-entry 2 review: PRODUCT.md success criterion #2 ("OS parity. Windows / Linux / macOS all behave identically modulo platform constraints") is enforced today only at the docs-text level — there is no CI workflow that verifies cross-OS parity of the `--json` envelope, and no green CI history for real iOS / macOS test execution on macOS hosts. Without these gates, "iOS works on macOS" rests on the maintainer's local wide-smoke alone, which doesn't survive in green/red CI history.
+
+This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not a sixth sub-entry — Sub-entries 1-5 stand alone. This is the release-readiness work that runs once Sub-entry 5 closes the bash → Node migration.
+
+1. **Cross-OS CLI parity workflow (NEW `cross-os-parity.yml`).** Matrix `{ubuntu-latest, windows-latest, macos-latest}` runs `kmp-test {parallel,changed,coverage,android,benchmark} --json --dry-run` against `tests/fixtures/kmp-cross-platform-e2e/` (see gate 2). For each subcommand, diff the captured envelope across the three OSes modulo an explicit allowlist of platform-specific fields (`android.device_serial`, `errors[].code:"platform_unsupported"` on Win/Linux for `--test-type ios|macos`, OS-specific paths in `project_root`, etc.). Fail the job if any non-allowlisted field diverges. **Effort: ~2-3h** (workflow + diff logic in Node + allowlist documentation). Becomes a **required** check on the v0.8.0 release PR.
+
+2. **Buildable cross-platform E2E fixture promoted from "v0.7.x patch / v0.8.0 minor / v1.0" to v0.8.0 release-blocker.** The "Buildable cross-platform E2E fixture project" entry below (currently scoped flexibly across releases) is reclassified as a v0.8.0 dependency. The fixture under `tests/fixtures/kmp-cross-platform-e2e/` must include real `gradle/wrapper/`, `gradlew[.bat]`, KMP modules with every supported target (`jvm`, `js(IR)`, `wasmJs`, `iosX64+iosSimulatorArm64`, `macosArm64`, `androidLibrary`/`androidTarget`), pinned Kotlin + AGP versions, and a trivial passing test in each test source set. The `e2e (macos-latest)` leg of the new `e2e-cross-platform.yml` workflow boots an iOS simulator and runs `:module:iosSimulatorArm64Test` + `:module:macosArm64Test` for real (not just dispatch). **This is the only place where iOS actually runs in CI.** Effort estimate from the existing entry stands: ~6-10h fixture + flakiness budget.
+
+3. **Branch-protection promotions.** `bats-macos` and `gradle-plugin-test-ios` move from informational to **required** status checks on `develop` and `main`. Promotion criteria: each must be green on at least 5 consecutive PRs after Sub-entry 5 lands (de-flake confidence — the bats-macos hang in `tests/bats/` and the install.bats adb-orphan flake must both be addressed first). The new `cross-os-parity` (gate 1) and `e2e (macos-latest)` (gate 2) jobs also become required at the same promotion. Effort: ~1-2h (manual `Settings → Branches → Edit rule` per CLAUDE.md "Adding a new required check" + verification PR).
+
+4. **Wide-smoke release validation on the maintainer's macOS.** Per existing `feedback_e2e_validate_as_you_go` memory, run all 5 subcommands × `{Confetti, KaMPKit, PeopleInSpace}` × `{--test-type all, androidUnit, androidInstrumented, common, desktop, ios, macos}` matrix on the maintainer's macOS before tagging v0.8.0. This is **in addition to** (not instead of) the synthetic E2E in gate 2 — the synthetic catches deterministic regressions; wide-smoke catches integration-level surprises against real-world projects with pinned dependencies the maintainer doesn't control. Hardware: Galaxy S22 Ultra connected for Android instrumented; iOS 26.4 Simulator runtime; JDK catalogue 11/17/21. Logs preserved on the host machine. Effort: ~2-3h ad-hoc.
+
+**Why this gate exists explicitly (vs leaving Sub-entry 5's existing acceptance line "the largest test surface in the repo lives here" load-bearing):**
+
+- Sub-entry 5 acceptance criteria validate `--test-type ios → PASS only on iOS-capable modules + rest skipped[]`. That's the **detection** path — it doesn't validate that simulator boot + test execution actually work end-to-end on macOS. iOS on macOS could silently regress and Sub-entry 5 vitest + bats would still go green.
+- Sub-entry 5 risks-line mention of "`gradle-plugin-test-ios` can be promoted from informational to required" is informational, not a blocking criterion. This entry makes it blocking.
+- v0.8.0's pitch is "no more Bash bug class on macOS, OS parity is honest". Without gates 1+2 enforcing in CI, the pitch rests on local wide-smoke that doesn't survive PR rotation.
+
+**Effort total: ~10-15h.** Spread across the v0.8.0 release ramp after Sub-entry 5 merges, before tagging `v0.8.0`. Each gate is independent (can be parallelized across multiple PRs).
+
+**Out of scope for this entry:**
+- Promoting `installer-e2e (macos-latest)` to required — it's already required in the existing 7-check matrix.
+- Re-using an existing OSS KMP project as the cross-platform E2E fixture — see Buildable cross-platform E2E fixture entry below for that decision.
+- New CLI features. v0.8.0 is "migrate plumbing + lock the cross-platform contract"; new flags / envelope shapes go in v0.9 / v0.8.x patches.
+
 ### v0.7.x — Wide-smoke validation findings (mom's MacBook session, 2026-05-01)
 
 **Surfaced 2026-05-01 during cross-project wide-smoke validation against PeopleInSpace, Confetti (multi-module ~13 subprojects), and KaMPKit at `/Volumes/XcodeOscar/kmp-test-workspace/`. Validation hardware: Galaxy S22 Ultra (SM-S908B, Android 16, arm64-v8a, instrumented tests), iOS 26.4 Simulator runtime (10 devices: iPhone 17 Pro/Air/17e, iPad Pro M5, etc.), JDK catalogue 11/17/21, host JDK 21 default.** Eleven issues uncovered (twelfth `SKIPPED_MODULES` fix tracked separately below). Target: clear ALL before v0.8.0.
