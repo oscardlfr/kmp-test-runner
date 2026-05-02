@@ -5,16 +5,16 @@
 
 BeforeAll {
     $script:RepoRoot      = Resolve-Path (Join-Path $PSScriptRoot '..\..')
-    $script:AndroidScript = Join-Path $script:RepoRoot 'scripts\ps1\run-android-tests.ps1'
-    # benchmark banners now live in lib/benchmark-orchestrator.js (Node-side
-    # since v0.8 sub-entry 1). Asserting on the .ps1 wrapper would fail —
-    # it's a 7-line node-launcher with no banner emission.
-    $script:BenchOrchestrator = Join-Path $script:RepoRoot 'lib\benchmark-orchestrator.js'
-    $script:AndroidText   = Get-Content -Path $script:AndroidScript -Raw
-    $script:BenchText     = Get-Content -Path $script:BenchOrchestrator -Raw
+    # benchmark + android banners now live in lib/<feature>-orchestrator.js
+    # (Node-side since v0.8 sub-entries 1+3). Asserting on the .ps1 wrappers
+    # would fail — they are thin node-launchers with no banner emission.
+    $script:BenchOrchestrator   = Join-Path $script:RepoRoot 'lib\benchmark-orchestrator.js'
+    $script:AndroidOrchestrator = Join-Path $script:RepoRoot 'lib\android-orchestrator.js'
+    $script:BenchText   = Get-Content -Path $script:BenchOrchestrator -Raw
+    $script:AndroidText = Get-Content -Path $script:AndroidOrchestrator -Raw
 }
 
-Describe 'run-android-tests.ps1: parseAndroidSummary contract (Bug G)' {
+Describe 'lib/android-orchestrator.js: parseAndroidSummary contract (Bug G)' {
 
     It 'emits the === JSON SUMMARY === delimiter parseAndroidSummary keys off' {
         $script:AndroidText | Should -Match '=== JSON SUMMARY ==='

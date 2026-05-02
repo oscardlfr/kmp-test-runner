@@ -228,31 +228,10 @@ Describe 'Cache format regression — module:task without leading colon' {
     }
 }
 
-Describe 'run-android-tests.ps1 — single-item pipeline collapse (summary.json counts)' {
-
-    BeforeAll {
-        $script:RunAndroid = Join-Path $script:RepoRoot 'scripts\ps1\run-android-tests.ps1'
-        $script:RunAndroidText = Get-Content $script:RunAndroid -Raw
-    }
-
-    It 'wraps $modules filter result in @(...) so .Count is the array length' {
-        # Without @(...) the single-item Where-Object pipeline collapses to a
-        # hashtable and $modules.Count returned the number of HASHTABLE KEYS
-        # (5: Name, Path, HasFlavor, IsKmp, Description) instead of array
-        # length 1, propagating into summary.json as `totalModules: 5` for
-        # single-module runs.
-        $script:RunAndroidText | Should -Match '\$modules\s*=\s*@\(\s*\$modules\s*\|\s*Where-Object'
-    }
-
-    It 'wraps $totalSuccess and $totalFailure in @(...) for the same reason' {
-        # Single-result runs would otherwise report `passedModules: 11` (the
-        # 11 keys in the per-module result hashtable: Module, Status, Duration,
-        # Success, TestsPassed, TestsFailed, TestsSkipped, LogFile, LogcatFile,
-        # ErrorsFile, Retried).
-        $script:RunAndroidText | Should -Match '\$totalSuccess\s*=\s*@\(\$results\s*\|\s*Where-Object'
-        $script:RunAndroidText | Should -Match '\$totalFailure\s*=\s*@\(\$results\s*\|\s*Where-Object'
-    }
-}
+# Pipeline-collapse tests for run-android-tests.ps1 deleted in v0.8 sub-entry 3.
+# The bash counter-loop in the wrapper no longer exists — orchestrator lives in
+# lib/android-orchestrator.js (Node) and counts via JS arrays. The collapse bug
+# class is structurally impossible in JS.
 
 Describe 'Clear-GradleTasksCache: cleans up tasks-*.txt files' {
 
@@ -288,17 +267,11 @@ Describe 'parallel.ps1 (Bug B'') and run-android-tests.ps1 (Bug B'') wiring' {
         (Get-Content $parallel -Raw) | Should -Match 'no coverage plugin applied'
     }
 
-    It "run-android-tests.ps1 sources Gradle-Tasks-Probe.ps1" {
-        $android = Join-Path $script:RepoRoot 'scripts\ps1\run-android-tests.ps1'
-        (Get-Content $android -Raw) | Should -Match 'Gradle-Tasks-Probe\.ps1'
-    }
-
-    It "run-android-tests.ps1 has -DeviceTask param + Get-ModuleFirstExistingTask call" {
-        $android = Join-Path $script:RepoRoot 'scripts\ps1\run-android-tests.ps1'
-        (Get-Content $android -Raw) | Should -Match '\$DeviceTask\s*='
-        (Get-Content $android -Raw) | Should -Match 'Get-ModuleFirstExistingTask'
-        (Get-Content $android -Raw) | Should -Match 'androidConnectedCheck'
-    }
+    # run-android-tests.ps1 wiring tests deleted in v0.8 sub-entry 3 — the
+    # ps1 wrapper is now thin (`& node lib\runner.js android @args`) and no
+    # longer sources Gradle-Tasks-Probe.ps1 / declares -DeviceTask / calls
+    # Get-ModuleFirstExistingTask. Equivalent contracts are now exercised
+    # in tests/vitest/android-orchestrator.test.js via the Node orchestrator.
 }
 
 Describe 'parallel.ps1 (Bug E): no-coverage-data banner + machine marker' {
