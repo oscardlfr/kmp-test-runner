@@ -39,6 +39,7 @@ import {
   stripAnsi,
   parseScriptOutput,
   buildJsonReport,
+  enforceErrorsExitCodeInvariant,
   buildDryRunReport,
   envErrorJson,
   translateFlagForPowerShell,
@@ -279,6 +280,19 @@ describe('parseScriptOutput', () => {
     expect(r.errors.find(e => e.code === 'no_summary')).toBeUndefined();
   });
 
+  // UX-2 (v0.7.x): when --module-filter is the default `*` and --test-type
+  // rejected every module, the wrapper now words the message to point at the
+  // test-type — but the discriminator code stays `no_test_modules` so agents
+  // don't have to branch on the wording.
+  it('discriminates code: no_test_modules on the UX-2 "No modules support the requested" wording', () => {
+    const out = '[ERROR] No modules support the requested --test-type=ios\n';
+    const r = parseScriptOutput(out, '', []);
+    const e = r.errors.find(x => x.code === 'no_test_modules');
+    expect(e).toBeDefined();
+    expect(e.message).toMatch(/^\[ERROR\] No modules support the requested --test-type=ios/);
+    expect(r.errors.find(x => x.code === 'no_summary')).toBeUndefined();
+  });
+
   it('captures [SKIP] mod (reason) lines into skipped[]', () => {
     const out = '[SKIP] composeApp (no test source set - pass --include-untested to override)\nBUILD SUCCESSFUL\n';
     const r = parseScriptOutput(out, '', []);
@@ -399,6 +413,62 @@ describe('buildJsonReport', () => {
       parsed,
     });
     expect(obj.skipped).toEqual([{ module: 'core-foo', reason: 'no test source set' }]);
+  });
+});
+
+// WS-5 (v0.7.x): the JSON envelope contract requires errors[] non-empty to
+// IMPLY exit_code != 0. Pre-fix, a wrapper run could exit 0 while a
+// discriminator (e.g. task_not_found) had still pushed an error — agents
+// branching on errors.length got false positives on a "passing" run. The
+// wrapper-side WS-1 fix already increments FAILURE_COUNT correctly so this
+// is mostly defense-in-depth, but the invariant locks the contract on the
+// CLI side too (covers any future regression on the wrapper side).
+describe('enforceErrorsExitCodeInvariant (WS-5)', () => {
+  it('promotes scriptStatus 0 to TEST_FAIL (1) when errors[] is non-empty', () => {
+    const parsed = { errors: [{ code: 'task_not_found', message: 'Cannot locate tasks ...' }] };
+    expect(enforceErrorsExitCodeInvariant(0, parsed)).toBe(1);
+  });
+
+  it('preserves scriptStatus 0 when errors[] is empty', () => {
+    expect(enforceErrorsExitCodeInvariant(0, { errors: [] })).toBe(0);
+  });
+
+  it('preserves non-zero scriptStatus regardless of errors[]', () => {
+    const parsed = { errors: [{ code: 'task_not_found' }] };
+    expect(enforceErrorsExitCodeInvariant(3, parsed)).toBe(3);
+    expect(enforceErrorsExitCodeInvariant(2, parsed)).toBe(2);
+    expect(enforceErrorsExitCodeInvariant(1, parsed)).toBe(1);
+  });
+
+  it('handles missing errors field defensively (treated as empty)', () => {
+    expect(enforceErrorsExitCodeInvariant(0, {})).toBe(0);
+    expect(enforceErrorsExitCodeInvariant(0, null)).toBe(0);
+    expect(enforceErrorsExitCodeInvariant(0, undefined)).toBe(0);
+  });
+
+  it('does NOT promote when only the no_summary parse-gap fallback is present', () => {
+    // no_summary fires whenever the wrapper output had no recognizable summary
+    // line. This is recoverable: stub scripts in unit tests legitimately exit 0
+    // and the parse-gap fallback catches the empty output. Promoting these to
+    // TEST_FAIL would break every spawnSync-mocked test in the suite.
+    const parsed = { errors: [{ code: 'no_summary', message: '...' }] };
+    expect(enforceErrorsExitCodeInvariant(0, parsed)).toBe(0);
+  });
+
+  it('promotes when no_summary coexists with a hard discriminator', () => {
+    // Mixed-bag case: parse-gap fallback fires AND a real discriminator
+    // (task_not_found) is present. The hard error wins → promotion.
+    const parsed = { errors: [
+      { code: 'no_summary', message: '...' },
+      { code: 'task_not_found', message: 'Cannot locate ...' },
+    ] };
+    expect(enforceErrorsExitCodeInvariant(0, parsed)).toBe(1);
+  });
+
+  it('promotes when ANY discriminator is in errors[] (not just task_not_found)', () => {
+    for (const code of ['task_not_found', 'unsupported_class_version', 'instrumented_setup_failed', 'no_test_modules']) {
+      expect(enforceErrorsExitCodeInvariant(0, { errors: [{ code }] })).toBe(1);
+    }
   });
 });
 

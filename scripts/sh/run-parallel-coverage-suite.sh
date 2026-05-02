@@ -51,6 +51,7 @@ export KMP_RUN_ID
 PROJECT_ROOT=""
 INCLUDE_SHARED=false
 TEST_TYPE=""
+TEST_TYPE_EXPLICIT=false  # UX-2: distinguish auto-defaulted from user-supplied
 MODULE_FILTER="*"
 SKIP_TESTS=false
 MIN_MISSED_LINES=0
@@ -112,7 +113,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --project-root)       PROJECT_ROOT="$2"; shift 2 ;;
         --include-shared)     INCLUDE_SHARED=true; shift ;;
-        --test-type)          TEST_TYPE="$2"; shift 2 ;;
+        --test-type)          TEST_TYPE="$2"; TEST_TYPE_EXPLICIT=true; shift 2 ;;
         --module-filter)      MODULE_FILTER="$2"; shift 2 ;;
         --skip-tests)         SKIP_TESTS=true; shift ;;
         --min-missed-lines)   MIN_MISSED_LINES="$2"; shift 2 ;;
@@ -532,7 +533,19 @@ fi
 
 MODULE_COUNT="${#MOD_NAMES[@]}"
 if [[ "$MODULE_COUNT" -eq 0 ]]; then
-    err "[ERROR] No modules found matching filter: $MODULE_FILTER"
+    # UX-2: when --module-filter was left at the default `*` AND the user
+    # explicitly passed --test-type AND --exclude-modules wasn't used, the
+    # literal-glob framing is misleading — the filter that actually rejected
+    # everything is --test-type (no module declares the requested target).
+    # Word the message to point at the real cause; the parser treats both
+    # lines as the same `no_test_modules` discriminator. The auto-defaulted
+    # --test-type case keeps the original wording so existing behavior
+    # (e.g. --exclude-modules removing every module) reads naturally.
+    if [[ "$MODULE_FILTER" == "*" && "$TEST_TYPE_EXPLICIT" == "true" && -z "$EXCLUDE_MODULES" ]]; then
+        err "[ERROR] No modules support the requested --test-type=$TEST_TYPE"
+    else
+        err "[ERROR] No modules found matching filter: $MODULE_FILTER"
+    fi
     exit 3
 fi
 
@@ -589,6 +602,24 @@ for mi in "${!MOD_NAMES[@]}"; do
         color_print "$DARK_YELLOW" "  [SKIP] ${MOD_NAMES[$mi]} (no $TEST_TYPE tests)"
         continue
     fi
+
+    # UX-1 (v0.7.x): require the module to actually declare a target for
+    # the requested test type before queuing the gradle task. Without this
+    # filter the wrapper would queue a non-existent task (e.g.
+    # :androidApp:iosSimulatorArm64Test on an Android-only module, or
+    # :androidApp:desktopTest on a module without a jvm target), and gradle
+    # would abort the entire invocation at task-graph resolution, taking
+    # down even modules that DO support the target. Source of truth is the
+    # project model (pm_get_*_test_task) with a filesystem fallback.
+    case "$TEST_TYPE" in
+        ios|macos|common|desktop)
+            if ! module_supports_test_type "$PROJECT_ROOT" "${MOD_NAMES[$mi]}" "$TEST_TYPE"; then
+                SKIPPED_MODULES+=("${MOD_NAMES[$mi]}")
+                color_print "$DARK_YELLOW" "  [SKIP] ${MOD_NAMES[$mi]} (no $TEST_TYPE target)"
+                continue
+            fi
+            ;;
+    esac
 
     TESTABLE_INDICES+=("$mi")
 
@@ -876,10 +907,16 @@ if ! $SKIP_TESTS && [[ "${#ALL_TEST_TASKS[@]}" -gt 0 ]]; then
     # Wait for process to finish and get exit code
     wait "$GRADLE_PID" 2>/dev/null && TEST_EXIT_CODE=0 || TEST_EXIT_CODE=$?
 
-    # Read test output
+    # Read test output (stdout + stderr — WS-1: gradle's "Cannot locate tasks
+    # that match" message can land on either stream depending on gradle version
+    # and configuration, so per-task detection scans both).
     TEST_OUTPUT=""
     if [[ -f "$TEMP_LOG" ]]; then
         TEST_OUTPUT="$(cat "$TEMP_LOG" 2>/dev/null || true)"
+    fi
+    TEST_OUTPUT_ERR=""
+    if [[ -f "$TEMP_LOG_ERR" ]]; then
+        TEST_OUTPUT_ERR="$(cat "$TEMP_LOG_ERR" 2>/dev/null || true)"
     fi
 
     # Clean up temp files
@@ -890,6 +927,22 @@ if ! $SKIP_TESTS && [[ "${#ALL_TEST_TASKS[@]}" -gt 0 ]]; then
         err "[!] Timed out after ${TIMEOUT}s."
         warn "[!] Tip: Run tests on individual modules to isolate the issue"
         TEST_EXIT_CODE=124
+    fi
+
+    # WS-1: when gradle could not locate one or more requested tasks (e.g.
+    # `--test-type ios` on a JVM-only module), the entire build aborts at
+    # task-graph resolution time BEFORE any task runs — so zero per-task
+    # FAILED markers appear in stdout, and the legacy default-to-PASS path
+    # below would mis-report every module as passed. Detect this once and
+    # mark ALL testable modules failed in the per-task loop. Also surface
+    # gradle's canonical "Cannot locate" line(s) on the wrapper's stderr so
+    # the CLI parser's task_not_found discriminator fires (the wrapper
+    # otherwise consumes gradle stderr via TEMP_LOG_ERR and never re-emits it).
+    GRADLE_RESOLUTION_FAILED=false
+    if printf '%s\n%s' "$TEST_OUTPUT" "$TEST_OUTPUT_ERR" | grep -qE 'Cannot locate tasks? that match'; then
+        GRADLE_RESOLUTION_FAILED=true
+        printf '%s\n%s' "$TEST_OUTPUT" "$TEST_OUTPUT_ERR" \
+            | grep -E 'Cannot locate tasks? that match' >&2 || true
     fi
 
     # Parse output to determine per-module results
@@ -938,6 +991,16 @@ if ! $SKIP_TESTS && [[ "${#ALL_TEST_TASKS[@]}" -gt 0 ]]; then
         escaped_task="$(echo "$task_name" | sed 's/[.[\*^$()+?{|\\]/\\&/g')"
         if echo "$TEST_OUTPUT" | grep -q "${escaped_task} FAILED"; then
             err "  [FAIL] $mod_name"
+            RESULT_STATUS[$idx]="failed"
+            FAILURE_COUNT=$((FAILURE_COUNT + 1))
+        elif $GRADLE_RESOLUTION_FAILED; then
+            # WS-1: gradle aborted at task-graph resolution (some requested
+            # task didn't exist on its project — e.g. iosSimulatorArm64Test
+            # on a JVM-only module). The build never reached execution, so
+            # NO module's task ran. Mark every testable module failed; gradle
+            # only names the FIRST missing task in its error, but every other
+            # task in the same invocation also did not run.
+            err "  [FAIL] $mod_name (task not found / build aborted at resolution)"
             RESULT_STATUS[$idx]="failed"
             FAILURE_COUNT=$((FAILURE_COUNT + 1))
         else

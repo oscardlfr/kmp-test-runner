@@ -154,6 +154,103 @@ module_has_test_sources() {
     _module_has_test_sources_fs "$1"
 }
 
+# UX-1 (v0.7.x): does a module declare a target/source set for the requested
+# test type? Used by the parallel wrapper to skip modules that lack the
+# requested target BEFORE invoking gradle — without this filter, the wrapper
+# would queue a non-existent task (e.g. :androidApp:iosSimulatorArm64Test on
+# an Android-only module, or :androidApp:desktopTest on a module without a
+# jvm target) and gradle would abort the entire build at task-graph
+# resolution, taking down even modules that DO support the target.
+#
+# Source of truth: project model JSON (pm_get_*_test_task / pm_get_unit_test_task),
+# with a filesystem fallback that checks BOTH src/<platform>Main (production
+# code → target is declared in build.gradle.kts → gradle task exists, may be
+# a no-op if Test source set is missing) AND src/<platform>Test. Returns 0
+# (true) for test_type values not handled here — those flow through the
+# existing module_has_test_sources path.
+#
+# Handled test types: ios, macos (v0.7.0 iOS/macOS dispatch);
+# common, desktop (gradle desktopTest task — needs jvm()/jvm("desktop") target).
+#
+# Usage: module_supports_test_type <project_root> <module_name> <test_type>
+module_supports_test_type() {
+    local project_root="$1"
+    local module_name="$2"
+    local test_type="$3"
+
+    case "$test_type" in
+        ios|macos|common|desktop) ;;
+        *) return 0 ;;
+    esac
+
+    # Lazy-source the project-model readers — sibling lib in the same dir.
+    if ! type pm_get_ios_test_task >/dev/null 2>&1; then
+        local _pm_lib_dir
+        _pm_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        # shellcheck source=./project-model.sh
+        [[ -f "$_pm_lib_dir/project-model.sh" ]] && source "$_pm_lib_dir/project-model.sh"
+    fi
+
+    local model_task=""
+    case "$test_type" in
+        ios)
+            type pm_get_ios_test_task >/dev/null 2>&1 \
+                && model_task="$(pm_get_ios_test_task "$project_root" "$module_name" 2>/dev/null || true)"
+            ;;
+        macos)
+            type pm_get_macos_test_task >/dev/null 2>&1 \
+                && model_task="$(pm_get_macos_test_task "$project_root" "$module_name" 2>/dev/null || true)"
+            ;;
+        common|desktop)
+            # `--test-type common` and `--test-type desktop` both dispatch
+            # gradle's desktopTest. The model's unitTestTask captures the
+            # JVM/desktop test task name when the module declares it.
+            type pm_get_unit_test_task >/dev/null 2>&1 \
+                && model_task="$(pm_get_unit_test_task "$project_root" "$module_name" 2>/dev/null || true)"
+            ;;
+    esac
+    [[ -n "$model_task" ]] && return 0
+
+    # Filesystem fallback per test-type. Use `tr` for the colon→slash
+    # substitution: bash 3.2's `${var//:/\/}` form leaks the backslash as
+    # a literal char in the result (`backend\/service-import`), which
+    # silently breaks the lookup for nested gradle modules. `tr` is
+    # version-agnostic.
+    local module_path
+    module_path="$(printf '%s' "$project_root/${module_name#:}" | tr ':' '/')"
+    case "$test_type" in
+        ios)
+            [[ -d "$module_path/src/iosMain" ]] && return 0
+            [[ -d "$module_path/src/iosX64Main" ]] && return 0
+            [[ -d "$module_path/src/iosArm64Main" ]] && return 0
+            [[ -d "$module_path/src/iosSimulatorArm64Main" ]] && return 0
+            [[ -d "$module_path/src/iosTest" ]] && return 0
+            [[ -d "$module_path/src/iosX64Test" ]] && return 0
+            [[ -d "$module_path/src/iosArm64Test" ]] && return 0
+            [[ -d "$module_path/src/iosSimulatorArm64Test" ]] && return 0
+            ;;
+        macos)
+            [[ -d "$module_path/src/macosMain" ]] && return 0
+            [[ -d "$module_path/src/macosX64Main" ]] && return 0
+            [[ -d "$module_path/src/macosArm64Main" ]] && return 0
+            [[ -d "$module_path/src/macosTest" ]] && return 0
+            [[ -d "$module_path/src/macosX64Test" ]] && return 0
+            [[ -d "$module_path/src/macosArm64Test" ]] && return 0
+            ;;
+        common|desktop)
+            # gradle desktopTest needs a jvm()/jvm("desktop") target. Evidence:
+            # any jvm/desktop main or test source set on disk. (commonMain /
+            # commonTest alone are NOT sufficient — pure-common KMP modules
+            # with no platform target have no platform tasks.)
+            [[ -d "$module_path/src/jvmMain" ]] && return 0
+            [[ -d "$module_path/src/desktopMain" ]] && return 0
+            [[ -d "$module_path/src/jvmTest" ]] && return 0
+            [[ -d "$module_path/src/desktopTest" ]] && return 0
+            ;;
+    esac
+    return 1
+}
+
 # Internal: filesystem-walk fallback. Checks the 18 standard directories
 # (9 baseline + 3 from v0.6 Bug 3 JS/Wasm + 6 from v0.7.0 iOS-arch/macOS).
 _module_has_test_sources_fs() {
