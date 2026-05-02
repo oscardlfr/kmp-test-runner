@@ -22,6 +22,7 @@ open class BenchmarkTestsTask : DefaultTask() {
     private val libResources = listOf(
         "/lib/runner.js",
         "/lib/benchmark-orchestrator.js",
+        "/lib/orchestrator-utils.js",
         "/lib/cli.js",
         "/lib/jdk-catalogue.js",
         "/lib/project-model.js",

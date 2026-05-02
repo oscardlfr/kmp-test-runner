@@ -1264,6 +1264,78 @@ describe('resolveTasksFor coverage prediction (Gap A)', () => {
   });
 });
 
+// v0.8 sub-entry 2 — predictTaskFromSourceSets fallback (BACKLOG line 215-244).
+// When `gradleTasks` is null (probe didn't run / cache miss) AND the analysis
+// carries `sourceSets` flags, predict the task name by walking the same
+// candidate order the populated branch uses. Fixes: Confetti `:shared` with
+// `jvm()` target gets `unitTestTask: 'jvmTest'` instead of falling through to
+// the hardcoded `desktopTest` and triggering a "Cannot locate tasks" failure.
+describe('resolveTasksFor source-set prediction (v0.8 sub-entry 2)', () => {
+  it('predicts unitTestTask=jvmTest when gradleTasks null + only jvmTest source set', () => {
+    const r = resolveTasksFor(':m', null, {
+      type: 'kmp',
+      sourceSets: { jvmTest: true },
+    });
+    expect(r.unitTestTask).toBe('jvmTest');
+  });
+
+  it('predicts unitTestTask=desktopTest with precedence over jvmTest when both source sets present', () => {
+    const r = resolveTasksFor(':m', null, {
+      type: 'kmp',
+      sourceSets: { desktopTest: true, jvmTest: true },
+    });
+    expect(r.unitTestTask).toBe('desktopTest');
+  });
+
+  it('JS-only KMP module: predicts unitTestTask=jsTest when no JVM source sets present', () => {
+    const r = resolveTasksFor(':m', null, {
+      type: 'kmp',
+      sourceSets: { jsTest: true },
+    });
+    expect(r.unitTestTask).toBe('jsTest');
+    expect(r.webTestTask).toBe('jsTest');
+  });
+
+  it('predicts iosTestTask=iosSimulatorArm64Test with precedence over iosX64Test when both present', () => {
+    const r = resolveTasksFor(':m', null, {
+      type: 'kmp',
+      sourceSets: { iosSimulatorArm64Test: true, iosX64Test: true, iosArm64Test: true },
+    });
+    expect(r.iosTestTask).toBe('iosSimulatorArm64Test');
+  });
+
+  it('predicts macosTestTask=macosArm64Test with precedence over macosX64Test when both present', () => {
+    const r = resolveTasksFor(':m', null, {
+      type: 'kmp',
+      sourceSets: { macosArm64Test: true, macosX64Test: true },
+    });
+    expect(r.macosTestTask).toBe('macosArm64Test');
+  });
+
+  it('returns null fields when gradleTasks null + analysis has empty sourceSets', () => {
+    const r = resolveTasksFor(':m', null, {
+      type: 'kmp',
+      sourceSets: {},
+    });
+    expect(r.unitTestTask).toBeNull();
+    expect(r.deviceTestTask).toBeNull();
+    expect(r.webTestTask).toBeNull();
+    expect(r.iosTestTask).toBeNull();
+    expect(r.macosTestTask).toBeNull();
+  });
+
+  it('deviceTestTask remains null even with android source sets (task name != source-set name)', () => {
+    // The populated branch picks `connectedDebugAndroidTest` etc. — those task
+    // names do NOT match any source set. Prediction can't infer them from
+    // source-set walking; consumers fall back to gradle probe or static defaults.
+    const r = resolveTasksFor(':m', null, {
+      type: 'kmp',
+      sourceSets: { androidInstrumentedTest: true, androidTest: true },
+    });
+    expect(r.deviceTestTask).toBeNull();
+  });
+});
+
 describe('buildProjectModel applies build-logic hints (Gap A integration)', () => {
   it('module without per-module kover signal inherits via build-logic hint and predicts coverageTask', () => {
     const dir = makeProject();
