@@ -6,22 +6,41 @@ import org.gradle.api.DefaultTask
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.TaskAction
 import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 
 open class AndroidTestsTask : DefaultTask() {
     @get:Internal
     lateinit var extension: KmpTestRunnerExtension
 
+    // v0.8 STRATEGIC PIVOT (sub-entry 3): android orchestrator now lives in
+    // lib/android-orchestrator.js. The orchestrator dispatches gradle directly
+    // (no subprocess to parallel-coverage-suite), so the bundle is just the
+    // lib/ tree — no scripts/sh/ entries needed (unlike ChangedTestsTask).
+    private val libResources = listOf(
+        "/lib/runner.js",
+        "/lib/android-orchestrator.js",
+        "/lib/orchestrator-utils.js",
+        "/lib/cli.js",
+        "/lib/jdk-catalogue.js",
+        "/lib/project-model.js",
+        "/package.json",
+    )
+
     @TaskAction
     fun run() {
-        val url = javaClass.getResource("/scripts/sh/run-android-tests.sh")
-            ?: error("Bundled script not found: run-android-tests.sh")
-        val tempScript = Files.createTempFile("kmp-test-", ".sh")
+        val tempDir = Files.createTempDirectory("kmp-test-android-")
         try {
-            url.openStream().use { Files.copy(it, tempScript, StandardCopyOption.REPLACE_EXISTING) }
-            tempScript.toFile().setExecutable(true)
+            for (resource in libResources) {
+                val url = javaClass.getResource(resource)
+                    ?: error("Bundled resource not found: $resource")
+                val dest: Path = tempDir.resolve(resource.trimStart('/'))
+                Files.createDirectories(dest.parent)
+                url.openStream().use { Files.copy(it, dest, StandardCopyOption.REPLACE_EXISTING) }
+            }
+            val runnerPath = tempDir.resolve("lib/runner.js").toString()
             val cmd = mutableListOf(
-                "bash", tempScript.toString(),
+                "node", runnerPath, "android",
                 "--project-root", extension.projectRoot
             )
             val pb = ProcessBuilder(cmd).redirectErrorStream(true)
@@ -31,9 +50,11 @@ open class AndroidTestsTask : DefaultTask() {
             val proc = pb.start()
             proc.inputStream.transferTo(System.out)
             val rc = proc.waitFor()
-            if (rc != 0) error("[androidTests] script exited with code $rc")
+            if (rc != 0) error("[androidTests] runner exited with code $rc")
         } finally {
-            Files.deleteIfExists(tempScript)
+            try {
+                Files.walk(tempDir).sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
+            } catch (_: Exception) { /* best-effort */ }
         }
     }
 }
