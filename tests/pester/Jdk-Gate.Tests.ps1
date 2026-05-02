@@ -228,6 +228,10 @@ Describe 'parallel.ps1: JDK gate (end-to-end)' {
             & pwsh -NoLogo -NoProfile -File $script -ProjectRoot $work 2>&1
         }
         $LASTEXITCODE | Should -Be 3
+        # v0.8 sub-entry 5: JDK gate moved into lib/runner.js. Wrapper is now
+        # a thin Node launcher; the gate fires from lib/runner.js#preflightJdkCheck
+        # which writes "JDK mismatch — project requires JDK X but current is JDK Y"
+        # to stderr (captured into $output by Pester's redirect).
         ($output -join "`n") | Should -Match 'JDK mismatch'
     }
 
@@ -238,11 +242,10 @@ Describe 'parallel.ps1: JDK gate (end-to-end)' {
             & pwsh -NoLogo -NoProfile -File $script -ProjectRoot $work -IgnoreJdkMismatch 2>&1
         }
         # Exit code is whatever downstream produces, but must NOT be 3 from JDK gate.
-        # The dominant message must be the WARN, not the BLOCK.
         $joined = ($output -join "`n")
-        # Either the WARN appears, or the gate didn't fire at all (matched Java).
-        if ($LASTEXITCODE -eq 3) {
-            $joined | Should -Match 'WARN: JDK mismatch'
-        }
+        # The legacy WARN line is gone (lib/runner.js doesn't surface a WARN
+        # when -IgnoreJdkMismatch is set — it bypasses the gate silently).
+        # We only assert that the gate did not BLOCK with exit 3.
+        $LASTEXITCODE | Should -Not -Be 3
     }
 }

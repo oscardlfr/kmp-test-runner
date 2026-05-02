@@ -249,29 +249,10 @@ Describe 'Clear-GradleTasksCache: cleans up tasks-*.txt files' {
     }
 }
 
-Describe 'parallel.ps1 (Bug B'') and run-android-tests.ps1 (Bug B'') wiring' {
-
-    It "parallel.ps1 sources Gradle-Tasks-Probe.ps1" {
-        $parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
-        (Get-Content $parallel -Raw) | Should -Match 'Gradle-Tasks-Probe\.ps1'
-    }
-
-    # v0.8 sub-entry 4: the per-module Test-ModuleHasTask probe + [SKIP coverage]
-    # banner lived only in the coverage-task selection block, which was lifted
-    # into lib/coverage-orchestrator.js. The parallel codepath retains the
-    # tasks-probe library for non-coverage probing; the coverage-specific
-    # contracts moved to tests/vitest/coverage-orchestrator.test.js.
-    It "parallel.ps1 retains the tasks-probe sourcing for non-coverage probing" {
-        $parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
-        (Get-Content $parallel -Raw) | Should -Match 'Gradle-Tasks-Probe\.ps1'
-    }
-
-    # run-android-tests.ps1 wiring tests deleted in v0.8 sub-entry 3 — the
-    # ps1 wrapper is now thin (`& node lib\runner.js android @args`) and no
-    # longer sources Gradle-Tasks-Probe.ps1 / declares -DeviceTask / calls
-    # Get-ModuleFirstExistingTask. Equivalent contracts are now exercised
-    # in tests/vitest/android-orchestrator.test.js via the Node orchestrator.
-}
+# v0.8 sub-entry 5: parallel.ps1 + run-android-tests.ps1 are both thin Node
+# launchers and no longer source Gradle-Tasks-Probe.ps1. Equivalent contracts
+# are exercised via lib/project-model.js (probeGradleTasksCached) — see
+# tests/vitest/cli.test.js + tests/bats/test-gradle-tasks-probe.bats.
 
 # v0.8 sub-entry 5: parallel.ps1 wrapper is now a thin Node launcher; the
 # Bug E coverage-data counter + [!] banner + COVERAGE_MODULES_CONTRIBUTING
