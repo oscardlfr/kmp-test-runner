@@ -82,6 +82,25 @@ The `sourceSets.jvmTest: true` is enough signal to predict `unitTestTask: "jvmTe
 
 **Cross-references:** complement to v0.7.0 Phase 1 (`unitTestTask` candidate chain landed there with the assumption that `gradleTasks` would be populated). Complement to PR #103 reactive WS-1 fix (which now surfaces this bug as a real FAIL instead of swallowing it).
 
+### v0.7.x — `tests/installer/install.bats` leaves orphan adb process and hangs on macos-latest (surfaced 2026-05-02 in PR #105 bats-macos rollout)
+
+**Surfaced 2026-05-02 by the new `bats-macos` CI job in PR #105 (WS-2 parity).** When `npx bats tests/bats/ tests/installer/` runs on `macos-latest`, the suite passes the first 227 tests cleanly (entire `tests/bats/` directory + part of `tests/installer/install.bats`) in ~3 min, then **hangs for 8 min** on the next test until the 15-min job timeout fires. Cleanup logs show `Terminate orphan process: pid (2875) (adb)` — an `adb` subprocess was spawned by one of the install.bats tests and never reaped, blocking bats's "wait for child to exit" step.
+
+Same symptom referenced in pre-existing comment at `.github/workflows/ci.yml:70-72` ("the wider tests/bats/ suite has a hang on macos-latest"); root cause now narrowed: it's specifically `tests/installer/install.bats` (not the wider `tests/bats/`).
+
+**Reproducer (when bats is installed locally):** `cd kmp-test-runner && /bin/bash -c 'npx bats --timing tests/installer/install.bats'` on macos-latest. Last test that completes is "E2E: install.sh fails when --archive file is missing"; the suite then hangs starting the next test. `pgrep adb` during the hang confirms a leaked daemon.
+
+**Suspect tests:** the install.bats E2E tests run `kmp-test --version` / `kmp-test --help` after install. The `kmp-test doctor` codepath at `lib/cli.js:1306` runs `spawnSync('adb', ['version'], ...)` — on a fresh macos-latest runner without prior adb usage, this triggers `adb start-server` which forks a daemon. Bats then waits for the daemon process tree to terminate. Hypothesis to verify: doctor / version checks are spawning the adb daemon during a wrapper invocation, and bats counts the daemon as a child of the test process.
+
+**Fix candidates:**
+1. Add an explicit `adb kill-server || true` in install.bats's `teardown_file()` (or per-test `teardown()`) to reap the daemon.
+2. Skip the adb probe in `kmp-test doctor` when `KMP_TEST_SKIP_ADB=1` (env opt-out) and set it in install.bats fixtures.
+3. Replace `adb` invocation with a process-group-isolated spawn (`setsid` or `kill -- -$pid` on teardown).
+
+**Workaround in flight (PR #105):** scope `bats-macos` to `tests/bats/` only. The 216 tests in that directory exercise the WS-2 regression coverage and pass in ~3 min. installer-e2e (macos-latest) at `ci.yml:45-77` already runs install.bats E2E with `--filter "E2E"` (different invocation that avoids the hang). Net effect: no parity loss for WS-2; install.bats macOS hang remains as documented follow-up here.
+
+**Effort: 1-2h** to identify the exact test (run install.bats one test at a time on macos-latest with `--filter` until the hang triggers), confirm the adb hypothesis, and pick a fix. Likely option 1 is the minimal change.
+
 ### v0.7.x — Fix `SKIPPED_MODULES[@]` unbound under Bash 3.2 set -u (patch validated locally, awaiting first PR)
 
 **Surfaced 2026-04-30 (HANDOFF.md, sesión previa). Validated 2026-05-01 with reverted-then-restored A/B experiment.**

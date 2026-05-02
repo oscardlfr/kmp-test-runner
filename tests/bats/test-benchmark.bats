@@ -34,6 +34,40 @@ teardown() {
     [[ "$output" == *"--project-root is required"* ]]
 }
 
+@test "benchmark: runs end-to-end under /bin/bash (Bash 3.2 regression — WS-2)" {
+    # /bin/bash on macOS is 3.2.57. On Linux CI it is bash 5.x. The script
+    # must complete without `declare: -A: invalid option` (the original WS-2
+    # symptom) AND without `<arr>[@]: unbound variable` errors triggered by
+    # iterating empty arrays under `set -u` (the surfaced-by-the-fix sibling
+    # bug for ALL_RESULTS / PLATFORMS_TO_RUN). This test catches the whole
+    # bug class — anyone re-introducing `declare -A` or an unguarded
+    # `"${arr[@]}"` over a sometimes-empty array gets caught here.
+    #
+    # We run the happy path with a benchmark module fixture so the script
+    # walks the full pipeline (discovery → dispatch → result aggregation →
+    # console summary → markdown report).
+    mkdir -p "$WORK_DIR/bench-mod/bin"
+    cat > "$WORK_DIR/settings.gradle.kts" << 'EOF'
+rootProject.name = "wsfix-test"
+include(":bench-mod")
+EOF
+    cat > "$WORK_DIR/bench-mod/build.gradle.kts" << 'EOF'
+plugins { id("org.jetbrains.kotlinx.benchmark") version "0.4.10" }
+benchmark { targets { register("jvm") } }
+EOF
+
+    run /bin/bash "$SCRIPT" --project-root "$WORK_DIR" --config smoke
+    # Either exit 0 (gradle stub absent → no tasks attempted, no failures)
+    # or non-zero with an explicit FAIL line — what we forbid is a Bash
+    # syntax/runtime crash before reaching the summary.
+    [[ "$output" != *"declare: -A: invalid option"* ]]
+    [[ "$output" != *"unbound variable"* ]]
+    [[ "$output" != *"syntax error"* ]]
+    # Must reach the summary table (proves we walked past every guarded
+    # array expansion site).
+    [[ "$output" == *"BENCHMARK SUMMARY"* ]]
+}
+
 @test "benchmark: lib sourcing uses SCRIPT_DIR not absolute paths" {
     local sources
     sources=$(grep -E '^source ' "$SCRIPT" || true)
