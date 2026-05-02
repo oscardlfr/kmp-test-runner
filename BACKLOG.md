@@ -6,6 +6,85 @@
 
 ## ACTIVE
 
+### v0.8 — STRATEGIC PIVOT: migrate orchestration logic from bash/ps1 to Node (decided 2026-05-02)
+
+**Surfaced 2026-05-02 during the WS-2 / PR #105 firefighting session, after stepping back from "another Bash 3.2 patch" thinking.**
+
+**Diagnosis of the maintenance trajectory:**
+
+The repo has invested 3 PRs in this session alone (#102 SKIPPED_MODULES unbound, #103 WS-1/WS-5/UX-1/UX-2 task-not-found + target filter, #105 WS-2 declare -A + 2 surfaced empty-array landmines) plus the original v0.7.0 18-entry sourceSet walker — all on bash-side bug classes that **shellcheck does not catch**. Of the 11 wide-smoke bugs WS-1..WS-10 + UX-1/UX-2, 7 remain (WS-3, WS-4, WS-6, WS-7, WS-8, WS-9, WS-10) plus jvm()→jvmTest discovery. Every one of them lives in `scripts/sh/run-*.sh` or `scripts/ps1/run-*.ps1`. Same pattern: discover modules, dispatch parallel, parse output, aggregate summary — implemented twice (bash + ps1) with subtly different gotchas in each dialect.
+
+The `bats-macos` job added in PR #105 to close the Bash 3.2 parity gap hit the adb-orphan flake on macos-latest in 2/2 runs. Validating bash-side fixes requires coming to mom's MacBook (the repo owner's primary machine is Windows). The cycle is: write fix on Windows → push to a Mac → smoke → discover the next bash-3.2 gotcha → repeat.
+
+**The asymmetry that breaks this open:**
+
+The product's value-add (per `README.md:5-123`) is the `--json` envelope — 13K → 100 token reduction for AI agents, ~542K → ~500 tokens for the coverage 5-iter loop. **That value lives entirely in Node** (`lib/cli.js` parser + envelope shaping, `lib/project-model.js` fast path, `lib/jdk-catalogue.js` multi-JDK selection, `tests/vitest/*` coverage). The bash + ps1 scripts are plumbing that invokes gradle and prints lines that Node then parses back. **The plumbing has no value the user pays for.**
+
+**Decision: incremental migration of orchestration logic from bash/ps1 → Node. Bash and ps1 become thin gradle invokers (target: ≤100 LOC each, no associative arrays, no parallel loops).**
+
+**Why this is the right move for this product (vs the alternatives considered):**
+
+| Alternative considered | Rejected because |
+|---|---|
+| Keep bash + invest in custom shellcheck rules | Doesn't address triple maintenance; every feature still doubles. shellcheck custom rules are themselves new maintenance. |
+| Hybrid Bash 4+ gate (require `brew install bash`) | Bad UX for an open-source product. "First install brew, then this" loses contributors. Repo owner explicitly retracted this option. |
+| Migrate runtime to zsh | ~2000 LOC rewrite, shellcheck doesn't validate zsh, bats is bash-idiom, breaks installer. Larger lift than Node migration with worse outcome. |
+| Status quo (keep firefighting) | 7 wide-smoke bugs remain + new ones surface every PR. Trajectory is more PRs not fewer. |
+| Greenfield Node rewrite | Months of work, breaks existing user contracts. Migration is incremental — preserves contracts. |
+
+**Why Node migration aligns with product reality (per the answers from 2026-05-02):**
+
+- **Open-source product, every-OS contributor** — Node runs identically on Windows/Linux/macOS; one logic, one test suite (vitest already covers all 3 OSes in `build` matrix).
+- **macOS must work on default Bash 3.2** — thin invoker scripts use no Bash-4 features, so this works for free.
+- **Repo owner is Windows-primary, mom's MacBook for testing** — Node iteration happens on Windows; comes to Mac only for final smoke. Cuts the iteration cycle massively.
+- **AI-agent first-class consumer** — vitest snapshots of envelope shapes catch agent-contract regressions deterministically (vs bats parsing stub gradle output).
+- **Producto, no tooling** — defaults must be rock-solid; one Node implementation has fewer surfaces to be flaky than three (bash + ps1 + gradle plugin).
+
+**Required precondition:**
+
+`PRODUCT.md` (or `docs/strategy.md`) drafted in next session that codifies:
+- Target user (open-source contributor any OS, with + without AI agents)
+- Supported OS matrix (Windows/Linux/macOS, with platform-aware error messages e.g. iOS tests on Windows fail clearly)
+- Value prop (token cost reduction via `--json` envelope, measured per README)
+- Architecture principle: "logic in Node, plumbing in shell" — every PR justifies itself against this
+
+Once `PRODUCT.md` exists, this entry expands into a per-feature migration plan (see "Approach" below).
+
+**Approach (incremental, per-feature):**
+
+Each feature migrates in a single PR:
+1. New `lib/<feature>-orchestrator.js` implementing the discovery + parallel dispatch + output parsing logic (already partly exists for parsing in `lib/cli.js`).
+2. `scripts/sh/run-<feature>.sh` shrinks to a thin wrapper that invokes `node lib/runner.js <feature> ...` (passes args through, returns exit code).
+3. `scripts/ps1/run-<feature>.ps1` shrinks identically.
+4. New vitest in `tests/vitest/<feature>-orchestrator.test.js` covers the migrated logic on all 3 OSes (Linux/Mac/Win runners).
+5. Existing bats + Pester tests of the SCRIPT shrink to "wrapper invokes node correctly" tests; the LOGIC tests live in vitest.
+6. `bats-macos` informational job stays during transition (catches Bash-3.2 regressions in any remaining `run-*.sh` plumbing); removed once all features migrated.
+
+**Migration order (smallest blast radius first):**
+1. `benchmark` — already touched in PR #105, smallest LOC count, good warm-up
+2. `changed` — single-purpose, isolated git diff logic
+3. `android` — touches WS-3 + WS-10, kills 2 backlog bugs in the migration
+4. `coverage` — Kover/JaCoCo discrimination, kills the 4 build-logic backlog entries
+5. `parallel` — largest, most complex, kills WS-4 / WS-6 / WS-7 / WS-8 / WS-9 + jvm()→jvmTest in the migration
+
+**Effort:** ~2-4 weeks of focused work (rough). Each feature migration is 1-3 days. Spread across v0.8.0 milestone.
+
+**What this means for pending bugs (WS-3..WS-10, jvm()→jvmTest):**
+
+- **Hold all bash-side patch PRs.** Opening more `fix(...)` PRs for these bugs is patching code that's scheduled for migration.
+- The bugs themselves don't disappear — they get fixed AS PART OF each feature's migration PR. Each migration PR description must explicitly note which WS-* / UX-* / discovery bugs it resolves.
+- BACKLOG entries below are **not deleted** — they document the bugs to verify against in the migration PR test plans.
+
+**What this means for the `bats-macos` informational job (added PR #105):**
+
+Stays in CI as a regression-guard against Bash 3.2 patterns in the remaining bash plumbing during the transition. Removed in the PR that completes the migration. Adb-orphan flake (separate BACKLOG entry below) gets investigated only if it blocks Mac-side smoke testing of migration PRs.
+
+**Next session start:**
+
+1. Draft `PRODUCT.md` codifying the 5 strategic answers (~30-60 min, repo owner drives, agent listens).
+2. Refine this BACKLOG entry into a per-feature migration plan with concrete acceptance criteria.
+3. Open first migration PR: `feat(node): migrate benchmark orchestrator to lib/benchmark-orchestrator.js`. Validates the pattern end-to-end before committing to the larger features.
+
 ### v0.7.x — Wide-smoke validation findings (mom's MacBook session, 2026-05-01)
 
 **Surfaced 2026-05-01 during cross-project wide-smoke validation against PeopleInSpace, Confetti (multi-module ~13 subprojects), and KaMPKit at `/Volumes/XcodeOscar/kmp-test-workspace/`. Validation hardware: Galaxy S22 Ultra (SM-S908B, Android 16, arm64-v8a, instrumented tests), iOS 26.4 Simulator runtime (10 devices: iPhone 17 Pro/Air/17e, iPad Pro M5, etc.), JDK catalogue 11/17/21, host JDK 21 default.** Eleven issues uncovered (twelfth `SKIPPED_MODULES` fix tracked separately below). Target: clear ALL before v0.8.0.
