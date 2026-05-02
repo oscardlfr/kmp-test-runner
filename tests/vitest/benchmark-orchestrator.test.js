@@ -220,6 +220,36 @@ describe('runBenchmark module discovery', () => {
     expect(exitCode).toBe(3);
   });
 
+  it('build.gradle.kts with comment "no benchmark plugin" is NOT discovered (comment-strip)', async () => {
+    // Regression for the comment-strip bug: regex /benchmark[\\s\\S]{0,40}plugin/
+    // would match a comment like `// no benchmark plugin — explanation` and
+    // falsely register the module as a benchmark candidate, leading to phantom
+    // gradle dispatch. stripKotlinComments must run BEFORE moduleHasBenchmarkPlugin.
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-bench-comment-'));
+    workDir = dir;
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      'rootProject.name = "x"\ninclude(":no-bench")\n');
+    mkdirSync(path.join(dir, 'no-bench'), { recursive: true });
+    writeFileSync(path.join(dir, 'no-bench', 'build.gradle.kts'),
+      '// no benchmark plugin — orchestrator should emit no_test_modules\n' +
+      'plugins { id("base") }\n');
+    writeFileSync(path.join(dir, 'gradlew'), '#!/usr/bin/env bash\nexit 0\n');
+
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'all'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    expect(spawn.calls.length).toBe(0);
+    expect(envelope.errors[0].code).toBe('no_test_modules');
+    expect(envelope.modules).toEqual([]);
+    expect(envelope.skipped).toEqual([]);
+    expect(exitCode).toBe(3);
+  });
+
   it('--module-filter "no-match-pattern" → no_test_modules', async () => {
     const dir = copyFixture();
     const spawn = makeSpawnStub();
