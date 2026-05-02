@@ -106,9 +106,17 @@ jobs:
   # `"${arr[@]}"` over empty arrays under set -u. The ubuntu-only bats job
   # (line 26-28 above) cannot catch these regressions because Linux runners
   # use bash 5.x. This job mirrors the ubuntu invocation against the system
-  # bash on macos-latest. Generous 15-min timeout because some bats tests
-  # spin up subprocess-heavy fixtures; if a specific test hangs, identify
-  # it from the --timing output and skip it on macOS in a follow-up PR.
+  # bash on macos-latest, scoped to tests/bats/ only.
+  #
+  # tests/installer/ is intentionally NOT included here: a test in install.bats
+  # leaves an orphaned adb process on macos-latest that hangs the suite past
+  # the 15-min timeout (first-run evidence: 227 tests passed in ~3 min, then
+  # 8-min hang, then runner-cancel + "Terminate orphan process: pid (...) (adb)").
+  # This matches the pre-existing comment at line 70-72 about "the wider tests/bats/
+  # suite has a hang on macos-latest". installer-e2e (macos-latest) at line 45-77
+  # already covers install.bats E2E using --filter "E2E" to avoid the same hang.
+  # Tracked in BACKLOG.md as a v0.7.x follow-up to investigate the adb orphan.
+  #
   # Informational by default; promote to required in branch protection
   # alongside gradle-plugin-test-ios when the v0.7 line stabilises.
   bats-macos:
@@ -121,4 +129,4 @@ jobs:
           node-version: 20
       - run: npm ci
       - name: bats (macOS — Bash 3.2 regression coverage)
-        run: npx bats --timing tests/bats/ tests/installer/
+        run: npx bats --timing tests/bats/
