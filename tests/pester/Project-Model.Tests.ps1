@@ -267,32 +267,29 @@ Describe 'Test-ModuleHasTestSources (Phase 4 step 4 — model fast-path)' {
 # tests/vitest/android-orchestrator.test.js cases 1 (WS-3) + 4 (--device-task
 # escape hatch).
 
-# v0.8 sub-entry 4 — run-parallel-coverage-suite.ps1 wires Get-PmCoverageTask
-# as the SINGLE source for coverage discrimination. The Gap A legacy helpers
-# (Detect-CoverageTool, Get-CoverageGradleTask) were removed; the ordering
-# regression test that gated the legacy fallback is now an "absence" check.
-Describe 'run-parallel-coverage-suite.ps1 — sub-entry 4 ProjectModel coverage path' {
+# v0.8 sub-entry 5: run-parallel-coverage-suite.ps1 wrapper is now a thin
+# Node launcher. ProjectModel coverage discrimination + Get-PmCoverageTask
+# logic moved entirely into lib/parallel-orchestrator.js +
+# lib/coverage-orchestrator.js (which call the JS project-model directly).
+# The wrapper has no Get-PmCoverageTask reference; the absence check below
+# verifies the migration removed the old call sites.
+Describe 'run-parallel-coverage-suite.ps1 — sub-entry 5 thin Node launcher' {
 
     BeforeAll {
         $script:Parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
         $script:ParallelText = Get-Content $script:Parallel -Raw
     }
 
-    It 'dot-sources the ProjectModel.ps1 lib' {
-        $script:ParallelText | Should -Match "ProjectModel\.ps1"
+    It 'forwards to node lib/runner.js parallel|coverage' {
+        $script:ParallelText | Should -Match 'node.*runner\.js'
+        $script:ParallelText | Should -Match '(parallel|coverage)'
     }
 
-    It 'consults Get-PmCoverageTask' {
-        $script:ParallelText | Should -Match 'Get-PmCoverageTask'
-    }
-
-    It 'no longer references the deleted Gap A helpers in any executable line' {
-        # Comments may still mention the deleted helpers (documentation of
-        # the removal); ensure no executable line invokes them.
-        foreach ($pattern in 'Detect-CoverageTool', 'Get-CoverageGradleTask') {
-            $matches = ($script:ParallelText -split "`n") |
+    It 'no longer references Get-PmCoverageTask / Detect-CoverageTool / Get-CoverageGradleTask' {
+        foreach ($pattern in 'Detect-CoverageTool', 'Get-CoverageGradleTask', 'Get-PmCoverageTask') {
+            $execLines = ($script:ParallelText -split "`n") |
                 Where-Object { $_ -match $pattern -and $_ -notmatch '^\s*#' }
-            $matches.Count | Should -Be 0
+            $execLines.Count | Should -Be 0
         }
     }
 }

@@ -30,21 +30,10 @@ teardown() {
     [[ "$output" != *"--project-root is required"* ]]
 }
 
-@test "parallel: error path exits 1 when --project-root is missing" {
-    run bash "$SCRIPT"
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"--project-root is required"* ]]
-}
-
-@test "parallel: lib sourcing uses SCRIPT_DIR not absolute paths" {
-    local sources
-    sources=$(grep -E '^source ' "$SCRIPT" || true)
-    # If there are source lines, none must use absolute paths
-    [[ "$sources" != *"/Users/"* ]]
-    [[ "$sources" != *"/home/"* ]]
-    [[ "$sources" != *"/root/"* ]]
-    # source lines must reference $SCRIPT_DIR
-    if [[ -n "$sources" ]]; then
-        [[ "$sources" == *'$SCRIPT_DIR'* ]]
-    fi
+# v0.8 sub-entry 5: wrapper is now a thin Node launcher. The legacy
+# `--project-root is required` upfront-check moved to lib/runner.js, which
+# auto-defaults to cwd. The "lib sourcing uses SCRIPT_DIR" guard is moot
+# (no source lines remain in the wrapper).
+@test "parallel: wrapper script delegates to lib/runner.js parallel" {
+    grep -q 'exec node.*lib/runner.js.*parallel' "$SCRIPT"
 }

@@ -273,31 +273,11 @@ Describe 'parallel.ps1 (Bug B'') and run-android-tests.ps1 (Bug B'') wiring' {
     # in tests/vitest/android-orchestrator.test.js via the Node orchestrator.
 }
 
-Describe 'parallel.ps1 (Bug E): no-coverage-data banner + machine marker' {
-
-    BeforeAll {
-        $script:Parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
-        $script:ParallelText = Get-Content $script:Parallel -Raw
-    }
-
-    It 'computes $modulesContributing from moduleSummaries.Total > 0' {
-        $script:ParallelText | Should -Match '\$modulesContributing\s*='
-        $script:ParallelText | Should -Match '\$_\.Total\s+-gt\s+0'
-    }
-
-    It 'gates the [OK] banner on $modulesContributing -gt 0' {
-        $script:ParallelText | Should -Match 'if\s*\(\s*\$modulesContributing\s+-gt\s+0\s*\)'
-    }
-
-    It 'emits [!] No coverage data ... when $modulesContributing -eq 0' {
-        $script:ParallelText | Should -Match '\[!\] No coverage data collected from any module'
-        $script:ParallelText | Should -Match 'kmp-test-runner#coverage-setup'
-    }
-
-    It 'emits machine-readable COVERAGE_MODULES_CONTRIBUTING marker' {
-        $script:ParallelText | Should -Match 'COVERAGE_MODULES_CONTRIBUTING:'
-    }
-}
+# v0.8 sub-entry 5: parallel.ps1 wrapper is now a thin Node launcher; the
+# Bug E coverage-data counter + [!] banner + COVERAGE_MODULES_CONTRIBUTING
+# marker live in lib/coverage-orchestrator.js. Equivalent contracts covered
+# by tests/vitest/coverage-orchestrator.test.js (no_coverage_data warning,
+# modules_contributing > 0 gating).
 
 # ----------------------------------------------------------------------------
 # v0.5.2 Gap C — cross-platform cache-key SHA byte parity
