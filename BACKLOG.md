@@ -51,6 +51,37 @@ The session ran an end-to-end reproducible matrix: every `--test-type {common,an
 
 **Wide-smoke evidence:** logs at `/tmp/kmp-{pis,conf,kk}-*.{log,json}` on mom's MacBook (2026-05-01); npm-link active there (global `kmp-test` → `/Volumes/XcodeOscar/kmp-test-workspace/kmp-test-runner`). Direct gradle reproductions captured for WS-1 evidence.
 
+### v0.7.x — `resolveTasksFor` returns null when `gradleTasks` is null even though `sourceSets` declares the test set (surfaced 2026-05-02 during PR #103 work)
+
+**Surfaced 2026-05-02 while validating PR #103 (`fix(parallel): proactive iOS/macOS/common/desktop target filter`).** When a KMP module declares `jvm()` (no custom name), Gradle exposes the unit-test task as `:moduleX:jvmTest` — not `:moduleX:desktopTest`. The wrapper hardcodes `desktopTest` for `--test-type common|desktop`. The proactive UX-1 filter from PR #103 now lets such a module slip into the dispatch set; the reactive WS-1 fallback then catches the resulting `Cannot locate tasks that match ':moduleX:desktopTest'` as a real failure (good — no more PASS fantasma). But the user-visible result is still `[FAIL] :moduleX (task not found)`, when the correct behavior would be: per-module task lookup picks `jvmTest` from the project model and runs it green.
+
+**Root cause** (file:line evidence): `lib/project-model.js:697-706` — when `gradleTasks` is null (probe didn't run / cache miss), `resolveTasksFor` returns all task fields as `null` — *even though* the `sourceSets` analysis available alongside it already knows which test source sets exist. Confetti reproducer from cached model `.kmp-test-runner-cache/model-1b53ddf*.json`:
+
+```json
+"shared": {
+  "type": "kmp",
+  "sourceSets": { "jvmTest": true, ...rest false },
+  "gradleTasks": null,
+  "resolved": { "unitTestTask": null, ... }
+}
+```
+
+The `sourceSets.jvmTest: true` is enough signal to predict `unitTestTask: "jvmTest"` without a gradle probe — the same way `predictedCoverage` is computed at line 694-696 as a fallback for `coverageTask`. This pattern is missing for the four other resolved fields.
+
+**Reproducer (live):** `cd /Volumes/XcodeOscar/kmp-test-workspace/Confetti && grep -c '":jvmTest"\|"jvmTest "' .kmp-test-runner-cache/tasks-*.txt` → 5 modules with `jvmTest` task; `kmp-test parallel --test-type common --json` → 5 of those are dispatched as `:moduleX:desktopTest`, gradle "Cannot locate", reactive WS-1 catches as FAIL. Direct `./gradlew :shared:jvmTest` → BUILD SUCCESSFUL.
+
+**Fix direction:**
+
+1. **Add `predictTaskFromSourceSets(analysis, candidate)` helper** in `lib/project-model.js` mirroring `predictCoverageTask`. Returns the first candidate task name whose corresponding source set is `true` in `analysis.sourceSets`.
+2. **Wire predicted fallbacks into the `gradleTasks==null` branch** for `unitTestTask` / `deviceTestTask` / `webTestTask` / `iosTestTask` / `macosTestTask`. Use the same candidate orders as the populated branch.
+3. **Sh + ps1 readers no change needed** — they already consume `unitTestTask` via `pm_get_unit_test_task` (per-module fast path).
+4. **Vitest in `tests/vitest/project-model.test.js`** — assert `resolveTasksFor('mod', null, { sourceSets: { jvmTest: true, ...rest false }, type: 'kmp' })` returns `unitTestTask: 'jvmTest'`. Repeat for desktopTest precedence, jsTest fallback, iosSimulatorArm64Test, macosArm64Test.
+5. **Bats integration test** — fixture project with a single `jvm()` KMP module + stub gradlew that succeeds on `jvmTest` and fails on `desktopTest`; assert `kmp-test parallel --test-type common` dispatches to `jvmTest`, exit 0, no `Cannot locate` in output.
+
+**Effort: 2-3h** (1h core resolver + tests, 1h fixture + bats integration, 30min sanity-check on Confetti live). Could ship in PR4 (alongside WS-3 which also touches the project-model resolver) or as its own standalone PR. Listed standalone here because it has zero coupling to Android detection (WS-3 territory).
+
+**Cross-references:** complement to v0.7.0 Phase 1 (`unitTestTask` candidate chain landed there with the assumption that `gradleTasks` would be populated). Complement to PR #103 reactive WS-1 fix (which now surfaces this bug as a real FAIL instead of swallowing it).
+
 ### v0.7.x — Fix `SKIPPED_MODULES[@]` unbound under Bash 3.2 set -u (patch validated locally, awaiting first PR)
 
 **Surfaced 2026-04-30 (HANDOFF.md, sesión previa). Validated 2026-05-01 with reverted-then-restored A/B experiment.**
