@@ -1020,6 +1020,76 @@ kotlin {
   });
 });
 
+// analyzeModule testBuildType detection (2026-05-03 dipatternsdemo repro)
+// ------------------------------------------------------------------
+describe('analyzeModule testBuildType', () => {
+  function makeAndroidModule(buildScript) {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), buildScript);
+    return dir;
+  }
+
+  it('detects testBuildType = "release"', () => {
+    const dir = makeAndroidModule(`
+plugins { id("com.android.library") }
+android {
+  namespace = "x"
+  testBuildType = "release"
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.testBuildType).toBe('release');
+  });
+
+  it('detects testBuildType = "debug" (explicit default)', () => {
+    const dir = makeAndroidModule(`
+plugins { id("com.android.library") }
+android {
+  testBuildType = "debug"
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.testBuildType).toBe('debug');
+  });
+
+  it('returns null when no testBuildType declaration present', () => {
+    const dir = makeAndroidModule(`
+plugins { id("com.android.library") }
+android { namespace = "x" }
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.testBuildType).toBeNull();
+  });
+
+  it('returns null for variable testBuildType (not statically resolvable)', () => {
+    // dipatternsdemo :benchmark uses `testBuildType = benchmarkBuildType`
+    // — we can't know the runtime value. Null defaults to AGP's "debug".
+    const dir = makeAndroidModule(`
+plugins { id("com.android.library") }
+val benchmarkBuildType = "release"
+android {
+  testBuildType = benchmarkBuildType
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.testBuildType).toBeNull();
+  });
+
+  it('ignores commented-out testBuildType', () => {
+    const dir = makeAndroidModule(`
+plugins { id("com.android.library") }
+android {
+  // testBuildType = "release"
+  /* testBuildType = "release" */
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.testBuildType).toBeNull();
+  });
+});
+
 // resolveTasksFor with intermediate hierarchy groups — drop XTest from chain
 // ------------------------------------------------------------------
 describe('resolveTasksFor with intermediate hierarchy groups', () => {

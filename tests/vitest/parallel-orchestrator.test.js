@@ -270,6 +270,7 @@ describe('pickGradleTaskFor', () => {
     name: 'app',
     type: 'android',
     androidDsl: true,
+    sourceSets: { test: true, androidUnitTest: false, commonTest: false },
     resolved: {
       unitTestTask: null,
       deviceTestTask: 'connectedDebugAndroidTest',
@@ -340,6 +341,74 @@ describe('pickGradleTaskFor', () => {
   it('empty test-type auto-picks: KMP/JVM → unitTestTask, Android-only → testDebugUnitTest', () => {
     expect(pickGradleTaskFor(kmpModule, '').task).toBe(':shared:jvmTest');
     expect(pickGradleTaskFor(androidModule, '').task).toBe(':app:testDebugUnitTest');
+  });
+
+  // 2026-05-03 — Android variant flag. Default --variant=auto preserves the
+  // historical fast-path (testDebugUnitTest); --variant=release and =all
+  // route to the matching task names. testBuildType="release" detected
+  // statically also flips the auto pick.
+  describe('--variant flag for Android unit tests', () => {
+    it('--variant debug → testDebugUnitTest (default)', () => {
+      expect(pickGradleTaskFor(androidModule, 'androidUnit', { androidVariant: 'debug' }).task)
+        .toBe(':app:testDebugUnitTest');
+    });
+
+    it('--variant release → testReleaseUnitTest', () => {
+      expect(pickGradleTaskFor(androidModule, 'androidUnit', { androidVariant: 'release' }).task)
+        .toBe(':app:testReleaseUnitTest');
+    });
+
+    it('--variant all → test (umbrella runs both Debug + Release)', () => {
+      expect(pickGradleTaskFor(androidModule, 'androidUnit', { androidVariant: 'all' }).task)
+        .toBe(':app:test');
+    });
+
+    it('--variant auto + testBuildType="release" → testReleaseUnitTest', () => {
+      const releaseModule = { ...androidModule, testBuildType: 'release' };
+      expect(pickGradleTaskFor(releaseModule, 'androidUnit', { androidVariant: 'auto' }).task)
+        .toBe(':app:testReleaseUnitTest');
+    });
+
+    it('--variant auto + no testBuildType → testDebugUnitTest (AGP default)', () => {
+      expect(pickGradleTaskFor(androidModule, 'androidUnit', { androidVariant: 'auto' }).task)
+        .toBe(':app:testDebugUnitTest');
+    });
+
+    it('default (no opts) → testDebugUnitTest (backward compat)', () => {
+      expect(pickGradleTaskFor(androidModule, 'androidUnit').task)
+        .toBe(':app:testDebugUnitTest');
+    });
+
+    it('default test-type (auto) honors --variant', () => {
+      expect(pickGradleTaskFor(androidModule, '', { androidVariant: 'release' }).task)
+        .toBe(':app:testReleaseUnitTest');
+      expect(pickGradleTaskFor(androidModule, '', { androidVariant: 'all' }).task)
+        .toBe(':app:test');
+    });
+  });
+
+  // 2026-05-03 — instrumented-only Android module skip (dipatternsdemo
+  // :benchmark repro). No `test/`, `androidUnitTest/`, or `commonTest/`
+  // source set → orchestrator skips with reason instead of dispatching a
+  // hardcoded task name that gradle doesn't have.
+  describe('instrumented-only Android module skip', () => {
+    it('Android module with only androidTest/ source set → skipped with reason', () => {
+      const benchmarkModule = {
+        name: 'benchmark',
+        type: 'android',
+        androidDsl: true,
+        sourceSets: { test: false, androidUnitTest: false, commonTest: false, androidTest: true },
+        resolved: null,
+      };
+      const result = pickGradleTaskFor(benchmarkModule, '');
+      expect(result.task).toBeNull();
+      expect(result.reason).toMatch(/no androidUnit source set/);
+    });
+
+    it('Android module with test/ source set → dispatches normally', () => {
+      const result = pickGradleTaskFor(androidModule, '');
+      expect(result.task).toBe(':app:testDebugUnitTest');
+    });
   });
 });
 
