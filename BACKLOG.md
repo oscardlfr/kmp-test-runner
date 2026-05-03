@@ -344,13 +344,19 @@ Caveats:
 
 **✅ Finding F3 — `tests.individual_total:0` on UP-TO-DATE / FROM-CACHE runs (FIXED 2026-05-03).** Root cause confirmed via Windows-side repro on dipatternsdemo: 4 valid `TEST-*.xml` files at the canonical `<module>/build/test-results/<taskShort>/` path containing 68 testcases, but `mtime` from a prior run (~8 days old). The post-PR #116 stale-XML guard at `lib/parallel-orchestrator.js#junitTestCountFor` (filter `mtime >= state.runStartMs`) false-discarded all 68 because gradle marked the task UP-TO-DATE and AGP didn't rewrite the XMLs. Fix: bypass the guard in `executeLeg` when `classifyTaskExecutionMode` returns `up_to_date` or `from_cache` — gradle has already confirmed the existing XMLs reflect the current source state in those modes, so they're not stale by definition. Modes `fresh` / `failed` / `no_evidence` keep the guard active to preserve the original PR #116 protection against bash-wrapper-era leftovers. Verified live: dipatternsdemo `individual_total` flips `0 → 68`. +3 vitest cases (`F3 fix: UP-TO-DATE …`, `F3 fix: FROM-CACHE …`, `F3 fix: fresh tasks still discard stale TEST-*.xml`).
 
-### v0.8.0 — JDK auto-select must prefer AGP runtime JDK over project's bytecode `jvmTarget` (surfaced 2026-05-03 wide-smoke; promoted to v0.8.0 release-blocker)
+### ✅ v0.8.0 — JDK auto-select prefers AGP runtime JDK over `jvmTarget` (DONE 2026-05-03 in `8b4c92f` / PR #116 + closeout PR `fix/jdk-auto-select-agp-runtime`)
 
-**Surfaced 2026-05-03 during the post-EINVAL wide-smoke pass on Windows.** TaskFlow declares `jvmTarget = "11"` in `app/build.gradle.kts` so the orchestrator's JDK auto-select picks JDK 11; AGP 8.8.2 needs JDK 17 to RUN (separate from bytecode target — bytecode 11 means "produce class files compatible with Java 11 runtime", which is a different question from "what JDK does the gradle build itself need"). Manual override `JAVA_HOME=jdk-17 ./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL in 1m 8s, confirming the bug.
+**Surfaced 2026-05-03 during the post-EINVAL wide-smoke pass on Windows.** TaskFlow declares `jvmTarget = "11"` in `app/build.gradle.kts` so the orchestrator's JDK auto-select picked JDK 11; AGP 8.8.2 needs JDK 17 to RUN (separate from bytecode target — bytecode 11 means "produce class files compatible with Java 11 runtime", which is a different question from "what JDK does the gradle build itself need"). Manual override `JAVA_HOME=jdk-17 ./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL in 1m 8s, confirming the bug.
 
-**Affected (wide-smoke evidence 2026-05-03):** TaskFlow (definitive); strong fast-fail patterns in DawSync, OmniSound, dipatternsdemo, gyg, nav3-recipes, FileKit. All show JDK-mismatch shape: gradle aborts in <1s with `Android Gradle plugin requires Java 17 to run` once stderr filter widening (PR #116) exposed the real error.
+**Affected (wide-smoke evidence 2026-05-03):** TaskFlow (definitive); strong fast-fail patterns in DawSync, OmniSound, dipatternsdemo, gyg, nav3-recipes, FileKit. All showed JDK-mismatch shape: gradle aborted in <1s with `Android Gradle plugin requires Java 17 to run` once stderr filter widening (PR #116) exposed the real error.
 
-**Fix:** in `lib/jdk-catalogue.js` discoverer and `lib/cli.js#preflightJdkCheck`, when the project applies AGP, prefer the AGP-version-implied JDK over the project's bytecode `jvmTarget`. The AGP → required-JDK mapping is publicly documented at https://developer.android.com/build/releases/gradle-plugin#compatibility (e.g. AGP 8.0+ requires JDK 17, AGP 8.8+ requires JDK 17, AGP 9.0+ requires JDK 21). Resolution precedence:
+**Fix landed in two commits:**
+
+1. **`8b4c92f` (bundled into PR #116, merged 2026-05-03)** — `lib/project-model.js` gains `detectAgpVersion(projectRoot)` (probes `gradle/libs.versions.toml [versions]` for `agp`/`android-gradle`/`androidGradlePlugin`/`android` keys, then plugins-DSL `id("com.android.*") version "..."`, then buildscript `com.android.tools.build:gradle:X.Y.Z`) + `agpRequiredJdk(version)` mapping (4→8, 7→11, 8→17, 9→17). The AGP-implied JDK joins `aggregateJdkSignals.signals[]` so the strictest signal wins. `agpVersion` exposed on the result envelope. 7 vitest regression cases added under `'AGP-implied runtime JDK'` (catalog 8.8.2 + 7.4.2, plugins-DSL 8.5.0, buildscript 8.2.1, TaskFlow shape, higher project toolchain wins, no-AGP KMP). Live-validated: TaskFlow now picks JDK 17, BUILD SUCCESSFUL in 4s.
+
+2. **PR3 closeout `fix/jdk-auto-select-agp-runtime` (2026-05-03)** — `preflightJdkCheck` now returns `agpVersion` so the auto-select `[NOTICE]` banner can include `project applies AGP X.Y.Z` for diagnostic clarity. +1 AGP 9.0 regression vitest case (locks `9.x → 17` mapping; cite to live AGP 9.2.0 docs). +2 cli.test.js cases for the AGP-aware notice text.
+
+**Final resolution precedence:**
 
 1. Explicit `--java-home <path>` (user override; trust them)
 2. AGP-version-implied JDK if project has AGP plugin AND auto-select catalogue has it
@@ -358,11 +364,15 @@ Caveats:
 4. `org.jetbrains.kotlin.jvmTarget` if no AGP (current behavior for KMP-pure-JVM and Java-only projects)
 5. Host default JDK
 
-**Test surface:** `tests/vitest/jdk-catalogue.test.js` + `tests/vitest/cli.test.js`. New cases for: (a) AGP 8.8 + jvmTarget=11 → picks JDK 17, (b) KMP module with jvmTarget=21 + no AGP → picks JDK 21 (existing behavior preserved), (c) explicit `--java-home` always wins.
+**AGP → minimum runtime JDK mapping (verified against https://developer.android.com/build/releases/gradle-plugin 2026-05-03):**
 
-**Effort:** ~3-4h (catalogue + preflight extension, 4-6 vitest cases, regression test against TaskFlow shape via fixture). 
+- AGP 4.x → JDK 8
+- AGP 7.x → JDK 11
+- AGP 8.0+ → JDK 17
+- AGP 8.8+ → JDK 17
+- AGP 9.x → JDK 17 (live AGP 9.2.0 docs confirm this; an earlier draft of this entry incorrectly stated "AGP 9.0+ → JDK 21")
 
-**Ship-when:** v0.8.0 release-blocker. Land before the wide-smoke release-validation gate (#4 of release-readiness), since the gate's wide-smoke matrix on the maintainer's macOS will REPRODUCE these failures and need them fixed first. Decompose: the 5 per-project investigations (DawSync, OmniSound, dipatternsdemo, nav3-recipes, PeopleInSpace) are blocked by this — once landed, re-run wide-smoke and any persistent REDs are repo-level test failures, not orchestrator bugs.
+**Follow-up — wide-smoke pass-7:** the 5 per-project investigations (DawSync, OmniSound, dipatternsdemo, nav3-recipes, PeopleInSpace) are now unblocked. Once re-run, persistent REDs are repo-level test failures, not orchestrator bugs. Tracked as PR4 (`chore/wide-smoke-pass-7`).
 
 ### v0.8.0 — Cascade isolation: per-module retry when one-shot dispatch aborts at evaluation phase (surfaced 2026-05-03 wide-smoke; promoted to v0.8.0 release-blocker)
 
