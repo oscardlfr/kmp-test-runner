@@ -5,7 +5,71 @@ on:
   pull_request:
     branches: [main, develop]
 jobs:
+  # Fast pre-check: decides whether the heavy CI matrix needs to run.
+  # When ALL diffed files are docs (any *.md), local smoke captures,
+  # or git config (.gitignore / .gitattributes), the downstream heavy
+  # jobs short-circuit. GitHub treats `skipped` as `success` for
+  # required-check gating (since 2022), so branch protection still
+  # passes without burning macOS minutes.
+  #
+  # Source code, tests/, scripts/, tools/, gradle-plugin/, package.json,
+  # and .github/workflows/** ALWAYS trigger the full matrix — anything
+  # the test suite or installer could regress on.
+  #
+  # secrets-scan stays unconditional (security is non-negotiable).
+  decide:
+    runs-on: ubuntu-latest
+    outputs:
+      heavy: ${{ steps.filter.outputs.heavy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -n "$PR_BASE_SHA" ]; then
+            BASE="$PR_BASE_SHA"
+          elif [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            BASE="$PUSH_BEFORE"
+          else
+            echo "Cannot determine diff base — defaulting to heavy=true (safe)"
+            echo "heavy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE"...HEAD)
+          if [ -z "$CHANGED" ]; then
+            echo "Empty diff — defaulting to heavy=true (safe)"
+            echo "heavy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # grep returns 1 when no lines match (= all changes are skippable).
+          # Capture exit explicitly to avoid bash -e killing the step on that
+          # legitimate "no matches" outcome.
+          set +e
+          NON_SKIPPABLE=$(printf '%s\n' "$CHANGED" | grep -vE '^(.+\.md|\.smoke/.*|\.gitignore|\.gitattributes)$')
+          GREP_EXIT=$?
+          set -e
+          if [ "$GREP_EXIT" -eq 0 ]; then
+            echo "Non-skippable file changes detected — heavy=true"
+            echo "Non-skippable files:"
+            printf '  %s\n' $NON_SKIPPABLE
+            echo "heavy=true" >> "$GITHUB_OUTPUT"
+          elif [ "$GREP_EXIT" -eq 1 ]; then
+            echo "All ${#CHANGED} changed files are skip-eligible — heavy=false"
+            echo "Skipped files:"
+            printf '  %s\n' $CHANGED
+            echo "heavy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Grep failed with exit $GREP_EXIT — defaulting to heavy=true (safe)"
+            echo "heavy=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: decide
+    if: needs.decide.outputs.heavy == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -33,6 +97,7 @@ jobs:
       - name: vitest
         run: npx vitest run --coverage
   secrets-scan:
+    # Always runs — security checks are non-negotiable, even on docs-only PRs.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +108,8 @@ jobs:
         with:
           extra_args: --only-verified
   installer-e2e:
-    needs: build
+    needs: [decide, build]
+    if: needs.decide.outputs.heavy == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -76,6 +142,8 @@ jobs:
         shell: pwsh
         run: Invoke-Pester -Path tests/installer/Install.Tests.ps1 -CI -TagFilter 'E2E'
   gradle-plugin-test:
+    needs: decide
+    if: needs.decide.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +159,8 @@ jobs:
   # reach iOS users. This is informational by default; promote to required
   # in branch protection when the v0.7 line stabilises.
   gradle-plugin-test-ios:
+    needs: decide
+    if: needs.decide.outputs.heavy == 'true'
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -122,6 +192,8 @@ jobs:
   # Informational by default; promote to required in branch protection
   # alongside gradle-plugin-test-ios when the v0.7 line stabilises.
   bats-macos:
+    needs: decide
+    if: needs.decide.outputs.heavy == 'true'
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
