@@ -509,3 +509,22 @@ describe('runBenchmark envelope shape', () => {
     expect(envelope.benchmark).toHaveProperty('failed');
   });
 });
+
+describe('runBenchmark --dry-run (F1)', () => {
+  it('emits dry_run:true plan, no spawn calls', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--dry-run', '--platform', 'jvm', '--config', 'stress'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.dry_run).toBe(true);
+    expect(envelope.exit_code).toBe(0);
+    expect(envelope.plan.config).toBe('stress');
+    expect(envelope.plan.platform).toBe('jvm');
+    expect(spawn.calls.length).toBe(0);
+    expect(exitCode).toBe(0);
+  });
+});

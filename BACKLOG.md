@@ -194,7 +194,7 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 **Out of scope for this entry:**
 - Promoting `installer-e2e (macos-latest)` to required — it's already required in the existing 7-check matrix.
 - Re-using an existing OSS KMP project as the cross-platform E2E fixture — see Buildable cross-platform E2E fixture entry below for that decision.
-- New CLI features. v0.8.0 is "migrate plumbing + lock the cross-platform contract"; new flags / envelope shapes go in v0.9 / v0.8.x patches.
+- ~~New CLI features.~~ **Carve-out (2026-05-03):** the project-level config file entry below (covers `sharedProjectName` + stable defaults) IS in v0.8.0 scope — closing the README ↔ tool surface gap honestly requires it rather than just deleting the misleading flag doc line.
 
 ### v0.8 — ✅ Silent-pass class FIXED — but the unsilenced REDs surfaced 3 more pre-existing bugs (2026-05-03)
 
@@ -334,15 +334,358 @@ Caveats:
 
 ---
 
-### v0.8 — Sub-entry 5 follow-up findings (deprioritized by Windows-spawn bug above; surfaced 2026-05-03)
+### v0.8 — Sub-entry 5 follow-up findings (F1+F2 ✅ FIXED 2026-05-03; F3 still open)
 
-> **NOTE:** these 3 findings (F1/F2/F3) were discovered during the same wide-smoke pass as the CRITICAL Windows-spawn bug above. They remain valid bugs but are MUCH smaller and should ship after the spawn fix lands and a clean wide-smoke pass establishes the true baseline.
+> **NOTE:** these 3 findings were discovered during the same wide-smoke pass as the CRITICAL Windows-spawn bug above. F1 + F2 closed in PR `feature/sub-entry-5-followups` (2026-05-03). F3 remains pending Windows-side repro.
 
-**Finding F1 — `--dry-run` is not consumed inside 3 of 5 orchestrators.** `lib/parallel-orchestrator.js` and `lib/coverage-orchestrator.js` honor `--dry-run` (4 references each). `lib/changed-orchestrator.js`, `lib/android-orchestrator.js`, and `lib/benchmark-orchestrator.js` have **zero** `--dry-run` references. Production paths via `bin/kmp-test.js` are unaffected (cli.js intercepts upstream), but direct `node lib/runner.js benchmark --dry-run` actually dispatches gradle. Fix: backfill `--dry-run` short-circuit in the 3 orchestrators (~3 × 10 LOC).
+**✅ Finding F1 — `--dry-run` not consumed in 3 of 5 orchestrators (FIXED 2026-05-03).** `changed`, `android`, `benchmark` orchestrators now short-circuit on `--dry-run` before any spawn / git probe / adb probe, emitting `dry_run:true` envelope with subcommand-specific plan fields. +3 vitest cases. Validated e2e on macOS.
 
-**Finding F2 — `--test-type all` double-counts no-target legs.** Repro: `kmp-test --json parallel --test-type all --module-filter "core-result"`. Per-leg empties emit BOTH `skipped[]` AND `errors[].no_test_modules`, forcing exit 3 even when one leg passes. Fix: suppress `no_test_modules` when `parallel.legs.some(l => results matched)`.
+**✅ Finding F2 — `--test-type all` per-leg `no_test_modules` forced exit 3 (FIXED 2026-05-03).** Per-leg empties demoted to `warnings[].code:"no_test_modules_for_leg"` when at least one other leg produced test results. +1 vitest case. PR `feature/sub-entry-5-followups`.
 
-**Finding F3 — `tests.individual_total:0` on AGP-only runs.** The junit-XML walker doesn't probe the AGP path `<module>/build/test-results/testDebugUnitTest/TEST-*.xml`. Fix: extend walker glob, dedupe by file path. (Becomes more visible after the spawn fix lands and tests actually run.)
+**🟡 Finding F3 — `tests.individual_total:0` on AGP-only runs (still open).** The junit-XML walker constructs `<module>/build/test-results/<taskShort>/` from `taskColonPath` (e.g. `:app:testDebugUnitTest` → `app/build/test-results/testDebugUnitTest/`), which IS the canonical AGP path. **The fix as originally described may already be a no-op post-PR #116** (the stale-junit `mtime` guard added there + the existing path construction look correct). Needs concrete Windows-side repro: run `kmp-test parallel --test-type androidUnit --json` against an Android-only project on Windows, capture the actual `<module>/build/test-results/` tree shape, and verify whether (a) AGP still puts XMLs at the expected path, (b) `tests.individual_total` actually reports 0, (c) the walker fails because of nested subdirs, mtime drift, or something else. **Pickup this on Windows next** with a fresh wide-smoke against the maintainer's Android-only projects (TaskFlow, dipatternsdemo, gyg). Fix: only after repro confirms what's actually wrong; speculative "extend walker glob, dedupe by file path" deferred.
+
+### v0.8.0 — JDK auto-select must prefer AGP runtime JDK over project's bytecode `jvmTarget` (surfaced 2026-05-03 wide-smoke; promoted to v0.8.0 release-blocker)
+
+**Surfaced 2026-05-03 during the post-EINVAL wide-smoke pass on Windows.** TaskFlow declares `jvmTarget = "11"` in `app/build.gradle.kts` so the orchestrator's JDK auto-select picks JDK 11; AGP 8.8.2 needs JDK 17 to RUN (separate from bytecode target — bytecode 11 means "produce class files compatible with Java 11 runtime", which is a different question from "what JDK does the gradle build itself need"). Manual override `JAVA_HOME=jdk-17 ./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL in 1m 8s, confirming the bug.
+
+**Affected (wide-smoke evidence 2026-05-03):** TaskFlow (definitive); strong fast-fail patterns in DawSync, OmniSound, dipatternsdemo, gyg, nav3-recipes, FileKit. All show JDK-mismatch shape: gradle aborts in <1s with `Android Gradle plugin requires Java 17 to run` once stderr filter widening (PR #116) exposed the real error.
+
+**Fix:** in `lib/jdk-catalogue.js` discoverer and `lib/cli.js#preflightJdkCheck`, when the project applies AGP, prefer the AGP-version-implied JDK over the project's bytecode `jvmTarget`. The AGP → required-JDK mapping is publicly documented at https://developer.android.com/build/releases/gradle-plugin#compatibility (e.g. AGP 8.0+ requires JDK 17, AGP 8.8+ requires JDK 17, AGP 9.0+ requires JDK 21). Resolution precedence:
+
+1. Explicit `--java-home <path>` (user override; trust them)
+2. AGP-version-implied JDK if project has AGP plugin AND auto-select catalogue has it
+3. `gradle.properties#org.gradle.java.home` if set
+4. `org.jetbrains.kotlin.jvmTarget` if no AGP (current behavior for KMP-pure-JVM and Java-only projects)
+5. Host default JDK
+
+**Test surface:** `tests/vitest/jdk-catalogue.test.js` + `tests/vitest/cli.test.js`. New cases for: (a) AGP 8.8 + jvmTarget=11 → picks JDK 17, (b) KMP module with jvmTarget=21 + no AGP → picks JDK 21 (existing behavior preserved), (c) explicit `--java-home` always wins.
+
+**Effort:** ~3-4h (catalogue + preflight extension, 4-6 vitest cases, regression test against TaskFlow shape via fixture). 
+
+**Ship-when:** v0.8.0 release-blocker. Land before the wide-smoke release-validation gate (#4 of release-readiness), since the gate's wide-smoke matrix on the maintainer's macOS will REPRODUCE these failures and need them fixed first. Decompose: the 5 per-project investigations (DawSync, OmniSound, dipatternsdemo, nav3-recipes, PeopleInSpace) are blocked by this — once landed, re-run wide-smoke and any persistent REDs are repo-level test failures, not orchestrator bugs.
+
+### v0.8.0 — Cascade isolation: per-module retry when one-shot dispatch aborts at evaluation phase (surfaced 2026-05-03 wide-smoke; promoted to v0.8.0 release-blocker)
+
+**Surfaced 2026-05-03 during the wide-smoke pass on Confetti-main and shared-kmp-libs.** When the orchestrator dispatches `:a:test :b:test :c:test` in ONE gradle invocation with `--continue`, and module `:a` fails at the **evaluation phase** (plugin resolution, AGP-JDK mismatch, SDK location not found, missing dep), gradle aborts BEFORE reaching `:b` and `:c`. The post-#116 defense-in-depth correctly marks all three as failed (none have `> Task :foo:bar` evidence in stdout) — but this is **honest RED for the wrong reason**: `:b` and `:c` would have succeeded in isolation.
+
+**Affected (wide-smoke evidence 2026-05-03):**
+- **Confetti-main**: `:shared:jvmTest` succeeds in 1m 44s when invoked alone; fails when bundled with `:androidApp:testDebugUnitTest` whose evaluation aborts. Cascade-isolated retry confirmed `:shared` is real-green.
+- **shared-kmp-libs**: 37 modules cascade-fail because some configuration bug aborts the whole graph at evaluation. Per-module retry isolates the actual broken modules.
+- Likely affects most multi-module projects with one misconfigured module at evaluation time.
+
+**Note:** PR #116 already added a "one-shot dispatch aborted before any task ran — retrying per-module" path (parallel-orchestrator.js#executeLeg step 4a) which fires when `legExit !== 0 && taskList.length > 1 && !anyTaskMentioned`. It correctly classifies each retry independently. **What's pending:** verifying the cascade isolation handles every shape we've observed (especially mixed evaluation-vs-execution failures in the same dispatch — when SOME tasks ran and SOME aborted) and that it scales to the 37-module shared-kmp-libs case without timing out.
+
+**Fix verification:**
+1. Reproduce the Confetti `:shared` ↔ `:androidApp` cascade on Windows; confirm post-#116 retry isolates `:shared` to GREEN.
+2. Reproduce the shared-kmp-libs 37-module cascade; confirm per-module retry surfaces which exact modules are broken (not all 37 cascade-failing).
+3. Add at least 2 vitest cases that exercise the retry path: (a) leg with 1 evaluation-aborting + 2 succeed-when-isolated, (b) leg with N modules where 1 fails at evaluation.
+
+**Effort:** ~2-3h (mostly verification + vitest; the implementation already landed in PR #116). 
+
+**Ship-when:** v0.8.0 release-blocker. Validates that PR #116's cascade-isolation path is robust enough to ship in the v0.8.0 wide-smoke release-validation gate.
+
+### v0.8.0 — Wide-smoke per-project triage: confirm REDs are repo-level vs orchestrator (surfaced 2026-05-03)
+
+**Surfaced 2026-05-03 wide-smoke against 23 KMP/Android projects on Windows post-EINVAL.** After the spawn fix + 13 collateral fixes (PR #116), the wide-smoke produced 8 REAL-GREEN, 6 REAL-RED, 9 NO-MODULES. The 6 REAL-REDs decompose into:
+
+| Project | Suspected root cause | Confirm in v0.8.0? |
+|---|---|---|
+| DawSync | 5 tests desync with refactored production | Repo-level (skip) |
+| OmniSound | 1 missing `DesktopPKCEGenerator` cascades 7 features | Repo-level (skip) |
+| gyg | 1 real test failing (`LoadingAndErrorStatesTest`) | Repo-level (skip) |
+| nav3-recipes | `NavigatorTest.kt` references removed `RouteV2`/`Navigator` | Repo-level (skip) |
+| nowinandroid | `:foryou:impl` Prod variant missing dep + 2 real tests | Repo-level (skip) |
+| Confetti-main | `:wearApp` 2 real tests fail (`WorkManagerTest`, `ComplicationScreenshotTest`) | Repo-level (skip) |
+
+**Plus the 5 per-project investigations** (still pending):
+- DawSync, OmniSound, dipatternsdemo, nav3-recipes, PeopleInSpace — flagged as "could be real test failures, JDK/dep issues, or more orchestrator bugs" pre-AGP-JDK fix. Once the AGP-JDK fix above lands, re-run wide-smoke and each of these will resolve to one of: (a) real repo bug → document and skip, (b) orchestrator bug → file own entry.
+
+**Process for v0.8.0:**
+1. Land the AGP-JDK fix (entry above).
+2. Re-run wide-smoke on Windows + Mac. Capture envelope diffs vs the 2026-05-03 baseline.
+3. For each REAL-RED, do a 5-minute triage: read the stderr context (now visible post-PR #116 widening), decide product-bug vs repo-bug.
+4. Product-bugs → file own v0.8.0 entry, fix in this milestone.
+5. Repo-bugs → document the project + reason in PRODUCT.md "known wide-smoke skip-list" (so v0.8.0 wide-smoke gate doesn't fail on them).
+
+**Effort:** ~3-4h (re-run wide-smoke + triage + filing).
+
+**Ship-when:** v0.8.0 release-blocker, AFTER the AGP-JDK fix lands. Closes the "5 per-project investigations" carve-out from the silent-pass entry.
+
+### v0.8.0 — `resolveTasksFor` returns null when `gradleTasks` is null even though `sourceSets` declares the test set (surfaced 2026-05-02; promoted 2026-05-03)
+
+**Surfaced 2026-05-02 while validating PR #103 (`fix(parallel): proactive iOS/macOS/common/desktop target filter`).** When a KMP module declares `jvm()` (no custom name), Gradle exposes the unit-test task as `:moduleX:jvmTest` — not `:moduleX:desktopTest`. The wrapper hardcodes `desktopTest` for `--test-type common|desktop`. The proactive UX-1 filter from PR #103 now lets such a module slip into the dispatch set; the reactive WS-1 fallback then catches the resulting `Cannot locate tasks that match ':moduleX:desktopTest'` as a real failure (good — no more PASS fantasma). But the user-visible result is still `[FAIL] :moduleX (task not found)`, when the correct behavior would be: per-module task lookup picks `jvmTest` from the project model and runs it green.
+
+**Root cause** (file:line evidence): `lib/project-model.js:697-706` — when `gradleTasks` is null (probe didn't run / cache miss), `resolveTasksFor` returns all task fields as `null` — *even though* the `sourceSets` analysis available alongside it already knows which test source sets exist. Confetti reproducer from cached model `.kmp-test-runner-cache/model-1b53ddf*.json`:
+
+```json
+"shared": {
+  "type": "kmp",
+  "sourceSets": { "jvmTest": true, ...rest false },
+  "gradleTasks": null,
+  "resolved": { "unitTestTask": null, ... }
+}
+```
+
+The `sourceSets.jvmTest: true` is enough signal to predict `unitTestTask: "jvmTest"` without a gradle probe — the same way `predictedCoverage` is computed at line 694-696 as a fallback for `coverageTask`. This pattern is missing for the four other resolved fields.
+
+**Reproducer (live):** `cd /Volumes/XcodeOscar/kmp-test-workspace/Confetti && grep -c '":jvmTest"\|"jvmTest "' .kmp-test-runner-cache/tasks-*.txt` → 5 modules with `jvmTest` task; `kmp-test parallel --test-type common --json` → 5 of those are dispatched as `:moduleX:desktopTest`, gradle "Cannot locate", reactive WS-1 catches as FAIL. Direct `./gradlew :shared:jvmTest` → BUILD SUCCESSFUL.
+
+**Fix direction:**
+
+1. **Add `predictTaskFromSourceSets(analysis, candidate)` helper** in `lib/project-model.js` mirroring `predictCoverageTask`. Returns the first candidate task name whose corresponding source set is `true` in `analysis.sourceSets`.
+2. **Wire predicted fallbacks into the `gradleTasks==null` branch** for `unitTestTask` / `deviceTestTask` / `webTestTask` / `iosTestTask` / `macosTestTask`. Use the same candidate orders as the populated branch.
+3. **Sh + ps1 readers no change needed** — they already consume `unitTestTask` via `pm_get_unit_test_task` (per-module fast path).
+4. **Vitest in `tests/vitest/project-model.test.js`** — assert `resolveTasksFor('mod', null, { sourceSets: { jvmTest: true, ...rest false }, type: 'kmp' })` returns `unitTestTask: 'jvmTest'`. Repeat for desktopTest precedence, jsTest fallback, iosSimulatorArm64Test, macosArm64Test.
+5. **Bats integration test** — fixture project with a single `jvm()` KMP module + stub gradlew that succeeds on `jvmTest` and fails on `desktopTest`; assert `kmp-test parallel --test-type common` dispatches to `jvmTest`, exit 0, no `Cannot locate` in output.
+
+**Effort: 2-3h** (1h core resolver + tests, 1h fixture + bats integration, 30min sanity-check on Confetti live). Could ship in PR4 (alongside WS-3 which also touches the project-model resolver) or as its own standalone PR. Listed standalone here because it has zero coupling to Android detection (WS-3 territory).
+
+**Cross-references:** complement to v0.7.0 Phase 1 (`unitTestTask` candidate chain landed there with the assumption that `gradleTasks` would be populated). Complement to PR #103 reactive WS-1 fix (which now surfaces this bug as a real FAIL instead of swallowing it).
+
+### v0.8.0 — Adaptive `KMP_GRADLE_TIMEOUT_MS` per benchmark config (surfaced 2026-05-03; promoted to v0.8.0 release-blocker 2026-05-03)
+
+**Surfaced 2026-05-03 during e2e validation of the new `--benchmark` / `--benchmark-config` parallel hook against `shared-kmp-libs:benchmark-io`.** `--config smoke` completes in ~1-3s; `--config stress` legitimately needs 30+ minutes (full JMH warmup + measurement iterations across 5 benchmarks). The orchestrator's default `KMP_GRADLE_TIMEOUT_MS=1800000` (30 min) is calibrated to detect hung daemons but trips on legitimate stress runs.
+
+**Observed behavior (validated):**
+- `kmp-test benchmark --config stress --module-filter benchmark-io --platform jvm` against shared-kmp-libs hit the 1800s timeout with the message `"gradle invocation exceeded 1800s timeout — likely a hung daemon"`. Plumbing was correct — task `:benchmark-io:desktopStressBenchmark` dispatched, gradle ran the JMH stress harness, just exceeded the budget.
+- Exit code anomaly: orchestrator emits the timeout message but reports exit code 0 to the caller. Pre-existing in benchmark-orchestrator, not introduced by the parallel `--benchmark` hook. Worth a separate audit (timeout-as-warning vs timeout-as-error semantics).
+
+**Proposal — adaptive timeout default by config:**
+
+| `--benchmark-config` | Suggested default `KMP_GRADLE_TIMEOUT_MS` |
+|---|---|
+| `smoke` (CI / validation) | 300000 (5 min) — generous slack on the 1-3s expected |
+| `main` (kotlinx-benchmark default) | 1800000 (30 min) — current default |
+| `stress` (real perf measurement) | 3600000 (1 h) — or `0` to disable |
+
+User override via env var continues to win. The `kmp-test benchmark --help` output should mention the implicit per-config defaults so users know what to expect.
+
+**Lift:** 1-2h. `lib/benchmark-orchestrator.js` reads `KMP_GRADLE_TIMEOUT_MS` already; add a config-aware default fallback when env var is unset. Vitest covers the resolution table. Document in README's flag reference.
+
+**Ship-when:** **v0.8.0 release-blocker** (promoted 2026-05-03 — every known bug closes before tag). Lands as a dedicated PR alongside the README refresh.
+
+**Includes (added when promoted to v0.8.0):**
+- Fix the exit-code-0-on-timeout discrepancy at the same time. Today the orchestrator emits the timeout warning but reports exit 0 to the caller; this conflates "test passed" and "build hung". Decision: timeout → exit 3 (`errors[].code:"gradle_timeout"`), with `--ignore-gradle-timeout` as the explicit bypass. Closes the audit gap surfaced 2026-05-03 against `--config stress`.
+
+### v0.8.0 — `tests/installer/install.bats` leaves orphan adb process and hangs on macos-latest (surfaced 2026-05-02; promoted 2026-05-03)
+
+**Surfaced 2026-05-02 by the new `bats-macos` CI job in PR #105 (WS-2 parity).** When `npx bats tests/bats/ tests/installer/` runs on `macos-latest`, the suite passes the first 227 tests cleanly (entire `tests/bats/` directory + part of `tests/installer/install.bats`) in ~3 min, then **hangs for 8 min** on the next test until the 15-min job timeout fires. Cleanup logs show `Terminate orphan process: pid (2875) (adb)` — an `adb` subprocess was spawned by one of the install.bats tests and never reaped, blocking bats's "wait for child to exit" step.
+
+Same symptom referenced in pre-existing comment at `.github/workflows/ci.yml:70-72` ("the wider tests/bats/ suite has a hang on macos-latest"); root cause now narrowed: it's specifically `tests/installer/install.bats` (not the wider `tests/bats/`).
+
+**Reproducer (when bats is installed locally):** `cd kmp-test-runner && /bin/bash -c 'npx bats --timing tests/installer/install.bats'` on macos-latest. Last test that completes is "E2E: install.sh fails when --archive file is missing"; the suite then hangs starting the next test. `pgrep adb` during the hang confirms a leaked daemon.
+
+**Suspect tests:** the install.bats E2E tests run `kmp-test --version` / `kmp-test --help` after install. The `kmp-test doctor` codepath at `lib/cli.js:1306` runs `spawnSync('adb', ['version'], ...)` — on a fresh macos-latest runner without prior adb usage, this triggers `adb start-server` which forks a daemon. Bats then waits for the daemon process tree to terminate. Hypothesis to verify: doctor / version checks are spawning the adb daemon during a wrapper invocation, and bats counts the daemon as a child of the test process.
+
+**Fix candidates:**
+1. Add an explicit `adb kill-server || true` in install.bats's `teardown_file()` (or per-test `teardown()`) to reap the daemon.
+2. Skip the adb probe in `kmp-test doctor` when `KMP_TEST_SKIP_ADB=1` (env opt-out) and set it in install.bats fixtures.
+3. Replace `adb` invocation with a process-group-isolated spawn (`setsid` or `kill -- -$pid` on teardown).
+
+**Workaround in flight (PR #105):** scope `bats-macos` to `tests/bats/` only. The 216 tests in that directory exercise the WS-2 regression coverage and pass in ~3 min. installer-e2e (macos-latest) at `ci.yml:45-77` already runs install.bats E2E with `--filter "E2E"` (different invocation that avoids the hang). Net effect: no parity loss for WS-2; install.bats macOS hang remains as documented follow-up here.
+
+**Effort: 1-2h** to identify the exact test (run install.bats one test at a time on macos-latest with `--filter` until the hang triggers), confirm the adb hypothesis, and pick a fix. Likely option 1 is the minimal change.
+
+### v0.8.0 — `bats-macos` job hangs in `tests/bats/` on macos-latest (surfaced 2026-05-02; promoted 2026-05-03 — blocks branch-protection promotion of `bats-macos` to required, gate #3 of release-readiness)
+
+**Surfaced 2026-05-02 in PR #108** (`docs(backlog): expand v0.8 STRATEGIC PIVOT per-feature migration plan`, doc-only — no `.sh` / `.js` / test changes). The `bats-macos` CI job was cancelled at 15m17s (job `timeout-minutes: 15` at `.github/workflows/ci.yml:124`). The cancelled step is `bats (macOS — Bash 3.2 regression coverage)` which executes `npx bats --timing tests/bats/` (`.github/workflows/ci.yml:131-132`).
+
+**This is a NEW finding distinct from the `tests/installer/install.bats` adb-orphan hang** documented in the entry above:
+- The PR #105 workaround (BACKLOG entry above, "Workaround in flight") explicitly scoped `bats-macos` to `tests/bats/` only, claiming "the 216 tests in that directory exercise the WS-2 regression coverage and pass in ~3 min." That assumption no longer holds: the same scope now hangs >15 min.
+- This PR (#108) modified only `BACKLOG.md`. No script, lib, or test files changed. The hang was therefore present in `develop` HEAD `d02b2f7` already and was not surfaced because PR #105's `bats-macos` introduction predated this run.
+
+**Evidence:**
+- Run URL: `https://github.com/oscardlfr/kmp-test-runner/actions/runs/25251117434/job/74043227381`
+- Job conclusion: `cancelled` (15m17s wall time)
+- Steps before the cancelled bats step: `Set up job` / `actions/checkout` / `actions/setup-node` / `npm ci` — all `success` → setup is not the culprit, the hang is in `npx bats tests/bats/` itself.
+- Other macOS jobs in the same run completed cleanly: `build (macos-latest)` 12s pass, `installer-e2e (macos-latest)` 12s pass, `gradle-plugin-test-ios` 3m pass. None of them invoke `bats tests/bats/`.
+
+**Reproducer (when bats is installed locally on macos-latest):** `cd kmp-test-runner && /bin/bash -c 'npx bats --timing tests/bats/'`. If hangs >5 min, reproduces. To bisect to the specific file: run each `tests/bats/test-*.bats` individually with `npx bats --timing <file>` and identify which one hangs. Suspects (priority by likelihood of spawning lingering processes / sub-shells):
+1. `tests/bats/test-concurrency.bats` — already known macOS-flaky per the original comment at `.github/workflows/ci.yml:70-72` ("the wider tests/bats/ suite has a hang on macos-latest" + the BSD-vs-Linux SIGINT delivery hypothesis surfaced in PR #30 deferred entry, BACKLOG line ~404). Forks stub `gradlew` that `sleep 30`s, sends SIGINT to parent, then `wait $cli_pid` — could leak children under BSD signal-delivery semantics.
+2. `tests/bats/test-android.bats` / `test-android-summary-counts.bats` / `test-parallel-ios-dispatch.bats` — invoke wrappers that may spawn `adb` (same class of orphan as the install.bats hang above).
+3. `tests/bats/test-doctor.bats` — runs `kmp-test doctor` which probes adb directly (`lib/cli.js:1306`'s `spawnSync('adb', ['version'], ...)`) — same pattern as the install.bats root cause.
+
+**Hypothesis:** likely the same adb-daemon-leak root cause as the install.bats entry above, just from a different test file in `tests/bats/`. The `KMP_TEST_SKIP_ADB=1` env opt-out documented as fix candidate 2 in the install.bats entry would address both hangs simultaneously if implemented in `lib/cli.js#runDoctorChecks` and exported to bats's setup_file(). Could ALTERNATIVELY be the BSD signal-delivery flake from `test-concurrency.bats` — those are different bug classes and need separate confirmation.
+
+**Fix candidates** (mostly subsume into the install.bats entry's fix, but with broader scope):
+1. Implement `KMP_TEST_SKIP_ADB=1` opt-out in `lib/cli.js#runDoctorChecks` (already referenced in PRODUCT.md OS matrix bullets and BACKLOG line 176); set it in BOTH `tests/installer/install.bats` and `tests/bats/` setup hooks. Single fix, both hangs closed.
+2. Bisect first via `--filter` on macos-latest to pin down the exact bats file → if it's `test-concurrency.bats`, fix is the BSD-signal-delivery option from PR #30 deferred entry; if it's a different file, fix is option 1.
+3. Mark `bats-macos` as `continue-on-error: true` until root cause confirmed (already done by branch-protection treating it as informational; document explicitly in `.github/workflows/ci.yml` for clarity).
+
+**Impact assessment:** the `bats-macos` job remains informational (NOT in the 7 required CI checks per `CLAUDE.md` "Daily workflow" bullet — required set is `build x2`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e x2`, `commit-lint`). PR #108 merged with the failure; future doc-only and code-only PRs will continue to merge despite the hang as long as the 7 required checks pass. **No release blocker.** Quality concern: bash 3.2 regression coverage is currently de facto disabled on macOS, leaving WS-2 (`declare -A`)-class bugs unchecked at the CI level. The 2-3h migration of `benchmark` to Node (Sub-entry 1 of v0.8 PIVOT) closes WS-2's specific bug class by construction, partially compensating for the gap until this hang is fixed.
+
+**Effort: 2-3h.** Bisect (1h) + fix (1h via option 1, otherwise 1-2h via option 2) + CI re-run validation (30min). Recommended order: ship the v0.8 PIVOT benchmark migration first (closes the WS-2 surface that `bats-macos` is supposed to guard), then fix this hang to restore the regression-coverage net for the remaining bash plumbing across the migration window.
+
+**Cross-references:**
+- BACKLOG entry above (`tests/installer/install.bats` adb-orphan hang) — likely shared root cause; fixes should be coordinated.
+- BACKLOG entry below in the QUEUED section (`macOS bats end-to-end validation (deuda from PR #30)`, line ~404) — original BSD-signal hypothesis for `test-concurrency.bats`; possibly the same bug as this one or a sibling.
+- PR #105 BACKLOG entry "Workaround in flight" claim ("tests/bats/ passes in ~3 min") — invalidated by this finding; the workaround scope reduction did not actually deliver a passing macOS bats job.
+
+### v0.8.0 — Project-level config file for stable settings (`sharedProjectName`, defaults) — surfaced 2026-05-03
+
+**Surfaced 2026-05-03 during the README ↔ tool-surface audit.** `--shared-project-name` is documented in the README's CLI flag tables (line 409 + line 639), but **has never existed as a CLI flag**. The legacy bash wrapper only ever read the `SHARED_PROJECT_NAME` env var; the Gradle plugin exposes it as a real DSL property (`sharedProjectName = "..."`).
+
+The repo owner's workflow makes the design tension visible: their main project depends on `shared-kmp-libs` (a sibling project that's a pure-libraries package). The shared-project relationship is **stable per-checkout** — it doesn't change between runs. A per-invocation CLI flag is the wrong shape; project-level config is.
+
+**Proposal — `.kmp-test-runner.json` (or `.kmp-test-runner.yml` / TOML) at project root:**
+
+```json
+{
+  "sharedProject": {
+    "name": "shared-kmp-libs",
+    "path": "../shared-kmp-libs"
+  },
+  "defaults": {
+    "testType": "common",
+    "coverageTool": "auto",
+    "excludeModules": "*:test-fakes,konsist-guard"
+  },
+  "skip": {
+    "android": ["legacy-app"],
+    "ios": ["benchmark-android-test"]
+  }
+}
+```
+
+CLI flags continue to override config-file defaults (per-invocation precedence: CLI > env > config file > built-in default). Gradle plugin DSL props continue to work the same way; they read the same config file under the hood. This lets `kmp-test parallel --include-shared` Just Work without any CLI argument or env-var setup once the config is committed.
+
+**Pairs naturally with the `.kmp-test-runner/` subdir entry below** — both put the runner's project-level surface under a single coherent root (`.kmp-test-runner.json` for config, `.kmp-test-runner/cache/` + `.kmp-test-runner/reports/` for artifacts). One `.gitignore` line covers all artifacts; the config file is committed.
+
+**Migration path for `--shared-project-name`:**
+1. v0.8.0 README refresh: **remove** `--shared-project-name` from the CLI flag tables (it never worked there). Document `SHARED_PROJECT_NAME` env var as the current interim. Keep the Gradle DSL property.
+2. v0.8.x or v0.9: ship config-file support; deprecate the env var with a friendly warning.
+3. v1.0: env var removed if config-file adoption sticks.
+
+**What else fits naturally as project config (post-config-file shape — not v0.8.0 scope):**
+- Default `testType`, `coverageTool`, `coverageModules`, `excludeCoverage`
+- Skip lists per platform (`SKIP_DESKTOP_MODULES` / `SKIP_ANDROID_MODULES` / `SKIP_IOS_MODULES` / `SKIP_MACOS_MODULES` env vars all become array fields)
+- `--output-file` default for coverage reports
+- `--module-filter` default (rare but possible for monorepo subproject focus)
+
+**Out of scope:**
+- Per-invocation flags that genuinely vary per CI job: `--json`, `--dry-run`, `--test-filter`, `--ignore-jdk-mismatch`, `--fresh-daemon`. These stay flag-only.
+- Schema validation / autocompletion — defer to v0.9 with a published JSON schema.
+
+**Effort:** ~4-6h (config loader in `lib/cli.js`, CLI > env > config precedence resolver, migration code for `SHARED_PROJECT_NAME` → file, vitest for precedence + parse). **Promoted to v0.8.0 release-blocker** (2026-05-03) — closing the `--shared-project-name` README↔CLI gap honestly requires this rather than just deleting the doc line. Without project-level config the user's "main project depends on shared-kmp-libs" workflow has no clean shape (env var is a workaround, not a feature). Lands as a dedicated PR before the v0.8.0 release readiness gate.
+
+### v0.8.0 — Move CLI-emitted artifacts into a single `.kmp-test-runner/` subdir (surfaced 2026-05-03; promoted to v0.8.0 release-blocker 2026-05-03)
+
+**Surfaced 2026-05-03 during e2e validation of `kmp-test coverage --coverage-tool kover` on `shared-kmp-libs`.** The orchestrator scatters CLI-generated artifacts at the project root, mixed with the user's actual files:
+
+- `coverage-full-report-<runId>.md` (one per run — ~20 accumulated in shared-kmp-libs after a week of iteration)
+- `coverage-full-report.md` (legacy alias — overwritten each run)
+- `androidtest-logs/<timestamp>/` (legacy `kmp-test android` log dir — pre-v0.8 sub-entry 3)
+- `.kmp-test-runner-cache/` (project-model + gradle-tasks cache — already in subdir, only correctly-grouped artifact)
+
+Users currently have no clean way to gitignore CLI output without enumerating every path individually. The legacy `coverage-full-report*.md` glob is fragile (third-party tools may produce similar filenames).
+
+**Proposed shape:**
+
+```
+<project-root>/
+  .kmp-test-runner/
+    cache/                      # was .kmp-test-runner-cache/ (consolidate)
+      model-<sha>.json
+      tasks-<sha>.txt
+    reports/
+      coverage/
+        <runId>.md
+        latest.md               # symlink/copy alias (replaces coverage-full-report.md)
+    logs/
+      android/
+        <runId>/<module>.log    # was build/logcat/<runId>/ (sub-entry 3 contract)
+        <runId>/<module>_logcat.log
+        <runId>/<module>_errors.json
+```
+
+**One-line `.gitignore` recipe** users can adopt:
+```
+# kmp-test-runner local artifacts (CLI output — never commit)
+.kmp-test-runner/
+```
+
+**Migration plan:**
+1. Single PR introduces `<project>/.kmp-test-runner/{cache,reports/coverage,logs/android}/` paths in coverage-orchestrator + android-orchestrator + project-model cache writer.
+2. Cache layer reads from BOTH old and new paths during a transition release (v0.8.x); writes to new only. Old caches become stale and ignored.
+3. Coverage reports read from new path; the `coverage-full-report.md` legacy alias at project root stays for one release with a deprecation banner inside the file ("> This file will be removed in v0.9 — see `.kmp-test-runner/reports/coverage/latest.md`").
+4. Android log dir migration: `<project>/build/logcat/<runId>/` (current, since sub-entry 3) → `<project>/.kmp-test-runner/logs/android/<runId>/`. The current path is gitignored by Gradle's default `build/` exclusion already; the new path needs the user-side `.gitignore` rule.
+5. README "Quick start" gains a 2-line section: "Add `.kmp-test-runner/` to your project `.gitignore` to keep CLI output out of git."
+
+**Effort:** ~120 LOC across 3 orchestrators + 2-3 vitest cases per orchestrator covering the new path resolution + 1 cli.test.js case for the doctor / `--help` text mention. Schema bump on the project-model cache (versions to 7) so old caches at the legacy path don't get half-read on first upgrade.
+
+**Ship-when:** **v0.8.0 release-blocker** (promoted 2026-05-03 — every known bug/improvement closes before tag). Lands as a dedicated PR after the project-level config file PR (the two pair: `.kmp-test-runner.json` config + `.kmp-test-runner/` artifacts share the same root). Cache layer keeps the dual-read transition behavior intact for one release so users coming from v0.7.x don't lose their cached models on first upgrade.
+
+### v0.8.0 — Buildable cross-platform E2E fixture project (promoted to release-blocker per release-readiness gate #2)
+
+**Surfaced 2026-05-01 during v0.7.0 Phase 3 review.** The current iOS / macOS test coverage is the same shape as JS/Wasm/Android — model unit tests, wrapper integration tests with stub `gradlew`, Gradle TestKit acceptance — but **no real iOS / macOS test execution in CI**. This is in parity with the rest of the platforms (Android instrumented + JS/Wasm also lack real-task CI runs), so v0.7.0 ships honestly. But it's the largest single piece of testing debt the project carries: every "iOS support works" claim today rests on wide-smoke validation against the user's local KMP projects, which doesn't survive in green/red CI history.
+
+**Proposal**: build a **minimum-viable buildable Kotlin Multiplatform fixture** under `tests/fixtures/kmp-cross-platform-e2e/` with:
+- Real `gradle/wrapper/` (gradle-wrapper.jar + properties pinning a stable Gradle 8.x or 9.x)
+- Real `gradlew` + `gradlew.bat`
+- Root `build.gradle.kts` with kotlin-multiplatform plugin
+- One module exercising **every supported target**: `jvm()`, `js(IR)`, `wasmJs()`, `iosX64()` + `iosSimulatorArm64()`, `macosArm64()`, `androidLibrary { }` (or `androidTarget()`)
+- Trivial passing test in each test source set (`commonTest`, `jvmTest`, `jsTest`, `wasmJsTest`, `iosX64Test`, `iosSimulatorArm64Test`, `macosArm64Test`, `androidUnitTest`)
+- Pinned Kotlin + AGP versions in `gradle/libs.versions.toml`
+
+**CI matrix** (new workflow `e2e-cross-platform.yml`):
+- `e2e (ubuntu-latest)`: runs `kmp-test parallel --test-type common` + `--test-type androidUnit` + `--test-type ios` (dispatch only — no simulator) + `--test-type macos` (dispatch only) + JS-via-jvmTest fallback. Verifies the wrapper picks the right per-module task in the JSON envelope (no real test execution beyond JVM).
+- `e2e (windows-latest)`: same as ubuntu — Pester / bash-via-Git-Bash parity check.
+- `e2e (macos-latest)`: full iOS + macOS execution. Boots simulator (Approach B fallback if needed), runs `:module:iosSimulatorArm64Test` and `:module:macosArm64Test` for real. This is the only place where iOS actually runs.
+
+**Risk + cost:**
+- **Risk**: high CI flakiness from network deps (Maven plugin downloads), Xcode version drift on macos-latest, simulator boot races. Initial implementation could spend 50% of effort fighting infrastructure.
+- **Cost**: ~6-10h to build a working fixture + reliable CI. Net new bytes in the repo: ~70KB for `gradle-wrapper.jar` (binary).
+- **Per-run CI cost**: macOS minutes are 10× ubuntu minutes — full E2E job could add 5-10 min per CI run, ~50 min macOS-equivalent per PR.
+
+**When to ship:**
+- v0.7.x patch — if a v0.7 user surfaces an iOS regression that the unit/integration suite missed, this becomes urgent.
+- v0.8.0 minor — if v0.7 ships clean, defer to a dedicated milestone where we can budget the CI flakiness work properly.
+- v1.0.0 — if v0.7 + v0.8 hold up, the bar for v1.0 is "no major iOS regressions in 3+ months", and this fixture is part of the v1.0 stability claim.
+
+**Out of scope for this entry:**
+- Re-using an existing real-world OSS KMP project (Confetti / KaMPKit) as the fixture — version drift makes our CI flakier than a pinned synthetic; only revisit if synthetic proves too much work.
+- Replacing the wide-smoke local validation gate (`feedback_release_wide_smoke.md`). Both should coexist: wide-smoke catches integration-level bugs against real projects; the synthetic E2E catches regressions deterministically.
+
+### v0.8.0 — README refresh + token-cost re-measurement across all CLI tools (surfaced 2026-05-03)
+
+**Surfaced 2026-05-03 after sub-entry 5 + PR #116 + sub-entry-5-followups landed.** The README has not been refreshed since v0.6.x; v0.7.0 (iOS/macOS surface), the v0.8 STRATEGIC PIVOT (5 orchestrators migrated to Node), the EINVAL spawn fix (PR #116), and the new flags restored in PR #115 follow-up (`--fresh-daemon`, `--output-file`, `--coverage-only`, `--benchmark` + `--benchmark-config`) all need to land in the user-facing docs before v0.8.0 tag.
+
+Concurrently, `tests/vitest/measure-token-cost.test.js` was last calibrated against the bash-wrapper-era output; the migrated orchestrators' envelope-mode output is structurally identical but the human-banner output paths diverged. The token-cost numbers reported in the README ("13K → 100 token reduction for AI agents", "~542K → ~500 tokens for the coverage 5-iter loop") need re-measurement against:
+- `kmp-test parallel` — both `--json` envelope mode AND human-banner mode, across `--test-type {common, desktop, androidUnit, androidInstrumented, ios, macos, all}` × `--no-coverage` × baseline
+- `kmp-test coverage` — `--json` + human modes
+- `kmp-test changed` — `--json` + human, with realistic git-diff scenarios
+- `kmp-test android` — `--json` + human
+- `kmp-test benchmark` — `--json` + human, across `--config {smoke, main, stress}`
+- `kmp-test doctor` — `--json` + human
+
+**Tasks:**
+1. Run the full token-cost measurement matrix on a representative project (e.g. shared-kmp-libs or KaMPKit) and record before/after/reduction-ratio numbers per subcommand.
+2. Refresh README sections: "Why kmp-test-runner" lead numbers, "AI agents and JSON envelope" examples, the per-subcommand flag tables (add `--fresh-daemon` / `--output-file` / `--coverage-only` / `--benchmark` / `--benchmark-config` / `--dry-run` to whichever subcommands accept them post-F1).
+3. Verify "Platforms supported" table still matches `lib/project-model.js` candidate chains.
+4. Audit README's tool surface against `lib/cli.js#COMMANDS` — add a separate BACKLOG entry below for any tool dropped during the migration.
+5. **Remove `--shared-project-name` from the CLI flag tables** (lines 409 + 639). Has never existed as a CLI flag — only the `SHARED_PROJECT_NAME` env var works, and the Gradle DSL property `sharedProjectName` works in the plugin. Replacement design tracked in the project-level config file BACKLOG entry below — the env var stays as the interim shape until that lands. Surfaced 2026-05-03 during the README ↔ tool-surface audit.
+
+**Effort:** 2-3h ad-hoc on the maintainer's macOS once a stable wide-smoke baseline is captured.
+
+**Ship-when:** Folded into the v0.8.0 release-readiness gate (BACKLOG entry above) — README refresh is a release-PR scope item, not standalone.
+
+### v0.8.0 — Verify all CLI tools advertised in README are still offered post-Node-migration (✅ audited 2026-05-03; remediation pending)
+
+**Audited 2026-05-03 during the sub-entry-5-followups PR.** First pass complete; findings below feed into the README refresh entry above. No action needed on this entry beyond folding the findings into that PR.
+
+**Audit findings (2026-05-03):**
+
+✅ **All 6 subcommands listed in README exist in `lib/cli.js#COMMANDS` and dispatch correctly:** parallel, changed, android, benchmark, coverage, doctor.
+
+✅ **All concrete `kmp-test ...` examples in README execute against valid parseArgs cases.** ~25 command-line examples extracted from backtick blocks; every flag matched to a parser case in the corresponding orchestrator.
+
+✅ **All legacy bash wrapper flags successfully migrated.** Compared `git show 1b92c6d^:scripts/sh/run-parallel-coverage-suite.sh` against `lib/parallel-orchestrator.js#parseArgs`: 20/20 legacy flags present. The 4 originally dropped (`--fresh-daemon`, `--output-file`, `--coverage-only`, `--benchmark` + `--benchmark-config`) were restored in PR #115 follow-up. **Migration is flag-complete.**
+
+⚠️ **`--shared-project-name` documented in README's CLI flag tables (line 409 + 639) but has never existed as a CLI flag.** Legacy bash wrapper only ever read the `SHARED_PROJECT_NAME` env var; Gradle plugin DSL `sharedProjectName` does work. Pre-existing README bug, not migration loss. **Tracked separately in the "Project-level config file" v0.8.0 entry above.**
+
+⚠️ **Flag reference table at README line 393-410 is significantly out-of-date.** Documents 8 flags; `parallel-orchestrator.js#parseArgs` parses 19+. Missing from README (need to be added or omitted with rationale): `--include-shared`, `--test-filter`, `--exclude-coverage`, `--timeout`, `--skip-tests`, `--dry-run`, `--fresh-daemon`, `--output-file`, `--coverage-only`, `--benchmark`, `--benchmark-config`. **Tracked in the "README refresh + token-cost re-measurement" v0.8.0 entry above** — this audit feeds that PR's task list.
+
+**Ship-when:** No standalone PR — findings already documented; remediation lands as part of the README refresh PR. Close this entry when README refresh ships.
 
 ### v0.8 — KMP target tier intel for iOS/macOS strategy (surfaced 2026-05-02 during sub-entry 3 validation in shared-kmp-libs)
 
@@ -408,79 +751,11 @@ This pattern covers ~90-95% of integration bugs. The remaining 5% (hardware/perf
 
 **Effort:** ~2-3h folded into v0.8.0 release-readiness gate (1) cross-OS parity workflow + (2) fixture build. Documentation update lands as a follow-up README polish PR pre-tag.
 
-### v0.8.x — Move CLI-emitted artifacts into a single `.kmp-test-runner/` subdir (surfaced 2026-05-03)
+### ✅ HISTORICAL — Wide-smoke validation findings (mom's MacBook session, 2026-05-01)
 
-**Surfaced 2026-05-03 during e2e validation of `kmp-test coverage --coverage-tool kover` on `shared-kmp-libs`.** The orchestrator scatters CLI-generated artifacts at the project root, mixed with the user's actual files:
-
-- `coverage-full-report-<runId>.md` (one per run — ~20 accumulated in shared-kmp-libs after a week of iteration)
-- `coverage-full-report.md` (legacy alias — overwritten each run)
-- `androidtest-logs/<timestamp>/` (legacy `kmp-test android` log dir — pre-v0.8 sub-entry 3)
-- `.kmp-test-runner-cache/` (project-model + gradle-tasks cache — already in subdir, only correctly-grouped artifact)
-
-Users currently have no clean way to gitignore CLI output without enumerating every path individually. The legacy `coverage-full-report*.md` glob is fragile (third-party tools may produce similar filenames).
-
-**Proposed shape:**
-
-```
-<project-root>/
-  .kmp-test-runner/
-    cache/                      # was .kmp-test-runner-cache/ (consolidate)
-      model-<sha>.json
-      tasks-<sha>.txt
-    reports/
-      coverage/
-        <runId>.md
-        latest.md               # symlink/copy alias (replaces coverage-full-report.md)
-    logs/
-      android/
-        <runId>/<module>.log    # was build/logcat/<runId>/ (sub-entry 3 contract)
-        <runId>/<module>_logcat.log
-        <runId>/<module>_errors.json
-```
-
-**One-line `.gitignore` recipe** users can adopt:
-```
-# kmp-test-runner local artifacts (CLI output — never commit)
-.kmp-test-runner/
-```
-
-**Migration plan:**
-1. Single PR introduces `<project>/.kmp-test-runner/{cache,reports/coverage,logs/android}/` paths in coverage-orchestrator + android-orchestrator + project-model cache writer.
-2. Cache layer reads from BOTH old and new paths during a transition release (v0.8.x); writes to new only. Old caches become stale and ignored.
-3. Coverage reports read from new path; the `coverage-full-report.md` legacy alias at project root stays for one release with a deprecation banner inside the file ("> This file will be removed in v0.9 — see `.kmp-test-runner/reports/coverage/latest.md`").
-4. Android log dir migration: `<project>/build/logcat/<runId>/` (current, since sub-entry 3) → `<project>/.kmp-test-runner/logs/android/<runId>/`. The current path is gitignored by Gradle's default `build/` exclusion already; the new path needs the user-side `.gitignore` rule.
-5. README "Quick start" gains a 2-line section: "Add `.kmp-test-runner/` to your project `.gitignore` to keep CLI output out of git."
-
-**Effort:** ~120 LOC across 3 orchestrators + 2-3 vitest cases per orchestrator covering the new path resolution + 1 cli.test.js case for the doctor / `--help` text mention. Schema bump on the project-model cache (versions to 7) so old caches at the legacy path don't get half-read on first upgrade.
-
-**Why not now (deferred):** the EINVAL spawn fix + the 13 collateral bug fixes already landed in fix/windows-spawn-einval are a coherent "unblock Windows" PR. Mixing in a path migration would muddy the diff and require an extra round of cross-platform validation. v0.8.x patch release after the spawn-fix PR ships.
-
-### v0.8.x — Adaptive `KMP_GRADLE_TIMEOUT_MS` per benchmark config (surfaced 2026-05-03)
-
-**Surfaced 2026-05-03 during e2e validation of the new `--benchmark` / `--benchmark-config` parallel hook against `shared-kmp-libs:benchmark-io`.** `--config smoke` completes in ~1-3s; `--config stress` legitimately needs 30+ minutes (full JMH warmup + measurement iterations across 5 benchmarks). The orchestrator's default `KMP_GRADLE_TIMEOUT_MS=1800000` (30 min) is calibrated to detect hung daemons but trips on legitimate stress runs.
-
-**Observed behavior (validated):**
-- `kmp-test benchmark --config stress --module-filter benchmark-io --platform jvm` against shared-kmp-libs hit the 1800s timeout with the message `"gradle invocation exceeded 1800s timeout — likely a hung daemon"`. Plumbing was correct — task `:benchmark-io:desktopStressBenchmark` dispatched, gradle ran the JMH stress harness, just exceeded the budget.
-- Exit code anomaly: orchestrator emits the timeout message but reports exit code 0 to the caller. Pre-existing in benchmark-orchestrator, not introduced by the parallel `--benchmark` hook. Worth a separate audit (timeout-as-warning vs timeout-as-error semantics).
-
-**Proposal — adaptive timeout default by config:**
-
-| `--benchmark-config` | Suggested default `KMP_GRADLE_TIMEOUT_MS` |
-|---|---|
-| `smoke` (CI / validation) | 300000 (5 min) — generous slack on the 1-3s expected |
-| `main` (kotlinx-benchmark default) | 1800000 (30 min) — current default |
-| `stress` (real perf measurement) | 3600000 (1 h) — or `0` to disable |
-
-User override via env var continues to win. The `kmp-test benchmark --help` output should mention the implicit per-config defaults so users know what to expect.
-
-**Lift:** 1-2h. `lib/benchmark-orchestrator.js` reads `KMP_GRADLE_TIMEOUT_MS` already; add a config-aware default fallback when env var is unset. Vitest covers the resolution table. Document in README's flag reference.
-
-**Ship-when:** v0.8.x or v0.8.0 release-readiness gate, alongside the parallel `--benchmark` hook (PR #115). The hook itself is independent of this — landing the hook with the 30-min default is acceptable, and stress users already know to override.
-
-**Out of scope:**
-- Fixing the exit-code-0-on-timeout discrepancy — separate ticket. The current behavior is "timeout = gradle problem, not test failure" which is defensible but not consistently documented.
-
-### v0.7.x — Wide-smoke validation findings (mom's MacBook session, 2026-05-01)
+> **STATUS (2026-05-03):** All WS-1 through WS-10 + UX-1/UX-2 findings closed via v0.8 sub-entries 1-5 (PRs #110-#115) + PR #116 EINVAL fix + sub-entry-5-followups (this PR). Entry preserved for historical context (the original 11-issue triage that drove v0.8 STRATEGIC PIVOT scoping).
+>
+> **What replaced it:** the post-#116 wide-smoke baseline lives in BACKLOG entry "v0.8 — ✅ Silent-pass class FIXED" (line ~199) and the 3 follow-up v0.8.0 entries (JDK-AGP, cascade isolation, per-project triage). Future wide-smoke surfaces feed those entries, not this one.
 
 **Surfaced 2026-05-01 during cross-project wide-smoke validation against PeopleInSpace, Confetti (multi-module ~13 subprojects), and KaMPKit at `/Volumes/XcodeOscar/kmp-test-workspace/`. Validation hardware: Galaxy S22 Ultra (SM-S908B, Android 16, arm64-v8a, instrumented tests), iOS 26.4 Simulator runtime (10 devices: iPhone 17 Pro/Air/17e, iPad Pro M5, etc.), JDK catalogue 11/17/21, host JDK 21 default.** Eleven issues uncovered (twelfth `SKIPPED_MODULES` fix tracked separately below). Target: clear ALL before v0.8.0.
 
@@ -525,92 +800,11 @@ The session ran an end-to-end reproducible matrix: every `--test-type {common,an
 
 **Wide-smoke evidence:** logs at `/tmp/kmp-{pis,conf,kk}-*.{log,json}` on mom's MacBook (2026-05-01); npm-link active there (global `kmp-test` → `/Volumes/XcodeOscar/kmp-test-workspace/kmp-test-runner`). Direct gradle reproductions captured for WS-1 evidence.
 
-### v0.7.x — `resolveTasksFor` returns null when `gradleTasks` is null even though `sourceSets` declares the test set (surfaced 2026-05-02 during PR #103 work)
+### ✅ OBSOLETE — `SKIPPED_MODULES[@]` unbound under Bash 3.2 set -u (resolved by v0.8 PIVOT 2026-05-03)
 
-**Surfaced 2026-05-02 while validating PR #103 (`fix(parallel): proactive iOS/macOS/common/desktop target filter`).** When a KMP module declares `jvm()` (no custom name), Gradle exposes the unit-test task as `:moduleX:jvmTest` — not `:moduleX:desktopTest`. The wrapper hardcodes `desktopTest` for `--test-type common|desktop`. The proactive UX-1 filter from PR #103 now lets such a module slip into the dispatch set; the reactive WS-1 fallback then catches the resulting `Cannot locate tasks that match ':moduleX:desktopTest'` as a real failure (good — no more PASS fantasma). But the user-visible result is still `[FAIL] :moduleX (task not found)`, when the correct behavior would be: per-module task lookup picks `jvmTest` from the project model and runs it green.
+**Resolution:** the v0.8 STRATEGIC PIVOT (sub-entry 5, PR #115) replaced `scripts/sh/run-parallel-coverage-suite.sh` (1,701 LOC) with a 28 LOC thin Node launcher. The line `scripts/sh/run-parallel-coverage-suite.sh:779` referenced in this entry no longer exists. The Bash 3.2 array-expansion bug is structurally impossible in the migrated `lib/parallel-orchestrator.js` (Node has no equivalent gotcha). Locked-in regression coverage: `tests/vitest/parallel-orchestrator.test.js` test "`partitionBySkipEnv` empty SKIP_* env partitions cleanly (locks Bash 3.2 SKIPPED_MODULES regression into JS)".
 
-**Root cause** (file:line evidence): `lib/project-model.js:697-706` — when `gradleTasks` is null (probe didn't run / cache miss), `resolveTasksFor` returns all task fields as `null` — *even though* the `sourceSets` analysis available alongside it already knows which test source sets exist. Confetti reproducer from cached model `.kmp-test-runner-cache/model-1b53ddf*.json`:
-
-```json
-"shared": {
-  "type": "kmp",
-  "sourceSets": { "jvmTest": true, ...rest false },
-  "gradleTasks": null,
-  "resolved": { "unitTestTask": null, ... }
-}
-```
-
-The `sourceSets.jvmTest: true` is enough signal to predict `unitTestTask: "jvmTest"` without a gradle probe — the same way `predictedCoverage` is computed at line 694-696 as a fallback for `coverageTask`. This pattern is missing for the four other resolved fields.
-
-**Reproducer (live):** `cd /Volumes/XcodeOscar/kmp-test-workspace/Confetti && grep -c '":jvmTest"\|"jvmTest "' .kmp-test-runner-cache/tasks-*.txt` → 5 modules with `jvmTest` task; `kmp-test parallel --test-type common --json` → 5 of those are dispatched as `:moduleX:desktopTest`, gradle "Cannot locate", reactive WS-1 catches as FAIL. Direct `./gradlew :shared:jvmTest` → BUILD SUCCESSFUL.
-
-**Fix direction:**
-
-1. **Add `predictTaskFromSourceSets(analysis, candidate)` helper** in `lib/project-model.js` mirroring `predictCoverageTask`. Returns the first candidate task name whose corresponding source set is `true` in `analysis.sourceSets`.
-2. **Wire predicted fallbacks into the `gradleTasks==null` branch** for `unitTestTask` / `deviceTestTask` / `webTestTask` / `iosTestTask` / `macosTestTask`. Use the same candidate orders as the populated branch.
-3. **Sh + ps1 readers no change needed** — they already consume `unitTestTask` via `pm_get_unit_test_task` (per-module fast path).
-4. **Vitest in `tests/vitest/project-model.test.js`** — assert `resolveTasksFor('mod', null, { sourceSets: { jvmTest: true, ...rest false }, type: 'kmp' })` returns `unitTestTask: 'jvmTest'`. Repeat for desktopTest precedence, jsTest fallback, iosSimulatorArm64Test, macosArm64Test.
-5. **Bats integration test** — fixture project with a single `jvm()` KMP module + stub gradlew that succeeds on `jvmTest` and fails on `desktopTest`; assert `kmp-test parallel --test-type common` dispatches to `jvmTest`, exit 0, no `Cannot locate` in output.
-
-**Effort: 2-3h** (1h core resolver + tests, 1h fixture + bats integration, 30min sanity-check on Confetti live). Could ship in PR4 (alongside WS-3 which also touches the project-model resolver) or as its own standalone PR. Listed standalone here because it has zero coupling to Android detection (WS-3 territory).
-
-**Cross-references:** complement to v0.7.0 Phase 1 (`unitTestTask` candidate chain landed there with the assumption that `gradleTasks` would be populated). Complement to PR #103 reactive WS-1 fix (which now surfaces this bug as a real FAIL instead of swallowing it).
-
-### v0.7.x — `tests/installer/install.bats` leaves orphan adb process and hangs on macos-latest (surfaced 2026-05-02 in PR #105 bats-macos rollout)
-
-**Surfaced 2026-05-02 by the new `bats-macos` CI job in PR #105 (WS-2 parity).** When `npx bats tests/bats/ tests/installer/` runs on `macos-latest`, the suite passes the first 227 tests cleanly (entire `tests/bats/` directory + part of `tests/installer/install.bats`) in ~3 min, then **hangs for 8 min** on the next test until the 15-min job timeout fires. Cleanup logs show `Terminate orphan process: pid (2875) (adb)` — an `adb` subprocess was spawned by one of the install.bats tests and never reaped, blocking bats's "wait for child to exit" step.
-
-Same symptom referenced in pre-existing comment at `.github/workflows/ci.yml:70-72` ("the wider tests/bats/ suite has a hang on macos-latest"); root cause now narrowed: it's specifically `tests/installer/install.bats` (not the wider `tests/bats/`).
-
-**Reproducer (when bats is installed locally):** `cd kmp-test-runner && /bin/bash -c 'npx bats --timing tests/installer/install.bats'` on macos-latest. Last test that completes is "E2E: install.sh fails when --archive file is missing"; the suite then hangs starting the next test. `pgrep adb` during the hang confirms a leaked daemon.
-
-**Suspect tests:** the install.bats E2E tests run `kmp-test --version` / `kmp-test --help` after install. The `kmp-test doctor` codepath at `lib/cli.js:1306` runs `spawnSync('adb', ['version'], ...)` — on a fresh macos-latest runner without prior adb usage, this triggers `adb start-server` which forks a daemon. Bats then waits for the daemon process tree to terminate. Hypothesis to verify: doctor / version checks are spawning the adb daemon during a wrapper invocation, and bats counts the daemon as a child of the test process.
-
-**Fix candidates:**
-1. Add an explicit `adb kill-server || true` in install.bats's `teardown_file()` (or per-test `teardown()`) to reap the daemon.
-2. Skip the adb probe in `kmp-test doctor` when `KMP_TEST_SKIP_ADB=1` (env opt-out) and set it in install.bats fixtures.
-3. Replace `adb` invocation with a process-group-isolated spawn (`setsid` or `kill -- -$pid` on teardown).
-
-**Workaround in flight (PR #105):** scope `bats-macos` to `tests/bats/` only. The 216 tests in that directory exercise the WS-2 regression coverage and pass in ~3 min. installer-e2e (macos-latest) at `ci.yml:45-77` already runs install.bats E2E with `--filter "E2E"` (different invocation that avoids the hang). Net effect: no parity loss for WS-2; install.bats macOS hang remains as documented follow-up here.
-
-**Effort: 1-2h** to identify the exact test (run install.bats one test at a time on macos-latest with `--filter` until the hang triggers), confirm the adb hypothesis, and pick a fix. Likely option 1 is the minimal change.
-
-### v0.7.x — `bats-macos` job hangs in `tests/bats/` on macos-latest (PR #105 workaround incomplete; surfaced 2026-05-02 by PR #108)
-
-**Surfaced 2026-05-02 in PR #108** (`docs(backlog): expand v0.8 STRATEGIC PIVOT per-feature migration plan`, doc-only — no `.sh` / `.js` / test changes). The `bats-macos` CI job was cancelled at 15m17s (job `timeout-minutes: 15` at `.github/workflows/ci.yml:124`). The cancelled step is `bats (macOS — Bash 3.2 regression coverage)` which executes `npx bats --timing tests/bats/` (`.github/workflows/ci.yml:131-132`).
-
-**This is a NEW finding distinct from the `tests/installer/install.bats` adb-orphan hang** documented in the entry above:
-- The PR #105 workaround (BACKLOG entry above, "Workaround in flight") explicitly scoped `bats-macos` to `tests/bats/` only, claiming "the 216 tests in that directory exercise the WS-2 regression coverage and pass in ~3 min." That assumption no longer holds: the same scope now hangs >15 min.
-- This PR (#108) modified only `BACKLOG.md`. No script, lib, or test files changed. The hang was therefore present in `develop` HEAD `d02b2f7` already and was not surfaced because PR #105's `bats-macos` introduction predated this run.
-
-**Evidence:**
-- Run URL: `https://github.com/oscardlfr/kmp-test-runner/actions/runs/25251117434/job/74043227381`
-- Job conclusion: `cancelled` (15m17s wall time)
-- Steps before the cancelled bats step: `Set up job` / `actions/checkout` / `actions/setup-node` / `npm ci` — all `success` → setup is not the culprit, the hang is in `npx bats tests/bats/` itself.
-- Other macOS jobs in the same run completed cleanly: `build (macos-latest)` 12s pass, `installer-e2e (macos-latest)` 12s pass, `gradle-plugin-test-ios` 3m pass. None of them invoke `bats tests/bats/`.
-
-**Reproducer (when bats is installed locally on macos-latest):** `cd kmp-test-runner && /bin/bash -c 'npx bats --timing tests/bats/'`. If hangs >5 min, reproduces. To bisect to the specific file: run each `tests/bats/test-*.bats` individually with `npx bats --timing <file>` and identify which one hangs. Suspects (priority by likelihood of spawning lingering processes / sub-shells):
-1. `tests/bats/test-concurrency.bats` — already known macOS-flaky per the original comment at `.github/workflows/ci.yml:70-72` ("the wider tests/bats/ suite has a hang on macos-latest" + the BSD-vs-Linux SIGINT delivery hypothesis surfaced in PR #30 deferred entry, BACKLOG line ~404). Forks stub `gradlew` that `sleep 30`s, sends SIGINT to parent, then `wait $cli_pid` — could leak children under BSD signal-delivery semantics.
-2. `tests/bats/test-android.bats` / `test-android-summary-counts.bats` / `test-parallel-ios-dispatch.bats` — invoke wrappers that may spawn `adb` (same class of orphan as the install.bats hang above).
-3. `tests/bats/test-doctor.bats` — runs `kmp-test doctor` which probes adb directly (`lib/cli.js:1306`'s `spawnSync('adb', ['version'], ...)`) — same pattern as the install.bats root cause.
-
-**Hypothesis:** likely the same adb-daemon-leak root cause as the install.bats entry above, just from a different test file in `tests/bats/`. The `KMP_TEST_SKIP_ADB=1` env opt-out documented as fix candidate 2 in the install.bats entry would address both hangs simultaneously if implemented in `lib/cli.js#runDoctorChecks` and exported to bats's setup_file(). Could ALTERNATIVELY be the BSD signal-delivery flake from `test-concurrency.bats` — those are different bug classes and need separate confirmation.
-
-**Fix candidates** (mostly subsume into the install.bats entry's fix, but with broader scope):
-1. Implement `KMP_TEST_SKIP_ADB=1` opt-out in `lib/cli.js#runDoctorChecks` (already referenced in PRODUCT.md OS matrix bullets and BACKLOG line 176); set it in BOTH `tests/installer/install.bats` and `tests/bats/` setup hooks. Single fix, both hangs closed.
-2. Bisect first via `--filter` on macos-latest to pin down the exact bats file → if it's `test-concurrency.bats`, fix is the BSD-signal-delivery option from PR #30 deferred entry; if it's a different file, fix is option 1.
-3. Mark `bats-macos` as `continue-on-error: true` until root cause confirmed (already done by branch-protection treating it as informational; document explicitly in `.github/workflows/ci.yml` for clarity).
-
-**Impact assessment:** the `bats-macos` job remains informational (NOT in the 7 required CI checks per `CLAUDE.md` "Daily workflow" bullet — required set is `build x2`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e x2`, `commit-lint`). PR #108 merged with the failure; future doc-only and code-only PRs will continue to merge despite the hang as long as the 7 required checks pass. **No release blocker.** Quality concern: bash 3.2 regression coverage is currently de facto disabled on macOS, leaving WS-2 (`declare -A`)-class bugs unchecked at the CI level. The 2-3h migration of `benchmark` to Node (Sub-entry 1 of v0.8 PIVOT) closes WS-2's specific bug class by construction, partially compensating for the gap until this hang is fixed.
-
-**Effort: 2-3h.** Bisect (1h) + fix (1h via option 1, otherwise 1-2h via option 2) + CI re-run validation (30min). Recommended order: ship the v0.8 PIVOT benchmark migration first (closes the WS-2 surface that `bats-macos` is supposed to guard), then fix this hang to restore the regression-coverage net for the remaining bash plumbing across the migration window.
-
-**Cross-references:**
-- BACKLOG entry above (`tests/installer/install.bats` adb-orphan hang) — likely shared root cause; fixes should be coordinated.
-- BACKLOG entry below in the QUEUED section (`macOS bats end-to-end validation (deuda from PR #30)`, line ~404) — original BSD-signal hypothesis for `test-concurrency.bats`; possibly the same bug as this one or a sibling.
-- PR #105 BACKLOG entry "Workaround in flight" claim ("tests/bats/ passes in ~3 min") — invalidated by this finding; the workaround scope reduction did not actually deliver a passing macOS bats job.
-
-### v0.7.x — Fix `SKIPPED_MODULES[@]` unbound under Bash 3.2 set -u (patch validated locally, awaiting first PR)
+**Original report below preserved for historical context only:**
 
 **Surfaced 2026-04-30 (HANDOFF.md, sesión previa). Validated 2026-05-01 with reverted-then-restored A/B experiment.**
 
@@ -648,7 +842,7 @@ Pattern is the **idiomatic one already used in this same file at line 792** for 
 
 Both are tiny single-file additions (~50-100 lines each). Pair with a CONTRIBUTING.md cross-reference (already exists). Estimated effort: 30-45 min total.
 
-### v0.7.x / v0.8 — Refresh token-cost measurement tables
+### ✅ SUPERSEDED — Refresh token-cost measurement tables (folded into v0.8.0 README refresh entry above 2026-05-03)
 
 **Surfaced 2026-05-01 during v0.7.0 README revamp.** The token-cost numbers in the README were captured at v0.5.0. The JSON envelope shape barely changed since (additive fields only — `skipped[]` in v0.6.2, `iosTestTask` / `macosTestTask` in v0.7.0 when those test types are picked), so the numbers remain representative within ±5%. But the date is now stale.
 
@@ -660,38 +854,7 @@ Refresh approach:
 
 Effort: ~2-3h total (1h re-running, 1h reviewing, 30-45 min editing the tables). Defer to v0.8 unless a v0.7.x bug pushes the JSON envelope shape (in which case re-measure becomes load-bearing).
 
-### v0.7.x / v0.8 — Buildable cross-platform E2E fixture project
-
-**Surfaced 2026-05-01 during v0.7.0 Phase 3 review.** The current iOS / macOS test coverage is the same shape as JS/Wasm/Android — model unit tests, wrapper integration tests with stub `gradlew`, Gradle TestKit acceptance — but **no real iOS / macOS test execution in CI**. This is in parity with the rest of the platforms (Android instrumented + JS/Wasm also lack real-task CI runs), so v0.7.0 ships honestly. But it's the largest single piece of testing debt the project carries: every "iOS support works" claim today rests on wide-smoke validation against the user's local KMP projects, which doesn't survive in green/red CI history.
-
-**Proposal**: build a **minimum-viable buildable Kotlin Multiplatform fixture** under `tests/fixtures/kmp-cross-platform-e2e/` with:
-- Real `gradle/wrapper/` (gradle-wrapper.jar + properties pinning a stable Gradle 8.x or 9.x)
-- Real `gradlew` + `gradlew.bat`
-- Root `build.gradle.kts` with kotlin-multiplatform plugin
-- One module exercising **every supported target**: `jvm()`, `js(IR)`, `wasmJs()`, `iosX64()` + `iosSimulatorArm64()`, `macosArm64()`, `androidLibrary { }` (or `androidTarget()`)
-- Trivial passing test in each test source set (`commonTest`, `jvmTest`, `jsTest`, `wasmJsTest`, `iosX64Test`, `iosSimulatorArm64Test`, `macosArm64Test`, `androidUnitTest`)
-- Pinned Kotlin + AGP versions in `gradle/libs.versions.toml`
-
-**CI matrix** (new workflow `e2e-cross-platform.yml`):
-- `e2e (ubuntu-latest)`: runs `kmp-test parallel --test-type common` + `--test-type androidUnit` + `--test-type ios` (dispatch only — no simulator) + `--test-type macos` (dispatch only) + JS-via-jvmTest fallback. Verifies the wrapper picks the right per-module task in the JSON envelope (no real test execution beyond JVM).
-- `e2e (windows-latest)`: same as ubuntu — Pester / bash-via-Git-Bash parity check.
-- `e2e (macos-latest)`: full iOS + macOS execution. Boots simulator (Approach B fallback if needed), runs `:module:iosSimulatorArm64Test` and `:module:macosArm64Test` for real. This is the only place where iOS actually runs.
-
-**Risk + cost:**
-- **Risk**: high CI flakiness from network deps (Maven plugin downloads), Xcode version drift on macos-latest, simulator boot races. Initial implementation could spend 50% of effort fighting infrastructure.
-- **Cost**: ~6-10h to build a working fixture + reliable CI. Net new bytes in the repo: ~70KB for `gradle-wrapper.jar` (binary).
-- **Per-run CI cost**: macOS minutes are 10× ubuntu minutes — full E2E job could add 5-10 min per CI run, ~50 min macOS-equivalent per PR.
-
-**When to ship:**
-- v0.7.x patch — if a v0.7 user surfaces an iOS regression that the unit/integration suite missed, this becomes urgent.
-- v0.8.0 minor — if v0.7 ships clean, defer to a dedicated milestone where we can budget the CI flakiness work properly.
-- v1.0.0 — if v0.7 + v0.8 hold up, the bar for v1.0 is "no major iOS regressions in 3+ months", and this fixture is part of the v1.0 stability claim.
-
-**Out of scope for this entry:**
-- Re-using an existing real-world OSS KMP project (Confetti / KaMPKit) as the fixture — version drift makes our CI flakier than a pinned synthetic; only revisit if synthetic proves too much work.
-- Replacing the wide-smoke local validation gate (`feedback_release_wide_smoke.md`). Both should coexist: wide-smoke catches integration-level bugs against real projects; the synthetic E2E catches regressions deterministically.
-
-### v0.6.2 / pre-v0.7 — Update README to reflect post-v0.6.x feature surface
+### ✅ SUPERSEDED — Update README to reflect post-v0.6.x feature surface (folded into v0.8.0 README refresh entry above 2026-05-03)
 
 The README has not been touched since v0.5.x. v0.6.0 + v0.6.x added significant surface that should be documented before v0.7 (where API breaks may land):
 

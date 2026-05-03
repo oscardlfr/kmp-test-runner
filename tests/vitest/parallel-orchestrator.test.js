@@ -891,9 +891,79 @@ describe('runParallel', () => {
     });
     expect(envelope.parallel).toBeDefined();
     expect(envelope.parallel.test_type).toBe('common');
-    expect(envelope.parallel.legs).toEqual([{ test_type: 'common', exit_code: 0 }]);
+    expect(envelope.parallel.legs).toHaveLength(1);
+    expect(envelope.parallel.legs[0]).toMatchObject({ test_type: 'common', exit_code: 0 });
+    expect(envelope.parallel.legs[0].execution).toBeDefined();
     expect(envelope.parallel.max_workers).toBe(4);
     expect(envelope.parallel.timeout_s).toBe(300);
+  });
+
+  it('execution telemetry: counts fresh tasks (no UP-TO-DATE / FROM-CACHE suffix)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: '> Task :core:jvmTest\nBUILD SUCCESSFUL in 5s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.parallel.legs[0].execution.fresh).toBe(1);
+    expect(envelope.parallel.legs[0].execution.up_to_date).toBe(0);
+    expect(envelope.parallel.legs[0].execution.from_cache).toBe(0);
+  });
+
+  it('execution telemetry: counts UP-TO-DATE tasks (gradle incremental skip)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: '> Task :core:jvmTest UP-TO-DATE\nBUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.parallel.legs[0].execution.up_to_date).toBe(1);
+    expect(envelope.parallel.legs[0].execution.fresh).toBe(0);
+  });
+
+  it('execution telemetry: counts FROM-CACHE tasks (gradle build cache hit)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: '> Task :core:jvmTest FROM-CACHE\nBUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.parallel.legs[0].execution.from_cache).toBe(1);
+    expect(envelope.parallel.legs[0].execution.fresh).toBe(0);
+  });
+
+  it('F2: --test-type all suppresses per-leg no_test_modules when another leg passes', async () => {
+    // Module declares only jvm() — leg `common` matches, leg `androidUnit` does not.
+    // Pre-fix: per-leg `no_test_modules` error → exit 3 even though `common` passed.
+    const dir = makeProject([{ name: 'shared', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: '> Task :shared:jvmTest\nBUILD SUCCESSFUL in 5s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'all'],
+      env: { KMP_TEST_SKIP_ADB: '1' }, // deterministic legs across hosts
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    // No no_test_modules in errors[] (per-leg empties demoted to warnings).
+    expect(envelope.errors.some(e => e.code === 'no_test_modules')).toBe(false);
+    // Per-leg empties surfaced as warnings instead.
+    expect(envelope.warnings.some(w => w.code === 'no_test_modules_for_leg')).toBe(true);
+    // Exit 0 — common leg passed, no env error.
+    expect(exitCode).toBe(0);
   });
 
   it('--test-type all dispatches multiple legs (closes WS-6)', async () => {

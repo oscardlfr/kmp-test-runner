@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — sub-entry 5 follow-up findings F1/F2 + UP-TO-DATE telemetry (2026-05-03)
+- **F1 — `--dry-run` plumbing in `changed`, `android`, `benchmark` orchestrators.** Pre-fix, the 3 orchestrators ignored `--dry-run` when invoked directly via `node lib/runner.js <sub> --dry-run` (the production path through `bin/kmp-test.js` was unaffected because cli.js intercepts upstream). They now short-circuit before any spawn / git probe / adb probe, emitting a `dry_run:true` envelope with subcommand-specific plan fields. Closes BACKLOG `Sub-entry 5 follow-up findings.F1`.
+- **F2 — `--test-type all`: per-leg `no_test_modules` demoted to `warnings[].code:"no_test_modules_for_leg"`** when at least one other leg produced test results. Pre-fix, ANY per-leg empty (e.g., the `ios` leg of a JVM-only project) forced `exit 3` even when other legs passed. Per-leg empties remain visible as warnings with `test_type` field for debuggability. Closes BACKLOG `Sub-entry 5 follow-up findings.F2`.
+- **`parallel.legs[].execution:{fresh, up_to_date, from_cache, no_source, skipped_by_gradle, failed, no_evidence}`** — new envelope field surfacing per-leg execution mode counts derived from gradle's `> Task :foo:bar [SUFFIX]` markers. Distinguishes "tests actually re-ran" from gradle's incremental shortcuts (UP-TO-DATE / FROM-CACHE) that still produce a `[PASS]` outcome. Defense-in-depth complement to the post-PR#116 silent-pass guard (which catches "gradle didn't run at all"); this catches "gradle ran but produced no fresh test execution". AI-agent consumers and CI dashboards can now detect cache-only-greens (a stale build cache or a not-actually-executed CI run will surface as `up_to_date+from_cache > 0 && fresh === 0`). +4 vitest cases.
+
 ### Added — sub-entry 5 follow-up (parallel parity gap close)
 - **`--fresh-daemon`** — restored from v0.7.x legacy bash wrapper. Stops existing Gradle daemons (`gradlew --stop`) before main dispatch.
 - **`--output-file <name>`** — restored. When running `kmp-test parallel` (not just `--skip-tests`), the custom report filename now propagates from `parallel-orchestrator` into the in-process `runCoverage` call (`lib/parallel-orchestrator.js#runCoverageInProcess`).
