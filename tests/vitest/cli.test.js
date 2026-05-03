@@ -1138,6 +1138,56 @@ describe('runDoctorChecks', () => {
       expect(gw.status).toBe('OK');
     });
   });
+
+  // v0.8.0 BACKLOG #6 + #9 — closes the macos-latest bats hang where the
+  // adb client inherits Node's pipe FDs and prevents bats from reaching
+  // pipe EOF on suite exit. test-doctor.bats / test-concurrency.bats now
+  // export KMP_TEST_SKIP_ADB=1 in their setup_file; lock the contract here.
+  describe('KMP_TEST_SKIP_ADB opt-out', () => {
+    afterEach(() => {
+      delete process.env.KMP_TEST_SKIP_ADB;
+    });
+
+    it('skips spawnSync(adb) when KMP_TEST_SKIP_ADB=1 and emits WARN/skipped', () => {
+      process.env.KMP_TEST_SKIP_ADB = '1';
+      spawnMock.mockImplementation((cmd) => {
+        if (cmd === 'java') return { status: 0, stderr: 'openjdk version "21"\n' };
+        return { status: 0, stdout: '', stderr: '' };
+      });
+      const dir = mkdtempSync(path.join(tmpdir(), 'kmp-doctor-skip-adb-'));
+      try {
+        const { checks } = runDoctorChecks(dir);
+        const adb = checks.find(c => c.name === 'ADB');
+        expect(adb.status).toBe('WARN');
+        expect(adb.value).toBe('skipped');
+        expect(adb.message).toMatch(/KMP_TEST_SKIP_ADB=1/);
+        // Critical assertion — the spawn that leaks the daemon FD is bypassed.
+        const adbSpawnCalls = spawnMock.mock.calls.filter(args => args[0] === 'adb');
+        expect(adbSpawnCalls).toHaveLength(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('still spawns adb when env var is unset (default behavior preserved)', () => {
+      delete process.env.KMP_TEST_SKIP_ADB;
+      spawnMock.mockImplementation((cmd) => {
+        if (cmd === 'java') return { status: 0, stderr: 'openjdk version "21"\n' };
+        if (cmd === 'adb')  return { status: 0, stdout: 'Android Debug Bridge version 1.0.41\nVersion 35.0.0', stderr: '' };
+        return { status: 0, stdout: '', stderr: '' };
+      });
+      const dir = mkdtempSync(path.join(tmpdir(), 'kmp-doctor-default-adb-'));
+      try {
+        const { checks } = runDoctorChecks(dir);
+        const adb = checks.find(c => c.name === 'ADB');
+        expect(adb.value).not.toBe('skipped');
+        const adbSpawnCalls = spawnMock.mock.calls.filter(args => args[0] === 'adb');
+        expect(adbSpawnCalls.length).toBeGreaterThanOrEqual(1);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
 });
 
 describe('parseGradleTimeoutMs (Bug H — gradle watchdog)', () => {

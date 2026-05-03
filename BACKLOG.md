@@ -467,7 +467,9 @@ User override via env var continues to win. The `kmp-test benchmark --help` outp
 **Includes (added when promoted to v0.8.0):**
 - Fix the exit-code-0-on-timeout discrepancy at the same time. Today the orchestrator emits the timeout warning but reports exit 0 to the caller; this conflates "test passed" and "build hung". Decision: timeout → exit 3 (`errors[].code:"gradle_timeout"`), with `--ignore-gradle-timeout` as the explicit bypass. Closes the audit gap surfaced 2026-05-03 against `--config stress`.
 
-### v0.8.0 — `tests/installer/install.bats` leaves orphan adb process and hangs on macos-latest (surfaced 2026-05-02; promoted 2026-05-03)
+### v0.8.0 — `tests/installer/install.bats` leaves orphan adb process and hangs on macos-latest (surfaced 2026-05-02; promoted 2026-05-03; CLOSED 2026-05-03 by PR #118)
+
+**CLOSED 2026-05-03 by PR #118 (`fix(doctor): skip adb probe via KMP_TEST_SKIP_ADB to fix bats-macos hang`).** Hypothesis-correction note: the original "install.bats spawns adb via `--version`/`--help`" framing was wrong. install.bats E2E tests use a stub `bin/kmp-test.js` (built inline by `setup_e2e_archive`) with no adb codepath; even the real CLI short-circuits `--version`/`--help` at `lib/cli.js:1498-1505` before any subcommand dispatch. The actual leak source was `tests/bats/test-doctor.bats` + `tests/bats/test-concurrency.bats` (the only files that invoke `kmp-test doctor`, which spawns `adb version` at `lib/cli.js:1411`). Fixed by adding a `KMP_TEST_SKIP_ADB=1` env opt-out in `runDoctorChecks` and exporting it from those two bats files' `setup_file` hooks. Empirical validation in PR #118: bats-macos completes in 1m48s vs prior 15-min hang; in-CI `pgrep -af adb` after the suite confirms zero residual adb processes. `tests/installer/` restored in the bats-macos CI scope.
 
 **Surfaced 2026-05-02 by the new `bats-macos` CI job in PR #105 (WS-2 parity).** When `npx bats tests/bats/ tests/installer/` runs on `macos-latest`, the suite passes the first 227 tests cleanly (entire `tests/bats/` directory + part of `tests/installer/install.bats`) in ~3 min, then **hangs for 8 min** on the next test until the 15-min job timeout fires. Cleanup logs show `Terminate orphan process: pid (2875) (adb)` — an `adb` subprocess was spawned by one of the install.bats tests and never reaped, blocking bats's "wait for child to exit" step.
 
@@ -486,7 +488,9 @@ Same symptom referenced in pre-existing comment at `.github/workflows/ci.yml:70-
 
 **Effort: 1-2h** to identify the exact test (run install.bats one test at a time on macos-latest with `--filter` until the hang triggers), confirm the adb hypothesis, and pick a fix. Likely option 1 is the minimal change.
 
-### v0.8.0 — `bats-macos` job hangs in `tests/bats/` on macos-latest (surfaced 2026-05-02; promoted 2026-05-03 — blocks branch-protection promotion of `bats-macos` to required, gate #3 of release-readiness)
+### v0.8.0 — `bats-macos` job hangs in `tests/bats/` on macos-latest (surfaced 2026-05-02; promoted 2026-05-03; CLOSED 2026-05-03 by PR #118)
+
+**CLOSED 2026-05-03 by PR #118.** Same root cause as the install.bats entry above — `runDoctorChecks` at `lib/cli.js:1411` spawning `adb version` whose client inherits Node's pipe FDs on macos-latest. The leak fired from `tests/bats/test-doctor.bats` (and to a lesser extent `tests/bats/test-concurrency.bats`'s lockfile-not-acquired test). Fixed by `KMP_TEST_SKIP_ADB=1` env opt-out exported from those files' `setup_file` hooks. The hypothesised BSD signal-delivery alternative for `test-concurrency.bats` (cross-referenced in fix-candidate 2 below) was NOT the cause. With the env-var fix, bats-macos completes in 1m48s and runs the full `tests/bats/ + tests/installer/` scope (parity with the ubuntu bats job). Branch-protection promotion of `bats-macos` to required is now unblocked — promote when v0.8.0 ships.
 
 **Surfaced 2026-05-02 in PR #108** (`docs(backlog): expand v0.8 STRATEGIC PIVOT per-feature migration plan`, doc-only — no `.sh` / `.js` / test changes). The `bats-macos` CI job was cancelled at 15m17s (job `timeout-minutes: 15` at `.github/workflows/ci.yml:124`). The cancelled step is `bats (macOS — Bash 3.2 regression coverage)` which executes `npx bats --timing tests/bats/` (`.github/workflows/ci.yml:131-132`).
 

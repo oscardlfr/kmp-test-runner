@@ -67,9 +67,9 @@ jobs:
         run: npm ci
       - name: Run E2E bats tests (Linux/macOS)
         if: matrix.os != 'windows-latest'
-        # 5-min timeout so a hang fails fast with logs (the wider tests/bats/
-        # suite has a hang on macos-latest — install.bats specifically should
-        # be quick and clean, this bounds risk).
+        # --filter "E2E" runs the install.sh archive-roundtrip tests only.
+        # The non-E2E install.bats tests are static-grep / mocked-uname checks
+        # already covered by the ubuntu bats job; no value re-running here.
         run: npx bats tests/installer/install.bats --filter "E2E"
       - name: Run E2E Pester tests (Windows)
         if: matrix.os == 'windows-latest'
@@ -106,16 +106,18 @@ jobs:
   # `"${arr[@]}"` over empty arrays under set -u. The ubuntu-only bats job
   # (line 26-28 above) cannot catch these regressions because Linux runners
   # use bash 5.x. This job mirrors the ubuntu invocation against the system
-  # bash on macos-latest, scoped to tests/bats/ only.
+  # bash on macos-latest, full parity (tests/bats/ + tests/installer/).
   #
-  # tests/installer/ is intentionally NOT included here: a test in install.bats
-  # leaves an orphaned adb process on macos-latest that hangs the suite past
-  # the 15-min timeout (first-run evidence: 227 tests passed in ~3 min, then
+  # 2026-05-03 — orphan-adb hang root-caused and fixed (v0.8.0 BACKLOG #6 + #9):
+  # `kmp-test doctor`'s adb probe (lib/cli.js#runDoctorChecks) was forking an
+  # adb child that inherited Node's pipe FDs, blocking bats from reaching pipe
+  # EOF on suite exit (first-run evidence: 227 tests passed in ~3 min, then
   # 8-min hang, then runner-cancel + "Terminate orphan process: pid (...) (adb)").
-  # This matches the pre-existing comment at line 70-72 about "the wider tests/bats/
-  # suite has a hang on macos-latest". installer-e2e (macos-latest) at line 45-77
-  # already covers install.bats E2E using --filter "E2E" to avoid the same hang.
-  # Tracked in BACKLOG.md as a v0.7.x follow-up to investigate the adb orphan.
+  # The actual leak source was tests/bats/test-doctor.bats + test-concurrency.bats
+  # (the only files invoking `node $CLI doctor`); install.bats was incorrectly
+  # blamed in the original investigation. Fixed by KMP_TEST_SKIP_ADB=1 opt-out
+  # exported from those two setup_file hooks. tests/installer/ is now back in
+  # scope here.
   #
   # Informational by default; promote to required in branch protection
   # alongside gradle-plugin-test-ios when the v0.7 line stabilises.
@@ -129,4 +131,4 @@ jobs:
           node-version: 20
       - run: npm ci
       - name: bats (macOS — Bash 3.2 regression coverage)
-        run: npx bats --timing tests/bats/
+        run: npx bats --timing tests/bats/ tests/installer/

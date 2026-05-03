@@ -3,6 +3,20 @@
 
 CLI="bin/kmp-test.js"
 
+# Opt out of the adb probe inside runDoctorChecks — on macos-latest GH
+# runners the adb client inherits Node's pipe FDs and prevents bats from
+# reaching pipe EOF on suite exit, hanging the whole run. Closes v0.8.0
+# BACKLOG #6 + #9.
+setup_file() {
+    export KMP_TEST_SKIP_ADB=1
+}
+
+# Belt + braces — reap any daemon a previous suite or external invocation
+# may have left running on the same shell.
+teardown_file() {
+    command -v adb >/dev/null 2>&1 && adb kill-server >/dev/null 2>&1 || true
+}
+
 @test "doctor --help prints subcommand-specific help and returns 0" {
     run node "$CLI" doctor --help
     [ "$status" -eq 0 ]
