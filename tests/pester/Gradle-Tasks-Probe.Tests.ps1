@@ -249,55 +249,16 @@ Describe 'Clear-GradleTasksCache: cleans up tasks-*.txt files' {
     }
 }
 
-Describe 'parallel.ps1 (Bug B'') and run-android-tests.ps1 (Bug B'') wiring' {
+# v0.8 sub-entry 5: parallel.ps1 + run-android-tests.ps1 are both thin Node
+# launchers and no longer source Gradle-Tasks-Probe.ps1. Equivalent contracts
+# are exercised via lib/project-model.js (probeGradleTasksCached) — see
+# tests/vitest/cli.test.js + tests/bats/test-gradle-tasks-probe.bats.
 
-    It "parallel.ps1 sources Gradle-Tasks-Probe.ps1" {
-        $parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
-        (Get-Content $parallel -Raw) | Should -Match 'Gradle-Tasks-Probe\.ps1'
-    }
-
-    # v0.8 sub-entry 4: the per-module Test-ModuleHasTask probe + [SKIP coverage]
-    # banner lived only in the coverage-task selection block, which was lifted
-    # into lib/coverage-orchestrator.js. The parallel codepath retains the
-    # tasks-probe library for non-coverage probing; the coverage-specific
-    # contracts moved to tests/vitest/coverage-orchestrator.test.js.
-    It "parallel.ps1 retains the tasks-probe sourcing for non-coverage probing" {
-        $parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
-        (Get-Content $parallel -Raw) | Should -Match 'Gradle-Tasks-Probe\.ps1'
-    }
-
-    # run-android-tests.ps1 wiring tests deleted in v0.8 sub-entry 3 — the
-    # ps1 wrapper is now thin (`& node lib\runner.js android @args`) and no
-    # longer sources Gradle-Tasks-Probe.ps1 / declares -DeviceTask / calls
-    # Get-ModuleFirstExistingTask. Equivalent contracts are now exercised
-    # in tests/vitest/android-orchestrator.test.js via the Node orchestrator.
-}
-
-Describe 'parallel.ps1 (Bug E): no-coverage-data banner + machine marker' {
-
-    BeforeAll {
-        $script:Parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
-        $script:ParallelText = Get-Content $script:Parallel -Raw
-    }
-
-    It 'computes $modulesContributing from moduleSummaries.Total > 0' {
-        $script:ParallelText | Should -Match '\$modulesContributing\s*='
-        $script:ParallelText | Should -Match '\$_\.Total\s+-gt\s+0'
-    }
-
-    It 'gates the [OK] banner on $modulesContributing -gt 0' {
-        $script:ParallelText | Should -Match 'if\s*\(\s*\$modulesContributing\s+-gt\s+0\s*\)'
-    }
-
-    It 'emits [!] No coverage data ... when $modulesContributing -eq 0' {
-        $script:ParallelText | Should -Match '\[!\] No coverage data collected from any module'
-        $script:ParallelText | Should -Match 'kmp-test-runner#coverage-setup'
-    }
-
-    It 'emits machine-readable COVERAGE_MODULES_CONTRIBUTING marker' {
-        $script:ParallelText | Should -Match 'COVERAGE_MODULES_CONTRIBUTING:'
-    }
-}
+# v0.8 sub-entry 5: parallel.ps1 wrapper is now a thin Node launcher; the
+# Bug E coverage-data counter + [!] banner + COVERAGE_MODULES_CONTRIBUTING
+# marker live in lib/coverage-orchestrator.js. Equivalent contracts covered
+# by tests/vitest/coverage-orchestrator.test.js (no_coverage_data warning,
+# modules_contributing > 0 gating).
 
 # ----------------------------------------------------------------------------
 # v0.5.2 Gap C — cross-platform cache-key SHA byte parity

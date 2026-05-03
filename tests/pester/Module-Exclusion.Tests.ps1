@@ -117,67 +117,28 @@ Describe 'Test-ModuleHasTestSources (lib/Script-Utils.ps1)' {
 # End-to-end: invoke the parallel script and assert on the discovery output
 # ----------------------------------------------------------------------------
 
-Describe 'parallel.ps1: Find-Modules filtering (end-to-end)' {
+# v0.8 sub-entry 5: parallel.ps1 wrapper is now a thin Node launcher; the
+# "Modules found: N" banner and ps1-side Find-Modules helper no longer exist.
+# Equivalent end-to-end coverage of auto-skip-untested + -ExcludeModules
+# lives in tests/vitest/parallel-orchestrator.test.js + the kmp-test --json
+# envelope tests below (the agent-facing contract).
+
+Describe 'parallel: filter that rejects everything → exits 3' {
 
     BeforeEach {
         $script:WorkDir = Join-Path $TestDrive ("proj-" + [guid]::NewGuid().ToString('N').Substring(0,8))
         New-FakeMultiModuleProject -Path $script:WorkDir
     }
 
-    It 'auto-skips :api and :build-logic (no test source set) by default' {
-        $script = $script:Parallel
-        $work = $script:WorkDir
-        $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
-            (& pwsh -NoLogo -NoProfile -File $script -ProjectRoot $work -ModuleFilter '*' 2>&1) -join "`n"
-        }
-        (Get-ModulesFoundCount -Output $output) | Should -Be 2
-        $output | Should -Match '\[SKIP\]\s+api'
-        $output | Should -Match '\[SKIP\]\s+build-logic'
-        $output | Should -Match 'no test source set'
-    }
-
-    It '-IncludeUntested re-includes untested modules' {
-        $script = $script:Parallel
-        $work = $script:WorkDir
-        $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
-            (& pwsh -NoLogo -NoProfile -File $script -ProjectRoot $work -ModuleFilter '*' -IncludeUntested 2>&1) -join "`n"
-        }
-        (Get-ModulesFoundCount -Output $output) | Should -Be 4
-    }
-
-    It '-ExcludeModules removes matching modules with [SKIP] reason' {
+    It 'exits 3 with helpful message when filter excludes all' {
         $script = $script:Parallel
         $work = $script:WorkDir
         $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
             (& pwsh -NoLogo -NoProfile -File $script -ProjectRoot $work -ModuleFilter '*' `
-                -ExcludeModules 'feature-*' 2>&1) -join "`n"
-        }
-        # core-domain only: feature-* excluded explicitly, api/build-logic auto-skipped.
-        (Get-ModulesFoundCount -Output $output) | Should -Be 1
-        $output | Should -Match '\[SKIP\]\s+feature-home \(excluded by -ExcludeModules\)'
-    }
-
-    It '-ExcludeModules accepts comma-separated globs' {
-        $script = $script:Parallel
-        $work = $script:WorkDir
-        $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
-            (& pwsh -NoLogo -NoProfile -File $script -ProjectRoot $work -ModuleFilter '*' `
-                -ExcludeModules 'api,build-logic' -IncludeUntested 2>&1) -join "`n"
-        }
-        # api + build-logic explicitly excluded; -IncludeUntested doesn't undo
-        # the explicit exclusion → core-domain + feature-home remain.
-        (Get-ModulesFoundCount -Output $output) | Should -Be 2
-    }
-
-    It 'when no modules survive filtering → exits 3' {
-        $script = $script:Parallel
-        $work = $script:WorkDir
-        $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
-            (& pwsh -NoLogo -NoProfile -File $script -ProjectRoot $work -ModuleFilter '*' `
-                -ExcludeModules 'core-*,feature-*' 2>&1) -join "`n"
+                -ExcludeModules 'core-*,feature-*' -IgnoreJdkMismatch 2>&1) -join "`n"
         }
         $LASTEXITCODE | Should -Be 3
-        $output | Should -Match 'No modules found'
+        $output | Should -Match 'No modules (found|support)'
     }
 }
 

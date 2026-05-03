@@ -337,25 +337,38 @@ function extractModuleFilter(args) {
 }
 
 describe('runChanged multi-module dispatch', () => {
-  it('passes detected modules as comma-separated --module-filter', async () => {
+  it('passes detected modules as comma-separated --module-filter to runParallel (in-process)', async () => {
     const dir = makeProject(['core', 'feature']);
     const spawn = makeSpawnStub({
       git: { statusOutput: porcelain([
         'core/src/jvmTest/X.kt',
         'feature/src/commonTest/Y.kt',
       ]) },
-      parallelSuite: { stdout: 'BUILD SUCCESSFUL\n' },
     });
+    // Sub-entry 5: subprocess hop replaced with in-process runParallel call.
+    // Inject a stub that records the args it receives.
+    const parallelCalls = [];
+    const runParallelInjection = async (opts) => {
+      parallelCalls.push(opts);
+      return {
+        envelope: {
+          tests: { total: 0, passed: 0, failed: 0, skipped: 0 },
+          modules: [], skipped: [],
+          coverage: { tool: 'auto', missed_lines: null },
+          errors: [], warnings: [],
+        },
+        exitCode: 0,
+      };
+    };
 
-    await runChanged({ projectRoot: dir, args: [], spawn });
+    await runChanged({ projectRoot: dir, args: [], spawn, runParallelInjection });
 
-    const suiteCall = findSuiteCall(spawn);
-    expect(suiteCall).toBeDefined();
-
-    const filterValue = extractModuleFilter(suiteCall.args);
-    expect(filterValue).not.toBeNull();
-    const mods = filterValue.split(',').sort();
-    expect(mods).toEqual(['core', 'feature']);
+    expect(parallelCalls.length).toBe(1);
+    const args = parallelCalls[0].args;
+    const filterIdx = args.indexOf('--module-filter');
+    expect(filterIdx).toBeGreaterThan(-1);
+    const filterValue = args[filterIdx + 1];
+    expect(filterValue.split(',').sort()).toEqual(['core', 'feature']);
   });
 });
 
@@ -448,23 +461,32 @@ describe('runChanged --include-shared filter', () => {
 // Case 10 — Discriminator preempts no_summary fallback
 // ---------------------------------------------------------------------------
 describe('runChanged error code discrimination', () => {
-  it('parallel-suite output with task_not_found surfaces in errors[].code', async () => {
+  it('runParallel-returned errors flow through to changed envelope', async () => {
     const dir = makeProject(['mod']);
-    const suiteOutput =
-      "FAILURE: Build failed with an exception.\n" +
-      "Cannot locate tasks that match ':mod:nonexistentTask' as task 'nonexistentTask' not found in project ':mod'.\n";
     const spawn = makeSpawnStub({
       git: { statusOutput: porcelain(['mod/src/jvmTest/X.kt']) },
-      parallelSuite: { status: 1, stdout: suiteOutput, stderr: '' },
+    });
+    // Sub-entry 5: discriminators (task_not_found etc.) live in
+    // runParallel + applyErrorCodeDiscriminators. The changed-orchestrator
+    // simply forwards whatever errors[] runParallel returns.
+    const runParallelInjection = async () => ({
+      envelope: {
+        tests: { total: 1, passed: 0, failed: 1, skipped: 0 },
+        modules: ['mod'], skipped: [],
+        coverage: { tool: 'auto', missed_lines: null },
+        errors: [{ code: 'task_not_found', message: "Cannot locate tasks that match ':mod:nonexistentTask'" }],
+        warnings: [],
+      },
+      exitCode: 1,
     });
 
     const { envelope } = await runChanged({
       projectRoot: dir,
       args: [],
       spawn,
+      runParallelInjection,
     });
 
-    // task_not_found discriminator should preempt generic no_summary.
     const codes = envelope.errors.map(e => e.code);
     expect(codes).toContain('task_not_found');
     expect(codes).not.toContain('no_summary');
