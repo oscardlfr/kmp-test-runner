@@ -208,14 +208,22 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 
 3. **stderr filter swallowed gradle's actual error context** — `executeLeg`'s pre-fix filter only forwarded lines matching `Cannot locate|FAILURE:|BUILD FAILED|UnsupportedClassVersionError|Failed to install`. The `* What went wrong:`, `> Could not resolve`, `Android Gradle plugin requires Java 17` and similar diagnostic blocks were dropped. Widened to forward `> Task :*`, `* What went wrong:`, `* Try:`, `Caused by:`, AGP/JDK requirement messages, plugin-resolution errors, and capped at 60 lines/leg with a "(N more suppressed)" footer. Wide-smoke surfaced TaskFlow's actual error: `Android Gradle plugin requires Java 17 to run. You are currently using Java 11`.
 
-**Wide-smoke after all 3 fixes (vs broken):**
+**Wide-smoke trajectory across 3 fix passes:**
 
-| Verdict | Broken state | After fixes |
-|---|---:|---:|
-| SILENT-FAKE-PASS | 14 | **0** ✅ |
-| REAL-GREEN | 0 | 3 (android-challenge, androidify-main, kotlinconf-app-main) |
-| REAL-RED | 0 | 11 |
-| NO-MODULES | 9 | 9 |
+| Verdict | Broken | Pass 1 (spawn) | Pass 2 (+ comment-strip + stderr) | Pass 3 (+ AGP + cascade) |
+|---|---:|---:|---:|---:|
+| SILENT-FAKE-PASS | 14 | **0** ✅ | 0 | 0 |
+| REAL-GREEN | 0 | 0 | 3 | **6** |
+| REAL-RED | 0 | 14 | 11 | 8 |
+| NO-MODULES | 9 | 9 | 9 | 9 |
+
+REAL-GREEN flips after Pass 3: TaskFlow (AGP 8.8.2 → JDK 17 picked correctly), Confetti-main (cascade-isolation: `:shared:jvmTest` succeeds when isolated from broken `:androidApp`), kotlinconf-app-main + FileKit-main (cache invalidation + AGP fix). Pre-existing REAL-GREEN: android-challenge, androidify-main.
+
+**The 8 remaining REAL-REDs** (decompose by root cause):
+
+- **2 are REAL test failures** — gyg (`LoadingAndErrorStatesTest.errorStateWithRetryShowsButton FAILED`), nowinandroid (`feature:foryou:impl` + `lint` test tasks fail). The CLI is correctly surfacing real project bugs.
+- **1 is a project-model task-name discovery bug** — shared-kmp-libs sends gradle `:core-X:desktopTest` for 37 modules; gradle says `Cannot locate tasks that match` for each one (per-module retry confirmed each individually fails). The convention plugin shape is registering tasks under different names than the project model expects. Separate v0.7.x BACKLOG entry candidate.
+- **5 need per-project investigation** — DawSync, OmniSound, dipatternsdemo, nav3-recipes, PeopleInSpace — could be real test failures, JDK/dep issues, or more orchestrator bugs. The widened stderr filter now exposes their real errors so investigation is straightforward.
 
 **The 11 REAL-REDs decompose as follows (root-cause categories that the orchestrator could mitigate but doesn't yet):**
 
