@@ -1173,3 +1173,226 @@ describe('hasAnyTestSourceSet', () => {
     expect(hasAnyTestSourceSet({ sourceSets: {} })).toBe(false);
   });
 });
+
+// ===========================================================================
+// PR5 (2026-05-04) — cascade-isolation retry path. PR #116 added the per-module
+// retry but its `anyTaskMentioned` regex (`Task\s+:foo:bar(\s|$)`) was more
+// permissive than `classifyTaskExecutionMode`'s strict regex (`Task\s+:foo:bar
+// (?:\s+SUFFIX)?\s*$`). Wide-smoke pass-7 found 8/30 cascade cases bypassed
+// the retry. PR5 replaces the trigger with the same execution-summary signature
+// that pass-7's cascade-detection helper uses and exposes
+// `parallel.legs[].cascade_detected` + `parallel.legs[].retry_fired` so
+// downstream tooling can read the orchestrator's verdict directly.
+// ===========================================================================
+describe('cascade-isolation retry path (PR5)', () => {
+  // Helper: build a spawn that returns cascade output on the bundled one-shot
+  // (>1 task arg) and per-module-defined output on isolated retries.
+  function makeCascadeSpawn({ oneShotStdout, perModule = {} }) {
+    const calls = [];
+    const fn = (cmd, args, opts) => {
+      calls.push({ cmd, args: [...args], opts });
+      const eArgs = effectiveGradleArgs({ cmd, args });
+      const taskArgs = eArgs.filter(a => a.startsWith(':'));
+      const isOneShot = taskArgs.length > 1;
+      if (isOneShot) {
+        return { status: 1, stdout: oneShotStdout, stderr: '', signal: null, error: null };
+      }
+      const taskArg = taskArgs[0] || '';
+      const cfg = perModule[taskArg] ?? { status: 0, stdout: `> Task ${taskArg}\nBUILD SUCCESSFUL in 1s\n` };
+      return { status: cfg.status, stdout: cfg.stdout, stderr: cfg.stderr || '', signal: null, error: null };
+    };
+    fn.calls = calls;
+    return fn;
+  }
+
+  // Test 1 — Pure cascade (multi-module, single leg): one-shot fails with no
+  // task evidence, per-module retries all pass. cascade_detected=true,
+  // retry_fired=true, spawn count = 1 (one-shot) + 4 (retries) = 5.
+  it('pure cascade single leg → cascade_detected=true, retry_fired=true, retries each module', async () => {
+    const dir = makeProject([
+      { name: 'a', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'b', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'c', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'd', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeCascadeSpawn({
+      oneShotStdout: 'FAILURE: Build failed.\nBUILD FAILED in 1s\n',
+    });
+    const lines = [];
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: (l) => lines.push(l),
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const leg = envelope.parallel.legs[0];
+    expect(leg.cascade_detected).toBe(true);
+    expect(leg.retry_fired).toBe(true);
+    const gradleSpawnCount = spawn.calls.filter(c => isGradleCall(c)).length;
+    expect(gradleSpawnCount).toBe(5); // 1 one-shot + 4 per-module retries
+    expect(lines.some(l => /retrying per-module|isolate/i.test(l))).toBe(true);
+    expect(envelope.tests.passed).toBe(4);
+    expect(envelope.tests.failed).toBe(0);
+  });
+
+  // Test 2 — Single-task cascade (nav3-recipes shape): 1 module, leg fails,
+  // no task evidence. PR5 drops the `taskList.length > 1` requirement so the
+  // retry now fires for single-task cascades too — surfaces the per-module
+  // gradle error context that the bundled-leg output buried.
+  it('single-task cascade (nav3 shape) → retry fires (drops the >1 requirement)', async () => {
+    const dir = makeProject([
+      { name: 'app', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    // Single-task case: the one-shot dispatch and the per-module retry have
+    // the same `:app:jvmTest` arg shape, so we can't differentiate them by
+    // task-count. Track call sequence instead: first call returns cascade
+    // output (status=1, no evidence), second call returns the same cascade
+    // output (the underlying task IS broken — retry surfaces same diagnostic
+    // in isolation). Both calls trip cascade detection per-call.
+    const calls = [];
+    const spawn = (cmd, args, opts) => {
+      calls.push({ cmd, args: [...args], opts });
+      return { status: 1, stdout: 'FAILURE: Build failed.\nBUILD FAILED in 1s\n', stderr: '', signal: null, error: null };
+    };
+    spawn.calls = calls;
+    const lines = [];
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: (l) => lines.push(l),
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const leg = envelope.parallel.legs[0];
+    expect(leg.cascade_detected).toBe(true);
+    expect(leg.retry_fired).toBe(true);
+    const gradleSpawnCount = calls.filter(c => isGradleCall(c)).length;
+    // 1 one-shot + 1 per-module retry = 2 spawns. Pre-fix this would be 1
+    // (retry guard's `taskList.length > 1` blocked the single-task case).
+    expect(gradleSpawnCount).toBe(2);
+    expect(lines.some(l => /retrying per-module|isolate/i.test(l))).toBe(true);
+  });
+
+  // Test 3 — Real failures (gradle reported `> Task :mod:jvmTest FAILED`)
+  // do NOT trigger the retry. cascade_detected requires failed===0, so when
+  // any task explicitly failed the retry is skipped — gradle has actionable
+  // diagnostic in the original output already.
+  it('real failures (FAILED marker) → cascade_detected=false, no retry', async () => {
+    const dir = makeProject([
+      { name: 'a', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'b', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({
+      failTasks: [':a:jvmTest', ':b:jvmTest'],
+      stdout: '> Task :a:jvmTest FAILED\n> Task :b:jvmTest FAILED\nBUILD FAILED in 1s\n',
+    });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const leg = envelope.parallel.legs[0];
+    expect(leg.cascade_detected).toBe(false);
+    expect(leg.retry_fired).toBe(false);
+    const gradleSpawnCount = spawn.calls.filter(c => isGradleCall(c)).length;
+    expect(gradleSpawnCount).toBe(1); // no retry — only the one-shot
+    expect(envelope.tests.failed).toBe(2);
+  });
+
+  // Test 4 — `anyTaskMentioned` false-positive regression guard. The original
+  // PR #116 regex matched ANY mid-line `Task :foo:bar` mention, which gradle's
+  // daemon/log output sometimes prints during housekeeping (not actual task
+  // execution). Such a mention would set anyTaskMentioned=true and skip the
+  // retry. PR5 uses the strict execution-mode regex (`Task ... \s*$` anchored
+  // to line-end with optional suffix), so housekeeping mentions don't poison
+  // the cascade signal. This test injects exactly the kind of mid-line mention
+  // that fooled the old guard and verifies the retry now fires.
+  it('mid-line `Task :foo:bar` mention does NOT block retry (regex divergence fix)', async () => {
+    const dir = makeProject([
+      { name: 'a', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'b', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    // Mid-line mention that the OLD lax regex `Task\s+:foo:bar(\s|$)` would
+    // match (because `Task :a:jvmTest dispatch` has whitespace after the task
+    // name) but the NEW strict regex `Task ...\s*$` (anchored to line-end)
+    // will not match.
+    const spawn = makeCascadeSpawn({
+      oneShotStdout: 'Daemon vm using Task :a:jvmTest dispatch context\n'
+                   + 'Daemon vm using Task :b:jvmTest dispatch context\n'
+                   + 'FAILURE: Build failed.\n'
+                   + 'BUILD FAILED in 1s\n',
+    });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const leg = envelope.parallel.legs[0];
+    expect(leg.cascade_detected).toBe(true);
+    expect(leg.retry_fired).toBe(true);
+    const gradleSpawnCount = spawn.calls.filter(c => isGradleCall(c)).length;
+    expect(gradleSpawnCount).toBe(3); // 1 one-shot + 2 retries
+  });
+
+  // Test 5 — Mixed in same leg (1 task FAILED, 1 task no_evidence). The
+  // cascade trigger requires `failed === 0` — this leg has failed===1 so the
+  // retry is NOT fired. The no_evidence task is left as the orchestrator's
+  // defense-in-depth marks it (failed via classifyTaskResults's
+  // legExit-and-no-mention guard). Conservative: only retry pure cascades.
+  it('mixed in-leg (1 failed + 1 no_evidence) → cascade_detected=false (failed > 0)', async () => {
+    const dir = makeProject([
+      { name: 'a', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'b', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({
+      // a's task failed explicitly (FAILED marker); b's task never mentioned
+      // (no_evidence). execSummary.failed=1, no_evidence=1 → cascade NOT
+      // triggered (requires failed===0).
+      stdout: '> Task :a:jvmTest FAILED\nBUILD FAILED in 1s\n',
+      status: 1,
+    });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const leg = envelope.parallel.legs[0];
+    expect(leg.cascade_detected).toBe(false);
+    expect(leg.retry_fired).toBe(false);
+    const gradleSpawnCount = spawn.calls.filter(c => isGradleCall(c)).length;
+    expect(gradleSpawnCount).toBe(1);
+  });
+
+  // Test 6 — Envelope shape: every leg always emits cascade_detected and
+  // retry_fired as booleans (never undefined). Locks the field contract so
+  // downstream consumers can rely on the orchestrator's verdict being present
+  // for all legs (passing, cascading, real-failure, and empty no-modules).
+  it('envelope shape: every leg has cascade_detected + retry_fired as booleans', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({
+      stdout: '> Task :core:jvmTest\nBUILD SUCCESSFUL in 1s\n',
+      status: 0,
+    });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const leg = envelope.parallel.legs[0];
+    expect(typeof leg.cascade_detected).toBe('boolean');
+    expect(typeof leg.retry_fired).toBe('boolean');
+    expect(leg.cascade_detected).toBe(false);
+    expect(leg.retry_fired).toBe(false);
+  });
+});
