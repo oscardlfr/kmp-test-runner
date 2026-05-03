@@ -208,14 +208,20 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 
 3. **stderr filter swallowed gradle's actual error context** — `executeLeg`'s pre-fix filter only forwarded lines matching `Cannot locate|FAILURE:|BUILD FAILED|UnsupportedClassVersionError|Failed to install`. The `* What went wrong:`, `> Could not resolve`, `Android Gradle plugin requires Java 17` and similar diagnostic blocks were dropped. Widened to forward `> Task :*`, `* What went wrong:`, `* Try:`, `Caused by:`, AGP/JDK requirement messages, plugin-resolution errors, and capped at 60 lines/leg with a "(N more suppressed)" footer. Wide-smoke surfaced TaskFlow's actual error: `Android Gradle plugin requires Java 17 to run. You are currently using Java 11`.
 
-**Wide-smoke trajectory across 3 fix passes:**
+**Wide-smoke trajectory across 5 fix passes:**
 
-| Verdict | Broken | Pass 1 (spawn) | Pass 2 (+ comment-strip + stderr) | Pass 3 (+ AGP + cascade) |
-|---|---:|---:|---:|---:|
-| SILENT-FAKE-PASS | 14 | **0** ✅ | 0 | 0 |
-| REAL-GREEN | 0 | 0 | 3 | **6** |
-| REAL-RED | 0 | 14 | 11 | 8 |
-| NO-MODULES | 9 | 9 | 9 | 9 |
+| Verdict | Broken | P1 spawn | P2 +strip+stderr | P3 +AGP+cascade | P4 +per-mod-isolation | P5 +jvm("name")+hierarchy |
+|---|---:|---:|---:|---:|---:|---:|
+| SILENT-FAKE-PASS | 14 | **0** ✅ | 0 | 0 | 0 | 0 |
+| REAL-GREEN | 0 | 0 | 3 | 6 | 5 | **6** |
+| REAL-RED | 0 | 14 | 11 | 8 | 9 | 8 |
+| NO-MODULES | 9 | 9 | 9 | 9 | 9 | 9 |
+
+Notable per-project flips:
+- **shared-kmp-libs**: silent-pass-38 → cross-contaminated-37-fail → 35/2 → 35/2 → **63/0** (jvm("desktop") fix unlocked all modules)
+- **TaskFlow**: silent-pass-1 → JDK-mismatch-fail → JDK-mismatch-fail → **PASS** (AGP-aware JDK fix)
+- **Confetti-main**: silent-pass-4 → cascade-fail-4 → fake-green-via-cascade → REAL-RED-2/2 (cascade isolation honest, then per-module isolation honest)
+- **nowinandroid**: silent-pass-14 → real-RED → real-RED (real Kotlin compile error in `:feature:foryou:impl` — repo bug, not CLI)
 
 REAL-GREEN flips after Pass 3: TaskFlow (AGP 8.8.2 → JDK 17 picked correctly), Confetti-main (cascade-isolation: `:shared:jvmTest` succeeds when isolated from broken `:androidApp`), kotlinconf-app-main + FileKit-main (cache invalidation + AGP fix). Pre-existing REAL-GREEN: android-challenge, androidify-main.
 
