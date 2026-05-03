@@ -132,9 +132,3 @@ jobs:
       - run: npm ci
       - name: bats (macOS — Bash 3.2 regression coverage)
         run: npx bats --timing tests/bats/ tests/installer/
-      # PROBE — temporary diagnostic. If any adb process is still running here
-      # the env-var opt-out fix did not catch all spawn sites. Revert before
-      # squash-merge once the run is green; output is captured in the PR body.
-      - name: probe — pgrep adb
-        if: always()
-        run: pgrep -af adb || echo "no adb processes (expected after opt-out fix)"
