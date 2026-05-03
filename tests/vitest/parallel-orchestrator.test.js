@@ -41,7 +41,7 @@
 //  35.  Empty modules list → no_test_modules error, exit 3
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { isGradleCall, effectiveGradleArgs, isStopCall } from './_spawn-helpers.js';
@@ -942,6 +942,74 @@ describe('runParallel', () => {
     });
     expect(envelope.parallel.legs[0].execution.from_cache).toBe(1);
     expect(envelope.parallel.legs[0].execution.fresh).toBe(0);
+  });
+
+  // F3 (2026-05-03): when gradle marks the test task UP-TO-DATE, AGP doesn't
+  // rewrite TEST-*.xml — their mtime stays from the prior run. The walker's
+  // stale-XML guard (added by PR #116 to filter ~10K bash-wrapper-era XMLs)
+  // would then false-discard them and report individual_total:0 on otherwise
+  // green incremental builds. Reproduced live on dipatternsdemo:
+  // 4 XMLs with mtime 8 days old, walker returned 0; touch + rerun → 68.
+  // Fix: bypass the guard for UP-TO-DATE / FROM-CACHE execution modes.
+  function writeStaleJunitXml(projectRoot, modName, taskShort, fileBase, testcaseCount, ageSec = 60) {
+    const taskDir = path.join(projectRoot, modName, 'build', 'test-results', taskShort);
+    mkdirSync(taskDir, { recursive: true });
+    const xml = '<testsuite>' + '<testcase/>'.repeat(testcaseCount) + '</testsuite>';
+    const filePath = path.join(taskDir, `TEST-${fileBase}.xml`);
+    writeFileSync(filePath, xml);
+    const past = Math.floor(Date.now() / 1000) - ageSec;
+    utimesSync(filePath, past, past);
+  }
+
+  it('F3 fix: UP-TO-DATE tasks count existing TEST-*.xml without mtime guard', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    writeStaleJunitXml(dir, 'core', 'jvmTest', 'com.foo.Bar', 5);
+    writeStaleJunitXml(dir, 'core', 'jvmTest', 'com.foo.Baz', 3);
+    const spawn = makeSpawnStub({ stdout: '> Task :core:jvmTest UP-TO-DATE\nBUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.parallel.legs[0].execution.up_to_date).toBe(1);
+    expect(envelope.tests.individual_total).toBe(8);
+  });
+
+  it('F3 fix: FROM-CACHE tasks count existing TEST-*.xml without mtime guard', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    writeStaleJunitXml(dir, 'core', 'jvmTest', 'com.foo.Cached', 7);
+    const spawn = makeSpawnStub({ stdout: '> Task :core:jvmTest FROM-CACHE\nBUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.parallel.legs[0].execution.from_cache).toBe(1);
+    expect(envelope.tests.individual_total).toBe(7);
+  });
+
+  it('F3 fix: fresh tasks still discard stale TEST-*.xml (regression guard preserved)', async () => {
+    // Locks the original PR #116 protection: gradle ran the task fresh, but
+    // stale XMLs from a prior run remain on disk. Walker must NOT count them.
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    writeStaleJunitXml(dir, 'core', 'jvmTest', 'com.foo.Wrapper', 99);
+    const spawn = makeSpawnStub({ stdout: '> Task :core:jvmTest\nBUILD SUCCESSFUL in 5s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.parallel.legs[0].execution.fresh).toBe(1);
+    expect(envelope.tests.individual_total).toBe(0);
   });
 
   it('F2: --test-type all suppresses per-leg no_test_modules when another leg passes', async () => {
