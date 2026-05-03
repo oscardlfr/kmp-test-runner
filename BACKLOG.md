@@ -411,7 +411,11 @@ Caveats:
 
 **Ship-when:** v0.8.0 release-blocker, AFTER the AGP-JDK fix lands. Closes the "5 per-project investigations" carve-out from the silent-pass entry.
 
-### v0.8.0 — `resolveTasksFor` returns null when `gradleTasks` is null even though `sourceSets` declares the test set (surfaced 2026-05-02; promoted 2026-05-03)
+### v0.8.0 — `resolveTasksFor` returns null when `gradleTasks` is null even though `sourceSets` declares the test set (surfaced 2026-05-02; promoted 2026-05-03; CLOSED 2026-05-03 in PR #116)
+
+**CLOSED 2026-05-03 in PR #116** — `predictTaskFromSourceSets` helper at `lib/project-model.js:841-884` plus cold-cache fallback wired into `unitTestTask` / `webTestTask` / `iosTestTask` / `macosTestTask` (5 of 6 fields; `deviceTestTask` correctly stays null since instrumented test names like `connectedDebugAndroidTest` have no source-set parity). 7 vitest cases at `tests/vitest/project-model.test.js:1804-1874` cover all 4 scenarios specified in the original fix plan plus 3 extras (JS-only, macOS, empty sourceSets, deviceTestTask-stays-null). The bats integration fixture (fix step 5) was a nice-to-have integration check; vitest coverage is comprehensive enough that the PR1 of v0.8.0 (`fix(benchmark): adaptive timeout`) closed this entry without a dedicated bats fixture PR.
+
+
 
 **Surfaced 2026-05-02 while validating PR #103 (`fix(parallel): proactive iOS/macOS/common/desktop target filter`).** When a KMP module declares `jvm()` (no custom name), Gradle exposes the unit-test task as `:moduleX:jvmTest` — not `:moduleX:desktopTest`. The wrapper hardcodes `desktopTest` for `--test-type common|desktop`. The proactive UX-1 filter from PR #103 now lets such a module slip into the dispatch set; the reactive WS-1 fallback then catches the resulting `Cannot locate tasks that match ':moduleX:desktopTest'` as a real failure (good — no more PASS fantasma). But the user-visible result is still `[FAIL] :moduleX (task not found)`, when the correct behavior would be: per-module task lookup picks `jvmTest` from the project model and runs it green.
 
@@ -442,7 +446,11 @@ The `sourceSets.jvmTest: true` is enough signal to predict `unitTestTask: "jvmTe
 
 **Cross-references:** complement to v0.7.0 Phase 1 (`unitTestTask` candidate chain landed there with the assumption that `gradleTasks` would be populated). Complement to PR #103 reactive WS-1 fix (which now surfaces this bug as a real FAIL instead of swallowing it).
 
-### v0.8.0 — Adaptive `KMP_GRADLE_TIMEOUT_MS` per benchmark config (surfaced 2026-05-03; promoted to v0.8.0 release-blocker 2026-05-03)
+### v0.8.0 — Adaptive `KMP_GRADLE_TIMEOUT_MS` per benchmark config (surfaced 2026-05-03; promoted to v0.8.0 release-blocker 2026-05-03; CLOSED 2026-05-03)
+
+**CLOSED 2026-05-03 in v0.8.0 PR1 (`fix(benchmark): adaptive timeout per config + exit-code 3 on timeout`).** `lib/benchmark-orchestrator.js` now resolves an effective inner timeout per `--config` (smoke=300_000 / main=1_800_000 / stress=3_600_000) with override precedence: `--ignore-gradle-timeout` > `--timeout <seconds>` > `KMP_GRADLE_TIMEOUT_MS` env > per-config default. Timeout fires now surface as `errors[].code:"gradle_timeout"` and exit 3 (ENV_ERROR), distinguishing "build hung / config too tight" from "tests failed" (exit 1). `lib/cli.js` outer wrapper-level watchdog (`resolveBenchmarkOuterTimeoutMs`) bumps to `inner + 30 min buffer` so legitimate stress runs no longer trip cli.js outer SIGTERM before the orchestrator can react. 11 vitest cases cover the full resolution table + timeout-fire path on POSIX (SIGTERM) and Windows (ETIMEDOUT). Below entry retained for historical context.
+
+
 
 **Surfaced 2026-05-03 during e2e validation of the new `--benchmark` / `--benchmark-config` parallel hook against `shared-kmp-libs:benchmark-io`.** `--config smoke` completes in ~1-3s; `--config stress` legitimately needs 30+ minutes (full JMH warmup + measurement iterations across 5 benchmarks). The orchestrator's default `KMP_GRADLE_TIMEOUT_MS=1800000` (30 min) is calibrated to detect hung daemons but trips on legitimate stress runs.
 

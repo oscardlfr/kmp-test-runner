@@ -18,7 +18,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runBenchmark } from '../../lib/benchmark-orchestrator.js';
+import { runBenchmark, resolveBenchmarkTimeoutMs, BENCHMARK_TIMEOUT_DEFAULTS_MS } from '../../lib/benchmark-orchestrator.js';
+import { resolveBenchmarkOuterTimeoutMs, BENCHMARK_OUTER_TIMEOUTS_MS } from '../../lib/cli.js';
 import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -526,5 +527,147 @@ describe('runBenchmark --dry-run (F1)', () => {
     expect(envelope.plan.platform).toBe('jvm');
     expect(spawn.calls.length).toBe(0);
     expect(exitCode).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.8.0 — adaptive `KMP_GRADLE_TIMEOUT_MS` per benchmark config (BACKLOG #5)
+// ---------------------------------------------------------------------------
+// Per-config defaults: smoke=300s, main=1800s, stress=3600s. Env override
+// (KMP_GRADLE_TIMEOUT_MS) wins. --timeout flag (seconds) wins over env.
+// --ignore-gradle-timeout returns 0 (disabled). On timeout fire,
+// errors[].code:"gradle_timeout" + exitCode=3 (ENV_ERROR, not TEST_FAIL).
+describe('resolveBenchmarkTimeoutMs (v0.8.0 — adaptive timeout per --config)', () => {
+  it('--config smoke + env unset → 300_000 (5 min default)', () => {
+    expect(resolveBenchmarkTimeoutMs('smoke', {}, {})).toBe(300_000);
+  });
+
+  it('--config main + env unset → 1_800_000 (30 min default)', () => {
+    expect(resolveBenchmarkTimeoutMs('main', {}, {})).toBe(1_800_000);
+  });
+
+  it('--config stress + env unset → 3_600_000 (60 min default)', () => {
+    expect(resolveBenchmarkTimeoutMs('stress', {}, {})).toBe(3_600_000);
+  });
+
+  it('KMP_GRADLE_TIMEOUT_MS env override wins over per-config default', () => {
+    expect(resolveBenchmarkTimeoutMs('stress', { KMP_GRADLE_TIMEOUT_MS: '999' }, {})).toBe(999);
+  });
+
+  it('--ignore-gradle-timeout returns 0 (disabled) regardless of env/config', () => {
+    expect(
+      resolveBenchmarkTimeoutMs('stress', { KMP_GRADLE_TIMEOUT_MS: '999' }, { ignoreGradleTimeout: true })
+    ).toBe(0);
+  });
+
+  it('--timeout 60 wins over env and config (returns 60_000 ms)', () => {
+    expect(
+      resolveBenchmarkTimeoutMs('main', { KMP_GRADLE_TIMEOUT_MS: '999' }, { timeout: 60 })
+    ).toBe(60_000);
+  });
+
+  it('unknown config falls through to main default', () => {
+    expect(resolveBenchmarkTimeoutMs('unknown-config', {}, {})).toBe(BENCHMARK_TIMEOUT_DEFAULTS_MS.main);
+  });
+});
+
+describe('runBenchmark gradle_timeout fire path (v0.8.0 — BACKLOG #5)', () => {
+  it('spawnGradle returns SIGTERM signal (POSIX timeout) → errors[].code:"gradle_timeout", exit 3', async () => {
+    const dir = copyFixture();
+    // Mock spawn returns POSIX timeout shape: signal SIGTERM, status null.
+    const spawn = (cmd, args, opts) => ({
+      status: null,
+      signal: 'SIGTERM',
+      stdout: '',
+      stderr: '',
+      error: null,
+    });
+
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'stress'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    const timeoutErr = envelope.errors.find(e => e.code === 'gradle_timeout');
+    expect(timeoutErr).toBeDefined();
+    expect(timeoutErr.module).toBe('bench-jvm');
+    expect(envelope.benchmark.timed_out).toBe(1);
+    expect(envelope.benchmark.timeout_ms).toBe(3_600_000); // stress default
+    expect(exitCode).toBe(3);
+  });
+
+  it('spawnGradle returns ETIMEDOUT (Windows timeout) → exit 3 + envelope.benchmark.timeout_ms reflects config', async () => {
+    const dir = copyFixture();
+    const spawn = (cmd, args, opts) => ({
+      status: null,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      error: { code: 'ETIMEDOUT' },
+    });
+
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'main'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    expect(envelope.errors[0].code).toBe('gradle_timeout');
+    expect(envelope.benchmark.timeout_ms).toBe(1_800_000); // main default
+    expect(exitCode).toBe(3);
+  });
+
+  it('--ignore-gradle-timeout disables inner timeout (spawnOpts.timeout undefined)', async () => {
+    const dir = copyFixture();
+    const captured = [];
+    const spawn = (cmd, args, opts) => {
+      captured.push(opts);
+      return { status: 0, signal: null, stdout: 'OK', stderr: '', error: null };
+    };
+
+    await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'stress', '--ignore-gradle-timeout'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    // The first injected spawn call is the gradle benchmark dispatch — when
+    // --ignore-gradle-timeout is set, the orchestrator must NOT pass a
+    // `timeout` option (gradle runs without a watchdog).
+    expect(captured.length).toBeGreaterThan(0);
+    expect(captured[0].timeout).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.8.0 — adaptive cli.js outer-timeout for benchmark (BACKLOG #5 second leg)
+// ---------------------------------------------------------------------------
+// The wrapper-level `spawnSync` watchdog must be ≥ orchestrator's per-config
+// inner timeout, otherwise cli.js SIGTERMs the wrapper before the orchestrator
+// can surface gradle_timeout. Per-config defaults add a 30-min safety buffer
+// on top of the orchestrator inner default.
+describe('resolveBenchmarkOuterTimeoutMs (v0.8.0 — cli.js outer adaptive)', () => {
+  it('--config smoke + env unset → 35 min (5 min inner + 30 min buffer)', () => {
+    expect(resolveBenchmarkOuterTimeoutMs(['--config', 'smoke'], {}))
+      .toBe(BENCHMARK_OUTER_TIMEOUTS_MS.smoke);
+  });
+
+  it('--config stress + env unset → 90 min (60 min inner + 30 min buffer)', () => {
+    expect(resolveBenchmarkOuterTimeoutMs(['--config', 'stress'], {}))
+      .toBe(BENCHMARK_OUTER_TIMEOUTS_MS.stress);
+  });
+
+  it('KMP_GRADLE_TIMEOUT_MS env override wins (preserves parseGradleTimeoutMs contract)', () => {
+    expect(resolveBenchmarkOuterTimeoutMs(['--config', 'stress'], { KMP_GRADLE_TIMEOUT_MS: '999' }))
+      .toBe(999);
+  });
+
+  it('--config flag absent → smoke default (matches orchestrator parseArgs default)', () => {
+    expect(resolveBenchmarkOuterTimeoutMs([], {}))
+      .toBe(BENCHMARK_OUTER_TIMEOUTS_MS.smoke);
   });
 });
