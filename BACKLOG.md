@@ -334,15 +334,15 @@ Caveats:
 
 ---
 
-### v0.8 — Sub-entry 5 follow-up findings (F1+F2 ✅ FIXED 2026-05-03; F3 still open)
+### v0.8 — Sub-entry 5 follow-up findings (F1+F2+F3 ✅ FIXED 2026-05-03)
 
-> **NOTE:** these 3 findings were discovered during the same wide-smoke pass as the CRITICAL Windows-spawn bug above. F1 + F2 closed in PR `feature/sub-entry-5-followups` (2026-05-03). F3 remains pending Windows-side repro.
+> **NOTE:** these 3 findings were discovered during the same wide-smoke pass as the CRITICAL Windows-spawn bug above. F1 + F2 closed in PR `feature/sub-entry-5-followups` (2026-05-03). F3 closed in PR `fix/android-individual-total-walker` (2026-05-03).
 
 **✅ Finding F1 — `--dry-run` not consumed in 3 of 5 orchestrators (FIXED 2026-05-03).** `changed`, `android`, `benchmark` orchestrators now short-circuit on `--dry-run` before any spawn / git probe / adb probe, emitting `dry_run:true` envelope with subcommand-specific plan fields. +3 vitest cases. Validated e2e on macOS.
 
 **✅ Finding F2 — `--test-type all` per-leg `no_test_modules` forced exit 3 (FIXED 2026-05-03).** Per-leg empties demoted to `warnings[].code:"no_test_modules_for_leg"` when at least one other leg produced test results. +1 vitest case. PR `feature/sub-entry-5-followups`.
 
-**🟡 Finding F3 — `tests.individual_total:0` on AGP-only runs (still open).** The junit-XML walker constructs `<module>/build/test-results/<taskShort>/` from `taskColonPath` (e.g. `:app:testDebugUnitTest` → `app/build/test-results/testDebugUnitTest/`), which IS the canonical AGP path. **The fix as originally described may already be a no-op post-PR #116** (the stale-junit `mtime` guard added there + the existing path construction look correct). Needs concrete Windows-side repro: run `kmp-test parallel --test-type androidUnit --json` against an Android-only project on Windows, capture the actual `<module>/build/test-results/` tree shape, and verify whether (a) AGP still puts XMLs at the expected path, (b) `tests.individual_total` actually reports 0, (c) the walker fails because of nested subdirs, mtime drift, or something else. **Pickup this on Windows next** with a fresh wide-smoke against the maintainer's Android-only projects (TaskFlow, dipatternsdemo, gyg). Fix: only after repro confirms what's actually wrong; speculative "extend walker glob, dedupe by file path" deferred.
+**✅ Finding F3 — `tests.individual_total:0` on UP-TO-DATE / FROM-CACHE runs (FIXED 2026-05-03).** Root cause confirmed via Windows-side repro on dipatternsdemo: 4 valid `TEST-*.xml` files at the canonical `<module>/build/test-results/<taskShort>/` path containing 68 testcases, but `mtime` from a prior run (~8 days old). The post-PR #116 stale-XML guard at `lib/parallel-orchestrator.js#junitTestCountFor` (filter `mtime >= state.runStartMs`) false-discarded all 68 because gradle marked the task UP-TO-DATE and AGP didn't rewrite the XMLs. Fix: bypass the guard in `executeLeg` when `classifyTaskExecutionMode` returns `up_to_date` or `from_cache` — gradle has already confirmed the existing XMLs reflect the current source state in those modes, so they're not stale by definition. Modes `fresh` / `failed` / `no_evidence` keep the guard active to preserve the original PR #116 protection against bash-wrapper-era leftovers. Verified live: dipatternsdemo `individual_total` flips `0 → 68`. +3 vitest cases (`F3 fix: UP-TO-DATE …`, `F3 fix: FROM-CACHE …`, `F3 fix: fresh tasks still discard stale TEST-*.xml`).
 
 ### v0.8.0 — JDK auto-select must prefer AGP runtime JDK over project's bytecode `jvmTarget` (surfaced 2026-05-03 wide-smoke; promoted to v0.8.0 release-blocker)
 
