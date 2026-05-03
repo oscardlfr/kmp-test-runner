@@ -260,6 +260,31 @@ This pattern covers ~90-95% of integration bugs. The remaining 5% (hardware/perf
 
 **Effort:** ~2-3h folded into v0.8.0 release-readiness gate (1) cross-OS parity workflow + (2) fixture build. Documentation update lands as a follow-up README polish PR pre-tag.
 
+### v0.8.x — Adaptive `KMP_GRADLE_TIMEOUT_MS` per benchmark config (surfaced 2026-05-03)
+
+**Surfaced 2026-05-03 during e2e validation of the new `--benchmark` / `--benchmark-config` parallel hook against `shared-kmp-libs:benchmark-io`.** `--config smoke` completes in ~1-3s; `--config stress` legitimately needs 30+ minutes (full JMH warmup + measurement iterations across 5 benchmarks). The orchestrator's default `KMP_GRADLE_TIMEOUT_MS=1800000` (30 min) is calibrated to detect hung daemons but trips on legitimate stress runs.
+
+**Observed behavior (validated):**
+- `kmp-test benchmark --config stress --module-filter benchmark-io --platform jvm` against shared-kmp-libs hit the 1800s timeout with the message `"gradle invocation exceeded 1800s timeout — likely a hung daemon"`. Plumbing was correct — task `:benchmark-io:desktopStressBenchmark` dispatched, gradle ran the JMH stress harness, just exceeded the budget.
+- Exit code anomaly: orchestrator emits the timeout message but reports exit code 0 to the caller. Pre-existing in benchmark-orchestrator, not introduced by the parallel `--benchmark` hook. Worth a separate audit (timeout-as-warning vs timeout-as-error semantics).
+
+**Proposal — adaptive timeout default by config:**
+
+| `--benchmark-config` | Suggested default `KMP_GRADLE_TIMEOUT_MS` |
+|---|---|
+| `smoke` (CI / validation) | 300000 (5 min) — generous slack on the 1-3s expected |
+| `main` (kotlinx-benchmark default) | 1800000 (30 min) — current default |
+| `stress` (real perf measurement) | 3600000 (1 h) — or `0` to disable |
+
+User override via env var continues to win. The `kmp-test benchmark --help` output should mention the implicit per-config defaults so users know what to expect.
+
+**Lift:** 1-2h. `lib/benchmark-orchestrator.js` reads `KMP_GRADLE_TIMEOUT_MS` already; add a config-aware default fallback when env var is unset. Vitest covers the resolution table. Document in README's flag reference.
+
+**Ship-when:** v0.8.x or v0.8.0 release-readiness gate, alongside the parallel `--benchmark` hook (PR #115). The hook itself is independent of this — landing the hook with the 30-min default is acceptable, and stress users already know to override.
+
+**Out of scope:**
+- Fixing the exit-code-0-on-timeout discrepancy — separate ticket. The current behavior is "timeout = gradle problem, not test failure" which is defensible but not consistently documented.
+
 ### v0.7.x — Wide-smoke validation findings (mom's MacBook session, 2026-05-01)
 
 **Surfaced 2026-05-01 during cross-project wide-smoke validation against PeopleInSpace, Confetti (multi-module ~13 subprojects), and KaMPKit at `/Volumes/XcodeOscar/kmp-test-workspace/`. Validation hardware: Galaxy S22 Ultra (SM-S908B, Android 16, arm64-v8a, instrumented tests), iOS 26.4 Simulator runtime (10 devices: iPhone 17 Pro/Air/17e, iPad Pro M5, etc.), JDK catalogue 11/17/21, host JDK 21 default.** Eleven issues uncovered (twelfth `SKIPPED_MODULES` fix tracked separately below). Target: clear ALL before v0.8.0.

@@ -165,6 +165,11 @@ describe('parseArgs', () => {
       '--timeout', '900',
       '--skip-tests',
       '--dry-run',
+      '--fresh-daemon',
+      '--output-file', 'custom.md',
+      '--coverage-only',
+      '--benchmark',
+      '--benchmark-config', 'stress',
     ]);
     expect(opts.includeShared).toBe(true);
     expect(opts.testType).toBe('ios');
@@ -181,6 +186,11 @@ describe('parseArgs', () => {
     expect(opts.timeout).toBe(900);
     expect(opts.skipTests).toBe(true);
     expect(opts.dryRun).toBe(true);
+    expect(opts.freshDaemon).toBe(true);
+    expect(opts.outputFile).toBe('custom.md');
+    expect(opts.coverageOnly).toBe(true);
+    expect(opts.benchmark).toBe(true);
+    expect(opts.benchmarkConfig).toBe('stress');
   });
 
   it('defaults: testType empty, moduleFilter "*", testTypeExplicit false', () => {
@@ -191,6 +201,11 @@ describe('parseArgs', () => {
     expect(opts.coverageTool).toBe('auto');
     expect(opts.timeout).toBe(600);
     expect(opts.maxWorkers).toBe(0);
+    expect(opts.freshDaemon).toBe(false);
+    expect(opts.outputFile).toBe('coverage-full-report.md');
+    expect(opts.coverageOnly).toBe(false);
+    expect(opts.benchmark).toBe(false);
+    expect(opts.benchmarkConfig).toBe('smoke');
   });
 
   it('expands --no-coverage to --coverage-tool none', () => {
@@ -530,6 +545,135 @@ describe('runParallel', () => {
     expect(envelope.modules.length).toBeGreaterThan(0);
     expect(envelope.modules).toContain('core');
     expect(envelope.modules).toContain('feature');
+  });
+
+  it('--fresh-daemon spawns gradlew --stop before main dispatch', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--fresh-daemon'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    const stopCalls = spawn.calls.filter(c => c.args.length === 1 && c.args[0] === '--stop');
+    expect(stopCalls.length).toBe(1);
+    // --stop must precede the main test dispatch.
+    const firstNonStop = spawn.calls.findIndex(c => !(c.args.length === 1 && c.args[0] === '--stop'));
+    const stopIdx = spawn.calls.findIndex(c => c.args.length === 1 && c.args[0] === '--stop');
+    expect(stopIdx).toBeLessThan(firstNonStop);
+  });
+
+  it('without --fresh-daemon, no gradlew --stop call', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    const stopCalls = spawn.calls.filter(c => c.args.length === 1 && c.args[0] === '--stop');
+    expect(stopCalls.length).toBe(0);
+  });
+
+  it('--output-file forwarded to runCoverage', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--output-file', 'custom-report.md'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(stubCoverage.calls.length).toBe(1);
+    const passedArgs = stubCoverage.calls[0].args;
+    const idx = passedArgs.indexOf('--output-file');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(passedArgs[idx + 1]).toBe('custom-report.md');
+  });
+
+  it('--coverage-only filters modules to those listed in --coverage-modules', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'feature', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'shared', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--coverage-only', '--coverage-modules', 'core,feature'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    // Only `core` + `feature` reached the test dispatch, `shared` was filtered out.
+    expect(envelope.modules).toContain('core');
+    expect(envelope.modules).toContain('feature');
+    expect(envelope.modules).not.toContain('shared');
+  });
+
+  it('--benchmark invokes runBenchmark stub with --config', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const benchCalls = [];
+    const stubBenchmark = async (opts) => {
+      benchCalls.push(opts);
+      return { envelope: { benchmark: { config: 'main', total: 0 } }, exitCode: 0 };
+    };
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--benchmark', '--benchmark-config', 'main'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+      runBenchmarkInjection: stubBenchmark,
+    });
+    expect(benchCalls.length).toBe(1);
+    expect(benchCalls[0].args).toContain('--config');
+    expect(benchCalls[0].args).toContain('main');
+  });
+
+  it('without --benchmark, runBenchmark is NOT invoked', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    let benchCalled = false;
+    const stubBenchmark = async () => { benchCalled = true; return { envelope: {}, exitCode: 0 }; };
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+      runBenchmarkInjection: stubBenchmark,
+    });
+    expect(benchCalled).toBe(false);
+  });
+
+  it('--benchmark non-zero exit surfaces as non-fatal warning, parallel exit unchanged', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const stubBenchmark = async () => ({ envelope: {}, exitCode: 1 });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--benchmark'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+      runBenchmarkInjection: stubBenchmark,
+    });
+    expect(envelope.warnings.some(w => w.code === 'benchmark_failed')).toBe(true);
+    expect(exitCode).toBe(0);
   });
 
   it('"<task> FAILED" pattern → state.errors has module_failed, exit 1', async () => {

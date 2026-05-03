@@ -40,7 +40,10 @@ param(
     [string]$ExcludeModules = "",
     [switch]$IncludeUntested,
     [switch]$DryRun,
-    [switch]$NoCoverage
+    [switch]$NoCoverage,
+    [switch]$Benchmark,
+    [ValidateSet("smoke", "main", "stress")]
+    [string]$BenchmarkConfig = "smoke"
 )
 
 $ErrorActionPreference = "Continue"
@@ -67,6 +70,10 @@ if ($ExcludeModules)       { $kmpArgv += @('--exclude-modules', $ExcludeModules)
 if ($IncludeUntested)      { $kmpArgv += @('--include-untested') }
 if ($DryRun)               { $kmpArgv += @('--dry-run') }
 if ($NoCoverage)           { $kmpArgv += @('--no-coverage') }
+if ($FreshDaemon)          { $kmpArgv += @('--fresh-daemon') }
+if ($CoverageOnly)         { $kmpArgv += @('--coverage-only') }
+if ($Benchmark)            { $kmpArgv += @('--benchmark') }
+if ($BenchmarkConfig -and $BenchmarkConfig -ne "smoke") { $kmpArgv += @('--benchmark-config', $BenchmarkConfig) }
 
 $kmpScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $kmpRunner = Join-Path $kmpScriptDir '..\..\lib\runner.js'
