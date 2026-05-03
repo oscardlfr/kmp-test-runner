@@ -208,14 +208,22 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 
 3. **stderr filter swallowed gradle's actual error context** — `executeLeg`'s pre-fix filter only forwarded lines matching `Cannot locate|FAILURE:|BUILD FAILED|UnsupportedClassVersionError|Failed to install`. The `* What went wrong:`, `> Could not resolve`, `Android Gradle plugin requires Java 17` and similar diagnostic blocks were dropped. Widened to forward `> Task :*`, `* What went wrong:`, `* Try:`, `Caused by:`, AGP/JDK requirement messages, plugin-resolution errors, and capped at 60 lines/leg with a "(N more suppressed)" footer. Wide-smoke surfaced TaskFlow's actual error: `Android Gradle plugin requires Java 17 to run. You are currently using Java 11`.
 
-**Wide-smoke trajectory across 5 fix passes:**
+**Wide-smoke trajectory across 6 fix passes:**
 
-| Verdict | Broken | P1 spawn | P2 +strip+stderr | P3 +AGP+cascade | P4 +per-mod-isolation | P5 +jvm("name")+hierarchy |
-|---|---:|---:|---:|---:|---:|---:|
-| SILENT-FAKE-PASS | 14 | **0** ✅ | 0 | 0 | 0 | 0 |
-| REAL-GREEN | 0 | 0 | 3 | 6 | 5 | **6** |
-| REAL-RED | 0 | 14 | 11 | 8 | 9 | 8 |
-| NO-MODULES | 9 | 9 | 9 | 9 | 9 | 9 |
+| Verdict | Broken | P1 spawn | P2 +strip+stderr | P3 +AGP+cascade | P4 +per-mod-isolation | P5 +jvm("name")+hierarchy | P6 +variant+sdk+default-jvm |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| SILENT-FAKE-PASS | 14 | **0** ✅ | 0 | 0 | 0 | 0 | 0 |
+| REAL-GREEN | 0 | 0 | 3 | 6 | 5 | 6 | **8** |
+| REAL-RED | 0 | 14 | 11 | 8 | 9 | 8 | 6 |
+| NO-MODULES | 9 | 9 | 9 | 9 | 9 | 9 | 9 |
+
+P6 flips: `dipatternsdemo`, `PeopleInSpace-main` to GREEN (instrumented-only skip + default jvm() detection + ANDROID_HOME auto-set). The 6 remaining REDs are honest:
+- `DawSync` — 5 tests desync with refactored production
+- `OmniSound` — 1 missing `DesktopPKCEGenerator` cascades 7 features
+- `gyg` — 1 real test failing (`LoadingAndErrorStatesTest`)
+- `nav3-recipes` — `NavigatorTest.kt` references removed `RouteV2`/`Navigator`
+- `nowinandroid` — `:foryou:impl` Prod variant missing dep + 2 real tests
+- `Confetti-main` — `:wearApp` 2 real tests fail (`WorkManagerTest`, `ComplicationScreenshotTest`)
 
 Notable per-project flips:
 - **shared-kmp-libs**: silent-pass-38 → cross-contaminated-37-fail → 35/2 → 35/2 → **63/0** (jvm("desktop") fix unlocked all modules)
@@ -399,6 +407,53 @@ This pattern covers ~90-95% of integration bugs. The remaining 5% (hardware/perf
 4. `gradle-plugin-test-ios` promotion: same tier-1-only test list as the E2E fixture — `:module:macosArm64Test` + `:module:iosSimulatorArm64Test` are the only two that execute on the runner.
 
 **Effort:** ~2-3h folded into v0.8.0 release-readiness gate (1) cross-OS parity workflow + (2) fixture build. Documentation update lands as a follow-up README polish PR pre-tag.
+
+### v0.8.x — Move CLI-emitted artifacts into a single `.kmp-test-runner/` subdir (surfaced 2026-05-03)
+
+**Surfaced 2026-05-03 during e2e validation of `kmp-test coverage --coverage-tool kover` on `shared-kmp-libs`.** The orchestrator scatters CLI-generated artifacts at the project root, mixed with the user's actual files:
+
+- `coverage-full-report-<runId>.md` (one per run — ~20 accumulated in shared-kmp-libs after a week of iteration)
+- `coverage-full-report.md` (legacy alias — overwritten each run)
+- `androidtest-logs/<timestamp>/` (legacy `kmp-test android` log dir — pre-v0.8 sub-entry 3)
+- `.kmp-test-runner-cache/` (project-model + gradle-tasks cache — already in subdir, only correctly-grouped artifact)
+
+Users currently have no clean way to gitignore CLI output without enumerating every path individually. The legacy `coverage-full-report*.md` glob is fragile (third-party tools may produce similar filenames).
+
+**Proposed shape:**
+
+```
+<project-root>/
+  .kmp-test-runner/
+    cache/                      # was .kmp-test-runner-cache/ (consolidate)
+      model-<sha>.json
+      tasks-<sha>.txt
+    reports/
+      coverage/
+        <runId>.md
+        latest.md               # symlink/copy alias (replaces coverage-full-report.md)
+    logs/
+      android/
+        <runId>/<module>.log    # was build/logcat/<runId>/ (sub-entry 3 contract)
+        <runId>/<module>_logcat.log
+        <runId>/<module>_errors.json
+```
+
+**One-line `.gitignore` recipe** users can adopt:
+```
+# kmp-test-runner local artifacts (CLI output — never commit)
+.kmp-test-runner/
+```
+
+**Migration plan:**
+1. Single PR introduces `<project>/.kmp-test-runner/{cache,reports/coverage,logs/android}/` paths in coverage-orchestrator + android-orchestrator + project-model cache writer.
+2. Cache layer reads from BOTH old and new paths during a transition release (v0.8.x); writes to new only. Old caches become stale and ignored.
+3. Coverage reports read from new path; the `coverage-full-report.md` legacy alias at project root stays for one release with a deprecation banner inside the file ("> This file will be removed in v0.9 — see `.kmp-test-runner/reports/coverage/latest.md`").
+4. Android log dir migration: `<project>/build/logcat/<runId>/` (current, since sub-entry 3) → `<project>/.kmp-test-runner/logs/android/<runId>/`. The current path is gitignored by Gradle's default `build/` exclusion already; the new path needs the user-side `.gitignore` rule.
+5. README "Quick start" gains a 2-line section: "Add `.kmp-test-runner/` to your project `.gitignore` to keep CLI output out of git."
+
+**Effort:** ~120 LOC across 3 orchestrators + 2-3 vitest cases per orchestrator covering the new path resolution + 1 cli.test.js case for the doctor / `--help` text mention. Schema bump on the project-model cache (versions to 7) so old caches at the legacy path don't get half-read on first upgrade.
+
+**Why not now (deferred):** the EINVAL spawn fix + the 13 collateral bug fixes already landed in fix/windows-spawn-einval are a coherent "unblock Windows" PR. Mixing in a path migration would muddy the diff and require an extra round of cross-platform validation. v0.8.x patch release after the spawn-fix PR ships.
 
 ### v0.8.x — Adaptive `KMP_GRADLE_TIMEOUT_MS` per benchmark config (surfaced 2026-05-03)
 
