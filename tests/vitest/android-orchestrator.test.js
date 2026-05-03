@@ -636,3 +636,25 @@ describe('runAndroid envelope passthrough (regression guard for cli.js:1165)', (
     expect(envelope.android.flavor).toBe('staging');
   });
 });
+
+describe('runAndroid --dry-run (F1)', () => {
+  it('emits dry_run:true plan, no gradle/adb spawn calls', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => { throw new Error('adb should not be probed in dry-run'); };
+
+    const { envelope, exitCode } = await runAndroid({
+      projectRoot: dir,
+      args: ['--dry-run', '--module-filter', 'a', '--flavor', 'staging'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.dry_run).toBe(true);
+    expect(envelope.exit_code).toBe(0);
+    expect(envelope.plan.module_filter).toBe('a');
+    expect(envelope.plan.flavor).toBe('staging');
+    expect(spawn.calls.length).toBe(0);
+    expect(exitCode).toBe(0);
+  });
+});

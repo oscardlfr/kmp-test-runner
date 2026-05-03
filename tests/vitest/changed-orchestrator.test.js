@@ -555,3 +555,23 @@ describe('runChanged non-git directory', () => {
     expect(exitCode).not.toBe(0);
   });
 });
+
+describe('runChanged --dry-run (F1)', () => {
+  it('emits dry_run:true plan, no git probe, no parallel dispatch', async () => {
+    const dir = makeProject(['core']);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runChanged({
+      projectRoot: dir,
+      args: ['--dry-run', '--test-type', 'common', '--staged-only'],
+      spawn,
+    });
+    expect(envelope.dry_run).toBe(true);
+    expect(envelope.exit_code).toBe(0);
+    expect(envelope.plan.test_type).toBe('common');
+    expect(envelope.plan.staged_only).toBe(true);
+    // git rev-parse should NOT have been called.
+    const gitCalls = spawn.calls.filter(c => c.cmd === 'git');
+    expect(gitCalls.length).toBe(0);
+    expect(exitCode).toBe(0);
+  });
+});
