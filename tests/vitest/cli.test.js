@@ -2162,7 +2162,9 @@ describe('preflightJdkCheck', () => {
     withFakeKmpProject(17, dir => {
       mockJavaVersion(23);
       const result = preflightJdkCheck(dir);
-      expect(result).toEqual({ required: 17, current: 23 });
+      // PR3 closeout 2026-05-03: result now also carries `agpVersion`
+      // (null for non-AGP projects, used by the auto-select notice).
+      expect(result).toEqual({ required: 17, current: 23, agpVersion: null });
     });
   });
 
@@ -2304,6 +2306,71 @@ describe('main() — JDK gate integration', () => {
       // path.join + path.delimiter for cross-platform parity (Windows
       // substitutes \ for / and uses ; not :).
       expect(opts.env.PATH.startsWith(path.join('/fake/jdk-17', 'bin') + path.delimiter)).toBe(true);
+    });
+  });
+
+  // PR3 closeout 2026-05-03 — AGP-aware notice. When the JDK floor was raised
+  // because the project applies AGP, the [NOTICE] auto-select banner should
+  // include `project applies AGP X.Y.Z` so the user understands WHY the
+  // host JDK isn't being used.
+  it('auto-select notice includes AGP version when AGP-implied JDK fires', () => {
+    withFakeGradleProject(dir => {
+      mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+        '[versions]\nagp = "8.8.2"\n');
+      // Bytecode jvmTarget 11 — AGP-floor (17) must win.
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin { jvmToolchain(11) }\n');
+      spawnMock.mockImplementation((cmd) => {
+        if (cmd === 'java') {
+          return { status: 0, stdout: '', stderr: 'openjdk version "23.0.1" 2024-01-16\n' };
+        }
+        return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
+      });
+      discoverInstalledJdksMock.mockReturnValue([
+        { majorVersion: 17, vendor: 'Eclipse Adoptium', path: '/fake/jdk-17' },
+      ]);
+      const stderrChunks = [];
+      const origStderr = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+      try {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+        expect(main()).toBe(EXIT.SUCCESS);
+      } finally {
+        process.stderr.write = origStderr;
+      }
+      const notice = stderrChunks.find(c => c.includes('[NOTICE] auto-selecting JDK'));
+      expect(notice).toBeTruthy();
+      expect(notice).toMatch(/auto-selecting JDK 17/);
+      expect(notice).toMatch(/project applies AGP 8\.8\.2/);
+    });
+  });
+
+  it('auto-select notice omits AGP marker when project does not apply AGP', () => {
+    withFakeKmpProject(17, dir => {
+      // No gradle/libs.versions.toml AGP entry; just the jvmToolchain(17)
+      // baked in by withFakeKmpProject.
+      spawnMock.mockImplementation((cmd) => {
+        if (cmd === 'java') {
+          return { status: 0, stdout: '', stderr: 'openjdk version "23.0.1" 2024-01-16\n' };
+        }
+        return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
+      });
+      discoverInstalledJdksMock.mockReturnValue([
+        { majorVersion: 17, vendor: 'Eclipse Adoptium', path: '/fake/jdk-17' },
+      ]);
+      const stderrChunks = [];
+      const origStderr = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+      try {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+        expect(main()).toBe(EXIT.SUCCESS);
+      } finally {
+        process.stderr.write = origStderr;
+      }
+      const notice = stderrChunks.find(c => c.includes('[NOTICE] auto-selecting JDK'));
+      expect(notice).toBeTruthy();
+      expect(notice).not.toMatch(/AGP/);
     });
   });
 

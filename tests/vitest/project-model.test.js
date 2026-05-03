@@ -323,6 +323,23 @@ describe('aggregateJdkSignals', () => {
       expect(r.agpVersion).toBeNull();
       expect(r.signals.find(s => /AGP/.test(s.type))).toBeUndefined();
     });
+
+    // PR3 closeout 2026-05-03 — locks AGP 9.x → JDK 17 mapping. Live docs at
+    // developer.android.com/build/releases/gradle-plugin (fetched 2026-05-03)
+    // confirm AGP 9.2.0 requires JDK 17 minimum, not JDK 21 as an earlier
+    // BACKLOG draft expected. Regression guard: if a future Android Studio
+    // release bumps AGP 9.x to require JDK 21+, this test fails and forces
+    // an explicit decision.
+    it('catalog: agp = "9.0.0" → JDK 17 floor (per AGP 9.2.0 live docs 2026-05-03)', () => {
+      const dir = makeProject();
+      mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+        '[versions]\nagp = "9.0.0"\n');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.agpVersion).toBe('9.0.0');
+      expect(r.signals.find(s => /AGP 9\.0\.0 runtime/.test(s.type))).toBeTruthy();
+    });
   });
 });
 
