@@ -121,8 +121,14 @@ const FAIL_LINE_RE = /\[FAIL\] :[^\s]+:[^\s]+/;
 // Detects the cascade-isolation signature: legs that exited non-zero where
 // execution.failed === 0 AND execution.no_evidence > 0 — meaning the
 // orchestrator dispatched N tasks but gradle never mentioned any of them
-// (gradle aborted at evaluation phase before reaching them). The retry path
-// from PR #116 was supposed to catch this but its condition is too narrow.
+// (gradle aborted at evaluation phase before reaching them).
+//
+// PR5 (2026-05-04): the orchestrator now emits `leg.cascade_detected`
+// directly in the envelope. Prefer that when present (it's the
+// orchestrator's own verdict — same signal used to gate the retry path);
+// fall back to the execution-summary derivation for older envelopes that
+// lack the field (pass-7 fixtures captured before PR5 landed). Backward
+// compat lets `--reclassify` still work against the saved 030/030 sweep.
 //
 // Returns: { isCascade, cascadeLegs[], realFailedLegs[] } so the caller can
 // decide RED-orchestrator-cascade vs RED-repo vs MIXED.
@@ -132,9 +138,14 @@ function detectCascadePattern(envelope) {
   const realFailedLegs = [];
   for (const leg of legs) {
     if (leg.exit_code === 0) continue;
-    const ex = leg.execution || {};
-    const noEvidenceOnly = (ex.failed || 0) === 0 && (ex.no_evidence || 0) > 0;
-    if (noEvidenceOnly) cascadeLegs.push(leg.test_type);
+    let isLegCascade;
+    if (typeof leg.cascade_detected === 'boolean') {
+      isLegCascade = leg.cascade_detected;
+    } else {
+      const ex = leg.execution || {};
+      isLegCascade = (ex.failed || 0) === 0 && (ex.no_evidence || 0) > 0;
+    }
+    if (isLegCascade) cascadeLegs.push(leg.test_type);
     else realFailedLegs.push(leg.test_type);
   }
   return { isCascade: cascadeLegs.length > 0, cascadeLegs, realFailedLegs };
@@ -164,9 +175,27 @@ function classify(envelope, stderr) {
     // Pure cascade — every failed leg is no-evidence-only. The module_failed
     // entries are fabricated from the defense-in-depth, NOT real test failures.
     if (cascade.isCascade && cascade.realFailedLegs.length === 0) {
+      // PR5 (2026-05-04): when the orchestrator's retry fired on every
+      // cascade leg AND the post-retry summary still shows the cascade
+      // signature, each module was confirmed independently broken at
+      // evaluation phase (e.g., missing SDK, plugin failure, classpath
+      // issue). That's a repo-side issue, NOT an orchestrator bug.
+      // Pre-PR5 envelopes lack `retry_fired` (undefined/false in fallback),
+      // so they correctly stay as RED-orchestrator-cascade.
+      const allCascadeLegsRetried = cascade.cascadeLegs.every(t => {
+        const leg = (envelope.parallel?.legs || []).find(l => l.test_type === t);
+        return leg?.retry_fired === true;
+      });
+      if (allCascadeLegsRetried) {
+        return {
+          bucket: 'RED-repo',
+          reason: `cascade-isolation retry fired on all cascade legs [${cascade.cascadeLegs.join(', ')}] — modules independently broken at evaluation phase (not orchestrator bug). ${moduleFailedCount} module_failed, ${indvTotal} testcases ran in OTHER legs.`,
+          errorCodes,
+        };
+      }
       return {
         bucket: 'RED-orchestrator-cascade',
-        reason: `cascade-isolation signature: legs [${cascade.cascadeLegs.join(', ')}] dispatched ${moduleFailedCount} tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. ${indvTotal} testcases ran in OTHER legs.`,
+        reason: `cascade-isolation signature: legs [${cascade.cascadeLegs.join(', ')}] dispatched ${moduleFailedCount} tasks, gradle never mentioned any (no_evidence). Retry path didn't fire (orchestrator bug). ${indvTotal} testcases ran in OTHER legs.`,
         errorCodes,
       };
     }
@@ -380,7 +409,11 @@ function emitMarkdown(results, outputPath) {
   const cascadeProjects = results.filter(r => !r.missing && r.bucket === 'RED-orchestrator-cascade').map(r => r.proj.name);
   const realRedProjects = results.filter(r => !r.missing && r.bucket === 'RED-repo').map(r => r.proj.name);
   const greenProjects   = results.filter(r => !r.missing && r.bucket === 'GREEN').map(r => r.proj.name);
-  lines.push(`1. **${cascadeProjects.length} cascade-isolation cases** — orchestrator bug, not real test failures. PR #116's retry path did NOT fire even when its documented conditions matched (\`legExit !== 0 && taskList.length > 1 && !anyTaskMentioned\`). Affected: ${cascadeProjects.join(', ') || 'none'}. **Raises PR5 priority.**`);
+  if (cascadeProjects.length > 0) {
+    lines.push(`1. **${cascadeProjects.length} cascade-isolation cases** — orchestrator bug, not real test failures. PR #116's retry path did NOT fire even when its documented conditions matched (\`legExit !== 0 && taskList.length > 1 && !anyTaskMentioned\`). Affected: ${cascadeProjects.join(', ')}. **Raises PR5 priority.**`);
+  } else {
+    lines.push(`1. **0 cascade-isolation cases (post-PR5)** — PR5 \`fix(parallel): cascade-isolation retry that PR #116 added now actually fires\` replaced the \`anyTaskMentioned\` regex with the execution-summary cascade signature. Cascade legs that previously bypassed the retry now fire it; legs whose retry confirms each module is independently broken at evaluation phase reclassify as \`RED-repo\` (real failures, not orchestrator bug).`);
+  }
   lines.push('');
   lines.push(`2. **${realRedProjects.length} legitimate RED-repo cases** — actual project test failures, out of scope for this PR. Affected: ${realRedProjects.join(', ') || 'none'}.`);
   lines.push('');

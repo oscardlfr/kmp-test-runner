@@ -374,7 +374,7 @@ Caveats:
 
 **Follow-up — wide-smoke pass-7:** the 5 per-project investigations (DawSync, OmniSound, dipatternsdemo, nav3-recipes, PeopleInSpace) are now unblocked. Once re-run, persistent REDs are repo-level test failures, not orchestrator bugs. Tracked as PR4 (`chore/wide-smoke-pass-7`).
 
-### v0.8.0 — Cascade isolation: per-module retry when one-shot dispatch aborts at evaluation phase (surfaced 2026-05-03 wide-smoke; promoted to v0.8.0 release-blocker)
+### v0.8.0 — Cascade isolation: per-module retry when one-shot dispatch aborts at evaluation phase (surfaced 2026-05-03 wide-smoke; **DONE 2026-05-04 in PR5 — `fix/cascade-isolation-retry`**)
 
 **Surfaced 2026-05-03 during the wide-smoke pass on Confetti-main and shared-kmp-libs.** When the orchestrator dispatches `:a:test :b:test :c:test` in ONE gradle invocation with `--continue`, and module `:a` fails at the **evaluation phase** (plugin resolution, AGP-JDK mismatch, SDK location not found, missing dep), gradle aborts BEFORE reaching `:b` and `:c`. The post-#116 defense-in-depth correctly marks all three as failed (none have `> Task :foo:bar` evidence in stdout) — but this is **honest RED for the wrong reason**: `:b` and `:c` would have succeeded in isolation.
 
@@ -401,6 +401,14 @@ Caveats:
 **Effort:** ~4-6h (deeper than originally estimated; root-cause why retry doesn't fire + 6 vitest cases + envelope schema bump).
 
 **Ship-when:** v0.8.0 release-blocker. PR5 (`test/cascade-isolation-validation`) — promoted in priority by pass-7. Wide-smoke pass-7 RED-orchestrator-cascade count must drop from 8 to 0 before v0.8.0 release tag.
+
+**Closure (2026-05-04, PR5 `fix/cascade-isolation-retry`):**
+- **Root cause:** the retry-guard regex (`Task\s+:foo:bar(\s|$)` at parallel-orchestrator.js:643) was more permissive than `classifyTaskExecutionMode`'s strict regex (`Task\s+:foo:bar(?:\s+SUFFIX)?\s*$` at parallel-orchestrator.js:501). Gradle's housekeeping/daemon log lines mentioning task names tripped the lax regex, setting `anyTaskMentioned=true` and skipping the retry, even when the strict regex (used for execution-mode classification) showed all tasks as `no_evidence`. PR #116's retry path was correct but the trigger predicate was wrong.
+- **Fix:** replaced the `anyTaskMentioned` heuristic with the same execution-summary cascade signature (`exit !== 0 && execSummary.failed === 0 && execSummary.no_evidence > 0`) that pass-7's classifier uses, eliminating the divergence. Dropped the `taskList.length > 1` requirement so single-task cascades (nav3-recipes shape) also retry — surfaces the per-module gradle error context that the bundled-leg output buried. `classifyTaskExecutionMode` was hoisted above the retry guard (was at step 5 line 728, now computed at step 4a line ~620) and the post-retry execModes are recomputed from merged retry stdout.
+- **Envelope additions:** `parallel.legs[].cascade_detected: boolean` + `parallel.legs[].retry_fired: boolean` exposed for downstream consumers (pass-N sweeps, dashboards, AI agents) — branch on the orchestrator's verdict directly instead of re-deriving the signature from `execution.failed`/`execution.no_evidence`.
+- **Pass-7 classifier update:** when `cascade_detected=true && retry_fired=true` on every cascade leg AND post-retry summary still shows the cascade signature, the bucket flips from `RED-orchestrator-cascade` → `RED-repo` (modules independently broken at evaluation phase, not orchestrator bug). Pre-PR5 saved envelopes lack `retry_fired` (undefined → fallback signature derivation) and correctly stay as `RED-orchestrator-cascade`.
+- **Tests:** +6 vitest cases (702 total, 696 baseline). Pure cascade single-leg, single-task cascade (drops `>1`), real failures NOT triggering retry, mid-line `Task` mention regression guard (the false-positive that fooled the old guard), mixed-in-leg conservative non-trigger, envelope-shape lock for the new boolean fields.
+- **Live verification:** wide-smoke re-run of all 8 cascade cases on Windows; `RED-orchestrator-cascade` bucket dropped from 8 → 0. Cases redistributed: 7 → `RED-repo` (modules genuinely broken at evaluation phase, retry confirmed), 1 → outcome per project's actual gradle exit. WIDE-SMOKE-PASS-7-postfix.md captures the post-fix bucket counts.
 
 ### v0.8.0 — Confetti-main `unsupported_class_version` despite PR3's AGP-aware JDK auto-select (surfaced 2026-05-04 wide-smoke pass-7)
 

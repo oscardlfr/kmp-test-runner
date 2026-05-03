@@ -1,14 +1,14 @@
 # Wide-smoke pass-7 — v0.8.0 release-validation baseline
 
-Generated: 2026-05-03T22:24:21.283Z
+Generated: 2026-05-03T23:31:01.534Z
 
 Orchestrator HEAD: `0910615` (v0.7.0 + PR1+PR2+PR3 of v0.8.0 ramp).
 
 ## Key findings
 
-1. **8 cascade-isolation cases** — orchestrator bug, not real test failures. PR #116's retry path did NOT fire even when its documented conditions matched (`legExit !== 0 && taskList.length > 1 && !anyTaskMentioned`). Affected: DawSync, dipatternsdemo, OmniSound, nav3-recipes, WakeTheCave, WakeTheCave_clean, WakeTheCave_ref, FileKit-main. **Raises PR5 priority.**
+1. **0 cascade-isolation cases (post-PR5)** — PR5 `fix(parallel): cascade-isolation retry that PR #116 added now actually fires` replaced the `anyTaskMentioned` regex with the execution-summary cascade signature. Cascade legs that previously bypassed the retry now fire it; legs whose retry confirms each module is independently broken at evaluation phase reclassify as `RED-repo` (real failures, not orchestrator bug).
 
-2. **5 legitimate RED-repo cases** — actual project test failures, out of scope for this PR. Affected: gyg, shared-kmp-libs, Confetti-main, nowinandroid, PeopleInSpace-main.
+2. **13 legitimate RED-repo cases** — actual project test failures, out of scope for this PR. Affected: DawSync, dipatternsdemo, gyg, OmniSound, shared-kmp-libs, Confetti-main, nav3-recipes, nowinandroid, WakeTheCave, WakeTheCave_clean, WakeTheCave_ref, FileKit-main, PeopleInSpace-main.
 
 3. **3 GREEN** — full sweep through orchestrator + JDK auto-select + tests passing: android-challenge, TaskFlow, kotlinconf-app-main.
 
@@ -24,8 +24,8 @@ Orchestrator HEAD: `0910615` (v0.7.0 + PR1+PR2+PR3 of v0.8.0 ramp).
 |---|---|
 | GREEN | 3 |
 | SKIP | 14 |
-| RED-repo | 5 |
-| RED-orchestrator-cascade | 8 |
+| RED-repo | 13 |
+| RED-orchestrator-cascade | 0 |
 | RED-orchestrator | 0 |
 | MISSING | 0 |
 | **Total** | **30** |
@@ -35,18 +35,18 @@ Orchestrator HEAD: `0910615` (v0.7.0 + PR1+PR2+PR3 of v0.8.0 ramp).
 | Project | Category | Bucket | Duration | Exit | Discriminators | Notes |
 |---|---|---|---|---|---|---|
 | android-challenge | PR3 | GREEN | 1m 12s | 0 | – | 1 testcases ran |
-| DawSync | PR3 | RED-orchestrator-cascade | 4m 31s | 1 | module_failed×48, task_not_found | cascade-isolation signature: legs [common, desktop, androidUnit, androidInstrumented] dispatched 48 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 16564 testcases ran in OTHER legs. |
-| dipatternsdemo | PR3 | RED-orchestrator-cascade | 46s | 1 | module_failed×3, task_not_found | cascade-isolation signature: legs [androidUnit, androidInstrumented] dispatched 3 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 68 testcases ran in OTHER legs. |
+| DawSync | PR3 | RED-repo | 12m 19s | 1 | module_failed×48, task_not_found | cascade-isolation retry fired on all cascade legs [common, desktop, androidUnit, androidInstrumented] — modules independently broken at evaluation phase (not orchestrator bug). 48 module_failed, 16564 testcases ran in OTHER legs. |
+| dipatternsdemo | PR3 | RED-repo | 45s | 1 | module_failed×3, task_not_found | cascade-isolation retry fired on all cascade legs [androidUnit, androidInstrumented] — modules independently broken at evaluation phase (not orchestrator bug). 3 module_failed, 68 testcases ran in OTHER legs. |
 | dokka-markdown-plugin | PR3 | SKIP | 1s | 3 | no_test_modules | all errors are no_test_modules (legitimately empty) |
 | gyg | PR3 | RED-repo | 1m 47s | 3 | no_test_modules×2, module_failed×2 | module_failed discriminator (2 module(s), 30 testcases ran) |
-| OmniSound | PR3 | RED-orchestrator-cascade | 1m 10s | 1 | module_failed×14 | cascade-isolation signature: legs [common, desktop] dispatched 14 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 3630 testcases ran in OTHER legs. |
+| OmniSound | PR3 | RED-repo | 3m 19s | 1 | module_failed×14 | cascade-isolation retry fired on all cascade legs [common, desktop] — modules independently broken at evaluation phase (not orchestrator bug). 14 module_failed, 3630 testcases ran in OTHER legs. |
 | shared-kmp-libs | PR3 | RED-repo | 10m 28s | 1 | module_failed×66, task_not_found | MIXED: cascade in [androidUnit] + real failures in [androidInstrumented] (66 module_failed, 7750 testcases ran) |
 | TaskFlow | PR3 | GREEN | 1m 15s | 0 | – | 1 testcases ran |
 | Confetti-main | INTERESTING | RED-repo | 2m 22s | 1 | module_failed, unsupported_class_version | module_failed discriminator (1 module(s), 133 testcases ran) |
 | DroidconKotlin-main | INTERESTING | SKIP | 1s | 3 | no_test_modules | all errors are no_test_modules (legitimately empty) |
 | KMedia-main | INTERESTING | SKIP | 1s | 3 | no_test_modules | all errors are no_test_modules (legitimately empty) |
 | kmp-production-sample-master | INTERESTING | SKIP | 1s | 3 | no_test_modules | all errors are no_test_modules (legitimately empty) |
-| nav3-recipes | INTERESTING | RED-orchestrator-cascade | 1m 46s | 1 | module_failed | cascade-isolation signature: legs [androidUnit] dispatched 1 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 0 testcases ran in OTHER legs. |
+| nav3-recipes | INTERESTING | RED-repo | 42s | 1 | module_failed | cascade-isolation retry fired on all cascade legs [androidUnit] — modules independently broken at evaluation phase (not orchestrator bug). 1 module_failed, 0 testcases ran in OTHER legs. |
 | Nav3Guide-scenes | INTERESTING | SKIP | 1s | 3 | no_test_modules | all errors are no_test_modules (legitimately empty) |
 | nowinandroid | INTERESTING | RED-repo | 38s | 3 | module_failed×2, no_test_modules×2 | module_failed discriminator (2 module(s), 8 testcases ran) |
 | NYTimes-KMP-main | INTERESTING | SKIP | 1s | 3 | no_test_modules | all errors are no_test_modules (legitimately empty) |
@@ -54,10 +54,10 @@ Orchestrator HEAD: `0910615` (v0.7.0 + PR1+PR2+PR3 of v0.8.0 ramp).
 | AndroidCommonDoc-detekt-rules | NEW | SKIP | 1s | 3 | no_test_modules | all errors are no_test_modules (legitimately empty) |
 | AndroidCommonDoc-konsist-tests | NEW | SKIP | 1s | 3 | no_test_modules | all errors are no_test_modules (legitimately empty) |
 | kmp-test-runner-gradle-plugin | NEW | SKIP | 1s | 3 | no_test_modules | all errors are no_test_modules (legitimately empty) |
-| WakeTheCave | NEW | RED-orchestrator-cascade | 1m 58s | 1 | module_failed×118 | cascade-isolation signature: legs [common, desktop, androidUnit, androidInstrumented] dispatched 118 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 0 testcases ran in OTHER legs. |
-| WakeTheCave_clean | NEW | RED-orchestrator-cascade | 1m 20s | 1 | module_failed×90 | cascade-isolation signature: legs [common, desktop, androidUnit, androidInstrumented] dispatched 90 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 0 testcases ran in OTHER legs. |
-| WakeTheCave_ref | NEW | RED-orchestrator-cascade | 38s | 3 | no_test_modules×2, module_failed×38 | cascade-isolation signature: legs [androidUnit, androidInstrumented] dispatched 38 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 0 testcases ran in OTHER legs. |
-| FileKit-main | NEW | RED-orchestrator-cascade | 42s | 1 | module_failed×4, task_not_found | cascade-isolation signature: legs [androidUnit, androidInstrumented] dispatched 4 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 56 testcases ran in OTHER legs. |
+| WakeTheCave | NEW | RED-repo | 1m 39s | 1 | module_failed×118 | cascade-isolation retry fired on all cascade legs [common, desktop, androidUnit, androidInstrumented] — modules independently broken at evaluation phase (not orchestrator bug). 118 module_failed, 0 testcases ran in OTHER legs. |
+| WakeTheCave_clean | NEW | RED-repo | 1m 3s | 1 | module_failed×90 | cascade-isolation retry fired on all cascade legs [common, desktop, androidUnit, androidInstrumented] — modules independently broken at evaluation phase (not orchestrator bug). 90 module_failed, 0 testcases ran in OTHER legs. |
+| WakeTheCave_ref | NEW | RED-repo | 30s | 3 | no_test_modules×2, module_failed×38 | cascade-isolation retry fired on all cascade legs [androidUnit, androidInstrumented] — modules independently broken at evaluation phase (not orchestrator bug). 38 module_failed, 0 testcases ran in OTHER legs. |
+| FileKit-main | NEW | RED-repo | 22s | 1 | module_failed×4, task_not_found | cascade-isolation retry fired on all cascade legs [androidUnit, androidInstrumented] — modules independently broken at evaluation phase (not orchestrator bug). 4 module_failed, 56 testcases ran in OTHER legs. |
 | androidify-main | NEW | SKIP | 2s | 3 | no_test_modules×4 | all errors are no_test_modules (legitimately empty) |
 | KaMPKit-main | NEW | SKIP | 1s | 3 | no_test_modules×4 | all errors are no_test_modules (legitimately empty) |
 | kmp-basic-sample-master | NEW | SKIP | 1s | 3 | no_test_modules×4 | all errors are no_test_modules (legitimately empty) |
@@ -67,12 +67,12 @@ Orchestrator HEAD: `0910615` (v0.7.0 + PR1+PR2+PR3 of v0.8.0 ramp).
 
 ## Per-project envelopes (non-GREEN)
 
-### DawSync — RED-orchestrator-cascade
+### DawSync — RED-repo
 
 Path: `C:/Users/34645/AndroidStudioProjects/DawSync`
 Category: PR3
 Spawn exit: 1
-Reason: cascade-isolation signature: legs [common, desktop, androidUnit, androidInstrumented] dispatched 48 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 16564 testcases ran in OTHER legs.
+Reason: cascade-isolation retry fired on all cascade legs [common, desktop, androidUnit, androidInstrumented] — modules independently broken at evaluation phase (not orchestrator bug). 48 module_failed, 16564 testcases ran in OTHER legs.
 
 Envelope excerpt:
 ```json
@@ -472,12 +472,12 @@ Envelope excerpt:
 }
 ```
 
-### dipatternsdemo — RED-orchestrator-cascade
+### dipatternsdemo — RED-repo
 
 Path: `C:/Users/34645/AndroidStudioProjects/dipatternsdemo`
 Category: PR3
 Spawn exit: 1
-Reason: cascade-isolation signature: legs [androidUnit, androidInstrumented] dispatched 3 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 68 testcases ran in OTHER legs.
+Reason: cascade-isolation retry fired on all cascade legs [androidUnit, androidInstrumented] — modules independently broken at evaluation phase (not orchestrator bug). 3 module_failed, 68 testcases ran in OTHER legs.
 
 Envelope excerpt:
 ```json
@@ -919,12 +919,12 @@ Envelope excerpt:
 }
 ```
 
-### OmniSound — RED-orchestrator-cascade
+### OmniSound — RED-repo
 
 Path: `C:/Users/34645/AndroidStudioProjects/OmniSound`
 Category: PR3
 Spawn exit: 1
-Reason: cascade-isolation signature: legs [common, desktop] dispatched 14 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 3630 testcases ran in OTHER legs.
+Reason: cascade-isolation retry fired on all cascade legs [common, desktop] — modules independently broken at evaluation phase (not orchestrator bug). 14 module_failed, 3630 testcases ran in OTHER legs.
 
 Envelope excerpt:
 ```json
@@ -1992,12 +1992,12 @@ Envelope excerpt:
 }
 ```
 
-### nav3-recipes — RED-orchestrator-cascade
+### nav3-recipes — RED-repo
 
 Path: `C:/Users/34645/AndroidStudioProjects/OFFICIAL_PROJECTS/nav3-recipes`
 Category: INTERESTING
 Spawn exit: 1
-Reason: cascade-isolation signature: legs [androidUnit] dispatched 1 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 0 testcases ran in OTHER legs.
+Reason: cascade-isolation retry fired on all cascade legs [androidUnit] — modules independently broken at evaluation phase (not orchestrator bug). 1 module_failed, 0 testcases ran in OTHER legs.
 
 Envelope excerpt:
 ```json
@@ -2771,12 +2771,12 @@ Envelope excerpt:
 }
 ```
 
-### WakeTheCave — RED-orchestrator-cascade
+### WakeTheCave — RED-repo
 
 Path: `C:/Users/34645/AndroidStudioProjects/WakeTheCave/WakeTheCave`
 Category: NEW
 Spawn exit: 1
-Reason: cascade-isolation signature: legs [common, desktop, androidUnit, androidInstrumented] dispatched 118 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 0 testcases ran in OTHER legs.
+Reason: cascade-isolation retry fired on all cascade legs [common, desktop, androidUnit, androidInstrumented] — modules independently broken at evaluation phase (not orchestrator bug). 118 module_failed, 0 testcases ran in OTHER legs.
 
 Envelope excerpt:
 ```json
@@ -3632,12 +3632,12 @@ Envelope excerpt:
 }
 ```
 
-### WakeTheCave_clean — RED-orchestrator-cascade
+### WakeTheCave_clean — RED-repo
 
 Path: `C:/Users/34645/AndroidStudioProjects/WakeTheCave/WakeTheCave_clean`
 Category: NEW
 Spawn exit: 1
-Reason: cascade-isolation signature: legs [common, desktop, androidUnit, androidInstrumented] dispatched 90 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 0 testcases ran in OTHER legs.
+Reason: cascade-isolation retry fired on all cascade legs [common, desktop, androidUnit, androidInstrumented] — modules independently broken at evaluation phase (not orchestrator bug). 90 module_failed, 0 testcases ran in OTHER legs.
 
 Envelope excerpt:
 ```json
@@ -4441,12 +4441,12 @@ Envelope excerpt:
 }
 ```
 
-### WakeTheCave_ref — RED-orchestrator-cascade
+### WakeTheCave_ref — RED-repo
 
 Path: `C:/Users/34645/AndroidStudioProjects/WakeTheCave/WakeTheCave_ref`
 Category: NEW
 Spawn exit: 3
-Reason: cascade-isolation signature: legs [androidUnit, androidInstrumented] dispatched 38 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 0 testcases ran in OTHER legs.
+Reason: cascade-isolation retry fired on all cascade legs [androidUnit, androidInstrumented] — modules independently broken at evaluation phase (not orchestrator bug). 38 module_failed, 0 testcases ran in OTHER legs.
 
 Envelope excerpt:
 ```json
@@ -4956,12 +4956,12 @@ Envelope excerpt:
 }
 ```
 
-### FileKit-main — RED-orchestrator-cascade
+### FileKit-main — RED-repo
 
 Path: `C:/Users/34645/AndroidStudioProjects/Nueva carpeta/FileKit-main/FileKit-main`
 Category: NEW
 Spawn exit: 1
-Reason: cascade-isolation signature: legs [androidUnit, androidInstrumented] dispatched 4 tasks, gradle never mentioned any (no_evidence). Retry path from PR #116 didn't fire. 56 testcases ran in OTHER legs.
+Reason: cascade-isolation retry fired on all cascade legs [androidUnit, androidInstrumented] — modules independently broken at evaluation phase (not orchestrator bug). 4 module_failed, 56 testcases ran in OTHER legs.
 
 Envelope excerpt:
 ```json
@@ -5767,11 +5767,11 @@ PR3 listed 8 projects with preflightJdkCheck status. Re-validating each post-PR3
 | Project | PR3 expectation | PR4 result | Notes |
 |---|---|---|---|
 | android-challenge | JDK auto-select fires | GREEN | see `.smoke/pass-7/android-challenge.err` |
-| DawSync | JDK auto-select fires | RED-orchestrator-cascade | see `.smoke/pass-7/DawSync.err` |
-| dipatternsdemo | JDK auto-select fires | RED-orchestrator-cascade | see `.smoke/pass-7/dipatternsdemo.err` |
+| DawSync | JDK auto-select fires | RED-repo | see `.smoke/pass-7/DawSync.err` |
+| dipatternsdemo | JDK auto-select fires | RED-repo | see `.smoke/pass-7/dipatternsdemo.err` |
 | dokka-markdown-plugin | JDK auto-select fires | SKIP | see `.smoke/pass-7/dokka-markdown-plugin.err` |
 | gyg | JDK auto-select fires | RED-repo | see `.smoke/pass-7/gyg.err` |
-| OmniSound | JDK auto-select fires | RED-orchestrator-cascade | see `.smoke/pass-7/OmniSound.err` |
+| OmniSound | JDK auto-select fires | RED-repo | see `.smoke/pass-7/OmniSound.err` |
 | shared-kmp-libs | JDK auto-select fires | RED-repo | see `.smoke/pass-7/shared-kmp-libs.err` |
 | TaskFlow | JDK auto-select fires | GREEN | see `.smoke/pass-7/TaskFlow.err` |
 
