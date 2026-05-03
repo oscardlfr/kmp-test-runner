@@ -810,6 +810,255 @@ nowinandroid-android-application-jacoco = { id = "myproj.android.application.jac
 });
 
 // ------------------------------------------------------------------
+// analyzeModule named JVM targets + intermediate hierarchy groups
+// (2026-05-03 — shared-kmp-libs core-network-retrofit / core-storage-cache repro)
+// ------------------------------------------------------------------
+describe('analyzeModule named JVM targets + hierarchy groups', () => {
+  function makeKmpModule(buildScript) {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), buildScript);
+    return dir;
+  }
+
+  it('detects jvm("desktop") as a named JVM target', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("desktop") { compilerOptions { } }
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.namedJvmTargets).toEqual(['desktop']);
+  });
+
+  it('detects jvm("server") with single quotes', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm('server')
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.namedJvmTargets).toEqual(['server']);
+  });
+
+  it('detects multiple named JVM targets', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("desktop")
+  jvm("server")
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.namedJvmTargets.sort()).toEqual(['desktop', 'server']);
+  });
+
+  it('does NOT detect default jvm() as a named target', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm()
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.namedJvmTargets).toEqual([]);
+  });
+
+  it('ignores commented-out jvm("...") declarations', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("desktop")
+  // jvm("phantom")
+  /* jvm("alsoPhantom") */
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.namedJvmTargets).toEqual(['desktop']);
+  });
+
+  it('detects intermediate hierarchy group("jvm")', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("desktop")
+  androidLibrary { namespace = "x" }
+  applyDefaultHierarchyTemplate {
+    common {
+      group("jvm") {
+        withAndroidTarget()
+        withJvm()
+      }
+    }
+  }
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.namedJvmTargets).toEqual(['desktop']);
+    expect(a.intermediateGroups).toContain('jvm');
+  });
+
+  it('augments source-set walker with named-target dirs (e.g. serverMain/serverTest)', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("server")
+}
+`);
+    mkdirSync(path.join(dir, 'm', 'src', 'serverMain', 'kotlin'), { recursive: true });
+    mkdirSync(path.join(dir, 'm', 'src', 'serverTest', 'kotlin'), { recursive: true });
+    const a = analyzeModule(dir, ':m');
+    expect(a.sourceSets.serverMain).toBe(true);
+    expect(a.sourceSets.serverTest).toBe(true);
+  });
+});
+
+// resolveTasksFor with named JVM targets — cold cache (predict from sourceSets)
+// ------------------------------------------------------------------
+describe('resolveTasksFor with named JVM targets (cold cache)', () => {
+  function makeKmpModule(buildScript, sourceSetDirs = []) {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), buildScript);
+    for (const ss of sourceSetDirs) {
+      mkdirSync(path.join(dir, 'm', 'src', ss, 'kotlin'), { recursive: true });
+    }
+    return dir;
+  }
+
+  // The shared-kmp-libs `core-storage-cache` repro: jvm("desktop") declared,
+  // BUT only `commonTest/`+`jvmTest/` exist on disk (no `desktopTest/`).
+  // Pre-fix: walker saw jvmTest/, picked `jvmTest`, gradle aborted with
+  // "Cannot locate tasks". Post-fix: trust the named target, return
+  // `desktopTest` regardless of disk state — gradle creates the task from
+  // the `jvm("desktop")` declaration.
+  it('jvm("desktop") + only jvmTest/ on disk → resolves to desktopTest', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin { jvm("desktop") }
+`, ['commonTest', 'jvmTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('desktopTest');
+  });
+
+  it('jvm("server") + serverTest/ on disk → resolves to serverTest', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin { jvm("server") }
+`, ['serverTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('serverTest');
+  });
+
+  it('no named target + jvmTest/ on disk → falls back to jvmTest (regression guard)', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin { jvm() }
+`, ['jvmTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('jvmTest');
+  });
+
+  it('no named target + desktopTest/ on disk → resolves to desktopTest', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin { jvm() }
+`, ['desktopTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('desktopTest');
+  });
+
+  // Defense in depth: if someone declares both jvm("X") AND group("X")
+  // (would be ambiguous), we should not pick a target task that conflicts
+  // with an intermediate group name.
+  it('jvm("desktop") + group("desktop") (conflict) → falls back to standard chain', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("desktop")
+  applyDefaultHierarchyTemplate {
+    common {
+      group("desktop") { withJvm() }
+    }
+  }
+}
+`, ['desktopTest']);
+    const a = analyzeModule(dir, ':m');
+    expect(a.intermediateGroups).toContain('desktop');
+    const r = resolveTasksFor(':m', null, a);
+    // Conflict: skip the named target, fall through to standard chain.
+    // desktopTest is then dropped (intermediate), and jvmTest is also dropped
+    // because it's not on disk. Result: null.
+    // This is intentional — caller can probe gradle to disambiguate.
+    expect(r.unitTestTask).toBeNull();
+  });
+
+  it('JVM-target override does NOT pollute iosTestTask / macosTestTask / webTestTask', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("desktop")
+  iosX64()
+  macosArm64()
+  js(IR) { browser() }
+}
+`, ['iosX64Test', 'macosArm64Test', 'jsTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('desktopTest');     // JVM family — overridden
+    expect(r.iosTestTask).toBe('iosX64Test');       // iOS family — disk walk
+    expect(r.macosTestTask).toBe('macosArm64Test'); // macOS family — disk walk
+    expect(r.webTestTask).toBe('jsTest');           // web family — disk walk
+  });
+});
+
+// resolveTasksFor with intermediate hierarchy groups — drop XTest from chain
+// ------------------------------------------------------------------
+describe('resolveTasksFor with intermediate hierarchy groups', () => {
+  function makeKmpModule(buildScript, sourceSetDirs = []) {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), buildScript);
+    for (const ss of sourceSetDirs) {
+      mkdirSync(path.join(dir, 'm', 'src', ss, 'kotlin'), { recursive: true });
+    }
+    return dir;
+  }
+
+  // applyDefaultHierarchyTemplate { common { group("X") { ... } } } creates
+  // intermediate XTest source set with no runnable XTest task. Even when no
+  // named JVM target is declared (so the JVM-family override doesn't fire),
+  // the intermediateGroups filter must drop the matching candidate so the
+  // walker doesn't return a phantom task name.
+  it('drops jvmTest candidate when group("jvm") is declared', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm()
+  applyDefaultHierarchyTemplate {
+    common {
+      group("jvm") { withJvm() }
+    }
+  }
+}
+`, ['jvmTest', 'desktopTest']);
+    const a = analyzeModule(dir, ':m');
+    expect(a.intermediateGroups).toContain('jvm');
+    const r = resolveTasksFor(':m', null, a);
+    // jvmTest filtered out (intermediate group); desktopTest is next in chain.
+    expect(r.unitTestTask).toBe('desktopTest');
+  });
+});
+
 // analyzeModule per-module convention-plugin detection (v0.6.x Gap 4)
 // ------------------------------------------------------------------
 describe('analyzeModule per-module convention application (v0.6.x Gap 4)', () => {
