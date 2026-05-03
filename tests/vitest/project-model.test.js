@@ -278,6 +278,41 @@ describe('parseSettingsIncludes', () => {
     const dir = makeProject();
     expect(parseSettingsIncludes(dir)).toEqual([]);
   });
+
+  // 2026-05-03 wide-smoke regression guard. shared-kmp-libs has
+  // `// include(":benchmark-android-test")  // TODO: AGP 9 compat` and the
+  // pre-fix parser treated it as a live module. The orchestrator then sent
+  // gradle a task for a non-existent project, build aborted at resolution,
+  // and (combined with the EINVAL silent-pass class) every project failed.
+  // Mirrors orchestrator-utils.js#stripKotlinComments coverage in this file
+  // (line ~120 — discoverIncludedModules already had this fix).
+  it('strips // line comments before matching include keyword', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      'include(":real")\n// include(":phantom")\n  // include(":also-phantom")\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':real']);
+  });
+
+  it('strips block comments before matching include keyword', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      'include(":real")\n/* include(":phantom") */\n/*\n  include(":multi-line-phantom")\n*/\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':real']);
+  });
+
+  it('preserves URLs in comments (https://...)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      '// see https://example.com/some/path\ninclude(":real")\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':real']);
+  });
+
+  it('strips trailing-comment on the same line as a live include', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      'include(":real")  // TODO: rename someday\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':real']);
+  });
 });
 
 // ------------------------------------------------------------------

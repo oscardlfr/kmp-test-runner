@@ -196,9 +196,36 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 - Re-using an existing OSS KMP project as the cross-platform E2E fixture — see Buildable cross-platform E2E fixture entry below for that decision.
 - New CLI features. v0.8.0 is "migrate plumbing + lock the cross-platform contract"; new flags / envelope shapes go in v0.9 / v0.8.x patches.
 
-### v0.8 — ✅ RESOLVED — Windows-wide silent gradle no-op (surfaced + fixed 2026-05-03)
+### v0.8 — ✅ Silent-pass class FIXED — but the unsilenced REDs surfaced 3 more pre-existing bugs (2026-05-03)
 
-**Status: FIXED on branch `validate/v0.8-windows-wide-smoke`.** All 5 spawn sites in `lib/{parallel,android,benchmark}-orchestrator.js` now route through `lib/orchestrator-utils.js#spawnGradle` which uses an explicit cmd.exe wrapper with `windowsVerbatimArguments: true` to bypass the EINVAL block. Defense-in-depth in `classifyTaskResults` refuses to silent-pass when leg failed without positive evidence. Stale-junit guard filters XMLs by `mtime >= state.runStartMs`. Live integration tests in `tests/vitest/e2e-spawn-gradle.test.js` (9 cases) use real `spawnSync` against `tests/fixtures/fake-gradlew/` to lock the contract — no mocked spawn for these. Wide-smoke re-validation 2026-05-03 against the same 23 Windows projects produced 0 SILENT-FAKE-PASS, 3 REAL-GREEN, 11 REAL-RED, 9 NO-MODULES (vs the broken state's 14 SILENT-FAKE-PASS / 0 REAL-anything). Vitest: 603/603 (was 594/594, +9 e2e cases).
+**Status: silent-pass class FIXED + parseSettingsIncludes phantom-module FIXED + stderr filter WIDENED. Still outstanding: 2 pre-existing bugs that were hidden behind silent-pass and need their own investigation.**
+
+**What's fixed in commits on `fix/windows-spawn-einval`:**
+
+1. **Spawn EINVAL** — `lib/orchestrator-utils.js#spawnGradle` (cmd.exe wrapper + `windowsVerbatimArguments:true`); 5 spawn sites in parallel/android/benchmark routed through it. Defense-in-depth in `classifyTaskResults` (legExit + no positive evidence → 'failed'). Stale-junit guard (mtime gate). 9 new e2e cases with real spawn (`tests/vitest/e2e-spawn-gradle.test.js`).
+
+2. **Phantom commented modules** — `lib/project-model.js#parseSettingsIncludes` did NOT strip Kotlin comments before matching `\binclude\b`, so `// include(":benchmark-android-test")` was treated as a live module. Gradle then errored at task resolution (`project 'benchmark-android-test' not found`), which combined with EINVAL silent-pass produced the false GREEN. Fixed by mirroring `orchestrator-utils.js#stripKotlinComments`. Schema bumped 2 → 3 to invalidate stale `.kmp-test-runner-cache/model-*.json` entries that contain phantom modules. 4 regression tests added in `tests/vitest/project-model.test.js`.
+
+3. **stderr filter swallowed gradle's actual error context** — `executeLeg`'s pre-fix filter only forwarded lines matching `Cannot locate|FAILURE:|BUILD FAILED|UnsupportedClassVersionError|Failed to install`. The `* What went wrong:`, `> Could not resolve`, `Android Gradle plugin requires Java 17` and similar diagnostic blocks were dropped. Widened to forward `> Task :*`, `* What went wrong:`, `* Try:`, `Caused by:`, AGP/JDK requirement messages, plugin-resolution errors, and capped at 60 lines/leg with a "(N more suppressed)" footer. Wide-smoke surfaced TaskFlow's actual error: `Android Gradle plugin requires Java 17 to run. You are currently using Java 11`.
+
+**Wide-smoke after all 3 fixes (vs broken):**
+
+| Verdict | Broken state | After fixes |
+|---|---:|---:|
+| SILENT-FAKE-PASS | 14 | **0** ✅ |
+| REAL-GREEN | 0 | 3 (android-challenge, androidify-main, kotlinconf-app-main) |
+| REAL-RED | 0 | 11 |
+| NO-MODULES | 9 | 9 |
+
+**The 11 REAL-REDs decompose as follows (root-cause categories that the orchestrator could mitigate but doesn't yet):**
+
+- **JDK auto-select picks the bytecode `jvmTarget` instead of AGP's required runtime JDK.** TaskFlow has `jvmTarget = "11"` in `app/build.gradle.kts` so the orchestrator chose JDK 11; AGP 8.8.2 needs JDK 17 to RUN (separate from bytecode target). Manual `JAVA_HOME=jdk-17 ./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL in 1m 8s. Affects: TaskFlow, possibly DawSync / OmniSound / dipatternsdemo / gyg / nav3-recipes / FileKit (all show similar fast-fail patterns). Fix: in `lib/jdk-catalogue.js` discoverer / `lib/cli.js#preflightJdkCheck`, prefer the AGP-version-implied JDK over the project's `jvmTarget`. AGP version → required JDK table is publicly documented (`https://developer.android.com/build/releases/gradle-plugin#compatibility`).
+
+- **One-shot multi-module dispatch + `--continue` + evaluation-time abort cascades.** When the orchestrator dispatches `:a:test :b:test :c:test` in ONE gradle invocation, if module A fails at evaluation phase (plugin resolution, AGP-JDK mismatch, missing SDK), gradle aborts BEFORE reaching B and C. defense-in-depth correctly marks all three as failed (none have `> Task :foo:bar` evidence in stdout). Confetti-main reproduces this: `:shared:jvmTest` succeeds in 1m 44s when invoked alone, fails when bundled with `:androidApp:testDebugUnitTest` whose evaluation aborts. Affects: Confetti-main, shared-kmp-libs (37 modules cascade-fail because some configuration bug aborts the whole graph), OmniSound, etc. Fix options: (a) per-module gradle dispatch (slower but isolates failures); (b) detect evaluation-phase abort vs task-execution failure and report differently; (c) `--no-continue` retry split when first invocation aborts at evaluation.
+
+- **(Already noted) jvm()→jvmTest fallback** in project model — separate `v0.7.x` BACKLOG entry below; surfaces here as `[SKIP] X (no resolvable test task)` in nowinandroid (4 modules skipped: app, core:database, core:ui, sync:work).
+
+The CRITICAL silent-pass bug IS fixed. These 3 follow-up bugs should each get their own PR and BACKLOG entry. Defense-in-depth means they now produce HONEST RED instead of silent GREEN — already a major win for AI-agent users who can no longer be misled.
 
 **Severity: CRITICAL. Blocks v0.8.0 release. Every parallel/coverage/changed/android/benchmark invocation on Windows produces false-positive PASS envelopes.** PRODUCT.md WS-1 contract ("never silent pass") violated by every dispatch in the migrated orchestrators on win32.
 

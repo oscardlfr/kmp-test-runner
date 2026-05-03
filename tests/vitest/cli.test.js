@@ -1346,7 +1346,7 @@ describe('main() — Phase 4 step 7 (eager ProjectModel build before spawn)', ()
       const modelFiles = readdirSync(cacheDir).filter(f => f.startsWith('model-') && f.endsWith('.json'));
       expect(modelFiles.length).toBeGreaterThan(0);
       const model = JSON.parse(readFileSync(path.join(cacheDir, modelFiles[0]), 'utf8'));
-      expect(model.schemaVersion).toBe(2);
+      expect(model.schemaVersion).toBe(3);
       expect(model.settingsIncludes).toEqual([':m']);
       expect(model.modules[':m'].type).toBe('jvm');
     });
