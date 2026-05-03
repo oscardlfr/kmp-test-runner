@@ -243,6 +243,87 @@ describe('aggregateJdkSignals', () => {
     const r = aggregateJdkSignals(dir);
     expect(r.signals[0].file).toBe('a/b/build.gradle.kts');
   });
+
+  // 2026-05-03 wide-smoke regression guard. AGP version → required runtime JDK
+  // joins the signal pool. Without this, projects with `jvmTarget=11` AND
+  // AGP 8.x picked JDK 11; gradle aborted with "Android Gradle plugin
+  // requires Java 17". The strictest signal must win.
+  describe('AGP-implied runtime JDK', () => {
+    it('catalog: agp = "8.8.2" → JDK 17 floor', () => {
+      const dir = makeProject();
+      mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+      mkdirSync(path.join(dir, 'app'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+        '[versions]\nagp = "8.8.2"\n');
+      writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+        'compileOptions { sourceCompatibility = JavaVersion.VERSION_11 }');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.agpVersion).toBe('8.8.2');
+      expect(r.signals.find(s => /AGP 8\.8\.2 runtime/.test(s.type))).toBeTruthy();
+    });
+
+    it('catalog: agp = "7.4.2" → JDK 11 floor', () => {
+      const dir = makeProject();
+      mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+        '[versions]\nagp = "7.4.2"\n');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(11);
+      expect(r.agpVersion).toBe('7.4.2');
+    });
+
+    it('plugins DSL: id("com.android.application") version "8.5.0" → JDK 17', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'plugins {\n  id("com.android.application") version "8.5.0" apply false\n}');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.agpVersion).toBe('8.5.0');
+    });
+
+    it('buildscript classpath: com.android.tools.build:gradle:8.2.1 → JDK 17', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'buildscript {\n  dependencies {\n    classpath("com.android.tools.build:gradle:8.2.1")\n  }\n}');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.agpVersion).toBe('8.2.1');
+    });
+
+    it('AGP-floor wins over lower jvmTarget — TaskFlow case', () => {
+      const dir = makeProject();
+      mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+        '[versions]\nagp = "8.8.2"\n');
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin { jvmToolchain(11) }');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);  // not 11
+    });
+
+    it('higher project jvmToolchain wins over AGP floor', () => {
+      const dir = makeProject();
+      mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+        '[versions]\nagp = "8.0.0"\n');
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin { jvmToolchain(21) }');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(21);
+      expect(r.agpVersion).toBe('8.0.0');
+    });
+
+    it('non-Android KMP project → no AGP signal added', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin { jvm() }\nkotlin { jvmToolchain(17) }');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.agpVersion).toBeNull();
+      expect(r.signals.find(s => /AGP/.test(s.type))).toBeUndefined();
+    });
+  });
 });
 
 // ------------------------------------------------------------------
@@ -277,6 +358,41 @@ describe('parseSettingsIncludes', () => {
   it('returns [] when settings.gradle.kts is missing', () => {
     const dir = makeProject();
     expect(parseSettingsIncludes(dir)).toEqual([]);
+  });
+
+  // 2026-05-03 wide-smoke regression guard. shared-kmp-libs has
+  // `// include(":benchmark-android-test")  // TODO: AGP 9 compat` and the
+  // pre-fix parser treated it as a live module. The orchestrator then sent
+  // gradle a task for a non-existent project, build aborted at resolution,
+  // and (combined with the EINVAL silent-pass class) every project failed.
+  // Mirrors orchestrator-utils.js#stripKotlinComments coverage in this file
+  // (line ~120 — discoverIncludedModules already had this fix).
+  it('strips // line comments before matching include keyword', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      'include(":real")\n// include(":phantom")\n  // include(":also-phantom")\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':real']);
+  });
+
+  it('strips block comments before matching include keyword', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      'include(":real")\n/* include(":phantom") */\n/*\n  include(":multi-line-phantom")\n*/\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':real']);
+  });
+
+  it('preserves URLs in comments (https://...)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      '// see https://example.com/some/path\ninclude(":real")\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':real']);
+  });
+
+  it('strips trailing-comment on the same line as a live include', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      'include(":real")  // TODO: rename someday\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':real']);
   });
 });
 
@@ -694,6 +810,427 @@ nowinandroid-android-application-jacoco = { id = "myproj.android.application.jac
 });
 
 // ------------------------------------------------------------------
+// analyzeModule named JVM targets + intermediate hierarchy groups
+// (2026-05-03 — shared-kmp-libs core-network-retrofit / core-storage-cache repro)
+// ------------------------------------------------------------------
+describe('analyzeModule named JVM targets + hierarchy groups', () => {
+  function makeKmpModule(buildScript) {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), buildScript);
+    return dir;
+  }
+
+  it('detects jvm("desktop") as a named JVM target', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("desktop") { compilerOptions { } }
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.namedJvmTargets).toEqual(['desktop']);
+  });
+
+  it('detects jvm("server") with single quotes', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm('server')
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.namedJvmTargets).toEqual(['server']);
+  });
+
+  it('detects multiple named JVM targets', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("desktop")
+  jvm("server")
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.namedJvmTargets.sort()).toEqual(['desktop', 'server']);
+  });
+
+  it('does NOT detect default jvm() as a named target', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm()
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.namedJvmTargets).toEqual([]);
+  });
+
+  it('detects default jvm() declaration via hasDefaultJvm', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm()
+  androidTarget()
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.hasDefaultJvm).toBe(true);
+    expect(a.namedJvmTargets).toEqual([]);
+  });
+
+  it('hasDefaultJvm = false when no jvm() declared', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  iosX64()
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.hasDefaultJvm).toBe(false);
+  });
+
+  it('hasDefaultJvm = true when jvm() AND jvm("name") both declared', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm()
+  jvm("server")
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.hasDefaultJvm).toBe(true);
+    expect(a.namedJvmTargets).toEqual(['server']);
+  });
+
+  it('ignores commented-out jvm("...") declarations', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("desktop")
+  // jvm("phantom")
+  /* jvm("alsoPhantom") */
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.namedJvmTargets).toEqual(['desktop']);
+  });
+
+  it('detects intermediate hierarchy group("jvm")', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("desktop")
+  androidLibrary { namespace = "x" }
+  applyDefaultHierarchyTemplate {
+    common {
+      group("jvm") {
+        withAndroidTarget()
+        withJvm()
+      }
+    }
+  }
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.namedJvmTargets).toEqual(['desktop']);
+    expect(a.intermediateGroups).toContain('jvm');
+  });
+
+  it('augments source-set walker with named-target dirs (e.g. serverMain/serverTest)', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("server")
+}
+`);
+    mkdirSync(path.join(dir, 'm', 'src', 'serverMain', 'kotlin'), { recursive: true });
+    mkdirSync(path.join(dir, 'm', 'src', 'serverTest', 'kotlin'), { recursive: true });
+    const a = analyzeModule(dir, ':m');
+    expect(a.sourceSets.serverMain).toBe(true);
+    expect(a.sourceSets.serverTest).toBe(true);
+  });
+});
+
+// resolveTasksFor with named JVM targets — cold cache (predict from sourceSets)
+// ------------------------------------------------------------------
+describe('resolveTasksFor with named JVM targets (cold cache)', () => {
+  function makeKmpModule(buildScript, sourceSetDirs = []) {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), buildScript);
+    for (const ss of sourceSetDirs) {
+      mkdirSync(path.join(dir, 'm', 'src', ss, 'kotlin'), { recursive: true });
+    }
+    return dir;
+  }
+
+  // The shared-kmp-libs `core-storage-cache` repro: jvm("desktop") declared,
+  // BUT only `commonTest/`+`jvmTest/` exist on disk (no `desktopTest/`).
+  // Pre-fix: walker saw jvmTest/, picked `jvmTest`, gradle aborted with
+  // "Cannot locate tasks". Post-fix: trust the named target, return
+  // `desktopTest` regardless of disk state — gradle creates the task from
+  // the `jvm("desktop")` declaration.
+  it('jvm("desktop") + only jvmTest/ on disk → resolves to desktopTest', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin { jvm("desktop") }
+`, ['commonTest', 'jvmTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('desktopTest');
+  });
+
+  it('jvm("server") + serverTest/ on disk → resolves to serverTest', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin { jvm("server") }
+`, ['serverTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('serverTest');
+  });
+
+  it('no named target + jvmTest/ on disk → falls back to jvmTest (regression guard)', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin { jvm() }
+`, ['jvmTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('jvmTest');
+  });
+
+  it('default jvm() + jvmTest/ on disk → resolves to jvmTest', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin { jvm() }
+`, ['jvmTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('jvmTest');
+  });
+
+  it('no jvm at all + desktopTest/ on disk (custom source set) → desktopTest', () => {
+    // Edge case: someone declared a custom source set named desktopTest
+    // without a corresponding `jvm("desktop")` declaration. Disk walk wins.
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin { iosX64() }
+`, ['desktopTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('desktopTest');
+  });
+
+  // PeopleInSpace `:common` reproducer: declares `kotlin { jvm() }` but only
+  // has `commonTest/` on disk (no `jvmTest/` folder). Pre-fix the CLI returned
+  // null because predict-from-sourceSets didn't see jvmTest on disk. Now
+  // hasDefaultJvm trusts the declaration, returning `jvmTest`. KMP creates
+  // the task from the target declaration regardless of source-set folder.
+  it('default jvm() + only commonTest/ on disk → resolves to jvmTest', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm()
+  androidTarget()
+}
+`, ['commonTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('jvmTest');
+  });
+
+  it('no jvm declaration + only commonTest/ on disk → null (no task)', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  iosX64()
+}
+`, ['commonTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBeNull();
+  });
+
+  it('default jvm() + group("jvm") intermediate (rare conflict) → falls through', () => {
+    // Group named "jvm" hijacks the bare `jvmTest` source set as intermediate;
+    // the orchestrator should NOT trust the default declaration in this case.
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm()
+  androidTarget()
+  applyDefaultHierarchyTemplate {
+    common {
+      group("jvm") { withJvm(); withAndroidTarget() }
+    }
+  }
+}
+`, ['jvmTest']);
+    const a = analyzeModule(dir, ':m');
+    expect(a.intermediateGroups).toContain('jvm');
+    const r = resolveTasksFor(':m', null, a);
+    // jvmTest filtered out (intermediate); no other candidate present → null.
+    // Caller can probe gradle to disambiguate.
+    expect(r.unitTestTask).toBeNull();
+  });
+
+  // Defense in depth: if someone declares both jvm("X") AND group("X")
+  // (would be ambiguous), we should not pick a target task that conflicts
+  // with an intermediate group name.
+  it('jvm("desktop") + group("desktop") (conflict) → falls back to standard chain', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("desktop")
+  applyDefaultHierarchyTemplate {
+    common {
+      group("desktop") { withJvm() }
+    }
+  }
+}
+`, ['desktopTest']);
+    const a = analyzeModule(dir, ':m');
+    expect(a.intermediateGroups).toContain('desktop');
+    const r = resolveTasksFor(':m', null, a);
+    // Conflict: skip the named target, fall through to standard chain.
+    // desktopTest is then dropped (intermediate), and jvmTest is also dropped
+    // because it's not on disk. Result: null.
+    // This is intentional — caller can probe gradle to disambiguate.
+    expect(r.unitTestTask).toBeNull();
+  });
+
+  it('JVM-target override does NOT pollute iosTestTask / macosTestTask / webTestTask', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm("desktop")
+  iosX64()
+  macosArm64()
+  js(IR) { browser() }
+}
+`, ['iosX64Test', 'macosArm64Test', 'jsTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('desktopTest');     // JVM family — overridden
+    expect(r.iosTestTask).toBe('iosX64Test');       // iOS family — disk walk
+    expect(r.macosTestTask).toBe('macosArm64Test'); // macOS family — disk walk
+    expect(r.webTestTask).toBe('jsTest');           // web family — disk walk
+  });
+});
+
+// analyzeModule testBuildType detection (2026-05-03 dipatternsdemo repro)
+// ------------------------------------------------------------------
+describe('analyzeModule testBuildType', () => {
+  function makeAndroidModule(buildScript) {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), buildScript);
+    return dir;
+  }
+
+  it('detects testBuildType = "release"', () => {
+    const dir = makeAndroidModule(`
+plugins { id("com.android.library") }
+android {
+  namespace = "x"
+  testBuildType = "release"
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.testBuildType).toBe('release');
+  });
+
+  it('detects testBuildType = "debug" (explicit default)', () => {
+    const dir = makeAndroidModule(`
+plugins { id("com.android.library") }
+android {
+  testBuildType = "debug"
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.testBuildType).toBe('debug');
+  });
+
+  it('returns null when no testBuildType declaration present', () => {
+    const dir = makeAndroidModule(`
+plugins { id("com.android.library") }
+android { namespace = "x" }
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.testBuildType).toBeNull();
+  });
+
+  it('returns null for variable testBuildType (not statically resolvable)', () => {
+    // dipatternsdemo :benchmark uses `testBuildType = benchmarkBuildType`
+    // — we can't know the runtime value. Null defaults to AGP's "debug".
+    const dir = makeAndroidModule(`
+plugins { id("com.android.library") }
+val benchmarkBuildType = "release"
+android {
+  testBuildType = benchmarkBuildType
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.testBuildType).toBeNull();
+  });
+
+  it('ignores commented-out testBuildType', () => {
+    const dir = makeAndroidModule(`
+plugins { id("com.android.library") }
+android {
+  // testBuildType = "release"
+  /* testBuildType = "release" */
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.testBuildType).toBeNull();
+  });
+});
+
+// resolveTasksFor with intermediate hierarchy groups — drop XTest from chain
+// ------------------------------------------------------------------
+describe('resolveTasksFor with intermediate hierarchy groups', () => {
+  function makeKmpModule(buildScript, sourceSetDirs = []) {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), buildScript);
+    for (const ss of sourceSetDirs) {
+      mkdirSync(path.join(dir, 'm', 'src', ss, 'kotlin'), { recursive: true });
+    }
+    return dir;
+  }
+
+  // applyDefaultHierarchyTemplate { common { group("X") { ... } } } creates
+  // intermediate XTest source set with no runnable XTest task. Even when no
+  // named JVM target is declared (so the JVM-family override doesn't fire),
+  // the intermediateGroups filter must drop the matching candidate so the
+  // walker doesn't return a phantom task name.
+  it('drops jvmTest candidate when group("jvm") is declared', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm()
+  applyDefaultHierarchyTemplate {
+    common {
+      group("jvm") { withJvm() }
+    }
+  }
+}
+`, ['jvmTest', 'desktopTest']);
+    const a = analyzeModule(dir, ':m');
+    expect(a.intermediateGroups).toContain('jvm');
+    const r = resolveTasksFor(':m', null, a);
+    // jvmTest filtered out (intermediate group); desktopTest is next in chain.
+    expect(r.unitTestTask).toBe('desktopTest');
+  });
+});
+
 // analyzeModule per-module convention-plugin detection (v0.6.x Gap 4)
 // ------------------------------------------------------------------
 describe('analyzeModule per-module convention application (v0.6.x Gap 4)', () => {
@@ -989,7 +1526,7 @@ describe('buildProjectModel', () => {
     expect(model.projectRoot).toBe(dir);
     expect(typeof model.generatedAt).toBe('string');
     expect(model.cacheKey).toMatch(/^[0-9a-f]{40}$/);
-    expect(model.jdkRequirement).toEqual({ min: null, signals: [] });
+    expect(model.jdkRequirement).toEqual({ min: null, signals: [], agpVersion: null });
     expect(model.settingsIncludes).toEqual([':m']);
     expect(model.modules[':m']).toBeTruthy();
     expect(model.modules[':m'].type).toBe('jvm');

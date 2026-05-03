@@ -43,7 +43,9 @@ param(
     [switch]$NoCoverage,
     [switch]$Benchmark,
     [ValidateSet("smoke", "main", "stress")]
-    [string]$BenchmarkConfig = "smoke"
+    [string]$BenchmarkConfig = "smoke",
+    [ValidateSet("auto", "debug", "release", "all")]
+    [string]$Variant = "auto"
 )
 
 $ErrorActionPreference = "Continue"
@@ -74,6 +76,7 @@ if ($FreshDaemon)          { $kmpArgv += @('--fresh-daemon') }
 if ($CoverageOnly)         { $kmpArgv += @('--coverage-only') }
 if ($Benchmark)            { $kmpArgv += @('--benchmark') }
 if ($BenchmarkConfig -and $BenchmarkConfig -ne "smoke") { $kmpArgv += @('--benchmark-config', $BenchmarkConfig) }
+if ($Variant -and $Variant -ne "auto") { $kmpArgv += @('--variant', $Variant) }
 
 $kmpScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $kmpRunner = Join-Path $kmpScriptDir '..\..\lib\runner.js'

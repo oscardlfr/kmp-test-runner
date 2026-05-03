@@ -19,6 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runBenchmark } from '../../lib/benchmark-orchestrator.js';
+import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_SRC = path.join(__dirname, '..', 'fixtures', 'kmp-with-benchmark');
@@ -91,8 +92,8 @@ describe('runBenchmark --platform jvm', () => {
 
     // Only the JVM module should have been dispatched.
     expect(spawn.calls.length).toBe(1);
-    expect(spawn.calls[0].cmd).toMatch(/gradlew/);
-    expect(spawn.calls[0].args).toContain(':bench-jvm:desktopSmokeBenchmark');
+    expect(isGradleCall(spawn.calls[0])).toBe(true);
+    expect(effectiveGradleArgs(spawn.calls[0])).toContain(':bench-jvm:desktopSmokeBenchmark');
     expect(spawn.calls[0].cwd).toBe(dir);
 
     expect(envelope.tests.passed).toBe(1);
@@ -123,7 +124,7 @@ describe('runBenchmark --platform jvm', () => {
       spawn,
       adbProbe: () => [],
     });
-    expect(spawn.calls[0].args).toContain(':bench-jvm:desktopStressBenchmark');
+    expect(effectiveGradleArgs(spawn.calls[0])).toContain(':bench-jvm:desktopStressBenchmark');
   });
 
   it('--config main maps to :module:desktopBenchmark (no suffix)', async () => {
@@ -135,7 +136,7 @@ describe('runBenchmark --platform jvm', () => {
       spawn,
       adbProbe: () => [],
     });
-    expect(spawn.calls[0].args).toContain(':bench-jvm:desktopBenchmark');
+    expect(effectiveGradleArgs(spawn.calls[0])).toContain(':bench-jvm:desktopBenchmark');
   });
 });
 
@@ -156,7 +157,7 @@ describe('runBenchmark --platform android', () => {
     });
 
     expect(spawn.calls.length).toBe(1);
-    expect(spawn.calls[0].args).toContain(':bench-android:connectedAndroidTest');
+    expect(effectiveGradleArgs(spawn.calls[0])).toContain(':bench-android:connectedAndroidTest');
     expect(envelope.benchmark.platforms).toEqual(['android']);
     expect(envelope.errors).toEqual([]);
     expect(exitCode).toBe(0);
@@ -323,8 +324,9 @@ describe('runBenchmark --test-filter', () => {
       adbProbe: () => [],
     });
 
-    expect(spawn.calls[0].args).toContain('--tests');
-    expect(spawn.calls[0].args).toContain('*ScaleBenchmark*');
+    const args = effectiveGradleArgs(spawn.calls[0]);
+    expect(args).toContain('--tests');
+    expect(args).toContain('*ScaleBenchmark*');
   });
 
   it('android: emits -Pandroid.testInstrumentationRunnerArguments.class= with FQN', async () => {
@@ -338,7 +340,7 @@ describe('runBenchmark --test-filter', () => {
       adbProbe: () => [{ serial: 'X', type: 'physical', model: 'Y' }],
     });
 
-    const argsStr = spawn.calls[0].args.join(' ');
+    const argsStr = effectiveGradleArgs(spawn.calls[0]).join(' ');
     expect(argsStr).toContain(
       '-Pandroid.testInstrumentationRunnerArguments.class=com.example.ScaleBenchmark'
     );
@@ -355,7 +357,7 @@ describe('runBenchmark --test-filter', () => {
       adbProbe: () => [{ serial: 'X', type: 'physical', model: 'Y' }],
     });
 
-    const argsStr = spawn.calls[0].args.join(' ');
+    const argsStr = effectiveGradleArgs(spawn.calls[0]).join(' ');
     expect(argsStr).toContain(
       '-Pandroid.testInstrumentationRunnerArguments.class=com.example.Bench'
     );
@@ -440,7 +442,7 @@ describe('runBenchmark KMP-with-android-target detection', () => {
 
     // Both legs dispatched; no skip for the android leg.
     expect(spawn.calls.length).toBe(2);
-    const tasks = spawn.calls.map(c => c.args[0]);
+    const tasks = spawn.calls.map(c => effectiveGradleArgs(c)[0]);
     expect(tasks).toContain(':bench-mod:desktopSmokeBenchmark');
     expect(tasks).toContain(':bench-mod:connectedAndroidTest');
     expect(envelope.benchmark.platforms.sort()).toEqual(['android', 'jvm']);
@@ -467,7 +469,7 @@ describe('runBenchmark KMP-with-android-target detection', () => {
     });
 
     expect(spawn.calls.length).toBe(1);
-    expect(spawn.calls[0].args).toContain(':bench-mod:connectedAndroidTest');
+    expect(effectiveGradleArgs(spawn.calls[0])).toContain(':bench-mod:connectedAndroidTest');
     expect(envelope.benchmark.platforms).toEqual(['android']);
   });
 });

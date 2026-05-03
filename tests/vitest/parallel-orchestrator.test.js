@@ -44,6 +44,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { isGradleCall, effectiveGradleArgs, isStopCall } from './_spawn-helpers.js';
 
 import {
   runParallel,
@@ -269,6 +270,7 @@ describe('pickGradleTaskFor', () => {
     name: 'app',
     type: 'android',
     androidDsl: true,
+    sourceSets: { test: true, androidUnitTest: false, commonTest: false },
     resolved: {
       unitTestTask: null,
       deviceTestTask: 'connectedDebugAndroidTest',
@@ -339,6 +341,74 @@ describe('pickGradleTaskFor', () => {
   it('empty test-type auto-picks: KMP/JVM → unitTestTask, Android-only → testDebugUnitTest', () => {
     expect(pickGradleTaskFor(kmpModule, '').task).toBe(':shared:jvmTest');
     expect(pickGradleTaskFor(androidModule, '').task).toBe(':app:testDebugUnitTest');
+  });
+
+  // 2026-05-03 — Android variant flag. Default --variant=auto preserves the
+  // historical fast-path (testDebugUnitTest); --variant=release and =all
+  // route to the matching task names. testBuildType="release" detected
+  // statically also flips the auto pick.
+  describe('--variant flag for Android unit tests', () => {
+    it('--variant debug → testDebugUnitTest (default)', () => {
+      expect(pickGradleTaskFor(androidModule, 'androidUnit', { androidVariant: 'debug' }).task)
+        .toBe(':app:testDebugUnitTest');
+    });
+
+    it('--variant release → testReleaseUnitTest', () => {
+      expect(pickGradleTaskFor(androidModule, 'androidUnit', { androidVariant: 'release' }).task)
+        .toBe(':app:testReleaseUnitTest');
+    });
+
+    it('--variant all → test (umbrella runs both Debug + Release)', () => {
+      expect(pickGradleTaskFor(androidModule, 'androidUnit', { androidVariant: 'all' }).task)
+        .toBe(':app:test');
+    });
+
+    it('--variant auto + testBuildType="release" → testReleaseUnitTest', () => {
+      const releaseModule = { ...androidModule, testBuildType: 'release' };
+      expect(pickGradleTaskFor(releaseModule, 'androidUnit', { androidVariant: 'auto' }).task)
+        .toBe(':app:testReleaseUnitTest');
+    });
+
+    it('--variant auto + no testBuildType → testDebugUnitTest (AGP default)', () => {
+      expect(pickGradleTaskFor(androidModule, 'androidUnit', { androidVariant: 'auto' }).task)
+        .toBe(':app:testDebugUnitTest');
+    });
+
+    it('default (no opts) → testDebugUnitTest (backward compat)', () => {
+      expect(pickGradleTaskFor(androidModule, 'androidUnit').task)
+        .toBe(':app:testDebugUnitTest');
+    });
+
+    it('default test-type (auto) honors --variant', () => {
+      expect(pickGradleTaskFor(androidModule, '', { androidVariant: 'release' }).task)
+        .toBe(':app:testReleaseUnitTest');
+      expect(pickGradleTaskFor(androidModule, '', { androidVariant: 'all' }).task)
+        .toBe(':app:test');
+    });
+  });
+
+  // 2026-05-03 — instrumented-only Android module skip (dipatternsdemo
+  // :benchmark repro). No `test/`, `androidUnitTest/`, or `commonTest/`
+  // source set → orchestrator skips with reason instead of dispatching a
+  // hardcoded task name that gradle doesn't have.
+  describe('instrumented-only Android module skip', () => {
+    it('Android module with only androidTest/ source set → skipped with reason', () => {
+      const benchmarkModule = {
+        name: 'benchmark',
+        type: 'android',
+        androidDsl: true,
+        sourceSets: { test: false, androidUnitTest: false, commonTest: false, androidTest: true },
+        resolved: null,
+      };
+      const result = pickGradleTaskFor(benchmarkModule, '');
+      expect(result.task).toBeNull();
+      expect(result.reason).toMatch(/no androidUnit source set/);
+    });
+
+    it('Android module with test/ source set → dispatches normally', () => {
+      const result = pickGradleTaskFor(androidModule, '');
+      expect(result.task).toBe(':app:testDebugUnitTest');
+    });
   });
 });
 
@@ -558,11 +628,11 @@ describe('runParallel', () => {
       log: () => {},
       runCoverageInjection: stubCoverage,
     });
-    const stopCalls = spawn.calls.filter(c => c.args.length === 1 && c.args[0] === '--stop');
+    const stopCalls = spawn.calls.filter(isStopCall);
     expect(stopCalls.length).toBe(1);
     // --stop must precede the main test dispatch.
-    const firstNonStop = spawn.calls.findIndex(c => !(c.args.length === 1 && c.args[0] === '--stop'));
-    const stopIdx = spawn.calls.findIndex(c => c.args.length === 1 && c.args[0] === '--stop');
+    const firstNonStop = spawn.calls.findIndex(c => isGradleCall(c) && !isStopCall(c));
+    const stopIdx = spawn.calls.findIndex(isStopCall);
     expect(stopIdx).toBeLessThan(firstNonStop);
   });
 
@@ -577,7 +647,7 @@ describe('runParallel', () => {
       log: () => {},
       runCoverageInjection: stubCoverage,
     });
-    const stopCalls = spawn.calls.filter(c => c.args.length === 1 && c.args[0] === '--stop');
+    const stopCalls = spawn.calls.filter(isStopCall);
     expect(stopCalls.length).toBe(0);
   });
 
@@ -739,15 +809,74 @@ describe('runParallel', () => {
       log: () => {},
       runCoverageInjection: stubCoverage,
     });
-    // Find the gradle spawn (skip git probes etc.).
-    const gradleCall = spawn.calls.find(c => /gradlew/.test(String(c.cmd)));
+    // Find the gradle spawn (skip git probes etc.). isGradleCall sees through
+    // the cmd.exe wrapper used on Windows by spawnGradle.
+    const gradleCall = spawn.calls.find(isGradleCall);
     expect(gradleCall).toBeTruthy();
-    // It MUST be the gradlew binary directly, not bash/powershell wrapping.
+    // The orchestrator must invoke gradlew (directly on POSIX, via cmd.exe
+    // wrapper on Windows). It must never wrap with bash/powershell.
     const cmd = String(gradleCall.cmd);
-    expect(cmd).toMatch(/gradlew(\.bat)?$/);
-    // Args contain --parallel --continue
-    expect(gradleCall.args).toContain('--parallel');
-    expect(gradleCall.args).toContain('--continue');
+    expect(cmd).toMatch(/gradlew(\.bat)?$|(^|[\\/])cmd(\.exe)?$/i);
+    expect(/bash|pwsh|powershell/i.test(cmd)).toBe(false);
+    // Effective args contain --parallel --continue
+    const args = effectiveGradleArgs(gradleCall);
+    expect(args).toContain('--parallel');
+    expect(args).toContain('--continue');
+  });
+
+  // 2026-05-03 wide-smoke regression: when gradle aborts at evaluation phase
+  // (one module's plugin/compile fails before any task runs), --continue +
+  // multi-module dispatch produced 4 misleading [FAIL] lines. Confetti repro:
+  // `:shared:jvmTest` succeeds in 1m 44s when invoked alone, but fails when
+  // bundled with `:androidApp:test` whose evaluation aborts. Cascade-isolation
+  // fallback retries each module separately when the one-shot dispatch shows
+  // no per-task evidence, so per-module truth surfaces.
+  it('cascade-isolation fallback: re-dispatches per-module when one-shot aborts pre-task', async () => {
+    const dir = makeProject([
+      { name: 'broken', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'healthy', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    let callIdx = 0;
+    const calls = [];
+    // Spawn that simulates: (1) one-shot leg → exit 1 with NO per-task line
+    // (only `BUILD FAILED`), then (2) per-module retry: broken → fail with
+    // per-task FAILED marker, healthy → BUILD SUCCESSFUL.
+    const spawn = (cmd, args, opts) => {
+      calls.push({ cmd, args: [...args], opts });
+      callIdx++;
+      const eArgs = effectiveGradleArgs({ cmd, args });
+      const isOneShot = eArgs.filter(a => a.startsWith(':')).length > 1;
+      if (isOneShot) {
+        return { status: 1, stdout: 'FAILURE: Build failed.\nBUILD FAILED in 1s\n', stderr: '', signal: null, error: null };
+      }
+      const taskArg = eArgs.find(a => a.startsWith(':')) || '';
+      if (taskArg.startsWith(':broken')) {
+        return { status: 1, stdout: `> Task ${taskArg} FAILED\nBUILD FAILED in 1s\n`, stderr: '', signal: null, error: null };
+      }
+      return { status: 0, stdout: `> Task ${taskArg}\nBUILD SUCCESSFUL in 1s\n`, stderr: '', signal: null, error: null };
+    };
+    spawn.calls = calls;
+    const stubCoverage = makeRunCoverageStub();
+    const lines = [];
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: (l) => lines.push(l),
+      runCoverageInjection: stubCoverage,
+    });
+    // Cascade-isolation banner emitted.
+    expect(lines.some(l => /retrying per-module|isolate/i.test(l))).toBe(true);
+    // Per-module truth: healthy passed, broken failed. Pre-fix, BOTH would
+    // have been marked failed by defense-in-depth.
+    expect(envelope.tests.passed).toBe(1);
+    expect(envelope.tests.failed).toBe(1);
+    expect(envelope.modules).toContain('healthy');
+    expect(envelope.errors.some(e => e.module === 'broken')).toBe(true);
+    expect(envelope.errors.some(e => e.module === 'healthy')).toBe(false);
+    // Spawn called 1 (one-shot) + 2 (per-module retry) = 3 times.
+    const gradleSpawnCount = calls.filter(c => isGradleCall(c)).length;
+    expect(gradleSpawnCount).toBe(3);
   });
 
   it('envelope shape: parallel:{test_type, legs[], max_workers, timeout_s}', async () => {

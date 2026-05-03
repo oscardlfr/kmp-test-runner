@@ -8,3 +8,8 @@
 # stable workaround.
 tools/measure-token-cost.js text eol=lf
 tests/vitest/measure-token-cost.test.js text eol=lf
+
+# Fixture wrapper scripts: gradlew (POSIX) needs LF; gradlew.bat needs CRLF
+# so cmd.exe parses it correctly across hosts.
+tests/fixtures/fake-gradlew/gradlew text eol=lf
+tests/fixtures/fake-gradlew/gradlew.bat text eol=crlf
