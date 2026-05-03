@@ -867,6 +867,43 @@ kotlin {
     expect(a.namedJvmTargets).toEqual([]);
   });
 
+  it('detects default jvm() declaration via hasDefaultJvm', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm()
+  androidTarget()
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.hasDefaultJvm).toBe(true);
+    expect(a.namedJvmTargets).toEqual([]);
+  });
+
+  it('hasDefaultJvm = false when no jvm() declared', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  iosX64()
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.hasDefaultJvm).toBe(false);
+  });
+
+  it('hasDefaultJvm = true when jvm() AND jvm("name") both declared', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm()
+  jvm("server")
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.hasDefaultJvm).toBe(true);
+    expect(a.namedJvmTargets).toEqual(['server']);
+  });
+
   it('ignores commented-out jvm("...") declarations', () => {
     const dir = makeKmpModule(`
 plugins { kotlin("multiplatform") }
@@ -966,14 +1003,79 @@ kotlin { jvm() }
     expect(r.unitTestTask).toBe('jvmTest');
   });
 
-  it('no named target + desktopTest/ on disk → resolves to desktopTest', () => {
+  it('default jvm() + jvmTest/ on disk → resolves to jvmTest', () => {
     const dir = makeKmpModule(`
 plugins { kotlin("multiplatform") }
 kotlin { jvm() }
+`, ['jvmTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('jvmTest');
+  });
+
+  it('no jvm at all + desktopTest/ on disk (custom source set) → desktopTest', () => {
+    // Edge case: someone declared a custom source set named desktopTest
+    // without a corresponding `jvm("desktop")` declaration. Disk walk wins.
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin { iosX64() }
 `, ['desktopTest']);
     const a = analyzeModule(dir, ':m');
     const r = resolveTasksFor(':m', null, a);
     expect(r.unitTestTask).toBe('desktopTest');
+  });
+
+  // PeopleInSpace `:common` reproducer: declares `kotlin { jvm() }` but only
+  // has `commonTest/` on disk (no `jvmTest/` folder). Pre-fix the CLI returned
+  // null because predict-from-sourceSets didn't see jvmTest on disk. Now
+  // hasDefaultJvm trusts the declaration, returning `jvmTest`. KMP creates
+  // the task from the target declaration regardless of source-set folder.
+  it('default jvm() + only commonTest/ on disk → resolves to jvmTest', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm()
+  androidTarget()
+}
+`, ['commonTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBe('jvmTest');
+  });
+
+  it('no jvm declaration + only commonTest/ on disk → null (no task)', () => {
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  iosX64()
+}
+`, ['commonTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', null, a);
+    expect(r.unitTestTask).toBeNull();
+  });
+
+  it('default jvm() + group("jvm") intermediate (rare conflict) → falls through', () => {
+    // Group named "jvm" hijacks the bare `jvmTest` source set as intermediate;
+    // the orchestrator should NOT trust the default declaration in this case.
+    const dir = makeKmpModule(`
+plugins { kotlin("multiplatform") }
+kotlin {
+  jvm()
+  androidTarget()
+  applyDefaultHierarchyTemplate {
+    common {
+      group("jvm") { withJvm(); withAndroidTarget() }
+    }
+  }
+}
+`, ['jvmTest']);
+    const a = analyzeModule(dir, ':m');
+    expect(a.intermediateGroups).toContain('jvm');
+    const r = resolveTasksFor(':m', null, a);
+    // jvmTest filtered out (intermediate); no other candidate present → null.
+    // Caller can probe gradle to disambiguate.
+    expect(r.unitTestTask).toBeNull();
   });
 
   // Defense in depth: if someone declares both jvm("X") AND group("X")
