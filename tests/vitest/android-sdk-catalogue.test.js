@@ -12,6 +12,7 @@ import {
   discoverAndroidSdk,
   projectHasSdkDir,
   maybeAugmentEnvWithAndroidSdk,
+  inspectLocalProperties,
 } from '../../lib/android-sdk-catalogue.js';
 
 let workDir;
@@ -90,6 +91,88 @@ describe('maybeAugmentEnvWithAndroidSdk', () => {
     expect(out.ANDROID_HOME).toBe(realSdk);
     expect(out.ANDROID_SDK_ROOT).toBe(realSdk);
     expect(lines.some(l => /\[NOTICE\]/.test(l) && /ANDROID_HOME/.test(l))).toBe(true);
+  });
+});
+
+// 2026-05-03 — local.properties malformed-escape detection. Java Properties
+// syntax: `\\` → `\`, `\:` → `:`, unknown `\X` drops the leading backslash.
+// `sdk.dir=C\:\Users\X\...` parses to `C:Users\X\...` (silently strips
+// `\U`/`\A`/etc.), AGP IOException at SdkLocator.validateSdkPath. Doctor
+// surfaces this as a WARN since auto-set ANDROID_HOME WON'T save you here:
+// AGP reads local.properties FIRST and throws before falling through.
+describe('inspectLocalProperties', () => {
+  it('returns null when local.properties is absent', () => {
+    const dir = makeProject();
+    expect(inspectLocalProperties(dir)).toBeNull();
+  });
+
+  it('returns null when local.properties has no sdk.dir line', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'local.properties'),
+      'org.gradle.jvmargs=-Xmx4g\nkotlin.code.style=official\n');
+    expect(inspectLocalProperties(dir)).toBeNull();
+  });
+
+  it('returns ok=true when sdk.dir uses forward slashes pointing to existing dir', () => {
+    const dir = makeProject();
+    // Use the project root itself as the "sdk path" — guaranteed to exist.
+    const fwd = dir.replace(/\\/g, '/');
+    writeFileSync(path.join(dir, 'local.properties'), `sdk.dir=${fwd}\n`);
+    const r = inspectLocalProperties(dir);
+    expect(r).toBeTruthy();
+    expect(r.ok).toBe(true);
+    expect(r.path).toBe(fwd);
+  });
+
+  it('returns ok=true when sdk.dir uses properly-doubled backslashes', () => {
+    const dir = makeProject();
+    // Encode the dir with doubled backslashes (Properties syntax).
+    const escaped = dir.replace(/\\/g, '\\\\').replace(/:/g, '\\:');
+    writeFileSync(path.join(dir, 'local.properties'), `sdk.dir=${escaped}\n`);
+    const r = inspectLocalProperties(dir);
+    expect(r).toBeTruthy();
+    expect(r.ok).toBe(true);
+  });
+
+  it('returns ok=false with malformed-escape reason for single-backslash Windows paths', () => {
+    const dir = makeProject();
+    // The Confetti repro shape — single backslashes that get silently dropped
+    // by Properties parser, yielding a non-existent path.
+    writeFileSync(path.join(dir, 'local.properties'),
+      'sdk.dir=C\\:\\Users\\34645\\AppData\\Local\\Android\\Sdk\n');
+    const r = inspectLocalProperties(dir);
+    expect(r).toBeTruthy();
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/malformed Properties escapes/);
+    expect(r.raw).toContain('\\Users');  // raw preserves the broken input for the user message
+  });
+
+  it('returns ok=false with not-on-disk reason for valid syntax + non-existent path', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'local.properties'),
+      'sdk.dir=/totally/made/up/path/that/does/not/exist\n');
+    const r = inspectLocalProperties(dir);
+    expect(r).toBeTruthy();
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/does not exist/);
+  });
+
+  it('handles \\u#### unicode escapes in sdk.dir', () => {
+    const dir = makeProject();
+    // \u002f is forward-slash; not common but valid Properties syntax.
+    const fwd = dir.replace(/\\/g, '/');
+    writeFileSync(path.join(dir, 'local.properties'), `sdk.dir=${fwd}\n`);
+    const r = inspectLocalProperties(dir);
+    expect(r.ok).toBe(true);
+  });
+
+  it('strips trailing whitespace from sdk.dir value', () => {
+    const dir = makeProject();
+    const fwd = dir.replace(/\\/g, '/');
+    writeFileSync(path.join(dir, 'local.properties'), `sdk.dir=${fwd}    \n`);
+    const r = inspectLocalProperties(dir);
+    expect(r.ok).toBe(true);
+    expect(r.path).toBe(fwd);
   });
 });
 
