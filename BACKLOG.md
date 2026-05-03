@@ -196,6 +196,105 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 - Re-using an existing OSS KMP project as the cross-platform E2E fixture — see Buildable cross-platform E2E fixture entry below for that decision.
 - New CLI features. v0.8.0 is "migrate plumbing + lock the cross-platform contract"; new flags / envelope shapes go in v0.9 / v0.8.x patches.
 
+### v0.8 — ✅ RESOLVED — Windows-wide silent gradle no-op (surfaced + fixed 2026-05-03)
+
+**Status: FIXED on branch `validate/v0.8-windows-wide-smoke`.** All 5 spawn sites in `lib/{parallel,android,benchmark}-orchestrator.js` now route through `lib/orchestrator-utils.js#spawnGradle` which uses an explicit cmd.exe wrapper with `windowsVerbatimArguments: true` to bypass the EINVAL block. Defense-in-depth in `classifyTaskResults` refuses to silent-pass when leg failed without positive evidence. Stale-junit guard filters XMLs by `mtime >= state.runStartMs`. Live integration tests in `tests/vitest/e2e-spawn-gradle.test.js` (9 cases) use real `spawnSync` against `tests/fixtures/fake-gradlew/` to lock the contract — no mocked spawn for these. Wide-smoke re-validation 2026-05-03 against the same 23 Windows projects produced 0 SILENT-FAKE-PASS, 3 REAL-GREEN, 11 REAL-RED, 9 NO-MODULES (vs the broken state's 14 SILENT-FAKE-PASS / 0 REAL-anything). Vitest: 603/603 (was 594/594, +9 e2e cases).
+
+**Severity: CRITICAL. Blocks v0.8.0 release. Every parallel/coverage/changed/android/benchmark invocation on Windows produces false-positive PASS envelopes.** PRODUCT.md WS-1 contract ("never silent pass") violated by every dispatch in the migrated orchestrators on win32.
+
+**Repro:**
+```bash
+node bin/kmp-test.js --json parallel --project-root C:/path/to/any-gradle-project --no-coverage --max-workers 4
+# → exit_code:0, tests.passed = modules.length, parallel.legs[0].exit_code:1, duration_ms:11-722
+```
+
+**Root cause:** Node `spawnSync("gradlew.bat", args, { ... })` on Windows returns `status:null, error:'EINVAL'` because Node 18.20.2 / 20.12.2 / 22.0.0+ enforce CVE-2024-27980 which forbids direct `.bat`/`.cmd` execution without `shell:true` or explicit `cmd.exe /c` invocation. **All 5 migrated orchestrators (`parallel`, `coverage`, `changed`, `android`, `benchmark`) call `spawn(gradlewPath, ...)` with `shell:false` (the default).** Verified by direct test:
+
+```js
+spawnSync("gradlew.bat", [...], { cwd, encoding:"utf8" })            // → status:null, EINVAL
+spawnSync("gradlew.bat", [...], { cwd, encoding:"utf8", shell:true }) // → status:0, real output
+```
+
+**The cascade:**
+1. `dispatchLeg` calls `spawn(gradlewPath, gradleArgs, {...})` — no `shell:true` (line 409, parallel-orchestrator.js).
+2. spawn returns `result.status === null`. Line 416: `const exit = (typeof result.status === 'number') ? result.status : 1;` → exit:1.
+3. `result.stdout` and `result.stderr` are both empty strings (gradle never ran).
+4. `classifyTaskResults(stdout, stderr, taskList)` (line 424) checks the empty `all` for `<task>\s+FAILED` regex → no match → defaults to `'passed'` (line 439: `out.set(task, re.test(all) ? 'failed' : 'passed')`).
+5. Per-task loop (line 521-548) emits `[PASS] mod` for every task; `state.tests.passed += 1` for every module.
+6. No `errors[]` row added; top-level `exit_code` stays 0.
+7. Envelope reports GREEN with `tests.passed = modules.length` for a project where gradle was **never invoked**.
+
+**Wide-smoke evidence** (23 gradle-rooted projects under `C:/Users/34645/AndroidStudioProjects/`, run via `.smoke/run.sh`):
+
+| Project | reported | reality | leg.exit | duration |
+|---|---|---|---|---|
+| DawSync | GREEN, 20/20 passed, 7393 individual | NEVER RAN (manual `gradlew tasks` → BUILD FAILED 16s) | 1 | 722ms |
+| OmniSound | GREEN, 10/10 passed, 4063 individual | NEVER RAN | 1 | 241ms |
+| TaskFlow | GREEN, 1/1 passed | NEVER RAN (manual gradle → BUILD FAILED 1s, gradle.properties JAVA_HOME issue) | 1 | 11ms |
+| android-challenge | GREEN, 1/1 | NEVER RAN | 1 | 13ms |
+| dipatternsdemo | GREEN, 3/3, 68 individual | NEVER RAN | 1 | 116ms |
+| gyg | GREEN, 1/1, 26 individual | NEVER RAN | 1 | 20ms |
+| shared-kmp-libs | GREEN, 38/38 passed, 317 individual | NEVER RAN | 1 | 681ms |
+| nav3-recipes / nowinandroid / Confetti / PeopleInSpace / androidify / kotlinconf / FileKit | GREEN, all passed | NEVER RAN | 1 | 38–143ms |
+| dokka-markdown / Nav3Guide-scenes / DroidconKotlin / KMedia / KaMPKit / NYTimes-KMP / Nav3Guide-master / kmp-basic-sample / kmp-production-sample | AMBER (`no_test_modules`) | discovery short-circuited before dispatch | n/a | 11–36ms |
+
+**14 of 14 "green" envelopes are false positives.** The 9 AMBER results never reached `dispatchLeg` (caught at module-discovery stage), so they're correct by accident.
+
+`tests.individual_total` populated values (7393, 4063, 317, 68, 26) are **stale junit XMLs from previous bash-wrapper-era runs** that the v0.7.0 wrapper left on disk under `<module>/build/test-results/`. The walker counts them every time because no recency check exists.
+
+**Why CI didn't catch this:**
+- `tests/vitest/parallel-orchestrator.test.js` (48 cases) injects a mock `spawn` that returns synthetic stdout/stderr — never exercises real `spawnSync` on Windows.
+- `tests/bats/*` runs on Linux only (no `.bat`).
+- `tests/pester/*` exists but the v0.8 PIVOT shrank Pester contracts to "wrapper invokes node" assertions (sub-entry 5 removed `Invoke-ScriptSmoke.Tests.ps1` 206→? lines), losing the integration-test coverage that would have caught EINVAL.
+- The `gradle-plugin-test-ios` informational job runs on macOS, not Windows.
+- Manual repo-owner testing happened on shared-kmp-libs with `--test-type androidUnit --module-filter X` — same EINVAL bug, but I read the `tests.passed:1` as success during sub-entry 5 dev. (`leg.exit_code:1` was also visible but dismissed at the time.)
+
+**Fix (trivial, ~5 LOC × 5 orchestrators = ~25 LOC):**
+
+```js
+// lib/parallel-orchestrator.js (and 4 mirror sites)
+const isWin = process.platform === 'win32';
+const result = spawn(gradlewPath, gradleArgs, {
+  cwd: projectRoot,
+  encoding: 'utf8',
+  env: { ...env },
+  maxBuffer: 64 * 1024 * 1024,
+  timeout: opts.timeout > 0 ? opts.timeout * 1000 : undefined,
+  shell: isWin,   // ← required for .bat on Node 18.20.2+ / 20.12.2+ / 22+
+});
+```
+
+Caveats:
+- `shell: true` triggers `DEP0190` deprecation warning in Node 22+ ("args not escaped, only concatenated"). For our case (gradle task names: `:mod:taskName` — no shell metachars in module/task names by Gradle convention), this is safe but should be quoted defensively. Cleaner long-term: invoke `process.env.ComSpec || 'cmd.exe'` with `['/d', '/s', '/c', gradlewPath, ...args]` explicitly — bypasses the deprecation entirely.
+- `--tests "<filter>"` user input does flow into args; need to ensure proper escaping if going `shell:true` route, OR use the explicit cmd.exe approach.
+- Same fix needed in `parallel-orchestrator.js` `--stop` daemon-stop call (line 669).
+
+**Required additional work to PREVENT recurrence:**
+
+1. **Live integration test on Windows CI** — at least one Pester or vitest case that does `spawn(gradlewPath, ['--version'], {...})` against a real fixture and asserts non-null status. Cost: ~20 LOC, would have caught this in PR #110.
+2. **Refuse to silent-pass when leg.exit_code !== 0** — even after the spawn fix, `classifyTaskResults` should treat unclassified-tasks-after-failed-leg as `'failed'`, not `'passed'`. Defense in depth against future `[PASS]` fallthroughs. (This is also what F2 / WS-1 contract demands — already a documented invariant per PRODUCT.md.)
+3. **Stale-junit guard** — `junitTestCountFor(projectRoot, task)` should filter by `mtime > orchestrator_start_time` to avoid counting prior runs' XMLs.
+4. **Pre-release wide-smoke job in CI** — current process is manual repo-owner pass on Windows; should be a `wide-smoke` workflow that runs `kmp-test parallel --json` against the 5-6 curated KMP fixtures listed in PRODUCT.md success criteria + asserts `parallel.legs[*].exit_code === 0` when `tests.passed > 0` (catches the silent-pass invariant).
+
+**Knock-on:** the previously-noted F1 / F2 / F3 findings (above, in earlier draft of this section) still apply but become low-priority. F2 (`--test-type all` double-counting) is even masked by this bug — when the spawn never runs, `--test-type all` reports false GREEN per-leg.
+
+**Recommended sequence:**
+1. Hotfix PR `fix(orchestrator): pass shell:true / cmd.exe wrapper on Windows for gradle dispatch` — touches all 5 orchestrators, adds 2-3 vitest/Pester live-integration cases, no new CLI surface.
+2. Re-run wide-smoke against 23 projects, capture true GREEN/RED distribution, file follow-up tickets per RED project.
+3. Then resume the v0.8.0 release-readiness gate (BACKLOG entry below).
+
+---
+
+### v0.8 — Sub-entry 5 follow-up findings (deprioritized by Windows-spawn bug above; surfaced 2026-05-03)
+
+> **NOTE:** these 3 findings (F1/F2/F3) were discovered during the same wide-smoke pass as the CRITICAL Windows-spawn bug above. They remain valid bugs but are MUCH smaller and should ship after the spawn fix lands and a clean wide-smoke pass establishes the true baseline.
+
+**Finding F1 — `--dry-run` is not consumed inside 3 of 5 orchestrators.** `lib/parallel-orchestrator.js` and `lib/coverage-orchestrator.js` honor `--dry-run` (4 references each). `lib/changed-orchestrator.js`, `lib/android-orchestrator.js`, and `lib/benchmark-orchestrator.js` have **zero** `--dry-run` references. Production paths via `bin/kmp-test.js` are unaffected (cli.js intercepts upstream), but direct `node lib/runner.js benchmark --dry-run` actually dispatches gradle. Fix: backfill `--dry-run` short-circuit in the 3 orchestrators (~3 × 10 LOC).
+
+**Finding F2 — `--test-type all` double-counts no-target legs.** Repro: `kmp-test --json parallel --test-type all --module-filter "core-result"`. Per-leg empties emit BOTH `skipped[]` AND `errors[].no_test_modules`, forcing exit 3 even when one leg passes. Fix: suppress `no_test_modules` when `parallel.legs.some(l => results matched)`.
+
+**Finding F3 — `tests.individual_total:0` on AGP-only runs.** The junit-XML walker doesn't probe the AGP path `<module>/build/test-results/testDebugUnitTest/TEST-*.xml`. Fix: extend walker glob, dedupe by file path. (Becomes more visible after the spawn fix lands and tests actually run.)
+
 ### v0.8 — KMP target tier intel for iOS/macOS strategy (surfaced 2026-05-02 during sub-entry 3 validation in shared-kmp-libs)
 
 **Source:** repo owner's investigation in shared-kmp-libs while validating sub-entry 3 (PR #113). Captures the current Kotlin/Native target tier status that affects (a) the v0.7.0 `resolveTasksFor` candidate-chain design (`iosX64Test → iosArm64Test → iosSimulatorArm64Test` for `iosTestTask`; `macosX64Test → macosArm64Test → macosTest` for `macosTestTask`), (b) the v0.8.0 release-readiness gate's "Buildable cross-platform E2E fixture" target matrix, and (c) the `gradle-plugin-test-ios` informational job's promotion criteria.

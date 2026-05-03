@@ -29,6 +29,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { runAndroid } from '../../lib/android-orchestrator.js';
+import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 
 let workDir;
 
@@ -89,7 +90,10 @@ function makeSpawnStub({ gradle = {}, perModuleStatus = {}, adb = {} } = {}) {
       };
     }
     // Otherwise: gradle. Look up per-module status by inspecting the task arg.
-    const taskArg = args.find(a => typeof a === 'string' && a.startsWith(':'));
+    // On Windows, spawnGradle wraps in cmd.exe so the task arg lives inside
+    // args[3]'s command line — peel it back via effectiveGradleArgs.
+    const eArgs = effectiveGradleArgs({ cmd, args });
+    const taskArg = eArgs.find(a => typeof a === 'string' && a.startsWith(':'));
     let status = gradle.status ?? 0;
     if (taskArg) {
       const mod = taskArg.split(':')[1];
@@ -110,9 +114,10 @@ function makeSpawnStub({ gradle = {}, perModuleStatus = {}, adb = {} } = {}) {
 }
 
 // Find the gradle subprocess invocations among recorded calls. Filters out
-// adb calls so per-module dispatch assertions stay focused.
+// adb calls so per-module dispatch assertions stay focused. Sees through
+// the cmd.exe wrapper that spawnGradle uses on Windows.
 function findGradleCalls(calls) {
-  return calls.filter(c => /gradlew(\.bat)?$/.test(c.cmd));
+  return calls.filter(isGradleCall);
 }
 
 // Find the adb invocations.
@@ -248,8 +253,9 @@ describe('runAndroid --device-task escape hatch', () => {
 
     const gradleCalls = findGradleCalls(spawn.calls);
     expect(gradleCalls.length).toBe(1);
-    expect(gradleCalls[0].args).toContain(':a:androidConnectedCheck');
-    expect(gradleCalls[0].args).not.toContain(':a:connectedDebugAndroidTest');
+    const eArgs = effectiveGradleArgs(gradleCalls[0]);
+    expect(eArgs).toContain(':a:androidConnectedCheck');
+    expect(eArgs).not.toContain(':a:connectedDebugAndroidTest');
   });
 
   it('envelope.android.device_task echoes the override', async () => {
@@ -344,10 +350,12 @@ describe('runAndroid cross-OS spawn shape', () => {
 
     const gradleCalls = findGradleCalls(spawn.calls);
     expect(gradleCalls.length).toBeGreaterThan(0);
-    // The orchestrator picks gradlew on Unix, gradlew.bat on Windows. We
-    // accept BOTH shapes (memory: feedback_orchestrator_test_cross_platform
-    // — macOS local hides Windows divergence). Lock the basename.
-    expect(gradleCalls[0].cmd).toMatch(/gradlew(\.bat)?$/);
+    // The orchestrator picks gradlew on Unix, gradlew.bat on Windows
+    // (wrapped through cmd.exe to bypass the EINVAL block). isGradleCall
+    // accepts both shapes; the assertion just locks "no bash/pwsh wrapper".
+    const cmd = String(gradleCalls[0].cmd);
+    expect(/gradlew(\.bat)?$|(^|[\\/])cmd(\.exe)?$/i.test(cmd)).toBe(true);
+    expect(/bash|pwsh|powershell/i.test(cmd)).toBe(false);
     expect(gradleCalls[0].cwd).toBe(dir);
   });
 });
@@ -577,7 +585,7 @@ describe('runAndroid --test-filter Class#method (Gap E v0.5.2)', () => {
     });
 
     const gradleCalls = findGradleCalls(spawn.calls);
-    const args = gradleCalls[0].args;
+    const args = effectiveGradleArgs(gradleCalls[0]);
     const classArg = args.find(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.class='));
     const methodArg = args.find(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.method='));
     expect(classArg).toBe('-Pandroid.testInstrumentationRunnerArguments.class=com.example.MyTest');
@@ -596,7 +604,7 @@ describe('runAndroid --test-filter Class#method (Gap E v0.5.2)', () => {
       adbProbe,
     });
 
-    const args = findGradleCalls(spawn.calls)[0].args;
+    const args = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
     expect(args.some(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.class='))).toBe(true);
     expect(args.some(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.method='))).toBe(false);
   });

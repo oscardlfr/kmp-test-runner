@@ -44,6 +44,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { isGradleCall, effectiveGradleArgs, isStopCall } from './_spawn-helpers.js';
 
 import {
   runParallel,
@@ -558,11 +559,11 @@ describe('runParallel', () => {
       log: () => {},
       runCoverageInjection: stubCoverage,
     });
-    const stopCalls = spawn.calls.filter(c => c.args.length === 1 && c.args[0] === '--stop');
+    const stopCalls = spawn.calls.filter(isStopCall);
     expect(stopCalls.length).toBe(1);
     // --stop must precede the main test dispatch.
-    const firstNonStop = spawn.calls.findIndex(c => !(c.args.length === 1 && c.args[0] === '--stop'));
-    const stopIdx = spawn.calls.findIndex(c => c.args.length === 1 && c.args[0] === '--stop');
+    const firstNonStop = spawn.calls.findIndex(c => isGradleCall(c) && !isStopCall(c));
+    const stopIdx = spawn.calls.findIndex(isStopCall);
     expect(stopIdx).toBeLessThan(firstNonStop);
   });
 
@@ -577,7 +578,7 @@ describe('runParallel', () => {
       log: () => {},
       runCoverageInjection: stubCoverage,
     });
-    const stopCalls = spawn.calls.filter(c => c.args.length === 1 && c.args[0] === '--stop');
+    const stopCalls = spawn.calls.filter(isStopCall);
     expect(stopCalls.length).toBe(0);
   });
 
@@ -739,15 +740,19 @@ describe('runParallel', () => {
       log: () => {},
       runCoverageInjection: stubCoverage,
     });
-    // Find the gradle spawn (skip git probes etc.).
-    const gradleCall = spawn.calls.find(c => /gradlew/.test(String(c.cmd)));
+    // Find the gradle spawn (skip git probes etc.). isGradleCall sees through
+    // the cmd.exe wrapper used on Windows by spawnGradle.
+    const gradleCall = spawn.calls.find(isGradleCall);
     expect(gradleCall).toBeTruthy();
-    // It MUST be the gradlew binary directly, not bash/powershell wrapping.
+    // The orchestrator must invoke gradlew (directly on POSIX, via cmd.exe
+    // wrapper on Windows). It must never wrap with bash/powershell.
     const cmd = String(gradleCall.cmd);
-    expect(cmd).toMatch(/gradlew(\.bat)?$/);
-    // Args contain --parallel --continue
-    expect(gradleCall.args).toContain('--parallel');
-    expect(gradleCall.args).toContain('--continue');
+    expect(cmd).toMatch(/gradlew(\.bat)?$|(^|[\\/])cmd(\.exe)?$/i);
+    expect(/bash|pwsh|powershell/i.test(cmd)).toBe(false);
+    // Effective args contain --parallel --continue
+    const args = effectiveGradleArgs(gradleCall);
+    expect(args).toContain('--parallel');
+    expect(args).toContain('--continue');
   });
 
   it('envelope shape: parallel:{test_type, legs[], max_workers, timeout_s}', async () => {

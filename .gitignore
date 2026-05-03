@@ -16,3 +16,6 @@ build/
 Thumbs.db
 # Pester -CI emits this NUnit XML at repo root
 testResults.xml
+
+# Local diagnostic / smoke captures (not for commit)
+.smoke/
