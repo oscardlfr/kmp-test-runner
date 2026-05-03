@@ -243,6 +243,87 @@ describe('aggregateJdkSignals', () => {
     const r = aggregateJdkSignals(dir);
     expect(r.signals[0].file).toBe('a/b/build.gradle.kts');
   });
+
+  // 2026-05-03 wide-smoke regression guard. AGP version → required runtime JDK
+  // joins the signal pool. Without this, projects with `jvmTarget=11` AND
+  // AGP 8.x picked JDK 11; gradle aborted with "Android Gradle plugin
+  // requires Java 17". The strictest signal must win.
+  describe('AGP-implied runtime JDK', () => {
+    it('catalog: agp = "8.8.2" → JDK 17 floor', () => {
+      const dir = makeProject();
+      mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+      mkdirSync(path.join(dir, 'app'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+        '[versions]\nagp = "8.8.2"\n');
+      writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
+        'compileOptions { sourceCompatibility = JavaVersion.VERSION_11 }');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.agpVersion).toBe('8.8.2');
+      expect(r.signals.find(s => /AGP 8\.8\.2 runtime/.test(s.type))).toBeTruthy();
+    });
+
+    it('catalog: agp = "7.4.2" → JDK 11 floor', () => {
+      const dir = makeProject();
+      mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+        '[versions]\nagp = "7.4.2"\n');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(11);
+      expect(r.agpVersion).toBe('7.4.2');
+    });
+
+    it('plugins DSL: id("com.android.application") version "8.5.0" → JDK 17', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'plugins {\n  id("com.android.application") version "8.5.0" apply false\n}');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.agpVersion).toBe('8.5.0');
+    });
+
+    it('buildscript classpath: com.android.tools.build:gradle:8.2.1 → JDK 17', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'buildscript {\n  dependencies {\n    classpath("com.android.tools.build:gradle:8.2.1")\n  }\n}');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.agpVersion).toBe('8.2.1');
+    });
+
+    it('AGP-floor wins over lower jvmTarget — TaskFlow case', () => {
+      const dir = makeProject();
+      mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+        '[versions]\nagp = "8.8.2"\n');
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin { jvmToolchain(11) }');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);  // not 11
+    });
+
+    it('higher project jvmToolchain wins over AGP floor', () => {
+      const dir = makeProject();
+      mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+        '[versions]\nagp = "8.0.0"\n');
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin { jvmToolchain(21) }');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(21);
+      expect(r.agpVersion).toBe('8.0.0');
+    });
+
+    it('non-Android KMP project → no AGP signal added', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin { jvm() }\nkotlin { jvmToolchain(17) }');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.agpVersion).toBeNull();
+      expect(r.signals.find(s => /AGP/.test(s.type))).toBeUndefined();
+    });
+  });
 });
 
 // ------------------------------------------------------------------
@@ -1024,7 +1105,7 @@ describe('buildProjectModel', () => {
     expect(model.projectRoot).toBe(dir);
     expect(typeof model.generatedAt).toBe('string');
     expect(model.cacheKey).toMatch(/^[0-9a-f]{40}$/);
-    expect(model.jdkRequirement).toEqual({ min: null, signals: [] });
+    expect(model.jdkRequirement).toEqual({ min: null, signals: [], agpVersion: null });
     expect(model.settingsIncludes).toEqual([':m']);
     expect(model.modules[':m']).toBeTruthy();
     expect(model.modules[':m'].type).toBe('jvm');

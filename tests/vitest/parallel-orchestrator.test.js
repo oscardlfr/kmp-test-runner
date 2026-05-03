@@ -755,6 +755,61 @@ describe('runParallel', () => {
     expect(args).toContain('--continue');
   });
 
+  // 2026-05-03 wide-smoke regression: when gradle aborts at evaluation phase
+  // (one module's plugin/compile fails before any task runs), --continue +
+  // multi-module dispatch produced 4 misleading [FAIL] lines. Confetti repro:
+  // `:shared:jvmTest` succeeds in 1m 44s when invoked alone, but fails when
+  // bundled with `:androidApp:test` whose evaluation aborts. Cascade-isolation
+  // fallback retries each module separately when the one-shot dispatch shows
+  // no per-task evidence, so per-module truth surfaces.
+  it('cascade-isolation fallback: re-dispatches per-module when one-shot aborts pre-task', async () => {
+    const dir = makeProject([
+      { name: 'broken', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'healthy', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    let callIdx = 0;
+    const calls = [];
+    // Spawn that simulates: (1) one-shot leg → exit 1 with NO per-task line
+    // (only `BUILD FAILED`), then (2) per-module retry: broken → fail with
+    // per-task FAILED marker, healthy → BUILD SUCCESSFUL.
+    const spawn = (cmd, args, opts) => {
+      calls.push({ cmd, args: [...args], opts });
+      callIdx++;
+      const eArgs = effectiveGradleArgs({ cmd, args });
+      const isOneShot = eArgs.filter(a => a.startsWith(':')).length > 1;
+      if (isOneShot) {
+        return { status: 1, stdout: 'FAILURE: Build failed.\nBUILD FAILED in 1s\n', stderr: '', signal: null, error: null };
+      }
+      const taskArg = eArgs.find(a => a.startsWith(':')) || '';
+      if (taskArg.startsWith(':broken')) {
+        return { status: 1, stdout: `> Task ${taskArg} FAILED\nBUILD FAILED in 1s\n`, stderr: '', signal: null, error: null };
+      }
+      return { status: 0, stdout: `> Task ${taskArg}\nBUILD SUCCESSFUL in 1s\n`, stderr: '', signal: null, error: null };
+    };
+    spawn.calls = calls;
+    const stubCoverage = makeRunCoverageStub();
+    const lines = [];
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: (l) => lines.push(l),
+      runCoverageInjection: stubCoverage,
+    });
+    // Cascade-isolation banner emitted.
+    expect(lines.some(l => /retrying per-module|isolate/i.test(l))).toBe(true);
+    // Per-module truth: healthy passed, broken failed. Pre-fix, BOTH would
+    // have been marked failed by defense-in-depth.
+    expect(envelope.tests.passed).toBe(1);
+    expect(envelope.tests.failed).toBe(1);
+    expect(envelope.modules).toContain('healthy');
+    expect(envelope.errors.some(e => e.module === 'broken')).toBe(true);
+    expect(envelope.errors.some(e => e.module === 'healthy')).toBe(false);
+    // Spawn called 1 (one-shot) + 2 (per-module retry) = 3 times.
+    const gradleSpawnCount = calls.filter(c => isGradleCall(c)).length;
+    expect(gradleSpawnCount).toBe(3);
+  });
+
   it('envelope shape: parallel:{test_type, legs[], max_workers, timeout_s}', async () => {
     const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
     const stubCoverage = makeRunCoverageStub();
