@@ -385,14 +385,57 @@ Caveats:
 
 **Note:** PR #116 already added a "one-shot dispatch aborted before any task ran — retrying per-module" path (parallel-orchestrator.js#executeLeg step 4a) which fires when `legExit !== 0 && taskList.length > 1 && !anyTaskMentioned`. It correctly classifies each retry independently. **What's pending:** verifying the cascade isolation handles every shape we've observed (especially mixed evaluation-vs-execution failures in the same dispatch — when SOME tasks ran and SOME aborted) and that it scales to the 37-module shared-kmp-libs case without timing out.
 
-**Fix verification:**
-1. Reproduce the Confetti `:shared` ↔ `:androidApp` cascade on Windows; confirm post-#116 retry isolates `:shared` to GREEN.
-2. Reproduce the shared-kmp-libs 37-module cascade; confirm per-module retry surfaces which exact modules are broken (not all 37 cascade-failing).
-3. Add at least 2 vitest cases that exercise the retry path: (a) leg with 1 evaluation-aborting + 2 succeed-when-isolated, (b) leg with N modules where 1 fails at evaluation.
+**Wide-smoke pass-7 evidence (2026-05-04, PR4):** the cascade-isolation pattern affects **8 of 30** projects swept (`DawSync, dipatternsdemo, OmniSound, nav3-recipes, WakeTheCave, WakeTheCave_clean, WakeTheCave_ref, FileKit-main`). Detection signature: per-leg `execution.failed === 0 && execution.no_evidence > 0` while emitting `module_failed` for every dispatched task. **PR #116's retry path did NOT fire** in any of these cases despite all documented conditions matching (`legExit !== 0 && taskList.length > 1 && !anyTaskMentioned`):
+- `WakeTheCave` stderr is 1 line (only the JDK [NOTICE] auto-select); no `retrying per-module` message anywhere in stdout/stderr.
+- 8 cases × 0 retry firings = retry condition is too narrow OR the retry message is suppressed OR `anyTaskMentioned` is incorrectly truthy.
+- One MIXED case: `shared-kmp-libs` — cascade in `androidUnit` leg + REAL failures in `androidInstrumented` leg. Validates that the per-leg detection (not per-project) is the right granularity.
 
-**Effort:** ~2-3h (mostly verification + vitest; the implementation already landed in PR #116). 
+**Fix verification (UPDATED for pass-7):**
+1. **Re-investigate why retry doesn't fire** on the 8 pass-7 cases. Add `console.error` instrumentation around the `executeLeg` step 4a guard to see which condition fails.
+2. Reproduce `WakeTheCave` cascade on Windows (118 tasks × 4 legs, all `no_evidence`); confirm post-fix retry isolates the actual broken module(s).
+3. Reproduce `DawSync` 48-task cascade (4 legs); confirm per-leg detection works (each cascade leg gets its own retry).
+4. Reproduce `shared-kmp-libs` MIXED case (cascade in androidUnit + real failures in androidInstrumented); confirm retry fires only for the cascade leg.
+5. Add ≥3 vitest cases: (a) leg with all-`no_evidence` triggers retry, (b) leg with mixed real failures + `no_evidence` does NOT trigger retry (real failures take priority), (c) WakeTheCave-shape: 4 legs all-cascade triggers retry on every leg independently.
+6. Add the cascade-detection signature to the orchestrator's emitted envelope as a new field (e.g. `parallel.legs[].cascade_detected: boolean`) so downstream agents can branch on it without re-deriving from execution counters.
 
-**Ship-when:** v0.8.0 release-blocker. Validates that PR #116's cascade-isolation path is robust enough to ship in the v0.8.0 wide-smoke release-validation gate.
+**Effort:** ~4-6h (deeper than originally estimated; root-cause why retry doesn't fire + 6 vitest cases + envelope schema bump).
+
+**Ship-when:** v0.8.0 release-blocker. PR5 (`test/cascade-isolation-validation`) — promoted in priority by pass-7. Wide-smoke pass-7 RED-orchestrator-cascade count must drop from 8 to 0 before v0.8.0 release tag.
+
+### v0.8.0 — Confetti-main `unsupported_class_version` despite PR3's AGP-aware JDK auto-select (surfaced 2026-05-04 wide-smoke pass-7)
+
+**Surfaced 2026-05-04 in PR4 wide-smoke pass-7.** Confetti-main classified as RED-repo (1 module_failed, 133 testcases ran). The `errors[]` array contains both `module_failed` AND `unsupported_class_version` — meaning the JDK gate did fire after PR3's AGP-aware auto-select selected a JDK. PR3 was supposed to prevent exactly this by picking the AGP-required JDK runtime over the project's `jvmTarget`.
+
+**Hypothesis:** The auto-selected JDK satisfies AGP runtime + most modules, but ONE module compiles with a Kotlin `jvmTarget` that's higher than the auto-selected JDK can run. When that module's test class is loaded at test-runtime, the JVM throws `UnsupportedClassVersionError`. PR3's logic picked "AGP runtime JDK ≥ project's jvmTarget" but if a single module overrides jvmTarget higher than the project default, the auto-select misses it.
+
+**Investigation steps:**
+1. Read `.smoke/pass-7/Confetti-main.{out,err,json}` for the exact module + class version mismatch.
+2. Check `Confetti-main/.kmp-test-runner-cache/model-*.json` for per-module `jvmTarget` values vs project root's value.
+3. If single-module-overrides-jvmTarget is the cause: extend `aggregateJdkSignals` to scan per-module overrides, not just project-root signals.
+
+**Effort:** ~2-3h.
+
+**Ship-when:** v0.8.0 nice-to-have (not release-blocker — Confetti is an external sample; user repos that hit this should already be addressable via `--java-home` override).
+
+### v0.8.0 — `task_not_found` paired with `module_failed` in 4 projects (project-model task-name overreach; surfaced 2026-05-04 wide-smoke pass-7)
+
+**Surfaced 2026-05-04 in PR4 wide-smoke pass-7.** Four projects emit BOTH `module_failed` and `task_not_found` discriminators in the same envelope: DawSync, dipatternsdemo, shared-kmp-libs, FileKit-main. The `task_not_found` example from dipatternsdemo: "Cannot locate tasks that match `:benchmark:testDebugUnitTest` as task `testDebugUnitTest` not found in project `:benchmark`."
+
+**Root cause hypothesis:** The orchestrator's project model (`lib/project-model.js`) infers a task name (e.g. `testDebugUnitTest`) for the module from generic patterns, but THIS particular module (`:benchmark`) doesn't expose that task — perhaps it has only `connectedDebugAndroidTest` (instrumented) or a custom test task. The model's predict-from-source-sets fallback (added in PR #116) might be predicting a task that doesn't actually exist in gradle.
+
+**Investigation steps:**
+1. Read `dipatternsdemo/.kmp-test-runner-cache/model-*.json` for `:benchmark` module's `gradleTasks` and `sourceSets` arrays.
+2. If `gradleTasks` is null but `sourceSets.androidUnitTest === true`, the predictTaskFromSourceSets fallback (project-model.js:841-884) is the culprit — it predicts `testDebugUnitTest` even though gradle's task graph doesn't expose it.
+3. Fix: when the model probe ran successfully but `gradleTasks` is empty for a module, treat that module as untestable for that test-type rather than predicting a task name.
+
+**Affected (in addition to dipatternsdemo):**
+- DawSync — 1 task_not_found alongside 48 module_failed (entangled with cascade-isolation entry above).
+- shared-kmp-libs — 1 task_not_found alongside 66 module_failed.
+- FileKit-main — 1 task_not_found alongside 4 module_failed.
+
+**Effort:** ~2-3h.
+
+**Ship-when:** v0.8.0 nice-to-have. Lower priority than cascade-isolation fix because the impact is "1-2 false dispatches per multi-module project" rather than "entire project marked RED".
 
 ### v0.8.0 — Wide-smoke per-project triage: confirm REDs are repo-level vs orchestrator (surfaced 2026-05-03)
 
