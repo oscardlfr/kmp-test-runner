@@ -120,11 +120,18 @@ function Invoke-JdkMismatchGate {
     }
     $current = [int]$Matches[1]
 
-    if ($current -eq $required) {
+    # v0.8.0 fix-PR-B: host JDK that satisfies the floor must NOT trigger the
+    # gate. Pre-fix this used `-eq` (exact equality), coercing host=23+floor=17
+    # into a mismatch even though host 23 is a valid choice — the CLI-side
+    # auto-select would then downgrade to JDK 17 and break bytecode-65 Compose
+    # deps. The CLI now preserves host when current >= floor; this script-side
+    # gate must mirror that semantics so the preserved-host run actually
+    # reaches gradle.
+    if ($current -ge $required) {
         return 0
     }
 
-    # 4. Mismatch detected.
+    # 4. Mismatch detected (host below floor).
     if ($IgnoreJdkMismatch) {
         [Console]::Error.WriteLine("[!] WARN: JDK mismatch (required: $required, current: $current) - bypassed by -IgnoreJdkMismatch")
         return 0

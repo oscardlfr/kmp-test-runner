@@ -20,14 +20,26 @@ exit 0
 EOF
     chmod +x "$WORK_DIR/bin/gradlew"
 
-    # Stub java that reports JDK 23 (mismatch versus jvmToolchain(17) below).
+    # Stub java that reports JDK 11 (host BELOW jvmToolchain(17) → mismatch).
+    # v0.8.0 fix-PR-B: pre-fix this stub returned JDK 23 because the gate did
+    # `==` equality and 23 != 17 triggered the mismatch path. Post-fix the gate
+    # uses `>=` semantics (host satisfying the floor preserves the host), so
+    # we need host < floor to keep exercising the mismatch branch.
     cat > "$WORK_DIR/bin/java" << 'EOF'
 #!/usr/bin/env bash
 # `java -version` writes to stderr in real JDKs; mirror that.
-echo 'openjdk version "23.0.1" 2024-10-15' >&2
+echo 'openjdk version "11.0.21" 2023-10-17' >&2
 exit 0
 EOF
     chmod +x "$WORK_DIR/bin/java"
+    # Mirror the stub as java.cmd so Windows-local runs (where Node's spawnSync
+    # uses PATHEXT and ignores extensionless stubs) also pick it up. CI bats
+    # only runs on ubuntu so this is a local-dev-quality-of-life touch.
+    cat > "$WORK_DIR/bin/java.cmd" << 'EOF'
+@echo off
+echo openjdk version "11.0.21" 2023-10-17 1>&2
+exit /b 0
+EOF
 
     # Minimal KMP project layout with a jvmToolchain(17) declaration.
     echo 'rootProject.name = "test-project"' > "$WORK_DIR/settings.gradle.kts"
@@ -55,7 +67,7 @@ teardown() {
     [ "$status" -eq 3 ]
     [[ "$output" == *"JDK mismatch"* ]]
     [[ "$output" == *"requires JDK 17"* ]]
-    [[ "$output" == *"current JDK is 23"* ]]
+    [[ "$output" == *"current JDK is 11"* ]]
     [[ "$output" == *"--ignore-jdk-mismatch"* ]]
 }
 
@@ -91,6 +103,11 @@ echo 'openjdk version "17.0.10" 2024-01-16' >&2
 exit 0
 EOF
     chmod +x "$WORK_DIR/bin/java"
+    cat > "$WORK_DIR/bin/java.cmd" << 'EOF'
+@echo off
+echo openjdk version "17.0.10" 2024-01-16 1>&2
+exit /b 0
+EOF
     source "$LIB"
     run gate_jdk_mismatch "$WORK_DIR" "false"
     [ "$status" -eq 0 ]
@@ -117,7 +134,7 @@ EOF
     run gate_jdk_mismatch "$WORK_DIR" "false"
     [ "$status" -eq 3 ]
     [[ "$output" == *"requires JDK 21"* ]]
-    [[ "$output" == *"current JDK is 23"* ]]
+    [[ "$output" == *"current JDK is 11"* ]]
 }
 
 @test "jdk-check lib: takes MAX across mixed signals (jvmToolchain 17 + JvmTarget.JVM_21 → 21)" {
@@ -173,7 +190,7 @@ EOF
     run gate_jdk_mismatch "$WORK_DIR" "false"
     [ "$status" -eq 3 ]
     [[ "$output" == *"requires JDK 21"* ]]
-    [[ "$output" == *"current JDK is 23"* ]]
+    [[ "$output" == *"current JDK is 11"* ]]
 }
 
 @test "jdk-check lib (Gap B): falls back to legacy walker when model.json is absent" {
@@ -219,4 +236,36 @@ EOF
     (cd "$WORK_DIR" && git init -q && git config user.email t@t && git config user.name t)
     run bash "$CHANGED" --project-root "$WORK_DIR" --ignore-jdk-mismatch
     [[ "$output" != *"requires JDK 17"* ]] || [[ "$output" == *"WARN: JDK mismatch"* ]]
+}
+
+# -----------------------------------------------------------------------------
+# v0.8.0 fix-PR-B — preserve host JDK when it satisfies the floor
+# -----------------------------------------------------------------------------
+# The CLI-side preserve-host fix is in lib/cli.js#preflightJdkCheck, but the
+# script-side gate (this lib) had the same `==` equality bug. Both must mirror
+# the `host >= floor → preserve` semantic so the preserved-host run from cli.js
+# actually reaches gradle. Without this, cli.js says "host is fine" but the
+# script then re-gates and exits 3, breaking the preserve path end-to-end.
+# Canonical scenario: host=23 + jvmToolchain(17) → preserve.
+# -----------------------------------------------------------------------------
+
+@test "jdk-check lib (v0.8.0 fix-PR-B): host JDK above floor → returns 0 (preserved)" {
+    # Replace java stub with one reporting JDK 23 (above jvmToolchain(17)).
+    cat > "$WORK_DIR/bin/java" << 'EOF'
+#!/usr/bin/env bash
+echo 'openjdk version "23.0.2" 2025-01-21' >&2
+exit 0
+EOF
+    chmod +x "$WORK_DIR/bin/java"
+    cat > "$WORK_DIR/bin/java.cmd" << 'EOF'
+@echo off
+echo openjdk version "23.0.2" 2025-01-21 1>&2
+exit /b 0
+EOF
+    source "$LIB"
+    run gate_jdk_mismatch "$WORK_DIR" "false"
+    [ "$status" -eq 0 ]
+    # No mismatch error must be emitted on this path.
+    [[ "$output" != *"JDK mismatch"* ]]
+    [[ "$output" != *"UnsupportedClassVersionError"* ]]
 }

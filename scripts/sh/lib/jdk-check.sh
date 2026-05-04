@@ -107,11 +107,18 @@ gate_jdk_mismatch() {
     # 3. Read current `java -version` (works even if JAVA_HOME unset).
     local current_version
     current_version="$(java -version 2>&1 | head -1 | grep -oE '"[0-9]+' | tr -d '"' || true)"
-    if [[ -z "$current_version" || "$current_version" == "$jvm_version" ]]; then
+    # v0.8.0 fix-PR-B: host JDK that satisfies the floor must NOT trigger the
+    # gate. Pre-fix this used `==` (exact equality), coercing host=23+floor=17
+    # into a mismatch even though host 23 is a valid choice — the CLI-side
+    # auto-select would then downgrade to JDK 17 and break bytecode-65 Compose
+    # deps. The CLI now preserves host when current >= floor; this script-side
+    # gate must mirror that semantics so the preserved-host run actually
+    # reaches gradle.
+    if [[ -z "$current_version" || "$current_version" -ge "$jvm_version" ]]; then
         return 0
     fi
 
-    # 4. Mismatch detected.
+    # 4. Mismatch detected (host below floor).
     if [[ "$ignore" == "true" ]]; then
         echo "[!] WARN: JDK mismatch (required: $jvm_version, current: $current_version) — bypassed by --ignore-jdk-mismatch" >&2
         return 0

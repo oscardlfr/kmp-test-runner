@@ -340,6 +340,68 @@ describe('aggregateJdkSignals', () => {
       expect(r.agpVersion).toBe('9.0.0');
       expect(r.signals.find(s => /AGP 9\.0\.0 runtime/.test(s.type))).toBeTruthy();
     });
+
+    // v0.8.0 fix-PR-B — `agpIsBinding` distinguishes "AGP raised the floor"
+    // (binding) from "jvmToolchain raised it above AGP" (not binding).
+    // preflightJdkCheck uses this to decide whether to emit the "preserving
+    // host" notice — only when AGP is the surprising signal worth surfacing.
+    describe('agpIsBinding', () => {
+      it('AGP-only floor → agpIsBinding=true', () => {
+        const dir = makeProject();
+        mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+        writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+          '[versions]\nagp = "8.13.1"\n');
+        const r = aggregateJdkSignals(dir);
+        expect(r.min).toBe(17);
+        expect(r.agpIsBinding).toBe(true);
+      });
+
+      it('AGP + lower jvmToolchain → AGP wins, agpIsBinding=true', () => {
+        const dir = makeProject();
+        mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+        writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+          '[versions]\nagp = "8.8.2"\n');
+        writeFileSync(path.join(dir, 'build.gradle.kts'),
+          'kotlin { jvmToolchain(11) }');
+        const r = aggregateJdkSignals(dir);
+        expect(r.min).toBe(17);
+        expect(r.agpIsBinding).toBe(true);
+      });
+
+      it('AGP + equal jvmToolchain → still binding (AGP would have pinned floor anyway)', () => {
+        const dir = makeProject();
+        mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+        writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+          '[versions]\nagp = "8.8.2"\n');
+        writeFileSync(path.join(dir, 'build.gradle.kts'),
+          'kotlin { jvmToolchain(17) }');
+        const r = aggregateJdkSignals(dir);
+        expect(r.min).toBe(17);
+        expect(r.agpIsBinding).toBe(true);
+      });
+
+      it('higher jvmToolchain over AGP floor → agpIsBinding=false', () => {
+        const dir = makeProject();
+        mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+        writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+          '[versions]\nagp = "8.0.0"\n');
+        writeFileSync(path.join(dir, 'build.gradle.kts'),
+          'kotlin { jvmToolchain(21) }');
+        const r = aggregateJdkSignals(dir);
+        expect(r.min).toBe(21);
+        expect(r.agpIsBinding).toBe(false);
+      });
+
+      it('non-AGP project → agpIsBinding=false', () => {
+        const dir = makeProject();
+        writeFileSync(path.join(dir, 'build.gradle.kts'),
+          'kotlin { jvmToolchain(17) }');
+        const r = aggregateJdkSignals(dir);
+        expect(r.min).toBe(17);
+        expect(r.agpVersion).toBeNull();
+        expect(r.agpIsBinding).toBe(false);
+      });
+    });
   });
 });
 
@@ -1640,7 +1702,7 @@ describe('buildProjectModel', () => {
     expect(model.projectRoot).toBe(dir);
     expect(typeof model.generatedAt).toBe('string');
     expect(model.cacheKey).toMatch(/^[0-9a-f]{40}$/);
-    expect(model.jdkRequirement).toEqual({ min: null, signals: [], agpVersion: null });
+    expect(model.jdkRequirement).toEqual({ min: null, signals: [], agpVersion: null, agpIsBinding: false });
     expect(model.settingsIncludes).toEqual([':m']);
     expect(model.modules[':m']).toBeTruthy();
     expect(model.modules[':m'].type).toBe('jvm');
