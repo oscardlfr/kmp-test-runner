@@ -196,6 +196,106 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 - Re-using an existing OSS KMP project as the cross-platform E2E fixture — see Buildable cross-platform E2E fixture entry below for that decision.
 - ~~New CLI features.~~ **Carve-out (2026-05-03):** the project-level config file entry below (covers `sharedProjectName` + stable defaults) IS in v0.8.0 scope — closing the README ↔ tool surface gap honestly requires it rather than just deleting the misleading flag doc line.
 
+### v0.8.0 — Execution-summary classifier under-reports non-JVM test task RUNTIME failures (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 + Mac/Win post-toolchain-fix re-runs)
+
+**Status:** OPEN — **RELEASE-BLOCKER for v0.8.0**. Initially scoped to K/N native test tasks only (`macosArm64Test`, `iosX/Sim/ArmTest`). After post-toolchain-fix re-runs of shared-kmp-libs with **device connected** (Win: S22 Ultra, Mac: S25 Ultra), the same classifier gap surfaced on AGP instrumented tasks too: `connectedAndroidDeviceTest` (Mac) and `androidConnectedCheck` (Win). Three task classes confirmed affected; scope is generalized to "non-JVM test task RUNTIME failures".
+
+**Pre-S22/S25 wide-smoke runs always hit the infrastructure-failure path** on `connectedAndroidDeviceTest` (no device → adb returns nothing → gradle aborts pre-test-runner). That output shape the classifier DOES recognize → `execution.failed` was correct. With a real device, the SAME task class fails at the runtime test phase, which uses different output shape → classifier blind, `execution.failed: 0` despite real failures in `errors[]`.
+
+The `[FAIL]`-line fallback catches all three task classes correctly, so end-user envelopes are functionally correct via `errors[]`. Structured `execution.failed` counter is wrong on K/N + AGP instrumented runtime failures.
+
+**Repro envelope from pass-9-mac on shared-kmp-libs (`--test-type=all`):**
+
+```json
+{
+  "test_type": "macos",
+  "exit_code": 1,
+  "execution": { "fresh": 1, "up_to_date": 54, "skipped_by_gradle": 7, "failed": 0 },
+  "cascade_detected": false
+}
+```
+
+…paired with the correct error in the same envelope:
+
+```json
+{ "code": "module_failed", "module": "benchmark-storage",
+  "task": ":benchmark-storage:macosArm64Test", "message": "[FAIL] benchmark-storage" }
+```
+
+**Diagnosis:** the execution-summary classifier introduced in PR5 (`1da639b`) parses gradle's task-result output to build the `execution` counter. K/N native test tasks (`macosArm64Test`, `iosSimulatorArm64Test`, `iosX64Test`, `iosArm64Test`) report task results in a shape the classifier doesn't recognize as "failed", so the counter stays at 0. The `[FAIL]`-line fallback (which scans `[FAIL] :module:task` lines) catches the actual failure independently — but only via the fallback path.
+
+**Why Windows could not have caught this:**
+
+K/N `macosArm64Test` requires a macOS host. Windows wide-smoke runs never dispatch the macos leg (gradle refuses to compile the target on Windows). Pass-8 + pass-9 on Windows triaged shared-kmp-libs's macos leg as never-executed.
+
+**Hypothesis to confirm:**
+
+Same classifier gap likely exists for `iosSimulatorArm64Test` / `iosX64Test` / `iosArm64Test` since they share the K/N test task output shape with `macosArm64Test`. Pass-9-mac on shared-kmp-libs didn't dispatch iOS legs (`skipped[]` = 11 with reason "no ios target") — repro would land on a project with iOS targets (Confetti/KaMPKit candidates).
+
+**Why this matters even though end-user envelope is correct:**
+
+1. **OS parity principle (PRODUCT.md criterion 2):** Win and Mac should report execution counters identically modulo platform constraints.
+2. **Defense-in-depth at risk:** if the `[FAIL]`-line scrape ever changes shape (e.g., gradle output format drift in a future AGP/KGP version), the counter being 0 would mask the failure entirely. Right now we have two independent signals; only one is reliable for native legs.
+3. **Cascade detection input:** `detectCascadePattern` in tools/wide-smoke-pass-9.mjs reads `execution.failed` as one branch of its derivation. False zero in native legs could yield false cascade verdicts on edge cases (no immediate repro known, but the input-correctness invariant is broken).
+
+**Fix shape (next session):**
+
+1. Identify the K/N task-result line pattern in `lib/parallel-orchestrator.js` that the current classifier misses. Likely the K/N test task summary line uses different formatting than JVM `Test` task output.
+2. Extend the execution-summary regex / state-machine to count K/N native test failures into `execution.failed`.
+3. Add 2-3 vitest cases covering native task output shapes (use real captured output from shared-kmp-libs pass-9-mac forensic artifacts as fixtures).
+4. No envelope-shape change — the `errors[]` fallback continues to work; this is purely about correcting the structured counter.
+
+**Forensic artifacts (Mac-side):**
+
+`.smoke/pass-9-mac-all/{Confetti,KaMPKit,PeopleInSpace,shared-kmp-libs}.{json,out,err,meta.json}` on the Mac. To be published in the follow-up `WIDE-SMOKE-PASS-9-MAC.md` PR.
+
+**Out of scope:**
+
+- Fixing this in a Mac-only patch path. The classifier lives in shared `lib/parallel-orchestrator.js` and should produce identical results on all hosts modulo platform constraints.
+- Reworking the dual-signal (`execution` summary + `[FAIL]`-line fallback) architecture. Both signals are valuable; just need to align them on native legs.
+
+---
+
+### v0.8.0 — `--variant` flag honored on the instrumented (`androidInstrumented`) dispatch path (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 against dipatternsdemo)
+
+**Status:** OPEN — **RELEASE-BLOCKER for v0.8.0** per `feedback_dont_defer_to_post_release.md`. Asymmetry surfaced in pass-9 triage on Windows against dipatternsdemo. Even though no GREEN/SKIP project flipped to RED-orchestrator (the affected modules surface as RED-repo via `task_not_found` discriminator), this is a real orchestrator bug discovered by a release-validation gate — fix BEFORE v0.8.0 tag, do not defer.
+
+**The asymmetry today:**
+
+`lib/parallel-orchestrator.js#androidUnitTask` (line 306) honors `--variant {auto,debug,release,all}` AND respects `mod.testBuildType === 'release'` for static per-module variant selection. So unit-test runs against benchmark-style modules (e.g. dipatternsdemo's `:benchmark` with `testBuildType = "release"`) correctly dispatch `:m:testReleaseUnitTest` under default `--variant auto`.
+
+The instrumented path (`selectTaskForLeg` case `androidInstrumented`, lines 373-399) hardcodes `connectedDebugAndroidTest`. No `mod.testBuildType` lookup, no variant honoring. Modules with `testBuildType = "release"` (which only generate `connectedReleaseAndroidTest`) fail with `task_not_found` on every default sweep.
+
+**Repro (any time):** dipatternsdemo `:benchmark` (legacy `com.android.library`, `testBuildType = "release"`) dispatched via `kmp-test parallel --test-type=androidInstrumented` — gradle responds `Cannot locate tasks that match ':benchmark:connectedDebugAndroidTest' as task 'connectedDebugAndroidTest' not found in project ':benchmark'.`
+
+**Fix shape (next session):**
+
+1. Add `androidConnectedTask(gradlePath, variant, mod)` mirroring `androidUnitTask` semantics:
+   - `auto` (default): dispatch `connectedReleaseAndroidTest` when `mod.testBuildType === 'release'`, else `connectedDebugAndroidTest`
+   - `debug` / `release`: forced
+   - `all`: emit two leg entries (one per variant) — same shape as the unit-test `--variant all` path
+2. Replace the hardcoded `${gradlePath}:connectedDebugAndroidTest` at parallel-orchestrator.js:396 with `androidConnectedTask(gradlePath, opts.androidVariant, mod)`.
+3. Mirror in the `kmpAndroidLibrary` branch (line 387) where applicable — though the new KMP plugin uses `androidConnectedCheck` without Debug/Release variants, so the variant flag stays a no-op there (already documented in fix-PR-D's commit message).
+4. +3-4 vitest cases:
+   - `mod.testBuildType === 'release'` + `--variant auto` → `connectedReleaseAndroidTest`
+   - `mod.testBuildType === 'release'` + `--variant debug` → `connectedDebugAndroidTest` (user override)
+   - `mod.testBuildType === undefined` + `--variant auto` → `connectedDebugAndroidTest` (legacy default)
+   - `--variant all` emits both legs
+
+**Repro projects (parking):**
+- dipatternsdemo (`:benchmark`, `:sample-multimodule`)
+- Any benchmark module across the wide-smoke matrix that uses `testBuildType = "release"`
+
+**Why this IS blocking v0.8.0 (corrected 2026-05-04 second incident):**
+Initially framed as "not blocking" because pass-9 bucket counts match pass-8 (3/14/13/0/0/0) and the dipatternsdemo failures happened in both passes. User pushed back: "no va a ser para la 0.8.x — tiene que estar antes". Standing rule per `feedback_dont_defer_to_post_release.md`: any bug found during a release-validation gate gets root-caused and fixed before the version tag. The "pre-existing in earlier pass" framing does NOT exempt the bug from the rule — pass-7 and pass-8 just happened to not stress this path. Pass-9 surfaced it; fix it pre-tag.
+
+**Out of scope:**
+- Changing the default variant from auto to anything else
+- Auto-mixing debug + release in the same sweep without `--variant all`
+- Refactoring `androidUnitTask` (already correct; just needs to be paralleled for connected)
+
+---
+
 ### v0.8 — ✅ Silent-pass class FIXED — but the unsilenced REDs surfaced 3 more pre-existing bugs (2026-05-03)
 
 **Status: silent-pass class FIXED + parseSettingsIncludes phantom-module FIXED + stderr filter WIDENED. Still outstanding: 2 pre-existing bugs that were hidden behind silent-pass and need their own investigation.**
