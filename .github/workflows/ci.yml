@@ -98,11 +98,18 @@ jobs:
         run: npx vitest run --coverage
   secrets-scan:
     # Always runs — security checks are non-negotiable, even on docs-only PRs.
+    # Also gates the release version-pin invariant: tools/sync-versions.js --check
+    # exits non-zero if package.json version drifts from gradle-plugin / README / CLAUDE.md.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Verify version pins are in sync (tools/sync-versions.js --check)
+        run: node tools/sync-versions.js --check
       - name: TruffleHog OSS
         uses: trufflesecurity/trufflehog@main
         with:
