@@ -1189,7 +1189,9 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
 
-### Multi-feature token-cost measurement (v0.4 milestone)
+### ✅ Multi-feature token-cost measurement (v0.4 milestone) (DONE in v0.4 — PRs #34–#37)
+
+**Status: DONE in v0.4** (PRs #34–#37). All 4 in-scope features (`parallel` / `coverage` / `changed` / `benchmark`) shipped with cross-tokenizer measurement (`cl100k_base` + `opus-4-7` + `sonnet-4-6` + `haiku-4-5`) in the README's "Why this exists — token cost per agent test-run iteration" section (line ~5). Chart redesign landed as one markdown bar table per feature (no Mermaid). `android` (instrumented) deferred per the entry's explicit out-of-scope clause; `doctor` skipped per the entry's "too small" note. Original entry text preserved below.
 
 Today's measurement (PRs #27–#29) covers **one** scenario: `kmp-test parallel` with Kover coverage on a single failing module of `shared-kmp-libs`. The "127–154× cheaper than raw gradle" claim in the README only stands up for that scenario. The CLI ships several other features the same agent-cost story applies to but we haven't measured:
 
@@ -1215,7 +1217,9 @@ Recommend the second — Mermaid xychart-beta has been a pain (PRs #28–#29 his
 
 **Out of scope for this entry.** README quick-fix mentioning Kover/JaCoCo as supported coverage tools (currently undocumented — separate small entry below).
 
-### Document Kover and JaCoCo in README (quick win)
+### ✅ Document Kover and JaCoCo in README (quick win) (DONE since v0.5.1 — README "Coverage tools" subsection at L334)
+
+**Status: DONE since v0.5.1.** README's "Coverage tools" subsection (line ~334) covers both Kover and JaCoCo by name with links, the `--coverage-tool` flag with `auto` / `kover` / `jacoco` / `none` values, heterogeneous-project handling, and the convention-plugin coverage detection note (v0.6.1+). Original entry text preserved below.
 
 `--coverage-tool` accepts `kover`, `jacoco`, or `none` (current default `kover`). README never mentions either tool by name — only references "coverage" generically. New users land on the README, see "coverage" with no signal that JaCoCo is supported, assume Kover-only or look for `--jacoco`-style flags. Quick fix: a 1-paragraph "Coverage tools" subsection under "Usage" naming both tools, the default, and the flag.
 

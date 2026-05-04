@@ -39,7 +39,9 @@
   "scripts": {
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "shellcheck": "shellcheck scripts/sh/*.sh scripts/sh/lib/*.sh"
+    "shellcheck": "shellcheck scripts/sh/*.sh scripts/sh/lib/*.sh",
+    "sync-versions": "node tools/sync-versions.js",
+    "version": "node tools/sync-versions.js && git add gradle-plugin/build.gradle.kts README.md CLAUDE.md"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.91.1",

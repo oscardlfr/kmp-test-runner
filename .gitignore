@@ -10,6 +10,8 @@ build/
 .idea/
 # Build cache artefacts produced when fixtures are exercised by tests
 **/.kmp-test-runner-cache/
+# v0.8.0 (PR6): unified runner artefacts subdir (cache/ reports/ logs/)
+**/.kmp-test-runner/
 **/gradle.properties
 *.log
 .DS_Store
