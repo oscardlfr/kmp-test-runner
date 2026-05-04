@@ -8,6 +8,10 @@
 # stable workaround.
 tools/measure-token-cost.js text eol=lf
 tests/vitest/measure-token-cost.test.js text eol=lf
+# Same vitest 2.1.x CRLF + non-ASCII trigger applies — these files contain
+# em-dashes in headers / prose that break Windows vitest without LF.
+tools/sync-versions.js text eol=lf
+tests/vitest/sync-versions.test.js text eol=lf
 
 # Fixture wrapper scripts: gradlew (POSIX) needs LF; gradlew.bat needs CRLF
 # so cmd.exe parses it correctly across hosts.
