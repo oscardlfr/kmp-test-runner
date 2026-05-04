@@ -488,10 +488,11 @@ describe('analyzeModule', () => {
     expect(a.type).toBe('android');
   });
 
-  it('detects all 18 source-set directories independently', () => {
+  it('detects all 19 source-set directories independently', () => {
     // 9 baseline + 3 added in v0.6 Bug 3 (jsTest / wasmJsTest / wasmWasiTest)
     // + 6 added in v0.7.0 (iosX64Test / iosArm64Test / iosSimulatorArm64Test
-    //   / macosTest / macosX64Test / macosArm64Test).
+    //   / macosTest / macosX64Test / macosArm64Test)
+    // + 1 added in v0.8.0 fix-PR-D (androidDeviceTest — new KMP-Android plugin).
     const dir = makeProject();
     mkdirSync(path.join(dir, 'm', 'src', 'commonTest'), { recursive: true });
     mkdirSync(path.join(dir, 'm', 'src', 'androidInstrumentedTest'), { recursive: true });
@@ -632,6 +633,102 @@ describe('analyzeModule', () => {
       'plugins { id("com.android.application") }');
     const a = analyzeModule(dir, ':app');
     expect(a.type).toBe('android');
+  });
+});
+
+// ------------------------------------------------------------------
+// analyzeModule kmpAndroidLibrary plugin (v0.8.0 fix-PR-D — Bug D)
+//
+// Google's `com.android.kotlin.multiplatform.library` plugin (Kotlin 2.3+)
+// replaces `com.android.library` for KMP modules. It uses different test
+// task names (`testAndroidHostTest` vs `testDebugUnitTest`) and requires
+// `withHostTestBuilder {} / withDeviceTestBuilder {}` opt-ins inside
+// `androidLibrary {}` for AGP to generate the test tasks. The model surfaces
+// these as `androidDslVariant`, `hasHostTestOptIn`, `hasDeviceTestOptIn`,
+// and overrides `sourceSets.androidUnitTest`/`androidDeviceTest` to reflect
+// AGP behavior (opt-in trumps disk evidence and vice versa).
+// ------------------------------------------------------------------
+describe('analyzeModule kmpAndroidLibrary plugin (v0.8.0 fix-PR-D)', () => {
+  it('detects kmpAndroidLibrary via literal id("com.android.kotlin.multiplatform.library")', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'),
+      'plugins {\n  kotlin("multiplatform")\n  id("com.android.kotlin.multiplatform.library")\n}\nkotlin { androidLibrary { } }');
+    const a = analyzeModule(dir, ':m');
+    expect(a.type).toBe('kmp');
+    expect(a.androidDslVariant).toBe('kmpAndroidLibrary');
+  });
+
+  it('detects kmpAndroidLibrary via alias(libs.plugins.android.kotlin.multiplatform.library)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      '[plugins]\n' +
+      'kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version = "2.3.0" }\n' +
+      'android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version = "9.0.0" }\n');
+    mkdirSync(path.join(dir, 'shared'), { recursive: true });
+    writeFileSync(path.join(dir, 'shared', 'build.gradle.kts'),
+      'plugins {\n  alias(libs.plugins.kotlin.multiplatform)\n  alias(libs.plugins.android.kotlin.multiplatform.library)\n}');
+    const a = analyzeModule(dir, ':shared');
+    expect(a.type).toBe('kmp');
+    expect(a.androidDslVariant).toBe('kmpAndroidLibrary');
+  });
+
+  it('detects kmpAndroidLibrary via androidLibrary {} DSL alone (convention-plugin scenario)', () => {
+    // Repro: shared-kmp-libs `:benchmark-network` applies a convention plugin
+    // (`com.grinx.shared.kmp.benchmark`) which internally applies the new
+    // plugin. The module's own build.gradle.kts has neither the literal id
+    // nor the alias — only the `androidLibrary { }` DSL block. The DSL block
+    // is exclusive to the new plugin (legacy uses `android {}`), so its
+    // presence alone IS a reliable signal.
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'),
+      'plugins {\n  id("com.grinx.shared.kmp.benchmark")\n}\nkotlin {\n  androidLibrary {\n    namespace = "com.x"\n  }\n}');
+    const a = analyzeModule(dir, ':m');
+    expect(a.androidDslVariant).toBe('kmpAndroidLibrary');
+  });
+
+  it('withHostTestBuilder {} opt-in surfaces sourceSets.androidUnitTest = true', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'm', 'src', 'androidUnitTest'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'),
+      'plugins {\n  kotlin("multiplatform")\n  id("com.android.kotlin.multiplatform.library")\n}\n' +
+      'kotlin {\n  androidLibrary {\n    withHostTestBuilder {\n      sourceSetTreeName = "test"\n    }\n  }\n}');
+    const a = analyzeModule(dir, ':m');
+    expect(a.androidDslVariant).toBe('kmpAndroidLibrary');
+    expect(a.hasHostTestOptIn).toBe(true);
+    expect(a.sourceSets.androidUnitTest).toBe(true);
+  });
+
+  it('withHostTestBuilder ABSENT zeros sourceSets.androidUnitTest even when src dir exists (core-firebase-native repro)', () => {
+    // Live repro from shared-kmp-libs `:core-firebase-native`. The dir has
+    // `src/androidUnitTest/kotlin/` with real test files but no
+    // `withHostTestBuilder {}` opt-in declared. AGP creates no
+    // `testAndroidHostTest` task → orchestrator must skip, not dispatch.
+    // Pre-fix: filesystem-only probe set `androidUnitTest = true`, leading
+    // orchestrator to dispatch `:m:testDebugUnitTest` → task_not_found.
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'm', 'src', 'androidUnitTest', 'kotlin'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'),
+      'plugins {\n  kotlin("multiplatform")\n  id("com.android.kotlin.multiplatform.library")\n}\n' +
+      'kotlin {\n  androidLibrary {\n    namespace = "com.x"\n  }\n}');
+    const a = analyzeModule(dir, ':m');
+    expect(a.androidDslVariant).toBe('kmpAndroidLibrary');
+    expect(a.hasHostTestOptIn).toBe(false);
+    expect(a.sourceSets.androidUnitTest).toBe(false);
+  });
+
+  it('withDeviceTestBuilder {} opt-in surfaces sourceSets.androidDeviceTest = true (benchmark-network repro)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'),
+      'plugins {\n  id("com.grinx.shared.kmp.benchmark")\n}\n' +
+      'kotlin {\n  androidLibrary {\n    namespace = "com.x"\n    withDeviceTestBuilder {\n      sourceSetTreeName = "test"\n    }\n  }\n}');
+    const a = analyzeModule(dir, ':m');
+    expect(a.androidDslVariant).toBe('kmpAndroidLibrary');
+    expect(a.hasDeviceTestOptIn).toBe(true);
+    expect(a.sourceSets.androidDeviceTest).toBe(true);
   });
 });
 
