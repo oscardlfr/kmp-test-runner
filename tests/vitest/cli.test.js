@@ -1392,11 +1392,11 @@ describe('main() — Phase 4 step 7 (eager ProjectModel build before spawn)', ()
       writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), 'plugins { kotlin("jvm") }');
       process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
       main();
-      const cacheDir = path.join(dir, '.kmp-test-runner-cache');
+      const cacheDir = path.join(dir, '.kmp-test-runner', 'cache');
       const modelFiles = readdirSync(cacheDir).filter(f => f.startsWith('model-') && f.endsWith('.json'));
       expect(modelFiles.length).toBeGreaterThan(0);
       const model = JSON.parse(readFileSync(path.join(cacheDir, modelFiles[0]), 'utf8'));
-      expect(model.schemaVersion).toBe(6);
+      expect(model.schemaVersion).toBe(7);
       expect(model.settingsIncludes).toEqual([':m']);
       expect(model.modules[':m'].type).toBe('jvm');
     });
@@ -1415,7 +1415,7 @@ describe('main() — Phase 4 step 7 (eager ProjectModel build before spawn)', ()
         expect(code).toBe(EXIT.SUCCESS);
         // The eager build call lives AFTER the dry-run early return, so no
         // model JSON should appear on disk after a --dry-run invocation.
-        const cacheDir = path.join(dir, '.kmp-test-runner-cache');
+        const cacheDir = path.join(dir, '.kmp-test-runner', 'cache');
         if (existsSync(cacheDir)) {
           const files = readdirSync(cacheDir).filter(f => f.startsWith('model-'));
           expect(files).toEqual([]);

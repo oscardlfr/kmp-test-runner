@@ -438,6 +438,27 @@ describe('partitionBySkipEnv', () => {
     expect(r.kept.length).toBe(3);
     expect(r.skipped.length).toBe(0);
   });
+
+  // v0.8.0 — config-file fallback for SKIP_*_MODULES precedence chain
+  it('config skip.android falls through when env is unset → reason includes [config] suffix', () => {
+    const r = partitionBySkipEnv(modules, 'androidUnit', {}, { skip: { android: ['core'] } });
+    expect(r.kept.map(m => m.name)).toEqual(['feature:domain', 'app']);
+    expect(r.skipped[0].module).toBe('core');
+    expect(r.skipped[0].reason).toMatch(/SKIP_ANDROID_MODULES \(core\) \[config\]/);
+  });
+
+  it('env SKIP_ANDROID_MODULES wins over config skip.android (precedence: env > config)', () => {
+    const r = partitionBySkipEnv(
+      modules,
+      'androidUnit',
+      { SKIP_ANDROID_MODULES: 'app' },         // env says skip "app"
+      { skip: { android: ['core'] } },         // config says skip "core" — should be ignored
+    );
+    expect(r.kept.map(m => m.name)).toEqual(['core', 'feature:domain']);
+    expect(r.skipped[0].module).toBe('app');
+    // No [config] suffix because env supplied the value.
+    expect(r.skipped[0].reason).not.toMatch(/\[config\]/);
+  });
 });
 
 // ===========================================================================

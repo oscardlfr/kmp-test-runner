@@ -361,7 +361,8 @@ describe('runAndroid cross-OS spawn shape', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Case 8 — per-module log files at <projectRoot>/build/logcat/<runId>/
+// Case 8 — per-module log files at <projectRoot>/.kmp-test-runner/logs/android/<runId>/
+// (v0.8.0: moved from build/logcat/<runId>/ as part of artifact-subdir consolidation)
 // ---------------------------------------------------------------------------
 describe('runAndroid per-module log files', () => {
   it('writes <runId>/<module>.log + _logcat.log on success; +_errors.json on FAIL', async () => {
@@ -379,7 +380,7 @@ describe('runAndroid per-module log files', () => {
       runId: 'fixed-run-id',
     });
 
-    const logDir = path.join(dir, 'build', 'logcat', 'fixed-run-id');
+    const logDir = path.join(dir, '.kmp-test-runner', 'logs', 'android', 'fixed-run-id');
     expect(existsSync(path.join(logDir, 'pass-mod.log'))).toBe(true);
     expect(existsSync(path.join(logDir, 'pass-mod_logcat.log'))).toBe(true);
     expect(existsSync(path.join(logDir, 'fail-mod.log'))).toBe(true);
@@ -409,8 +410,25 @@ describe('runAndroid per-module log files', () => {
       runId: 'fixed-run-id',
     });
 
-    const logDir = path.join(dir, 'build', 'logcat', 'fixed-run-id');
+    const logDir = path.join(dir, '.kmp-test-runner', 'logs', 'android', 'fixed-run-id');
     expect(existsSync(path.join(logDir, 'core_db.log'))).toBe(true);
+  });
+
+  it('legacy build/logcat/ path is NOT created (clean migration, no dual-write for logs) — v0.8.0', async () => {
+    const dir = makeProject([{ name: 'pass-mod' }]);
+    const spawn = makeSpawnStub({ perModuleStatus: { 'pass-mod': 0 } });
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: [],
+      spawn,
+      adbProbe,
+      runId: 'fixed-run-id',
+    });
+
+    expect(existsSync(path.join(dir, 'build', 'logcat'))).toBe(false);
+    expect(existsSync(path.join(dir, '.kmp-test-runner', 'logs', 'android', 'fixed-run-id', 'pass-mod.log'))).toBe(true);
   });
 });
 

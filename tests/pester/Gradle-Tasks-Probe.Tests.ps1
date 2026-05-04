@@ -235,11 +235,12 @@ Describe 'Cache format regression — module:task without leading colon' {
 
 Describe 'Clear-GradleTasksCache: cleans up tasks-*.txt files' {
 
-    It 'removes all cache files under .kmp-test-runner-cache' {
+    It 'removes all cache files under .kmp-test-runner\cache (v0.8.0 path)' {
         $dir = New-ProbeFixture
         try {
             Invoke-GradleTasksProbe -ProjectRoot $dir | Out-Null
-            $cacheDir = Join-Path $dir '.kmp-test-runner-cache'
+            # v0.8.0 — probe writes to the new path `.kmp-test-runner\cache\`.
+            $cacheDir = Join-Path $dir '.kmp-test-runner\cache'
             (Get-ChildItem $cacheDir -Filter 'tasks-*.txt').Count | Should -BeGreaterThan 0
             Clear-GradleTasksCache -ProjectRoot $dir
             (Get-ChildItem $cacheDir -Filter 'tasks-*.txt' -ErrorAction SilentlyContinue).Count | Should -Be 0

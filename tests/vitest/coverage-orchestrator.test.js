@@ -24,7 +24,7 @@
 //  12. Cross-platform spawn shape (no shell-specific assumptions in stub)
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -422,7 +422,7 @@ describe('runCoverage', () => {
     expect(existsSync(path.join(projectRoot, 'coverage-full-report.md'))).toBe(false);
   });
 
-  it('writes Markdown report with versioned filename + legacy alias', async () => {
+  it('writes Markdown report under .kmp-test-runner/reports/coverage/ with versioned + latest alias (v0.8.0)', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'a', 'kover');
     const spawn = makeSpawnStub({
@@ -434,9 +434,46 @@ describe('runCoverage', () => {
       spawn,
       runId: 'TEST-RUN-ID',
     });
-    expect(existsSync(path.join(projectRoot, 'coverage-full-report-TEST-RUN-ID.md'))).toBe(true);
-    expect(existsSync(path.join(projectRoot, 'coverage-full-report.md'))).toBe(true);
+    const reportsDir = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage');
+    expect(existsSync(path.join(reportsDir, 'TEST-RUN-ID.md'))).toBe(true);
+    expect(existsSync(path.join(reportsDir, 'latest.md'))).toBe(true);
     expect(envelope.coverage.missed_lines).toBe(1);
+  });
+
+  it('clean break — no coverage-full-report.md or coverage-full-report-<runId>.md written at project root (v0.8.0)', async () => {
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'a', 'kover');
+    const spawn = makeSpawnStub({
+      rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+    });
+    await runCoverage({
+      projectRoot,
+      args: ['--output-file', 'coverage-full-report.md'],
+      spawn,
+      runId: 'TEST-RUN-ID',
+    });
+    expect(existsSync(path.join(projectRoot, 'coverage-full-report.md'))).toBe(false);
+    expect(existsSync(path.join(projectRoot, 'coverage-full-report-TEST-RUN-ID.md'))).toBe(false);
+  });
+
+  it('two coverage runs in same project produce two <runId>.md files + single latest.md overwrite', async () => {
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'a', 'kover');
+    const spawnA = makeSpawnStub({
+      rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+    });
+    await runCoverage({ projectRoot, args: [], spawn: spawnA, runId: 'RUN-A' });
+    const spawnB = makeSpawnStub({
+      rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|8|2|10|80.0|7,9'] },
+    });
+    await runCoverage({ projectRoot, args: [], spawn: spawnB, runId: 'RUN-B' });
+    const reportsDir = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage');
+    expect(existsSync(path.join(reportsDir, 'RUN-A.md'))).toBe(true);
+    expect(existsSync(path.join(reportsDir, 'RUN-B.md'))).toBe(true);
+    expect(existsSync(path.join(reportsDir, 'latest.md'))).toBe(true);
+    // latest.md must mirror the most recent run (RUN-B) — sample a known-distinct row.
+    const latestContent = readFileSync(path.join(reportsDir, 'latest.md'), 'utf8');
+    expect(latestContent).toContain('80%');  // RUN-B coverage pct
   });
 
   it('--exclude-coverage drops module from dispatched but keeps plugin classification', async () => {
