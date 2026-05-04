@@ -196,9 +196,13 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 - Re-using an existing OSS KMP project as the cross-platform E2E fixture — see Buildable cross-platform E2E fixture entry below for that decision.
 - ~~New CLI features.~~ **Carve-out (2026-05-03):** the project-level config file entry below (covers `sharedProjectName` + stable defaults) IS in v0.8.0 scope — closing the README ↔ tool surface gap honestly requires it rather than just deleting the misleading flag doc line.
 
-### v0.8.0 — Kotlin/Native leg execution-summary classifier under-reports test task failures (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9-mac on shared-kmp-libs)
+### v0.8.0 — Execution-summary classifier under-reports non-JVM test task RUNTIME failures (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 + Mac/Win post-toolchain-fix re-runs)
 
-**Status:** OPEN — **RELEASE-BLOCKER for v0.8.0**. Mac-side validation surfaced a counter discrepancy in `lib/parallel-orchestrator.js` for `macosArm64Test`. The `[FAIL]`-line fallback catches the failure and emits `module_failed` to `errors[]` correctly, but the structured `execution.failed` counter on the leg stays 0. Even though the end-user envelope appears correct via fallback, this is a real orchestrator bug surfaced by a release-validation gate — fix BEFORE v0.8.0 tag per `feedback_dont_defer_to_post_release.md`.
+**Status:** OPEN — **RELEASE-BLOCKER for v0.8.0**. Initially scoped to K/N native test tasks only (`macosArm64Test`, `iosX/Sim/ArmTest`). After post-toolchain-fix re-runs of shared-kmp-libs with **device connected** (Win: S22 Ultra, Mac: S25 Ultra), the same classifier gap surfaced on AGP instrumented tasks too: `connectedAndroidDeviceTest` (Mac) and `androidConnectedCheck` (Win). Three task classes confirmed affected; scope is generalized to "non-JVM test task RUNTIME failures".
+
+**Pre-S22/S25 wide-smoke runs always hit the infrastructure-failure path** on `connectedAndroidDeviceTest` (no device → adb returns nothing → gradle aborts pre-test-runner). That output shape the classifier DOES recognize → `execution.failed` was correct. With a real device, the SAME task class fails at the runtime test phase, which uses different output shape → classifier blind, `execution.failed: 0` despite real failures in `errors[]`.
+
+The `[FAIL]`-line fallback catches all three task classes correctly, so end-user envelopes are functionally correct via `errors[]`. Structured `execution.failed` counter is wrong on K/N + AGP instrumented runtime failures.
 
 **Repro envelope from pass-9-mac on shared-kmp-libs (`--test-type=all`):**
 
