@@ -1595,11 +1595,11 @@ describe('buildProjectModel', () => {
     expect(() => buildProjectModel('/no/such/dir', { skipProbe: true })).toThrow();
   });
 
-  it('persists model JSON atomically (model-<sha>.json file present)', () => {
+  it('persists model JSON atomically at .kmp-test-runner/cache/model-<sha>.json (v0.8.0 path)', () => {
     const dir = makeProject();
     writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
     const m = buildProjectModel(dir, { skipProbe: true });
-    const modelFile = path.join(dir, '.kmp-test-runner-cache', `model-${m.cacheKey}.json`);
+    const modelFile = path.join(dir, '.kmp-test-runner', 'cache', `model-${m.cacheKey}.json`);
     expect(existsSync(modelFile)).toBe(true);
     const onDisk = JSON.parse(readFileSync(modelFile, 'utf8'));
     expect(onDisk.cacheKey).toBe(m.cacheKey);
@@ -1611,7 +1611,7 @@ describe('buildProjectModel', () => {
     writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
     const m1 = buildProjectModel(dir, { skipProbe: true });
     // Corrupt the cache file in-place.
-    const modelFile = path.join(dir, '.kmp-test-runner-cache', `model-${m1.cacheKey}.json`);
+    const modelFile = path.join(dir, '.kmp-test-runner', 'cache', `model-${m1.cacheKey}.json`);
     writeFileSync(modelFile, '{ not valid json');
     const m2 = buildProjectModel(dir, { skipProbe: true });
     expect(m2.cacheKey).toBe(m1.cacheKey);
@@ -1625,6 +1625,57 @@ describe('buildProjectModel', () => {
     await new Promise(r => setTimeout(r, 5));
     const b = buildProjectModel(dir, { skipProbe: true, useCache: false });
     expect(b.generatedAt).not.toBe(a.generatedAt);
+  });
+
+  // v0.8.0 cache subdir migration — dual-read fallback for legacy `.kmp-test-runner-cache/`
+  it('writes new cache to .kmp-test-runner/cache/ (NOT to legacy .kmp-test-runner-cache/)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const m = buildProjectModel(dir, { skipProbe: true });
+    expect(existsSync(path.join(dir, '.kmp-test-runner', 'cache', `model-${m.cacheKey}.json`))).toBe(true);
+    expect(existsSync(path.join(dir, '.kmp-test-runner-cache', `model-${m.cacheKey}.json`))).toBe(false);
+  });
+
+  it('reads a same-schema cache stored at the legacy `.kmp-test-runner-cache/` path on first upgrade', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    // Build once so we know the cacheKey + a valid model shape, then erase the
+    // new-path cache and pre-populate the legacy path with the same model.
+    const m1 = buildProjectModel(dir, { skipProbe: true });
+    const newCacheFile = path.join(dir, '.kmp-test-runner', 'cache', `model-${m1.cacheKey}.json`);
+    const legacyDir = path.join(dir, '.kmp-test-runner-cache');
+    const legacyFile = path.join(legacyDir, `model-${m1.cacheKey}.json`);
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(legacyFile, readFileSync(newCacheFile, 'utf8'));
+    rmSync(newCacheFile);
+    // Now buildProjectModel should pick up the legacy cache via dual-read.
+    const m2 = buildProjectModel(dir, { skipProbe: true });
+    expect(m2.cacheKey).toBe(m1.cacheKey);
+    expect(m2.generatedAt).toBe(m1.generatedAt);  // Same cached object, not a rebuild.
+  });
+
+  it('legacy cache file is left alone after upgrade — new writes go to .kmp-test-runner/cache/ only', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    // Pre-populate the legacy path with a valid cache, then drop the new path.
+    const m1 = buildProjectModel(dir, { skipProbe: true });
+    const newCacheFile = path.join(dir, '.kmp-test-runner', 'cache', `model-${m1.cacheKey}.json`);
+    const legacyDir = path.join(dir, '.kmp-test-runner-cache');
+    const legacyFile = path.join(legacyDir, `model-${m1.cacheKey}.json`);
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(legacyFile, readFileSync(newCacheFile, 'utf8'));
+    rmSync(newCacheFile);
+    // Mutate settings.gradle.kts so the next call gets a different cacheKey
+    // (legacy cache miss → rebuild → write to new path).
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "y"');
+    const m2 = buildProjectModel(dir, { skipProbe: true });
+    expect(m2.cacheKey).not.toBe(m1.cacheKey);
+    // New path got the rebuilt cache.
+    expect(existsSync(path.join(dir, '.kmp-test-runner', 'cache', `model-${m2.cacheKey}.json`))).toBe(true);
+    // Legacy file (old cacheKey) preserved — no migration delete.
+    expect(existsSync(legacyFile)).toBe(true);
+    // No legacy write for the new cacheKey.
+    expect(existsSync(path.join(legacyDir, `model-${m2.cacheKey}.json`))).toBe(false);
   });
 });
 

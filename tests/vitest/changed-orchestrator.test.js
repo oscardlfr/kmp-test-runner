@@ -455,6 +455,48 @@ describe('runChanged --include-shared filter', () => {
 
     expect(envelope.changed.detected_modules.sort()).toEqual(['app', 'foo-shared']);
   });
+
+  // v0.8.0 — config-file fallback for sharedProject.name
+  it('config sharedProject.name=foo + no env + no --include-shared → drops modules containing "foo"', async () => {
+    const dir = makeProject(['app', 'foo-shared']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain([
+        'app/src/jvmTest/X.kt',
+        'foo-shared/src/commonTest/Y.kt',
+      ]) },
+    });
+
+    const { envelope } = await runChanged({
+      projectRoot: dir,
+      args: ['--show-modules-only'],
+      env: {},
+      config: { sharedProject: { name: 'foo' } },
+      spawn,
+    });
+
+    expect(envelope.changed.detected_modules).toEqual(['app']);
+  });
+
+  it('env SHARED_PROJECT_NAME wins over config sharedProject.name (precedence: env > config)', async () => {
+    const dir = makeProject(['env-shared', 'cfg-shared']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain([
+        'env-shared/src/commonTest/X.kt',
+        'cfg-shared/src/commonTest/Y.kt',
+      ]) },
+    });
+
+    const { envelope } = await runChanged({
+      projectRoot: dir,
+      args: ['--show-modules-only'],
+      env: { SHARED_PROJECT_NAME: 'env-shared' },
+      config: { sharedProject: { name: 'cfg-shared' } },
+      spawn,
+    });
+
+    // env value drops env-shared; cfg-shared survives because env beats config.
+    expect(envelope.changed.detected_modules).toEqual(['cfg-shared']);
+  });
 });
 
 // ---------------------------------------------------------------------------

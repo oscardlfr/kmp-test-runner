@@ -594,7 +594,7 @@ Same symptom referenced in pre-existing comment at `.github/workflows/ci.yml:70-
 - BACKLOG entry below in the QUEUED section (`macOS bats end-to-end validation (deuda from PR #30)`, line ~404) — original BSD-signal hypothesis for `test-concurrency.bats`; possibly the same bug as this one or a sibling.
 - PR #105 BACKLOG entry "Workaround in flight" claim ("tests/bats/ passes in ~3 min") — invalidated by this finding; the workaround scope reduction did not actually deliver a passing macOS bats job.
 
-### v0.8.0 — Project-level config file for stable settings (`sharedProjectName`, defaults) — surfaced 2026-05-03
+### v0.8.0 — Project-level config file for stable settings (`sharedProjectName`, defaults) — surfaced 2026-05-03 — **DONE 2026-05-04 (PR6 — bundled with `.kmp-test-runner/` subdir)**
 
 **Surfaced 2026-05-03 during the README ↔ tool-surface audit.** `--shared-project-name` is documented in the README's CLI flag tables (line 409 + line 639), but **has never existed as a CLI flag**. The legacy bash wrapper only ever read the `SHARED_PROJECT_NAME` env var; the Gradle plugin exposes it as a real DSL property (`sharedProjectName = "..."`).
 
@@ -641,7 +641,7 @@ CLI flags continue to override config-file defaults (per-invocation precedence: 
 
 **Effort:** ~4-6h (config loader in `lib/cli.js`, CLI > env > config precedence resolver, migration code for `SHARED_PROJECT_NAME` → file, vitest for precedence + parse). **Promoted to v0.8.0 release-blocker** (2026-05-03) — closing the `--shared-project-name` README↔CLI gap honestly requires this rather than just deleting the doc line. Without project-level config the user's "main project depends on shared-kmp-libs" workflow has no clean shape (env var is a workaround, not a feature). Lands as a dedicated PR before the v0.8.0 release readiness gate.
 
-### v0.8.0 — Move CLI-emitted artifacts into a single `.kmp-test-runner/` subdir (surfaced 2026-05-03; promoted to v0.8.0 release-blocker 2026-05-03)
+### v0.8.0 — Move CLI-emitted artifacts into a single `.kmp-test-runner/` subdir (surfaced 2026-05-03; promoted to v0.8.0 release-blocker 2026-05-03) — **DONE 2026-05-04 (PR6 — bundled with `.kmp-test-runner.json` config)**
 
 **Surfaced 2026-05-03 during e2e validation of `kmp-test coverage --coverage-tool kover` on `shared-kmp-libs`.** The orchestrator scatters CLI-generated artifacts at the project root, mixed with the user's actual files:
 

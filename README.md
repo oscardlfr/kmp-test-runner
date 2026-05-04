@@ -122,6 +122,12 @@ ANTHROPIC_API_KEY=sk-ant-... node tools/measure-token-cost.js --feature <name> \
 
 > **Practical impact across features.** A 5-iteration agent loop reading raw gradle output burns ~64 K tokens for `parallel`/`changed`, ~80 K for `benchmark`, and **~542 K for `coverage`** (more than two full 200 K contexts). The same loops on `--json` burn ~500 tokens each. The agent's working memory stays focused on the code instead of log noise.
 
+## What's new in v0.8.0
+
+- **`.kmp-test-runner.json` project config** — pin stable settings (`sharedProject.name`, `defaults.testType`, `defaults.coverageTool`, `skip.{android,desktop,ios,macos}`) instead of repeating CLI flags or relying on env vars. Resolution: **CLI flag > env var > config file > built-in default**. See "Project config" below.
+- **`.kmp-test-runner/` artifacts subdir** — the cache (`cache/`), coverage reports (`reports/coverage/<runId>.md` + `latest.md`), and Android log dumps (`logs/android/<runId>/`) all consolidate under one root. Add `.kmp-test-runner/` to your project `.gitignore` once and you're done. **BREAKING:** `coverage-full-report*.md` files at the project root are gone — external CI consumers should read `latest.md` inside the new subdir.
+- **Cache schema bump 6 → 7** with dual-read fallback for the legacy `.kmp-test-runner-cache/` path during one transition release. v0.7.x users keep their cached models on first upgrade; new writes always go to `.kmp-test-runner/cache/`.
+
 ## What's new in v0.7.0
 
 The headline of the v0.7 line is **first-class iOS / macOS support**. KMP modules declaring `iosX64()`, `iosSimulatorArm64()`, `iosArm64()`, `macosArm64()`, or `macosX64()` are now visible to the project model, surface their per-target test source sets (`iosX64Test` / `iosSimulatorArm64Test` / etc.), and can be dispatched directly via `kmp-test parallel --test-type ios` (or `--test-type macos`). The CLI consults the project model per module to pick the right gradle task — `iosSimulatorArm64Test` on Apple-silicon hosts, `iosX64Test` on Intel hosts and CI, `iosArm64Test` for device runs, with `iosTest` (umbrella) as a last-fallback. macOS dispatches host-natively (no simulator boot dance); iOS leans on Gradle's built-in simulator orchestration since AGP/KMP 1.9+.
@@ -406,7 +412,6 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--java-home <path>` _(v0.6.1+)_ | _(none)_ | Explicit JDK install to use; wins over catalogue auto-select and `gradle.properties org.gradle.java.home`. See "JDK toolchain mismatch" |
 | `--no-jdk-autoselect` _(v0.6.1+)_ | _(off)_ | Disable catalogue auto-select; fall through directly to the gate (pre-v0.6.1 behavior) |
 | `--no-coverage` _(v0.6.0+)_ | _(off)_ | Alias for `--coverage-tool none`; runs tests only without generating coverage |
-| `--shared-project-name` | _(none)_ | Name of the shared KMP module (for Android test dispatch) |
 | `--json` / `--format json` | _(off)_ | Emit a single JSON object on stdout (see "Agentic usage" below). Suppresses human-readable output |
 
 **Env vars (skip-list):**
@@ -418,6 +423,29 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `SKIP_IOS_MODULES` _(v0.7.0)_ | `--test-type ios` | Same shape, for iOS dispatch |
 | `SKIP_MACOS_MODULES` _(v0.7.0)_ | `--test-type macos` | Same shape, for macOS dispatch |
 | `PARENT_ONLY_MODULES` | always | Comma-separated module names that are aggregator-only (skipped at discovery time) |
+
+### Project config — `.kmp-test-runner.json` _(v0.8.0+)_
+
+Drop a `.kmp-test-runner.json` at your project root to pin stable defaults instead of repeating CLI flags or relying on env vars. Resolution precedence: **CLI flag > env var > config file > built-in default**. Schema:
+
+```json
+{
+  "sharedProject": { "name": "shared-kmp-libs", "path": "../shared-kmp-libs" },
+  "defaults":     { "testType": "common", "coverageTool": "kover", "excludeModules": "*:test-fakes" },
+  "skip":         { "android": ["legacy-app"], "ios": ["benchmark-android-test"] }
+}
+```
+
+All fields are optional. Unknown fields are preserved silently for forward compat. Type-mismatched fields are dropped with a `[WARN]` line on stderr.
+
+### Quick start: gitignore CLI artifacts _(v0.8.0+)_
+
+The CLI writes its outputs (cache, coverage reports, Android log dumps) under a single `.kmp-test-runner/` subdir at your project root. Add this one line to your project `.gitignore`:
+
+```
+# kmp-test-runner local artifacts (CLI output — never commit)
+.kmp-test-runner/
+```
 
 ## Agentic usage — token-cost rationale
 
@@ -636,7 +664,8 @@ A token with `read:packages` scope is sufficient for consumers. Maven Central wi
 | `--coverage-tool` | `kover` | `kover` \| `jacoco` \| `none` |
 | `--coverage-modules` | _(all)_ | Comma-separated module names for coverage |
 | `--min-missed-lines` | `0` | Fail threshold for missed lines |
-| `--shared-project-name` | _(none)_ | Shared KMP module name |
+
+> The shared-project name is now configured via `.kmp-test-runner.json` (`sharedProject.name`). The legacy `SHARED_PROJECT_NAME` env var still works as a fallback. There is no `--shared-project-name` CLI flag.
 
 ### Gradle DSL properties
 
