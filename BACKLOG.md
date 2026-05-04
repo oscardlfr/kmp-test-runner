@@ -6,9 +6,11 @@
 
 ## ACTIVE
 
-### v0.8 — STRATEGIC PIVOT: migrate orchestration logic from bash/ps1 to Node (decided 2026-05-02)
+### ✅ v0.8 — STRATEGIC PIVOT COMPLETE: orchestration logic migrated bash/ps1 → Node (2026-05-03)
 
-**Surfaced 2026-05-02 during the WS-2 / PR #105 firefighting session, after stepping back from "another Bash 3.2 patch" thinking.**
+**Status: COMPLETE 2026-05-03.** All 5 sub-entries shipped (PRs #110-#115). Spawn EINVAL fix landed PR #116. Sub-entry-5-followups + bats-macos closure landed PR #118. Total LOC delta: bash + ps1 6,196 → ~470 (12× reduction); new `lib/<feature>-orchestrator.js` aggregate covered by single vitest matrix on Linux+Mac+Windows. Migration is flag-complete (20/20 legacy flags + 4 originally dropped restored in PR #115 follow-up). The "Release readiness gate (post Sub-entry 5)" sub-block below tracks the post-pivot release-validation work; status of each gate updated 2026-05-05.
+
+**Surfaced 2026-05-02 during the WS-2 / PR #105 firefighting session, after stepping back from "another Bash 3.2 patch" thinking.** Historical context preserved below for rationale + per-feature migration plan that drove PRs #110-#115. ~~Active~~ entries marked complete inline.
 
 **Diagnosis of the maintenance trajectory:**
 
@@ -169,7 +171,18 @@ Stays in CI as a regression-guard against Bash 3.2 patterns in the remaining bas
 
 ---
 
-#### v0.8.0 — Release readiness gate (post Sub-entry 5)
+#### v0.8.0 — Release readiness gate (post Sub-entry 5) — REVISED 2026-05-05
+
+**Status revised 2026-05-05** after fix-PR-A through fix-PR-F landed. The original 4-gate framing (drafted 2026-05-02 before the 6 fix-PRs surfaced) was more aspirational than realized. Honest status of each gate:
+
+- **Gate 1 — Cross-OS CLI parity workflow (`cross-os-parity.yml`)**: ❌ NEVER IMPLEMENTED. File doesn't exist. Deferred past v0.8.0; the existing 7-required-check matrix (build × ubuntu/win + secrets-scan + gradle-plugin-test + installer-e2e × ubuntu/win + Commit Lint) plus informational bats-macos + build-macos + gradle-plugin-test-ios + installer-e2e-macos provides parity coverage in practice. A dedicated `cross-os-parity.yml` envelope-diff workflow remains a v0.9 candidate.
+- **Gate 2 — Cross-platform E2E fixture project**: DEFERRED to v0.8.x/v0.9 (see entry below; ~6-10h fixture + flakiness budget not justified for v0.8.0 given the 6 fix-PRs already absorbed the release-validation budget). The "promoted to release-blocker" claim below is now superseded.
+- **Gate 3 — Branch-protection promotions of `bats-macos` + `gradle-plugin-test-ios` to required**: DEFERRED opportunistic. Both jobs are passing reliably (PR #118 closed bats-macos; gradle-plugin-test-ios passes on every recent PR). Promotion is a 1-2h Settings change + verification PR — schedule post-tag.
+- **Gate 4 — Wide-smoke release validation on maintainer's macOS**: ✅ DONE via wide-smoke pass-9-mac (PR #129, 2026-05-04). Real iOS/macOS execution validated against shared-kmp-libs + 4 other projects; bucket counts match Win-side baseline.
+
+**Net assessment**: v0.8.0 ships on the existing 7-required-check matrix + the 6 fix-PRs (A-F) + PR7-bis docs polish + PR8 release tag. The original gate framework was retroactively too strict for what v0.8.0 actually delivers (a Node-migration milestone, not an iOS-coverage milestone). The 4 listed items below remain the historical specification of the gate as drafted 2026-05-02; they're tracked individually for v0.9 planning rather than v0.8.0 blockers.
+
+**Original 2026-05-02 specification preserved below for v0.9 planning context:**
 
 Once Sub-entries 1-5 land, the v0.8.0 stamp does NOT ship until the four gates below are green. Surfaced 2026-05-02 during Sub-entry 2 review: PRODUCT.md success criterion #2 ("OS parity. Windows / Linux / macOS all behave identically modulo platform constraints") is enforced today only at the docs-text level — there is no CI workflow that verifies cross-OS parity of the `--json` envelope, and no green CI history for real iOS / macOS test execution on macOS hosts. Without these gates, "iOS works on macOS" rests on the maintainer's local wide-smoke alone, which doesn't survive in green/red CI history.
 
@@ -198,7 +211,9 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 
 ### v0.8.0 — Execution-summary classifier under-reports non-JVM test task RUNTIME failures (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 + Mac/Win post-toolchain-fix re-runs)
 
-**Status:** OPEN — **RELEASE-BLOCKER for v0.8.0**. Initially scoped to K/N native test tasks only (`macosArm64Test`, `iosX/Sim/ArmTest`). After post-toolchain-fix re-runs of shared-kmp-libs with **device connected** (Win: S22 Ultra, Mac: S25 Ultra), the same classifier gap surfaced on AGP instrumented tasks too: `connectedAndroidDeviceTest` (Mac) and `androidConnectedCheck` (Win). Three task classes confirmed affected; scope is generalized to "non-JVM test task RUNTIME failures".
+**Status: DONE — fix-PR-E shipped 2026-05-04 (PR #130 / `f95b57c`).** Two surgical changes in `executeLeg` (lib/parallel-orchestrator.js): (1) cascade trigger semantic refined to `no_evidence === taskList.length`; (2) post-step-5 alignment rebuilds `execSummary` from `classifyTaskResults` so tasks marked 'failed' get bucketed to `execution.failed` regardless of execMode. 762 → 768 vitest. Live S22 Ultra validated `execution.failed: 0→1` on `:benchmark-storage:androidConnectedCheck`. OS-parity invariant restored (`execution.failed === errors.filter(c='module_failed').length`). Original entry text preserved below for context.
+
+**Status (historical):** OPEN — **RELEASE-BLOCKER for v0.8.0**. Initially scoped to K/N native test tasks only (`macosArm64Test`, `iosX/Sim/ArmTest`). After post-toolchain-fix re-runs of shared-kmp-libs with **device connected** (Win: S22 Ultra, Mac: S25 Ultra), the same classifier gap surfaced on AGP instrumented tasks too: `connectedAndroidDeviceTest` (Mac) and `androidConnectedCheck` (Win). Three task classes confirmed affected; scope is generalized to "non-JVM test task RUNTIME failures".
 
 **Pre-S22/S25 wide-smoke runs always hit the infrastructure-failure path** on `connectedAndroidDeviceTest` (no device → adb returns nothing → gradle aborts pre-test-runner). That output shape the classifier DOES recognize → `execution.failed` was correct. With a real device, the SAME task class fails at the runtime test phase, which uses different output shape → classifier blind, `execution.failed: 0` despite real failures in `errors[]`.
 
@@ -532,6 +547,17 @@ Caveats:
 
 ### v0.8.0 — `task_not_found` paired with `module_failed` in 4 projects (project-model task-name overreach; surfaced 2026-05-04 wide-smoke pass-7)
 
+**Status: DONE 2026-05-05 — closed by fix-PR-A (#125) + fix-PR-D (#126) + fix-PR-F (#131).** Re-validated live 2026-05-05 against the 3 of 4 originally-affected projects:
+
+| Project | Pre-fix L533 | Post-fix-PR-A/D/F (2026-05-05 live) | Closure |
+|---|---|---|---|
+| DawSync | 1 task_not_found + 48 module_failed | 0 + 0 (24 modules clean-skipped, mostly via fix-PR-D `withHostTestBuilder{}` opt-in) | ✅ |
+| shared-kmp-libs | 1 task_not_found + 66 module_failed | 0 + 0 (69 modules clean-skipped via fix-PR-D) | ✅ |
+| dipatternsdemo `:benchmark` testDebugUnitTest | task_not_found | parser variable-resolution (fix-PR-F) auto-resolves `testBuildType = benchmarkBuildType` → `testReleaseUnitTest` | ✅ |
+| FileKit-main | 1 + 4 | Project not properly set up locally (no gradlew.bat in current path) — kmp-test correctly errors with structured `no gradlew` message; not a regression | n/a (validate post-tag if user re-clones) |
+
+Root cause was three-fold: (1) source-set gate missing on AGP-fallback dispatch path (fix-PR-A); (2) kmpAndroidLibrary plugin opt-in detection missing (fix-PR-D); (3) `testBuildType` variable expressions parser-blind (fix-PR-F bundled with parser enhancement). All three closed in v0.8.0 fix-PR ramp. Original entry text preserved below for context.
+
 **Surfaced 2026-05-04 in PR4 wide-smoke pass-7.** Four projects emit BOTH `module_failed` and `task_not_found` discriminators in the same envelope: DawSync, dipatternsdemo, shared-kmp-libs, FileKit-main. The `task_not_found` example from dipatternsdemo: "Cannot locate tasks that match `:benchmark:testDebugUnitTest` as task `testDebugUnitTest` not found in project `:benchmark`."
 
 **Root cause hypothesis:** The orchestrator's project model (`lib/project-model.js`) infers a task name (e.g. `testDebugUnitTest`) for the module from generic patterns, but THIS particular module (`:benchmark`) doesn't expose that task — perhaps it has only `connectedDebugAndroidTest` (instrumented) or a custom test task. The model's predict-from-source-sets fallback (added in PR #116) might be predicting a task that doesn't actually exist in gradle.
@@ -551,6 +577,8 @@ Caveats:
 **Ship-when:** v0.8.0 nice-to-have. Lower priority than cascade-isolation fix because the impact is "1-2 false dispatches per multi-module project" rather than "entire project marked RED".
 
 ### v0.8.0 — Wide-smoke per-project triage: confirm REDs are repo-level vs orchestrator (surfaced 2026-05-03)
+
+**Status: DONE — process completed via wide-smoke passes 7 (PR4 / `020ea86`), 8 (during PR6 era), and 9 (PR #129 / `61704f3`).** All 6 REAL-REDs from the original triage classified as repo-bugs (DawSync 5-test desync, OmniSound DesktopPKCEGenerator, gyg LoadingAndErrorStatesTest, nav3-recipes RouteV2/Navigator, nowinandroid `:foryou:impl`, Confetti-main `:wearApp` 2 tests). The "5 per-project investigations" carve-out (DawSync, OmniSound, dipatternsdemo, nav3-recipes, PeopleInSpace) resolved: dipatternsdemo + DawSync now pass via fix-PR-A through F (validated 2026-05-05); the other 3 remain repo-level bugs documented in pass-9 results. Pass-9 final bucket counts (per `project_v0_8_0_pass_9_shipped.md`): match pass-8 baseline 3 GREEN / 14 SKIP / 13 RED-repo / 0 cascade. Original entry text preserved below for context.
 
 **Surfaced 2026-05-03 wide-smoke against 23 KMP/Android projects on Windows post-EINVAL.** After the spawn fix + 13 collateral fixes (PR #116), the wide-smoke produced 8 REAL-GREEN, 6 REAL-RED, 9 NO-MODULES. The 6 REAL-REDs decompose into:
 
@@ -793,7 +821,9 @@ Users currently have no clean way to gitignore CLI output without enumerating ev
 
 **Ship-when:** **v0.8.0 release-blocker** (promoted 2026-05-03 — every known bug/improvement closes before tag). Lands as a dedicated PR after the project-level config file PR (the two pair: `.kmp-test-runner.json` config + `.kmp-test-runner/` artifacts share the same root). Cache layer keeps the dual-read transition behavior intact for one release so users coming from v0.7.x don't lose their cached models on first upgrade.
 
-### v0.8.0 — Buildable cross-platform E2E fixture project (promoted to release-blocker per release-readiness gate #2)
+### v0.8.x / v0.9 — Buildable cross-platform E2E fixture project (DEFERRED 2026-05-05 from v0.8.0 release-blocker)
+
+**Status: DEFERRED 2026-05-05.** Originally framed as "promoted to release-blocker per release-readiness gate #2" (entry above L172). Demoted to v0.8.x/v0.9 candidate because: (1) the 6 fix-PRs (A-F) absorbed the v0.8.0 release-validation budget; (2) ~6-10h fixture build + open-ended CI flakiness budget is not justified pre-tag when wide-smoke pass-9-mac (PR #129) already validates real iOS/macOS execution against shared-kmp-libs + 4 other projects; (3) the existing 7-required-check matrix + informational macOS jobs (build-macos, bats-macos, gradle-plugin-test-ios, installer-e2e-macos) provide acceptable CI coverage. Promote back to release-blocker at v0.9 when the milestone scope can absorb the flakiness work. Original entry text preserved below.
 
 **Surfaced 2026-05-01 during v0.7.0 Phase 3 review.** The current iOS / macOS test coverage is the same shape as JS/Wasm/Android — model unit tests, wrapper integration tests with stub `gradlew`, Gradle TestKit acceptance — but **no real iOS / macOS test execution in CI**. This is in parity with the rest of the platforms (Android instrumented + JS/Wasm also lack real-task CI runs), so v0.7.0 ships honestly. But it's the largest single piece of testing debt the project carries: every "iOS support works" claim today rests on wide-smoke validation against the user's local KMP projects, which doesn't survive in green/red CI history.
 
@@ -1052,7 +1082,9 @@ Two slots:
 
 The pre-v0.7 pass is critical — v0.7 introduces iOS support (Bug 4 deferred) which is a major surface change and the README must be coherent for new users.
 
-### v0.6.2 — Refine `no_summary` discrimination into specific sub-codes (surfaced 2026-04-30 v0.6.x stress test)
+### ✅ v0.6.2 — Refine `no_summary` discrimination into specific sub-codes (DONE 2026-04-30 in v0.6.2 — PRs #91-#94)
+
+**Status: DONE 2026-04-30 in v0.6.2** (PRs #91-#94 — see `project_v0_6_2_shipped.md` memory). All three sub-gaps shipped: Gap 1.1 (`errors[].code = "no_test_modules"` discriminator on parse-gap fallback) + Gap 1.2 (`state.skipped: [{module, reason}]` array on JSON envelope) + Gap 1.3 (`applyErrorCodeDiscriminators` preempts generic `no_summary` fallback when a specific code fires; locked by 4 vitest regression-guards). Live-validated: wide-smoke ALL phase against 28 projects: 5/5 wild Gap 1.1 hits + 0 generic `no_summary` + 0 AMBER-JDK. **Gap 1.4 (out of scope) — `[KMP_TEST_EXIT_REASON]` structured stdout line** remains deferred (would require a protocol break to v0.7+; no demand surfaced post-shipping). Original entry text preserved below.
 
 `no_summary` (added in v0.6.x Gap 1) is a defensive catch-all for "the script ran but produced no recognizable test/build summary". Phase J stress test against 9 ex-AMBER-JDK projects post-Adoptium-11-install surfaced 3 distinct real-world causes that all collapse to `no_summary` today:
 
@@ -1071,7 +1103,18 @@ Wide-smoke evidence files (already on disk locally): `.smoke/stress-J/OFFICIAL_P
 
 Estimated effort: 2-3h total for Gaps 1.1-1.3. Patch bump (no API break, additive codes/fields).
 
-### Multi-JDK auto-selection per project (research — surfaced 2026-04-30 v0.6 wide smoke)
+### ✅ Multi-JDK auto-selection per project (DONE — sub-items 1-4+6 shipped via v0.6.1 + v0.8.0 PR3 + fix-PR-B; sub-item 5 tracked in entry below)
+
+**Status: DONE.** All 6 investigation questions addressed across 3 release ramps. Verified live 2026-05-05 (file paths + grep counts):
+
+1. ✅ **Detect installed JDKs** — `lib/jdk-catalogue.js` (v0.6.1) walks Adoptium / Zulu / Microsoft / Semeru / BellSoft on Win; `/Library/Java/JavaVirtualMachines/` on macOS; `/usr/lib/jvm` + `/opt/{java,jdk}` on Linux.
+2. ✅ **Match required JDK + auto-select** — `aggregateJdkSignals` + `agpRequiredJdk` + `preflightJdkCheck` (3 lib files: `lib/project-model.js`, `lib/cli.js`, `lib/runner.js`). v0.8.0 PR3 (`0910615`) added AGP-runtime aware selection (e.g., AGP 8.x → JDK 17 even when `jvmTarget = "11"`). fix-PR-B (PR #127 / `049828a`) added preserve-host-when-meets-floor logic.
+3. ✅ **Surface in `kmp-test doctor`** — "JDK catalogue" check row (3 mentions in `lib/cli.js`).
+4. ✅ **`--java-home <path>` hoisted to CLI** — 8 occurrences in `lib/cli.js` parser + propagation chain.
+5. ⏭️ **Per-project config presets pinning JDK path** — TRACKED IN NEXT ENTRY ("Per-project config presets" — partial: `.kmp-test-runner.json` project-local shipped in PR6; user-global `~/.kmp-test/config.json` deferred).
+6. ✅ **`gradle.properties#org.gradle.java.home` precedence** — bypasses gate (final-resolution-precedence rule documented in JDK auto-select entry above).
+
+Original entry text preserved below.
 
 When running `kmp-test parallel` against many KMP projects in one session, each project may require a different JDK (KaMPKit JDK 11 / nav3-recipes JDK 11 / Confetti JDK 17 / shared-kmp-libs JDK 21). Today the user must restart the shell with a different `JAVA_HOME` between projects, or pass `--ignore-jdk-mismatch` to bypass the gate. Wide-smoke surface 2026-04-30: 4/20 surveyed projects exited 3 with `jdk_mismatch` because the host's `java -version` was 21.
 
@@ -1085,7 +1128,13 @@ Investigation questions:
 
 Estimated effort: ~3-4h for catalogue + match + doctor surfacing. Probably v0.6.x or v0.7.
 
-### Per-project config presets (post-v0.5.1 idea — needs design)
+### Per-project config presets (post-v0.5.1 idea — PARTIALLY DONE 2026-05-04 via PR6; user-global aspect deferred)
+
+**Status: PARTIALLY DONE 2026-05-04 (PR6 / `63a292b`)**:
+- ✅ **Project-local `.kmp-test-runner.json`** shipped in PR6. Schema covers `sharedProject`, `defaults`, `skip` per platform. Loader at `lib/project-config.js`. Precedence: CLI > env > config file > built-in default.
+- ⏭️ **User-global `~/.kmp-test/config.json`** (the original proposal's per-project preset map keyed by project name / git-remote) DEFERRED. Different scope — would need user-global config loader + per-project lookup mechanism + JDK-path pinning. Promote when wide-smoke surfaces a concrete need; deferred-with-shape per `feedback_dont_defer_to_post_release.md` because no current user is blocked.
+
+Original entry text preserved below.
 
 The CLI currently expects each invocation to carry every flag verbatim — which becomes painful when running it against several real projects with different requirements. Examples surfaced 2026-04-27 while validating v0.5.1:
 
@@ -1172,7 +1221,11 @@ Recommend the second — Mermaid xychart-beta has been a pain (PRs #28–#29 his
 
 Estimated effort: 15 min. Probably bundle into the next docs PR.
 
-### macOS bats end-to-end validation (deuda from PR #30)
+### ✅ macOS bats end-to-end validation (DONE 2026-05-03 in PR #118 — root cause was adb pipe FDs, NOT BSD-signal hypothesis)
+
+**Status: DONE 2026-05-03 (PR #118).** Original BSD-signal hypothesis below was wrong. Real root cause: `runDoctorChecks` (`lib/cli.js:1411`) spawning `adb version` whose client inherits Node's pipe FDs on macos-latest, leaving an orphan adb daemon that bats counts as an unfinished child process and waits indefinitely. Fix: `KMP_TEST_SKIP_ADB=1` env opt-out exported from `tests/bats/test-doctor.bats` + `tests/bats/test-concurrency.bats`'s `setup_file()` hooks. Empirical validation in PR #118: bats-macos completes in 1m48s vs prior 15-min hang; `pgrep -af adb` after suite confirms zero residual adb processes. CI verification 2026-05-05: bats-macos passing in last 28/30 CI runs (the 2 failures were on a v0.8.0 wide-smoke pass-9 branch, unrelated to bats). PR #118 also closed L644 (install.bats orphan adb) + L665 (bats-macos hangs in tests/bats/) — same root cause across all three.
+
+Branch-protection promotion of `bats-macos` to required is now unblocked technically; deferred opportunistic per Gate 3 of L172 release-readiness (post-tag scheduling). Original entry text preserved below.
 
 PR #30 added `macos-latest` to the CI matrix for `build` (vitest) and `installer-e2e` (install.bats E2E only). The wider `tests/bats/` suite is intentionally skipped on macOS because the bats step **hung** for 12+ minutes on macos-latest in the first run (cancelled to avoid burning runner minutes). Suspected culprit: `tests/bats/test-concurrency.bats` (v0.3.8 lockfile work) — its concurrency tests fork a stub `gradlew` that `sleep 30`, send SIGINT to the parent, then `wait $cli_pid`. BSD signal handling on macOS may not deliver SIGINT to forked sub-processes the same way Linux does, leaving `wait` stuck.
 
