@@ -328,8 +328,14 @@ describe('pickGradleTaskFor', () => {
 
   it('--test-type androidInstrumented uses deviceTestTask, falls back for AGP modules', () => {
     expect(pickGradleTaskFor(androidModule, 'androidInstrumented').task).toBe(':app:connectedDebugAndroidTest');
-    // KMP module with androidDsl but probe missed → fallback.
-    const kmpWithAndroid = { name: 'kmp-and', type: 'kmp', androidDsl: true, resolved: { deviceTestTask: null } };
+    // 2026-05-04 Bug A — fallback now requires source-set evidence
+    // (androidInstrumentedTest / androidTest) to avoid over-dispatching to
+    // KMP+androidLibrary modules that lack the source set entirely.
+    const kmpWithAndroid = {
+      name: 'kmp-and', type: 'kmp', androidDsl: true,
+      sourceSets: { androidInstrumentedTest: true },
+      resolved: { deviceTestTask: null },
+    };
     expect(pickGradleTaskFor(kmpWithAndroid, 'androidInstrumented').task).toBe(':kmp-and:connectedDebugAndroidTest');
   });
 
@@ -384,6 +390,77 @@ describe('pickGradleTaskFor', () => {
         .toBe(':app:testReleaseUnitTest');
       expect(pickGradleTaskFor(androidModule, '', { androidVariant: 'all' }).task)
         .toBe(':app:test');
+    });
+  });
+
+  // 2026-05-04 — Bug A (wide-smoke pass-8): source-set gate for explicit
+  // androidUnit / androidInstrumented dispatch. KMP modules with
+  // `androidLibrary {}` DSL but no androidUnitTest / androidInstrumentedTest
+  // source set must be skipped, not dispatched (AGP doesn't create the task →
+  // task_not_found + module_failed). 4 projects affected pre-fix:
+  // shared-kmp-libs (+66 false positives), DawSync, dipatternsdemo, FileKit-main.
+  describe('Bug A: source-set gate for androidUnit/androidInstrumented', () => {
+    it('androidUnit: KMP+androidLibrary DSL with no androidUnitTest source set → null', () => {
+      const mod = {
+        name: 'benchmark-crypto', type: 'kmp', androidDsl: 'androidLibrary',
+        sourceSets: { commonTest: true, desktopTest: true, androidUnitTest: false, test: false },
+        resolved: { unitTestTask: null },
+      };
+      const r = pickGradleTaskFor(mod, 'androidUnit');
+      expect(r.task).toBeNull();
+      expect(r.reason).toMatch(/no androidUnitTest source set/);
+    });
+
+    it('androidUnit: KMP+androidLibrary DSL with androidUnitTest source set → dispatches testDebugUnitTest', () => {
+      const mod = {
+        name: 'app', type: 'kmp', androidDsl: 'androidLibrary',
+        sourceSets: { commonTest: true, androidUnitTest: true },
+        resolved: { unitTestTask: null },
+      };
+      expect(pickGradleTaskFor(mod, 'androidUnit').task).toBe(':app:testDebugUnitTest');
+    });
+
+    it('androidUnit: pure Android module with src/test/ → dispatches', () => {
+      const mod = { name: 'lint', type: 'android', sourceSets: { test: true }, resolved: { unitTestTask: null } };
+      expect(pickGradleTaskFor(mod, 'androidUnit').task).toBe(':lint:testDebugUnitTest');
+    });
+
+    it('androidUnit: pure Android module without src/test/ → null', () => {
+      const mod = { name: 'instrumented-only', type: 'android', sourceSets: { test: false }, resolved: { unitTestTask: null } };
+      const r = pickGradleTaskFor(mod, 'androidUnit');
+      expect(r.task).toBeNull();
+      expect(r.reason).toMatch(/no androidUnitTest source set/);
+    });
+
+    it('androidUnit: commonTest alone is NOT enough (Gotcha 1 — AGP needs explicit androidUnitTest)', () => {
+      const mod = {
+        name: 'common-only', type: 'kmp', androidDsl: 'androidLibrary',
+        sourceSets: { commonTest: true, androidUnitTest: false, test: false },
+        resolved: { unitTestTask: null },
+      };
+      expect(pickGradleTaskFor(mod, 'androidUnit').task).toBeNull();
+    });
+
+    it('androidInstrumented: KMP+androidLibrary DSL + no androidInstrumentedTest source set + no probe → null', () => {
+      const mod = {
+        name: 'benchmark-crypto', type: 'kmp', androidDsl: 'androidLibrary',
+        sourceSets: { androidInstrumentedTest: false, androidTest: false },
+        resolved: { deviceTestTask: null },
+      };
+      const r = pickGradleTaskFor(mod, 'androidInstrumented');
+      expect(r.task).toBeNull();
+      expect(r.reason).toMatch(/no androidInstrumentedTest source set/);
+    });
+
+    it('androidInstrumented: deviceTestTask probe wins over fallback gate', () => {
+      // Source-set evidence is irrelevant when the project model already
+      // resolved a deviceTestTask — that's the canonical happy path.
+      const mod = {
+        name: 'app', type: 'android',
+        sourceSets: { androidTest: false, androidInstrumentedTest: false },
+        resolved: { deviceTestTask: 'connectedDebugAndroidTest' },
+      };
+      expect(pickGradleTaskFor(mod, 'androidInstrumented').task).toBe(':app:connectedDebugAndroidTest');
     });
   });
 
