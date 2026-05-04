@@ -258,7 +258,12 @@ Same classifier gap likely exists for `iosSimulatorArm64Test` / `iosX64Test` / `
 
 ### v0.8.0 — `--variant` flag honored on the instrumented (`androidInstrumented`) dispatch path (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 against dipatternsdemo)
 
-**Status:** OPEN — **RELEASE-BLOCKER for v0.8.0** per `feedback_dont_defer_to_post_release.md`. Asymmetry surfaced in pass-9 triage on Windows against dipatternsdemo. Even though no GREEN/SKIP project flipped to RED-orchestrator (the affected modules surface as RED-repo via `task_not_found` discriminator), this is a real orchestrator bug discovered by a release-validation gate — fix BEFORE v0.8.0 tag, do not defer.
+**Status: DONE — fix-PR-F shipped 2026-05-05.** Two bundled changes in `lib/parallel-orchestrator.js` + `lib/project-model.js`:
+
+1. **Orchestrator helper.** New `androidConnectedTask(gradlePath, variant, mod)` mirrors `androidUnitTask`: `--variant {auto,debug,release,all}` honored + `mod.testBuildType === 'release'` respected for static per-module variant selection. Hardcoded `connectedDebugAndroidTest` at line 396 replaced. `kmpAndroidLibrary` branch unchanged (no Debug/Release split in the new plugin).
+2. **Parser enhancement.** `lib/project-model.js#analyzeModule` now resolves single-file `val NAME = ... ?: "literal"` and `val NAME = "literal"` patterns when `testBuildType = NAME` references a variable. Out of scope: `project.findProperty()` lookups against `gradle.properties`, multi-file refs (`buildSrc`, root build), conditional expressions — those still fall through to null.
+
+Help text in `lib/cli.js` updated to reflect that `--variant` now applies to both unit + instrumented dispatch. **768 → 775 vitest** (5 orchestrator cases + 2 parser cases + 1 existing parser test updated). Live verified against dipatternsdemo under default `--variant auto`: `:benchmark:connectedReleaseAndroidTest` dispatched (auto-resolved from `val benchmarkBuildType = (...) ?: "release"`) and `:sample-multimodule:connectedDebugAndroidTest` dispatched (no testBuildType, AGP default). Both accepted by gradle. Fully closes the pass-9 dipatternsdemo `task_not_found` repro under default args — no user workaround required.
 
 **The asymmetry today:**
 
