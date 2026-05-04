@@ -196,9 +196,9 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 - Re-using an existing OSS KMP project as the cross-platform E2E fixture — see Buildable cross-platform E2E fixture entry below for that decision.
 - ~~New CLI features.~~ **Carve-out (2026-05-03):** the project-level config file entry below (covers `sharedProjectName` + stable defaults) IS in v0.8.0 scope — closing the README ↔ tool surface gap honestly requires it rather than just deleting the misleading flag doc line.
 
-### v0.8.x — Kotlin/Native leg execution-summary classifier under-reports test task failures (surfaced 2026-05-04 wide-smoke pass-9-mac on shared-kmp-libs)
+### v0.8.0 — Kotlin/Native leg execution-summary classifier under-reports test task failures (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9-mac on shared-kmp-libs)
 
-**Status:** OPEN. Mac-side validation surfaced a counter discrepancy in `lib/parallel-orchestrator.js` for `macosArm64Test`. The `[FAIL]`-line fallback in the orchestrator catches the failure and emits `module_failed` to `errors[]` correctly — **so the end-user envelope is functionally correct** — but the structured `execution.failed` counter on the leg stays 0. Not a v0.8.0 blocker.
+**Status:** OPEN — **RELEASE-BLOCKER for v0.8.0**. Mac-side validation surfaced a counter discrepancy in `lib/parallel-orchestrator.js` for `macosArm64Test`. The `[FAIL]`-line fallback catches the failure and emits `module_failed` to `errors[]` correctly, but the structured `execution.failed` counter on the leg stays 0. Even though the end-user envelope appears correct via fallback, this is a real orchestrator bug surfaced by a release-validation gate — fix BEFORE v0.8.0 tag per `feedback_dont_defer_to_post_release.md`.
 
 **Repro envelope from pass-9-mac on shared-kmp-libs (`--test-type=all`):**
 
@@ -252,9 +252,9 @@ Same classifier gap likely exists for `iosSimulatorArm64Test` / `iosX64Test` / `
 
 ---
 
-### v0.8.x — `--variant` flag honored on the instrumented (`androidInstrumented`) dispatch path (surfaced 2026-05-04 wide-smoke pass-9 against dipatternsdemo)
+### v0.8.0 — `--variant` flag honored on the instrumented (`androidInstrumented`) dispatch path (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 against dipatternsdemo)
 
-**Status:** OPEN. Asymmetry surfaced in pass-9 triage. Not blocking v0.8.0 — no project flipped GREEN/SKIP → RED-orchestrator because of this; the affected modules remain RED-repo via `task_not_found` discriminator. Queued for v0.8.x.
+**Status:** OPEN — **RELEASE-BLOCKER for v0.8.0** per `feedback_dont_defer_to_post_release.md`. Asymmetry surfaced in pass-9 triage on Windows against dipatternsdemo. Even though no GREEN/SKIP project flipped to RED-orchestrator (the affected modules surface as RED-repo via `task_not_found` discriminator), this is a real orchestrator bug discovered by a release-validation gate — fix BEFORE v0.8.0 tag, do not defer.
 
 **The asymmetry today:**
 
@@ -282,8 +282,8 @@ The instrumented path (`selectTaskForLeg` case `androidInstrumented`, lines 373-
 - dipatternsdemo (`:benchmark`, `:sample-multimodule`)
 - Any benchmark module across the wide-smoke matrix that uses `testBuildType = "release"`
 
-**Why this isn't blocking v0.8.0:**
-Pass-9 confirmed bucket counts match pass-8 baseline exactly (3/14/13/0/0/0). The dipatternsdemo failures happened BOTH in pass-8 and pass-9 — they're orchestrator-known limitation expressed via `task_not_found` discriminator + RED-repo classification. No regression introduced by fix-PR-A/D/B/C. The user's repos that exhibit this can document the current invocation (direct gradle for benchmarks; or wait for this PR).
+**Why this IS blocking v0.8.0 (corrected 2026-05-04 second incident):**
+Initially framed as "not blocking" because pass-9 bucket counts match pass-8 (3/14/13/0/0/0) and the dipatternsdemo failures happened in both passes. User pushed back: "no va a ser para la 0.8.x — tiene que estar antes". Standing rule per `feedback_dont_defer_to_post_release.md`: any bug found during a release-validation gate gets root-caused and fixed before the version tag. The "pre-existing in earlier pass" framing does NOT exempt the bug from the rule — pass-7 and pass-8 just happened to not stress this path. Pass-9 surfaced it; fix it pre-tag.
 
 **Out of scope:**
 - Changing the default variant from auto to anything else
