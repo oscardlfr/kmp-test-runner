@@ -1582,3 +1582,232 @@ describe('cascade-isolation retry path (PR5)', () => {
     expect(leg.retry_fired).toBe(false);
   });
 });
+
+// ===========================================================================
+// fix-PR-E (2026-05-04) — execution-summary classifier counts non-JVM test
+// task RUNTIME failures. Pre-fix, classifyTaskExecutionMode's strict-EOL
+// regex (`Task\s+ESCAPED(?:\s+SUFFIX)?\s*$`) missed K/N native + AGP
+// instrumented runtime fails where gradle prints `> Task :foo FAILED in Xs`
+// (non-whitespace before EOL) — execMode dropped to 'fresh' (first-match wins
+// on the bare `> Task :foo` line printed at task-start) or 'no_evidence' (no
+// task line at all). classifyTaskResults still caught these via its
+// non-anchored primary regex (`escaped + '\s+FAILED'`), so [FAIL]-line
+// emission + errors[].module_failed entries were correct — but execSummary.
+// failed stayed 0, breaking OS parity (PRODUCT.md criterion 2) and false-firing
+// cascade-isolation retry (`failed===0 && no_evidence>0`) on real-failure legs.
+//
+// The fix is two surgical changes in executeLeg:
+//   (1) cascade trigger: `failed===0 && no_evidence>0` → `no_evidence===taskList.length`
+//       (literal "every task ended up no_evidence" — gradle ran nothing).
+//   (2) post-step-5 alignment: rebuild execSummary from classifyTaskResults
+//       so execution.failed === errors.module_failed-count per leg.
+//
+// Repro envelopes: shared-kmp-libs Mac `macos` leg + Win `androidInstrumented`
+// leg + dipatternsdemo `androidInstrumented` leg (.smoke/pass-9/).
+// ===========================================================================
+describe('execution.failed counter on non-JVM task failures (fix-PR-E)', () => {
+  // Test 1 — K/N runtime fail with `FAILED in Xs` suffix. The strict-EOL
+  // anchor in classifyTaskExecutionMode misses the FAILED suffix because of
+  // the trailing duration. The bare `> Task :a:jvmTest` line earlier in the
+  // stream wins as 'fresh' on first-match. Pre-fix: execution.failed=0
+  // (envelope wrong, OS-parity broken). Post-fix: alignment promotes the task
+  // from fresh → failed, matching errors.module_failed count.
+  it('K/N-style runtime fail (FAILED in Xs suffix) → execution.failed=1, cascade=false', async () => {
+    const dir = makeProject([
+      { name: 'a', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({
+      stdout: '> Task :a:jvmTest\n'
+            + 'kotlin.test.AssertionError\n'
+            + '  at TestImpl.testThing(Test.kt:42)\n'
+            + '> Task :a:jvmTest FAILED in 5s\n'
+            + 'BUILD FAILED in 6s\n',
+      status: 1,
+    });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const leg = envelope.parallel.legs[0];
+    expect(leg.execution.failed).toBe(1);
+    expect(leg.execution.fresh).toBe(0);
+    expect(leg.cascade_detected).toBe(false);
+    expect(leg.retry_fired).toBe(false);
+    expect(envelope.tests.failed).toBe(1);
+    const moduleFailedCount = envelope.errors.filter(e => e.code === 'module_failed').length;
+    expect(moduleFailedCount).toBe(1);
+    expect(leg.execution.failed).toBe(moduleFailedCount); // OS-parity invariant
+  });
+
+  // Test 2 — AGP instrumented runtime fail (`connectedDebugAndroidTest`).
+  // Same FAILED-with-trailing-content shape. Locks the AGP-on-device path
+  // (Win-S22 / Mac-S25 repros from wide-smoke pass-9 post-toolchain re-runs).
+  // Note: the dispatched task is `:a:jvmTest` (project model), but the stdout
+  // shape is what classifyTaskExecutionMode parses — so the test is meaningful
+  // for the classifier behavior regardless of the actual task class dispatched.
+  it('AGP instrumented-style runtime fail → execution.failed=1, cascade=false', async () => {
+    const dir = makeProject([
+      { name: 'app', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({
+      stdout: '> Task :app:jvmTest\n'
+            + 'Finished testRun\n'
+            + 'There were failing tests. See the report at: file:///...\n'
+            + '> Task :app:jvmTest FAILED in 12s\n'
+            + 'BUILD FAILED in 13s\n',
+      status: 1,
+    });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const leg = envelope.parallel.legs[0];
+    expect(leg.execution.failed).toBe(1);
+    expect(leg.cascade_detected).toBe(false);
+    expect(envelope.tests.failed).toBe(1);
+  });
+
+  // Test 3 — KMP plugin alias path (`androidConnectedCheck` shape, no Debug/
+  // Release variant suffix — the new `com.android.kotlin.multiplatform.library`
+  // plugin emits this single composite task). Locks the AGP-KMP plugin path
+  // detected by fix-PR-D (PR #126).
+  it('androidConnectedCheck-style runtime fail (KMP plugin alias) → execution.failed=1', async () => {
+    const dir = makeProject([
+      { name: 'mod', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({
+      stdout: '> Task :mod:jvmTest\n'
+            + 'Test instrumentation runner finished with 3 tests, 1 failure\n'
+            + '> Task :mod:jvmTest FAILED in 18s\n'
+            + 'FAILURE: Build failed with an exception.\n'
+            + 'BUILD FAILED in 20s\n',
+      status: 1,
+    });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const leg = envelope.parallel.legs[0];
+    expect(leg.execution.failed).toBe(1);
+    expect(leg.cascade_detected).toBe(false);
+  });
+
+  // Test 4 — Mixed K/N + JVM-success in same leg. 2 tasks complete cleanly
+  // (matching strict-EOL → 'fresh'), 1 task runtime-fails with non-EOL FAILED.
+  // Pre-fix: leg shows fresh:2, no_evidence:1, failed:0, cascade_detected=true,
+  // retry_fired=true (the dipatternsdemo Win-side bug shape — wasted gradle
+  // work). Post-fix: cascade signature requires no_evidence === taskList.length,
+  // which fails (1 !== 3) — no spurious retry. Alignment promotes the failing
+  // task from fresh → failed, leaving fresh:2, failed:1, total preserved.
+  it('mixed K/N-fail + 2 JVM-pass in same leg → cascade NOT fired, failed=1', async () => {
+    const dir = makeProject([
+      { name: 'a', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'b', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'c', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({
+      stdout: '> Task :a:jvmTest\n'
+            + '> Task :b:jvmTest\n'
+            + '> Task :c:jvmTest\n'
+            + 'kotlin.test.AssertionError\n'
+            + '> Task :c:jvmTest FAILED in 4s\n'
+            + 'BUILD FAILED in 5s\n',
+      status: 1,
+    });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const leg = envelope.parallel.legs[0];
+    // Counter alignment (Change 2): :c promoted from fresh → failed.
+    expect(leg.execution.failed).toBe(1);
+    expect(leg.execution.fresh).toBe(2);
+    // Bucket-total preserved.
+    const total = leg.execution.fresh + leg.execution.up_to_date
+                + leg.execution.from_cache + leg.execution.no_source
+                + leg.execution.skipped_by_gradle + leg.execution.failed
+                + leg.execution.no_evidence;
+    expect(total).toBe(3);
+    // Cascade trigger (Change 1): no_evidence !== taskList.length → suppressed.
+    expect(leg.cascade_detected).toBe(false);
+    expect(leg.retry_fired).toBe(false);
+    expect(envelope.tests.failed).toBe(1);
+    expect(envelope.tests.passed).toBe(2);
+  });
+
+  // Test 5 — Pure cascade (Cannot locate task → all tasks no_evidence).
+  // Both Change 1 (cascade still fires when every task is no_evidence) and
+  // Change 2 (alignment promotes resolutionFailed-marked tasks from
+  // no_evidence → failed in the final envelope) exercised together.
+  it('pure cascade (Cannot locate) → cascade fires + alignment promotes to failed', async () => {
+    const dir = makeProject([
+      { name: 'a', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'b', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({
+      stdout: 'Cannot locate tasks that match \':a:jvmTest\' as task \'jvmTest\' not found in project \':a\'.\n'
+            + 'BUILD FAILED in 1s\n',
+      resolutionFail: true,
+    });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const leg = envelope.parallel.legs[0];
+    // Change 1 — cascade trigger fires: every task is no_evidence (no
+    // Task-status lines printed) → no_evidence === taskList.length.
+    expect(leg.cascade_detected).toBe(true);
+    expect(leg.retry_fired).toBe(true);
+    // Change 2 — alignment: classifyTaskResults marks all 'failed' via
+    // resolutionFailed branch in BOTH the bundled one-shot AND each per-module
+    // retry, so the final aligned execSummary surfaces all modules as failed.
+    expect(leg.execution.failed).toBe(2);
+    expect(leg.execution.no_evidence).toBe(0);
+    expect(envelope.tests.failed).toBe(2);
+  });
+
+  // Test 6 — Regression guard: classic JVM `> Task :foo:test FAILED\n` shape
+  // (FAILED at clean EOL, no trailing content). classifyTaskExecutionMode
+  // already counts these correctly via the strict-EOL anchor; alignment is
+  // a no-op (failedTasks.size === execSummary.failed). Locks the JVM path
+  // against future regressions to either Change 1 or Change 2.
+  it('regression guard: classic JVM `> Task FAILED\\n` (clean EOL) → execution.failed=2', async () => {
+    const dir = makeProject([
+      { name: 'a', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'b', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({
+      failTasks: [':a:jvmTest', ':b:jvmTest'],
+      stdout: '> Task :a:jvmTest FAILED\n> Task :b:jvmTest FAILED\nBUILD FAILED in 1s\n',
+    });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const leg = envelope.parallel.legs[0];
+    expect(leg.execution.failed).toBe(2);
+    expect(leg.execution.no_evidence).toBe(0);
+    // Cascade trigger (new semantic): no_evidence !== taskList.length → suppressed.
+    expect(leg.cascade_detected).toBe(false);
+    expect(leg.retry_fired).toBe(false);
+    expect(envelope.tests.failed).toBe(2);
+  });
+});
