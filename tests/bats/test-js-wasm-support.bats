@@ -72,6 +72,8 @@ _dump_modules() {
 @test "pm_get_web_test_task returns empty when model is absent" {
     # shellcheck disable=SC1090
     source scripts/sh/lib/project-model.sh
+    # v0.8.0 — purge BOTH the new path and the legacy cache.
+    rm -rf "$FIXTURE/.kmp-test-runner"
     rm -rf "$FIXTURE/.kmp-test-runner-cache"
     result="$(pm_get_web_test_task "$FIXTURE" "kmp-multi")"
     [ -z "$result" ]
