@@ -464,6 +464,94 @@ describe('pickGradleTaskFor', () => {
     });
   });
 
+  // 2026-05-04 — Bug D (wide-smoke pass-8 follow-up to Bug A): Google's new
+  // KMP-Android plugin `com.android.kotlin.multiplatform.library` (Kotlin 2.3+)
+  // uses different test task names than legacy AGP. Host tests dispatch as
+  // `testAndroidHostTest` (no Debug/Release variants — the new DSL omits
+  // product-flavor support). Device tests dispatch as `androidConnectedCheck`.
+  // Modules that declare `withHostTestBuilder {} / withDeviceTestBuilder {}`
+  // opt in to test-task generation; without the opt-in, AGP creates no task
+  // even if `src/androidUnitTest/` exists on disk. The model surfaces this
+  // via `androidDslVariant: 'kmpAndroidLibrary'` and pre-overrides the
+  // sourceSets booleans so the orchestrator sees opt-in-aware values.
+  describe('Bug D: kmpAndroidLibrary plugin dispatch (testAndroidHostTest / androidConnectedCheck)', () => {
+    it('androidUnit: kmpAndroidLibrary with androidUnitTest opt-in → dispatches testAndroidHostTest', () => {
+      const mod = {
+        name: 'core-firebase-native', type: 'kmp', androidDsl: 'androidLibrary',
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidUnitTest: true, commonTest: true },
+        resolved: { unitTestTask: null },
+      };
+      const r = pickGradleTaskFor(mod, 'androidUnit');
+      expect(r.task).toBe(':core-firebase-native:testAndroidHostTest');
+      expect(r.reason).toBe('');
+    });
+
+    it('androidUnit: kmpAndroidLibrary without opt-in → null with withHostTestBuilder reason', () => {
+      const mod = {
+        name: 'core-firebase-native', type: 'kmp', androidDsl: 'androidLibrary',
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidUnitTest: false, commonTest: true },
+        resolved: { unitTestTask: null },
+      };
+      const r = pickGradleTaskFor(mod, 'androidUnit');
+      expect(r.task).toBeNull();
+      expect(r.reason).toMatch(/withHostTestBuilder/);
+    });
+
+    it('androidUnit: --variant=release is a no-op for kmpAndroidLibrary (no Debug/Release split)', () => {
+      const mod = {
+        name: 'core-firebase-native', type: 'kmp', androidDsl: 'androidLibrary',
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidUnitTest: true },
+        resolved: { unitTestTask: null },
+      };
+      // Pass --variant=release: legacy path would emit testReleaseUnitTest;
+      // new plugin path emits testAndroidHostTest regardless of the flag.
+      const r = pickGradleTaskFor(mod, 'androidUnit', { androidVariant: 'release' });
+      expect(r.task).toBe(':core-firebase-native:testAndroidHostTest');
+    });
+
+    it('androidInstrumented: kmpAndroidLibrary with androidDeviceTest opt-in → dispatches androidConnectedCheck', () => {
+      const mod = {
+        name: 'benchmark-network', type: 'kmp', androidDsl: 'androidLibrary',
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidDeviceTest: true, commonTest: true },
+        resolved: { deviceTestTask: null },
+      };
+      const r = pickGradleTaskFor(mod, 'androidInstrumented');
+      expect(r.task).toBe(':benchmark-network:androidConnectedCheck');
+      expect(r.reason).toBe('');
+    });
+
+    it('androidInstrumented: kmpAndroidLibrary without opt-in → null with withDeviceTestBuilder reason', () => {
+      const mod = {
+        name: 'core-firebase-native', type: 'kmp', androidDsl: 'androidLibrary',
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidDeviceTest: false },
+        resolved: { deviceTestTask: null },
+      };
+      const r = pickGradleTaskFor(mod, 'androidInstrumented');
+      expect(r.task).toBeNull();
+      expect(r.reason).toMatch(/withDeviceTestBuilder/);
+    });
+
+    it('regression: legacy androidLibrary (androidDslVariant null) still dispatches testDebugUnitTest', () => {
+      // Guards Bug D from accidentally swallowing the legacy path. KMP modules
+      // using the deprecated `androidTarget()` shape (or any path where the
+      // model didn't tag kmpAndroidLibrary) must continue to dispatch the
+      // legacy variant-aware task name.
+      const mod = {
+        name: 'legacy-shared', type: 'kmp', androidDsl: 'androidLibrary',
+        androidDslVariant: null,
+        sourceSets: { androidUnitTest: true, commonTest: true },
+        resolved: { unitTestTask: null },
+      };
+      const r = pickGradleTaskFor(mod, 'androidUnit');
+      expect(r.task).toBe(':legacy-shared:testDebugUnitTest');
+    });
+  });
+
   // 2026-05-03 — instrumented-only Android module skip (dipatternsdemo
   // :benchmark repro). No `test/`, `androidUnitTest/`, or `commonTest/`
   // source set → orchestrator skips with reason instead of dispatching a
