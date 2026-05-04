@@ -393,6 +393,60 @@ describe('pickGradleTaskFor', () => {
     });
   });
 
+  // 2026-05-05 — fix-PR-F: --variant flag on androidInstrumented dispatch.
+  // Mirror of the androidUnit variant suite. The fallback path for AGP
+  // modules without a probed deviceTestTask must honor --variant +
+  // mod.testBuildType to fix dipatternsdemo :benchmark (testBuildType =
+  // "release" → only :benchmark:connectedReleaseAndroidTest exists).
+  describe('--variant flag for Android instrumented tests', () => {
+    // Fixture: AGP-fallback path (deviceTestTask null forces fallback to
+    // androidConnectedTask). Mirrors line ~394-415 fallback in pickGradleTaskFor.
+    const fallbackModule = {
+      name: 'app',
+      type: 'android',
+      androidDsl: true,
+      sourceSets: { androidInstrumentedTest: true },
+      resolved: { deviceTestTask: null },
+    };
+
+    it('--variant auto + testBuildType="release" → connectedReleaseAndroidTest', () => {
+      const releaseModule = { ...fallbackModule, testBuildType: 'release' };
+      expect(pickGradleTaskFor(releaseModule, 'androidInstrumented', { androidVariant: 'auto' }).task)
+        .toBe(':app:connectedReleaseAndroidTest');
+    });
+
+    it('--variant debug overrides testBuildType="release" → connectedDebugAndroidTest', () => {
+      const releaseModule = { ...fallbackModule, testBuildType: 'release' };
+      expect(pickGradleTaskFor(releaseModule, 'androidInstrumented', { androidVariant: 'debug' }).task)
+        .toBe(':app:connectedDebugAndroidTest');
+    });
+
+    it('--variant auto + no testBuildType → connectedDebugAndroidTest (AGP default)', () => {
+      expect(pickGradleTaskFor(fallbackModule, 'androidInstrumented', { androidVariant: 'auto' }).task)
+        .toBe(':app:connectedDebugAndroidTest');
+    });
+
+    it('--variant all → connectedAndroidTest (AGP lifecycle umbrella)', () => {
+      expect(pickGradleTaskFor(fallbackModule, 'androidInstrumented', { androidVariant: 'all' }).task)
+        .toBe(':app:connectedAndroidTest');
+    });
+
+    it('kmpAndroidLibrary branch: --variant is no-op, still dispatches androidConnectedCheck', () => {
+      const kmpAndroidLib = {
+        name: 'kmp-feat',
+        type: 'kmp',
+        androidDsl: true,
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidDeviceTest: true },
+        resolved: { deviceTestTask: null },
+      };
+      expect(pickGradleTaskFor(kmpAndroidLib, 'androidInstrumented', { androidVariant: 'release' }).task)
+        .toBe(':kmp-feat:androidConnectedCheck');
+      expect(pickGradleTaskFor(kmpAndroidLib, 'androidInstrumented', { androidVariant: 'all' }).task)
+        .toBe(':kmp-feat:androidConnectedCheck');
+    });
+  });
+
   // 2026-05-04 — Bug A (wide-smoke pass-8): source-set gate for explicit
   // androidUnit / androidInstrumented dispatch. KMP modules with
   // `androidLibrary {}` DSL but no androidUnitTest / androidInstrumentedTest

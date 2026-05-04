@@ -1341,14 +1341,40 @@ android { namespace = "x" }
     expect(a.testBuildType).toBeNull();
   });
 
-  it('returns null for variable testBuildType (not statically resolvable)', () => {
-    // dipatternsdemo :benchmark uses `testBuildType = benchmarkBuildType`
-    // — we can't know the runtime value. Null defaults to AGP's "debug".
+  it('resolves variable testBuildType when val is a direct string literal', () => {
+    // 2026-05-05 fix-PR-F follow-up — single-file `val x = "release"` shape.
     const dir = makeAndroidModule(`
 plugins { id("com.android.library") }
 val benchmarkBuildType = "release"
 android {
   testBuildType = benchmarkBuildType
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.testBuildType).toBe('release');
+  });
+
+  it('resolves variable testBuildType when val uses ?: default (dipatternsdemo shape)', () => {
+    // 2026-05-05 fix-PR-F follow-up — dipatternsdemo :benchmark uses
+    // `val x = (project.findProperty(...) as? String) ?: "release"`.
+    const dir = makeAndroidModule(`
+plugins { id("com.android.library") }
+val benchmarkBuildType = (project.findProperty("benchmarkBuildType") as? String) ?: "release"
+android {
+  testBuildType = benchmarkBuildType
+}
+`);
+    const a = analyzeModule(dir, ':m');
+    expect(a.testBuildType).toBe('release');
+  });
+
+  it('returns null when variable testBuildType has no resolvable val literal', () => {
+    // Regression guard — opaque expressions (function calls, multi-file
+    // refs) fall through to null, preserving AGP-default "debug" behavior.
+    const dir = makeAndroidModule(`
+plugins { id("com.android.library") }
+android {
+  testBuildType = computeBuildType()
 }
 `);
     const a = analyzeModule(dir, ':m');
