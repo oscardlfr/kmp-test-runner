@@ -2158,13 +2158,25 @@ describe('preflightJdkCheck', () => {
     });
   });
 
-  it('returns mismatch info when jvmToolchain != current java major', () => {
+  it('returns mismatch info when jvmToolchain != current java major (host BELOW floor)', () => {
+    // v0.8.0 fix-PR-B: result is now a tagged union; `kind: 'mismatch'` fires
+    // only when host < floor. (Pre-fix host=23 + jvmToolchain(17) returned
+    // mismatch because the equality check coerced host down.)
+    withFakeKmpProject(17, dir => {
+      mockJavaVersion(11);
+      const result = preflightJdkCheck(dir);
+      expect(result).toEqual({ kind: 'mismatch', required: 17, current: 11, agpVersion: null });
+    });
+  });
+
+  it('returns null when host JDK exceeds jvmToolchain floor (no AGP signal) — host preserved', () => {
+    // v0.8.0 fix-PR-B regression guard: pure-jvmToolchain floors don't trigger
+    // the preserved-info return (sig.agpIsBinding=false). Result is null —
+    // silent preserve. Without this guard a future refactor could re-emit a
+    // [NOTICE] banner for routine non-AGP projects.
     withFakeKmpProject(17, dir => {
       mockJavaVersion(23);
-      const result = preflightJdkCheck(dir);
-      // PR3 closeout 2026-05-03: result now also carries `agpVersion`
-      // (null for non-AGP projects, used by the auto-select notice).
-      expect(result).toEqual({ required: 17, current: 23, agpVersion: null });
+      expect(preflightJdkCheck(dir)).toBeNull();
     });
   });
 
@@ -2209,8 +2221,9 @@ describe('main() — JDK gate integration', () => {
     // auto-selects a matching install. To exercise the gate-fires path
     // explicitly (independent of which JDKs the test host has installed),
     // pass --no-jdk-autoselect.
+    // v0.8.0 fix-PR-B: host=11 < jvmToolchain(17) → mismatch fires (host > floor preserves now).
     withFakeKmpProject(17, dir => {
-      mockJavaVersion(23);
+      mockJavaVersion(11);
       process.argv = ['node', 'kmp-test.js', 'parallel', '--no-jdk-autoselect', '--project-root', dir];
       expect(main()).toBe(EXIT.ENV_ERROR);
       // No script spawn happened (only the java -version probe).
@@ -2251,8 +2264,9 @@ describe('main() — JDK gate integration', () => {
   });
 
   it('--json + --no-jdk-autoselect on mismatch → emits jdk_mismatch code with versions in errors[0]', () => {
+    // v0.8.0 fix-PR-B: host=11 < jvmToolchain(17) → mismatch fires (host > floor preserves now).
     withFakeKmpProject(17, dir => {
-      mockJavaVersion(23);
+      mockJavaVersion(11);
       const writes = [];
       const origWrite = process.stdout.write.bind(process.stdout);
       process.stdout.write = (chunk) => { writes.push(String(chunk)); return true; };
@@ -2268,7 +2282,7 @@ describe('main() — JDK gate integration', () => {
       expect(obj.exit_code).toBe(EXIT.ENV_ERROR);
       expect(obj.errors[0].code).toBe('jdk_mismatch');
       expect(obj.errors[0].required_jdk).toBe(17);
-      expect(obj.errors[0].current_jdk).toBe(23);
+      expect(obj.errors[0].current_jdk).toBe(11);
     });
   });
 
@@ -2276,13 +2290,15 @@ describe('main() — JDK gate integration', () => {
   // v0.6.x Gap 2 — JDK catalogue auto-selection
   // ------------------------------------------------------------------
   it('catalogue match → auto-selects matching JDK and bypasses gate (Gap 2)', () => {
+    // v0.8.0 fix-PR-B: host JDK MUST be below floor to trigger auto-select
+    // (host >= floor preserves host now). Use host=11 + jvmToolchain(17) so
+    // mismatch fires; auto-select picks JDK 17 from catalogue.
     withFakeKmpProject(17, dir => {
-      mockJavaVersion(23);
       // mockJavaVersion replaces all spawn (including the script). Re-arrange
-      // so `java -version` returns 23 but the script spawn returns success.
+      // so `java -version` returns 11 but the script spawn returns success.
       spawnMock.mockImplementation((cmd) => {
         if (cmd === 'java') {
-          return { status: 0, stdout: '', stderr: 'openjdk version "23.0.1" 2024-01-16\n' };
+          return { status: 0, stdout: '', stderr: 'openjdk version "11.0.1" 2024-01-16\n' };
         }
         return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
       });
@@ -2314,6 +2330,8 @@ describe('main() — JDK gate integration', () => {
   // include `project applies AGP X.Y.Z` so the user understands WHY the
   // host JDK isn't being used.
   it('auto-select notice includes AGP version when AGP-implied JDK fires', () => {
+    // v0.8.0 fix-PR-B: host JDK 11 < AGP floor 17 triggers auto-select.
+    // (Pre-fix this test used host=23, which now hits the preserve-host path.)
     withFakeGradleProject(dir => {
       mkdirSync(path.join(dir, 'gradle'), { recursive: true });
       writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
@@ -2323,7 +2341,7 @@ describe('main() — JDK gate integration', () => {
         'kotlin { jvmToolchain(11) }\n');
       spawnMock.mockImplementation((cmd) => {
         if (cmd === 'java') {
-          return { status: 0, stdout: '', stderr: 'openjdk version "23.0.1" 2024-01-16\n' };
+          return { status: 0, stdout: '', stderr: 'openjdk version "11.0.1" 2024-01-16\n' };
         }
         return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
       });
@@ -2347,12 +2365,13 @@ describe('main() — JDK gate integration', () => {
   });
 
   it('auto-select notice omits AGP marker when project does not apply AGP', () => {
+    // v0.8.0 fix-PR-B: host=11 < jvmToolchain(17) → mismatch fires.
     withFakeKmpProject(17, dir => {
       // No gradle/libs.versions.toml AGP entry; just the jvmToolchain(17)
       // baked in by withFakeKmpProject.
       spawnMock.mockImplementation((cmd) => {
         if (cmd === 'java') {
-          return { status: 0, stdout: '', stderr: 'openjdk version "23.0.1" 2024-01-16\n' };
+          return { status: 0, stdout: '', stderr: 'openjdk version "11.0.1" 2024-01-16\n' };
         }
         return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
       });
@@ -2375,10 +2394,11 @@ describe('main() — JDK gate integration', () => {
   });
 
   it('--java-home overrides catalogue auto-select (Gap 2)', () => {
+    // v0.8.0 fix-PR-B: host=11 < jvmToolchain(17) → mismatch fires; --java-home wins.
     withFakeKmpProject(17, dir => {
       spawnMock.mockImplementation((cmd) => {
         if (cmd === 'java') {
-          return { status: 0, stdout: '', stderr: 'openjdk version "23.0.1" 2024-01-16\n' };
+          return { status: 0, stdout: '', stderr: 'openjdk version "11.0.1" 2024-01-16\n' };
         }
         return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
       });
@@ -2397,8 +2417,9 @@ describe('main() — JDK gate integration', () => {
   });
 
   it('--no-jdk-autoselect prevents catalogue lookup → gate fires (Gap 2)', () => {
+    // v0.8.0 fix-PR-B: host=11 < jvmToolchain(17) → mismatch fires; --no-jdk-autoselect short-circuits.
     withFakeKmpProject(17, dir => {
-      mockJavaVersion(23);
+      mockJavaVersion(11);
       // Even if catalogue HAS a match, --no-jdk-autoselect disables the lookup.
       discoverInstalledJdksMock.mockReturnValue([
         { majorVersion: 17, vendor: 'Eclipse Adoptium', path: '/would-match' },
@@ -2411,8 +2432,9 @@ describe('main() — JDK gate integration', () => {
   });
 
   it('catalogue empty (no installs) → gate fires as today (Gap 2)', () => {
+    // v0.8.0 fix-PR-B: host=11 < jvmToolchain(17) → mismatch fires.
     withFakeKmpProject(17, dir => {
-      mockJavaVersion(23);
+      mockJavaVersion(11);
       discoverInstalledJdksMock.mockReturnValue([]);
       process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
       expect(main()).toBe(EXIT.ENV_ERROR);
@@ -2421,14 +2443,207 @@ describe('main() — JDK gate integration', () => {
   });
 
   it('catalogue has only non-matching versions → gate fires (Gap 2)', () => {
+    // v0.8.0 fix-PR-B: host=11 < jvmToolchain(17) → mismatch fires; catalogue
+    // [JDK 8, JDK 11] has no exact-17 match → gate fires (catalogue lookup is
+    // still strict-equal as of fix-PR-B; the `>=` refinement is deferred).
     withFakeKmpProject(17, dir => {
-      mockJavaVersion(23);
+      mockJavaVersion(11);
       discoverInstalledJdksMock.mockReturnValue([
-        { majorVersion: 11, vendor: 'Adoptium', path: '/fake/jdk-11' },
-        { majorVersion: 23, vendor: 'Zulu', path: '/fake/jdk-23' },
+        { majorVersion: 8, vendor: 'Adoptium', path: '/fake/jdk-8' },
+        { majorVersion: 11, vendor: 'Zulu', path: '/fake/jdk-11' },
       ]);
       process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
       expect(main()).toBe(EXIT.ENV_ERROR);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // v0.8.0 fix-PR-B — preserve host JDK when it satisfies the AGP floor.
+  //
+  // PR3 (commit 0910615) introduced AGP-runtime auto-select but coerced the
+  // host JDK down to the AGP floor even when the host already satisfied it.
+  // That breaks bytecode-65 (Java 21) Compose dependencies on projects whose
+  // AGP floor is JDK 17 but whose host is JDK 23 — UnsupportedClassVersionError
+  // at test runtime. Canonical repro: Confetti :wearApp BookmarksTest.
+  //
+  // Fix: preflightJdkCheck now returns kind='preserved' when host > floor AND
+  // AGP is the BINDING signal (sig.agpIsBinding === true). main() emits an
+  // observability [NOTICE] but does NOT override JAVA_HOME. When jvmToolchain
+  // raises the floor above AGP, the user already accepted that JDK requirement
+  // explicitly — no banner needed.
+  // ------------------------------------------------------------------
+  describe('preserve host JDK when it satisfies the AGP floor (v0.8.0 fix-PR-B)', () => {
+    it('host JDK 23 + AGP 8.13.1 (floor 17) → preserved, no JAVA_HOME override (Confetti repro)', () => {
+      withFakeGradleProject(dir => {
+        mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+        writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+          '[versions]\nagp = "8.13.1"\n');
+        writeFileSync(path.join(dir, 'build.gradle.kts'),
+          'kotlin { jvmToolchain(11) }\n');
+        spawnMock.mockImplementation((cmd) => {
+          if (cmd === 'java') {
+            return { status: 0, stdout: '', stderr: 'openjdk version "23.0.2" 2025-01-21\n' };
+          }
+          return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
+        });
+        // Catalogue HAS a JDK 17 — the bug was that auto-select picked it
+        // even though host 23 was fine. Post-fix, catalogue MUST NOT be
+        // consulted when host satisfies the floor.
+        discoverInstalledJdksMock.mockReturnValue([
+          { majorVersion: 17, vendor: 'Eclipse Adoptium', path: '/fake/jdk-17' },
+        ]);
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+        expect(main()).toBe(EXIT.SUCCESS);
+        expect(discoverInstalledJdksMock).not.toHaveBeenCalled();
+        // Spawn opts MUST NOT carry a JAVA_HOME override — host preserved.
+        const scriptCall = spawnMock.mock.calls.find(
+          c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+        );
+        expect(scriptCall).toBeTruthy();
+        expect(scriptCall[2]?.env?.JAVA_HOME).toBeUndefined();
+      });
+    });
+
+    it('emits [NOTICE] preserving host banner when AGP is the binding floor', () => {
+      withFakeGradleProject(dir => {
+        mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+        writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+          '[versions]\nagp = "8.13.1"\n');
+        writeFileSync(path.join(dir, 'build.gradle.kts'),
+          'kotlin { jvmToolchain(11) }\n');
+        spawnMock.mockImplementation((cmd) => {
+          if (cmd === 'java') {
+            return { status: 0, stdout: '', stderr: 'openjdk version "23.0.2" 2025-01-21\n' };
+          }
+          return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
+        });
+        const stderrChunks = [];
+        const origStderr = process.stderr.write.bind(process.stderr);
+        process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+        try {
+          process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+          expect(main()).toBe(EXIT.SUCCESS);
+        } finally {
+          process.stderr.write = origStderr;
+        }
+        const notice = stderrChunks.find(c => c.includes('[NOTICE] host JDK'));
+        expect(notice).toBeTruthy();
+        expect(notice).toMatch(/host JDK 23 meets AGP 8\.13\.1 floor \(JDK 17\); preserving host/);
+        // Auto-select banner MUST NOT fire — preserve, not coerce.
+        const autoNotice = stderrChunks.find(c => c.includes('[NOTICE] auto-selecting JDK'));
+        expect(autoNotice).toBeFalsy();
+      });
+    });
+
+    it('host JDK == AGP floor (boundary) → silent, no notice, no override', () => {
+      withFakeGradleProject(dir => {
+        mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+        writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+          '[versions]\nagp = "8.8.2"\n');
+        writeFileSync(path.join(dir, 'build.gradle.kts'),
+          'kotlin { jvmToolchain(11) }\n');
+        spawnMock.mockImplementation((cmd) => {
+          if (cmd === 'java') {
+            return { status: 0, stdout: '', stderr: 'openjdk version "17.0.10" 2024-01-16\n' };
+          }
+          return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
+        });
+        const stderrChunks = [];
+        const origStderr = process.stderr.write.bind(process.stderr);
+        process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+        try {
+          process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+          expect(main()).toBe(EXIT.SUCCESS);
+        } finally {
+          process.stderr.write = origStderr;
+        }
+        // Exact match on the floor — silent (this path returns null in
+        // preflightJdkCheck before reaching the preserve branch).
+        expect(stderrChunks.find(c => /\[NOTICE\] (host JDK|auto-selecting JDK)/.test(c)))
+          .toBeFalsy();
+      });
+    });
+
+    it('host JDK 23 + jvmToolchain(17) only (no AGP) → silent, no notice', () => {
+      // Pure KMP project, no AGP. Host > floor but agpIsBinding=false → silent.
+      withFakeKmpProject(17, dir => {
+        spawnMock.mockImplementation((cmd) => {
+          if (cmd === 'java') {
+            return { status: 0, stdout: '', stderr: 'openjdk version "23.0.2" 2025-01-21\n' };
+          }
+          return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
+        });
+        const stderrChunks = [];
+        const origStderr = process.stderr.write.bind(process.stderr);
+        process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+        try {
+          process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+          expect(main()).toBe(EXIT.SUCCESS);
+        } finally {
+          process.stderr.write = origStderr;
+        }
+        expect(stderrChunks.find(c => c.includes('[NOTICE] host JDK'))).toBeFalsy();
+        expect(discoverInstalledJdksMock).not.toHaveBeenCalled();
+      });
+    });
+
+    it('host JDK 23 + AGP 8.x but jvmToolchain(21) raises floor → silent (jvmToolchain binds, not AGP)', () => {
+      // jvmToolchain(21) > AGP 8.x floor (17) → min=21, agpIsBinding=false.
+      // Host=23 > 21 → preserved, but the user explicitly opted in to JDK 21,
+      // so no observability banner fires.
+      withFakeGradleProject(dir => {
+        mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+        writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+          '[versions]\nagp = "8.0.0"\n');
+        writeFileSync(path.join(dir, 'build.gradle.kts'),
+          'kotlin { jvmToolchain(21) }\n');
+        spawnMock.mockImplementation((cmd) => {
+          if (cmd === 'java') {
+            return { status: 0, stdout: '', stderr: 'openjdk version "23.0.2" 2025-01-21\n' };
+          }
+          return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
+        });
+        const stderrChunks = [];
+        const origStderr = process.stderr.write.bind(process.stderr);
+        process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+        try {
+          process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+          expect(main()).toBe(EXIT.SUCCESS);
+        } finally {
+          process.stderr.write = origStderr;
+        }
+        expect(stderrChunks.find(c => c.includes('[NOTICE] host JDK'))).toBeFalsy();
+      });
+    });
+
+    it('host JDK 21 + AGP 9.0.0 (floor 17) → preserved, banner fires', () => {
+      // Locks the AGP 9.x → JDK 17 mapping (regression guard for AGP 9 docs as
+      // of 2026-05-03). Host 21 satisfies the AGP-binding floor of 17.
+      withFakeGradleProject(dir => {
+        mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+        writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+          '[versions]\nagp = "9.0.0"\n');
+        writeFileSync(path.join(dir, 'build.gradle.kts'),
+          'kotlin { jvmToolchain(11) }\n');
+        spawnMock.mockImplementation((cmd) => {
+          if (cmd === 'java') {
+            return { status: 0, stdout: '', stderr: 'openjdk version "21.0.4" 2024-07-16\n' };
+          }
+          return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '' };
+        });
+        const stderrChunks = [];
+        const origStderr = process.stderr.write.bind(process.stderr);
+        process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+        try {
+          process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+          expect(main()).toBe(EXIT.SUCCESS);
+        } finally {
+          process.stderr.write = origStderr;
+        }
+        const notice = stderrChunks.find(c => c.includes('[NOTICE] host JDK'));
+        expect(notice).toBeTruthy();
+        expect(notice).toMatch(/host JDK 21 meets AGP 9\.0\.0 floor \(JDK 17\); preserving host/);
+      });
     });
   });
 

@@ -13,7 +13,7 @@ BeforeAll {
         param(
             [string]$Path,
             [int]$JvmToolchain = 17,
-            [int]$JavaVersion = 23
+            [int]$JavaVersion = 11
         )
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $Path 'bin') -Force | Out-Null
@@ -54,7 +54,11 @@ Describe 'Jdk-Check lib: Invoke-JdkMismatchGate' {
 
     BeforeEach {
         $script:WorkDir = Join-Path $TestDrive ("proj-" + [guid]::NewGuid().ToString('N').Substring(0,8))
-        New-FakeKmpProject -Path $script:WorkDir -JvmToolchain 17 -JavaVersion 23
+        # v0.8.0 fix-PR-B: host=11 < jvmToolchain(17) → mismatch fires.
+        # (Pre-fix this used JavaVersion=23 because the gate did `==` equality;
+        # post-fix the gate uses `>=` semantics — host satisfying the floor
+        # preserves the host, so we need host < floor for the mismatch path.)
+        New-FakeKmpProject -Path $script:WorkDir -JvmToolchain 17 -JavaVersion 11
     }
 
     It 'returns 3 on jvmToolchain mismatch (no opt-out)' {
@@ -191,7 +195,7 @@ kotlin {
         }
         ($output | Select-Object -Last 1) | Should -Be 3
         ($output -join "`n") | Should -Match 'requires JDK 21'
-        ($output -join "`n") | Should -Match 'current JDK is 23'
+        ($output -join "`n") | Should -Match 'current JDK is 11'
     }
 
     It '(Gap B) falls back to legacy walker when model.json is absent' {
@@ -208,6 +212,29 @@ kotlin {
         ($output | Select-Object -Last 1) | Should -Be 3
         ($output -join "`n") | Should -Match 'requires JDK 17'
     }
+
+    # -------------------------------------------------------------------------
+    # v0.8.0 fix-PR-B — preserve host JDK when it satisfies the floor
+    # -------------------------------------------------------------------------
+    # Mirrors the cli.js preserve-host fix in the script-side gate. Without
+    # this, cli.js says "host is fine" (preserves) but the script then re-gates
+    # with `-eq` semantics and exits 3, breaking the preserve path end-to-end.
+    # -------------------------------------------------------------------------
+    It '(v0.8.0 fix-PR-B) host JDK above floor -> returns 0 (preserved, no gate)' {
+        # Re-create the project with host=23 (above jvmToolchain(17)).
+        $script:WorkDir = Join-Path $TestDrive ("proj-preserve-" + [guid]::NewGuid().ToString('N').Substring(0,8))
+        New-FakeKmpProject -Path $script:WorkDir -JvmToolchain 17 -JavaVersion 23
+
+        $libPath = $script:JdkLib
+        $work = $script:WorkDir
+        $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
+            & pwsh -NoLogo -NoProfile -Command ". '$libPath'; exit (Invoke-JdkMismatchGate -ProjectRoot '$work')" 2>&1
+            $LASTEXITCODE
+        }
+        ($output | Select-Object -Last 1) | Should -Be 0
+        ($output -join "`n") | Should -Not -Match 'JDK mismatch'
+        ($output -join "`n") | Should -Not -Match 'UnsupportedClassVersionError'
+    }
 }
 
 # ----------------------------------------------------------------------------
@@ -218,7 +245,11 @@ Describe 'parallel.ps1: JDK gate (end-to-end)' {
 
     BeforeEach {
         $script:WorkDir = Join-Path $TestDrive ("proj-e2e-" + [guid]::NewGuid().ToString('N').Substring(0,8))
-        New-FakeKmpProject -Path $script:WorkDir -JvmToolchain 17 -JavaVersion 23
+        # v0.8.0 fix-PR-B: host=11 < jvmToolchain(17) → mismatch fires.
+        # (Pre-fix this used JavaVersion=23 because the gate did `==` equality;
+        # post-fix the gate uses `>=` semantics — host satisfying the floor
+        # preserves the host, so we need host < floor for the mismatch path.)
+        New-FakeKmpProject -Path $script:WorkDir -JvmToolchain 17 -JavaVersion 11
     }
 
     It 'BLOCKs with exit 3 when JDK mismatches jvmToolchain (default)' {
