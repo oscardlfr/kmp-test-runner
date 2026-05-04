@@ -8,7 +8,9 @@
 #   module_first_existing_task "$PROJECT_ROOT" "$mod" task1 task2 task3
 #                                                -> echoes first existing task name (no colon), empty if none
 #
-# Cache layout: <project>/.kmp-test-runner-cache/tasks-<sha>.txt
+# Cache layout: <project>/.kmp-test-runner/cache/tasks-<sha>.txt
+#               (v0.8.0 — dual-read fallback for legacy `.kmp-test-runner-cache/`
+#                covers v0.7.x users for one transition release.)
 # Cache key:    sha1 of concatenated file contents of settings.gradle.kts,
 #               gradle.properties, and every <module>/build.gradle.kts
 #               discovered via include() declarations. Any content change

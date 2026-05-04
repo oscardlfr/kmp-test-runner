@@ -8,7 +8,9 @@
 #                                       -Candidates @('connectedDebugAndroidTest','androidConnectedCheck')
 #   Clear-GradleTasksCache -ProjectRoot $PR
 #
-# Cache layout: <project>\.kmp-test-runner-cache\tasks-<sha>.txt
+# Cache layout: <project>\.kmp-test-runner\cache\tasks-<sha>.txt
+#               (v0.8.0 — dual-read fallback for legacy `.kmp-test-runner-cache\`
+#                covers v0.7.x users for one transition release.)
 # Cache key:    SHA1 of concatenated file contents of settings.gradle.kts,
 #               gradle.properties, and every per-module build.gradle.kts.
 #               Any content change invalidates the cache deterministically.
