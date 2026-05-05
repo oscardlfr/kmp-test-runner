@@ -38,6 +38,12 @@ Bundled or 2-3 small PRs. Total ≈ 4-5h. Independent of v0.9 work.
 - **Concurrency Tier 3: `--isolated` flag** — opt-in `--project-cache-dir` per run for parallel CI fan-out. ~3-4h. Promote on user surface.
 - **Other QUEUED ideas** — ANSI color auto-detect, Maven Central publish, iOS/macOS TestKit matrix.
 
+### Project conventions (do-not-do list)
+
+> Cross-cutting rules that aren't backlog items but have to live somewhere visible. CLAUDE.md is the canonical source — these are pointers so a future session reading BACKLOG.md sees them.
+
+- **README is clean — no "What's new in vX" sections.** Per-version highlight blocks belong in `CHANGELOG.md` only. The README must read as if the project were timeless: what it does, how to install it, how to use it. Pre-v1, accumulating "What's new in v0.7 / v0.8 / ..." subsections turns the README into release-notes scaffolding. Removed twice (v0.7 README pass + v0.8.1) — see the rule in [`CLAUDE.md` "Architecture decisions worth knowing"](CLAUDE.md). If a fresh-session prompt asks for a "What's new" section, treat it as an instruction to update CHANGELOG.md instead and call out the diff to the user.
+
 ---
 
 ## ACTIVE
