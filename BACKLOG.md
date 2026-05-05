@@ -4,6 +4,42 @@
 
 ---
 
+## ROADMAP (post-v0.8.0 — added 2026-05-05)
+
+> Milestone view of OPEN items. Order within each milestone reflects intended development sequence (later items may depend on earlier ones — for v0.9 in particular, token-cost re-measurement + README refresh come AFTER all envelope-shape-changing flags land so the docs reflect the final v0.9 surface). Detailed entries below; search by title.
+
+### v0.8.1 — patch (docs + diagnostics, no API change)
+
+Bundled or 2-3 small PRs. Total ≈ 4-5h. Independent of v0.9 work.
+
+1. **Community standards** — `.github/ISSUE_TEMPLATE/{bug_report,feature_request}.md` + `.github/PULL_REQUEST_TEMPLATE.md` (see "v0.7.x / v0.8 — Community standards"). 30-45min.
+2. **Doctor: surface `gradle_config{}` diagnostic** — Tier 1 of "Adapt CLI to project's Gradle config" entry. Pure additive `--json` field on `kmp-test doctor`, no behavior change. 30min.
+3. **Concurrency Tier 2 docs** — full collision matrix in `docs/concurrency.md` (Tier 1 shipped v0.3.8). See "Concurrent-invocation safety" entry. 30min.
+4. **README refresh + token-cost re-measurement** — refresh README post-v0.7.0 + v0.8.0 surface; re-run `tools/measure-token-cost.js` matrix; update flag tables; remove stale `--shared-project-name`. See "v0.8.0 — README refresh + token-cost re-measurement" entry. 2-3h.
+
+### v0.9 — minor (new features + behavior surface)
+
+**Order is load-bearing**: parameters land FIRST (steps 1-3) so envelope shape stabilises, THEN token-cost re-measurement (step 4) captures the new shape, THEN README v0.9 refresh (step 5) documents the final surface. Steps 6-7 follow as separable feature work.
+
+1. **`parallel --test-type androidInstrumented` parity-gap** — 6 new flags: `--clear-data`, `--auto-retry`, `--device <serial>`, `--flavor <name>`, `--device-task <name>`, `class=<FQN>#<method>` filter shape. One PR per flag, or bundled. ~115 LOC + 11 vitest. See "v0.9 — `kmp-test parallel --test-type androidInstrumented` parity gap" entry.
+2. **`--gradle-args` passthrough** — Tier 2 of CLI/Gradle adapter. Generic gradle args injection. ~1h.
+3. **DX-parity bundle from android CLI** — global `--variant` flag (cross-subcommand), `kmp-test describe`, `kmp-test info`, `kmp-test update`. See "DX/UX parity audit — borrow good ideas" entry, high-value 4 items. ~4-8h.
+4. **Token-cost re-measurement across the new v0.9 surface** — after steps 1-3 land, capture envelope-shape token costs for new fields (`retries[]`, `pre_run_actions`, etc.) + the new subcommands (`describe`, `info`). See "v0.9 — Token-cost re-measurement after parity-gap + DX-parity land" entry below (NEW 2026-05-05). ~2-3h.
+5. **README v0.9 refresh** — document the new flags + subcommands + updated token-cost numbers + DX-parity surface. See "v0.9 — README refresh after parity-gap + DX-parity + token-cost re-measurement" entry below (NEW 2026-05-05). ~2-3h.
+6. **`kmp-test` as Google `android` skill** — package as discoverable skill in Google's `android skills` system. See "Integrate with Google's `android` CLI for agents" entry. ~3-4h.
+7. **Buildable cross-platform E2E fixture** (DEFERRED from v0.8.0 release-blocker) — synthetic KMP fixture with all targets + CI matrix with macOS-real-execution. See "v0.8.x / v0.9 — Buildable cross-platform E2E fixture" entry. ~6-10h + CI flakiness budget. The "KMP target tier intel" entry is informational input for this.
+
+### Deferred (v1.0+ or pending trigger)
+
+- **Per-project config presets — user-global aspect** — promote when a user is blocked.
+- **CLI auto-respect `gradle.properties`** (Tier 3 of adapter) — behavior change, needs migration note → v1.0.
+- **DX-parity lower-priority items** (`kmp-test docs`/`devices`/`sdk`, subcommand grouping) — trigger at 8+ commands.
+- **Use `android describe` JSON for module discovery** — pending review of KMP-non-AGP module enumeration support.
+- **Concurrency Tier 3: `--isolated` flag** — opt-in `--project-cache-dir` per run for parallel CI fan-out. ~3-4h. Promote on user surface.
+- **Other QUEUED ideas** — ANSI color auto-detect, Maven Central publish, iOS/macOS TestKit matrix.
+
+---
+
 ## ACTIVE
 
 ### ✅ v0.8 — STRATEGIC PIVOT COMPLETE: orchestration logic migrated bash/ps1 → Node (2026-05-03)
@@ -299,6 +335,43 @@ Fix: new `buildFilterArgs(testFilter, testType, projectRoot)` mirrors the androi
 **Token-cost re-measurement when v0.9 parity-gap flags land.** When the 6 pending parity-gap items (`--clear-data`, `--auto-retry`, `--device <serial>`, `--flavor`, `--device-task`, `class=<FQN>#<method>` filter shape) get implemented, also extend `tools/measure-token-cost.js` and the README's "Why this exists — token cost per agent test-run iteration" tables. Audit per-flag at implementation time: does this flag change the `--json` envelope output shape? If yes (e.g. `--auto-retry` adds a `retries[]` field; `--clear-data` adds a `pre_run_actions` field), capture a fresh A/B/C measurement so the agentic-cost claim stays honest. If no (e.g. `--device <serial>` only selects which adb device, doesn't change stdout shape), skip with a note in the PR description. Cross-link to the original token-cost measurement entry (`Multi-feature token-cost measurement (v0.4 milestone)`) for context. Surfaced 2026-05-05 during PR8 release prep — the user noted that mac-side fix-PR-F-bis and fix-PR-G work surfaced these Android-side gaps, and re-measurement should be part of any v0.9 parity work that changes envelope shape.
 
 **Out of scope until parity decision**: full `parallel`-side adoption of android-orchestrator's `--list-tests`, `--logcat-tail`, `--clear-cache`, `--no-uninstall` flags — those are android-subcommand-specific UX that may not apply to the parallel sweep model.
+
+---
+
+### v0.9 — Token-cost re-measurement after parity-gap + DX-parity land (NEW 2026-05-05)
+
+**Status: OPEN, scheduled as step 4 of v0.9 milestone (per ROADMAP).** After the 6 parity-gap flags (entry above) AND the DX-parity bundle (`--variant` global, `kmp-test describe`, `kmp-test info`, `kmp-test update` — see "DX/UX parity audit" entry) land, re-run the full `tools/measure-token-cost.js` matrix to capture the new envelope shape and the new subcommands. The original token-cost claim ("13K → 100 token reduction for AI agents", "~542K → ~500 tokens for the coverage 5-iter loop") was calibrated at v0.5.0; the v0.8.0 envelope is structurally identical but the v0.9 parity-gap + DX-parity adds `retries[]` (auto-retry), `pre_run_actions` (clear-data), `device.serial` field (device targeting), `describe`-mode JSON shape, etc. — every additive field that an agent might consume.
+
+**Why AFTER all envelope-shape work lands** (load-bearing ordering): re-measuring per-flag is a dead-weight loop — each flag PR would invalidate the previous measurement. Single re-measurement at the end captures the FINAL v0.9 surface in one pass.
+
+**Tasks:**
+1. Audit each merged v0.9 PR's envelope diff: collect the additive fields. Bucket: `{shape-changing | shape-preserving}`. Skip the shape-preserving flags (`--device <serial>` doesn't change stdout shape, only adb target).
+2. Extend `tools/measure-token-cost.js` to include the new subcommands (`kmp-test describe`, `kmp-test info`) in its measurement matrix.
+3. Run the full matrix on `shared-kmp-libs` (or KaMPKit). 4 features × 3 approaches × cross-model. ~$10-15 USD in API calls.
+4. Update the README "Why this exists — token cost per agent test-run iteration" tables with v0.9 numbers + a timestamp note ("Measured at v0.9.0 on YYYY-MM-DD").
+5. Bump `tests/vitest/measure-token-cost.test.js` baselines if any changed.
+
+**Effort:** ~2-3h (1h re-running, 1h reviewing, 30-45min editing tables).
+
+**Cross-link**: original token-cost measurement context in "✅ Multi-feature token-cost measurement (v0.4 milestone)" entry below. The note inside the v0.9 parity-gap entry above (L335) is the inline rationale; this entry is the action item.
+
+---
+
+### v0.9 — README refresh after parity-gap + DX-parity + token-cost re-measurement (NEW 2026-05-05)
+
+**Status: OPEN, scheduled as step 5 of v0.9 milestone (per ROADMAP).** After steps 1-4 of v0.9 land, refresh the README to document the new surface. This is the v0.9-milestone analogue of the "v0.8.0 README refresh" entry (which covers v0.7.0+v0.8.0 surface and ships in v0.8.1 per ROADMAP). The v0.9 refresh covers ONLY what's new in v0.9 on top of v0.8.x.
+
+**Tasks:**
+1. **New flags** under each subcommand's flag table: `--clear-data`, `--auto-retry`, `--device <serial>`, `--flavor <name>`, `--device-task <name>`, global `--variant`, `--gradle-args`. Document precedence rules + interaction with existing flags.
+2. **New subcommands**: `kmp-test describe`, `kmp-test info`, `kmp-test update`. One-paragraph each + an example.
+3. **Updated `class=<FQN>#<method>` filter shape**: explain the new canonical AGP single-arg form, document migration from the legacy `class=` + `method=` separate-args form (still supported).
+4. **Updated token-cost numbers** from step 4 of v0.9 milestone. Add timestamp ("Measured at v0.9.0 on YYYY-MM-DD").
+5. **Pre-existing TODOs from "Verify all CLI tools advertised in README" entry** that didn't make it into v0.8.1 (if any) — close out as part of this refresh.
+6. **CHANGELOG `[0.9.0]` section**: per-PR breakdown (mirroring the [0.8.0] structure).
+
+**Effort:** ~2-3h.
+
+**Ship-when**: bundled with the v0.9.0 release PR (per `feedback_release_wide_smoke.md` standing rule, this lands in the same release-prep cycle as the wide-smoke pass-N+1 validation).
 
 ---
 
