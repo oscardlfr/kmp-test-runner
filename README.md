@@ -120,6 +120,16 @@ node tools/measure-token-cost.js --feature benchmark \
 # Cross-model re-tokenize (Anthropic count_tokens is free; rate-limited only)
 ANTHROPIC_API_KEY=sk-ant-... node tools/measure-token-cost.js --feature <name> \
   --anthropic-models claude-opus-4-7,claude-sonnet-4-6,claude-haiku-4-5
+
+# Multi-account workflows: set both keys, the tool auto-falls-back on 401:
+export ANTHROPIC_API_KEY=sk-ant-account-A...
+export ANTHROPIC_API_KEY_FALLBACK=sk-ant-account-B...
+node tools/measure-token-cost.js --feature <name> \
+  --anthropic-models claude-opus-4-7
+
+# One-shot CLI override (skips env, use a single arbitrary key):
+node tools/measure-token-cost.js --feature <name> \
+  --anthropic-models claude-opus-4-7 --anthropic-api-key sk-ant-...
 ```
 
 > **Practical impact across features.** A 5-iteration agent loop reading raw gradle output burns ~64 K tokens for `parallel`/`changed`, ~80 K for `benchmark`, and **~542 K for `coverage`** (more than two full 200 K contexts). The same loops on `--json` burn ~500 tokens each. The agent's working memory stays focused on the code instead of log noise.
