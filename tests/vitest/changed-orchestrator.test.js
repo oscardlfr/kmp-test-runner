@@ -617,3 +617,106 @@ describe('runChanged --dry-run (F1)', () => {
     expect(exitCode).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Case 13 — v0.9 step 3: --variant global propagation to runParallel
+// ---------------------------------------------------------------------------
+describe('runChanged --variant propagation (v0.9 step 3)', () => {
+  it('--variant release reaches runParallel via buildParallelArgs', async () => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['app/src/androidUnitTest/X.kt']) },
+    });
+    const parallelCalls = [];
+    const runParallelInjection = async (opts) => {
+      parallelCalls.push(opts);
+      return {
+        envelope: {
+          tests: { total: 0, passed: 0, failed: 0, skipped: 0 },
+          modules: [], skipped: [],
+          coverage: { tool: 'auto', missed_lines: null },
+          errors: [], warnings: [],
+        },
+        exitCode: 0,
+      };
+    };
+
+    await runChanged({
+      projectRoot: dir,
+      args: ['--variant', 'release'],
+      spawn,
+      runParallelInjection,
+    });
+
+    expect(parallelCalls.length).toBe(1);
+    const args = parallelCalls[0].args;
+    const idx = args.indexOf('--variant');
+    expect(idx).toBeGreaterThan(-1);
+    expect(args[idx + 1]).toBe('release');
+  });
+
+  it('--variant auto (default) is omitted from spawn args (parallel default = auto)', async () => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['app/src/androidUnitTest/X.kt']) },
+    });
+    const parallelCalls = [];
+    const runParallelInjection = async (opts) => {
+      parallelCalls.push(opts);
+      return {
+        envelope: {
+          tests: { total: 0, passed: 0, failed: 0, skipped: 0 },
+          modules: [], skipped: [],
+          coverage: { tool: 'auto', missed_lines: null },
+          errors: [], warnings: [],
+        },
+        exitCode: 0,
+      };
+    };
+
+    // No --variant flag passed. opts.variant defaults to 'auto'; should NOT
+    // be emitted (mirrors parallel-orchestrator's own default).
+    await runChanged({
+      projectRoot: dir,
+      args: [],
+      spawn,
+      runParallelInjection,
+    });
+
+    expect(parallelCalls.length).toBe(1);
+    expect(parallelCalls[0].args.indexOf('--variant')).toBe(-1);
+  });
+
+  it('--android-variant alias also propagates', async () => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['app/src/androidUnitTest/X.kt']) },
+    });
+    const parallelCalls = [];
+    const runParallelInjection = async (opts) => {
+      parallelCalls.push(opts);
+      return {
+        envelope: {
+          tests: { total: 0, passed: 0, failed: 0, skipped: 0 },
+          modules: [], skipped: [],
+          coverage: { tool: 'auto', missed_lines: null },
+          errors: [], warnings: [],
+        },
+        exitCode: 0,
+      };
+    };
+
+    await runChanged({
+      projectRoot: dir,
+      args: ['--android-variant', 'all'],
+      spawn,
+      runParallelInjection,
+    });
+
+    expect(parallelCalls.length).toBe(1);
+    const args = parallelCalls[0].args;
+    const idx = args.indexOf('--variant');
+    expect(idx).toBeGreaterThan(-1);
+    expect(args[idx + 1]).toBe('all');
+  });
+});

@@ -719,3 +719,80 @@ describe('runBenchmark --gradle-args escape hatch (v0.9 step 2)', () => {
     expect(idxFoo).toBeGreaterThan(idxNoParallel);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v0.9 step 3 — --variant Android variant selector for benchmarks
+// ---------------------------------------------------------------------------
+describe('runBenchmark --variant (v0.9 step 3)', () => {
+  it('parseArgs --variant <value> stores lowercased value; default auto', () => {
+    expect(parseArgs(['--variant', 'Release']).variant).toBe('release');
+    expect(parseArgs(['--variant', 'all']).variant).toBe('all');
+    expect(parseArgs(['--android-variant', 'DEBUG']).variant).toBe('debug');
+    expect(parseArgs([]).variant).toBe('auto');
+  });
+
+  it('--variant release on android dispatches :mod:connectedReleaseAndroidTest', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+
+    await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'android', '--variant', 'release'],
+      spawn,
+      adbProbe,
+    });
+
+    const args = effectiveGradleArgs(spawn.calls[0]);
+    expect(args).toContain(':bench-android:connectedReleaseAndroidTest');
+    expect(args).not.toContain(':bench-android:connectedAndroidTest');
+  });
+
+  it('--variant debug on android dispatches :mod:connectedDebugAndroidTest', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+
+    await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'android', '--variant', 'debug'],
+      spawn,
+      adbProbe,
+    });
+
+    const args = effectiveGradleArgs(spawn.calls[0]);
+    expect(args).toContain(':bench-android:connectedDebugAndroidTest');
+  });
+
+  it('--variant has no effect on jvm benchmarks (variant-agnostic by design)', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+
+    await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--variant', 'release'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    // JVM benchmarks compose desktopSmokeBenchmark regardless of --variant.
+    const args = effectiveGradleArgs(spawn.calls[0]);
+    expect(args.some(a => /desktop.*Benchmark/.test(a))).toBe(true);
+    expect(args.some(a => /connected.*AndroidTest/.test(a))).toBe(false);
+  });
+
+  it('--dry-run echoes variant in plan', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+
+    const { envelope } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--dry-run', '--variant', 'release'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    expect(envelope.dry_run).toBe(true);
+    expect(envelope.plan.variant).toBe('release');
+  });
+});

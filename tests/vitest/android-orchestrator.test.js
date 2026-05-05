@@ -728,3 +728,118 @@ describe('runAndroid --gradle-args escape hatch (v0.9 step 2)', () => {
     expect(idxFoo).toBeGreaterThan(idxNoParallel);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v0.9 step 3 — --variant Android variant selector
+// ---------------------------------------------------------------------------
+describe('runAndroid --variant (v0.9 step 3)', () => {
+  it('--variant release composes :mod:connectedReleaseAndroidTest', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: ['--variant', 'release'],
+      spawn,
+      adbProbe,
+    });
+
+    const eArgs = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
+    expect(eArgs).toContain(':a:connectedReleaseAndroidTest');
+    expect(eArgs).not.toContain(':a:connectedDebugAndroidTest');
+  });
+
+  it('--variant debug composes :mod:connectedDebugAndroidTest (explicit)', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: ['--variant', 'debug'],
+      spawn,
+      adbProbe,
+    });
+
+    const eArgs = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
+    expect(eArgs).toContain(':a:connectedDebugAndroidTest');
+  });
+
+  it('--variant all composes :mod:connectedAndroidTest (umbrella)', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: ['--variant', 'all'],
+      spawn,
+      adbProbe,
+    });
+
+    const eArgs = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
+    expect(eArgs).toContain(':a:connectedAndroidTest');
+    expect(eArgs).not.toContain(':a:connectedDebugAndroidTest');
+    expect(eArgs).not.toContain(':a:connectedReleaseAndroidTest');
+  });
+
+  it('--variant auto (default) preserves project-model resolution / falls back to Debug', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: [],   // no --variant — defaults to 'auto'
+      spawn,
+      adbProbe,
+    });
+
+    const eArgs = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
+    // Project-model probe is disabled in tests; falls through to static
+    // connectedDebugAndroidTest. The 'auto' branch is exercised either
+    // through deviceTestTask or static fallback — both paths picked Debug.
+    expect(eArgs).toContain(':a:connectedDebugAndroidTest');
+  });
+
+  it('--device-task override beats --variant', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: ['--variant', 'release', '--device-task', 'androidConnectedCheck'],
+      spawn,
+      adbProbe,
+    });
+
+    const eArgs = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
+    expect(eArgs).toContain(':a:androidConnectedCheck');
+    expect(eArgs).not.toContain(':a:connectedReleaseAndroidTest');
+  });
+
+  it('parseArgs --variant <value> stores lowercased value', () => {
+    expect(parseArgs(['--variant', 'Release']).variant).toBe('release');
+    expect(parseArgs(['--variant', 'all']).variant).toBe('all');
+    expect(parseArgs(['--android-variant', 'DEBUG']).variant).toBe('debug');
+    expect(parseArgs([]).variant).toBe('auto');
+  });
+
+  it('--dry-run echoes variant in plan', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--dry-run', '--variant', 'release'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.dry_run).toBe(true);
+    expect(envelope.plan.variant).toBe('release');
+  });
+});
