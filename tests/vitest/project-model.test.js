@@ -1602,6 +1602,55 @@ describe('resolveTasksFor', () => {
     });
   });
 
+  // 2026-05-05 fix-PR-F-bis — testBuildType-aware deviceTestTask candidate
+  // chain. Pre-fix the chain was hardcoded
+  // `['connectedAndroidDeviceTest', 'connectedDebugAndroidTest', ...]`, so a
+  // module declaring `testBuildType = "release"` whose gradleTasks contained
+  // BOTH `connectedDebugAndroidTest` AND `connectedReleaseAndroidTest` (a
+  // legitimate AGP setup post-`androidComponents.beforeVariants` re-enabling
+  // debug variants) silently picked Debug — the wrong canonical variant.
+  describe('testBuildType-aware deviceTestTask (fix-PR-F-bis)', () => {
+    it('testBuildType="release" with both Debug+Release tasks → connectedReleaseAndroidTest', () => {
+      const analysis = { testBuildType: 'release', coveragePlugin: null, type: 'android' };
+      const r = resolveTasksFor(':benchmark', ['connectedDebugAndroidTest', 'connectedReleaseAndroidTest'], analysis);
+      expect(r.deviceTestTask).toBe('connectedReleaseAndroidTest');
+    });
+
+    it('testBuildType="release" with only Release task → connectedReleaseAndroidTest', () => {
+      const analysis = { testBuildType: 'release', coveragePlugin: null, type: 'android' };
+      const r = resolveTasksFor(':benchmark', ['connectedReleaseAndroidTest'], analysis);
+      expect(r.deviceTestTask).toBe('connectedReleaseAndroidTest');
+    });
+
+    it('testBuildType="release" with only Debug task → connectedDebugAndroidTest (graceful fallback)', () => {
+      // Edge case: testBuildType pinned to release but AGP only emitted the
+      // Debug task (mis-configured project, or before user enables release
+      // variants explicitly). Chain falls through to legacy Debug candidate.
+      const analysis = { testBuildType: 'release', coveragePlugin: null, type: 'android' };
+      const r = resolveTasksFor(':m', ['connectedDebugAndroidTest'], analysis);
+      expect(r.deviceTestTask).toBe('connectedDebugAndroidTest');
+    });
+
+    it('testBuildType=null preserves legacy debug-first chain (regression guard)', () => {
+      const analysis = { testBuildType: null, coveragePlugin: null, type: 'android' };
+      const r = resolveTasksFor(':m', ['connectedDebugAndroidTest', 'connectedReleaseAndroidTest'], analysis);
+      expect(r.deviceTestTask).toBe('connectedDebugAndroidTest');
+    });
+
+    it('connectedAndroidDeviceTest wins regardless of testBuildType (kmpAndroidLibrary precedence)', () => {
+      // The KMP `androidLibrary {}` plugin uses `connectedAndroidDeviceTest`,
+      // which sits at the head of the candidate chain ahead of any variant.
+      const analysis = { testBuildType: 'release', coveragePlugin: null, type: 'kmp' };
+      const r = resolveTasksFor(':m', ['connectedAndroidDeviceTest', 'connectedReleaseAndroidTest'], analysis);
+      expect(r.deviceTestTask).toBe('connectedAndroidDeviceTest');
+    });
+
+    it('analysis=null preserves legacy chain (no testBuildType signal)', () => {
+      const r = resolveTasksFor(':m', ['connectedDebugAndroidTest', 'connectedReleaseAndroidTest']);
+      expect(r.deviceTestTask).toBe('connectedDebugAndroidTest');
+    });
+  });
+
   // v0.7.0 — iOS / macOS support.
   describe('iOS / macOS task resolution (v0.7.0)', () => {
     it('picks iosSimulatorArm64Test as iosTestTask when present', () => {

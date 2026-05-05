@@ -447,6 +447,66 @@ describe('pickGradleTaskFor', () => {
     });
   });
 
+  // 2026-05-05 — fix-PR-F-bis: --variant + testBuildType honored even when
+  // the project model already resolved a deviceTestTask. Repro from
+  // dipatternsdemo `:benchmark` post commit 058a520
+  // (androidComponents.beforeVariants enabled connectedDebugAndroidTest
+  // alongside the testBuildType="release" canonical
+  // connectedReleaseAndroidTest). Pre-fix, the early-return on
+  // `r.deviceTestTask` returned Debug regardless of testBuildType, and an
+  // explicit `--variant release` from the user was bypassed.
+  describe('fix-PR-F-bis: probe-populated deviceTestTask + variant + testBuildType', () => {
+    const probedReleaseModule = {
+      name: 'benchmark',
+      type: 'android',
+      androidDsl: true,
+      sourceSets: { androidTest: true },
+      testBuildType: 'release',
+      resolved: { deviceTestTask: 'connectedDebugAndroidTest' },
+    };
+    const probedDebugModule = {
+      name: 'app',
+      type: 'android',
+      androidDsl: true,
+      sourceSets: { androidTest: true },
+      resolved: { deviceTestTask: 'connectedDebugAndroidTest' },
+    };
+
+    it('AGP+source-set+probe(Debug)+testBuildType="release"+variant=auto → connectedReleaseAndroidTest', () => {
+      // The exact dipatternsdemo `:benchmark` regression case: probe-populated
+      // Debug task name is now ignored in favor of testBuildType-aware variant
+      // selection in androidConnectedTask.
+      expect(pickGradleTaskFor(probedReleaseModule, 'androidInstrumented', { androidVariant: 'auto' }).task)
+        .toBe(':benchmark:connectedReleaseAndroidTest');
+    });
+
+    it('AGP+source-set+probe(Debug)+testBuildType="release"+variant=debug → user override wins', () => {
+      expect(pickGradleTaskFor(probedReleaseModule, 'androidInstrumented', { androidVariant: 'debug' }).task)
+        .toBe(':benchmark:connectedDebugAndroidTest');
+    });
+
+    it('AGP+source-set+probe(Debug)+no testBuildType+variant=auto → connectedDebugAndroidTest (legacy preserved)', () => {
+      expect(pickGradleTaskFor(probedDebugModule, 'androidInstrumented', { androidVariant: 'auto' }).task)
+        .toBe(':app:connectedDebugAndroidTest');
+    });
+
+    it('AGP NO source-set evidence + probe(Debug) → probe wins (legacy invariant preserved)', () => {
+      // Existing "deviceTestTask probe wins over fallback gate" contract from
+      // line ~509 below. With no source-set evidence, the AGP+source-set
+      // branch is skipped and the probe early-return fires.
+      const noSrcMod = {
+        name: 'app',
+        type: 'android',
+        androidDsl: true,
+        sourceSets: { androidTest: false, androidInstrumentedTest: false },
+        testBuildType: 'release',
+        resolved: { deviceTestTask: 'connectedDebugAndroidTest' },
+      };
+      expect(pickGradleTaskFor(noSrcMod, 'androidInstrumented', { androidVariant: 'auto' }).task)
+        .toBe(':app:connectedDebugAndroidTest');
+    });
+  });
+
   // 2026-05-04 — Bug A (wide-smoke pass-8): source-set gate for explicit
   // androidUnit / androidInstrumented dispatch. KMP modules with
   // `androidLibrary {}` DSL but no androidUnitTest / androidInstrumentedTest
