@@ -228,39 +228,19 @@ Describe 'Cache format regression — module:task without leading colon' {
     }
 }
 
-Describe 'run-android-tests.ps1 — single-item pipeline collapse (summary.json counts)' {
-
-    BeforeAll {
-        $script:RunAndroid = Join-Path $script:RepoRoot 'scripts\ps1\run-android-tests.ps1'
-        $script:RunAndroidText = Get-Content $script:RunAndroid -Raw
-    }
-
-    It 'wraps $modules filter result in @(...) so .Count is the array length' {
-        # Without @(...) the single-item Where-Object pipeline collapses to a
-        # hashtable and $modules.Count returned the number of HASHTABLE KEYS
-        # (5: Name, Path, HasFlavor, IsKmp, Description) instead of array
-        # length 1, propagating into summary.json as `totalModules: 5` for
-        # single-module runs.
-        $script:RunAndroidText | Should -Match '\$modules\s*=\s*@\(\s*\$modules\s*\|\s*Where-Object'
-    }
-
-    It 'wraps $totalSuccess and $totalFailure in @(...) for the same reason' {
-        # Single-result runs would otherwise report `passedModules: 11` (the
-        # 11 keys in the per-module result hashtable: Module, Status, Duration,
-        # Success, TestsPassed, TestsFailed, TestsSkipped, LogFile, LogcatFile,
-        # ErrorsFile, Retried).
-        $script:RunAndroidText | Should -Match '\$totalSuccess\s*=\s*@\(\$results\s*\|\s*Where-Object'
-        $script:RunAndroidText | Should -Match '\$totalFailure\s*=\s*@\(\$results\s*\|\s*Where-Object'
-    }
-}
+# Pipeline-collapse tests for run-android-tests.ps1 deleted in v0.8 sub-entry 3.
+# The bash counter-loop in the wrapper no longer exists — orchestrator lives in
+# lib/android-orchestrator.js (Node) and counts via JS arrays. The collapse bug
+# class is structurally impossible in JS.
 
 Describe 'Clear-GradleTasksCache: cleans up tasks-*.txt files' {
 
-    It 'removes all cache files under .kmp-test-runner-cache' {
+    It 'removes all cache files under .kmp-test-runner\cache (v0.8.0 path)' {
         $dir = New-ProbeFixture
         try {
             Invoke-GradleTasksProbe -ProjectRoot $dir | Out-Null
-            $cacheDir = Join-Path $dir '.kmp-test-runner-cache'
+            # v0.8.0 — probe writes to the new path `.kmp-test-runner\cache\`.
+            $cacheDir = Join-Path $dir '.kmp-test-runner\cache'
             (Get-ChildItem $cacheDir -Filter 'tasks-*.txt').Count | Should -BeGreaterThan 0
             Clear-GradleTasksCache -ProjectRoot $dir
             (Get-ChildItem $cacheDir -Filter 'tasks-*.txt' -ErrorAction SilentlyContinue).Count | Should -Be 0
@@ -270,62 +250,16 @@ Describe 'Clear-GradleTasksCache: cleans up tasks-*.txt files' {
     }
 }
 
-Describe 'parallel.ps1 (Bug B'') and run-android-tests.ps1 (Bug B'') wiring' {
+# v0.8 sub-entry 5: parallel.ps1 + run-android-tests.ps1 are both thin Node
+# launchers and no longer source Gradle-Tasks-Probe.ps1. Equivalent contracts
+# are exercised via lib/project-model.js (probeGradleTasksCached) — see
+# tests/vitest/cli.test.js + tests/bats/test-gradle-tasks-probe.bats.
 
-    It "parallel.ps1 sources Gradle-Tasks-Probe.ps1" {
-        $parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
-        (Get-Content $parallel -Raw) | Should -Match 'Gradle-Tasks-Probe\.ps1'
-    }
-
-    It "parallel.ps1 module-classification calls Test-ModuleHasTask" {
-        $parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
-        (Get-Content $parallel -Raw) | Should -Match 'Test-ModuleHasTask'
-    }
-
-    It "parallel.ps1 emits [SKIP coverage] when probe says task missing" {
-        $parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
-        (Get-Content $parallel -Raw) | Should -Match '\[SKIP coverage\]'
-        (Get-Content $parallel -Raw) | Should -Match 'no coverage plugin applied'
-    }
-
-    It "run-android-tests.ps1 sources Gradle-Tasks-Probe.ps1" {
-        $android = Join-Path $script:RepoRoot 'scripts\ps1\run-android-tests.ps1'
-        (Get-Content $android -Raw) | Should -Match 'Gradle-Tasks-Probe\.ps1'
-    }
-
-    It "run-android-tests.ps1 has -DeviceTask param + Get-ModuleFirstExistingTask call" {
-        $android = Join-Path $script:RepoRoot 'scripts\ps1\run-android-tests.ps1'
-        (Get-Content $android -Raw) | Should -Match '\$DeviceTask\s*='
-        (Get-Content $android -Raw) | Should -Match 'Get-ModuleFirstExistingTask'
-        (Get-Content $android -Raw) | Should -Match 'androidConnectedCheck'
-    }
-}
-
-Describe 'parallel.ps1 (Bug E): no-coverage-data banner + machine marker' {
-
-    BeforeAll {
-        $script:Parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
-        $script:ParallelText = Get-Content $script:Parallel -Raw
-    }
-
-    It 'computes $modulesContributing from moduleSummaries.Total > 0' {
-        $script:ParallelText | Should -Match '\$modulesContributing\s*='
-        $script:ParallelText | Should -Match '\$_\.Total\s+-gt\s+0'
-    }
-
-    It 'gates the [OK] banner on $modulesContributing -gt 0' {
-        $script:ParallelText | Should -Match 'if\s*\(\s*\$modulesContributing\s+-gt\s+0\s*\)'
-    }
-
-    It 'emits [!] No coverage data ... when $modulesContributing -eq 0' {
-        $script:ParallelText | Should -Match '\[!\] No coverage data collected from any module'
-        $script:ParallelText | Should -Match 'kmp-test-runner#coverage-setup'
-    }
-
-    It 'emits machine-readable COVERAGE_MODULES_CONTRIBUTING marker' {
-        $script:ParallelText | Should -Match 'COVERAGE_MODULES_CONTRIBUTING:'
-    }
-}
+# v0.8 sub-entry 5: parallel.ps1 wrapper is now a thin Node launcher; the
+# Bug E coverage-data counter + [!] banner + COVERAGE_MODULES_CONTRIBUTING
+# marker live in lib/coverage-orchestrator.js. Equivalent contracts covered
+# by tests/vitest/coverage-orchestrator.test.js (no_coverage_data warning,
+# modules_contributing > 0 gating).
 
 # ----------------------------------------------------------------------------
 # v0.5.2 Gap C — cross-platform cache-key SHA byte parity

@@ -8,7 +8,9 @@
 #   module_first_existing_task "$PROJECT_ROOT" "$mod" task1 task2 task3
 #                                                -> echoes first existing task name (no colon), empty if none
 #
-# Cache layout: <project>/.kmp-test-runner-cache/tasks-<sha>.txt
+# Cache layout: <project>/.kmp-test-runner/cache/tasks-<sha>.txt
+#               (v0.8.0 — dual-read fallback for legacy `.kmp-test-runner-cache/`
+#                covers v0.7.x users for one transition release.)
 # Cache key:    sha1 of concatenated file contents of settings.gradle.kts,
 #               gradle.properties, and every <module>/build.gradle.kts
 #               discovered via include() declarations. Any content change
@@ -82,16 +84,24 @@ probe_gradle_tasks() {
     [[ -z "$project_root" || ! -d "$project_root" ]] && return 1
     [[ ! -x "$project_root/gradlew" && ! -f "$project_root/gradlew" ]] && return 1
 
-    local cache_dir="$project_root/.kmp-test-runner-cache"
+    # v0.8.0 — cache moved from .kmp-test-runner-cache/ to .kmp-test-runner/cache/.
+    # Dual-read for v0.7.x compat; writes go to the new path only.
+    local cache_dir="$project_root/.kmp-test-runner/cache"
+    local legacy_cache_dir="$project_root/.kmp-test-runner-cache"
     local cache_key
     cache_key="$(_kmp_compute_cache_key "$project_root")"
     [[ -z "$cache_key" ]] && return 1
 
     local cache_file="$cache_dir/tasks-${cache_key}.txt"
+    local legacy_cache_file="$legacy_cache_dir/tasks-${cache_key}.txt"
 
-    # Cache hit
+    # Cache hit (new path preferred, legacy fallback for v0.7.x users).
     if [[ -s "$cache_file" ]]; then
         echo "$cache_file"
+        return 0
+    fi
+    if [[ -s "$legacy_cache_file" ]]; then
+        echo "$legacy_cache_file"
         return 0
     fi
 
@@ -196,9 +206,12 @@ module_first_existing_task() {
 
 # Force-rebuild the cache (used by tests + when the user passes a flag).
 # Removes all tasks-*.txt files for the project; the next probe rebuilds.
+# v0.8.0 — sweeps BOTH the new path (`.kmp-test-runner/cache/`) and the legacy
+# `.kmp-test-runner-cache/` so a manual reset doesn't leave stale v0.7.x caches.
 clear_gradle_tasks_cache() {
     local project_root="$1"
     [[ -z "$project_root" || ! -d "$project_root" ]] && return 1
+    rm -f "$project_root/.kmp-test-runner/cache/tasks-"*.txt 2>/dev/null
     rm -f "$project_root/.kmp-test-runner-cache/tasks-"*.txt 2>/dev/null
     return 0
 }

@@ -17,8 +17,11 @@
 # through to legacy detection on $null. Never throws on legitimate
 # "model missing" — fail-soft is the contract.
 #
-# Model layout: <project>\.kmp-test-runner-cache\model-<sha>.json (sha is
-# the same content-keyed SHA1 used by Gradle-Tasks-Probe.ps1).
+# Model layout: <project>\.kmp-test-runner\cache\model-<sha>.json (sha is
+# the same content-keyed SHA1 used by Gradle-Tasks-Probe.ps1). v0.8.0 moved
+# the cache from `.kmp-test-runner-cache\` into the artifact subdir; the
+# dual-read fallback below honors v0.7.x users' legacy caches for one
+# transition release.
 # =============================================================================
 
 # Sourced helpers — Gradle-Tasks-Probe owns the cache-key algorithm and we
@@ -32,10 +35,14 @@ function _Get-PmModelFile {
     $cacheKey = $null
     try { $cacheKey = Get-KmpCacheKey -ProjectRoot $ProjectRoot } catch { return $null }
     if (-not $cacheKey) { return $null }
-    $file = Join-Path $ProjectRoot ".kmp-test-runner-cache\model-$cacheKey.json"
-    if (-not (Test-Path $file)) { return $null }
-    if ((Get-Item $file).Length -eq 0) { return $null }
-    return $file
+    # v0.8.0 dual-read: try new path, fall back to legacy `.kmp-test-runner-cache\`
+    foreach ($dir in @('.kmp-test-runner\cache', '.kmp-test-runner-cache')) {
+        $candidate = Join-Path $ProjectRoot "$dir\model-$cacheKey.json"
+        if ((Test-Path $candidate) -and ((Get-Item $candidate).Length -gt 0)) {
+            return $candidate
+        }
+    }
+    return $null
 }
 
 function _Get-PmModelData {

@@ -122,31 +122,7 @@ ANTHROPIC_API_KEY=sk-ant-... node tools/measure-token-cost.js --feature <name> \
 
 > **Practical impact across features.** A 5-iteration agent loop reading raw gradle output burns ~64 K tokens for `parallel`/`changed`, ~80 K for `benchmark`, and **~542 K for `coverage`** (more than two full 200 K contexts). The same loops on `--json` burn ~500 tokens each. The agent's working memory stays focused on the code instead of log noise.
 
-## What's new in v0.7.0
-
-The headline of the v0.7 line is **first-class iOS / macOS support**. KMP modules declaring `iosX64()`, `iosSimulatorArm64()`, `iosArm64()`, `macosArm64()`, or `macosX64()` are now visible to the project model, surface their per-target test source sets (`iosX64Test` / `iosSimulatorArm64Test` / etc.), and can be dispatched directly via `kmp-test parallel --test-type ios` (or `--test-type macos`). The CLI consults the project model per module to pick the right gradle task — `iosSimulatorArm64Test` on Apple-silicon hosts, `iosX64Test` on Intel hosts and CI, `iosArm64Test` for device runs, with `iosTest` (umbrella) as a last-fallback. macOS dispatches host-natively (no simulator boot dance); iOS leans on Gradle's built-in simulator orchestration since AGP/KMP 1.9+.
-
-- **`--test-type ios | macos`** (v0.7.0) — adds two new dispatch modes to `parallel` / `changed` / `coverage`. See [Multi-platform test dispatch](#multi-platform-test-dispatch) below.
-- **Project-model `iosTestTask` + `macosTestTask` fields** (v0.7.0) — exposed alongside the existing `unitTestTask` / `webTestTask` / `deviceTestTask`. Independent of `unitTestTask`'s candidate race so KMP modules with `jvmTest + iosSimulatorArm64Test` still pick `jvmTest` for unit tests; iOS surfaces only via the explicit `iosTestTask` field. `pm_get_ios_test_task` / `pm_get_macos_test_task` (sh) and `Get-PmIosTestTask` / `Get-PmMacosTestTask` (ps1) are the corresponding script-side readers.
-- **`SKIP_IOS_MODULES` / `SKIP_MACOS_MODULES`** env vars (v0.7.0) mirror the existing `SKIP_DESKTOP_MODULES` / `SKIP_ANDROID_MODULES` shape — comma-separated short module names.
-- **Gradle plugin `testType` property** (v0.7.0) — `kmpTestRunner { testType = "ios" }` propagates `--test-type ios` to the bundled wrapper. Empty default preserves auto-detect.
-- **Source-set discovery extends to 18 directories** (12 from v0.6.x baseline + 6 new iOS-arch / macOS variants). The legacy filesystem walker (when the project-model JSON is absent) is in lockstep, so iOS-only modules without an umbrella `src/iosTest/` directory still register as testable.
-
-## What's new in v0.6.x
-
-The 0.6 line hardened `kmp-test` against ~28 real-world KMP/Android projects (KaMPKit, Confetti, nowinandroid, DroidconKotlin, Compose Multiplatform, nav3-recipes, Nav3Guide, kmp-production-sample, etc.). Highlights:
-
-- **Multi-JDK auto-selection (v0.6.1+).** When the project requires a JDK version different from the host default, `kmp-test` consults a system-wide JDK catalogue (`Adoptium / Zulu / Microsoft / Semeru / BellSoft` on Windows, `/Library/Java/JavaVirtualMachines/` on macOS, `/usr/lib/jvm` + `/opt/{java,jdk}` on Linux) and auto-selects a matching install — no more manual `JAVA_HOME` dance between projects. New flags `--java-home <path>` (explicit override) and `--no-jdk-autoselect` (disable catalogue). See [JDK toolchain mismatch](#jdk-toolchain-mismatch-auto-resolved-when-possible-since-v061).
-- **Precise no-summary discrimination (v0.6.2+).** When the wrapper exits without producing a recognizable summary, the JSON envelope now carries a specific `errors[].code` instead of the generic `no_summary` fallback: `no_test_modules` (project has no test source sets — Nav3Guide-scenes, kmp-production-sample), plus the existing `task_not_found` / `unsupported_class_version` / `instrumented_setup_failed` / `module_failed`. Real-world stress test 2026-04-30 hit `no_test_modules` on 5 projects (DroidconKotlin / KMedia / NYTimes-KMP / Nav3Guide-scenes / kmp-production-sample), each previously surfacing as `no_summary`. Agents can now branch on the specific cause.
-- **`skipped: [{module, reason}]` envelope field (v0.6.2+).** The wrapper has always emitted `[SKIP] <mod> (<reason>)` lines for modules without test source sets or hit by `--exclude-modules`; pre-fix this was just stdout noise. The JSON envelope now surfaces a structured array so agents can suggest `--include-untested` when the user expected tests, and CI dashboards can audit module-filter mistakes.
-- **`--no-coverage` alias (v0.6.0+).** Natural shorthand for `--coverage-tool none`. Works on both Linux and Windows (was rejected by both pre-fix).
-- **JS / Wasm source-set + task support (v0.6.0+).** The project model now enumerates `jsTest` / `wasmJsTest` / `wasmWasiTest` source sets and exposes a `webTestTask` field. JS-only KMP modules (Compose Multiplatform's `html/`, KaMPKit web examples) become visible to the model; KMP+JS modules continue to pick `jvmTest` for `unitTestTask`.
-- **Per-module convention-plugin coverage detection (v0.6.1+).** Only modules that explicitly apply a coverage-adding convention plugin (e.g. `nowinandroid.android.application.jacoco`) inherit `coveragePlugin`. nowinandroid drops from "all 35 modules report jacoco" to the 13 that actually apply it. Pre-v0.6.1 broad inheritance preserved as a fallback for `Plugin<Project>` setups without a `gradlePlugin{}` block (shared-kmp-libs's kover continues to work unchanged).
-- **`alias(libs.plugins.<X>)` plugin reference resolution (v0.6.1+).** Module-type detection now reads `gradle/libs.versions.toml` and resolves version-catalog plugin aliases to plugin ids; namespaced aliases (`libs.plugins.nowinandroid.android.application`) fall back to a suffix heuristic. nav3-recipes, modern Confetti modules, and Compose Multiplatform's catalog-based modules classify correctly without hand-listing plugin ids.
-- **`--dry-run` no longer blocks on JDK mismatch (v0.6.0+).** Plan inspection works on misconfigured hosts; real runs still gate.
-- **`com.android.test` + `kotlin("android")` recognised as Android (v0.6.0+).** Confetti's `androidBenchmark` and similar test-fixture modules classify correctly.
-
-Full per-version detail: [`CHANGELOG.md`](CHANGELOG.md).
+Per-version detail and migration notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Quick Start
 
@@ -406,7 +382,6 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--java-home <path>` _(v0.6.1+)_ | _(none)_ | Explicit JDK install to use; wins over catalogue auto-select and `gradle.properties org.gradle.java.home`. See "JDK toolchain mismatch" |
 | `--no-jdk-autoselect` _(v0.6.1+)_ | _(off)_ | Disable catalogue auto-select; fall through directly to the gate (pre-v0.6.1 behavior) |
 | `--no-coverage` _(v0.6.0+)_ | _(off)_ | Alias for `--coverage-tool none`; runs tests only without generating coverage |
-| `--shared-project-name` | _(none)_ | Name of the shared KMP module (for Android test dispatch) |
 | `--json` / `--format json` | _(off)_ | Emit a single JSON object on stdout (see "Agentic usage" below). Suppresses human-readable output |
 
 **Env vars (skip-list):**
@@ -418,6 +393,29 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `SKIP_IOS_MODULES` _(v0.7.0)_ | `--test-type ios` | Same shape, for iOS dispatch |
 | `SKIP_MACOS_MODULES` _(v0.7.0)_ | `--test-type macos` | Same shape, for macOS dispatch |
 | `PARENT_ONLY_MODULES` | always | Comma-separated module names that are aggregator-only (skipped at discovery time) |
+
+### Project config — `.kmp-test-runner.json` _(v0.8.0+)_
+
+Drop a `.kmp-test-runner.json` at your project root to pin stable defaults instead of repeating CLI flags or relying on env vars. Resolution precedence: **CLI flag > env var > config file > built-in default**. Schema:
+
+```json
+{
+  "sharedProject": { "name": "shared-kmp-libs", "path": "../shared-kmp-libs" },
+  "defaults":     { "testType": "common", "coverageTool": "kover", "excludeModules": "*:test-fakes" },
+  "skip":         { "android": ["legacy-app"], "ios": ["benchmark-android-test"] }
+}
+```
+
+All fields are optional. Unknown fields are preserved silently for forward compat. Type-mismatched fields are dropped with a `[WARN]` line on stderr.
+
+### Quick start: gitignore CLI artifacts _(v0.8.0+)_
+
+The CLI writes its outputs (cache, coverage reports, Android log dumps) under a single `.kmp-test-runner/` subdir at your project root. Add this one line to your project `.gitignore`:
+
+```
+# kmp-test-runner local artifacts (CLI output — never commit)
+.kmp-test-runner/
+```
 
 ## Agentic usage — token-cost rationale
 
@@ -445,7 +443,7 @@ Configuration:
 > Task :core-bar:test ... 5 tests completed, 0 failed, 0 skipped
 ... (one block per module) ...
 [OK] Full coverage report generated!
-[>>] Report saved to: coverage-full-report.md
+[>>] Report saved to: .kmp-test-runner/reports/coverage/latest.md
 
 Tests: 42 total | 42 passed | 0 failed | 0 skipped
 
@@ -463,7 +461,7 @@ BUILD SUCCESSFUL
 **Agentic (`--json`) output** — the entire response, on one line:
 
 ```json
-{"tool":"kmp-test","subcommand":"parallel","version":"0.5.0","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16},"errors":[],"warnings":[]}
+{"tool":"kmp-test","subcommand":"parallel","version":"0.8.0","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16},"errors":[],"warnings":[]}
 ```
 
 That's ~300 bytes — roughly **80–200 tokens** vs. tens of thousands for approach A. For an agent running tests on every iteration of a coding loop, the difference compounds quickly. The full per-tokenizer table is at the [top of this README](#why-this-exists--token-cost-per-agent-test-run-iteration); methodology and the captured run output are in [`docs/token-cost-measurement.md`](docs/token-cost-measurement.md).
@@ -499,7 +497,7 @@ kmp-test parallel --dry-run --project-root /abs/path
 Pair with `--json` for a structured plan:
 
 ```json
-{"tool":"kmp-test","subcommand":"parallel","version":"0.3.8","dry_run":true,"exit_code":0,"plan":{"spawn_cmd":"bash","spawn_args":["…/run-parallel-coverage-suite.sh","--project-root","/abs"],"script_path":"…/run-parallel-coverage-suite.sh","final_args":["--project-root","/abs"],"test_filter":null},…}
+{"tool":"kmp-test","subcommand":"parallel","version":"0.8.0","dry_run":true,"exit_code":0,"plan":{"spawn_cmd":"bash","spawn_args":["…/run-parallel-coverage-suite.sh","--project-root","/abs"],"script_path":"…/run-parallel-coverage-suite.sh","final_args":["--project-root","/abs"],"test_filter":null},…}
 ```
 
 `--dry-run` still validates `gradlew` (so a missing wrapper still exits `3`). It just stops before spawning the script.
@@ -589,7 +587,7 @@ pluginManagement {
 In `build.gradle.kts`:
 ```kotlin
 plugins {
-    id("io.github.oscardlfr.kmp-test-runner") version "0.7.0"
+    id("io.github.oscardlfr.kmp-test-runner") version "0.8.0"
 }
 
 kmpTestRunner {
@@ -636,7 +634,8 @@ A token with `read:packages` scope is sufficient for consumers. Maven Central wi
 | `--coverage-tool` | `kover` | `kover` \| `jacoco` \| `none` |
 | `--coverage-modules` | _(all)_ | Comma-separated module names for coverage |
 | `--min-missed-lines` | `0` | Fail threshold for missed lines |
-| `--shared-project-name` | _(none)_ | Shared KMP module name |
+
+> The shared-project name is now configured via `.kmp-test-runner.json` (`sharedProject.name`). The legacy `SHARED_PROJECT_NAME` env var still works as a fallback. There is no `--shared-project-name` CLI flag.
 
 ### Gradle DSL properties
 
@@ -652,7 +651,7 @@ A token with `read:packages` scope is sufficient for consumers. Maven Central wi
 
 ## Architecture
 
-kmp-test-runner uses a three-shape model: an npm CLI, a Gradle plugin, and shell installers — all backed by the same set of platform scripts in `scripts/sh/`. The npm CLI and Gradle plugin map subcommands and DSL properties to identical script invocations, ensuring cross-shape parity. `CrossShapeParityTest` enforces this structurally in CI — it asserts that every npm subcommand flag has a matching Gradle task name without spawning a subprocess. This design lets the runner be consumed as a global tool (installer), a project devDependency (npm), or a Gradle task (plugin) with no behavioral difference.
+kmp-test-runner uses a three-shape model — an npm CLI, a Gradle plugin, and shell installers — all backed by the same set of Node orchestrators in `lib/` (`parallel-orchestrator.js`, `coverage-orchestrator.js`, `changed-orchestrator.js`, `android-orchestrator.js`, `benchmark-orchestrator.js`). The shell scripts in `scripts/sh/` and `scripts/ps1/` are thin wrappers (~6–80 LOC each) that `exec` the corresponding Node module — moving 6,196 lines of duplicated bash + PowerShell logic into ~470 lines of platform-glue, with the orchestration logic deduplicated into `lib/` (~2,200 LOC). The npm CLI and Gradle plugin both invoke the same orchestrators with identical argument shapes, ensuring cross-shape parity; `CrossShapeParityTest` enforces this structurally in CI by asserting that every npm subcommand flag has a matching Gradle task name without spawning a subprocess. This design lets the runner be consumed as a global tool (installer), a project devDependency (npm), or a Gradle task (plugin) with no behavioral difference.
 
 ## Contributing
 
@@ -661,7 +660,7 @@ Open issues and pull requests are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.
 Quick check before a PR:
 
 ```bash
-npm test                                       # vitest (~424 tests at v0.7.0)
+npm test                                       # vitest (~775 tests at v0.8.0)
 npx bats tests/bats/ tests/installer/          # bats (~197 tests, Linux/macOS)
 cd gradle-plugin && ./gradlew test && cd ..    # Gradle TestKit (~12 tests)
 npm run shellcheck                             # POSIX script lint (0 warnings required)

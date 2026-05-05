@@ -260,57 +260,36 @@ Describe 'Test-ModuleHasTestSources (Phase 4 step 4 — model fast-path)' {
     }
 }
 
-# Phase 4 step 5 — run-android-tests.ps1 wires the ProjectModel fast-path
-# BEFORE the existing gradle-tasks probe, with the -DeviceTask override still
-# pre-empting both. Source-grep regression so accidental refactors don't
-# silently revert the tier ordering.
-Describe 'run-android-tests.ps1 — Phase 4 ProjectModel fast-path wiring' {
+# Phase 4 step 5 — run-android-tests.ps1 wiring tests deleted in v0.8
+# sub-entry 3. The ps1 wrapper is now a thin node-launcher; tier ordering
+# (--device-task override > project-model deviceTestTask > static fallback)
+# moved to lib/android-orchestrator.js#pickGradleTaskFor and is covered by
+# tests/vitest/android-orchestrator.test.js cases 1 (WS-3) + 4 (--device-task
+# escape hatch).
 
-    BeforeAll {
-        $script:RunAndroid = Join-Path $script:RepoRoot 'scripts\ps1\run-android-tests.ps1'
-        $script:RunAndroidText = Get-Content $script:RunAndroid -Raw
-    }
-
-    It 'dot-sources the ProjectModel.ps1 lib at startup' {
-        $script:RunAndroidText | Should -Match "ProjectModel\.ps1"
-    }
-
-    It 'consults Get-PmDeviceTestTask before Get-ModuleFirstExistingTask' {
-        $script:RunAndroidText | Should -Match 'Get-PmDeviceTestTask'
-        $script:RunAndroidText | Should -Match 'Get-ModuleFirstExistingTask'
-        $pmIndex    = $script:RunAndroidText.IndexOf('Get-PmDeviceTestTask')
-        $probeIndex = $script:RunAndroidText.IndexOf('Get-ModuleFirstExistingTask')
-        $pmIndex | Should -BeLessThan $probeIndex
-    }
-
-    It '-DeviceTask override still pre-empts both fast-path and probe' {
-        # The DeviceTask branch must occur strictly before the model check.
-        $deviceTaskIdx = $script:RunAndroidText.IndexOf('if ($DeviceTask) {')
-        $pmIndex       = $script:RunAndroidText.IndexOf('Get-PmDeviceTestTask')
-        $deviceTaskIdx | Should -BeGreaterOrEqual 0
-        $deviceTaskIdx | Should -BeLessThan $pmIndex
-    }
-}
-
-# Phase 4 step 6 — run-parallel-coverage-suite.ps1 wires the ProjectModel
-# fast-path BEFORE the existing detect_coverage_tool + Test-ModuleHasTask
-# chain. Source-grep regression for the layer ordering.
-Describe 'run-parallel-coverage-suite.ps1 — Phase 4 ProjectModel coverage fast-path' {
+# v0.8 sub-entry 5: run-parallel-coverage-suite.ps1 wrapper is now a thin
+# Node launcher. ProjectModel coverage discrimination + Get-PmCoverageTask
+# logic moved entirely into lib/parallel-orchestrator.js +
+# lib/coverage-orchestrator.js (which call the JS project-model directly).
+# The wrapper has no Get-PmCoverageTask reference; the absence check below
+# verifies the migration removed the old call sites.
+Describe 'run-parallel-coverage-suite.ps1 — sub-entry 5 thin Node launcher' {
 
     BeforeAll {
         $script:Parallel = Join-Path $script:RepoRoot 'scripts\ps1\run-parallel-coverage-suite.ps1'
         $script:ParallelText = Get-Content $script:Parallel -Raw
     }
 
-    It 'dot-sources the ProjectModel.ps1 lib' {
-        $script:ParallelText | Should -Match "ProjectModel\.ps1"
+    It 'forwards to node lib/runner.js parallel|coverage' {
+        $script:ParallelText | Should -Match 'node.*runner\.js'
+        $script:ParallelText | Should -Match '(parallel|coverage)'
     }
 
-    It 'consults Get-PmCoverageTask before Get-CoverageGradleTask' {
-        $script:ParallelText | Should -Match 'Get-PmCoverageTask'
-        $pmIndex    = $script:ParallelText.IndexOf('Get-PmCoverageTask')
-        $legacyIdx  = $script:ParallelText.IndexOf('Get-CoverageGradleTask -Tool $modCovTool')
-        $pmIndex | Should -BeGreaterOrEqual 0
-        $pmIndex | Should -BeLessThan $legacyIdx
+    It 'no longer references Get-PmCoverageTask / Detect-CoverageTool / Get-CoverageGradleTask' {
+        foreach ($pattern in 'Detect-CoverageTool', 'Get-CoverageGradleTask', 'Get-PmCoverageTask') {
+            $execLines = ($script:ParallelText -split "`n") |
+                Where-Object { $_ -match $pattern -and $_ -notmatch '^\s*#' }
+            $execLines.Count | Should -Be 0
+        }
     }
 }

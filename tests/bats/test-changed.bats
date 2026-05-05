@@ -1,53 +1,56 @@
 #!/usr/bin/env bats
-# Tests for scripts/sh/run-changed-modules-tests.sh
+# Wrapper-invocation contracts for scripts/sh/run-changed-modules-tests.sh.
+#
+# Behavioral coverage moved to tests/vitest/changed-orchestrator.test.js in
+# v0.8 sub-entry 2 (PRODUCT.md "logic in Node, plumbing in shell"). This
+# file's job is to lock the wrapper shape so the changed feature never
+# re-grows bash plumbing under shellcheck's blind spots.
 
 SCRIPT="scripts/sh/run-changed-modules-tests.sh"
 
-setup() {
-    WORK_DIR="$(mktemp -d)"
-    mkdir -p "$WORK_DIR"
-    echo 'rootProject.name = "test-project"' > "$WORK_DIR/settings.gradle.kts"
-    mkdir -p "$WORK_DIR/bin"
-    cat > "$WORK_DIR/bin/gradlew" << 'EOF'
-#!/usr/bin/env bash
-echo "BUILD SUCCESSFUL (stub): $*"
-exit 0
-EOF
-    chmod +x "$WORK_DIR/bin/gradlew"
-    export PATH="$WORK_DIR/bin:$PATH"
-    # Self-contained git identity for CI runners without global config
-    export GIT_AUTHOR_NAME="bats-test"
-    export GIT_AUTHOR_EMAIL="bats@test.local"
-    export GIT_COMMITTER_NAME="bats-test"
-    export GIT_COMMITTER_EMAIL="bats@test.local"
+@test "changed wrapper: exec's into node lib/runner.js changed" {
+    grep -qE 'exec node ' "$SCRIPT"
+    grep -qE 'lib/runner\.js' "$SCRIPT"
+    grep -qE ' changed ' "$SCRIPT"
 }
 
-teardown() {
-    rm -rf "$WORK_DIR"
+@test "changed wrapper: ≤40 LOC (BACKLOG sub-entry 2 cap, target ≤10)" {
+    local lines
+    lines=$(wc -l < "$SCRIPT")
+    [[ "$lines" -le 40 ]]
 }
 
-@test "changed: happy path exits 0 with --project-root and no changed modules" {
-    # Initialize a git repo so git-status doesn't fail
-    git -C "$WORK_DIR" init --quiet
-    git -C "$WORK_DIR" commit --allow-empty -m "init" --quiet
-    run bash "$SCRIPT" --project-root "$WORK_DIR"
-    # Should not produce a --project-root required error
-    [[ "$output" != *"--project-root is required"* ]]
+@test "changed wrapper: no associative arrays (declare -A)" {
+    ! grep -q 'declare -A' "$SCRIPT"
 }
 
-@test "changed: error path exits 1 when --project-root is missing" {
-    run bash "$SCRIPT"
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"--project-root is required"* ]]
+@test "changed wrapper: no parallel loops (no trailing & or wait)" {
+    ! grep -qE '^\s*[^#]*&\s*$' "$SCRIPT"
+    ! grep -qE '^\s*wait\s*$' "$SCRIPT"
 }
 
-@test "changed: lib sourcing uses SCRIPT_DIR not absolute paths" {
-    local sources
-    sources=$(grep -E '^source ' "$SCRIPT" || true)
-    [[ "$sources" != *"/Users/"* ]]
-    [[ "$sources" != *"/home/"* ]]
-    [[ "$sources" != *"/root/"* ]]
-    if [[ -n "$sources" ]]; then
-        [[ "$sources" == *'$SCRIPT_DIR'* ]]
-    fi
+@test "changed wrapper: passes argv through verbatim" {
+    grep -qE '"\$@"' "$SCRIPT"
+}
+
+@test "changed wrapper: no output parsing (no awk/sed/cut/grep on gradle output)" {
+    # Wrappers must not try to parse what gradle prints — that's the
+    # orchestrator's job. Fail if we see piped data extraction commands.
+    ! grep -qE '\| (awk|sed|cut|grep)\b' "$SCRIPT"
+}
+
+@test "changed wrapper: uses set -euo pipefail (safe defaults)" {
+    grep -qE '^set -euo pipefail' "$SCRIPT"
+}
+
+@test "changed wrapper: SCRIPT_DIR resolution is portable (no /Users/, /home/)" {
+    ! grep -qE '/Users/|/home/|/root/' "$SCRIPT"
+    grep -q 'SCRIPT_DIR=' "$SCRIPT"
+}
+
+@test "changed wrapper: no git-status/git-diff parsing in shell (orchestrator owns it)" {
+    # WS-4 root cause was a hand-rolled get_changed_files+get_module_from_file
+    # in the wrapper. The Node orchestrator owns this now.
+    ! grep -qE 'git status --porcelain|git diff --cached' "$SCRIPT"
+    ! grep -qE 'get_module_from_file|get_changed_files' "$SCRIPT"
 }

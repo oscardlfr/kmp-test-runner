@@ -57,24 +57,12 @@ Describe 'Script-Utils.ps1: Invoke-GradleExitDeprecationGate' {
     }
 }
 
-Describe 'parallel.ps1: gate is invoked from both test-exec AND coverage-gen passes' {
+# v0.8 sub-entry 5: parallel.ps1 wrapper is now a thin Node launcher and no
+# longer invokes Invoke-GradleExitDeprecationGate. Equivalent classification
+# (passed/failed/mixed-with-deprecation) lives in lib/parallel-orchestrator.js
+# and is covered by tests/vitest/parallel-orchestrator.test.js exit-code cases.
 
-    It 'sources the Script-Utils.ps1 helper' {
-        $script:ScriptText | Should -Match '\.\s+["'']?[^"'']*Script-Utils\.ps1["'']?'
-    }
-
-    It 'test-execution pass calls the gate with -Context tests' {
-        $script:ScriptText | Should -Match "Invoke-GradleExitDeprecationGate[\s\S]{0,400}?-Context\s+'tests'"
-    }
-
-    It "coverage-gen (Bug C') calls the gate with -Context coverage for main project" {
-        $script:ScriptText | Should -Match "Invoke-GradleExitDeprecationGate[\s\S]{0,400}?-Context\s+'coverage'"
-    }
-
-    It "coverage-gen (Bug C') calls the gate with -Context 'shared coverage' for shared-libs" {
-        $script:ScriptText | Should -Match "Invoke-GradleExitDeprecationGate[\s\S]{0,400}?-Context\s+'shared coverage'"
-    }
-
+Describe 'Script-Utils.ps1 helper still ships (used by remaining bash consumers)' {
     It 'mentions Gradle 9 in the helper deprecation explanation' {
         $script:HelperText | Should -Match 'Gradle 9'
     }
