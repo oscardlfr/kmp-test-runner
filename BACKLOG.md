@@ -4,45 +4,52 @@
 
 ---
 
-## ROADMAP (post-v0.8.0 — added 2026-05-05)
+## ROADMAP (locked 2026-05-05 — user-decided buckets)
 
-> Milestone view of OPEN items. Order within each milestone reflects intended development sequence (later items may depend on earlier ones — for v0.9 in particular, token-cost re-measurement + README refresh come AFTER all envelope-shape-changing flags land so the docs reflect the final v0.9 surface). Detailed entries below; search by title.
+> Milestone view of OPEN items. Order within each milestone is **load-bearing**: features land FIRST, validation gates next, token-cost re-measurement after that, README refresh LAST (right before tagging the release). This applies uniformly to v0.9 and v0.10. Detailed entries below; search by title.
+>
+> **Hard rule**: Claude sessions cannot create v0.11 or move items to v1.0 without explicit user consent. See `CLAUDE.md` "Project conventions" + memory `feedback_release_milestone_decisions.md`.
 
-### v0.8.1 — patch (docs + diagnostics, no API change)
+### v0.9 — minor (locked 2026-05-05)
 
-Bundled or 2-3 small PRs. Total ≈ 4-5h. Independent of v0.9 work.
+1. **parallel parity-gap (6 flags)** — `--clear-data`, `--auto-retry`, `--device <serial>`, `--flavor <name>`, `--device-task <name>`, `class=<FQN>#<method>` filter shape. ~3-4h. See entry "v0.9 — parallel parity gap" below.
+2. **`--gradle-args` passthrough** — Tier 2 of "Adapt CLI to Gradle config". ~1h. See entry "Adapt CLI to project's Gradle config" Tier 2.
+3. **DX-parity bundle** — global `--variant`, `kmp-test describe`, `kmp-test info`, `kmp-test update`. ~4-8h. See entry "DX/UX parity audit" — high-value 4 items.
+4. **Concurrency Tier 3 `--isolated` flag** — opt-in `--project-cache-dir <tmp>` per run. ~3-4h. See entry "Concurrent-invocation safety" Tier 3.
+5. **Cross-platform parity check in CI** — flag matrix audit + envelope schema snapshot + README ↔ code drift detection + platform-behaviour matrix. ~4-5h. New entry below.
+6. **Buildable cross-platform E2E fixture (build only, NO CI matrix)** — synthetic KMP fixture with `iosX64()` + `iosSimulatorArm64()` + `macosArm64()` + `jvm()` + `js()` + `android` targets. The fixture builds; per-PR CI does NOT exercise mac/iOS targets on it. ~6-10h. See entry "v0.8.x / v0.9 — Buildable cross-platform E2E fixture".
+7. **macOS validation gate** — manual smoke against the v0.9 fixture + shared-kmp-libs + KaMPKit on a local Mac, all subcommands × all `--test-type` values × all platforms. Captures any drift not caught by step 5's CI parity check. Fix-PRs land before tagging. ~2-3h validation + N×fix-PRs. New entry below.
+8. **Token-cost re-measurement** — captures the new envelope shape post steps 1-7. ~2-3h. See entry "v0.9 — Token-cost re-measurement after parity-gap + DX-parity land".
+9. **README v0.9 refresh + CHANGELOG** — documents the new surface. **MUST be the last step before tagging.** ~2-3h. See entry "v0.9 — README refresh after parity-gap + DX-parity + token-cost re-measurement".
+10. **Tag v0.9.0** — release ceremony per the v0.8.0 / v0.8.1 pattern (intermediate develop PR + clean-cut release/main PR with `git read-tree --reset -u`).
 
-1. **Community standards** — `.github/ISSUE_TEMPLATE/{bug_report,feature_request}.md` + `.github/PULL_REQUEST_TEMPLATE.md` (see "v0.7.x / v0.8 — Community standards"). 30-45min.
-2. **Doctor: surface `gradle_config{}` diagnostic** — Tier 1 of "Adapt CLI to project's Gradle config" entry. Pure additive `--json` field on `kmp-test doctor`, no behavior change. 30min.
-3. **Concurrency Tier 2 docs** — full collision matrix in `docs/concurrency.md` (Tier 1 shipped v0.3.8). See "Concurrent-invocation safety" entry. 30min.
-4. **README refresh + token-cost re-measurement** — refresh README post-v0.7.0 + v0.8.0 surface; re-run `tools/measure-token-cost.js` matrix; update flag tables; remove stale `--shared-project-name`. See "v0.8.0 — README refresh + token-cost re-measurement" entry. 2-3h.
+### v0.10 — minor (locked 2026-05-05)
 
-### v0.9 — minor (new features + behavior surface)
+1. **ANSI color auto-detect** — TTY/piped detection in `lib/<feature>-orchestrator.js` print logic. ~1-2h.
+2. **CLI auto-respect `gradle.properties`** — Tier 3 of adapter. Drop `--parallel` injection when `org.gradle.parallel=false`, etc. Behavior change with migration note. ~2-3h.
+3. **Per-project config user-global** — `~/.kmp-test/config.json` keyed by git-remote / project name. Extends `lib/project-config.js`. ~6-10h.
+4. **Research direction A — Google `android` skills system viability** — investigate whether the skills system supports tools that spawn gradle. ~2-3h research. If positive → ship the manifest (~1h). If negative → drop with user authorization.
+5. **Research direction B — `android describe` JSON discovery** — verify it enumerates KMP-non-AGP modules against `shared-kmp-libs`. ~2h research. If positive → ship the opt-in fallback in `lib/project-model.js` (~3-4h). If negative → drop with user authorization.
+6. **macOS validation gate** — same shape as v0.9 step 7. ~2-3h.
+7. **Token-cost re-measurement** — captures any v0.10 envelope changes. ~2-3h.
+8. **README v0.10 refresh + CHANGELOG** — last step before tagging. ~2-3h.
+9. **Tag v0.10.0** — release ceremony.
 
-**Order is load-bearing**: parameters land FIRST (steps 1-3) so envelope shape stabilises, THEN token-cost re-measurement (step 4) captures the new shape, THEN README v0.9 refresh (step 5) documents the final surface. Steps 6-7 follow as separable feature work.
+### ❌ DROPPED 2026-05-05 (decided OUT — not deleted, kept for traceability)
 
-1. **`parallel --test-type androidInstrumented` parity-gap** — 6 new flags: `--clear-data`, `--auto-retry`, `--device <serial>`, `--flavor <name>`, `--device-task <name>`, `class=<FQN>#<method>` filter shape. One PR per flag, or bundled. ~115 LOC + 11 vitest. See "v0.9 — `kmp-test parallel --test-type androidInstrumented` parity gap" entry.
-2. **`--gradle-args` passthrough** — Tier 2 of CLI/Gradle adapter. Generic gradle args injection. ~1h.
-3. **DX-parity bundle from android CLI** — global `--variant` flag (cross-subcommand), `kmp-test describe`, `kmp-test info`, `kmp-test update`. See "DX/UX parity audit — borrow good ideas" entry, high-value 4 items. ~4-8h.
-4. **Token-cost re-measurement across the new v0.9 surface** — after steps 1-3 land, capture envelope-shape token costs for new fields (`retries[]`, `pre_run_actions`, etc.) + the new subcommands (`describe`, `info`). See "v0.9 — Token-cost re-measurement after parity-gap + DX-parity land" entry below (NEW 2026-05-05). ~2-3h.
-5. **README v0.9 refresh** — document the new flags + subcommands + updated token-cost numbers + DX-parity surface. See "v0.9 — README refresh after parity-gap + DX-parity + token-cost re-measurement" entry below (NEW 2026-05-05). ~2-3h.
-6. **`kmp-test` as Google `android` skill** — package as discoverable skill in Google's `android skills` system. See "Integrate with Google's `android` CLI for agents" entry. ~3-4h.
-7. **Buildable cross-platform E2E fixture** (DEFERRED from v0.8.0 release-blocker) — synthetic KMP fixture with all targets + CI matrix with macOS-real-execution. See "v0.8.x / v0.9 — Buildable cross-platform E2E fixture" entry. ~6-10h + CI flakiness budget. The "KMP target tier intel" entry is informational input for this.
+- **DX-parity lower-priority items** (`kmp-test docs`, `kmp-test devices`, `kmp-test sdk`, subcommand grouping verb/noun) — solap with `--help`, `adb devices`, `doctor`, and the verb/noun grouping is breaking change without agentic value. User decision 2026-05-05.
+- **iOS/macOS TestKit matrix in CI** — incompatible with CI minute budget rule (`feedback_ci_minutes_minimal_macos.md`). Coverage replaced by step 5 (cross-platform parity check in CI) + step 7 (manual macOS validation gate). User decision 2026-05-05.
 
-### Deferred (v1.0+ or pending trigger)
+### 🅿️ PARKED — promote on user trigger
 
-- **Per-project config presets — user-global aspect** — promote when a user is blocked.
-- **CLI auto-respect `gradle.properties`** (Tier 3 of adapter) — behavior change, needs migration note → v1.0.
-- **DX-parity lower-priority items** (`kmp-test docs`/`devices`/`sdk`, subcommand grouping) — trigger at 8+ commands.
-- **Use `android describe` JSON for module discovery** — pending review of KMP-non-AGP module enumeration support.
-- **Concurrency Tier 3: `--isolated` flag** — opt-in `--project-cache-dir` per run for parallel CI fan-out. ~3-4h. Promote on user surface.
-- **Other QUEUED ideas** — ANSI color auto-detect, Maven Central publish, iOS/macOS TestKit matrix.
+- **Maven Central publish for the Gradle plugin** — needs Sonatype account. Promote when account exists.
+- **VitePress/MkDocs docs site** — promote when README exceeds 1500 lines (today: 716).
 
 ### Project conventions (do-not-do list)
 
-> Cross-cutting rules that aren't backlog items but have to live somewhere visible. CLAUDE.md is the canonical source — these are pointers so a future session reading BACKLOG.md sees them.
-
-- **README is clean — no "What's new in vX" sections.** Per-version highlight blocks belong in `CHANGELOG.md` only. The README must read as if the project were timeless: what it does, how to install it, how to use it. Pre-v1, accumulating "What's new in v0.7 / v0.8 / ..." subsections turns the README into release-notes scaffolding. Removed twice (v0.7 README pass + v0.8.1) — see the rule in [`CLAUDE.md` "Architecture decisions worth knowing"](CLAUDE.md). If a fresh-session prompt asks for a "What's new" section, treat it as an instruction to update CHANGELOG.md instead and call out the diff to the user.
+- **README "What's new in vX" sections** — don't add. Per-version highlight blocks belong in `CHANGELOG.md` only. Removed twice. See `CLAUDE.md` + `feedback_readme_no_whats_new.md`.
+- **Milestone decisions belong to the user.** Claude must NEVER create v0.11 or move items to v1.0 unilaterally. On blockers / errors: ASK. See `CLAUDE.md` + `feedback_release_milestone_decisions.md`.
+- **CI macOS minutes** — keep heavy mac jobs OFF the per-PR matrix. Per-PR matrix runs only `build (macos-latest)` + `installer-e2e (macos-latest)`. iOS / TestKit / E2E mac runs are manual / `workflow_dispatch` only. See `CLAUDE.md` + `feedback_ci_minutes_minimal_macos.md`.
 
 ---
 
@@ -251,7 +258,7 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 - Re-using an existing OSS KMP project as the cross-platform E2E fixture — see Buildable cross-platform E2E fixture entry below for that decision.
 - ~~New CLI features.~~ **Carve-out (2026-05-03):** the project-level config file entry below (covers `sharedProjectName` + stable defaults) IS in v0.8.0 scope — closing the README ↔ tool surface gap honestly requires it rather than just deleting the misleading flag doc line.
 
-### v0.8.0 — Execution-summary classifier under-reports non-JVM test task RUNTIME failures (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 + Mac/Win post-toolchain-fix re-runs)
+### ✅ DONE 2026-05-04 (PR #130 / f95b57c) — v0.8.0 — Execution-summary classifier under-reports non-JVM test task RUNTIME failures (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 + Mac/Win post-toolchain-fix re-runs)
 
 **Status: DONE — fix-PR-E shipped 2026-05-04 (PR #130 / `f95b57c`).** Two surgical changes in `executeLeg` (lib/parallel-orchestrator.js): (1) cascade trigger semantic refined to `no_evidence === taskList.length`; (2) post-step-5 alignment rebuilds `execSummary` from `classifyTaskResults` so tasks marked 'failed' get bucketed to `execution.failed` regardless of execMode. 762 → 768 vitest. Live S22 Ultra validated `execution.failed: 0→1` on `:benchmark-storage:androidConnectedCheck`. OS-parity invariant restored (`execution.failed === errors.filter(c='module_failed').length`). Original entry text preserved below for context.
 
@@ -313,7 +320,7 @@ Same classifier gap likely exists for `iosSimulatorArm64Test` / `iosX64Test` / `
 
 ---
 
-### v0.8.0 — `--test-filter` on `parallel --test-type androidInstrumented` blindly pushes `--tests` to AGP `connectedAndroidTest` (RELEASE-BLOCKER, surfaced 2026-05-05 dipatternsdemo live validation)
+### ✅ DONE 2026-05-05 (PR #135 / 89e3cba) — v0.8.0 — `--test-filter` on `parallel --test-type androidInstrumented` blindly pushes `--tests` to AGP `connectedAndroidTest` (RELEASE-BLOCKER, surfaced 2026-05-05 dipatternsdemo live validation)
 
 **Status: DONE — fix-PR-G shipped 2026-05-05.** Live repro on dipatternsdemo: `kmp-test parallel --test-type androidInstrumented --module-filter benchmark --test-filter <FQN>` → gradle errored `Unknown command-line option '--tests'` → BUILD FAILED in 1s. Audit of `dispatchLeg` (`lib/parallel-orchestrator.js:547-549`) showed `--tests <pattern>` was pushed unconditionally for every leg. JvmTestTask, KotlinNativeTest, KotlinJsTest accept `--tests`; AGP `AndroidConnectedTest` does not — it expects `-Pandroid.testInstrumentationRunnerArguments.{class,method}` (per https://developer.android.com/studio/test/command-line). The dedicated `kmp-test android` and `kmp-test benchmark` subcommands already had the right translation (`lib/android-orchestrator.js#buildFilterArgs` + benchmark-orchestrator); only `parallel` was the gap.
 
@@ -341,6 +348,38 @@ Fix: new `buildFilterArgs(testFilter, testType, projectRoot)` mirrors the androi
 **Token-cost re-measurement when v0.9 parity-gap flags land.** When the 6 pending parity-gap items (`--clear-data`, `--auto-retry`, `--device <serial>`, `--flavor`, `--device-task`, `class=<FQN>#<method>` filter shape) get implemented, also extend `tools/measure-token-cost.js` and the README's "Why this exists — token cost per agent test-run iteration" tables. Audit per-flag at implementation time: does this flag change the `--json` envelope output shape? If yes (e.g. `--auto-retry` adds a `retries[]` field; `--clear-data` adds a `pre_run_actions` field), capture a fresh A/B/C measurement so the agentic-cost claim stays honest. If no (e.g. `--device <serial>` only selects which adb device, doesn't change stdout shape), skip with a note in the PR description. Cross-link to the original token-cost measurement entry (`Multi-feature token-cost measurement (v0.4 milestone)`) for context. Surfaced 2026-05-05 during PR8 release prep — the user noted that mac-side fix-PR-F-bis and fix-PR-G work surfaced these Android-side gaps, and re-measurement should be part of any v0.9 parity work that changes envelope shape.
 
 **Out of scope until parity decision**: full `parallel`-side adoption of android-orchestrator's `--list-tests`, `--logcat-tail`, `--clear-cache`, `--no-uninstall` flags — those are android-subcommand-specific UX that may not apply to the parallel sweep model.
+
+---
+
+### v0.9 — Cross-platform parity check in CI (NEW 2026-05-05)
+
+**Status: OPEN, scheduled as step 5 of v0.9 milestone (per ROADMAP).** Replaces the dropped iOS/macOS TestKit-in-CI matrix with a lightweight static parity check that catches drift between flag tables, envelope schema, README, and platform-behavior matrix without burning macOS minutes (`feedback_ci_minutes_minimal_macos.md`).
+
+**Scope — 4 sub-checks:**
+1. **Flag matrix audit** — vitest spec that enumerates every CLI subcommand × every flag, asserting platform-applicability matches the README "Platforms supported" table. Catches drift like "added `--device` to `parallel` but forgot to update README".
+2. **Envelope JSON schema snapshot** — golden-file snapshot of the `kmp-test ... --json` output shape for each subcommand (using a dry-run mode where possible). Any envelope-shape change forces a deliberate snapshot update.
+3. **README ↔ code drift detection** — regex over README flag table compared against the actual `bin/kmp-test.js` argv parser. Detects flags documented but not parsed, or parsed but not documented.
+4. **Platform-behavior matrix lock-in** — vitest spec asserting which gradle task name / source set each `--test-type` resolves to per platform (e.g. `--test-type ios` → `iosSimulatorArm64Test` candidate chain). Catches dispatch-table regressions.
+
+**Acceptance:** 4 new vitest specs (or 1 with 4 describe blocks) + a CI step that runs them on every PR. **No new macOS minutes** — all checks run on `ubuntu-latest`. Failure messages must be actionable ("README says X, code does Y, fix one of them").
+
+**Estimated effort:** ~4-5h.
+
+**Out of scope:** runtime gradle dispatch validation against real projects (that's step 7, manual). E2E flake tests (those are real-execution territory).
+
+---
+
+### v0.9 — macOS validation gate (manual smoke before tagging) (NEW 2026-05-05)
+
+**Status: OPEN, scheduled as step 7 of v0.9 milestone (per ROADMAP).** With iOS/macOS TestKit dropped from the per-PR CI matrix (`feedback_ci_minutes_minimal_macos.md`), the only mac coverage is `build (macos-latest)` (vitest, ~30s) + `installer-e2e (macos-latest)` (~20s). Drift in real iOS/macOS gradle dispatch is invisible until manual validation. This gate runs **once before tagging v0.9.0**, against a curated set of real KMP projects.
+
+**Scope:** matrix of `{kmp-test parallel, kmp-test changed, kmp-test android}` × `{--test-type common, jvm, android, ios, macos, all}` × `{v0.9 fixture (step 6), shared-kmp-libs, KaMPKit}`. Capture each run's JSON envelope; diff against expected shape from step 5's snapshot tests. Any drift becomes a fix-PR before the v0.9 tag.
+
+**Acceptance:** all subcommand × test-type × project combinations produce envelopes matching the step-5 snapshots. Tooling: a small `tools/macos-validation-gate.mjs` script that drives the matrix and produces a markdown summary (mirrors the `tools/wide-smoke-pass-9-mac.mjs` pattern from v0.8.0). Failures captured as `MACOS-GATE-V0.9-XXX.md` evidence files; each becomes a fix-PR docked to the v0.9 ramp.
+
+**Estimated effort:** ~2-3h validation run + N×fix-PRs (open-ended; bounds set by what the gate surfaces).
+
+**Out of scope:** automating this in CI (explicitly NOT desired per `feedback_ci_minutes_minimal_macos.md`). The gate stays manual on a secondary local machine.
 
 ---
 
@@ -381,7 +420,7 @@ Fix: new `buildFilterArgs(testFilter, testType, projectRoot)` mirrors the androi
 
 ---
 
-### v0.8.0 — `--variant` flag honored on the instrumented (`androidInstrumented`) dispatch path (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 against dipatternsdemo)
+### ✅ DONE 2026-05-05 (PR #131 + #134) — v0.8.0 — `--variant` flag honored on the instrumented (`androidInstrumented`) dispatch path (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 against dipatternsdemo)
 
 **Status (2026-05-05 follow-up): DONE — fix-PR-F-bis closes a regression in fix-PR-F's coverage on the probed-task path.** The original fix-PR-F (PR #131) only honored `--variant` + `testBuildType` in the AGP fallback branch (when `r.deviceTestTask === null`). After dipatternsdemo commit `058a520` enabled `connectedDebugAndroidTest` alongside the canonical `connectedReleaseAndroidTest` via `androidComponents.beforeVariants`, gradleTasks contained both and `resolveTasksFor.deviceTestTask` matched Debug first → early-return at `parallel-orchestrator.js:391` bypassed the variant logic → orchestrator dispatched `connectedDebugAndroidTest` even though `testBuildType="release"` and the parser correctly resolved it. fix-PR-F-bis lands two surgical changes: (1) `lib/project-model.js#resolveTasksFor` candidate chain prepends `connected{TestBuildType}AndroidTest` when `analysis.testBuildType` is set, fixing all consumers (parallel/android/benchmark/coverage/changed) uniformly; (2) `pickGradleTaskFor('androidInstrumented')` in `lib/parallel-orchestrator.js` reorders the AGP source-set branch BEFORE the probe early-return so explicit `--variant debug|release` overrides win regardless of probed task name. **+10 vitest cases** (775 → 797 passing). Live verified inline against the real cached gradleTasks for dipatternsdemo `:benchmark`. Probe-wins legacy contract preserved for non-AGP / no-source-set modules.
 
@@ -642,7 +681,7 @@ Caveats:
 - **Tests:** +6 vitest cases (702 total, 696 baseline). Pure cascade single-leg, single-task cascade (drops `>1`), real failures NOT triggering retry, mid-line `Task` mention regression guard (the false-positive that fooled the old guard), mixed-in-leg conservative non-trigger, envelope-shape lock for the new boolean fields.
 - **Live verification:** wide-smoke re-run of all 8 cascade cases on Windows; `RED-orchestrator-cascade` bucket dropped from 8 → 0. Cases redistributed: 7 → `RED-repo` (modules genuinely broken at evaluation phase, retry confirmed), 1 → outcome per project's actual gradle exit. WIDE-SMOKE-PASS-7-postfix.md captures the post-fix bucket counts.
 
-### v0.8.0 — Confetti-main `unsupported_class_version` despite PR3's AGP-aware JDK auto-select (surfaced 2026-05-04 wide-smoke pass-7)
+### ✅ DONE 2026-05-04 (PR #127 / 049828a) — v0.8.0 — Confetti-main `unsupported_class_version` despite PR3's AGP-aware JDK auto-select (surfaced 2026-05-04 wide-smoke pass-7)
 
 **Surfaced 2026-05-04 in PR4 wide-smoke pass-7.** Confetti-main classified as RED-repo (1 module_failed, 133 testcases ran). The `errors[]` array contains both `module_failed` AND `unsupported_class_version` — meaning the JDK gate did fire after PR3's AGP-aware auto-select selected a JDK. PR3 was supposed to prevent exactly this by picking the AGP-required JDK runtime over the project's `jvmTarget`.
 
@@ -657,7 +696,7 @@ Caveats:
 
 **Ship-when:** v0.8.0 nice-to-have (not release-blocker — Confetti is an external sample; user repos that hit this should already be addressable via `--java-home` override).
 
-### v0.8.0 — `task_not_found` paired with `module_failed` in 4 projects (project-model task-name overreach; surfaced 2026-05-04 wide-smoke pass-7)
+### ✅ DONE 2026-05-04 (PRs #125 + #126) — v0.8.0 — `task_not_found` paired with `module_failed` in 4 projects (project-model task-name overreach; surfaced 2026-05-04 wide-smoke pass-7)
 
 **Status: DONE 2026-05-05 — closed by fix-PR-A (#125) + fix-PR-D (#126) + fix-PR-F (#131).** Re-validated live 2026-05-05 against the 3 of 4 originally-affected projects:
 
@@ -688,7 +727,7 @@ Root cause was three-fold: (1) source-set gate missing on AGP-fallback dispatch 
 
 **Ship-when:** v0.8.0 nice-to-have. Lower priority than cascade-isolation fix because the impact is "1-2 false dispatches per multi-module project" rather than "entire project marked RED".
 
-### v0.8.0 — Wide-smoke per-project triage: confirm REDs are repo-level vs orchestrator (surfaced 2026-05-03)
+### ✅ DONE 2026-05-04 (wide-smoke pass-9 + pass-9-mac) — v0.8.0 — Wide-smoke per-project triage: confirm REDs are repo-level vs orchestrator (surfaced 2026-05-03)
 
 **Status: DONE — process completed via wide-smoke passes 7 (PR4 / `020ea86`), 8 (during PR6 era), and 9 (PR #129 / `61704f3`).** All 6 REAL-REDs from the original triage classified as repo-bugs (DawSync 5-test desync, OmniSound DesktopPKCEGenerator, gyg LoadingAndErrorStatesTest, nav3-recipes RouteV2/Navigator, nowinandroid `:foryou:impl`, Confetti-main `:wearApp` 2 tests). The "5 per-project investigations" carve-out (DawSync, OmniSound, dipatternsdemo, nav3-recipes, PeopleInSpace) resolved: dipatternsdemo + DawSync now pass via fix-PR-A through F (validated 2026-05-05); the other 3 remain repo-level bugs documented in pass-9 results. Pass-9 final bucket counts (per `project_v0_8_0_pass_9_shipped.md`): match pass-8 baseline 3 GREEN / 14 SKIP / 13 RED-repo / 0 cascade. Original entry text preserved below for context.
 
@@ -935,6 +974,8 @@ Users currently have no clean way to gitignore CLI output without enumerating ev
 
 ### v0.8.x / v0.9 — Buildable cross-platform E2E fixture project (DEFERRED 2026-05-05 from v0.8.0 release-blocker)
 
+**Updated 2026-05-05** — scope reduced to **build only, no CI matrix** per `feedback_ci_minutes_minimal_macos.md`. Real iOS/macOS execution validation moved to v0.9 step 7 (manual macOS validation gate). The CI-matrix paragraphs below (`e2e-cross-platform.yml`, per-OS jobs) are **HISTORICAL — superseded 2026-05-05** — kept for traceability but NOT the current direction. Current scope: the fixture builds (so `kmp-test` discovery + dispatch can be exercised against it), but per-PR CI does NOT run iOS/macOS test tasks against it. Scheduled as **v0.9 step 6** in ROADMAP.
+
 **Status: DEFERRED 2026-05-05.** Originally framed as "promoted to release-blocker per release-readiness gate #2" (entry above L172). Demoted to v0.8.x/v0.9 candidate because: (1) the 6 fix-PRs (A-F) absorbed the v0.8.0 release-validation budget; (2) ~6-10h fixture build + open-ended CI flakiness budget is not justified pre-tag when wide-smoke pass-9-mac (PR #129) already validates real iOS/macOS execution against shared-kmp-libs + 4 other projects; (3) the existing 7-required-check matrix + informational macOS jobs (build-macos, bats-macos, gradle-plugin-test-ios, installer-e2e-macos) provide acceptable CI coverage. Promote back to release-blocker at v0.9 when the milestone scope can absorb the flakiness work. Original entry text preserved below.
 
 **Surfaced 2026-05-01 during v0.7.0 Phase 3 review.** The current iOS / macOS test coverage is the same shape as JS/Wasm/Android — model unit tests, wrapper integration tests with stub `gradlew`, Gradle TestKit acceptance — but **no real iOS / macOS test execution in CI**. This is in parity with the rest of the platforms (Android instrumented + JS/Wasm also lack real-task CI runs), so v0.7.0 ships honestly. But it's the largest single piece of testing debt the project carries: every "iOS support works" claim today rests on wide-smoke validation against the user's local KMP projects, which doesn't survive in green/red CI history.
@@ -947,7 +988,7 @@ Users currently have no clean way to gitignore CLI output without enumerating ev
 - Trivial passing test in each test source set (`commonTest`, `jvmTest`, `jsTest`, `wasmJsTest`, `iosX64Test`, `iosSimulatorArm64Test`, `macosArm64Test`, `androidUnitTest`)
 - Pinned Kotlin + AGP versions in `gradle/libs.versions.toml`
 
-**CI matrix** (new workflow `e2e-cross-platform.yml`):
+**[HISTORICAL — superseded 2026-05-05] CI matrix** (new workflow `e2e-cross-platform.yml`):
 - `e2e (ubuntu-latest)`: runs `kmp-test parallel --test-type common` + `--test-type androidUnit` + `--test-type ios` (dispatch only — no simulator) + `--test-type macos` (dispatch only) + JS-via-jvmTest fallback. Verifies the wrapper picks the right per-module task in the JSON envelope (no real test execution beyond JVM).
 - `e2e (windows-latest)`: same as ubuntu — Pester / bash-via-Git-Bash parity check.
 - `e2e (macos-latest)`: full iOS + macOS execution. Boots simulator (Approach B fallback if needed), runs `:module:iosSimulatorArm64Test` and `:module:macosArm64Test` for real. This is the only place where iOS actually runs.
@@ -955,7 +996,7 @@ Users currently have no clean way to gitignore CLI output without enumerating ev
 **Risk + cost:**
 - **Risk**: high CI flakiness from network deps (Maven plugin downloads), Xcode version drift on macos-latest, simulator boot races. Initial implementation could spend 50% of effort fighting infrastructure.
 - **Cost**: ~6-10h to build a working fixture + reliable CI. Net new bytes in the repo: ~70KB for `gradle-wrapper.jar` (binary).
-- **Per-run CI cost**: macOS minutes are 10× ubuntu minutes — full E2E job could add 5-10 min per CI run, ~50 min macOS-equivalent per PR.
+- **[HISTORICAL — superseded 2026-05-05] Per-run CI cost**: macOS minutes are 10× ubuntu minutes — full E2E job could add 5-10 min per CI run, ~50 min macOS-equivalent per PR. (No longer applicable: per-PR CI does NOT run mac/iOS targets against this fixture; manual validation handles that.)
 
 **When to ship:**
 - v0.7.x patch — if a v0.7 user surfaces an iOS regression that the unit/integration suite missed, this becomes urgent.
@@ -966,7 +1007,7 @@ Users currently have no clean way to gitignore CLI output without enumerating ev
 - Re-using an existing real-world OSS KMP project (Confetti / KaMPKit) as the fixture — version drift makes our CI flakier than a pinned synthetic; only revisit if synthetic proves too much work.
 - Replacing the wide-smoke local validation gate (`feedback_release_wide_smoke.md`). Both should coexist: wide-smoke catches integration-level bugs against real projects; the synthetic E2E catches regressions deterministically.
 
-### v0.8.0 — README refresh + token-cost re-measurement across all CLI tools (surfaced 2026-05-03)
+### 🟡 PARTIAL 2026-05-05 (v0.8.1) — surface refresh DONE; cross-model re-tokenisation moved to v0.9 step 8 — v0.8.0 — README refresh + token-cost re-measurement across all CLI tools (surfaced 2026-05-03)
 
 **Surfaced 2026-05-03 after sub-entry 5 + PR #116 + sub-entry-5-followups landed.** The README has not been refreshed since v0.6.x; v0.7.0 (iOS/macOS surface), the v0.8 STRATEGIC PIVOT (5 orchestrators migrated to Node), the EINVAL spawn fix (PR #116), and the new flags restored in PR #115 follow-up (`--fresh-daemon`, `--output-file`, `--coverage-only`, `--benchmark` + `--benchmark-config`) all need to land in the user-facing docs before v0.8.0 tag.
 
@@ -1153,7 +1194,7 @@ Pattern is the **idiomatic one already used in this same file at line 792** for 
 
 **Suggested first PR for the v0.7.x patch run** — small, isolated, evidence-rich, high signal-to-effort. Good warm-up before tackling WS-1 (which is the architecturally trickiest of the wide-smoke findings).
 
-### v0.7.x / v0.8 — Community standards (issue + PR templates)
+### ✅ DONE 2026-05-05 (v0.8.1 / PR #142) — v0.7.x / v0.8 — Community standards (issue + PR templates)
 
 **Surfaced 2026-05-01.** GitHub flags the repo as missing two community-standards files:
 
@@ -1366,7 +1407,7 @@ Today's escape hatches:
 
 **Three levels, ship cheapest first:**
 
-1. **Doctor surfacing (~30min)** — `kmp-test doctor` reads `<project>/gradle.properties` (and `~/.gradle/gradle.properties`) and prints the resolved values for `org.gradle.parallel`, `org.gradle.workers.max`, `org.gradle.caching`, `org.gradle.daemon`, `org.gradle.jvmargs`, `org.gradle.configureondemand`. Pure diagnostic — surfaces mismatches between project intent and what the CLI is about to do. Adds a `gradle_config{}` section to `--json` output. Zero behavior change.
+1. **✅ Doctor surfacing — DONE in v0.8.1 (PR #142).** `kmp-test doctor --json` carries a top-level `gradle_config{}` object with the resolved values for `org.gradle.parallel`, `workers.max`, `caching`, `daemon`, `jvmargs`, `configureondemand` from `<project>/gradle.properties` merged on top of `~/.gradle/gradle.properties`. Pure diagnostic — no behavior change. (Tier 2 below scheduled as **v0.9 step 2**; Tier 3 as **v0.10 step 2**.)
 2. **Generic pass-through (~1h)** — `--gradle-args "..."` global flag that appends arbitrary tokens to the gradlew invocation. Lets any agent or user inject `--no-parallel`, `--no-build-cache`, `--max-workers 1`, `-Pflag=value`, etc. Documented as an escape hatch — the CLI still has its opinionated defaults. Lower precedence than dedicated flags.
 3. **Auto-detect + respect (~2-3h)** — read `gradle.properties` at startup; if `org.gradle.parallel=false`, drop the `--parallel` injection; if `workers.max` is set, do not pass `--max-workers` unless explicitly overridden on the CLI; if `caching=false`, don't fight it. Most invasive — changes default behavior. Needs migration note ("`kmp-test parallel` no longer always parallelizes — set `org.gradle.parallel=true` if you want the previous behavior, or pass `--max-workers >1`").
 
@@ -1415,7 +1456,7 @@ The official `android` CLI's `describe` subcommand emits a JSON document of buil
 
 Open questions: (1) does `describe` cover KMP-only (non-Android) modules, or only AGP-rooted ones? (2) what's the schema stability guarantee, esp. for multi-module multi-target KMP? (3) fallback path when `android` CLI isn't installed — keep bash discovery as default, opt-in via `--use-android-describe` flag.
 
-Estimated effort: 3–4h research + refactor in `scripts/sh/lib/`. Pending review on (1) above before committing — if `describe` doesn't enumerate KMP non-AGP modules it's not a drop-in replacement.
+Estimated effort: ~2h research first to confirm `android describe` enumerates KMP-non-AGP modules (test against `shared-kmp-libs`), then ~3-4h refactor in `lib/project-model.js` if research is positive. Scheduled as **v0.10 step 5 (research-first)** — if research is negative, the entry gets dropped per user direction (`feedback_release_milestone_decisions.md` allows the user to authorize drops on case-by-case basis after research). Note: the legacy reference to `scripts/sh/lib/` above predates the v0.8 Node-pivot — discovery now lives in `lib/project-model.js`.
 
 ### Concurrent-invocation safety (multi-agent scenarios)
 
@@ -1435,7 +1476,7 @@ When multiple AI agents (or humans, or CI matrix shards) run `kmp-test` against 
 **Three tiers — Tier 1 shipped in v0.3.8 (2026-04-26):**
 
 1. **Cheap hardening (~1h)** — ✅ **DONE in v0.3.8**: PID-suffixed `TEMP_LOG`; run-id `YYYYMMDD-HHMMSS-PID6` versioned report filenames + legacy mirror; advisory lockfile at `<project>/.kmp-test-runner.lock` with `{schema, pid, start_time, subcommand, project_root, version}` JSON; `--force` global flag bypasses a live lock; stale-lock reclaim (PID dead) is automatic; SIGINT/SIGTERM/uncaughtException handlers clean up. `--json` mode surfaces `errors[].code = "lock_held"`. Doctor + dry-run skip the lock.
-2. **Audit + docs (~30min)** — partly done (Tier 1 ships with `docs/concurrency.md` stub); full collision matrix (subcommand × resource × outcome) still queued.
+2. **✅ Audit + docs — DONE in v0.8.1 (PR #142).** Full Tier 2 collision matrix landed in `docs/concurrency.md` — 10-row subcommand × resource × outcome × mitigation-status table. Tier 3 (`--isolated`) flips deferred rows when it ships (scheduled as **v0.9 step 4**).
 3. **Opt-in isolation (~3-4h)** — queued: `--isolated` global flag → injects `--project-cache-dir <tmp>` into every gradle invocation, giving each run its own `.gradle/` cache. Slow (no cache hits), but truly parallel-safe. Ideal for CI multi-agent fan-out.
 
 Out of scope for this item: cross-host coordination (use a real lock manager), Gradle-internal concurrency tuning, or rewriting the daemon model.
