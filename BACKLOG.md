@@ -271,6 +271,35 @@ Same classifier gap likely exists for `iosSimulatorArm64Test` / `iosX64Test` / `
 
 ---
 
+### v0.8.0 — `--test-filter` on `parallel --test-type androidInstrumented` blindly pushes `--tests` to AGP `connectedAndroidTest` (RELEASE-BLOCKER, surfaced 2026-05-05 dipatternsdemo live validation)
+
+**Status: DONE — fix-PR-G shipped 2026-05-05.** Live repro on dipatternsdemo: `kmp-test parallel --test-type androidInstrumented --module-filter benchmark --test-filter <FQN>` → gradle errored `Unknown command-line option '--tests'` → BUILD FAILED in 1s. Audit of `dispatchLeg` (`lib/parallel-orchestrator.js:547-549`) showed `--tests <pattern>` was pushed unconditionally for every leg. JvmTestTask, KotlinNativeTest, KotlinJsTest accept `--tests`; AGP `AndroidConnectedTest` does not — it expects `-Pandroid.testInstrumentationRunnerArguments.{class,method}` (per https://developer.android.com/studio/test/command-line). The dedicated `kmp-test android` and `kmp-test benchmark` subcommands already had the right translation (`lib/android-orchestrator.js#buildFilterArgs` + benchmark-orchestrator); only `parallel` was the gap.
+
+Fix: new `buildFilterArgs(testFilter, testType, projectRoot)` mirrors the android-orchestrator translation. When `testType === 'androidInstrumented'`, the filter resolves through `resolveAndroidTestFilter` + `splitClassMethod` (both already exported from `lib/cli.js`) and emits the canonical `-Pandroid.testInstrumentationRunnerArguments.class=<FQN>` (+ `.method=<m>` when present). All other test types preserve `--tests <pattern>` (regression guard for JVM / K/N / KJS legs). `dispatchLeg` now threads `testType` through to the helper. **+9 vitest cases** (797 → 806 passing): 8 unit tests covering each test type's translation + 1 integration test through `runParallel` confirming the JVM-side `--tests` regression guard at the spawn site. Live verified end-to-end on dipatternsdemo `:benchmark`: `[PASS] benchmark` with `connected/release/` outputs created (vs the pre-fix BUILD FAILED). Audit of all other gradle args pushed by `dispatchLeg` (`--parallel`, `--continue`, `--max-workers=N`) confirms they are universal gradle CLI flags accepted by every task class — no other JvmTestTask-only flag leaks into the AGP path.
+
+**Side observation (NOT a regression — pre-existing in `kmp-test android` and `kmp-test benchmark`).** The AndroidJUnitRunner method-level filter shape `class=<FQN>` + `method=<m>` (separate `-P` args) is not honored by all instrumented runners — Microbenchmark in particular runs all class methods despite the `method` arg. Repro: live dipatternsdemo run with `--test-filter "...DiBenchmark.lazyInit_noDeps_daggerB_analytics"` resolved to class+method correctly but 14 of 14 DiBenchmark methods ran instead of 1. The canonical AGP/AndroidJUnitRunner shape that ALWAYS works is the combined `class=<FQN>#<method>` single arg. Tracked under v0.9 follow-up entry below ("parallel parity gap").
+
+---
+
+### v0.9 — `kmp-test parallel --test-type androidInstrumented` parity gap with `kmp-test android` subcommand (surfaced 2026-05-05 during fix-PR-G audit)
+
+**Status: OPEN, deferred from v0.8.0.** The `kmp-test android` subcommand offers several instrumented-test ergonomics that the `parallel --test-type androidInstrumented` path does not surface today. None BREAK an existing flow (so they're not v0.8.0 release-blockers — fix-PR-G closed the only blocker), but they're features users will reasonably expect on the unified `parallel` path. Closing the gap is mostly mechanical: thread the missing flags through `parseArgs` + `dispatchLeg` + per-module retry path.
+
+| Flag | Available in `kmp-test android` | Available in `kmp-test parallel --test-type androidInstrumented` | Effort |
+|---|:---:|:---:|---|
+| `--clear-data` (clears app data via `adb shell pm clear <pkg>` before retry) | ✅ | ❌ | ~30 LOC + 2 vitest |
+| `--auto-retry` (re-spawn once on failure) | ✅ | ❌ (PR5 cascade-isolation covers ONLY evaluation-phase aborts, not runtime failures) | ~20 LOC + 2 vitest |
+| `--device <serial>` (multi-device targeting) | ✅ | ❌ (relies on first connected device) | ~15 LOC + 1 vitest |
+| `--flavor <name>` (productFlavors → `connected${Flavor}DebugAndroidTest`) | ✅ | ⚠️ partial (project-model `hasFlavor` signal exists but no CLI surface on `parallel`) | ~25 LOC + 3 vitest |
+| `--device-task <name>` (explicit gradle task override) | ✅ | ⚠️ alternative — `--variant` covers debug/release/all, but no full task-name override path | ~15 LOC + 1 vitest |
+| `class=<FQN>#<method>` filter shape (single arg, canonical AGP) | ❌ (uses separate `class=`/`method=` args — same gap as `parallel`) | ❌ | ~10 LOC in `cli.js#splitClassMethod` consumer + 2 vitest. Affects `kmp-test android`, `kmp-test benchmark`, AND `kmp-test parallel --test-type androidInstrumented`. |
+
+**Action shape**: one PR per row (or one bundled "parallel parity" PR if scoped together). Bundled is cheaper for the maintainer; individual is cheaper for review. The `class=<FQN>#<method>` row is the highest-impact: it would also fix the Microbenchmark method-filter weakness surfaced live during fix-PR-G validation.
+
+**Out of scope until parity decision**: full `parallel`-side adoption of android-orchestrator's `--list-tests`, `--logcat-tail`, `--clear-cache`, `--no-uninstall` flags — those are android-subcommand-specific UX that may not apply to the parallel sweep model.
+
+---
+
 ### v0.8.0 — `--variant` flag honored on the instrumented (`androidInstrumented`) dispatch path (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 against dipatternsdemo)
 
 **Status (2026-05-05 follow-up): DONE — fix-PR-F-bis closes a regression in fix-PR-F's coverage on the probed-task path.** The original fix-PR-F (PR #131) only honored `--variant` + `testBuildType` in the AGP fallback branch (when `r.deviceTestTask === null`). After dipatternsdemo commit `058a520` enabled `connectedDebugAndroidTest` alongside the canonical `connectedReleaseAndroidTest` via `androidComponents.beforeVariants`, gradleTasks contained both and `resolveTasksFor.deviceTestTask` matched Debug first → early-return at `parallel-orchestrator.js:391` bypassed the variant logic → orchestrator dispatched `connectedDebugAndroidTest` even though `testBuildType="release"` and the parser correctly resolved it. fix-PR-F-bis lands two surgical changes: (1) `lib/project-model.js#resolveTasksFor` candidate chain prepends `connected{TestBuildType}AndroidTest` when `analysis.testBuildType` is set, fixing all consumers (parallel/android/benchmark/coverage/changed) uniformly; (2) `pickGradleTaskFor('androidInstrumented')` in `lib/parallel-orchestrator.js` reorders the AGP source-set branch BEFORE the probe early-return so explicit `--variant debug|release` overrides win regardless of probed task name. **+10 vitest cases** (775 → 797 passing). Live verified inline against the real cached gradleTasks for dipatternsdemo `:benchmark`. Probe-wins legacy contract preserved for non-AGP / no-source-set modules.
