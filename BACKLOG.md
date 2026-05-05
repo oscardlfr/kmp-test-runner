@@ -1366,7 +1366,7 @@ Today's escape hatches:
 
 **Three levels, ship cheapest first:**
 
-1. **Doctor surfacing (~30min)** — `kmp-test doctor` reads `<project>/gradle.properties` (and `~/.gradle/gradle.properties`) and prints the resolved values for `org.gradle.parallel`, `org.gradle.workers.max`, `org.gradle.caching`, `org.gradle.daemon`, `org.gradle.jvmargs`, `org.gradle.configureondemand`. Pure diagnostic — surfaces mismatches between project intent and what the CLI is about to do. Adds a `gradle_config{}` section to `--json` output. Zero behavior change.
+1. **✅ Doctor surfacing — DONE in v0.8.1 (PR #142).** `kmp-test doctor --json` carries a top-level `gradle_config{}` object with the resolved values for `org.gradle.parallel`, `workers.max`, `caching`, `daemon`, `jvmargs`, `configureondemand` from `<project>/gradle.properties` merged on top of `~/.gradle/gradle.properties`. Pure diagnostic — no behavior change. (Tier 2 below scheduled as **v0.9 step 2**; Tier 3 as **v0.10 step 2**.)
 2. **Generic pass-through (~1h)** — `--gradle-args "..."` global flag that appends arbitrary tokens to the gradlew invocation. Lets any agent or user inject `--no-parallel`, `--no-build-cache`, `--max-workers 1`, `-Pflag=value`, etc. Documented as an escape hatch — the CLI still has its opinionated defaults. Lower precedence than dedicated flags.
 3. **Auto-detect + respect (~2-3h)** — read `gradle.properties` at startup; if `org.gradle.parallel=false`, drop the `--parallel` injection; if `workers.max` is set, do not pass `--max-workers` unless explicitly overridden on the CLI; if `caching=false`, don't fight it. Most invasive — changes default behavior. Needs migration note ("`kmp-test parallel` no longer always parallelizes — set `org.gradle.parallel=true` if you want the previous behavior, or pass `--max-workers >1`").
 
@@ -1415,7 +1415,7 @@ The official `android` CLI's `describe` subcommand emits a JSON document of buil
 
 Open questions: (1) does `describe` cover KMP-only (non-Android) modules, or only AGP-rooted ones? (2) what's the schema stability guarantee, esp. for multi-module multi-target KMP? (3) fallback path when `android` CLI isn't installed — keep bash discovery as default, opt-in via `--use-android-describe` flag.
 
-Estimated effort: 3–4h research + refactor in `scripts/sh/lib/`. Pending review on (1) above before committing — if `describe` doesn't enumerate KMP non-AGP modules it's not a drop-in replacement.
+Estimated effort: ~2h research first to confirm `android describe` enumerates KMP-non-AGP modules (test against `shared-kmp-libs`), then ~3-4h refactor in `lib/project-model.js` if research is positive. Scheduled as **v0.10 step 5 (research-first)** — if research is negative, the entry gets dropped per user direction (`feedback_release_milestone_decisions.md` allows the user to authorize drops on case-by-case basis after research). Note: the legacy reference to `scripts/sh/lib/` above predates the v0.8 Node-pivot — discovery now lives in `lib/project-model.js`.
 
 ### Concurrent-invocation safety (multi-agent scenarios)
 
@@ -1435,7 +1435,7 @@ When multiple AI agents (or humans, or CI matrix shards) run `kmp-test` against 
 **Three tiers — Tier 1 shipped in v0.3.8 (2026-04-26):**
 
 1. **Cheap hardening (~1h)** — ✅ **DONE in v0.3.8**: PID-suffixed `TEMP_LOG`; run-id `YYYYMMDD-HHMMSS-PID6` versioned report filenames + legacy mirror; advisory lockfile at `<project>/.kmp-test-runner.lock` with `{schema, pid, start_time, subcommand, project_root, version}` JSON; `--force` global flag bypasses a live lock; stale-lock reclaim (PID dead) is automatic; SIGINT/SIGTERM/uncaughtException handlers clean up. `--json` mode surfaces `errors[].code = "lock_held"`. Doctor + dry-run skip the lock.
-2. **Audit + docs (~30min)** — partly done (Tier 1 ships with `docs/concurrency.md` stub); full collision matrix (subcommand × resource × outcome) still queued.
+2. **✅ Audit + docs — DONE in v0.8.1 (PR #142).** Full Tier 2 collision matrix landed in `docs/concurrency.md` — 10-row subcommand × resource × outcome × mitigation-status table. Tier 3 (`--isolated`) flips deferred rows when it ships (scheduled as **v0.9 step 4**).
 3. **Opt-in isolation (~3-4h)** — queued: `--isolated` global flag → injects `--project-cache-dir <tmp>` into every gradle invocation, giving each run its own `.gradle/` cache. Slow (no cache hits), but truly parallel-safe. Ideal for CI multi-agent fan-out.
 
 Out of scope for this item: cross-host coordination (use a real lock manager), Gradle-internal concurrency tuning, or rewriting the daemon model.
