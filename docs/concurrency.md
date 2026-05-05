@@ -1,6 +1,6 @@
 # Concurrency model — kmp-test-runner
 
-> Status: **Tier 1 shipped** in v0.3.8 (2026-04-26). Tier 2 (full audit + matrix) and Tier 3 (`--isolated`) are still queued — see [BACKLOG.md](../BACKLOG.md#concurrent-invocation-safety-multi-agent-scenarios).
+> Status: **Tier 1 shipped** in v0.3.8 (2026-04-26). **Tier 2 collision matrix shipped** in v0.8.1 (locked contract — see below). Tier 3 (`--isolated`) is still queued — see [BACKLOG.md](../BACKLOG.md#concurrent-invocation-safety-multi-agent-scenarios).
 
 ## When this matters
 
@@ -78,15 +78,30 @@ Every run computes a run-id of the form `YYYYMMDD-HHMMSS-PID6` (zero-padded last
 
 The legacy stable filenames are kept as a "last finished run" mirror copy so existing consumers keep working — last writer wins, no corruption from interleaved writes.
 
-## What's still in scope (Tier 2 / Tier 3)
+## Tier 2 — collision matrix (v0.8.1)
 
-### Tier 2 — full collision audit + matrix (queued)
+The full subcommand × resource × outcome matrix. This locks the v0.8.1 contract — what each shared resource produces under collision today, and which tier mitigates it. Future Tier 3 (`--isolated`) work flips the "deferred" rows to "isolated via `--isolated`"; until then, the rows below are the canonical reference.
 
-The Tier 1 ship audited the most-likely collision paths. A complete pass against every output path in `scripts/sh/` and `scripts/ps1/` would surface anything still subtly racy. The deliverable is a subcommand × resource × outcome matrix (e.g. "`android` + `--device` auto-detect" against two parallel runs → both pick `emulator-5554`, tests interleave).
+| Subcommand | Resource | Collision behaviour | Mitigation status |
+|---|---|---|---|
+| `parallel` / `coverage` | `coverage-full-report.md` (mirror copy) | last-writer wins on the stable name; per-run `coverage-full-report-<run-id>.md` preserved alongside | **Tier 1** (v0.3.8 — versioned filenames) |
+| `parallel` / `coverage` | `coverage-full-report-<run-id>.md` (versioned) | unique run-id segment — never collides | **Tier 1** (v0.3.8) |
+| `benchmark` | `benchmark-report.md` (mirror copy) | last-writer wins on the stable name; per-run `benchmark-report-<run-id>.md` preserved alongside | **Tier 1** (v0.3.8) |
+| `benchmark` | `benchmark-report-<run-id>.md` (versioned) | unique run-id segment — never collides | **Tier 1** (v0.3.8) |
+| `parallel` / `coverage` | `${TMPDIR}/gradle-parallel-tests-<run-id>.log` | unique run-id segment — never collides | **Tier 1** (v0.3.8) |
+| `android` | `emulator-5554` (single attached device) | both runs share the device — instrumented tests interleave on-device, last-writer wins on `connectedAndroidTest` HTML report | **Tier 3** (`--isolated` + `--device-pool`) deferred |
+| `changed` | `git status` / `git diff` snapshot | each run computes the changed-module set independently — modules diverge if files change between snapshots | inherent race — agents should snapshot files before parallel runs |
+| `*` | `.gradle/` daemon + build cache | Gradle serialises internally on the configuration cache lock — *correct* (no corruption) but *slow* under contention | **Tier 3** (`--isolated` injects `--project-cache-dir <tmp>`) deferred |
+| `*` | `.kmp-test-runner.lock` (advisory) | second invocation refused with exit `3` + `errors[].code = "lock_held"`; `--force` overrides | **Tier 1** (v0.3.8) |
+| `*` | `<project>/.kmp-test-runner/` config-derived defaults | read-only; multiple runs read independently | not applicable — read-only |
 
-### Tier 3 — `--isolated` (queued)
+Out of the matrix above, the only currently-unmitigated paths are `android` device sharing and `.gradle/` daemon contention. Both are gated by Tier 3 (`--isolated`).
 
-Even with Tier 1 lockfile, two runs targeting the same project still share Gradle's daemon and `.gradle/` build cache. Gradle's own lockfile makes this *correct* (no corruption) but *slow* (second run waits). `--isolated` would inject `--project-cache-dir <tmp>` into every Gradle invocation, giving each run its own cache. Slower (no warm cache) but truly parallel-safe. Ideal for CI multi-agent fan-out where you'd rather burn CPU than serialize.
+## Tier 3 — `--isolated` (queued)
+
+Even with Tier 1 lockfile + Tier 2's matrix lock, two runs targeting the same project still share Gradle's daemon and `.gradle/` build cache. Gradle's own lockfile makes this *correct* (no corruption) but *slow* (second run waits). `--isolated` would inject `--project-cache-dir <tmp>` into every Gradle invocation, giving each run its own cache. Slower (no warm cache) but truly parallel-safe. Ideal for CI multi-agent fan-out where you'd rather burn CPU than serialize.
+
+`--isolated` would also handle the `android` device-sharing case via a `--device-pool` companion flag (round-robin attached devices when more than one is connected; refuse-with-exit-3 when only one is attached and another run holds it).
 
 ## Out of scope
 
