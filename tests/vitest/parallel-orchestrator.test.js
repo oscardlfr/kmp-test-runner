@@ -61,6 +61,7 @@ import {
   applyModuleFilters,
   hasAnyTestSourceSet,
   discoverParallelModules,
+  buildFilterArgs,
 } from '../../lib/parallel-orchestrator.js';
 
 let workDir;
@@ -1923,5 +1924,103 @@ describe('execution.failed counter on non-JVM task failures (fix-PR-E)', () => {
     expect(leg.cascade_detected).toBe(false);
     expect(leg.retry_fired).toBe(false);
     expect(envelope.tests.failed).toBe(2);
+  });
+});
+
+// 2026-05-05 fix-PR-G — `--test-filter` translation per task class.
+// JvmTestTask / KotlinNativeTest / KotlinJsTest accept `--tests <pattern>`;
+// AGP AndroidConnectedTest does NOT. Pre-fix the orchestrator pushed
+// `--tests` blindly for every leg, breaking
+// `kmp-test parallel --test-type androidInstrumented --test-filter <X>`
+// with `Unknown command-line option '--tests'`. Mirrors
+// `lib/android-orchestrator.js#buildFilterArgs`.
+describe('buildFilterArgs (fix-PR-G)', () => {
+  it('androidInstrumented + FQN class → -P class only', () => {
+    const args = buildFilterArgs('com.grinwich.benchmark.DiBenchmark', 'androidInstrumented', '/tmp/np');
+    expect(args).toEqual([
+      '-Pandroid.testInstrumentationRunnerArguments.class=com.grinwich.benchmark.DiBenchmark',
+    ]);
+  });
+
+  it('androidInstrumented + FQN#method (canonical separator) → -P class + method', () => {
+    const args = buildFilterArgs(
+      'com.grinwich.benchmark.DiBenchmark#lazyInit_noDeps_daggerB_analytics',
+      'androidInstrumented',
+      '/tmp/np',
+    );
+    expect(args).toEqual([
+      '-Pandroid.testInstrumentationRunnerArguments.class=com.grinwich.benchmark.DiBenchmark',
+      '-Pandroid.testInstrumentationRunnerArguments.method=lazyInit_noDeps_daggerB_analytics',
+    ]);
+  });
+
+  it('androidInstrumented + FQN.method (heuristic split, lowerCamel last segment) → -P class + method', () => {
+    const args = buildFilterArgs(
+      'com.grinwich.benchmark.DiBenchmark.lazyInit_noDeps_daggerB_analytics',
+      'androidInstrumented',
+      '/tmp/np',
+    );
+    expect(args).toEqual([
+      '-Pandroid.testInstrumentationRunnerArguments.class=com.grinwich.benchmark.DiBenchmark',
+      '-Pandroid.testInstrumentationRunnerArguments.method=lazyInit_noDeps_daggerB_analytics',
+    ]);
+  });
+
+  it('androidUnit (testDebugUnitTest = JvmTestTask) preserves --tests pattern', () => {
+    expect(buildFilterArgs('FooTest', 'androidUnit', '/tmp/np')).toEqual(['--tests', 'FooTest']);
+  });
+
+  it('common / desktop (jvmTest / desktopTest = JvmTestTask) preserves --tests', () => {
+    expect(buildFilterArgs('FooTest', 'common', '/tmp/np')).toEqual(['--tests', 'FooTest']);
+    expect(buildFilterArgs('FooTest', 'desktop', '/tmp/np')).toEqual(['--tests', 'FooTest']);
+  });
+
+  it('ios / macos (KotlinNativeTest accepts --tests) preserves --tests', () => {
+    expect(buildFilterArgs('FooTest', 'ios', '/tmp/np')).toEqual(['--tests', 'FooTest']);
+    expect(buildFilterArgs('FooTest', 'macos', '/tmp/np')).toEqual(['--tests', 'FooTest']);
+  });
+
+  it('js / wasmJs (KotlinJsTest accepts --tests) preserves --tests', () => {
+    expect(buildFilterArgs('FooTest', 'js', '/tmp/np')).toEqual(['--tests', 'FooTest']);
+    expect(buildFilterArgs('FooTest', 'wasmJs', '/tmp/np')).toEqual(['--tests', 'FooTest']);
+  });
+
+  it('empty filter → no args (regardless of test type)', () => {
+    expect(buildFilterArgs('', 'androidInstrumented', '/tmp/np')).toEqual([]);
+    expect(buildFilterArgs(null, 'common', '/tmp/np')).toEqual([]);
+    expect(buildFilterArgs(undefined, 'ios', '/tmp/np')).toEqual([]);
+  });
+});
+
+// fix-PR-G integration: confirm gradleArgs at the spawn site contain
+// `-Pandroid.testInstrumentationRunnerArguments.*` (NOT `--tests`) when the
+// leg dispatches an instrumented task. End-to-end through runParallel against
+// the `common` leg (deterministic — no adb / device probe in path) so we
+// regression-guard the JVM-side preservation. The androidInstrumented
+// leg's translation is locked at the unit level by `buildFilterArgs` above
+// + the live dipatternsdemo run.
+describe('runParallel: --test-filter on common leg preserves --tests (fix-PR-G regression guard)', () => {
+  it('common leg with --test-filter still uses --tests', async () => {
+    const dir = makeProject([
+      { name: 'shared', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :shared:jvmTest\n' });
+    await runParallel({
+      projectRoot: dir,
+      args: [
+        '--test-type', 'common',
+        '--test-filter', 'com.example.MyTest',
+      ],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const gradleCalls = spawn.calls.filter(c => isGradleCall(c) && !isStopCall(c));
+    expect(gradleCalls.length).toBeGreaterThanOrEqual(1);
+    const args = effectiveGradleArgs(gradleCalls[0]);
+    expect(args).toContain('--tests');
+    expect(args).toContain('com.example.MyTest');
+    // No -Pandroid.* leak into JVM legs.
+    expect(args.some(a => a.startsWith('-Pandroid.testInstrumentationRunner'))).toBe(false);
   });
 });
