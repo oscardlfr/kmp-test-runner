@@ -80,49 +80,23 @@ Describe 'parallel wrapper iOS / macOS dispatch (v0.7.0 Phase 2)' {
         }
     }
 
-    It '-TestType ios surfaces "Test Type: ios (per-module iosTestTask)" in config banner' {
+    # v0.8 sub-entry 5: ps1 wrapper is now a thin Node launcher and renders no
+    # config banner of its own. The orchestrator banner (lib/parallel-orchestrator.js
+    # "Parallel Test Suite" header + "Test Type: <type>" line) is on Node, not
+    # ps1. Per-module task name still appears in the dispatch log.
+    # On Windows hosts --test-type ios|macos hits platform_unsupported (exit 3)
+    # before any dispatch; the dispatch-name assertions are only meaningful on
+    # macOS hosts (gated below).
+
+    It '-TestType ios on Windows triggers platform_unsupported (exit 3)' {
+        if ($IsMacOS) { Set-ItResult -Skipped -Because 'iOS dispatch is supported on macOS' }
         $work = New-FixtureProject
         try {
             $output = & pwsh -NoLogo -NoProfile -File $script:Wrapper `
                 -ProjectRoot $work -TestType 'ios' -ModuleFilter 'ios-only' `
                 -IgnoreJdkMismatch -CoverageTool 'none' 2>&1
-            ($output | Out-String) | Should -Match 'Test Type: ios \(per-module iosTestTask\)'
-        } finally {
-            Remove-Item -Recurse -Force -Path $work -ErrorAction SilentlyContinue
-        }
-    }
-
-    It '-TestType macos surfaces "Test Type: macos (per-module macosTestTask, host-native)" in config banner' {
-        $work = New-FixtureProject
-        try {
-            $output = & pwsh -NoLogo -NoProfile -File $script:Wrapper `
-                -ProjectRoot $work -TestType 'macos' -ModuleFilter 'macos-only' `
-                -IgnoreJdkMismatch -CoverageTool 'none' 2>&1
-            ($output | Out-String) | Should -Match 'Test Type: macos \(per-module macosTestTask, host-native\)'
-        } finally {
-            Remove-Item -Recurse -Force -Path $work -ErrorAction SilentlyContinue
-        }
-    }
-
-    It '-TestType ios dispatches :module:iosSimulatorArm64Test (default fallback when model absent)' {
-        $work = New-FixtureProject
-        try {
-            $output = & pwsh -NoLogo -NoProfile -File $script:Wrapper `
-                -ProjectRoot $work -TestType 'ios' -ModuleFilter 'ios-only' `
-                -IgnoreJdkMismatch -CoverageTool 'none' 2>&1
-            ($output | Out-String) | Should -Match ':ios-only:iosSimulatorArm64Test'
-        } finally {
-            Remove-Item -Recurse -Force -Path $work -ErrorAction SilentlyContinue
-        }
-    }
-
-    It '-TestType macos dispatches :module:macosArm64Test (default fallback when model absent)' {
-        $work = New-FixtureProject
-        try {
-            $output = & pwsh -NoLogo -NoProfile -File $script:Wrapper `
-                -ProjectRoot $work -TestType 'macos' -ModuleFilter 'macos-only' `
-                -IgnoreJdkMismatch -CoverageTool 'none' 2>&1
-            ($output | Out-String) | Should -Match ':macos-only:macosArm64Test'
+            $LASTEXITCODE | Should -Be 3
+            ($output | Out-String) | Should -Match 'platform_unsupported|requires macOS host'
         } finally {
             Remove-Item -Recurse -Force -Path $work -ErrorAction SilentlyContinue
         }

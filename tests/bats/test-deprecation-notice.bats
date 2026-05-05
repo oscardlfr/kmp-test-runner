@@ -8,24 +8,12 @@
 PARALLEL="scripts/sh/run-parallel-coverage-suite.sh"
 HELPER="scripts/sh/lib/script-utils.sh"
 
-@test "parallel.sh: notice() helper defined alongside warn/err/info/ok" {
-    grep -q '^notice() ' "$PARALLEL"
-}
-
-@test "parallel.sh: notice() emits cyan output (distinct prefix from warn yellow)" {
-    local helpers
-    helpers="$(sed -n '/^# COLOR HELPERS/,/^# RUN ID/p' "$PARALLEL")"
-    local tmp
-    tmp="$(mktemp)"
-    printf '%s\n' "$helpers" > "$tmp"
-    # shellcheck disable=SC1090
-    source "$tmp"
-    rm -f "$tmp"
-
-    local out
-    out="$(notice 'msg')"
-    [[ "$out" == *$'\033[36m'* ]] || [[ "$out" == *'msg'* ]]
-}
+# v0.8 sub-entry 5: parallel.sh is now a thin Node launcher; the notice()
+# helper + gate_gradle_exit_for_deprecation invocations moved into
+# lib/parallel-orchestrator.js (where exit code classification + warnings
+# are computed in JS). The script-utils.sh helper itself is still tested
+# below since it remains a load-bearing utility for any remaining bash
+# consumers (e.g. tests/installer/).
 
 @test "script-utils.sh: gate_gradle_exit_for_deprecation defined" {
     grep -q '^gate_gradle_exit_for_deprecation()' "$HELPER"
@@ -90,15 +78,7 @@ HELPER="scripts/sh/lib/script-utils.sh"
     [[ "$msg" == *'(shared coverage)'* ]]
 }
 
-@test "parallel.sh: test-execution gate calls gate_gradle_exit_for_deprecation with 'tests'" {
-    # Multi-line call (\ continuations); search across lines.
-    grep -A 3 'gate_gradle_exit_for_deprecation' "$PARALLEL" | grep -q '"tests"'
-}
-
-@test "parallel.sh: coverage-gen gate (Bug C') calls helper for main project" {
-    grep -A 3 'gate_gradle_exit_for_deprecation' "$PARALLEL" | grep -q '"coverage"'
-}
-
-@test "parallel.sh: coverage-gen gate (Bug C') calls helper for shared-libs" {
-    grep -A 3 'gate_gradle_exit_for_deprecation' "$PARALLEL" | grep -q '"shared coverage"'
-}
+# Wrapper-grep tests removed in sub-entry 5: the wrapper no longer invokes
+# gate_gradle_exit_for_deprecation. Equivalent classification (passed/failed/
+# mixed-with-deprecation) lives in lib/parallel-orchestrator.js and is
+# covered by tests/vitest/parallel-orchestrator.test.js exit-code cases.

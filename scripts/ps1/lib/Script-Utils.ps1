@@ -71,6 +71,92 @@ function Test-ModuleHasTestSources {
 }
 # =============================================================================
 
+# UX-1 (v0.7.x): does a module declare a target/source set for the requested
+# test type? Used by the parallel wrapper to skip modules that lack the
+# requested target BEFORE invoking gradle — without this filter, the wrapper
+# would queue a non-existent task (e.g. :androidApp:iosSimulatorArm64Test on
+# an Android-only module, or :androidApp:desktopTest on a module without a
+# jvm target) and gradle would abort the entire build at task-graph
+# resolution, taking down even modules that DO support the target.
+#
+# Source of truth: project model JSON (Get-Pm*TestTask / Get-PmUnitTestTask),
+# with a filesystem fallback that checks BOTH src\<platform>Main (production
+# code → target is declared in build.gradle.kts → gradle task exists, may be
+# a no-op if Test source set is missing) AND src\<platform>Test.
+#
+# Handled test types: ios, macos (v0.7.0 iOS/macOS dispatch);
+# common, desktop (gradle desktopTest task — needs jvm()/jvm("desktop") target).
+function Test-ModuleSupportsTestType {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [Parameter(Mandatory)][string]$Module,
+        [Parameter(Mandatory)][string]$TestType
+    )
+
+    if ($TestType -notin @('ios', 'macos', 'common', 'desktop')) { return $true }
+
+    # Lazy-source the ProjectModel readers — sibling lib in the same dir.
+    if (-not (Get-Command Get-PmIosTestTask -ErrorAction SilentlyContinue)) {
+        $modelLib = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'ProjectModel.ps1'
+        if (Test-Path $modelLib) { . $modelLib }
+    }
+
+    $modelTask = $null
+    switch ($TestType) {
+        'ios' {
+            if (Get-Command Get-PmIosTestTask -ErrorAction SilentlyContinue) {
+                $modelTask = Get-PmIosTestTask -ProjectRoot $ProjectRoot -Module $Module
+            }
+        }
+        'macos' {
+            if (Get-Command Get-PmMacosTestTask -ErrorAction SilentlyContinue) {
+                $modelTask = Get-PmMacosTestTask -ProjectRoot $ProjectRoot -Module $Module
+            }
+        }
+        { $_ -in @('common', 'desktop') } {
+            # `--test-type common` and `--test-type desktop` both dispatch
+            # gradle's desktopTest. The model's unitTestTask captures the
+            # JVM/desktop test task name when the module declares it.
+            if (Get-Command Get-PmUnitTestTask -ErrorAction SilentlyContinue) {
+                $modelTask = Get-PmUnitTestTask -ProjectRoot $ProjectRoot -Module $Module
+            }
+        }
+    }
+    if (-not [string]::IsNullOrEmpty($modelTask)) { return $true }
+
+    # Filesystem fallback per test-type.
+    $rel = $Module.TrimStart(':') -replace ':', [IO.Path]::DirectorySeparatorChar
+    $modulePath = Join-Path $ProjectRoot $rel
+
+    $candidates = switch ($TestType) {
+        'ios' {
+            @(
+                'src\iosMain', 'src\iosX64Main', 'src\iosArm64Main', 'src\iosSimulatorArm64Main',
+                'src\iosTest', 'src\iosX64Test', 'src\iosArm64Test', 'src\iosSimulatorArm64Test'
+            )
+        }
+        'macos' {
+            @(
+                'src\macosMain', 'src\macosX64Main', 'src\macosArm64Main',
+                'src\macosTest', 'src\macosX64Test', 'src\macosArm64Test'
+            )
+        }
+        { $_ -in @('common', 'desktop') } {
+            # gradle desktopTest needs a jvm()/jvm("desktop") target. Evidence:
+            # any jvm/desktop main or test source set on disk. (commonMain /
+            # commonTest alone are NOT sufficient — pure-common KMP modules
+            # with no platform target have no platform tasks.)
+            @('src\jvmMain', 'src\desktopMain', 'src\jvmTest', 'src\desktopTest')
+        }
+    }
+    foreach ($d in $candidates) {
+        if (Test-Path (Join-Path $modulePath $d)) { return $true }
+    }
+    return $false
+}
+# =============================================================================
+
 function Invoke-GradleExitDeprecationGate {
     [CmdletBinding()]
     param(

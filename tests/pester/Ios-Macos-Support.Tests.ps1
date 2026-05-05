@@ -104,8 +104,11 @@ Describe 'iOS / macOS support (v0.7.0)' {
     }
 
     It 'Get-PmIosTestTask returns null when model is absent' {
-        $cache = Join-Path $script:Fixture '.kmp-test-runner-cache'
-        if (Test-Path $cache) { Remove-Item -Recurse -Force $cache }
+        # v0.8.0 — purge BOTH the new path and the legacy cache.
+        foreach ($d in @('.kmp-test-runner', '.kmp-test-runner-cache')) {
+            $p = Join-Path $script:Fixture $d
+            if (Test-Path $p) { Remove-Item -Recurse -Force $p }
+        }
         (Get-PmIosTestTask -ProjectRoot $script:Fixture -Module 'kmp-multi') | Should -BeNullOrEmpty
         (Get-PmMacosTestTask -ProjectRoot $script:Fixture -Module 'macos-only') | Should -BeNullOrEmpty
     }

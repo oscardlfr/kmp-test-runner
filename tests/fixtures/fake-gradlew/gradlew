@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Fake gradlew for e2e integration tests of lib/orchestrator-utils.js#spawnGradle.
+# POSIX twin of gradlew.bat. Echoes synthetic gradle output for the requested
+# tasks; honors KMP_FAKE_GRADLE_FAIL=1 to flip pass→fail.
+echo "> Task :app:compileKotlin"
+for arg in "$@"; do
+  case "$arg" in
+    :*)
+      if [ -n "${KMP_FAKE_GRADLE_FAIL:-}" ]; then
+        echo "> Task $arg FAILED"
+      else
+        echo "> Task $arg"
+      fi
+      ;;
+  esac
+done
+if [ -n "${KMP_FAKE_GRADLE_FAIL:-}" ]; then
+  echo "BUILD FAILED in 1s"
+  exit 1
+fi
+echo "BUILD SUCCESSFUL in 1s"
+exit 0

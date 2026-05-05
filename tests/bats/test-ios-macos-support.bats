@@ -90,6 +90,9 @@ _dump_modules() {
 @test "pm_get_ios_test_task / pm_get_macos_test_task return empty when model is absent" {
     # shellcheck disable=SC1090
     source scripts/sh/lib/project-model.sh
+    # v0.8.0 — purge BOTH the new path and the legacy cache so the dual-read
+    # reader can't find any model file.
+    rm -rf "$FIXTURE/.kmp-test-runner"
     rm -rf "$FIXTURE/.kmp-test-runner-cache"
     result="$(pm_get_ios_test_task "$FIXTURE" "kmp-multi")"
     [ -z "$result" ]

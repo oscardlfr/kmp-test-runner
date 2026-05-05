@@ -42,61 +42,45 @@ teardown() {
     rm -rf "$WORK_DIR"
 }
 
-@test "wrapper --help surfaces ios | macos as valid --test-type values" {
-    run bash "$SCRIPT" --help
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"ios"* ]]
-    [[ "$output" == *"macos"* ]]
-}
+# v0.8 sub-entry 5: the wrapper is now a thin Node launcher and does not
+# render its own --help text or banners. The CLI-level --help (kmp-test
+# parallel --help) still documents ios|macos as valid test types — see
+# tests/vitest/cli.test.js. The per-module task resolution
+# (iosTestTask / macosTestTask candidate chain) lives in
+# lib/project-model.js and is covered by tests/bats/test-ios-macos-support.bats
+# and tests/vitest/parallel-orchestrator.test.js (pickGradleTaskFor cases).
 
 @test "wrapper --test-type ios is accepted (not a usage error)" {
+    # On non-mac hosts the orchestrator emits platform_unsupported (exit 3)
+    # but it must NOT print "Unknown option".
     run bash "$SCRIPT" --project-root "$WORK_DIR" --test-type ios \
         --module-filter "ios-only" --ignore-jdk-mismatch --coverage-tool none
-    # Wrapper may exit non-zero for downstream reasons (e.g. coverage report
-    # generation) but must NOT print "Unknown option" / usage errors for the
-    # new test type.
     [[ "$output" != *"Unknown option"* ]]
-    [[ "$output" != *"--project-root is required"* ]]
 }
 
 @test "wrapper --test-type macos is accepted (not a usage error)" {
     run bash "$SCRIPT" --project-root "$WORK_DIR" --test-type macos \
         --module-filter "macos-only" --ignore-jdk-mismatch --coverage-tool none
     [[ "$output" != *"Unknown option"* ]]
-    [[ "$output" != *"--project-root is required"* ]]
 }
 
-@test "wrapper --test-type ios surfaces 'Test Type: ios (per-module iosTestTask)' in config banner" {
+@test "wrapper --test-type ios on macOS dispatches :module:iosX64Test (resolved from source set)" {
+    # On non-mac hosts this fires platform_unsupported BEFORE any dispatch.
+    if [[ "$(uname)" != "Darwin" ]]; then
+        skip "iOS dispatch requires macOS host"
+    fi
+    # Fixture has src/iosX64Test → resolveTasksFor picks iosX64Test as the
+    # iosTestTask candidate (first in the chain that's present on disk).
     run bash "$SCRIPT" --project-root "$WORK_DIR" --test-type ios \
         --module-filter "ios-only" --ignore-jdk-mismatch --coverage-tool none
-    [[ "$output" == *"Test Type: ios (per-module iosTestTask)"* ]]
-}
-
-@test "wrapper --test-type macos surfaces 'Test Type: macos (per-module macosTestTask, host-native)' in config banner" {
-    run bash "$SCRIPT" --project-root "$WORK_DIR" --test-type macos \
-        --module-filter "macos-only" --ignore-jdk-mismatch --coverage-tool none
-    [[ "$output" == *"Test Type: macos (per-module macosTestTask, host-native)"* ]]
-}
-
-@test "wrapper --test-type ios dispatches :module:iosSimulatorArm64Test (default fallback when model absent)" {
-    run bash "$SCRIPT" --project-root "$WORK_DIR" --test-type ios \
-        --module-filter "ios-only" --ignore-jdk-mismatch --coverage-tool none
-    # The diagnostic line ("    :ios-only:iosSimulatorArm64Test") confirms
-    # the wrapper resolved the iOS-default task and queued it for gradle.
-    [[ "$output" == *":ios-only:iosSimulatorArm64Test"* ]]
+    [[ "$output" == *":ios-only:iosX64Test"* ]]
 }
 
 @test "wrapper --test-type macos dispatches :module:macosArm64Test (default fallback when model absent)" {
+    if [[ "$(uname)" != "Darwin" ]]; then
+        skip "macOS dispatch requires macOS host"
+    fi
     run bash "$SCRIPT" --project-root "$WORK_DIR" --test-type macos \
         --module-filter "macos-only" --ignore-jdk-mismatch --coverage-tool none
     [[ "$output" == *":macos-only:macosArm64Test"* ]]
-}
-
-@test "legacy fs walker counts iosX64Test source set as testable (v0.7.0)" {
-    # Without --include-untested, modules without test source sets get
-    # auto-skipped. iOS-arch source sets must register as testable.
-    run bash "$SCRIPT" --project-root "$WORK_DIR" --test-type ios \
-        --module-filter "ios-only" --ignore-jdk-mismatch --coverage-tool none
-    [[ "$output" != *"[SKIP] :ios-only (no test source set"* ]]
-    [[ "$output" == *"Modules found: 1"* ]]
 }
