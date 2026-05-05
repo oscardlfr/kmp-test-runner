@@ -54,7 +54,16 @@ param(
     [string]$DeviceTask = "",
     [switch]$AutoRetry,
     [switch]$ClearData,
-    [string]$Flavor = ""
+    [string]$Flavor = "",
+    # 2026-05-05 v0.9 step 2 — global escape hatch. Single string param
+    # (NOT [string[]]) because PowerShell binds string-array params via comma
+    # syntax, but gradle prop values legitimately contain commas (`-Pfoo=a,b`).
+    # cli.js#collapseGradleArgs joins repeated `--gradle-args` invocations with
+    # ASCII Unit Separator (\x1F) into a single value; this wrapper splits on
+    # the same separator below and re-emits one `--gradle-args <tok>` per
+    # element so the Node-side parser sees the canonical multi-invocation
+    # shape. Stays empty when the user passes no `--gradle-args`.
+    [string]$GradleArgs = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -92,6 +101,15 @@ if ($DeviceTask)           { $kmpArgv += @('--device-task', $DeviceTask) }
 if ($AutoRetry)            { $kmpArgv += @('--auto-retry') }
 if ($ClearData)            { $kmpArgv += @('--clear-data') }
 if ($Flavor)               { $kmpArgv += @('--flavor', $Flavor) }
+# 2026-05-05 v0.9 step 2 — gradle-args escape hatch. cli.js joined multi-
+# invocation values with ASCII \x1F. Split + re-emit one --gradle-args per
+# token so the Node-side parser sees the canonical multi-invocation shape.
+if ($GradleArgs) {
+    $sep = [char]0x1F
+    foreach ($g in ($GradleArgs -split $sep)) {
+        if ($g) { $kmpArgv += @('--gradle-args', $g) }
+    }
+}
 
 $kmpScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $kmpRunner = Join-Path $kmpScriptDir '..\..\lib\runner.js'

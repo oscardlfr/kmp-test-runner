@@ -238,6 +238,26 @@ describe('parseArgs', () => {
     expect(opts.clearData).toBe(false);
     expect(opts.flavor).toBe('');
   });
+
+  it('v0.9 step 2 — --gradle-args accumulates across multiple invocations', () => {
+    const opts = parseArgs([
+      '--gradle-args', '--no-parallel',
+      '--gradle-args', '-Pfoo=bar',
+    ]);
+    expect(opts.gradleArgs).toEqual(['--no-parallel', '-Pfoo=bar']);
+  });
+
+  it('v0.9 step 2 — --gradle-args whitespace-splits a single multi-token argument', () => {
+    const opts = parseArgs([
+      '--gradle-args', '--no-parallel --max-workers 1 -Pfoo=bar',
+    ]);
+    expect(opts.gradleArgs).toEqual(['--no-parallel', '--max-workers', '1', '-Pfoo=bar']);
+  });
+
+  it('v0.9 step 2 — gradleArgs default is empty array', () => {
+    const opts = parseArgs([]);
+    expect(opts.gradleArgs).toEqual([]);
+  });
 });
 
 describe('expandNoCoverageAlias', () => {
@@ -1254,6 +1274,43 @@ describe('runParallel', () => {
     const args = effectiveGradleArgs(gradleCall);
     expect(args).toContain('--parallel');
     expect(args).toContain('--continue');
+  });
+
+  // v0.9 step 2 — --gradle-args escape hatch: tokens appended LAST so users
+  // can override CLI defaults via gradle's last-wins flag semantics.
+  it('--gradle-args tokens are appended LAST in dispatchLeg gradleArgs', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub();
+    const stubCoverage = makeRunCoverageStub();
+    await runParallel({
+      projectRoot: dir,
+      args: [
+        '--test-type', 'common',
+        '--gradle-args', '--no-parallel',
+        '--gradle-args', '-Pfoo=bar',
+      ],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    const gradleCall = spawn.calls.find(isGradleCall);
+    expect(gradleCall).toBeTruthy();
+    const args = effectiveGradleArgs(gradleCall);
+    // Both user tokens must appear in the spawn args.
+    expect(args).toContain('--no-parallel');
+    expect(args).toContain('-Pfoo=bar');
+    // CLI default --parallel still emitted (escape-hatch overrides via gradle's
+    // last-wins, not by suppression at the orchestrator layer).
+    expect(args).toContain('--parallel');
+    // Order check: user tokens come AFTER the CLI defaults so gradle wins-last
+    // resolves the user's intent. We assert idxParallel < idxNoParallel and
+    // both user tokens appear in the order they were passed on the CLI.
+    const idxParallel = args.indexOf('--parallel');
+    const idxNoParallel = args.indexOf('--no-parallel');
+    const idxFoo = args.indexOf('-Pfoo=bar');
+    expect(idxParallel).toBeGreaterThanOrEqual(0);
+    expect(idxNoParallel).toBeGreaterThan(idxParallel);
+    expect(idxFoo).toBeGreaterThan(idxNoParallel);
   });
 
   // 2026-05-03 wide-smoke regression: when gradle aborts at evaluation phase

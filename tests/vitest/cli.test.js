@@ -43,6 +43,9 @@ import {
   buildDryRunReport,
   envErrorJson,
   translateFlagForPowerShell,
+  translateBashFlagsForPowerShell,
+  collapseGradleArgs,
+  PS_GRADLE_ARGS_SEP,
   findFirstClassFqn,
   splitClassMethod,
   resolveAndroidTestFilter,
@@ -103,6 +106,80 @@ describe('translateFlagForPowerShell', () => {
   });
   it('handles multi-word flags correctly', () => {
     expect(translateFlagForPowerShell('--benchmark-config')).toBe('-BenchmarkConfig');
+  });
+});
+
+// v0.9 step 2 — PowerShell binds [string[]] params via comma syntax which is
+// unsafe for gradle prop values that legitimately contain commas. cli.js
+// collapses repeated --gradle-args invocations on BASH form into a single
+// value joined by ASCII Unit Separator (\x1F); the ps1 wrapper splits on the
+// same separator. Collapse runs BEFORE flag translation so values starting
+// with `--` (e.g. --no-parallel) survive translateBashFlagsForPowerShell.
+describe('collapseGradleArgs (v0.9 step 2)', () => {
+  it('collapses single --gradle-args invocation unchanged', () => {
+    const out = collapseGradleArgs(['--project-root', '/tmp/x', '--gradle-args', '--no-parallel']);
+    expect(out).toEqual(['--project-root', '/tmp/x', '--gradle-args', '--no-parallel']);
+  });
+
+  it('collapses multi-invocation into a single value joined by \\x1F', () => {
+    const out = collapseGradleArgs([
+      '--project-root', '/tmp/x',
+      '--gradle-args', '--no-parallel',
+      '--gradle-args', '-Pfoo=bar',
+      '--json',
+    ]);
+    expect(out).toEqual([
+      '--project-root', '/tmp/x',
+      '--json',
+      '--gradle-args', `--no-parallel${PS_GRADLE_ARGS_SEP}-Pfoo=bar`,
+    ]);
+  });
+
+  it('preserves comma-bearing values verbatim (no comma-syntax mangling)', () => {
+    const out = collapseGradleArgs([
+      '--gradle-args', '-Pfoo=a,b',
+      '--gradle-args', '-Pbar=c,d',
+    ]);
+    expect(out).toEqual([
+      '--gradle-args', `-Pfoo=a,b${PS_GRADLE_ARGS_SEP}-Pbar=c,d`,
+    ]);
+  });
+
+  it('passes through args without --gradle-args unchanged', () => {
+    const out = collapseGradleArgs(['--project-root', '/tmp/x', '--test-type', 'common']);
+    expect(out).toEqual(['--project-root', '/tmp/x', '--test-type', 'common']);
+  });
+});
+
+// v0.9 step 2 — translateBashFlagsForPowerShell preserves the value
+// immediately after --gradle-args verbatim. Without this, values starting
+// with `--` would be incorrectly translated to PascalCase by the simple
+// `.map(translateFlagForPowerShell)` (e.g. `--no-parallel` → `-NoParallel`,
+// which gradle does not recognise).
+describe('translateBashFlagsForPowerShell (v0.9 step 2)', () => {
+  it('translates flags but preserves the --gradle-args value verbatim', () => {
+    const out = translateBashFlagsForPowerShell([
+      '--project-root', '/tmp/x',
+      '--gradle-args', `--no-parallel${PS_GRADLE_ARGS_SEP}-Pfoo=bar`,
+      '--json',
+    ]);
+    expect(out).toEqual([
+      '-ProjectRoot', '/tmp/x',
+      '-GradleArgs', `--no-parallel${PS_GRADLE_ARGS_SEP}-Pfoo=bar`,
+      '-Json',
+    ]);
+  });
+
+  it('does NOT mangle a --gradle-args value that starts with --', () => {
+    const out = translateBashFlagsForPowerShell(['--gradle-args', '--no-parallel']);
+    expect(out).toEqual(['-GradleArgs', '--no-parallel']);
+  });
+
+  it('matches .map(translateFlagForPowerShell) when no --gradle-args present', () => {
+    const args = ['--project-root', '/tmp/x', '--test-type', 'common', '--include-shared'];
+    const walked = translateBashFlagsForPowerShell(args);
+    const mapped = args.map(translateFlagForPowerShell);
+    expect(walked).toEqual(mapped);
   });
 });
 
