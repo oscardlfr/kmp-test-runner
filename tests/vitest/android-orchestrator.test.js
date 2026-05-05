@@ -587,10 +587,13 @@ describe('runAndroid KMP_TEST_SKIP_ADB=1', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Case 14 — --test-filter Class#method emits both .class= and .method= -P args
+// Case 14 — --test-filter Class#method emits combined class=FQN#method -P arg
+// (v0.9 step 1, flag #6: the canonical AGP/AndroidJUnitRunner shape that
+// ALWAYS works including under Microbenchmark — separate `.class=` + `.method=`
+// args were silently missing the method filter for Microbenchmark, BACKLOG L329).
 // ---------------------------------------------------------------------------
-describe('runAndroid --test-filter Class#method (Gap E v0.5.2)', () => {
-  it('emits both -P...class= AND -P...method= to gradle', async () => {
+describe('runAndroid --test-filter Class#method (v0.9 step 1, flag #6)', () => {
+  it('emits combined -P...class=FQN#method (single arg, no separate .method=)', async () => {
     const dir = makeProject([{ name: 'a' }]);
     const spawn = makeSpawnStub();
     const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
@@ -606,11 +609,11 @@ describe('runAndroid --test-filter Class#method (Gap E v0.5.2)', () => {
     const args = effectiveGradleArgs(gradleCalls[0]);
     const classArg = args.find(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.class='));
     const methodArg = args.find(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.method='));
-    expect(classArg).toBe('-Pandroid.testInstrumentationRunnerArguments.class=com.example.MyTest');
-    expect(methodArg).toBe('-Pandroid.testInstrumentationRunnerArguments.method=shouldDoX');
+    expect(classArg).toBe('-Pandroid.testInstrumentationRunnerArguments.class=com.example.MyTest#shouldDoX');
+    expect(methodArg).toBeUndefined();
   });
 
-  it('class-only filter emits ONLY .class= (no .method=)', async () => {
+  it('class-only filter emits ONLY .class= (no method portion, no fake `#`)', async () => {
     const dir = makeProject([{ name: 'a' }]);
     const spawn = makeSpawnStub();
     const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
@@ -623,7 +626,8 @@ describe('runAndroid --test-filter Class#method (Gap E v0.5.2)', () => {
     });
 
     const args = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
-    expect(args.some(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.class='))).toBe(true);
+    const classArg = args.find(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.class='));
+    expect(classArg).toBe('-Pandroid.testInstrumentationRunnerArguments.class=com.example.MyTest');
     expect(args.some(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.method='))).toBe(false);
   });
 });

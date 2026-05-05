@@ -347,7 +347,7 @@ describe('runBenchmark --test-filter', () => {
     );
   });
 
-  it('android: # split → emits BOTH .class= AND .method= props', async () => {
+  it('android: # split → emits combined .class=FQN#method (v0.9 step 1, flag #6)', async () => {
     const dir = copyFixture();
     const spawn = makeSpawnStub();
 
@@ -358,13 +358,15 @@ describe('runBenchmark --test-filter', () => {
       adbProbe: () => [{ serial: 'X', type: 'physical', model: 'Y' }],
     });
 
-    const argsStr = effectiveGradleArgs(spawn.calls[0]).join(' ');
-    expect(argsStr).toContain(
-      '-Pandroid.testInstrumentationRunnerArguments.class=com.example.Bench'
+    const args = effectiveGradleArgs(spawn.calls[0]);
+    const classArg = args.find(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.class='));
+    expect(classArg).toBe(
+      '-Pandroid.testInstrumentationRunnerArguments.class=com.example.Bench#testFoo'
     );
-    expect(argsStr).toContain(
-      '-Pandroid.testInstrumentationRunnerArguments.method=testFoo'
-    );
+    // Microbenchmark fix: separate `.method=` arg is NOT emitted (the combined
+    // shape narrows down to the single method; the separate-args form was
+    // silently running every method in the class).
+    expect(args.some(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.method='))).toBe(false);
   });
 });
 

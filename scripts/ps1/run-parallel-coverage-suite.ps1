@@ -45,7 +45,16 @@ param(
     [ValidateSet("smoke", "main", "stress")]
     [string]$BenchmarkConfig = "smoke",
     [ValidateSet("auto", "debug", "release", "all")]
-    [string]$Variant = "auto"
+    [string]$Variant = "auto",
+    # 2026-05-05 v0.9 step 1 — parity-gap flags (close the gap between
+    # `kmp-test parallel --test-type androidInstrumented` and the dedicated
+    # `kmp-test android` subcommand). All five are androidInstrumented-only;
+    # no-op for other test types. See lib/parallel-orchestrator.js.
+    [string]$Device = "",
+    [string]$DeviceTask = "",
+    [switch]$AutoRetry,
+    [switch]$ClearData,
+    [string]$Flavor = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -77,6 +86,12 @@ if ($CoverageOnly)         { $kmpArgv += @('--coverage-only') }
 if ($Benchmark)            { $kmpArgv += @('--benchmark') }
 if ($BenchmarkConfig -and $BenchmarkConfig -ne "smoke") { $kmpArgv += @('--benchmark-config', $BenchmarkConfig) }
 if ($Variant -and $Variant -ne "auto") { $kmpArgv += @('--variant', $Variant) }
+# 2026-05-05 v0.9 step 1 — parity-gap flag passthrough.
+if ($Device)               { $kmpArgv += @('--device', $Device) }
+if ($DeviceTask)           { $kmpArgv += @('--device-task', $DeviceTask) }
+if ($AutoRetry)            { $kmpArgv += @('--auto-retry') }
+if ($ClearData)            { $kmpArgv += @('--clear-data') }
+if ($Flavor)               { $kmpArgv += @('--flavor', $Flavor) }
 
 $kmpScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $kmpRunner = Join-Path $kmpScriptDir '..\..\lib\runner.js'
