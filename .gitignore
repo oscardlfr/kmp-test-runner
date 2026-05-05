@@ -21,3 +21,7 @@ testResults.xml
 
 # Local diagnostic / smoke captures (not for commit)
 .smoke/
+
+# Wide-smoke evidence files (per-pass markdown reports — local artefacts only,
+# never commit; the wide-smoke tools live under tools/wide-smoke-pass-*.mjs).
+WIDE-SMOKE-PASS-*.md

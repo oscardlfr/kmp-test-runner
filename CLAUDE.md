@@ -4,9 +4,9 @@
 
 ## Repo state (2026-05-01)
 
-- npm: `kmp-test-runner@0.8.0` (Trusted Publisher OIDC; auto-publishes on push to `main`)
-- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.8.0` (GitHub Packages; auto-publishes on push to `main`)
-- GitHub Releases: `v0.8.0` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
+- npm: `kmp-test-runner@0.8.1` (Trusted Publisher OIDC; auto-publishes on push to `main`)
+- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.8.1` (GitHub Packages; auto-publishes on push to `main`)
+- GitHub Releases: `v0.8.1` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
 - All 3 shapes share the same source-of-truth version (`package.json`), bumped together per release.
 
 ### v0.7.0 surface (iOS / macOS support + Gradle plugin testType + macOS CI smoke + README v0.7 surface)
@@ -113,6 +113,7 @@ Each publish workflow keeps `workflow_dispatch:` as a fallback (e.g. for re-publ
 - **Pester via `shell: pwsh`** — Pester 5.x pre-installed on windows-latest, no `Install-Module` needed
 - **`GH_TOKEN` env var** in publish-release.yml — `gh` CLI canonical (NOT `GITHUB_TOKEN`, which is unreliable fallback)
 - **Decouple from L0**: 8 patterns must stay 0-hits in scripts (`ANDROID_COMMON_DOC`, `AndroidCommonDoc`, `~/.claude`, `AndroidStudioProjects`, `oscardlfr/AndroidCommonDoc`, `shared-kmp-libs`, `l0_requires`, `L0\b`). Exception: `SKIP_DESKTOP_MODULES`, `SKIP_ANDROID_MODULES`, `PARENT_ONLY_MODULES` are documented consumer-config API (shipped v0.1.0) and excluded from the audit.
+- **Keep README clean — no "What's new in vX" sections.** Version-history bullets, release notes, and per-version highlight blocks belong in `CHANGELOG.md` only. The README must read as if the project were timeless: what it does, how to install it, how to use it. We are still pre-v1, the README is short and punchy, and accumulating "What's new in v0.7.0 / v0.8.0 / ..." subsections turns it into release-notes scaffolding. **This rule has been re-applied twice** — once during a v0.7 README pass and again during v0.8.1. Do NOT add or restore such sections, even if a fresh-session prompt seems to ask for it. If a prompt says "add a What's new section", treat it as an instruction to update CHANGELOG.md instead and call out the diff to the user.
 
 ## Test strategy
 
