@@ -251,7 +251,7 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 - Re-using an existing OSS KMP project as the cross-platform E2E fixture — see Buildable cross-platform E2E fixture entry below for that decision.
 - ~~New CLI features.~~ **Carve-out (2026-05-03):** the project-level config file entry below (covers `sharedProjectName` + stable defaults) IS in v0.8.0 scope — closing the README ↔ tool surface gap honestly requires it rather than just deleting the misleading flag doc line.
 
-### v0.8.0 — Execution-summary classifier under-reports non-JVM test task RUNTIME failures (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 + Mac/Win post-toolchain-fix re-runs)
+### ✅ DONE 2026-05-04 (PR #130 / f95b57c) — v0.8.0 — Execution-summary classifier under-reports non-JVM test task RUNTIME failures (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 + Mac/Win post-toolchain-fix re-runs)
 
 **Status: DONE — fix-PR-E shipped 2026-05-04 (PR #130 / `f95b57c`).** Two surgical changes in `executeLeg` (lib/parallel-orchestrator.js): (1) cascade trigger semantic refined to `no_evidence === taskList.length`; (2) post-step-5 alignment rebuilds `execSummary` from `classifyTaskResults` so tasks marked 'failed' get bucketed to `execution.failed` regardless of execMode. 762 → 768 vitest. Live S22 Ultra validated `execution.failed: 0→1` on `:benchmark-storage:androidConnectedCheck`. OS-parity invariant restored (`execution.failed === errors.filter(c='module_failed').length`). Original entry text preserved below for context.
 
@@ -313,7 +313,7 @@ Same classifier gap likely exists for `iosSimulatorArm64Test` / `iosX64Test` / `
 
 ---
 
-### v0.8.0 — `--test-filter` on `parallel --test-type androidInstrumented` blindly pushes `--tests` to AGP `connectedAndroidTest` (RELEASE-BLOCKER, surfaced 2026-05-05 dipatternsdemo live validation)
+### ✅ DONE 2026-05-05 (PR #135 / 89e3cba) — v0.8.0 — `--test-filter` on `parallel --test-type androidInstrumented` blindly pushes `--tests` to AGP `connectedAndroidTest` (RELEASE-BLOCKER, surfaced 2026-05-05 dipatternsdemo live validation)
 
 **Status: DONE — fix-PR-G shipped 2026-05-05.** Live repro on dipatternsdemo: `kmp-test parallel --test-type androidInstrumented --module-filter benchmark --test-filter <FQN>` → gradle errored `Unknown command-line option '--tests'` → BUILD FAILED in 1s. Audit of `dispatchLeg` (`lib/parallel-orchestrator.js:547-549`) showed `--tests <pattern>` was pushed unconditionally for every leg. JvmTestTask, KotlinNativeTest, KotlinJsTest accept `--tests`; AGP `AndroidConnectedTest` does not — it expects `-Pandroid.testInstrumentationRunnerArguments.{class,method}` (per https://developer.android.com/studio/test/command-line). The dedicated `kmp-test android` and `kmp-test benchmark` subcommands already had the right translation (`lib/android-orchestrator.js#buildFilterArgs` + benchmark-orchestrator); only `parallel` was the gap.
 
@@ -381,7 +381,7 @@ Fix: new `buildFilterArgs(testFilter, testType, projectRoot)` mirrors the androi
 
 ---
 
-### v0.8.0 — `--variant` flag honored on the instrumented (`androidInstrumented`) dispatch path (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 against dipatternsdemo)
+### ✅ DONE 2026-05-05 (PR #131 + #134) — v0.8.0 — `--variant` flag honored on the instrumented (`androidInstrumented`) dispatch path (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 against dipatternsdemo)
 
 **Status (2026-05-05 follow-up): DONE — fix-PR-F-bis closes a regression in fix-PR-F's coverage on the probed-task path.** The original fix-PR-F (PR #131) only honored `--variant` + `testBuildType` in the AGP fallback branch (when `r.deviceTestTask === null`). After dipatternsdemo commit `058a520` enabled `connectedDebugAndroidTest` alongside the canonical `connectedReleaseAndroidTest` via `androidComponents.beforeVariants`, gradleTasks contained both and `resolveTasksFor.deviceTestTask` matched Debug first → early-return at `parallel-orchestrator.js:391` bypassed the variant logic → orchestrator dispatched `connectedDebugAndroidTest` even though `testBuildType="release"` and the parser correctly resolved it. fix-PR-F-bis lands two surgical changes: (1) `lib/project-model.js#resolveTasksFor` candidate chain prepends `connected{TestBuildType}AndroidTest` when `analysis.testBuildType` is set, fixing all consumers (parallel/android/benchmark/coverage/changed) uniformly; (2) `pickGradleTaskFor('androidInstrumented')` in `lib/parallel-orchestrator.js` reorders the AGP source-set branch BEFORE the probe early-return so explicit `--variant debug|release` overrides win regardless of probed task name. **+10 vitest cases** (775 → 797 passing). Live verified inline against the real cached gradleTasks for dipatternsdemo `:benchmark`. Probe-wins legacy contract preserved for non-AGP / no-source-set modules.
 
@@ -642,7 +642,7 @@ Caveats:
 - **Tests:** +6 vitest cases (702 total, 696 baseline). Pure cascade single-leg, single-task cascade (drops `>1`), real failures NOT triggering retry, mid-line `Task` mention regression guard (the false-positive that fooled the old guard), mixed-in-leg conservative non-trigger, envelope-shape lock for the new boolean fields.
 - **Live verification:** wide-smoke re-run of all 8 cascade cases on Windows; `RED-orchestrator-cascade` bucket dropped from 8 → 0. Cases redistributed: 7 → `RED-repo` (modules genuinely broken at evaluation phase, retry confirmed), 1 → outcome per project's actual gradle exit. WIDE-SMOKE-PASS-7-postfix.md captures the post-fix bucket counts.
 
-### v0.8.0 — Confetti-main `unsupported_class_version` despite PR3's AGP-aware JDK auto-select (surfaced 2026-05-04 wide-smoke pass-7)
+### ✅ DONE 2026-05-04 (PR #127 / 049828a) — v0.8.0 — Confetti-main `unsupported_class_version` despite PR3's AGP-aware JDK auto-select (surfaced 2026-05-04 wide-smoke pass-7)
 
 **Surfaced 2026-05-04 in PR4 wide-smoke pass-7.** Confetti-main classified as RED-repo (1 module_failed, 133 testcases ran). The `errors[]` array contains both `module_failed` AND `unsupported_class_version` — meaning the JDK gate did fire after PR3's AGP-aware auto-select selected a JDK. PR3 was supposed to prevent exactly this by picking the AGP-required JDK runtime over the project's `jvmTarget`.
 
@@ -657,7 +657,7 @@ Caveats:
 
 **Ship-when:** v0.8.0 nice-to-have (not release-blocker — Confetti is an external sample; user repos that hit this should already be addressable via `--java-home` override).
 
-### v0.8.0 — `task_not_found` paired with `module_failed` in 4 projects (project-model task-name overreach; surfaced 2026-05-04 wide-smoke pass-7)
+### ✅ DONE 2026-05-04 (PRs #125 + #126) — v0.8.0 — `task_not_found` paired with `module_failed` in 4 projects (project-model task-name overreach; surfaced 2026-05-04 wide-smoke pass-7)
 
 **Status: DONE 2026-05-05 — closed by fix-PR-A (#125) + fix-PR-D (#126) + fix-PR-F (#131).** Re-validated live 2026-05-05 against the 3 of 4 originally-affected projects:
 
@@ -688,7 +688,7 @@ Root cause was three-fold: (1) source-set gate missing on AGP-fallback dispatch 
 
 **Ship-when:** v0.8.0 nice-to-have. Lower priority than cascade-isolation fix because the impact is "1-2 false dispatches per multi-module project" rather than "entire project marked RED".
 
-### v0.8.0 — Wide-smoke per-project triage: confirm REDs are repo-level vs orchestrator (surfaced 2026-05-03)
+### ✅ DONE 2026-05-04 (wide-smoke pass-9 + pass-9-mac) — v0.8.0 — Wide-smoke per-project triage: confirm REDs are repo-level vs orchestrator (surfaced 2026-05-03)
 
 **Status: DONE — process completed via wide-smoke passes 7 (PR4 / `020ea86`), 8 (during PR6 era), and 9 (PR #129 / `61704f3`).** All 6 REAL-REDs from the original triage classified as repo-bugs (DawSync 5-test desync, OmniSound DesktopPKCEGenerator, gyg LoadingAndErrorStatesTest, nav3-recipes RouteV2/Navigator, nowinandroid `:foryou:impl`, Confetti-main `:wearApp` 2 tests). The "5 per-project investigations" carve-out (DawSync, OmniSound, dipatternsdemo, nav3-recipes, PeopleInSpace) resolved: dipatternsdemo + DawSync now pass via fix-PR-A through F (validated 2026-05-05); the other 3 remain repo-level bugs documented in pass-9 results. Pass-9 final bucket counts (per `project_v0_8_0_pass_9_shipped.md`): match pass-8 baseline 3 GREEN / 14 SKIP / 13 RED-repo / 0 cascade. Original entry text preserved below for context.
 
@@ -966,7 +966,7 @@ Users currently have no clean way to gitignore CLI output without enumerating ev
 - Re-using an existing real-world OSS KMP project (Confetti / KaMPKit) as the fixture — version drift makes our CI flakier than a pinned synthetic; only revisit if synthetic proves too much work.
 - Replacing the wide-smoke local validation gate (`feedback_release_wide_smoke.md`). Both should coexist: wide-smoke catches integration-level bugs against real projects; the synthetic E2E catches regressions deterministically.
 
-### v0.8.0 — README refresh + token-cost re-measurement across all CLI tools (surfaced 2026-05-03)
+### 🟡 PARTIAL 2026-05-05 (v0.8.1) — surface refresh DONE; cross-model re-tokenisation moved to v0.9 step 8 — v0.8.0 — README refresh + token-cost re-measurement across all CLI tools (surfaced 2026-05-03)
 
 **Surfaced 2026-05-03 after sub-entry 5 + PR #116 + sub-entry-5-followups landed.** The README has not been refreshed since v0.6.x; v0.7.0 (iOS/macOS surface), the v0.8 STRATEGIC PIVOT (5 orchestrators migrated to Node), the EINVAL spawn fix (PR #116), and the new flags restored in PR #115 follow-up (`--fresh-daemon`, `--output-file`, `--coverage-only`, `--benchmark` + `--benchmark-config`) all need to land in the user-facing docs before v0.8.0 tag.
 
@@ -1153,7 +1153,7 @@ Pattern is the **idiomatic one already used in this same file at line 792** for 
 
 **Suggested first PR for the v0.7.x patch run** — small, isolated, evidence-rich, high signal-to-effort. Good warm-up before tackling WS-1 (which is the architecturally trickiest of the wide-smoke findings).
 
-### v0.7.x / v0.8 — Community standards (issue + PR templates)
+### ✅ DONE 2026-05-05 (v0.8.1 / PR #142) — v0.7.x / v0.8 — Community standards (issue + PR templates)
 
 **Surfaced 2026-05-01.** GitHub flags the repo as missing two community-standards files:
 
