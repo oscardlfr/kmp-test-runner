@@ -214,6 +214,30 @@ describe('parseArgs', () => {
     const opts = parseArgs(['--no-coverage']);
     expect(opts.coverageTool).toBe('none');
   });
+
+  it('parses v0.9 step 1 parity-gap flags (#1-#5)', () => {
+    const opts = parseArgs([
+      '--device', 'R3CT30KAMEH',
+      '--device-task', 'androidConnectedCheck',
+      '--auto-retry',
+      '--clear-data',
+      '--flavor', 'staging',
+    ]);
+    expect(opts.device).toBe('R3CT30KAMEH');
+    expect(opts.deviceTaskOverride).toBe('androidConnectedCheck');
+    expect(opts.autoRetry).toBe(true);
+    expect(opts.clearData).toBe(true);
+    expect(opts.flavor).toBe('staging');
+  });
+
+  it('v0.9 parity flags default to off / empty', () => {
+    const opts = parseArgs([]);
+    expect(opts.device).toBe('');
+    expect(opts.deviceTaskOverride).toBe('');
+    expect(opts.autoRetry).toBe(false);
+    expect(opts.clearData).toBe(false);
+    expect(opts.flavor).toBe('');
+  });
 });
 
 describe('expandNoCoverageAlias', () => {
@@ -445,6 +469,113 @@ describe('pickGradleTaskFor', () => {
         .toBe(':kmp-feat:androidConnectedCheck');
       expect(pickGradleTaskFor(kmpAndroidLib, 'androidInstrumented', { androidVariant: 'all' }).task)
         .toBe(':kmp-feat:androidConnectedCheck');
+    });
+  });
+
+  // 2026-05-05 v0.9 step 1 (flag #4) — `--flavor <name>` weaves into
+  // `connected${Cap}${Variant}AndroidTest`. Modules with hasFlavor=true
+  // get the flavor weave; modules without hasFlavor see the flag as a no-op
+  // (parallel.warnings[].code='flavor_unused' surfaces at the runParallel
+  // level when no module has hasFlavor at all).
+  describe('--flavor weave on androidConnectedTask (v0.9 step 1, flag #4)', () => {
+    const flavorModule = {
+      name: 'app',
+      type: 'android',
+      androidDsl: true,
+      hasFlavor: true,
+      sourceSets: { androidInstrumentedTest: true },
+      resolved: { deviceTestTask: null },
+    };
+
+    it('--flavor staging --variant debug → connectedStagingDebugAndroidTest', () => {
+      expect(pickGradleTaskFor(flavorModule, 'androidInstrumented', {
+        androidVariant: 'debug', flavor: 'staging',
+      }).task).toBe(':app:connectedStagingDebugAndroidTest');
+    });
+
+    it('--flavor staging --variant release → connectedStagingReleaseAndroidTest', () => {
+      expect(pickGradleTaskFor(flavorModule, 'androidInstrumented', {
+        androidVariant: 'release', flavor: 'staging',
+      }).task).toBe(':app:connectedStagingReleaseAndroidTest');
+    });
+
+    it('--flavor staging --variant all → connectedStagingAndroidTest (umbrella)', () => {
+      expect(pickGradleTaskFor(flavorModule, 'androidInstrumented', {
+        androidVariant: 'all', flavor: 'staging',
+      }).task).toBe(':app:connectedStagingAndroidTest');
+    });
+
+    it('--flavor staging --variant auto + testBuildType=release → connectedStagingReleaseAndroidTest', () => {
+      const releaseFlavor = { ...flavorModule, testBuildType: 'release' };
+      expect(pickGradleTaskFor(releaseFlavor, 'androidInstrumented', {
+        androidVariant: 'auto', flavor: 'staging',
+      }).task).toBe(':app:connectedStagingReleaseAndroidTest');
+    });
+
+    it('--flavor staging on a module without hasFlavor → no-op (no flavor in task name)', () => {
+      const flatModule = {
+        ...flavorModule,
+        hasFlavor: false,
+      };
+      expect(pickGradleTaskFor(flatModule, 'androidInstrumented', {
+        androidVariant: 'debug', flavor: 'staging',
+      }).task).toBe(':app:connectedDebugAndroidTest');
+    });
+  });
+
+  // 2026-05-05 v0.9 step 1 (flag #5) — `--device-task <name>` preempts every
+  // other resolution path on the androidInstrumented branch. Mirrors the
+  // dedicated `kmp-test android` subcommand's escape hatch (BACKLOG L195-198).
+  describe('--device-task override (v0.9 step 1, flag #5)', () => {
+    it('preempts deviceTestTask probe', () => {
+      expect(pickGradleTaskFor(androidModule, 'androidInstrumented', {
+        deviceTaskOverride: 'androidConnectedCheck',
+      }).task).toBe(':app:androidConnectedCheck');
+    });
+
+    it('preempts kmpAndroidLibrary androidConnectedCheck default', () => {
+      const kmpLib = {
+        name: 'kmp-feat',
+        type: 'kmp',
+        androidDsl: true,
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidDeviceTest: true },
+        resolved: { deviceTestTask: null },
+      };
+      expect(pickGradleTaskFor(kmpLib, 'androidInstrumented', {
+        deviceTaskOverride: 'connectedDebugAndroidTest',
+      }).task).toBe(':kmp-feat:connectedDebugAndroidTest');
+    });
+
+    it('preempts AGP fallback to connected${Variant}AndroidTest', () => {
+      const fallbackModule = {
+        name: 'app',
+        type: 'android',
+        androidDsl: true,
+        sourceSets: { androidInstrumentedTest: true },
+        resolved: { deviceTestTask: null },
+        testBuildType: 'release',
+      };
+      // testBuildType="release" would normally pick connectedReleaseAndroidTest;
+      // override forces a different name verbatim.
+      expect(pickGradleTaskFor(fallbackModule, 'androidInstrumented', {
+        deviceTaskOverride: 'customConnectedTest',
+        androidVariant: 'auto',
+      }).task).toBe(':app:customConnectedTest');
+    });
+
+    it('does NOT apply to non-androidInstrumented test types (e.g. common, ios, androidUnit)', () => {
+      // The override is only consumed in the androidInstrumented branch; other
+      // branches see opts.deviceTaskOverride but ignore it.
+      expect(pickGradleTaskFor(kmpModule, 'common', {
+        deviceTaskOverride: 'androidConnectedCheck',
+      }).task).toBe(':shared:jvmTest');
+      expect(pickGradleTaskFor(kmpModule, 'ios', {
+        deviceTaskOverride: 'androidConnectedCheck',
+      }).task).toBe(':shared:iosSimulatorArm64Test');
+      expect(pickGradleTaskFor(androidModule, 'androidUnit', {
+        deviceTaskOverride: 'androidConnectedCheck',
+      }).task).toBe(':app:testDebugUnitTest');
     });
   });
 
@@ -1934,7 +2065,15 @@ describe('execution.failed counter on non-JVM task failures (fix-PR-E)', () => {
 // `kmp-test parallel --test-type androidInstrumented --test-filter <X>`
 // with `Unknown command-line option '--tests'`. Mirrors
 // `lib/android-orchestrator.js#buildFilterArgs`.
-describe('buildFilterArgs (fix-PR-G)', () => {
+//
+// 2026-05-05 v0.9 step 1 (flag #6) — method-bearing filters now emit the
+// COMBINED single-arg shape `class=<FQN>#<method>` instead of separate
+// `class=` + `method=` args. The combined form is the canonical AGP /
+// AndroidJUnitRunner shape that ALWAYS works (per BACKLOG.md L329) — the
+// pre-v0.9 separate-args shape silently missed Microbenchmark method
+// filtering (live repro on dipatternsdemo: 14 of 14 DiBenchmark methods
+// ran instead of 1). Pre-v0.9 cases re-asserted below.
+describe('buildFilterArgs (fix-PR-G + v0.9 step 1 flag #6)', () => {
   it('androidInstrumented + FQN class → -P class only', () => {
     const args = buildFilterArgs('com.grinwich.benchmark.DiBenchmark', 'androidInstrumented', '/tmp/np');
     expect(args).toEqual([
@@ -1942,28 +2081,45 @@ describe('buildFilterArgs (fix-PR-G)', () => {
     ]);
   });
 
-  it('androidInstrumented + FQN#method (canonical separator) → -P class + method', () => {
+  it('androidInstrumented + FQN#method (canonical separator) → combined single arg', () => {
     const args = buildFilterArgs(
       'com.grinwich.benchmark.DiBenchmark#lazyInit_noDeps_daggerB_analytics',
       'androidInstrumented',
       '/tmp/np',
     );
     expect(args).toEqual([
-      '-Pandroid.testInstrumentationRunnerArguments.class=com.grinwich.benchmark.DiBenchmark',
-      '-Pandroid.testInstrumentationRunnerArguments.method=lazyInit_noDeps_daggerB_analytics',
+      '-Pandroid.testInstrumentationRunnerArguments.class=com.grinwich.benchmark.DiBenchmark#lazyInit_noDeps_daggerB_analytics',
     ]);
   });
 
-  it('androidInstrumented + FQN.method (heuristic split, lowerCamel last segment) → -P class + method', () => {
+  it('androidInstrumented + FQN.method (heuristic split, lowerCamel last segment) → combined single arg', () => {
     const args = buildFilterArgs(
       'com.grinwich.benchmark.DiBenchmark.lazyInit_noDeps_daggerB_analytics',
       'androidInstrumented',
       '/tmp/np',
     );
     expect(args).toEqual([
-      '-Pandroid.testInstrumentationRunnerArguments.class=com.grinwich.benchmark.DiBenchmark',
-      '-Pandroid.testInstrumentationRunnerArguments.method=lazyInit_noDeps_daggerB_analytics',
+      '-Pandroid.testInstrumentationRunnerArguments.class=com.grinwich.benchmark.DiBenchmark#lazyInit_noDeps_daggerB_analytics',
     ]);
+  });
+
+  it('androidInstrumented + FQN#method does NOT emit a separate .method= arg (Microbenchmark fix)', () => {
+    const args = buildFilterArgs(
+      'com.foo.Bench#one',
+      'androidInstrumented',
+      '/tmp/np',
+    );
+    expect(args).toHaveLength(1);
+    expect(args[0]).toBe('-Pandroid.testInstrumentationRunnerArguments.class=com.foo.Bench#one');
+    expect(args.some(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.method='))).toBe(false);
+  });
+
+  it('androidInstrumented + class-only does NOT inject a fake `#` (regression guard)', () => {
+    const args = buildFilterArgs('com.foo.Bench', 'androidInstrumented', '/tmp/np');
+    expect(args).toEqual([
+      '-Pandroid.testInstrumentationRunnerArguments.class=com.foo.Bench',
+    ]);
+    expect(args[0].includes('#')).toBe(false);
   });
 
   it('androidUnit (testDebugUnitTest = JvmTestTask) preserves --tests pattern', () => {
@@ -2022,5 +2178,317 @@ describe('runParallel: --test-filter on common leg preserves --tests (fix-PR-G r
     expect(args).toContain('com.example.MyTest');
     // No -Pandroid.* leak into JVM legs.
     expect(args.some(a => a.startsWith('-Pandroid.testInstrumentationRunner'))).toBe(false);
+  });
+});
+
+// Spawn stub that reproduces the "first call fails, retry passes" pattern
+// used by --auto-retry tests. The `failNthGradleCall` option specifies which
+// 1-indexed gradle call should return failure (others pass). Adb calls always
+// pass with no output. Differentiates adb from gradle by command name.
+function makeAutoRetrySpawnStub({ failNthGradleCall = 1, failTasks = [] } = {}) {
+  const calls = [];
+  let gradleCallNum = 0;
+  const fn = (cmd, args, opts) => {
+    calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null, env: opts?.env ?? null });
+    if (cmd === 'adb') {
+      return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+    }
+    // Gradle call (gradlew or cmd.exe wrapping gradlew on Windows).
+    gradleCallNum++;
+    const eArgs = effectiveGradleArgs({ cmd, args });
+    const taskArg = eArgs.find(a => typeof a === 'string' && a.startsWith(':'));
+    let stdout = 'BUILD SUCCESSFUL\n';
+    if (taskArg) stdout = `> Task ${taskArg}\n${taskArg} ${gradleCallNum === failNthGradleCall ? 'FAILED' : ''}\nBUILD ${gradleCallNum === failNthGradleCall ? 'FAILED' : 'SUCCESSFUL'}\n`;
+    const status = gradleCallNum === failNthGradleCall || failTasks.includes(taskArg) ? 1 : 0;
+    return { status, stdout, stderr: '', signal: null, error: null };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+// 2026-05-05 v0.9 step 1 (flag #3) — `--device <serial>` validates against
+// adb output and injects ANDROID_SERIAL into the gradle dispatch env. The
+// envelope surfaces `parallel.legs[i].device.serial` on the
+// androidInstrumented leg only (clean shape — agents branch on field
+// presence). Adb probe failure modes (no devices / serial not found) emit
+// `instrumented_setup_failed` + exit 3, mirroring `kmp-test android`.
+describe('runParallel --device <serial> (v0.9 step 1, flag #3)', () => {
+  it('validates against adb probe + threads ANDROID_SERIAL into dispatchEnv', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const adbProbe = () => [
+      { serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' },
+      { serial: 'emulator-5554', type: 'emulator', model: 'sdk' },
+    ];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--device', 'R3CT30KAMEH'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(0);
+    // Envelope surfaces resolved device on the androidInstrumented leg.
+    const leg = envelope.parallel.legs.find(l => l.test_type === 'androidInstrumented');
+    expect(leg).toBeDefined();
+    expect(leg.device).toEqual({ serial: 'R3CT30KAMEH' });
+
+    // Gradle spawn env got ANDROID_SERIAL.
+    const gradleCalls = spawn.calls.filter(c => isGradleCall(c) && !isStopCall(c));
+    expect(gradleCalls.length).toBeGreaterThanOrEqual(1);
+    expect(gradleCalls[0].env.ANDROID_SERIAL).toBe('R3CT30KAMEH');
+  });
+
+  it('--device with no adb devices → instrumented_setup_failed, exit 3', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--device', 'NOPE'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('instrumented_setup_failed');
+    // No gradle dispatch happened.
+    expect(spawn.calls.filter(c => isGradleCall(c) && !isStopCall(c))).toEqual([]);
+  });
+
+  it('--device with serial not in probe → instrumented_setup_failed, exit 3', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--device', 'NOPE'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('instrumented_setup_failed');
+    expect(envelope.errors[0].message).toMatch(/Available: X/);
+  });
+
+  it('--device with no androidInstrumented leg → no probe (silent no-op)', async () => {
+    const dir = makeProject([
+      { name: 'shared', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :shared:jvmTest\n' });
+    let probeCalled = false;
+    const adbProbe = () => { probeCalled = true; return []; };
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--device', 'R3CT30KAMEH'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(0);
+    expect(probeCalled).toBe(false);
+    // No device field on the common leg.
+    const leg = envelope.parallel.legs.find(l => l.test_type === 'common');
+    expect(leg.device).toBeUndefined();
+  });
+});
+
+// 2026-05-05 v0.9 step 1 (flags #1 + #2) — `--auto-retry` re-dispatches
+// failed instrumented tasks once. `--clear-data` (precondition: --auto-retry)
+// invokes adb shell pm clear before each retry attempt. Mutually exclusive
+// with PR5 cascade-isolation: cascade fires when every task is no_evidence
+// (eval-phase abort); auto-retry fires when at least one task ran but came
+// back failed.
+describe('runParallel --auto-retry + --clear-data (v0.9 step 1, flags #1 + #2)', () => {
+  function makeAndroidApp(name = 'app') {
+    const modDir = path.join(workDir, name);
+    const manifestDir = path.join(modDir, 'src', 'main');
+    mkdirSync(manifestDir, { recursive: true });
+    writeFileSync(path.join(manifestDir, 'AndroidManifest.xml'),
+      `<manifest package="com.example.${name}"/>`);
+  }
+
+  it('--auto-retry re-dispatches failed task once → final exit 0 + retries[]', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    makeAndroidApp('app');
+    // First gradle call fails (one-shot dispatch); second (per-task retry) passes.
+    const spawn = makeAutoRetrySpawnStub({ failNthGradleCall: 1 });
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--auto-retry'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    const leg = envelope.parallel.legs.find(l => l.test_type === 'androidInstrumented');
+    expect(leg.retries).toBeDefined();
+    expect(leg.retries).toHaveLength(1);
+    expect(leg.retries[0]).toMatchObject({
+      module: 'app', attempt: 2, status: 'passed',
+    });
+    expect(leg.exit_code).toBe(0);
+    expect(exitCode).toBe(0);
+  });
+
+  it('--auto-retry without --clear-data does NOT call adb shell pm clear', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    makeAndroidApp('app');
+    const spawn = makeAutoRetrySpawnStub({ failNthGradleCall: 1 });
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--auto-retry'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    // No adb pm clear call.
+    const adbCalls = spawn.calls.filter(c => c.cmd === 'adb' && c.args.includes('clear'));
+    expect(adbCalls).toEqual([]);
+  });
+
+  it('--auto-retry --clear-data invokes adb pm clear with resolved package + records pre_run_actions', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    makeAndroidApp('app');
+    const spawn = makeAutoRetrySpawnStub({ failNthGradleCall: 1 });
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--auto-retry', '--clear-data'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    // adb shell pm clear <pkg> was invoked with the manifest's package.
+    const pmClearCall = spawn.calls.find(c => c.cmd === 'adb' && c.args.includes('clear'));
+    expect(pmClearCall).toBeDefined();
+    expect(pmClearCall.args).toEqual(['-s', 'X', 'shell', 'pm', 'clear', 'com.example.app']);
+
+    // Envelope records the action for downstream consumers / agents.
+    const leg = envelope.parallel.legs.find(l => l.test_type === 'androidInstrumented');
+    expect(leg.pre_run_actions).toBeDefined();
+    expect(leg.pre_run_actions[0]).toMatchObject({
+      module: 'app', action: 'pm_clear', package: 'com.example.app',
+    });
+  });
+
+  it('--flavor when no module declares productFlavors → flavor_unused warning', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        // Plain AGP (no productFlavors block).
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    makeAndroidApp('app');
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--flavor', 'staging'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(0);
+    const warning = envelope.warnings.find(w => w.code === 'flavor_unused');
+    expect(warning).toBeDefined();
+    expect(warning.flavor).toBe('staging');
+  });
+
+  it('--auto-retry skipped when cascade-isolation already retried (mutual exclusion)', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    makeAndroidApp('app');
+    // Cascade-isolation trigger: leg exit ≠ 0 + every task `no_evidence`.
+    // No `Task :app:connectedDebugAndroidTest` mention → no_evidence.
+    const calls = [];
+    let gradleCallNum = 0;
+    const spawn = (cmd, args, opts) => {
+      calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null, env: opts?.env ?? null });
+      if (cmd === 'adb') return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+      gradleCallNum++;
+      // First call: cascade trigger (exit 1, no task mention).
+      // Subsequent calls (per-module retries from cascade): same shape so
+      // tasks are still classified as failed/no_evidence.
+      return {
+        status: 1,
+        stdout: 'BUILD FAILED\n',
+        stderr: '',
+        signal: null,
+        error: null,
+      };
+    };
+    spawn.calls = calls;
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--auto-retry'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    const leg = envelope.parallel.legs.find(l => l.test_type === 'androidInstrumented');
+    // Cascade fired (per-module retry), auto-retry was skipped → no
+    // retries[] entries on the leg (cascade is exposed via cascade_detected
+    // + retry_fired; auto-retry's retries[] is distinct).
+    expect(leg.cascade_detected).toBe(true);
+    expect(leg.retry_fired).toBe(true);
+    expect(leg.retries).toBeUndefined();
   });
 });
