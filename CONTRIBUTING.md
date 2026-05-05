@@ -134,6 +134,18 @@ All 7 required (the 3 macOS variants are informational). Merge is squash-only.
 4. **For new install/CI logic, add E2E coverage that catches the bug class.** Existing baseline: 5 bats E2E + 4 Pester E2E covering the v0.3.0/0.3.2/0.3.3 historical install bugs (wrapper directory, `package.json` packaging, version mismatch).
 5. **Versions sync across all 3 shapes** — `package.json`, `gradle-plugin/build.gradle.kts`, Git tag. CI's `installer-e2e` verifies `kmp-test --version` matches `package.json` post-install.
 
+## Filing issues + PRs
+
+GitHub-rendered templates are pre-filled when you open a new issue or PR. The raw markdown sources live under `.github/`:
+
+| Template | Path | When to use |
+|---|---|---|
+| Bug report | [`.github/ISSUE_TEMPLATE/bug_report.md`](.github/ISSUE_TEMPLATE/bug_report.md) | Defects in the CLI, Gradle plugin, installers, or shell scripts. Asks for the `--json` envelope when available — paste it verbatim, it carries the full diagnostic state we need for triage. |
+| Feature request | [`.github/ISSUE_TEMPLATE/feature_request.md`](.github/ISSUE_TEMPLATE/feature_request.md) | New flags, subcommands, Gradle DSL properties, or workflow improvements. Sketch the proposed surface (CLI flag, DSL property) so the trade space is concrete. |
+| Pull request | [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) | Pre-fills the 5 sections we use ad-hoc today: **Summary**, **What changed**, **Tests**, **Out of scope**, **Test plan**. The Conventional Commits format reminder lives at the top of the template. |
+
+The PR template includes a tests checklist that maps to the 7 required CI checks — leaving boxes unchecked is fine for `docs:` and `chore:` PRs that don't touch the relevant area.
+
 ## Release Process
 
 Releases are fully automated on push to `main`. The release flow:
