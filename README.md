@@ -12,6 +12,8 @@ For an AI coding agent re-running a workflow on every change, the cheapest path 
 
 Measured against a representative KMP SDK module on Windows + JDK 21, single run per approach. Every cell in every table is a real `messages.countTokens` API count (Claude columns) or `cl100k_base` offline count via `js-tiktoken`. Bar width = `value / table-max` rendered in unicode block characters — visual scale is faithful to the underlying numbers.
 
+> **Provenance.** Detailed cross-model tables below are the v0.4.0 baseline (2026-04-27, shared-kmp-libs `:core-result*`). The narrative — single-line `--json` envelope strips ~100× the tokens vs raw gradle — holds at v0.8.0: a fresh cl100k_base re-measurement against the same module (post-v0.7 envelope additions) yielded `parallel` A=20,548 / B=754 / C=498 (A:C = 41×, vs 127× at v0.4), `coverage` A=435,479 / B=682 / C=372 (A:C = 1170×, vs 1218× at v0.4), `changed` A=1,118,355 / B=90 / C=143 (A:C = 7,821×, vs 127× at v0.4) — same order of magnitude, narrative unchanged. Full v0.8.0 cross-model re-measurement (Anthropic `countTokens` per Claude 4.x) is deferred to the v0.9 README refresh per [BACKLOG ROADMAP](BACKLOG.md). Raw v0.8.0 captures: [`tools/runs/<feature>/`](tools/runs/).
+
 ### Cross-feature summary — 4 features × 3 approaches × 4 tokenizers
 
 🟢 marks `kmp-test` rows (B = default markdown output, C = `--json` agentic envelope). Approach A is the raw `./gradlew + report parsing` baseline an agent does without `kmp-test`. `sonnet-4-6` and `haiku-4-5` share a tokenizer (identical counts on every cell) so they're merged into a single column. Per-feature visual bars are in the [drill-down tables](#per-feature-drill-down) below — this view is numbers only for scannability.
@@ -152,7 +154,20 @@ KMP projects mix JVM, Android, and native targets — each with its own Gradle t
 
 It's also the testing piece that's missing from Google's [official `android` CLI for AI agents](https://developer.android.com/tools/agents/android-cli). That CLI (v0.7.x) covers project create/describe/deploy/emulator but ships no `test` subcommand — Google delegated test execution back to Gradle. `kmp-test --json` fills that gap with a single-line, parseable response that drops the agent-context cost from ~13 K tokens (raw Gradle + reports) to ~100 tokens. See "[Agentic usage](#agentic-usage--token-cost-rationale)" below for the measurement.
 
-**Multi-agent safe (v0.3.8+).** When two `kmp-test` runs target the same project root — common with parallel agents or CI matrix shards — an advisory lockfile (`.kmp-test-runner.lock`) coordinates them and per-run-id-suffixed report files prevent clobber. The second arrival exits with a clear `lock_held` error (`--json` surfaces `errors[].code = "lock_held"`) instead of corrupting reports. Pass `--force` to override deliberately. See `docs/concurrency.md` for the full collision matrix.
+**Multi-agent safe (v0.3.8+).** When two `kmp-test` runs target the same project root — common with parallel agents or CI matrix shards — an advisory lockfile (`.kmp-test-runner.lock`) coordinates them and per-run-id-suffixed report files prevent clobber. The second arrival exits with a clear `lock_held` error (`--json` surfaces `errors[].code = "lock_held"`) instead of corrupting reports. Pass `--force` to override deliberately. See [`docs/concurrency.md`](docs/concurrency.md) for the **Tier 2 collision matrix** locked in v0.8.1 — every shared resource × subcommand pairing with current mitigation status.
+
+### What's new in v0.8.0 / v0.8.1
+
+- **Strategic Node migration** — wrapper logic moved from bash + PowerShell into Node orchestrators in `lib/`. SH + PS1 scripts are thin (~6–80 LOC) `exec` shims. Same CLI shape; cross-shape parity enforced structurally by `CrossShapeParityTest`.
+- **AGP-aware JDK preflight (fix-PR-B/-C)** — preserves the host JDK when it meets or exceeds the AGP-implied floor (no longer downgrades to the floor and breaks bytecode-65 Compose deps). When AGP binds the floor, the [NOTICE] banner names AGP as the source. `ANDROID_HOME` is auto-injected on JVM legs of AGP projects when the env doesn't carry it.
+- **KMP Android-library plugin support (fix-PR-D)** — opt-in detection of `com.android.kotlin.multiplatform.library` (Kotlin 2.3+) and dispatch to its native task names (`testAndroidHostTest` / `androidConnectedCheck`). Cleared 4 false-positive errors on shared-kmp-libs.
+- **K/N classifier + counter alignment (fix-PR-E)** — `execution.failed` counter aligned with `errors[]` for K/N-only test failures (Kotlin/Native target tests previously reported as PASSED with a top-level `errors[]` entry).
+- **Variant + testBuildType honoring on instrumented (fix-PR-F + F-bis)** — `--variant` (or `--android-variant`) flag plus `testBuildType="release"` honored on the `androidConnectedCheck` candidate chain. Default `auto` picks Debug if its task exists, falls back to Release.
+- **`--test-filter` translation per task class (fix-PR-G)** — on `androidInstrumented`, the AGP `AndroidConnectedTest` doesn't accept Gradle's `--tests` flag. v0.8.0 emits AGP-canonical `-Pandroid.testInstrumentationRunnerArguments.{class,method}=` instead.
+- **Project config file** — drop a `.kmp-test-runner.json` at your project root for stable defaults. Resolution: CLI flag > env var > config > built-in. See "[Project config](#project-config----kmp-test-runnerjson-v080)" below.
+- **`.kmp-test-runner/` artefact subdir** — single ignored subdir for cache + reports + logs (one `.gitignore` line covers everything).
+- **Doctor diagnostics — `gradle_config{}` (v0.8.1)** — `kmp-test doctor --json` now surfaces the resolved `org.gradle.parallel` / `workers.max` / `caching` / `daemon` / `jvmargs` / `configureondemand` from `<project>/gradle.properties` + `~/.gradle/gradle.properties`. Pure additive — agents can read these to layer their own scheduler decisions on top. See [`Tier 1 of "Adapt CLI to Gradle config"`](BACKLOG.md).
+- **Community standards (v0.8.1)** — issue + PR templates under `.github/`. See [Filing issues + PRs](CONTRIBUTING.md#filing-issues--prs) in CONTRIBUTING.
 
 ## Installation
 
@@ -383,6 +398,15 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--no-jdk-autoselect` _(v0.6.1+)_ | _(off)_ | Disable catalogue auto-select; fall through directly to the gate (pre-v0.6.1 behavior) |
 | `--no-coverage` _(v0.6.0+)_ | _(off)_ | Alias for `--coverage-tool none`; runs tests only without generating coverage |
 | `--json` / `--format json` | _(off)_ | Emit a single JSON object on stdout (see "Agentic usage" below). Suppresses human-readable output |
+| `--include-shared` | _(off)_ | Include the shared KMP project (configured via `.kmp-test-runner.json` `sharedProject.name`) in the module set. Defaults to off — the runner stays scoped to the consumer project |
+| `--exclude-coverage` | _(none)_ | Comma-separated module globs to skip from coverage aggregation (separate from `--exclude-modules`, which skips test execution too) |
+| `--fresh-daemon` | _(off)_ | Stop existing Gradle daemons before launching — useful when memory pressure or stale config-cache entries from prior runs cause flakes. Adds ~5 s of cold-start overhead |
+| `--skip-tests` | _(off)_ | Skip test execution; still runs coverage aggregation if the report files already exist. Equivalent to `kmp-test coverage` (the `coverage` subcommand sets this internally) |
+| `--output-file <path>` | `coverage-full-report.md` | Filename for the aggregated coverage / parallel report. The per-run-id-suffixed copy uses this as the base name; the stable mirror (last writer wins) takes the literal value. See [`docs/concurrency.md`](docs/concurrency.md) |
+| `--coverage-only` | _(off)_ | Generate only the coverage report — implies `--skip-tests` and skips test discovery. Faster than `coverage` subcommand when the gradle reports are already on disk |
+| `--benchmark` | _(off)_ | Run benchmark suites instead of tests. The `benchmark` subcommand sets this internally; pass directly to `parallel` only if you're composing the orchestrator |
+| `--benchmark-config <smoke\|full>` | `smoke` | Benchmark profile. `smoke` = single warmup + 3 measurement iters (~30 s/module). `full` = 5 warmup + 10 iters (~5 min/module). Applies to the `benchmark` subcommand |
+| `--variant` / `--android-variant <auto\|debug\|release\|all>` _(v0.8.0)_ | `auto` | Android build-variant selector for `androidUnit` / `androidInstrumented`. `auto` picks Debug if its task exists, falls back to Release (handles `testBuildType = "release"` projects). `all` dispatches both variants in the same gradle invocation |
 
 **Env vars (skip-list):**
 
@@ -544,10 +568,18 @@ kmp-test doctor
 # ADB            WARN    not found   install Android SDK platform-tools to run android subcommand
 ```
 
-Exit `0` if every check is OK or WARN; exit `3` if any FAIL (Node <18, missing shell, missing JDK). The "JDK catalogue" row (v0.6.1+) lists every JDK detected in the system locations consulted by the [auto-select chain](#jdk-toolchain-mismatch-auto-resolved-when-possible-since-v061) — empty catalogue → WARN ("auto-select disabled, gate will fire on JDK mismatch"). `--json` emits the same data as a structured array for agents:
+Exit `0` if every check is OK or WARN; exit `3` if any FAIL (Node <18, missing shell, missing JDK). The "JDK catalogue" row (v0.6.1+) lists every JDK detected in the system locations consulted by the [auto-select chain](#jdk-toolchain-mismatch-auto-resolved-when-possible-since-v061) — empty catalogue → WARN ("auto-select disabled, gate will fire on JDK mismatch"). `--json` emits the same data as a structured array for agents, plus a top-level `gradle_config{}` diagnostic (v0.8.1):
 
 ```json
-{"tool":"kmp-test","subcommand":"doctor","exit_code":0,"checks":[{"name":"Node","status":"OK","value":"v22.5.0","message":">=18 required"},…,{"name":"JDK catalogue","status":"OK","value":"3 installs","message":"JDK 11 (Eclipse Adoptium), JDK 17 (Eclipse Adoptium), JDK 21 (Azul Systems, Inc.)"}]}
+{"tool":"kmp-test","subcommand":"doctor","exit_code":0,"checks":[{"name":"Node","status":"OK","value":"v22.5.0","message":">=18 required"},…,{"name":"JDK catalogue","status":"OK","value":"3 installs","message":"JDK 11 (Eclipse Adoptium), JDK 17 (Eclipse Adoptium), JDK 21 (Azul Systems, Inc.)"}],"gradle_config":{"parallel":true,"workers_max":4,"caching":true,"daemon":true,"jvmargs":"-Xmx4g","configureondemand":false,"sources":{"project":true,"user":false}}}
+```
+
+The `gradle_config{}` block (v0.8.1+) is informational, not a check — it surfaces the resolved values from `<project>/gradle.properties` merged on top of `~/.gradle/gradle.properties`. Agents read these to decide whether to layer their own parallel scheduler on top of gradle's. The human banner renders it as a separate block below the CHECK table:
+
+```
+Gradle config (project + user resolved):
+  parallel=true  workers.max=4  caching=true  daemon=true  configureondemand=false
+  jvmargs=-Xmx4g
 ```
 
 ### Composing them
@@ -660,7 +692,7 @@ Open issues and pull requests are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.
 Quick check before a PR:
 
 ```bash
-npm test                                       # vitest (~775 tests at v0.8.0)
+npm test                                       # vitest (~810 tests at v0.8.1)
 npx bats tests/bats/ tests/installer/          # bats (~197 tests, Linux/macOS)
 cd gradle-plugin && ./gradlew test && cd ..    # Gradle TestKit (~12 tests)
 npm run shellcheck                             # POSIX script lint (0 warnings required)
