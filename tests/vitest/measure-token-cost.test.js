@@ -88,6 +88,20 @@ describe('parseArgs', () => {
     expect(out.runs).toBe(5);
     expect(out.testTask).toBe('desktopTest');
   });
+
+  it('parses --anthropic-api-key as a CLI override', () => {
+    const out = parseArgs([
+      '--anthropic-models', 'claude-opus-4-7',
+      '--anthropic-api-key', 'sk-ant-test-key-123',
+    ]);
+    expect(out.anthropicApiKey).toBe('sk-ant-test-key-123');
+    expect(out.anthropicModels).toEqual(['claude-opus-4-7']);
+  });
+
+  it('defaults anthropicApiKey to null when --anthropic-api-key is omitted', () => {
+    const out = parseArgs(['--anthropic-models', 'claude-opus-4-7']);
+    expect(out.anthropicApiKey).toBeNull();
+  });
 });
 
 describe('countTokensAnthropic', () => {
@@ -139,6 +153,63 @@ describe('countTokensAnthropic', () => {
     const r = await countTokensAnthropic(client, 'claude-opus-4-7', 'x');
     expect(r.ok).toBe(false);
     expect(r.error.length).toBeLessThanOrEqual(80);
+  });
+
+  // Multi-account fallback path. When the primary client returns 401 and a
+  // fallback client is provided, retry once on the fallback before giving up.
+
+  it('falls back to fallbackClient on 401 and returns the fallback result', async () => {
+    const primaryMock = vi.fn().mockRejectedValueOnce({ status: 401, message: 'invalid key' });
+    const fallbackMock = vi.fn().mockResolvedValueOnce({ input_tokens: 99 });
+    const primary = { messages: { countTokens: primaryMock } };
+    const fallback = { messages: { countTokens: fallbackMock } };
+
+    const r = await countTokensAnthropic(primary, 'claude-opus-4-7', 'hello', fallback);
+
+    expect(r).toEqual({ ok: true, tokens: 99, usedFallback: true });
+    expect(primaryMock).toHaveBeenCalledTimes(1);
+    expect(fallbackMock).toHaveBeenCalledTimes(1);
+    expect(fallbackMock).toHaveBeenCalledWith({
+      model: 'claude-opus-4-7',
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+  });
+
+  it('does NOT invoke fallbackClient when primary succeeds', async () => {
+    const primaryMock = vi.fn().mockResolvedValueOnce({ input_tokens: 7 });
+    const fallbackMock = vi.fn();
+    const primary = { messages: { countTokens: primaryMock } };
+    const fallback = { messages: { countTokens: fallbackMock } };
+
+    const r = await countTokensAnthropic(primary, 'claude-opus-4-7', 'x', fallback);
+
+    expect(r).toEqual({ ok: true, tokens: 7 });
+    expect(r.usedFallback).toBeUndefined();
+    expect(primaryMock).toHaveBeenCalledTimes(1);
+    expect(fallbackMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves auth_failed when primary returns 401 and no fallback is provided', async () => {
+    countTokensMock.mockRejectedValueOnce({ status: 401, message: 'invalid key' });
+    const client = { messages: { countTokens: countTokensMock } };
+    // fallbackClient omitted (defaults to null) — exercises the original
+    // single-client behaviour as a regression guard.
+    const r = await countTokensAnthropic(client, 'claude-opus-4-7', 'x');
+    expect(r).toEqual({ ok: false, error: 'auth_failed' });
+    expect(r.usedFallback).toBeUndefined();
+  });
+
+  it('returns fallback error code when both primary and fallback fail', async () => {
+    const primaryMock = vi.fn().mockRejectedValueOnce({ status: 401, message: 'invalid key' });
+    const fallbackMock = vi.fn().mockRejectedValueOnce({ status: 401, message: 'also invalid' });
+    const primary = { messages: { countTokens: primaryMock } };
+    const fallback = { messages: { countTokens: fallbackMock } };
+
+    const r = await countTokensAnthropic(primary, 'claude-opus-4-7', 'x', fallback);
+
+    expect(r).toEqual({ ok: false, error: 'auth_failed', usedFallback: true });
+    expect(primaryMock).toHaveBeenCalledTimes(1);
+    expect(fallbackMock).toHaveBeenCalledTimes(1);
   });
 });
 
