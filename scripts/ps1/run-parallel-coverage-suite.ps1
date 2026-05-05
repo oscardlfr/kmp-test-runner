@@ -63,7 +63,16 @@ param(
     # the same separator below and re-emits one `--gradle-args <tok>` per
     # element so the Node-side parser sees the canonical multi-invocation
     # shape. Stays empty when the user passes no `--gradle-args`.
-    [string]$GradleArgs = ""
+    [string]$GradleArgs = "",
+    # 2026-05-05 v0.9 step 4 — concurrency Tier 3 isolated cache dir.
+    # `--isolated` injects gradle's --project-cache-dir <tmp> into every
+    # spawn so concurrent kmp-test runs don't share <project>/.gradle/.
+    # `--isolated-cache-dir` lets users pin the location (CI tmpfs / RAM
+    # disk). `--isolated-no-lock` opts out of the Tier 1 advisory lockfile
+    # (cli.js consumes it; forwarded here for envelope mirroring).
+    [switch]$Isolated,
+    [string]$IsolatedCacheDir = "",
+    [switch]$IsolatedNoLock
 )
 
 $ErrorActionPreference = "Continue"
@@ -110,6 +119,10 @@ if ($GradleArgs) {
         if ($g) { $kmpArgv += @('--gradle-args', $g) }
     }
 }
+# 2026-05-05 v0.9 step 4 — concurrency Tier 3 isolated cache dir passthrough.
+if ($Isolated)         { $kmpArgv += @('--isolated') }
+if ($IsolatedCacheDir) { $kmpArgv += @('--isolated-cache-dir', $IsolatedCacheDir) }
+if ($IsolatedNoLock)   { $kmpArgv += @('--isolated-no-lock') }
 
 $kmpScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $kmpRunner = Join-Path $kmpScriptDir '..\..\lib\runner.js'

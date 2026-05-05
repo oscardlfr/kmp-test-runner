@@ -515,4 +515,24 @@ describe('runCoverage', () => {
     expect(pythonCalls[0].args).toHaveLength(3);
     expect(pythonCalls[0].args[2]).toBe('a');
   });
+
+  // v0.9 step 4 — coverage silently ignores --isolated. Coverage doesn't
+  // spawn gradle (Python XML parser only), so the cache-dir flag has no
+  // surface to attach to. The orchestrator must not error out and must
+  // not surface an `isolated:{}` envelope field (would be misleading).
+  it('--isolated is silently ignored (no envelope field, no error)', async () => {
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'a', 'kover');
+    const spawn = makeSpawnStub({
+      rowsByModule: { 'a': ['a|p|F.kt|F|1|0|1|100|'] },
+    });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--isolated', '--isolated-cache-dir', '/tmp/x', '--isolated-no-lock'],
+      spawn,
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.errors).toEqual([]);
+    expect(envelope.isolated).toBeUndefined();
+  });
 });
