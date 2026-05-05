@@ -24,6 +24,7 @@ import {
   consumeDryRunFlag,
   consumeForceFlag,
   consumeTestFilter,
+  peekIsolatedFlags,
   expandNoCoverageAlias,
   getIgnoreJdkMismatch,
   findRequiredJdkVersion,
@@ -3219,6 +3220,52 @@ describe('main() — lockfile integration', () => {
       // Original lock untouched (we never wrote/removed it).
       expect(readLockfile(dir).subcommand).toBe('parallel');
     });
+  });
+
+  // v0.9 step 4 — `--isolated-no-lock` opts out of the Tier 1 advisory lock.
+  it('--isolated-no-lock proceeds without acquiring or removing the lockfile', () => {
+    withFakeGradleProject(dir => {
+      // Pre-existing live lock from another concurrent run.
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+          subcommand: 'parallel', project_root: dir, version: '0.9.0',
+        }),
+        'utf8',
+      );
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--isolated', '--isolated-no-lock', '--project-root', dir];
+      expect(main()).toBe(EXIT.SUCCESS);
+      // Other run's lock must be intact — we never touched it.
+      const onDisk = readLockfile(dir);
+      expect(onDisk.subcommand).toBe('parallel');
+      expect(onDisk.pid).toBe(process.pid);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 step 4 — `peekIsolatedFlags` parser (cli.js side; mirrors
+// orchestrator-utils.js#parseIsolatedArgs but is non-stripping).
+// ---------------------------------------------------------------------------
+describe('peekIsolatedFlags', () => {
+  it('returns disabled defaults when no --isolated* flag is present', () => {
+    const r = peekIsolatedFlags(['parallel', '--project-root', '/x', '--variant', 'debug']);
+    expect(r).toEqual({ enabled: false, cacheDir: null, noLock: false });
+  });
+
+  it('detects bare --isolated', () => {
+    const r = peekIsolatedFlags(['--isolated', '--project-root', '/x']);
+    expect(r.enabled).toBe(true);
+    expect(r.cacheDir).toBe(null);
+    expect(r.noLock).toBe(false);
+  });
+
+  it('detects --isolated-cache-dir <path> (implies enabled) and --isolated-no-lock together', () => {
+    const r = peekIsolatedFlags(['--isolated-cache-dir', '/tmp/c', '--isolated-no-lock', '--project-root', '/x']);
+    expect(r.enabled).toBe(true);
+    expect(r.cacheDir).toBe('/tmp/c');
+    expect(r.noLock).toBe(true);
   });
 });
 

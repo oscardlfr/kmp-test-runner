@@ -796,3 +796,59 @@ describe('runBenchmark --variant (v0.9 step 3)', () => {
     expect(envelope.plan.variant).toBe('release');
   });
 });
+
+// v0.9 step 4 — `--isolated` for `kmp-test benchmark`. JVM benchmarks
+// dispatch one gradle spawn per (module, platform) tuple; verify each one
+// receives --project-cache-dir + cleanup runs after the loop.
+describe('--isolated cache-dir injection (v0.9 step 4)', () => {
+  it('--isolated --dry-run emits envelope.isolated; no spawn, no mkdir', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+    const { envelope } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke', '--dry-run', '--isolated'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.isolated).toBeDefined();
+    expect(envelope.isolated.enabled).toBe(true);
+    expect(existsSync(envelope.isolated.cache_dir)).toBe(false);
+    expect(spawn.calls.length).toBe(0);
+  });
+
+  it('--isolated injects --project-cache-dir on jvm benchmark spawn + cleans up', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+    const { envelope } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke', '--isolated'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.isolated.enabled).toBe(true);
+    const cacheDir = envelope.isolated.cache_dir;
+    const gradleCalls = spawn.calls.filter(isGradleCall);
+    expect(gradleCalls.length).toBe(1);
+    const flat = effectiveGradleArgs(gradleCalls[0]).join(' ');
+    expect(flat).toContain('--project-cache-dir');
+    expect(flat).toContain(cacheDir);
+    // Auto-generated dir cleaned up.
+    expect(envelope.isolated.kept).toBe(false);
+    expect(existsSync(cacheDir)).toBe(false);
+  });
+
+  it('--isolated-cache-dir <path> is preserved (kept:true, dir survives)', async () => {
+    const dir = copyFixture();
+    const userCache = path.join(dir, 'my-bench-cache');
+    const spawn = makeSpawnStub();
+    const { envelope } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke', '--isolated-cache-dir', userCache],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.isolated.cache_dir).toBe(userCache);
+    expect(envelope.isolated.kept).toBe(true);
+    expect(existsSync(userCache)).toBe(true);
+  });
+});

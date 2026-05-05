@@ -843,3 +843,68 @@ describe('runAndroid --variant (v0.9 step 3)', () => {
     expect(envelope.plan.variant).toBe('release');
   });
 });
+
+// v0.9 step 4 — `--isolated` for `kmp-test android`.
+// Per-module gradle dispatch loop must inject --project-cache-dir on every
+// spawn; cleanup runs after the loop; envelope surfaces isolated:{}.
+describe('--isolated cache-dir injection (v0.9 step 4)', () => {
+  it('--isolated --dry-run emits envelope.isolated; no spawn, no mkdir', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--dry-run', '--isolated'],
+      spawn,
+      adbProbe,
+    });
+    expect(envelope.isolated).toBeDefined();
+    expect(envelope.isolated.enabled).toBe(true);
+    expect(envelope.isolated.cache_dir).toMatch(/[\\/]\.kmp-test-runner[\\/]cache-isolated[\\/]/);
+    expect(existsSync(envelope.isolated.cache_dir)).toBe(false);
+  });
+
+  it('--isolated injects --project-cache-dir on every per-module spawn + cleans up', async () => {
+    const dir = makeProject([{ name: 'a' }, { name: 'b' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--isolated'],
+      spawn,
+      adbProbe,
+    });
+    expect(envelope.isolated.enabled).toBe(true);
+    const cacheDir = envelope.isolated.cache_dir;
+    expect(cacheDir).toBeTruthy();
+    const gradleCalls = findGradleCalls(spawn.calls);
+    expect(gradleCalls.length).toBe(2);
+    for (const c of gradleCalls) {
+      const flat = effectiveGradleArgs(c).join(' ');
+      expect(flat).toContain('--project-cache-dir');
+      expect(flat).toContain(cacheDir);
+    }
+    // Cleanup happened.
+    expect(envelope.isolated.kept).toBe(false);
+    expect(existsSync(cacheDir)).toBe(false);
+  });
+
+  it('--isolated-cache-dir <path> is preserved (kept:true, dir survives)', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const userCache = path.join(dir, 'my-android-cache');
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--isolated-cache-dir', userCache],
+      spawn,
+      adbProbe,
+    });
+    expect(envelope.isolated.cache_dir).toBe(userCache);
+    expect(envelope.isolated.kept).toBe(true);
+    expect(existsSync(userCache)).toBe(true);
+  });
+});

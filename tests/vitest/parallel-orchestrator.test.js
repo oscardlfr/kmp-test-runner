@@ -2549,3 +2549,126 @@ describe('runParallel --auto-retry + --clear-data (v0.9 step 1, flags #1 + #2)',
     expect(leg.retries).toBeUndefined();
   });
 });
+
+// ===========================================================================
+// v0.9 step 4 — `--isolated` Tier 3 concurrency flag.
+// Verifies that --isolated injects --project-cache-dir into every gradle
+// spawn, that the envelope surfaces the isolated:{} field, that cleanup
+// fires on success, and that --dry-run skips both mkdir and cleanup.
+// ===========================================================================
+describe('--isolated cache-dir injection (v0.9 step 4)', () => {
+  it('--isolated --dry-run emits envelope.isolated with would-be path; no spawn, no mkdir', async () => {
+    const dir = makeProject([{ name: 'core' }]);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--module-filter', 'core', '--dry-run', '--isolated'],
+      spawn,
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.isolated).toBeDefined();
+    expect(envelope.isolated.enabled).toBe(true);
+    expect(envelope.isolated.cache_dir).toMatch(/[\\/]\.kmp-test-runner[\\/]cache-isolated[\\/]/);
+    expect(envelope.isolated.kept).toBe(false);
+    expect(envelope.isolated.locked).toBe(true);
+    // No gradle dispatch on dry-run.
+    expect(spawn.calls.filter(c => isGradleCall(c.args)).length).toBe(0);
+    // The would-be cache_dir must NOT exist (dryRun:true skipped mkdir).
+    expect(existsSync(envelope.isolated.cache_dir)).toBe(false);
+  });
+
+  it('--isolated injects --project-cache-dir into every gradle spawn and cleans up after', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', 'core', '--isolated'],
+      spawn,
+      runCoverageInjection: stubCoverage,
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.isolated.enabled).toBe(true);
+    const cacheDir = envelope.isolated.cache_dir;
+    expect(cacheDir).toBeTruthy();
+    // Every gradle invocation receives `--project-cache-dir <cacheDir>`.
+    const gradleCalls = spawn.calls.filter(c => isGradleCall(c));
+    expect(gradleCalls.length).toBeGreaterThan(0);
+    for (const call of gradleCalls) {
+      const flat = effectiveGradleArgs(call).join(' ');
+      expect(flat).toContain('--project-cache-dir');
+      expect(flat).toContain(cacheDir);
+    }
+    // Cleanup happened: the auto-generated dir was removed (kept:false).
+    expect(envelope.isolated.kept).toBe(false);
+    expect(existsSync(cacheDir)).toBe(false);
+  });
+
+  it('--isolated-cache-dir <path> is preserved (kept:true, dir survives run)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const userCache = path.join(dir, 'my-cache');
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', 'core', '--isolated-cache-dir', userCache],
+      spawn,
+      runCoverageInjection: stubCoverage,
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.isolated.enabled).toBe(true);
+    expect(envelope.isolated.cache_dir).toBe(userCache);
+    expect(envelope.isolated.kept).toBe(true);
+    // User-supplied dir survives cleanup.
+    expect(existsSync(userCache)).toBe(true);
+  });
+
+  it('without --isolated → envelope.isolated reports enabled:false; no --project-cache-dir injected', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', 'core'],
+      spawn,
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.isolated).toEqual({
+      enabled: false, cache_dir: null, kept: false, locked: true,
+    });
+    const gradleCalls = spawn.calls.filter(c => isGradleCall(c));
+    expect(gradleCalls.length).toBeGreaterThan(0);
+    for (const call of gradleCalls) {
+      expect(effectiveGradleArgs(call).join(' ')).not.toContain('--project-cache-dir');
+    }
+  });
+
+  it('--isolated-no-lock surfaces locked:false in envelope', async () => {
+    const dir = makeProject([{ name: 'core' }]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--module-filter', 'core', '--dry-run', '--isolated', '--isolated-no-lock'],
+      spawn,
+    });
+    expect(envelope.isolated.locked).toBe(false);
+  });
+
+  it('KMP_TEST_KEEP_ISOLATED=1 skips cleanup of auto-generated dir', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', 'core', '--isolated'],
+      env: { ...process.env, KMP_TEST_KEEP_ISOLATED: '1' },
+      spawn,
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.isolated.kept).toBe(true);
+    expect(existsSync(envelope.isolated.cache_dir)).toBe(true);
+    // Test-side cleanup of the auto-generated dir (afterEach removes workDir
+    // recursively, so this is technically belt-and-braces).
+    rmSync(envelope.isolated.cache_dir, { recursive: true, force: true });
+  });
+});

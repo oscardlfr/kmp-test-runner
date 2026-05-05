@@ -720,3 +720,70 @@ describe('runChanged --variant propagation (v0.9 step 3)', () => {
     expect(args[idx + 1]).toBe('all');
   });
 });
+
+// v0.9 step 4 — --isolated forwarding to runParallel via buildParallelArgs.
+// Mirrors the --variant propagation tests above. changed-orchestrator does
+// not own the cache-dir lifecycle (parallel does); we only verify the flags
+// reach runParallel and the changed envelope mirrors parallel's isolated:{}.
+describe('runChanged --isolated propagation (v0.9 step 4)', () => {
+  it('--isolated --isolated-no-lock --isolated-cache-dir all forward to runParallel', async () => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['app/src/androidUnitTest/X.kt']) },
+    });
+    const parallelCalls = [];
+    const runParallelInjection = async (opts) => {
+      parallelCalls.push(opts);
+      return {
+        envelope: {
+          tests: { total: 0, passed: 0, failed: 0, skipped: 0 },
+          modules: [], skipped: [],
+          coverage: { tool: 'auto', missed_lines: null },
+          errors: [], warnings: [],
+          isolated: { enabled: true, cache_dir: '/tmp/x', kept: true, locked: false },
+        },
+        exitCode: 0,
+      };
+    };
+
+    const { envelope } = await runChanged({
+      projectRoot: dir,
+      args: ['--isolated', '--isolated-no-lock', '--isolated-cache-dir', '/tmp/x'],
+      spawn,
+      runParallelInjection,
+    });
+
+    expect(parallelCalls.length).toBe(1);
+    const args = parallelCalls[0].args;
+    expect(args).toContain('--isolated');
+    expect(args).toContain('--isolated-no-lock');
+    const idx = args.indexOf('--isolated-cache-dir');
+    expect(idx).toBeGreaterThan(-1);
+    expect(args[idx + 1]).toBe('/tmp/x');
+    // changed envelope mirrors parallel's isolated state.
+    expect(envelope.isolated).toEqual({
+      enabled: true, cache_dir: '/tmp/x', kept: true, locked: false,
+    });
+  });
+
+  it('--show-modules-only emits isolated:{enabled,locked} without delegating to parallel', async () => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['app/src/androidUnitTest/X.kt']) },
+    });
+    let parallelInvocations = 0;
+    const runParallelInjection = async () => { parallelInvocations++; return { envelope: {}, exitCode: 0 }; };
+
+    const { envelope } = await runChanged({
+      projectRoot: dir,
+      args: ['--show-modules-only', '--isolated', '--isolated-no-lock'],
+      spawn,
+      runParallelInjection,
+    });
+
+    expect(parallelInvocations).toBe(0);
+    expect(envelope.isolated).toEqual({
+      enabled: true, cache_dir: null, kept: false, locked: false,
+    });
+  });
+});
