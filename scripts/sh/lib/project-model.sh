@@ -18,8 +18,10 @@
 # falls back to its existing legacy detection. NEVER returns nonzero on
 # legitimate "model missing" — fail-soft is the contract.
 #
-# Model layout: <project>/.kmp-test-runner-cache/model-<sha>.json (sha is the
-# same content-keyed SHA1 used by gradle-tasks-probe.sh).
+# Model layout: <project>/.kmp-test-runner/cache/model-<sha>.json (sha is the
+# same content-keyed SHA1 used by gradle-tasks-probe.sh). v0.8.0 moved the
+# cache from `.kmp-test-runner-cache/` into the artifact subdir; the dual-read
+# fallback below honors v0.7.x users' legacy caches for one transition release.
 #
 # Parser: python3 (universal availability across CI runners + local dev). jq
 # is optional — not all environments have it, python3 ships everywhere.
@@ -40,10 +42,18 @@ _pm_locate_model_file() {
     local cache_key
     cache_key="$(_kmp_compute_cache_key "$project_root" 2>/dev/null)" || return 1
     [[ -z "$cache_key" ]] && return 1
-    local model_file="$project_root/.kmp-test-runner-cache/model-${cache_key}.json"
-    [[ -s "$model_file" ]] || return 1
-    echo "$model_file"
-    return 0
+    # v0.8.0 dual-read: try new path, fall back to legacy `.kmp-test-runner-cache/`
+    local model_file="$project_root/.kmp-test-runner/cache/model-${cache_key}.json"
+    if [[ -s "$model_file" ]]; then
+        echo "$model_file"
+        return 0
+    fi
+    local legacy_file="$project_root/.kmp-test-runner-cache/model-${cache_key}.json"
+    if [[ -s "$legacy_file" ]]; then
+        echo "$legacy_file"
+        return 0
+    fi
+    return 1
 }
 
 # Internal: extract a JSON value via python3. The python script reads the

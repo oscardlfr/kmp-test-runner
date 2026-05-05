@@ -210,10 +210,11 @@ EOF
     # shellcheck disable=SC1090
     source "$PROBE_LIB"
     probe_gradle_tasks "$WORK_DIR" >/dev/null
-    [ -d "$WORK_DIR/.kmp-test-runner-cache" ]
-    [ "$(find "$WORK_DIR/.kmp-test-runner-cache" -name 'tasks-*.txt' | wc -l)" -gt 0 ]
+    # v0.8.0 — probe writes to the new path `.kmp-test-runner/cache/`.
+    [ -d "$WORK_DIR/.kmp-test-runner/cache" ]
+    [ "$(find "$WORK_DIR/.kmp-test-runner/cache" -name 'tasks-*.txt' | wc -l)" -gt 0 ]
     clear_gradle_tasks_cache "$WORK_DIR"
-    [ "$(find "$WORK_DIR/.kmp-test-runner-cache" -name 'tasks-*.txt' 2>/dev/null | wc -l)" -eq 0 ]
+    [ "$(find "$WORK_DIR/.kmp-test-runner/cache" -name 'tasks-*.txt' 2>/dev/null | wc -l)" -eq 0 ]
 }
 
 # v0.5.2 Gap C — cross-platform cache-key SHA byte parity.

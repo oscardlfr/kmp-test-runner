@@ -15,6 +15,14 @@ LOCKFILE_NAME=".kmp-test-runner.lock"
 # ESRCH, giving a deterministic "dead PID" without forking + killing.
 DEAD_PID=999999999
 
+# Opt out of the adb probe inside runDoctorChecks — see test-doctor.bats
+# for the rationale. test-concurrency.bats invokes `kmp-test doctor` once
+# (the lockfile-not-acquired test) which is enough to leak the daemon on
+# macos-latest. Closes v0.8.0 BACKLOG #6 + #9.
+setup_file() {
+    export KMP_TEST_SKIP_ADB=1
+}
+
 setup() {
     # MinGW/Cygwin bash $$ returns an MSYS-internal PID that doesn't match
     # the Windows kernel PID Node.js sees, so the lock-collision tests would

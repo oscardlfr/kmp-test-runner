@@ -8,7 +8,9 @@
 #                                       -Candidates @('connectedDebugAndroidTest','androidConnectedCheck')
 #   Clear-GradleTasksCache -ProjectRoot $PR
 #
-# Cache layout: <project>\.kmp-test-runner-cache\tasks-<sha>.txt
+# Cache layout: <project>\.kmp-test-runner\cache\tasks-<sha>.txt
+#               (v0.8.0 — dual-read fallback for legacy `.kmp-test-runner-cache\`
+#                covers v0.7.x users for one transition release.)
 # Cache key:    SHA1 of concatenated file contents of settings.gradle.kts,
 #               gradle.properties, and every per-module build.gradle.kts.
 #               Any content change invalidates the cache deterministically.
@@ -86,13 +88,20 @@ function Invoke-GradleTasksProbe {
     $gradlewSh  = Join-Path $ProjectRoot 'gradlew'
     if (-not (Test-Path $gradlewBat) -and -not (Test-Path $gradlewSh)) { return $null }
 
-    $cacheDir = Join-Path $ProjectRoot '.kmp-test-runner-cache'
+    # v0.8.0 — cache moved from .kmp-test-runner-cache\ to .kmp-test-runner\cache\.
+    # Dual-read for v0.7.x compat; writes go to the new path only.
+    $cacheDir = Join-Path $ProjectRoot '.kmp-test-runner\cache'
+    $legacyCacheDir = Join-Path $ProjectRoot '.kmp-test-runner-cache'
     $cacheKey = Get-KmpCacheKey -ProjectRoot $ProjectRoot
     if (-not $cacheKey) { return $null }
     $cacheFile = Join-Path $cacheDir "tasks-$cacheKey.txt"
+    $legacyCacheFile = Join-Path $legacyCacheDir "tasks-$cacheKey.txt"
 
     if ((Test-Path $cacheFile) -and ((Get-Item $cacheFile).Length -gt 0)) {
         return $cacheFile
+    }
+    if ((Test-Path $legacyCacheFile) -and ((Get-Item $legacyCacheFile).Length -gt 0)) {
+        return $legacyCacheFile
     }
 
     if (-not (Test-Path $cacheDir)) {
@@ -213,8 +222,12 @@ function Clear-GradleTasksCache {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ProjectRoot)
     if (-not (Test-Path $ProjectRoot)) { return }
-    $cacheDir = Join-Path $ProjectRoot '.kmp-test-runner-cache'
-    if (-not (Test-Path $cacheDir)) { return }
-    Get-ChildItem -Path $cacheDir -Filter 'tasks-*.txt' -ErrorAction SilentlyContinue |
-        ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+    # v0.8.0 — sweep BOTH the new path and the legacy `.kmp-test-runner-cache\`
+    # so a manual reset doesn't leave stale v0.7.x caches behind.
+    foreach ($dir in @('.kmp-test-runner\cache', '.kmp-test-runner-cache')) {
+        $cacheDir = Join-Path $ProjectRoot $dir
+        if (-not (Test-Path $cacheDir)) { continue }
+        Get-ChildItem -Path $cacheDir -Filter 'tasks-*.txt' -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+    }
 }

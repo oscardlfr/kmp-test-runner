@@ -3,11 +3,13 @@ package io.github.oscardlfr.kmptestrunner.tasks
 
 import io.github.oscardlfr.kmptestrunner.KmpTestRunnerExtension
 import org.gradle.api.DefaultTask
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.TaskAction
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
 open class ParallelTestsTask : DefaultTask() {
+    @get:Internal
     lateinit var extension: KmpTestRunnerExtension
 
     @TaskAction
