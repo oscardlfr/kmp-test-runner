@@ -48,6 +48,7 @@ import {
   resolveAndroidTestFilter,
   resolvePatternForSubcommand,
   runDoctorChecks,
+  parseGradleConfig,
   parseGradleTimeoutMs,
   DEFAULT_GRADLE_TIMEOUT_MS,
 } from '../../lib/cli.js';
@@ -1478,6 +1479,114 @@ describe('main() — doctor subcommand', () => {
     // No java/adb probes should have been issued.
     const probed = spawnMock.mock.calls.some(c => ['java', 'adb'].includes(c[0]));
     expect(probed).toBe(false);
+  });
+
+  // v0.8.1 — gradle_config diagnostic (Tier 1 of "Adapt CLI to project's
+  // Gradle config" BACKLOG entry). Pure additive --json field; no behaviour
+  // change. Tests cover the resolution semantics: defaults vs project-level
+  // override vs project-wins-on-collision with user-global.
+
+  it('parseGradleConfig — empty gradle.properties returns gradle defaults', () => {
+    const projectDir = mkdtempSync(path.join(tmpdir(), 'kmp-cfg-empty-'));
+    const homeDir = mkdtempSync(path.join(tmpdir(), 'kmp-cfg-home-'));
+    try {
+      // No gradle.properties anywhere — exercise the missing-file path.
+      const cfg = parseGradleConfig(projectDir, homeDir);
+      expect(cfg.parallel).toBe(false);            // gradle default: parallel disabled
+      expect(cfg.workers_max).toBeNull();          // gradle default: auto (not set)
+      expect(cfg.caching).toBe(false);             // gradle default: build cache off
+      expect(cfg.daemon).toBe(true);               // gradle default: daemon on
+      expect(cfg.jvmargs).toBeNull();
+      expect(cfg.configureondemand).toBe(false);
+      expect(cfg.sources).toEqual({ project: false, user: false });
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('parseGradleConfig — project-level org.gradle.parallel=true reflected in JSON output', () => {
+    const projectDir = mkdtempSync(path.join(tmpdir(), 'kmp-cfg-proj-'));
+    const homeDir = mkdtempSync(path.join(tmpdir(), 'kmp-cfg-home-'));
+    try {
+      writeFileSync(
+        path.join(projectDir, 'gradle.properties'),
+        'org.gradle.parallel=true\n' +
+        'org.gradle.workers.max=4\n' +
+        'org.gradle.caching=true\n' +
+        'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m\n'
+      );
+      const cfg = parseGradleConfig(projectDir, homeDir);
+      expect(cfg.parallel).toBe(true);
+      expect(cfg.workers_max).toBe(4);
+      expect(cfg.caching).toBe(true);
+      expect(cfg.jvmargs).toBe('-Xmx4g -XX:MaxMetaspaceSize=512m');
+      expect(cfg.daemon).toBe(true);               // unset → default true
+      expect(cfg.configureondemand).toBe(false);   // unset → default false
+      expect(cfg.sources).toEqual({ project: true, user: false });
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('parseGradleConfig — project values override user-global on key collision', () => {
+    const projectDir = mkdtempSync(path.join(tmpdir(), 'kmp-cfg-both-'));
+    const homeDir = mkdtempSync(path.join(tmpdir(), 'kmp-cfg-home-'));
+    try {
+      // User-global says parallel=false, workers.max=2; project overrides parallel=true.
+      mkdirSync(path.join(homeDir, '.gradle'), { recursive: true });
+      writeFileSync(
+        path.join(homeDir, '.gradle', 'gradle.properties'),
+        'org.gradle.parallel=false\n' +
+        'org.gradle.workers.max=2\n' +
+        'org.gradle.daemon=false\n'
+      );
+      writeFileSync(
+        path.join(projectDir, 'gradle.properties'),
+        'org.gradle.parallel=true\n'
+      );
+      const cfg = parseGradleConfig(projectDir, homeDir);
+      // Project wins on collision...
+      expect(cfg.parallel).toBe(true);
+      // ...but user-global persists for keys the project didn't set.
+      expect(cfg.workers_max).toBe(2);
+      expect(cfg.daemon).toBe(false);
+      expect(cfg.sources).toEqual({ project: true, user: true });
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('doctor --json envelope carries gradle_config{} alongside checks[]', () => {
+    spawnMock.mockImplementation((cmd) => {
+      if (cmd === 'java') return { status: 0, stderr: 'openjdk version "17.0.1"\n' };
+      return { status: 0 };
+    });
+    const projectDir = mkdtempSync(path.join(tmpdir(), 'kmp-doctor-cfg-'));
+    try {
+      writeFileSync(
+        path.join(projectDir, 'gradle.properties'),
+        'org.gradle.parallel=true\norg.gradle.caching=true\n'
+      );
+      const captured = [];
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+      try {
+        process.argv = ['node', 'kmp-test.js', 'doctor', '--json', '--project-root', projectDir];
+        main();
+      } finally {
+        process.stdout.write = origWrite;
+      }
+      const json = JSON.parse(captured.join('').trim());
+      expect(json.gradle_config).toBeTypeOf('object');
+      expect(json.gradle_config.parallel).toBe(true);
+      expect(json.gradle_config.caching).toBe(true);
+      expect(json.gradle_config.sources.project).toBe(true);
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
   });
 });
 
