@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runBenchmark, resolveBenchmarkTimeoutMs, BENCHMARK_TIMEOUT_DEFAULTS_MS } from '../../lib/benchmark-orchestrator.js';
+import { runBenchmark, resolveBenchmarkTimeoutMs, BENCHMARK_TIMEOUT_DEFAULTS_MS, parseArgs } from '../../lib/benchmark-orchestrator.js';
 import { resolveBenchmarkOuterTimeoutMs, BENCHMARK_OUTER_TIMEOUTS_MS } from '../../lib/cli.js';
 import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 
@@ -671,5 +671,51 @@ describe('resolveBenchmarkOuterTimeoutMs (v0.8.0 — cli.js outer adaptive)', ()
   it('--config flag absent → smoke default (matches orchestrator parseArgs default)', () => {
     expect(resolveBenchmarkOuterTimeoutMs([], {}))
       .toBe(BENCHMARK_OUTER_TIMEOUTS_MS.smoke);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 step 2 — --gradle-args global escape hatch.
+// ---------------------------------------------------------------------------
+describe('runBenchmark --gradle-args escape hatch (v0.9 step 2)', () => {
+  it('parseArgs accumulates --gradle-args across invocations + whitespace-splits', () => {
+    const single = parseArgs(['--gradle-args', '--no-parallel --max-workers 1']);
+    expect(single.gradleArgs).toEqual(['--no-parallel', '--max-workers', '1']);
+
+    const multi = parseArgs([
+      '--gradle-args', '--no-parallel',
+      '--gradle-args', '-Pfoo=bar',
+    ]);
+    expect(multi.gradleArgs).toEqual(['--no-parallel', '-Pfoo=bar']);
+
+    const empty = parseArgs([]);
+    expect(empty.gradleArgs).toEqual([]);
+  });
+
+  it('per-platform dispatch appends --gradle-args tokens LAST in gradleArgs', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+
+    await runBenchmark({
+      projectRoot: dir,
+      args: [
+        '--platform', 'jvm',
+        '--gradle-args', '--no-parallel',
+        '--gradle-args', '-Pfoo=bar',
+      ],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    const args = effectiveGradleArgs(spawn.calls[0]);
+    expect(args).toContain('--no-parallel');
+    expect(args).toContain('-Pfoo=bar');
+    expect(args).toContain('--continue');
+    // User tokens AFTER --continue.
+    const idxContinue = args.indexOf('--continue');
+    const idxNoParallel = args.indexOf('--no-parallel');
+    const idxFoo = args.indexOf('-Pfoo=bar');
+    expect(idxNoParallel).toBeGreaterThan(idxContinue);
+    expect(idxFoo).toBeGreaterThan(idxNoParallel);
   });
 });

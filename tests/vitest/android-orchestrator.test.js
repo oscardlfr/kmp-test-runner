@@ -28,7 +28,7 @@ import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { runAndroid } from '../../lib/android-orchestrator.js';
+import { runAndroid, parseArgs } from '../../lib/android-orchestrator.js';
 import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 
 let workDir;
@@ -678,5 +678,53 @@ describe('runAndroid --dry-run (F1)', () => {
     expect(envelope.plan.flavor).toBe('staging');
     expect(spawn.calls.length).toBe(0);
     expect(exitCode).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 step 2 — --gradle-args global escape hatch.
+//   Tokens are appended LAST in the per-module gradleArgs so users can
+//   override CLI defaults via gradle's last-wins flag semantics. Repeatable.
+// ---------------------------------------------------------------------------
+describe('runAndroid --gradle-args escape hatch (v0.9 step 2)', () => {
+  it('parseArgs accumulates --gradle-args across invocations + whitespace-splits', () => {
+    const single = parseArgs(['--gradle-args', '--no-parallel --max-workers 1']);
+    expect(single.gradleArgs).toEqual(['--no-parallel', '--max-workers', '1']);
+
+    const multi = parseArgs([
+      '--gradle-args', '--no-parallel',
+      '--gradle-args', '-Pfoo=bar',
+    ]);
+    expect(multi.gradleArgs).toEqual(['--no-parallel', '-Pfoo=bar']);
+
+    const empty = parseArgs([]);
+    expect(empty.gradleArgs).toEqual([]);
+  });
+
+  it('per-module dispatch appends --gradle-args tokens LAST in gradleArgs', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: [
+        '--gradle-args', '--no-parallel',
+        '--gradle-args', '-Pfoo=bar',
+      ],
+      spawn,
+      adbProbe,
+    });
+
+    const args = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
+    expect(args).toContain('--no-parallel');
+    expect(args).toContain('-Pfoo=bar');
+    expect(args).toContain('--continue');
+    // User tokens appended AFTER --continue (CLI defaults precede escape-hatch).
+    const idxContinue = args.indexOf('--continue');
+    const idxNoParallel = args.indexOf('--no-parallel');
+    const idxFoo = args.indexOf('-Pfoo=bar');
+    expect(idxNoParallel).toBeGreaterThan(idxContinue);
+    expect(idxFoo).toBeGreaterThan(idxNoParallel);
   });
 });
