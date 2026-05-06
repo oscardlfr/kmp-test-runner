@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.9 step 7 (Phase A): macOS validation gate driver (2026-05-06)
+
+Closes Phase A of the BACKLOG L372 entry "v0.9 — macOS validation gate (manual smoke before tagging)" — the driver scaffold that Phase B (dry pass) and Phase C (scoped wet pass) consume. Manual-only; not wired into CI per `feedback_ci_minutes_minimal_macos.md`.
+
+- **`tools/macos-validation-gate.mjs`** — driver mirroring `tools/wide-smoke-pass-9-mac.mjs` shape, expanded for the 45-cell matrix (`{parallel, changed} × 7 --test-type values × 3 projects = 42`, plus `android × 3 projects = 3`). Three modes: `dry` (enumerate + plan, no spawn), `scoped` (run with `--module-filter <smallest>` per project so each cell touches one gradle daemon), `full` (unfiltered sweep, gated by `--i-have-20gb-free`). Per-cell artifacts under `.smoke/macos-gate-v0.9/<safe>.{out,err,json,meta.json}`. Drift detection by path-only shape diff against `tests/vitest/__snapshots__/parity.test.js.snap`. Disk-mitigation logic baked in: `TMPDIR` override to `/Volumes/XcodeOscar/.tmp`, `./gradlew --stop` between cells, `--abort-floor-mb` (default 2048 MiB) halts the run if `/System/Volumes/Data` falls below the floor.
+- **`tests/vitest/macos-validation-gate.test.js`** — specs locking the matrix shape (45 cells, exact subcommand × test-type × project cross-product), skip rules (device-required, no-instrumented-target, project-absent), argv hygiene (absolute paths, no shell metacharacters, no `--ignore-jdk-mismatch`), mode gating (`--mode full` requires `--i-have-20gb-free`), `safeName` uniqueness, the path-only `extractShape` / `diffShapes` contract, and the snapshot loader's Vitest-format parsing.
+- **`.gitignore`** — adds `MACOS-GATE-V0.9-SUMMARY.md` so iteration noise doesn't leak into commits. Revisited at step-7 close-out (Phase E) when the final summary is committed.
+- **Out of scope (Phase A).** No actual gradle execution (Phase C), no drift fix-PRs (Phase D), no final summary commit (Phase E), no CI integration (explicitly NOT wanted per `feedback_ci_minutes_minimal_macos.md`). The driver's wet modes will be exercised once Phase A merges and disk conditions allow.
+
 ### Added — v0.9 step 6: buildable cross-platform E2E fixture (build only, no CI matrix) (2026-05-06)
 
 Closes the BACKLOG L975 entry "Buildable cross-platform E2E fixture project" — but reframed per `feedback_ci_minutes_minimal_macos.md` to **build only, no CI matrix**. The fixture exists so the static project-model parser (`lib/project-model.js`) can be exercised against a real, deterministic, multi-target KMP shape. Per-PR CI does NOT execute iOS/macOS test tasks against it — real platform validation belongs to the manual macOS gate (v0.9 step 7). ~+14 vitest cases (1004 → 1018 passing). Zero new CI minutes — runs on the existing `build (ubuntu-latest)` + `build (windows-latest)` jobs.
