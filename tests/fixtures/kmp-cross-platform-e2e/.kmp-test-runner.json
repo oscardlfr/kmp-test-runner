@@ -1,0 +1,5 @@
+{
+  "$schema": "https://github.com/oscardlfr/kmp-test-runner/blob/main/docs/kmp-test-runner.schema.json",
+  "description": "Synthetic cross-platform KMP fixture — exercises every supported target in :sample.",
+  "shortcuts": {}
+}

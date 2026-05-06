@@ -17,3 +17,8 @@ tests/vitest/sync-versions.test.js text eol=lf
 # so cmd.exe parses it correctly across hosts.
 tests/fixtures/fake-gradlew/gradlew text eol=lf
 tests/fixtures/fake-gradlew/gradlew.bat text eol=crlf
+
+# v0.9 step 6 cross-platform E2E fixture — wrapper line endings + binary jar.
+tests/fixtures/kmp-cross-platform-e2e/gradlew text eol=lf
+tests/fixtures/kmp-cross-platform-e2e/gradlew.bat text eol=crlf
+tests/fixtures/kmp-cross-platform-e2e/gradle/wrapper/gradle-wrapper.jar binary
