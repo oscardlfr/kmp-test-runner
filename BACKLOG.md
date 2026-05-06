@@ -18,7 +18,7 @@
 4. **Concurrency Tier 3 `--isolated` flag** — opt-in `--project-cache-dir <tmp>` per run. ~3-4h. See entry "Concurrent-invocation safety" Tier 3.
 5. **Cross-platform parity check in CI** — flag matrix audit + envelope schema snapshot + README ↔ code drift detection + platform-behaviour matrix. ~4-5h. New entry below.
 6. ✅ **Buildable cross-platform E2E fixture (build only, NO CI matrix)** — DONE 2026-05-06 (PR #151 / `f296d21` on develop). Synthetic KMP fixture under `tests/fixtures/kmp-cross-platform-e2e/` with `:sample` exercising `jvm()` + `js(IR)` + `wasmJs` + `iosX64`/`iosSimulatorArm64`/`iosArm64` + `macosArm64` + `androidLibrary { withHostTestBuilder { } }`. Pinned Kotlin 2.3.20 / AGP 9.0.1 / Gradle 9.1.0. Vitest 1004 → 1018 (+14 in `tests/vitest/cross-platform-fixture.test.js`). Zero new CI minutes. See L975 entry below for closure details.
-7. **macOS validation gate** — manual smoke against the v0.9 fixture + shared-kmp-libs + KaMPKit on a local Mac, all subcommands × all `--test-type` values × all platforms. Captures any drift not caught by step 5's CI parity check. Fix-PRs land before tagging. ~2-3h validation + N×fix-PRs. New entry below.
+7. ✅ **macOS validation gate** — DONE 2026-05-06 (PRs #153 + #154 on develop). Manual smoke driver `tools/macos-validation-gate.mjs` with 4 modes (`dry`/`probe`/`scoped`/`full`); 45-cell matrix `{parallel, changed} × 7 --test-type values × 3 projects + android × 3 projects`. `--mode probe` against the 3 KMP projects (in-repo fixture + `shared-kmp-libs` + `KaMPKit`) reports **44 PASS / 0 DRIFT / 1 SKIP**. The single drift surfaced (incomplete `coverage` envelope in `lib/android-orchestrator.js` `--list-only` path) was fixed inline in PR #154. Evidence: `MACOS-GATE-V0.9-SUMMARY.md` (this PR). See L372 entry below for closure details.
 8. **Token-cost re-measurement** — captures the new envelope shape post steps 1-7. ~2-3h. See entry "v0.9 — Token-cost re-measurement after parity-gap + DX-parity land".
 9. **README v0.9 refresh + CHANGELOG** — documents the new surface. **MUST be the last step before tagging.** ~2-3h. See entry "v0.9 — README refresh after parity-gap + DX-parity + token-cost re-measurement".
 10. **Tag v0.9.0** — release ceremony per the v0.8.0 / v0.8.1 pattern (intermediate develop PR + clean-cut release/main PR with `git read-tree --reset -u`).
@@ -369,7 +369,27 @@ Fix: new `buildFilterArgs(testFilter, testType, projectRoot)` mirrors the androi
 
 ---
 
-### v0.9 — macOS validation gate (manual smoke before tagging) (NEW 2026-05-05)
+### ✅ SHIPPED 2026-05-06 (v0.9 step 7, PRs #153 + #154 on develop) — macOS validation gate (manual smoke before tagging)
+
+**Closure summary.** New `tools/macos-validation-gate.mjs` driver — 45-cell matrix (`{parallel, changed} × 7 --test-type values × 3 projects = 42` + `android × 3 projects = 3`) against the in-repo fixture + `shared-kmp-libs` + `KaMPKit`. Four modes:
+- `--mode dry` — enumerate cells, no spawn (for matrix-shape sanity).
+- `--mode probe` — spawn `kmp-test <sub> --dry-run|--list-only --json` per cell. Captures REAL envelopes without invoking gradle (orchestrators short-circuit). Disk-safe at any free-space level.
+- `--mode scoped` — spawn `kmp-test` per cell with `--module-filter <smallest>`. One gradle daemon per cell. For wet-validation when disk allows.
+- `--mode full` — unfiltered sweep, gated by `--i-have-20gb-free` (encodes `feedback_disk_space_awareness.md` rule in code).
+
+Drift detection by path-only shape diff against `tests/vitest/__snapshots__/parity.test.js.snap` (with `normalizeForShapeDiff` mirroring `_parity-helpers.js#PLATFORM_SPECIFIC_KEY` collapse, empty-array `[]` symmetry, array-child runtime-vs-contract distinction). Per-cell artifacts `.smoke/macos-gate-v0.9/<safe>.{out,err,json,meta.json}`.
+
+`--mode probe` against the 3 projects on develop tip (`0d8cc34`): **44 PASS / 0 DRIFT / 1 SKIP** (the single skip is the in-repo fixture's android cell, `no-instrumented-target` — the fixture has no instrumented android tests by design).
+
+The probe sweep surfaced **one genuine envelope-contract drift** mid-PR: `lib/android-orchestrator.js` was emitting an incomplete `coverage` block (`{ tool, missed_lines }`) in three places (`--list-only`, `KMP_TEST_SKIP_ADB=1`, main per-module dispatch state) instead of the canonical `{ tool, missed_lines, modules_with_kover_plugin: [], modules_with_jacoco_plugin: [] }` that every other subcommand emits. Fixed inline in PR #154 with a regression test in `tests/vitest/android-orchestrator.test.js` (per `feedback_close_in_one_session.md` — bugs surfaced in the milestone's session get fixed in the same session, not deferred to follow-up PRs).
+
+Evidence: `MACOS-GATE-V0.9-SUMMARY.md` committed in the close-out PR. The gate can be re-run anytime (`node tools/macos-validation-gate.mjs --mode probe`) to validate envelope shape + dispatch end-to-end against future code changes; runs in ~5s on this Mac with no gradle invocation.
+
+Vitest delta: 1018 → 1062 (+44 across the two PRs: 32 in `tests/vitest/macos-validation-gate.test.js` covering matrix-shape / argv hygiene / mode gating / `safeName` uniqueness / the path-only shape-diff contract; 11 covering probe-mode behavior + shape-diff refinements; 1 in `tests/vitest/android-orchestrator.test.js` locking the `--list-only` envelope coverage shape). Manual-only; not wired into CI per `feedback_ci_minutes_minimal_macos.md`.
+
+---
+
+**[Original entry — preserved for traceability]**
 
 **Status: OPEN, scheduled as step 7 of v0.9 milestone (per ROADMAP).** With iOS/macOS TestKit dropped from the per-PR CI matrix (`feedback_ci_minutes_minimal_macos.md`), the only mac coverage is `build (macos-latest)` (vitest, ~30s) + `installer-e2e (macos-latest)` (~20s). Drift in real iOS/macOS gradle dispatch is invisible until manual validation. This gate runs **once before tagging v0.9.0**, against a curated set of real KMP projects.
 

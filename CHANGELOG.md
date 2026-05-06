@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Docs — v0.9 step 7 close-out: BACKLOG marked DONE + evidence committed (2026-05-06)
+
+Closes the v0.9 macOS validation gate work end-to-end. ROADMAP item 7 + the L372 detailed entry both updated to `✅ SHIPPED`. `MACOS-GATE-V0.9-SUMMARY.md` (44 PASS / 0 DRIFT / 1 SKIP, generated against `develop` tip `0d8cc34`) committed at repo root as evidence; `.gitignore` line removed (was only needed during iteration). No code changes.
+
 ### Added — v0.9 step 7: macOS validation gate `--mode probe` + shape-diff refinements + android-orchestrator coverage envelope fix (2026-05-06)
 
 Closes the macOS validation gate work end-to-end (driver + probe mode + shape-diff refinements + the genuine coverage-envelope drift the probe sweep surfaced live). Fold-in of multiple sub-changes into one milestone-closing PR rather than splitting into "Phase D fix-PR" follow-ups (per `feedback_close_in_one_session.md`).
