@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.9 step 7 (Phase A+): macOS validation gate `--mode probe` + shape-diff refinements (2026-05-06)
+
+Phase A follow-up before Phase B kicks off. Adds a fourth driver mode that captures REAL `kmp-test` envelopes without invoking gradle, exactly mirroring the no-gradle-spawn pattern used by `tests/vitest/parity.test.js` for the step-5 snapshot baselines. Phase B (envelope-shape drift check against `parity.test.js.snap`) consumes this mode. Also tightens the shape-diff so it surfaces only contract drift, not runtime-data variance — surfaced live during the first probe sweep against `shared-kmp-libs` + `KaMPKit`.
+
+- **`tools/macos-validation-gate.mjs`** — new mode `probe` between `dry` and `scoped`. Per-cell appends `--dry-run` (parallel/changed) or `--list-only` (android), exactly the form `parity.test.js` uses to populate the step-5 snapshots. The orchestrators short-circuit before any gradle invocation, so envelopes return populated but no daemons start. `probe` is disk-safe at any free-space level — `--abort-floor-mb` and `./gradlew --stop` are no-ops when no daemons exist. Skip rules also relax: the device-required skip no longer applies in probe mode (probe is pre-gradle, so adb state is irrelevant). The matrix-time `no-instrumented-target` skip stays — it avoids a redundant spawn that would just emit `no_test_modules`.
+- **Shape-diff refinements** — three changes to eliminate false-positive drift surfaced during the first probe sweep:
+  1. `normalizeForShapeDiff(envelope)` mirrors `_parity-helpers.js#normalizeEnvelopeForSnapshot`'s `PLATFORM_SPECIFIC_KEY` collapse — `dry_run.plan.{spawn_cmd, spawn_args, script_path, final_args}` get pinned to `<PLATFORM_SPECIFIC>` before shape extraction, so live array-shaped values don't drift against the snapshot's string-shaped placeholders.
+  2. `extractShape` always emits the `[]` suffix for arrays (even empty), so empty-vs-populated arrays don't cause asymmetric drift between snapshot fixtures and real-project envelopes.
+  3. `diffShapes` excludes array-child paths (containing `[].`) from `agree`. Children are still reported in `onlyInExpected`/`onlyInObserved` for triagers, but they don't break agreement — array contents are runtime, not contract.
+  Net effect: the first probe sweep against the 3 projects now surfaces 2 GENUINE drifts (live `kmp-test android --list-only` envelope is missing `coverage.modules_with_jacoco_plugin` and `coverage.modules_with_kover_plugin` keys) instead of being buried under 5+ false positives.
+- **`tests/vitest/macos-validation-gate.test.js`** — 11 new specs (38 → 49 cases): probe-mode behavior (`--dry-run` / `--list-only` dispatch, no `--module-filter`, no device-required skip, matrix-time `no-instrumented-target` still applies, `parseArgs` accepts `probe` without the 20-GiB guard), `normalizeForShapeDiff` collapse semantics, `extractShape` empty-array `[]` emission, `diffShapes` array-child exclusion, top-level key removal still flags as drift.
+
 ### Added — v0.9 step 7 (Phase A): macOS validation gate driver (2026-05-06)
 
 Closes Phase A of the BACKLOG L372 entry "v0.9 — macOS validation gate (manual smoke before tagging)" — the driver scaffold that Phase B (dry pass) and Phase C (scoped wet pass) consume. Manual-only; not wired into CI per `feedback_ci_minutes_minimal_macos.md`.

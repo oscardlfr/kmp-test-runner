@@ -21,6 +21,7 @@ import {
   diffShapes,
   loadSnapshots,
   extractEnvelope,
+  normalizeForShapeDiff,
 } from '../../tools/macos-validation-gate.mjs';
 
 const FORBIDDEN_FLAGS = ['--ignore-jdk-mismatch'];
@@ -193,6 +194,61 @@ describe('macos-validation-gate / argv hygiene', () => {
   });
 });
 
+describe('macos-validation-gate / probe mode', () => {
+  const probeOpts = { ...baseDryOpts, mode: 'probe' };
+
+  it('appends --dry-run to parallel/changed cells (no gradle spawn)', () => {
+    const cells = buildMatrix(probeOpts, happyDeps())
+      .filter((c) => c.subcommand === 'parallel' || c.subcommand === 'changed');
+    expect(cells.length).toBe(2 * TEST_TYPES.length * PROJECTS.length);
+    for (const c of cells) {
+      expect(c.args).toContain('--dry-run');
+      expect(c.args).toContain('--json');
+    }
+  });
+
+  it('appends --list-only to android cells (no gradle spawn)', () => {
+    const cells = buildMatrix(probeOpts, happyDeps())
+      .filter((c) => c.subcommand === 'android');
+    expect(cells).toHaveLength(3);
+    for (const c of cells) {
+      expect(c.args).toContain('--list-only');
+      expect(c.args).toContain('--json');
+      expect(c.args).not.toContain('--dry-run');
+    }
+  });
+
+  it('does not require adb for instrumented cells (probe is pre-gradle)', () => {
+    const cells = buildMatrix(probeOpts, noDeviceDeps());
+    const deviceRequired = cells.filter((c) => c.skipReason === 'device-required');
+    expect(deviceRequired).toHaveLength(0);
+  });
+
+  it('still skips fixture android cell with no-instrumented-target', () => {
+    // The fixture has no android instrumented target regardless of mode —
+    // probe mode would emit no_test_modules from the orchestrator, but
+    // pre-skipping at matrix-build time avoids a redundant kmp-test spawn.
+    const cells = buildMatrix(probeOpts, happyDeps())
+      .filter((c) => c.subcommand === 'android' && c.project === 'fixture');
+    expect(cells).toHaveLength(1);
+    expect(cells[0].skipReason).toBe('no-instrumented-target');
+  });
+
+  it('omits --module-filter in probe mode (no gradle to filter)', () => {
+    const cells = buildMatrix(probeOpts, happyDeps());
+    for (const c of cells) {
+      expect(c.args).not.toContain('--module-filter');
+    }
+  });
+
+  it('parseArgs accepts probe as a valid mode', () => {
+    const opts = parseArgs(['--mode', 'probe']);
+    expect(opts.mode).toBe('probe');
+    // No --i-have-20gb-free guard for probe — disk-safe.
+    expect(opts.iHaveTwentyGb).toBe(false);
+  });
+});
+
 describe('macos-validation-gate / parseArgs + mode gating', () => {
   it('defaults to mode=dry, subcommand=all, testType=all-of, project=all', () => {
     const opts = parseArgs([]);
@@ -298,6 +354,88 @@ describe('macos-validation-gate / shape diff', () => {
   it('extractShape ignores concrete value differences (path-only contract)', () => {
     const a = extractShape({ duration_ms: '<DURATION_MS>' });
     const b = extractShape({ duration_ms: 1234 });
+    expect(diffShapes(a, b).agree).toBe(true);
+  });
+
+  it('emits the [] suffix on empty arrays so empty-vs-populated stays symmetric', () => {
+    const empty = extractShape({ items: [] });
+    const populated = extractShape({ items: ['x', 'y'] });
+    expect(empty).toContain('items[]');
+    expect(populated).toContain('items[]');
+    // Top-level shape diff agrees regardless of array contents.
+    expect(diffShapes(empty, populated).agree).toBe(true);
+  });
+
+  it('diffShapes excludes array-child paths from agree (runtime, not contract)', () => {
+    // snapshot has populated `errors`, live has empty `errors`.
+    const snapshot = extractShape({ errors: [{ code: 'x', message: 'y' }] });
+    const live     = extractShape({ errors: [] });
+    const d = diffShapes(snapshot, live);
+    // Children are reported (so triagers can see them) but don't break agreement.
+    expect(d.onlyInExpected).toEqual(
+      expect.arrayContaining(['errors[].code', 'errors[].message']),
+    );
+    expect(d.agree).toBe(true);
+  });
+
+  it('diffShapes still flags genuine top-level key removals as drift', () => {
+    const snapshot = extractShape({
+      coverage: { tool: 'auto', missed_lines: null, modules_with_kover_plugin: [] },
+    });
+    const live = extractShape({
+      coverage: { tool: 'auto', missed_lines: null },
+    });
+    const d = diffShapes(snapshot, live);
+    expect(d.agree).toBe(false);
+    expect(d.onlyInExpected).toEqual(
+      expect.arrayContaining(['coverage.modules_with_kover_plugin']),
+    );
+  });
+
+  it('normalizeForShapeDiff collapses plan.{spawn_args, final_args} arrays to platform-specific tokens', () => {
+    const live = {
+      plan: {
+        spawn_cmd: 'bash',
+        spawn_args: ['/path/to/script.sh', '--project-root', '/tmp/x'],
+        script_path: '/path/to/script.sh',
+        final_args: ['--project-root', '/tmp/x'],
+        test_filter: null,
+      },
+    };
+    const normalized = normalizeForShapeDiff({ ...live, plan: { ...live.plan } });
+    expect(normalized.plan.spawn_args).toBe('<PLATFORM_SPECIFIC>');
+    expect(normalized.plan.final_args).toBe('<PLATFORM_SPECIFIC>');
+    expect(normalized.plan.spawn_cmd).toBe('<PLATFORM_SPECIFIC>');
+    expect(normalized.plan.script_path).toBe('<PLATFORM_SPECIFIC>');
+    expect(normalized.plan.test_filter).toBeNull();
+  });
+
+  it('normalized live envelope shape matches normalized snapshot shape (no false-positive drift)', () => {
+    // The step-5 snapshot for parallel --dry-run --json normalizes
+    // platform-specific fields to a single string token. A live envelope
+    // emitted by `kmp-test parallel --dry-run --json` carries the same
+    // four keys but with array/string values. After normalizeForShapeDiff,
+    // both envelopes share an identical path set.
+    const snapshotLike = {
+      plan: {
+        spawn_cmd:   '<PLATFORM_SPECIFIC>',
+        spawn_args:  '<PLATFORM_SPECIFIC>',
+        script_path: '<PLATFORM_SPECIFIC>',
+        final_args:  '<PLATFORM_SPECIFIC>',
+        test_filter: null,
+      },
+    };
+    const live = {
+      plan: {
+        spawn_cmd: 'bash',
+        spawn_args: ['/scripts/run.sh', '--project-root', '/tmp/p'],
+        script_path: '/scripts/run.sh',
+        final_args: ['--project-root', '/tmp/p'],
+        test_filter: null,
+      },
+    };
+    const a = extractShape(snapshotLike);
+    const b = extractShape(normalizeForShapeDiff(JSON.parse(JSON.stringify(live))));
     expect(diffShapes(a, b).agree).toBe(true);
   });
 });
