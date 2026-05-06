@@ -1,0 +1,196 @@
+// SPDX-License-Identifier: MIT
+// tests/vitest/parity.test.js — cross-platform parity check (v0.9 step 5).
+//
+// Four static sub-checks running on every PR (ubuntu/windows-latest via the
+// existing build matrix; NO new macOS minutes). Catch drift between the four
+// sources of truth that documented behavior depends on:
+//
+//   1. Flag matrix audit: orchestrator parseArgs ↔ SUBCOMMAND_HELP text.
+//   2. Envelope JSON schema snapshot: golden-file freeze of each subcommand's
+//      JSON envelope shape (with volatile fields normalized).
+//   3. README ↔ code drift: bidirectional set equality (with allowlist).
+//   4. Platform-behavior matrix lock-in: pinned candidate-chains for
+//      resolveTasksFor (iOS/macOS/JS/Wasm).
+//
+// Drift simulations live in the PR description; running this spec without
+// modification asserts the codebase is internally consistent.
+
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { readFileSync, rmSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  REPO_ROOT,
+  SUBCOMMAND_TO_ORCHESTRATOR,
+  CLI_GLOBAL_FLAGS,
+  ORCHESTRATOR_INTERNAL_LITERALS,
+  GRADLE_PASSTHROUGH_FLAGS,
+  extractFlagsFromOrchestratorSource,
+  parseReadmeFlagTable,
+  normalizeEnvelopeForSnapshot,
+  makeFixtureProject,
+  runSubcommand,
+  getDocumentedFlagsForSubcommand,
+  getParsedFlagsForSubcommand,
+} from './_parity-helpers.js';
+
+import { resolveTasksFor } from '../../lib/project-model.js';
+
+const SUBCOMMANDS = Object.keys(SUBCOMMAND_TO_ORCHESTRATOR);
+
+// ---------------------------------------------------------------------------
+// Sub-check 1 — Flag matrix audit
+// ---------------------------------------------------------------------------
+
+describe('parity / flag-matrix audit', () => {
+  for (const sub of SUBCOMMANDS) {
+    describe(`subcommand: ${sub}`, () => {
+      it('every documented flag has a parser case (in cli.js or orchestrator)', () => {
+        const documented = getDocumentedFlagsForSubcommand(sub);
+        const parsed = getParsedFlagsForSubcommand(sub);
+        const documentedNotParsed = [...documented].filter(f => !parsed.has(f));
+        expect(documentedNotParsed).toEqual([]);
+      });
+
+      it('every orchestrator-parsed flag is documented in SUBCOMMAND_HELP', () => {
+        const documented = getDocumentedFlagsForSubcommand(sub);
+        const orchestratorRel = SUBCOMMAND_TO_ORCHESTRATOR[sub];
+        if (!orchestratorRel) {
+          // doctor — flags parsed inline in cli.js. Skip: the inline-runDoctor
+          // body is checked by the "every documented flag has a parser case"
+          // direction. Asserting the inverse here would re-test the same code.
+          return;
+        }
+        const internal = ORCHESTRATOR_INTERNAL_LITERALS[sub] || new Set();
+        // Use the canonical parsedFlags set (includes orchestrator literals +
+        // shared-parser flags from orchestrator-utils via SHARED_PARSER_FLAGS).
+        // Subtract:
+        //   - GRADLE_PASSTHROUGH_FLAGS — gradle CLI tokens emitted, not user-facing.
+        //   - CLI_GLOBAL_FLAGS — handled by cli.js; defensive arms in orchestrator.
+        //   - ORCHESTRATOR_INTERNAL_LITERALS[sub] — per-sub internal (git args, etc.).
+        const parsedFlags = getParsedFlagsForSubcommand(sub);
+        const orchestratorOwn = [...parsedFlags].filter(f =>
+          !GRADLE_PASSTHROUGH_FLAGS.has(f)
+          && !CLI_GLOBAL_FLAGS.has(f)
+          && !internal.has(f));
+        const parsedNotDocumented = orchestratorOwn.filter(f => !documented.has(f));
+        expect(parsedNotDocumented).toEqual([]);
+      });
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Sub-check 4 — Platform-behavior matrix lock-in
+// ---------------------------------------------------------------------------
+
+describe('parity / platform-behavior matrix', () => {
+  const matrix = JSON.parse(readFileSync(
+    path.join(REPO_ROOT, 'tests', 'vitest', 'fixtures', 'platform-behavior-matrix.json'),
+    'utf8',
+  ));
+
+  for (const [field, scenarios] of Object.entries(matrix)) {
+    describe(`resolveTasksFor → ${field}`, () => {
+      for (const { gradleTasks, expected, label } of scenarios) {
+        const tag = label || `tasks=[${(gradleTasks || []).join(',') || '∅'}]`;
+        it(`${tag} → ${expected === null ? 'null' : expected}`, () => {
+          const r = resolveTasksFor(':mod', gradleTasks);
+          expect(r[field]).toBe(expected);
+        });
+      }
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Sub-check 3 — README ↔ code drift detection
+// ---------------------------------------------------------------------------
+
+describe('parity / README ↔ code drift', () => {
+  const allowlistPath = path.join(REPO_ROOT, 'tests', 'vitest', 'fixtures', 'parity-allowlist.json');
+  const allowlist = JSON.parse(readFileSync(allowlistPath, 'utf8'));
+  const allowParsedNotInReadme = new Set(allowlist.parsedButNotInReadme || []);
+  const allowReadmeNotParsed = new Set(allowlist.readmeButNotParsed || []);
+
+  const readmePath = path.join(REPO_ROOT, 'README.md');
+  const readmeFlags = parseReadmeFlagTable(readmePath);
+
+  // Union of flags parsed by any orchestrator OR by cli.js globals.
+  const allParsed = new Set();
+  for (const f of CLI_GLOBAL_FLAGS) allParsed.add(f);
+  for (const sub of SUBCOMMANDS) {
+    for (const f of getParsedFlagsForSubcommand(sub)) allParsed.add(f);
+  }
+
+  it('every README flag has at least one parser case', () => {
+    const orphans = [...readmeFlags].filter(f => !allParsed.has(f) && !allowReadmeNotParsed.has(f));
+    expect(orphans).toEqual([]);
+  });
+
+  it('every parsed user-facing flag appears in the README', () => {
+    // Filter out gradle-passthrough literals AND every orchestrator's internal
+    // literals — these aren't user-facing CLI surface, so they shouldn't be in
+    // the README either.
+    const allInternal = new Set();
+    for (const sub of SUBCOMMANDS) {
+      for (const f of (ORCHESTRATOR_INTERNAL_LITERALS[sub] || new Set())) {
+        allInternal.add(f);
+      }
+    }
+    const userFacing = [...allParsed].filter(f =>
+      !GRADLE_PASSTHROUGH_FLAGS.has(f) && !allInternal.has(f));
+    const orphans = userFacing.filter(f => !readmeFlags.has(f) && !allowParsedNotInReadme.has(f));
+    expect(orphans).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sub-check 2 — Envelope JSON schema snapshot
+// ---------------------------------------------------------------------------
+
+describe('parity / envelope JSON schema snapshot', () => {
+  let fixtureRoot;
+
+  beforeAll(() => {
+    fixtureRoot = makeFixtureProject();
+  });
+
+  afterAll(() => {
+    if (fixtureRoot) {
+      try { rmSync(fixtureRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  // Each entry: { sub, args, env? } — driven via spawnSync of node bin/kmp-test.js.
+  // Mode picks the subcommand's lightest path that still emits a complete
+  // envelope (no gradle / network spawn).
+  const CASES = [
+    { sub: 'parallel',  args: ['--dry-run', '--json'] },
+    { sub: 'changed',   args: ['--dry-run', '--json', '--staged-only'] },
+    { sub: 'android',   args: ['--list-only', '--json'] },
+    { sub: 'benchmark', args: ['--dry-run', '--json'] },
+    { sub: 'coverage',  args: ['--dry-run', '--json'] },
+    { sub: 'doctor',    args: ['--json'], skipFixture: true },
+    { sub: 'info',      args: ['--json', '--no-adb'] },
+    { sub: 'describe',  args: ['--json', '--skip-probe'] },
+    { sub: 'update',    args: ['--check', '--json'], env: { KMP_TEST_REGISTRY_STUB: '{"tag":"99.99.99","source":"stub"}' } },
+  ];
+
+  for (const { sub, args, env, skipFixture } of CASES) {
+    it(`${sub} ${args.join(' ')} envelope shape is stable`, () => {
+      const cwd = skipFixture ? REPO_ROOT : fixtureRoot;
+      const fullArgs = skipFixture ? args : ['--project-root', fixtureRoot, ...args];
+      const { envelope, stdout, exitCode } = runSubcommand(sub, fullArgs, { cwd, env });
+      // Sanity: envelope parsed (don't assert exit code — coverage --dry-run can
+      // legitimately exit non-zero when the project has no coverage reports).
+      if (!envelope) {
+        const preview = stdout.slice(0, 800);
+        throw new Error(`No JSON envelope for '${sub}' (exit ${exitCode}). stdout preview: ${preview}`);
+      }
+      const normalized = normalizeEnvelopeForSnapshot(envelope, fixtureRoot);
+      expect(normalized).toMatchSnapshot();
+    });
+  }
+});
