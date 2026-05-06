@@ -27,8 +27,3 @@ testResults.xml
 # Wide-smoke evidence files (per-pass markdown reports — local artefacts only,
 # never commit; the wide-smoke tools live under tools/wide-smoke-pass-*.mjs).
 WIDE-SMOKE-PASS-*.md
-
-# v0.9 macOS validation gate summary — local-only during iteration.
-# Removed when the final summary is committed at step-7 close-out
-# (Phase E of v0.9 step 7).
-MACOS-GATE-V0.9-SUMMARY.md

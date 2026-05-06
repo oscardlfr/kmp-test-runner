@@ -28,7 +28,7 @@ import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { runAndroid, parseArgs } from '../../lib/android-orchestrator.js';
+import { runAndroid, parseArgs, parseTestCounts } from '../../lib/android-orchestrator.js';
 import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 
 let workDir;
@@ -191,6 +191,55 @@ describe('runAndroid WS-10 (--list-only same source as count)', () => {
       expect(lines.some(l => l.includes(`- ${name}`))).toBe(true);
     }
     expect(exitCode).toBe(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // parseTestCounts — both legacy and new KMP-Android plugin formats.
+  // Surfaced 2026-05-06 by v0.9 step 7 wet validation against
+  // shared-kmp-libs `:benchmark-network` on a real S22: gradle emitted
+  // `Finished 3 tests on SM-S908B - 16` + `BUILD SUCCESSFUL` but the
+  // legacy-only parser reported testsPassed=0, hiding the actual run.
+  // ---------------------------------------------------------------------------
+  it('parseTestCounts: legacy AGP format → counts populate correctly', () => {
+    const log = `> Task :module:connectedDebugAndroidTest
+12 tests completed, 1 failed, 2 skipped
+BUILD SUCCESSFUL`;
+    const c = parseTestCounts(log);
+    expect(c).toEqual({ total: 12, failed: 1, skipped: 2, passed: 9 });
+  });
+
+  it('parseTestCounts: new KMP-Android plugin "Finished N tests on <device>" → uses device-test reporter', () => {
+    const log = `> Task :benchmark-network:connectedAndroidDeviceTest
+Starting 3 tests on SM-S908B - 16
+SM-S908B - 16 Tests 0/3 completed. (0 skipped) (0 failed)
+SM-S908B - 16 Tests 2/3 completed. (0 skipped) (0 failed)
+Finished 3 tests on SM-S908B - 16
+BUILD SUCCESSFUL in 41s`;
+    const c = parseTestCounts(log);
+    expect(c).toEqual({ total: 3, failed: 0, skipped: 0, passed: 3 });
+  });
+
+  it('parseTestCounts: new format with failures takes the latest progress snapshot', () => {
+    const log = `Starting 5 tests on Pixel-7
+Pixel-7 Tests 1/5 completed. (0 skipped) (0 failed)
+Pixel-7 Tests 3/5 completed. (1 skipped) (1 failed)
+Pixel-7 Tests 4/5 completed. (1 skipped) (2 failed)
+Finished 5 tests on Pixel-7`;
+    const c = parseTestCounts(log);
+    expect(c).toEqual({ total: 5, failed: 2, skipped: 1, passed: 2 });
+  });
+
+  it('parseTestCounts: legacy format takes precedence when both present (avoid double-count)', () => {
+    const log = `7 tests completed, 0 failed, 0 skipped
+Finished 99 tests on Bogus-Device`;
+    const c = parseTestCounts(log);
+    expect(c).toEqual({ total: 7, failed: 0, skipped: 0, passed: 7 });
+  });
+
+  it('parseTestCounts: no recognized pattern → all zeros (fallback)', () => {
+    expect(parseTestCounts('')).toEqual({ total: 0, failed: 0, skipped: 0, passed: 0 });
+    expect(parseTestCounts('BUILD SUCCESSFUL\nNothing else relevant'))
+      .toEqual({ total: 0, failed: 0, skipped: 0, passed: 0 });
   });
 
   // Surfaced 2026-05-06 by tools/macos-validation-gate.mjs --mode probe

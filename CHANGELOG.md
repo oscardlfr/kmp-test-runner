@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed + Docs — v0.9 step 7 close-out: wet validation + 3 inline bug fixes + BACKLOG marked DONE (2026-05-06)
+
+Closes the v0.9 macOS validation gate work end-to-end. The wet pass (real gradle invocations against the in-repo fixture + `shared-kmp-libs` + `KaMPKit`, with the S22 attached for instrumented cells) surfaced 3 genuine bugs — all fixed inline in this PR per `feedback_close_in_one_session.md`, none deferred to a follow-up session.
+
+- **`tests/fixtures/kmp-cross-platform-e2e/gradlew` exec-bit fix.** The fixture's `gradlew` was committed with git mode `100644` (no execute bit) instead of `100755`. The first wet cell hit `permission denied: ./gradlew` and the orchestrator misreported it as `[FAIL]`. Fixed via `git update-index --chmod=+x`. Other read-only fixtures under `tests/fixtures/build-logic-*` keep `100644` intentionally — they exist for static parser tests and never invoke gradle.
+- **`lib/parallel-orchestrator.js#pickGradleTaskFor('androidUnit')` hybrid-plugin gate fix.** The early-return for "no Android target" only checked `mod.type` and `mod.androidDsl`, missing the hybrid pattern (legacy `com.android.library` plugin + `kotlin { android { withHostTestBuilder {} } }` DSL inside `kotlin {}`) that surfaces `androidDsl=null` + `androidDslVariant='kmpAndroidLibrary'`. KaMPKit `:shared` is the canonical example. Extended the gate to also accept `androidDslVariant`, so the existing `kmpAndroidLibrary` branch runs and dispatches `testAndroidHostTest`. Regression test in `tests/vitest/parallel-orchestrator.test.js` (Bug D suite).
+- **`lib/android-orchestrator.js#parseTestCounts` new-plugin format support.** The parser only matched the legacy AGP shape `"X tests completed[, Y failed][, Z skipped]"`. The new KMP-Android plugin (`com.android.kotlin.multiplatform.library`) emits `"Starting N tests on <device>"` + progress lines `"<device> Tests M/N completed. (S skipped) (F failed)"` + `"Finished N tests on <device>"`. shared-kmp-libs `:benchmark-network` ran 3 real tests on the S22 with `BUILD SUCCESSFUL` but the envelope reported `testsPassed: 0`. Added a fallback regex chain: legacy first, then `Finished N tests on <device>` for total + last progress line for skipped/failed counts. 5 regression tests in `tests/vitest/android-orchestrator.test.js` covering both formats, the precedence rule, and the empty-input fallback.
+- **`MACOS-GATE-V0.9-WET-RESULTS.md`** committed at repo root as the wet-pass evidence companion to `MACOS-GATE-V0.9-SUMMARY.md` (the auto-generated probe shape-validation summary). Lists all 14 wet cells with results, what was deliberately NOT validated (iOS sim on benchmark modules, since the convention plugin doesn't declare iOS targets), and the 3 bug findings.
+- **`BACKLOG.md`** ROADMAP item 7 + L372 detailed entry both marked `✅ SHIPPED` with the wet-validation evidence summary.
+- **`.gitignore`** line removed (was only needed during iteration).
+
+End-state: probe sweep → **44 PASS / 0 DRIFT / 1 SKIP**; vitest **1063 → 1068** (+5 from this PR's regression coverage); 0 unfixed drift findings.
+
 ### Added — v0.9 step 7: macOS validation gate `--mode probe` + shape-diff refinements + android-orchestrator coverage envelope fix (2026-05-06)
 
 Closes the macOS validation gate work end-to-end (driver + probe mode + shape-diff refinements + the genuine coverage-envelope drift the probe sweep surfaced live). Fold-in of multiple sub-changes into one milestone-closing PR rather than splitting into "Phase D fix-PR" follow-ups (per `feedback_close_in_one_session.md`).

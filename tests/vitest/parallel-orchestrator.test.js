@@ -753,6 +753,27 @@ describe('pickGradleTaskFor', () => {
       expect(r.reason).toBe('');
     });
 
+    // Surfaced live by v0.9 step 7 wet validation against KaMPKit's `:shared`
+    // (2026-05-06). KaMPKit uses the hybrid pattern: `com.android.library`
+    // plugin AT THE TOP + `kotlin { android { withHostTestBuilder {} } }`
+    // DSL inside the `kotlin {}` block. The parser surfaces type='kmp' +
+    // androidDsl=null (no `androidLibrary {}` block) + androidDslVariant=
+    // 'kmpAndroidLibrary' (legacy DSL with new opt-in). The orchestrator's
+    // androidUnit early-return previously only consulted `type` and
+    // `androidDsl`, so this combo hit `'no androidUnit target'` even though
+    // `testAndroidHostTest` would have run cleanly. Lock the dispatch.
+    it('androidUnit: kmpAndroidLibrary with androidDsl=null (KaMPKit hybrid) → dispatches testAndroidHostTest', () => {
+      const mod = {
+        name: 'shared', type: 'kmp', androidDsl: null,
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidUnitTest: true, commonTest: true, iosTest: true, iosMain: true },
+        resolved: { unitTestTask: null },
+      };
+      const r = pickGradleTaskFor(mod, 'androidUnit');
+      expect(r.task).toBe(':shared:testAndroidHostTest');
+      expect(r.reason).toBe('');
+    });
+
     it('androidUnit: kmpAndroidLibrary without opt-in → null with withHostTestBuilder reason', () => {
       const mod = {
         name: 'core-firebase-native', type: 'kmp', androidDsl: 'androidLibrary',
