@@ -161,6 +161,31 @@ export function parseReadmeFlagTable(readmePath) {
   return flags;
 }
 
+// Recursive schema projection — replaces every leaf value with a placeholder
+// describing its TYPE. Arrays collapse to a single-element shape (so the
+// snapshot doesn't lock the count) when their elements are homogeneous;
+// heterogeneous arrays keep per-position shapes. Used inside HOST_ENV_KEY
+// fields to lock the schema without locking the values.
+function schemaOf(v) {
+  if (v === null) return '<null>';
+  if (v === undefined) return '<undefined>';
+  if (typeof v === 'string') return '<string>';
+  if (typeof v === 'number') return '<number>';
+  if (typeof v === 'boolean') return '<boolean>';
+  if (Array.isArray(v)) {
+    if (v.length === 0) return [];
+    const elem = schemaOf(v[0]);
+    // For arrays of objects, lock per-element key set; for primitives, single shape.
+    return [elem];
+  }
+  if (typeof v === 'object') {
+    const out = {};
+    for (const [k, val] of Object.entries(v)) out[k] = schemaOf(val);
+    return out;
+  }
+  return `<${typeof v}>`;
+}
+
 // Normalize a kmp-test JSON envelope so snapshots stay stable across runs
 // AND across platforms (Windows / Linux / macOS). Volatile fields (durations,
 // timestamps, project_root, version) become symbolic placeholders. Platform-
@@ -178,6 +203,14 @@ export function normalizeEnvelopeForSnapshot(envelope, projectRoot) {
   // the value with a stable token. Locking these would tie the snapshot to a
   // single OS — defeats the cross-platform parity intent.
   const PLATFORM_SPECIFIC_KEY = /^(spawn_cmd|spawn_args|script_path|final_args)$/;
+  // Top-level envelope keys that contain HOST-environment-specific values
+  // (Node version, OS, installed JDKs, Android SDK path, gradle config sources,
+  // etc.). For these, we lock the SHAPE (key set / type / array element shape)
+  // not the values — otherwise the snapshot becomes a host fingerprint.
+  //   - doctor's `checks` array: per-machine list of {Node, JDK, ADB, …}
+  //   - doctor's `gradle_config` block: per-machine ~/.gradle/gradle.properties
+  //   - info's `info` block: same dimensions as doctor.checks
+  const HOST_ENV_KEY = /^(checks|info|gradle_config)$/;
 
   function walk(v) {
     if (v === null || v === undefined) return v;
@@ -208,6 +241,13 @@ export function normalizeEnvelopeForSnapshot(envelope, projectRoot) {
           // KEY presence — the dry-run plan's content is intrinsically OS-
           // specific and shouldn't pin to one host.
           out[k] = '<PLATFORM_SPECIFIC>';
+        } else if (HOST_ENV_KEY.test(k)) {
+          // doctor.checks[] / info.* — lock the schema (key set + element
+          // shape) not the values. Replace each leaf with its TYPE so adding
+          // a check or info field still surfaces as a snapshot diff, but
+          // host-specific values (Node version, JDK installs, SDK paths,
+          // gradle config sources) don't make the snapshot host-specific.
+          out[k] = schemaOf(val);
         } else {
           out[k] = walk(val);
         }
