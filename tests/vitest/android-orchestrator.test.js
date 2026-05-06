@@ -192,6 +192,29 @@ describe('runAndroid WS-10 (--list-only same source as count)', () => {
     }
     expect(exitCode).toBe(0);
   });
+
+  // Surfaced 2026-05-06 by tools/macos-validation-gate.mjs --mode probe
+  // against shared-kmp-libs and KaMPKit. The android orchestrator was
+  // emitting an incomplete coverage block ({ tool, missed_lines }) that
+  // didn't match the envelope contract used by every other subcommand
+  // and the parity snapshot. Lock the full shape: tool + missed_lines +
+  // both modules_with_*_plugin arrays, even when empty.
+  it('--list-only envelope coverage block matches the canonical full shape', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.coverage).toEqual({
+      tool: 'auto',
+      missed_lines: null,
+      modules_with_kover_plugin: [],
+      modules_with_jacoco_plugin: [],
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

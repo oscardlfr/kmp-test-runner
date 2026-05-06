@@ -12,10 +12,15 @@
 // per-cell artifacts under .smoke/<run>/<safe>.{out,err,json,meta.json},
 // markdown summary, --reclassify mode that re-reads saved artifacts).
 //
-// Modes (--mode <dry|scoped|full>):
+// Modes (--mode <dry|probe|scoped|full>):
 //   dry    — enumerate cells, print plan, write summary, NO spawn. Default.
-//            Used by Phase B (sanity check) + the vitest spec (matrix shape).
-//   scoped — spawn kmp-test per cell with --modules <scopedModule> filter
+//            Used by Phase B's matrix-shape sanity check + the vitest spec.
+//   probe  — spawn kmp-test per cell with --dry-run (parallel/changed) or
+//            --list-only (android). Captures REAL envelopes with NO gradle
+//            invocation, exactly mirroring the parity.test.js snapshot
+//            cases. Disk-safe (no daemons), so it runs unconditionally.
+//            Used by Phase B's envelope-shape drift check.
+//   scoped — spawn kmp-test per cell with --module-filter <scopedModule>
 //            so gradle only touches one module per cell. Daemons stopped
 //            between cells. Disk monitored against --abort-floor-mb. Used
 //            by Phase C with current 8.6 GiB disk.
@@ -91,7 +96,7 @@ export const TEST_TYPES = [
 
 export const SUBCOMMANDS = ['parallel', 'changed', 'android'];
 
-const VALID_MODES = new Set(['dry', 'scoped', 'full']);
+const VALID_MODES = new Set(['dry', 'probe', 'scoped', 'full']);
 
 // ─── argv parser ───────────────────────────────────────────────────────────
 
@@ -169,17 +174,22 @@ export function buildMatrix(opts, deps = {}) {
     : PROJECTS.filter((p) => p.name === opts.project);
 
   const adbReady = adbHasDevice();
+  // Probe mode short-circuits before any gradle (or adb) invocation,
+  // so the device-required skip rule doesn't apply. Phase B should
+  // produce envelope shapes for every cell regardless of device state.
+  const requireAdb = opts.mode !== 'probe';
   const cells = [];
 
   for (const sub of targetSubs) {
     for (const proj of targetProjects) {
       if (sub === 'android') {
         // android subcommand is instrumented-only and ignores --test-type.
-        // One cell per project. Skip if no project on disk or no device.
+        // One cell per project. Skip if no project on disk or no device
+        // (the latter only outside probe mode).
         cells.push(buildCell({
           sub, testType: null, proj,
           opts, adbReady, projectExists,
-          skipReason: pickAndroidSkip({ proj, adbReady, projectExists }),
+          skipReason: pickAndroidSkip({ proj, adbReady, projectExists, requireAdb }),
         }));
         continue;
       }
@@ -188,7 +198,7 @@ export function buildMatrix(opts, deps = {}) {
         cells.push(buildCell({
           sub, testType: tt, proj,
           opts, adbReady, projectExists,
-          skipReason: pickSkip({ tt, proj, adbReady, projectExists }),
+          skipReason: pickSkip({ tt, proj, adbReady, projectExists, requireAdb }),
         }));
       }
     }
@@ -199,6 +209,15 @@ export function buildMatrix(opts, deps = {}) {
 function buildCell({ sub, testType, proj, opts, skipReason }) {
   const args = [KMP_TEST, sub, '--project-root', proj.path];
   if (testType !== null) args.push('--test-type', testType);
+  if (opts.mode === 'probe') {
+    // Probe mode mirrors what parity.test.js does — invoke kmp-test
+    // in its lightest no-gradle-spawn shape. The orchestrators short-
+    // circuit before any gradle invocation, so envelopes come back
+    // populated but no daemons start. Keeps probe mode disk-safe at
+    // any free-space level.
+    if (sub === 'android') args.push('--list-only');
+    else args.push('--dry-run');
+  }
   if (opts.mode === 'scoped' && proj.scopedModule) {
     // Strip leading `:` — the CLI's --module-filter is a name-glob,
     // not a gradle path. `:core-result` → `core-result`.
@@ -220,16 +239,16 @@ function buildCell({ sub, testType, proj, opts, skipReason }) {
   };
 }
 
-function pickAndroidSkip({ proj, adbReady, projectExists }) {
+function pickAndroidSkip({ proj, adbReady, projectExists, requireAdb }) {
   if (!projectExists(proj.path)) return 'project-absent';
   if (!proj.hasAndroidInstrumented) return 'no-instrumented-target';
-  if (!adbReady) return 'device-required';
+  if (requireAdb && !adbReady) return 'device-required';
   return null;
 }
 
-function pickSkip({ tt, proj, adbReady, projectExists }) {
+function pickSkip({ tt, proj, adbReady, projectExists, requireAdb }) {
   if (!projectExists(proj.path)) return 'project-absent';
-  if (tt === 'androidInstrumented' && !adbReady) return 'device-required';
+  if (requireAdb && tt === 'androidInstrumented' && !adbReady) return 'device-required';
   return null;
 }
 
@@ -293,6 +312,11 @@ function walk(v, prefix, out) {
   if (prefix) out.add(prefix);
   if (v === null || v === undefined) return;
   if (Array.isArray(v)) {
+    // Always emit the `[]` suffix so empty-vs-populated arrays don't
+    // cause asymmetric drift (snapshot baseline often uses one shape
+    // against synthetic fixtures, live runs against real projects use
+    // the other).
+    if (prefix) out.add(`${prefix}[]`);
     if (v.length > 0) walk(v[0], `${prefix}[]`, out);
     return;
   }
@@ -304,18 +328,45 @@ function walk(v, prefix, out) {
   }
 }
 
+// Mirror the platform-specific normalizations baked into
+// tests/vitest/_parity-helpers.js#normalizeEnvelopeForSnapshot. The
+// step-5 snapshots collapse `dry_run.plan.{spawn_cmd, spawn_args,
+// script_path, final_args}` to a single `<PLATFORM_SPECIFIC>` token —
+// shape diff against a live envelope must apply the same collapse,
+// otherwise array-vs-string drifts reading as 2 unexpected paths
+// (`plan.spawn_args[]`, `plan.final_args[]`) get reported as drift.
+// Mutates and returns the envelope; only used as input to extractShape.
+export function normalizeForShapeDiff(envelope) {
+  if (!envelope || typeof envelope !== 'object') return envelope;
+  if (envelope.plan && typeof envelope.plan === 'object') {
+    for (const k of ['spawn_cmd', 'spawn_args', 'script_path', 'final_args']) {
+      if (k in envelope.plan) envelope.plan[k] = '<PLATFORM_SPECIFIC>';
+    }
+  }
+  return envelope;
+}
+
 // Compares two shape signatures; returns { onlyInA, onlyInB, agree } sets.
 // onlyInA = paths present in a but not b ("missing from observed").
 // onlyInB = paths present in b but not a ("unexpected in observed").
+// Array-element child paths (containing `[].`) are reported but excluded
+// from `agree`: snapshot baselines were generated against synthetic
+// fixtures whose array contents differ structurally from real projects
+// (e.g., snapshot's empty `errors: []` vs live `errors: [{code, message}]`).
+// Top-level array existence (`foo[]`), object keys, and nested non-array
+// keys all still drive `agree` — those reflect the actual envelope contract.
 export function diffShapes(expected, observed) {
   const exp = new Set(expected);
   const obs = new Set(observed);
   const onlyInExpected = [...exp].filter((x) => !obs.has(x));
   const onlyInObserved = [...obs].filter((x) => !exp.has(x));
+  const isArrayChild = (p) => p.includes('[].');
+  const expectedContractDrift = onlyInExpected.filter((p) => !isArrayChild(p));
+  const observedContractDrift = onlyInObserved.filter((p) => !isArrayChild(p));
   return {
     onlyInExpected,
     onlyInObserved,
-    agree: onlyInExpected.length === 0 && onlyInObserved.length === 0,
+    agree: expectedContractDrift.length === 0 && observedContractDrift.length === 0,
   };
 }
 
@@ -393,7 +444,7 @@ function runCell(cell, opts, smokeDir, expectedShape) {
     bucket = 'ERROR';
     reason = 'no envelope emitted (orchestrator died before --json write)';
   } else if (expectedShape) {
-    const observed = extractShape(envelope);
+    const observed = extractShape(normalizeForShapeDiff(structuredClone(envelope)));
     const diff = diffShapes(expectedShape, observed);
     if (diff.agree) {
       bucket = 'PASS';
@@ -423,14 +474,18 @@ function runCell(cell, opts, smokeDir, expectedShape) {
 
 function maybeStopDaemons(opts, projPath) {
   if (!opts.stopDaemons) return;
-  if (opts.mode === 'dry') return;
+  // dry + probe modes never spawn gradle daemons, so the stop is a
+  // pointless ~1s wrapper invocation.
+  if (opts.mode === 'dry' || opts.mode === 'probe') return;
   const wrapper = path.join(projPath, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
   if (!existsSync(wrapper)) return;
   spawnSync(wrapper, ['--stop'], { cwd: projPath, encoding: 'utf8', shell: false });
 }
 
 function checkAbortFloor(opts) {
-  if (opts.mode === 'dry') return false;
+  // dry + probe modes don't allocate gradle daemons, so the disk floor
+  // doesn't apply. They run regardless of free space.
+  if (opts.mode === 'dry' || opts.mode === 'probe') return false;
   const r = spawnSync('df', ['-Pm', '/System/Volumes/Data'], { encoding: 'utf8', shell: false });
   if (r.status !== 0) return false;
   const lines = r.stdout.trim().split('\n');
@@ -475,7 +530,7 @@ function reclassifyCell(cell, smokeDir, expectedShape) {
   let bucket = prior.bucket || 'ERROR';
   let reason = prior.reason || '';
   if (envelope && expectedShape) {
-    const diff = diffShapes(expectedShape, extractShape(envelope));
+    const diff = diffShapes(expectedShape, extractShape(normalizeForShapeDiff(structuredClone(envelope))));
     if (diff.agree) {
       bucket = 'PASS';
       reason = `(reclassified) envelope shape matches snapshot`;
@@ -585,9 +640,13 @@ Manual macOS validation gate for v0.9. See BACKLOG.md ### v0.9 — macOS
 validation gate for the matrix definition.
 
 Options:
-  --mode <dry|scoped|full>      dry: enumerate, no spawn (default)
-                                scoped: run with --modules <single>
-                                full: run unfiltered (requires --i-have-20gb-free)
+  --mode <dry|probe|scoped|full>
+                                dry:    enumerate, no spawn (default)
+                                probe:  spawn kmp-test --dry-run/--list-only
+                                        per cell — captures real envelopes
+                                        without invoking gradle (Phase B)
+                                scoped: run with --module-filter <single>
+                                full:   run unfiltered (requires --i-have-20gb-free)
   --subcommand <name>           parallel|changed|android|all (default: all)
   --test-type <name>            ${TEST_TYPES.join('|')}|all-of (default: all-of)
   --project <name>              ${PROJECTS.map((p) => p.name).join('|')}|all (default: all)

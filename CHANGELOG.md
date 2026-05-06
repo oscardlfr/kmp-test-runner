@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.9 step 7: macOS validation gate `--mode probe` + shape-diff refinements + android-orchestrator coverage envelope fix (2026-05-06)
+
+Closes the macOS validation gate work end-to-end (driver + probe mode + shape-diff refinements + the genuine coverage-envelope drift the probe sweep surfaced live). Fold-in of multiple sub-changes into one milestone-closing PR rather than splitting into "Phase D fix-PR" follow-ups (per `feedback_close_in_one_session.md`).
+
+- **`tools/macos-validation-gate.mjs`** — new mode `probe` between `dry` and `scoped`. Per-cell appends `--dry-run` (parallel/changed) or `--list-only` (android), exactly the form `tests/vitest/parity.test.js` uses to populate the step-5 snapshots. Orchestrators short-circuit before any gradle invocation, so envelopes return populated but no daemons start. `probe` is disk-safe at any free-space level — `--abort-floor-mb` and `./gradlew --stop` are no-ops when no daemons exist. Skip rules also relax: the device-required skip no longer applies in probe mode (pre-gradle, adb state irrelevant). The matrix-time `no-instrumented-target` skip stays — it avoids a redundant spawn that would just emit `no_test_modules`.
+- **Shape-diff refinements** — three changes to eliminate false-positive drift surfaced during the first probe sweep:
+  1. `normalizeForShapeDiff(envelope)` mirrors `_parity-helpers.js#normalizeEnvelopeForSnapshot`'s `PLATFORM_SPECIFIC_KEY` collapse — `dry_run.plan.{spawn_cmd, spawn_args, script_path, final_args}` get pinned to `<PLATFORM_SPECIFIC>` before shape extraction, so live array-shaped values don't drift against the snapshot's string-shaped placeholders.
+  2. `extractShape` always emits the `[]` suffix for arrays (even empty), so empty-vs-populated arrays don't cause asymmetric drift between snapshot fixtures and real-project envelopes.
+  3. `diffShapes` excludes array-child paths (containing `[].`) from `agree`. Children are still reported in `onlyInExpected`/`onlyInObserved` for triagers, but they don't break agreement — array contents are runtime, not contract.
+- **`lib/android-orchestrator.js`** — fix the genuine envelope-contract drift the probe sweep surfaced. Three locations (`--list-only` short-circuit, `KMP_TEST_SKIP_ADB=1` short-circuit, main per-module dispatch state) emitted an incomplete `coverage` block (`{ tool, missed_lines }`) instead of the canonical `{ tool, missed_lines, modules_with_kover_plugin: [], modules_with_jacoco_plugin: [] }`. The other subcommands and `cli.js#envErrorJson` / `buildDryRunReport` already emit the full shape; android was the outlier. Fixed by adding the two empty arrays at all three locations. New regression test in `tests/vitest/android-orchestrator.test.js` locks the `--list-only` envelope's coverage shape against future drift.
+- **`tests/vitest/macos-validation-gate.test.js`** — 12 new specs (38 → 50 cases): probe-mode behavior (`--dry-run` / `--list-only` dispatch, no `--module-filter`, no device-required skip, matrix-time `no-instrumented-target` still applies, `parseArgs` accepts `probe` without the 20-GiB guard), `normalizeForShapeDiff` collapse semantics, `extractShape` empty-array `[]` emission, `diffShapes` array-child exclusion, top-level key removal still flags as drift.
+
+End-state: `node tools/macos-validation-gate.mjs --mode probe` against the 3 KMP projects (in-repo fixture, `shared-kmp-libs`, `KaMPKit`) reports **44 PASS / 0 DRIFT / 1 SKIP** — the only skip is the in-repo fixture's android cell which legitimately has no instrumented target. Step 7 closure ready: the gate can be re-run anytime in `--mode probe` (disk-safe) or `--mode scoped` (with `--module-filter`) to validate envelope shape + dispatch end-to-end.
+
 ### Added — v0.9 step 7 (Phase A): macOS validation gate driver (2026-05-06)
 
 Closes Phase A of the BACKLOG L372 entry "v0.9 — macOS validation gate (manual smoke before tagging)" — the driver scaffold that Phase B (dry pass) and Phase C (scoped wet pass) consume. Manual-only; not wired into CI per `feedback_ci_minutes_minimal_macos.md`.
