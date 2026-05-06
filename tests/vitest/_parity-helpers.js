@@ -161,13 +161,23 @@ export function parseReadmeFlagTable(readmePath) {
   return flags;
 }
 
-// Normalize a kmp-test JSON envelope so snapshots stay stable across runs.
-// Volatile fields (durations, timestamps, the project_root path, version)
-// become symbolic placeholders. Recursive — descends into arrays/objects.
+// Normalize a kmp-test JSON envelope so snapshots stay stable across runs
+// AND across platforms (Windows / Linux / macOS). Volatile fields (durations,
+// timestamps, project_root, version) become symbolic placeholders. Platform-
+// specific dispatch fields (spawn_cmd, spawn_args, script_path, final_args)
+// inside `dry_run.plan` collapse to a single placeholder per family —
+// dry-run plans are inherently OS-specific (Windows pwsh + ps1 + PascalCase
+// vs bash + sh + kebab) but the AGNOSTIC envelope shape is what we lock in.
+// Recursive — descends into arrays/objects.
 export function normalizeEnvelopeForSnapshot(envelope, projectRoot) {
   const root = projectRoot ? path.resolve(projectRoot) : null;
   const rootForwardSlashes = root ? root.replace(/\\/g, '/') : null;
   const VOLATILE_KEY = /^(duration_ms|run_id|run-id|runId|started_at|started-at|startedAt|generated_at|generated-at|generatedAt|timestamp|finished_at|finished-at|finishedAt)$/i;
+  // Platform-specific fields inside dry_run.plan. The shape (key set) is
+  // platform-invariant; the values aren't. We assert key presence by replacing
+  // the value with a stable token. Locking these would tie the snapshot to a
+  // single OS — defeats the cross-platform parity intent.
+  const PLATFORM_SPECIFIC_KEY = /^(spawn_cmd|spawn_args|script_path|final_args)$/;
 
   function walk(v) {
     if (v === null || v === undefined) return v;
@@ -189,6 +199,15 @@ export function normalizeEnvelopeForSnapshot(envelope, projectRoot) {
           out[k] = '<KMP_TEST_VERSION>';
         } else if (VOLATILE_KEY.test(k)) {
           out[k] = `<${k.toUpperCase()}>`;
+        } else if (PLATFORM_SPECIFIC_KEY.test(k)) {
+          // Cross-platform: spawn_cmd ('pwsh' vs 'bash'), spawn_args
+          // (`-NoLogo -NoProfile -File <ps1> -ProjectRoot …` vs
+          // `<sh> --project-root …`; arrays of different LENGTH per OS),
+          // script_path ('.ps1' vs '.sh'), final_args (PascalCase vs kebab).
+          // Collapse to a single placeholder so the snapshot only locks the
+          // KEY presence — the dry-run plan's content is intrinsically OS-
+          // specific and shouldn't pin to one host.
+          out[k] = '<PLATFORM_SPECIFIC>';
         } else {
           out[k] = walk(val);
         }
