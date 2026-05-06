@@ -1,9 +1,9 @@
 # v0.9 macOS validation gate — summary
 
-Generated: 2026-05-06T20:12:29.256Z
+Generated: 2026-05-06T20:49:07.901Z
 Mode: `probe`
 Output cells: 45
-Repo HEAD: `0d8cc34`
+Repo HEAD: `dc83772`
 
 ## Bucket counts
 
