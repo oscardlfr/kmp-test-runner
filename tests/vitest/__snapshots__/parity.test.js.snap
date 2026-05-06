@@ -1,0 +1,475 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`parity / envelope JSON schema snapshot > android --list-only --json envelope shape is stable 1`] = `
+{
+  "android": {
+    "device_serial": "",
+    "device_task": "",
+    "flavor": "",
+    "instrumented_modules": [],
+  },
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "code": "no_test_modules",
+      "message": "[ERROR] No modules found with android-instrumented tests",
+    },
+  ],
+  "exit_code": 3,
+  "isolated": {
+    "cache_dir": null,
+    "enabled": false,
+    "kept": false,
+    "locked": true,
+  },
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "skipped": [],
+  "subcommand": "android",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`parity / envelope JSON schema snapshot > benchmark --dry-run --json envelope shape is stable 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "dry_run": true,
+  "duration_ms": "<DURATION_MS>",
+  "errors": [],
+  "exit_code": 0,
+  "modules": [],
+  "plan": {
+    "final_args": [
+      "--project-root",
+      "<PROJECT_ROOT>",
+    ],
+    "script_path": "C:\\Users\\34645\\AndroidStudioProjects\\kmp-test-runner\\scripts\\ps1\\run-benchmarks.ps1",
+    "spawn_args": [
+      "-NoLogo",
+      "-NoProfile",
+      "-File",
+      "C:\\Users\\34645\\AndroidStudioProjects\\kmp-test-runner\\scripts\\ps1\\run-benchmarks.ps1",
+      "--project-root",
+      "<PROJECT_ROOT>",
+    ],
+    "spawn_cmd": "pwsh",
+    "test_filter": null,
+  },
+  "project_root": "<PROJECT_ROOT>",
+  "skipped": [],
+  "subcommand": "benchmark",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`parity / envelope JSON schema snapshot > changed --dry-run --json --staged-only envelope shape is stable 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "dry_run": true,
+  "duration_ms": "<DURATION_MS>",
+  "errors": [],
+  "exit_code": 0,
+  "modules": [],
+  "plan": {
+    "final_args": [
+      "--project-root",
+      "<PROJECT_ROOT>",
+      "--staged-only",
+    ],
+    "script_path": "C:\\Users\\34645\\AndroidStudioProjects\\kmp-test-runner\\scripts\\ps1\\run-changed-modules-tests.ps1",
+    "spawn_args": [
+      "-NoLogo",
+      "-NoProfile",
+      "-File",
+      "C:\\Users\\34645\\AndroidStudioProjects\\kmp-test-runner\\scripts\\ps1\\run-changed-modules-tests.ps1",
+      "--project-root",
+      "<PROJECT_ROOT>",
+      "--staged-only",
+    ],
+    "spawn_cmd": "pwsh",
+    "test_filter": null,
+  },
+  "project_root": "<PROJECT_ROOT>",
+  "skipped": [],
+  "subcommand": "changed",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`parity / envelope JSON schema snapshot > coverage --dry-run --json envelope shape is stable 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "dry_run": true,
+  "duration_ms": "<DURATION_MS>",
+  "errors": [],
+  "exit_code": 0,
+  "modules": [],
+  "plan": {
+    "final_args": [
+      "--skip-tests",
+      "--project-root",
+      "<PROJECT_ROOT>",
+    ],
+    "script_path": "C:\\Users\\34645\\AndroidStudioProjects\\kmp-test-runner\\scripts\\ps1\\run-parallel-coverage-suite.ps1",
+    "spawn_args": [
+      "-NoLogo",
+      "-NoProfile",
+      "-File",
+      "C:\\Users\\34645\\AndroidStudioProjects\\kmp-test-runner\\scripts\\ps1\\run-parallel-coverage-suite.ps1",
+      "-SkipTests",
+      "-ProjectRoot",
+      "<PROJECT_ROOT>",
+    ],
+    "spawn_cmd": "pwsh",
+    "test_filter": null,
+  },
+  "project_root": "<PROJECT_ROOT>",
+  "skipped": [],
+  "subcommand": "coverage",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`parity / envelope JSON schema snapshot > describe --json --skip-probe envelope shape is stable 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "tool": "none",
+  },
+  "describe": {
+    "cache_key": "f42b0a1b80ae622c4fc749853078a3f256945acf",
+    "coverage_tool": "none",
+    "dependency_graph": {
+      "composite_builds": [],
+      "included_modules": [
+        ":mod",
+      ],
+    },
+    "generated_at": "<GENERATED_AT>",
+    "jdk_requirement": {
+      "agp": null,
+      "min": null,
+    },
+    "modules": [
+      {
+        "android_dsl": null,
+        "android_dsl_variant": null,
+        "coverage_plugin": null,
+        "coverage_task": null,
+        "has_flavor": false,
+        "name": ":mod",
+        "path": "mod",
+        "platforms": [
+          "jvm",
+        ],
+        "test_build_type": null,
+        "test_tasks": {
+          "device": null,
+          "ios": null,
+          "macos": null,
+          "unit": "jvmTest",
+          "web": null,
+        },
+        "type": "kmp",
+      },
+    ],
+    "schema_version": 7,
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [],
+  "exit_code": 0,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "skipped": [],
+  "subcommand": "describe",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`parity / envelope JSON schema snapshot > doctor --json envelope shape is stable 1`] = `
+{
+  "checks": [
+    {
+      "message": ">=18 required",
+      "name": "Node",
+      "status": "OK",
+      "value": "v24.12.0",
+    },
+    {
+      "message": "cross-platform PowerShell present",
+      "name": "pwsh",
+      "status": "OK",
+      "value": "available",
+    },
+    {
+      "message": "no wrapper in C:\\Users\\34645\\AndroidStudioProjects\\kmp-test-runner — run from a Gradle project or pass --project-root",
+      "name": "gradlew",
+      "status": "WARN",
+      "value": "not found",
+    },
+    {
+      "message": ">=17 recommended",
+      "name": "JDK",
+      "status": "OK",
+      "value": "23.0.2",
+    },
+    {
+      "message": "JDK 11 (Eclipse Adoptium), JDK 17 (Eclipse Adoptium), JDK 21 (Azul Systems, Inc.), JDK 23 (Eclipse Adoptium)",
+      "name": "JDK catalogue",
+      "status": "OK",
+      "value": "4 installs",
+    },
+    {
+      "message": "C:\\Users\\34645\\AppData\\Local\\Android\\Sdk (will be auto-set as ANDROID_HOME for android dispatches)",
+      "name": "Android SDK",
+      "status": "OK",
+      "value": "auto-detect",
+    },
+    {
+      "message": "optional — see README for .kmp-test-runner.json schema",
+      "name": "Config file",
+      "status": "OK",
+      "value": "not present",
+    },
+    {
+      "message": "install Android SDK platform-tools to run android subcommand",
+      "name": "ADB",
+      "status": "WARN",
+      "value": "not found",
+    },
+  ],
+  "duration_ms": "<DURATION_MS>",
+  "exit_code": 0,
+  "gradle_config": {
+    "caching": false,
+    "configureondemand": false,
+    "daemon": true,
+    "jvmargs": null,
+    "parallel": false,
+    "sources": {
+      "project": false,
+      "user": true,
+    },
+    "workers_max": null,
+  },
+  "project_root": "<PROJECT_ROOT>",
+  "subcommand": "doctor",
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+}
+`;
+
+exports[`parity / envelope JSON schema snapshot > info --json --no-adb envelope shape is stable 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [],
+  "exit_code": 0,
+  "info": {
+    "adb": null,
+    "android_sdk": {
+      "path": "C:\\Users\\34645\\AppData\\Local\\Android\\Sdk",
+      "source": "auto-detect",
+    },
+    "config": {
+      "present": false,
+    },
+    "gradle_config": {
+      "caching": false,
+      "configureondemand": false,
+      "daemon": true,
+      "parallel": false,
+      "sources": {
+        "project": false,
+        "user": true,
+      },
+      "workers_max": null,
+    },
+    "gradlew": {
+      "present": true,
+      "project_root": "<PROJECT_ROOT>",
+    },
+    "jdk": {
+      "java_home": "C:/Program Files/Eclipse Adoptium/jdk-17.0.18.8-hotspot",
+      "note": ">=17 recommended",
+      "version": "<KMP_TEST_VERSION>",
+    },
+    "jdk_catalogue": [
+      {
+        "major": 11,
+        "vendor": "Eclipse Adoptium",
+      },
+      {
+        "major": 17,
+        "vendor": "Eclipse Adoptium",
+      },
+      {
+        "major": 23,
+        "vendor": "Eclipse Adoptium",
+      },
+    ],
+    "node": "v24.12.0",
+    "os": "Windows_NT 10.0.22631",
+    "platform": "win32",
+    "shell": {
+      "name": "pwsh",
+      "present": true,
+    },
+  },
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "skipped": [],
+  "subcommand": "info",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`parity / envelope JSON schema snapshot > parallel --dry-run --json envelope shape is stable 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "dry_run": true,
+  "duration_ms": "<DURATION_MS>",
+  "errors": [],
+  "exit_code": 0,
+  "modules": [],
+  "plan": {
+    "final_args": [
+      "--project-root",
+      "<PROJECT_ROOT>",
+    ],
+    "script_path": "C:\\Users\\34645\\AndroidStudioProjects\\kmp-test-runner\\scripts\\ps1\\run-parallel-coverage-suite.ps1",
+    "spawn_args": [
+      "-NoLogo",
+      "-NoProfile",
+      "-File",
+      "C:\\Users\\34645\\AndroidStudioProjects\\kmp-test-runner\\scripts\\ps1\\run-parallel-coverage-suite.ps1",
+      "-ProjectRoot",
+      "<PROJECT_ROOT>",
+    ],
+    "spawn_cmd": "pwsh",
+    "test_filter": null,
+  },
+  "project_root": "<PROJECT_ROOT>",
+  "skipped": [],
+  "subcommand": "parallel",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`parity / envelope JSON schema snapshot > update --check --json envelope shape is stable 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [],
+  "exit_code": 0,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "skipped": [],
+  "subcommand": "update",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "update": {
+    "action": "check-only",
+    "current_version": "0.8.1",
+    "install_command": null,
+    "latest_source": "stub",
+    "latest_version": "99.99.99",
+    "up_to_date": false,
+  },
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;

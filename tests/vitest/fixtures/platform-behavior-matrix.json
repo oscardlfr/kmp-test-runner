@@ -1,0 +1,44 @@
+{
+  "iosTestTask": [
+    { "label": "all candidates → iosSimulatorArm64Test wins",
+      "gradleTasks": ["iosSimulatorArm64Test", "iosX64Test", "iosArm64Test", "iosTest"],
+      "expected": "iosSimulatorArm64Test" },
+    { "label": "no Sim, no Arm64 → iosX64Test wins",
+      "gradleTasks": ["iosX64Test", "iosArm64Test", "iosTest"],
+      "expected": "iosX64Test" },
+    { "label": "only iosArm64Test + umbrella → iosArm64Test wins",
+      "gradleTasks": ["iosArm64Test", "iosTest"],
+      "expected": "iosArm64Test" },
+    { "label": "only umbrella iosTest → iosTest",
+      "gradleTasks": ["iosTest"],
+      "expected": "iosTest" },
+    { "label": "no iOS task present → null",
+      "gradleTasks": ["jvmTest", "test"],
+      "expected": null }
+  ],
+  "macosTestTask": [
+    { "label": "all candidates → macosArm64Test wins",
+      "gradleTasks": ["macosArm64Test", "macosX64Test", "macosTest"],
+      "expected": "macosArm64Test" },
+    { "label": "no Arm → macosX64Test wins",
+      "gradleTasks": ["macosX64Test", "macosTest"],
+      "expected": "macosX64Test" },
+    { "label": "only umbrella macosTest → macosTest",
+      "gradleTasks": ["macosTest"],
+      "expected": "macosTest" },
+    { "label": "no macOS task → null",
+      "gradleTasks": ["jvmTest", "test"],
+      "expected": null }
+  ],
+  "webTestTask": [
+    { "label": "jsTest preferred over wasmJsTest",
+      "gradleTasks": ["jsTest", "wasmJsTest"],
+      "expected": "jsTest" },
+    { "label": "wasmJsTest only",
+      "gradleTasks": ["wasmJsTest"],
+      "expected": "wasmJsTest" },
+    { "label": "no web task → null",
+      "gradleTasks": ["jvmTest"],
+      "expected": null }
+  ]
+}

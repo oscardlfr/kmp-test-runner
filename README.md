@@ -227,8 +227,8 @@ Pass `--project-root <path>` explicitly when scripting from a different director
 | **JVM / Desktop** | `common` / `desktop` (auto-detect) | `:module:desktopTest` | host (Linux / macOS / Windows) |
 | **Android (unit)** | `androidUnit` (auto-detect) | `:module:testDebugUnitTest` | host JVM |
 | **Android (instrumented)** | `androidInstrumented` (or `kmp-test android`) | `:module:connectedDebugAndroidTest` | connected device or emulator |
-| **iOS** _(v0.7.0)_ | `ios` | `:module:iosSimulatorArm64Test` (Apple-silicon), `iosX64Test` (Intel/CI), `iosArm64Test` (device) — picked per-module from the project model | macOS host with Xcode + simulator (Gradle handles simulator boot since AGP/KMP 1.9+) |
-| **macOS** _(v0.7.0)_ | `macos` | `:module:macosArm64Test` / `macosX64Test` / `macosTest` — picked per-module | macOS host (host-native; no simulator) |
+| **iOS** | `ios` | `:module:iosSimulatorArm64Test` (Apple-silicon), `iosX64Test` (Intel/CI), `iosArm64Test` (device) — picked per-module from the project model | macOS host with Xcode + simulator (Gradle handles simulator boot since AGP/KMP 1.9+) |
+| **macOS** | `macos` | `:module:macosArm64Test` / `macosX64Test` / `macosTest` — picked per-module | macOS host (host-native; no simulator) |
 | **JS / Wasm** | _model-only_ (`webTestTask` field) | `:module:jsTest` / `:module:wasmJsTest` | host Node — wrapper-side dispatch deferred to v0.7.x |
 
 `kmp-test` auto-detects the project type (`kmp-desktop` → `common`, otherwise `androidUnit`) when `--test-type` is omitted. iOS / macOS / `androidInstrumented` are opt-in — the wrapper does not switch to them implicitly because they require platform-specific runners (simulator / connected device).
@@ -384,16 +384,16 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 |------|---------|-------------|
 | `--project-root` | `$PWD` | Path to the Gradle project root |
 | `--max-workers` | `4` | Maximum parallel Gradle workers |
-| `--test-type <type>` _(v0.7.0)_ | _(auto-detect)_ | `common` \| `desktop` \| `androidUnit` \| `androidInstrumented` \| `ios` \| `macos` \| `all`. iOS / macOS pick the per-module task from the project model. See [Multi-platform test dispatch](#multi-platform-test-dispatch) |
+| `--test-type <type>` | _(auto-detect)_ | `common` \| `desktop` \| `androidUnit` \| `androidInstrumented` \| `ios` \| `macos` \| `all`. iOS / macOS pick the per-module task from the project model. See [Multi-platform test dispatch](#multi-platform-test-dispatch) |
 | `--coverage-tool` | `kover` | Coverage tool: `kover`, `jacoco`, `auto`, or `none` |
 | `--coverage-modules` | _(all)_ | Comma-separated module list for coverage aggregation |
 | `--min-missed-lines` | `0` | Fail if missed lines exceed this threshold |
 | `--exclude-modules` | _(none)_ | Comma-separated module globs to skip entirely (e.g. `"*:api,build-logic"`). See "Heterogeneous projects" above |
 | `--include-untested` | _(off)_ | Re-include modules with no `src/*Test*` directory (auto-skipped by default) |
 | `--ignore-jdk-mismatch` | _(off)_ | Bypass the project-vs-`JAVA_HOME` JDK toolchain check. Default behavior is `BLOCK` with exit 3 — see "JDK toolchain mismatch" above |
-| `--java-home <path>` _(v0.6.1+)_ | _(none)_ | Explicit JDK install to use; wins over catalogue auto-select and `gradle.properties org.gradle.java.home`. See "JDK toolchain mismatch" |
-| `--no-jdk-autoselect` _(v0.6.1+)_ | _(off)_ | Disable catalogue auto-select; fall through directly to the gate (pre-v0.6.1 behavior) |
-| `--no-coverage` _(v0.6.0+)_ | _(off)_ | Alias for `--coverage-tool none`; runs tests only without generating coverage |
+| `--java-home <path>` | _(none)_ | Explicit JDK install to use; wins over catalogue auto-select and `gradle.properties org.gradle.java.home`. See "JDK toolchain mismatch" |
+| `--no-jdk-autoselect` | _(off)_ | Disable catalogue auto-select; fall through directly to the gate (pre-v0.6.1 behavior) |
+| `--no-coverage` | _(off)_ | Alias for `--coverage-tool none`; runs tests only without generating coverage |
 | `--json` / `--format json` | _(off)_ | Emit a single JSON object on stdout (see "Agentic usage" below). Suppresses human-readable output |
 | `--include-shared` | _(off)_ | Include the shared KMP project (configured via `.kmp-test-runner.json` `sharedProject.name`) in the module set. Defaults to off — the runner stays scoped to the consumer project |
 | `--exclude-coverage` | _(none)_ | Comma-separated module globs to skip from coverage aggregation (separate from `--exclude-modules`, which skips test execution too) |
@@ -403,7 +403,11 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--coverage-only` | _(off)_ | Generate only the coverage report — implies `--skip-tests` and skips test discovery. Faster than `coverage` subcommand when the gradle reports are already on disk |
 | `--benchmark` | _(off)_ | Run benchmark suites instead of tests. The `benchmark` subcommand sets this internally; pass directly to `parallel` only if you're composing the orchestrator |
 | `--benchmark-config <smoke\|full>` | `smoke` | Benchmark profile. `smoke` = single warmup + 3 measurement iters (~30 s/module). `full` = 5 warmup + 10 iters (~5 min/module). Applies to the `benchmark` subcommand |
-| `--variant` / `--android-variant <auto\|debug\|release\|all>` _(v0.8.0)_ | `auto` | Android build-variant selector for `androidUnit` / `androidInstrumented`. `auto` picks Debug if its task exists, falls back to Release (handles `testBuildType = "release"` projects). `all` dispatches both variants in the same gradle invocation |
+| `--variant` / `--android-variant <auto\|debug\|release\|all>` | `auto` | Android build-variant selector for `androidUnit` / `androidInstrumented`. `auto` picks Debug if its task exists, falls back to Release (handles `testBuildType = "release"` projects). `all` dispatches both variants in the same gradle invocation |
+| `--gradle-args <string>` | _(none)_ | Escape hatch — append tokens to every gradlew invocation. Repeatable; whitespace-split. Tokens go LAST so they OVERRIDE CLI defaults via gradle's last-wins (`--gradle-args "--no-parallel"` wins over `--parallel`). Applies to `parallel` / `changed` / `android` / `benchmark` |
+| `--isolated` | _(off)_ | Run gradle with `--project-cache-dir <tmp>` so concurrent `kmp-test` invocations don't share configuration cache. Tier-3 isolation. Applies to `parallel` / `changed` / `android` / `benchmark`. See [`docs/concurrency.md`](docs/concurrency.md) |
+| `--isolated-cache-dir <path>` | _(per-run tmpdir)_ | Override the temp project-cache-dir location. Implies `--isolated` |
+| `--isolated-no-lock` | _(off)_ | Skip the OS-level cache-dir lockfile. Implies `--isolated`. Use only when lockfile contention itself is the bottleneck (rare) |
 
 **Env vars (skip-list):**
 
@@ -411,11 +415,11 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 |----------|--------------|--------|
 | `SKIP_DESKTOP_MODULES` | `--test-type common` / `desktop` | Comma-separated short module names skipped from the desktop test pass |
 | `SKIP_ANDROID_MODULES` | `--test-type androidUnit` (default) | Same shape, for Android-side dispatch |
-| `SKIP_IOS_MODULES` _(v0.7.0)_ | `--test-type ios` | Same shape, for iOS dispatch |
-| `SKIP_MACOS_MODULES` _(v0.7.0)_ | `--test-type macos` | Same shape, for macOS dispatch |
+| `SKIP_IOS_MODULES` | `--test-type ios` | Same shape, for iOS dispatch |
+| `SKIP_MACOS_MODULES` | `--test-type macos` | Same shape, for macOS dispatch |
 | `PARENT_ONLY_MODULES` | always | Comma-separated module names that are aggregator-only (skipped at discovery time) |
 
-### Project config — `.kmp-test-runner.json` _(v0.8.0+)_
+### Project config — `.kmp-test-runner.json`
 
 Drop a `.kmp-test-runner.json` at your project root to pin stable defaults instead of repeating CLI flags or relying on env vars. Resolution precedence: **CLI flag > env var > config file > built-in default**. Schema:
 
@@ -429,7 +433,7 @@ Drop a `.kmp-test-runner.json` at your project root to pin stable defaults inste
 
 All fields are optional. Unknown fields are preserved silently for forward compat. Type-mismatched fields are dropped with a `[WARN]` line on stderr.
 
-### Quick start: gitignore CLI artifacts _(v0.8.0+)_
+### Quick start: gitignore CLI artifacts
 
 The CLI writes its outputs (cache, coverage reports, Android log dumps) under a single `.kmp-test-runner/` subdir at your project root. Add this one line to your project `.gitignore`:
 
@@ -676,7 +680,7 @@ A token with `read:packages` scope is sufficient for consumers. Maven Central wi
 | `coverageModules` | `String` | _(all)_ | Colon-prefixed module list (e.g. `":core,:app"`) |
 | `minMissedLines` | `Int` | `0` | Fail threshold for missed lines |
 | `sharedProjectName` | `String` | _(none)_ | Shared KMP module name |
-| `testType` _(v0.7.0)_ | `String` | `""` (wrapper auto-detect) | `"common"` \| `"desktop"` \| `"androidUnit"` \| `"androidInstrumented"` \| `"ios"` \| `"macos"` \| `"all"`. Propagated as `--test-type <value>` to `parallelTests` / `changedTests` / `coverageTask` |
+| `testType` | `String` | `""` (wrapper auto-detect) | `"common"` \| `"desktop"` \| `"androidUnit"` \| `"androidInstrumented"` \| `"ios"` \| `"macos"` \| `"all"`. Propagated as `--test-type <value>` to `parallelTests` / `changedTests` / `coverageTask` |
 
 ## Architecture
 
