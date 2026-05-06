@@ -8,6 +8,7 @@
 // by feeding raw argv through `parseArgs`.
 
 import { describe, it, expect } from 'vitest';
+import path from 'node:path';
 
 import {
   PROJECTS,
@@ -23,7 +24,11 @@ import {
 } from '../../tools/macos-validation-gate.mjs';
 
 const FORBIDDEN_FLAGS = ['--ignore-jdk-mismatch'];
-const SHELL_METACHARS = /[;&|`$<>(){}*?\[\]\\!]/;
+// Backslash deliberately excluded — Windows path separators use it
+// legitimately (`C:\Users\...`), and the driver runs with `shell: false`
+// so paths aren't shell-evaluated regardless. The chars below are the
+// ones that would break either bash or cmd if they leaked unquoted.
+const SHELL_METACHARS = /[;&|`$<>(){}*?\[\]!]/;
 
 const happyDeps = () => ({
   adbHasDevice: () => true,
@@ -137,7 +142,10 @@ describe('macos-validation-gate / argv hygiene', () => {
       const idx = c.args.indexOf('--project-root');
       expect(idx).toBeGreaterThan(-1);
       const value = c.args[idx + 1];
-      expect(value.startsWith('/')).toBe(true);
+      // path.isAbsolute handles both POSIX (`/foo`) and Windows
+      // (`C:\foo`, `\foo`) so the spec runs identically on the
+      // build (ubuntu-latest) and build (windows-latest) legs.
+      expect(path.isAbsolute(value)).toBe(true);
     }
   });
 
