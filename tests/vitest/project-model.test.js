@@ -2199,3 +2199,37 @@ describe('buildProjectModel applies build-logic hints (Gap A integration)', () =
     expect(m.modules[':core-foo'].resolved.coverageTask).toBe('koverXmlReportDesktop');
   });
 });
+
+describe('probeGradleTasksCached spawn wrapper (regression for v0.9 EINVAL bug)', () => {
+  // Surfaced 2026-05-07 against shared-kmp-libs core-* during v0.9.0
+  // pre-release validation. probeGradleTasksCached invoked
+  // `spawnSync(gradlewPath, [...])` directly. Windows hosts (Node 18.20.2+)
+  // returned `EINVAL` because gradlew.bat can't be spawned directly
+  // post-CVE-2024-27980. The probe failed silently, gradleTasks stayed
+  // unpopulated, and 5 KMP modules whose targets came from a convention plugin
+  // (`com.grinx.shared.kmp.library` declares `jvm("desktop")` / `iosX64()` /
+  // etc. inside the plugin, not in the consumer build.gradle.kts) reported
+  // test_tasks as all-null → kmp-test parallel/coverage refused to dispatch
+  // them with `errors[].code: "no_test_modules"`.
+  //
+  // Fix: route through `spawnGradle` from `lib/orchestrator-utils.js` which
+  // wraps via `cmd.exe /d /s /c` on Windows. This was the same bug class fixed
+  // in v0.8 sub-entry-1 for the orchestrators; the gradle-tasks probe was the
+  // last spawn site missed.
+  //
+  // This test is structural — if a future refactor reverts to raw spawnSync,
+  // it'll fail at module-import time.
+
+  it('lib/project-model.js imports spawnGradle from orchestrator-utils', () => {
+    const src = readFileSync(path.join(process.cwd(), 'lib/project-model.js'), 'utf8');
+    expect(src).toMatch(/import\s*\{\s*spawnGradle\s*\}\s*from\s*['"]\.\/orchestrator-utils\.js['"]/);
+  });
+
+  it('probeGradleTasksCached invokes spawnGradle(spawnSync, …), never raw spawnSync(wrapperPath, …)', () => {
+    const src = readFileSync(path.join(process.cwd(), 'lib/project-model.js'), 'utf8');
+    const probeBlock = src.match(/function\s+probeGradleTasksCached[\s\S]+?\n\}/);
+    expect(probeBlock).toBeTruthy();
+    expect(probeBlock[0]).toMatch(/spawnGradle\s*\(\s*spawnSync\s*,\s*wrapperPath\s*,/);
+    expect(probeBlock[0]).not.toMatch(/spawnSync\s*\(\s*wrapperPath\s*,/);
+  });
+});
