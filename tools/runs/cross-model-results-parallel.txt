@@ -1,39 +1,30 @@
-[count] A-raw_gradle_report_parsing-run1.txt × claude-opus-4-7…
-[count] A-raw_gradle_report_parsing-run1.txt × claude-sonnet-4-6…
-[count] A-raw_gradle_report_parsing-run1.txt × claude-haiku-4-5…
-[count] B-kmp_test_parallel_markdown_-run1.txt × claude-opus-4-7…
-[count] B-kmp_test_parallel_markdown_-run1.txt × claude-sonnet-4-6…
-[count] B-kmp_test_parallel_markdown_-run1.txt × claude-haiku-4-5…
-[count] C-kmp_test_parallel_json-run1.txt × claude-opus-4-7…
-[count] C-kmp_test_parallel_json-run1.txt × claude-sonnet-4-6…
-[count] C-kmp_test_parallel_json-run1.txt × claude-haiku-4-5…
 
-# Cross-model token-cost (re-tokenised existing captures)
+# Cross-model token-cost — feature: parallel
 
-Captures: 3 from `tools/runs/`
+Captures: 3 from `tools/runs/parallel/`
 Models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
 Tokenizer: cl100k_base baseline + Anthropic `messages.countTokens` per model
 
 | Approach | Capture | cl100k_base | claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 |
 |---|---|---:|---:|---:|---:|
-| A | `A-raw_gradle_report_parsing-run1.txt` | 12807 | 25780 | 19234 | 19234 |
-| B | `B-kmp_test_parallel_markdown_-run1.txt` | 376 | 642 | 444 | 444 |
-| C | `C-kmp_test_parallel_json-run1.txt` | 101 | 187 | 125 | 125 |
+| A | `A-run1.txt` | 1331036 | 2183843 | 1777893 | 1777893 |
+| B | `B-run1.txt` | 16556 | 30134 | 21372 | 21372 |
+| C | `C-run1.txt` | 843 | 1396 | 1063 | 1063 |
 
 ## Cross-family variation
 
-| Approach | Capture | spread (max/min − 1) |
+| Approach | Capture | spread (max/min - 1) |
 |----------|---------|---------------------:|
-| A | `A-raw_gradle_report_parsing-run1.txt` | 101.3% |
-| B | `B-kmp_test_parallel_markdown_-run1.txt` | 70.7% |
-| C | `C-kmp_test_parallel_json-run1.txt` | 85.1% |
+| A | `A-run1.txt` | 64.1% |
+| B | `B-run1.txt` | 82% |
+| C | `C-run1.txt` | 65.6% |
 
 ## Approach ratio vs C (per tokenizer)
 
 | Approach | cl100k_base | claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 |
 |---|---|---|---|---|
-| A | 126.8× | 137.9× | 153.9× | 153.9× |
-| B | 3.7× | 3.4× | 3.6× | 3.6× |
+| A | 1578.9× | 1564.4× | 1672.5× | 1672.5× |
+| B | 19.6× | 21.6× | 20.1× | 20.1× |
 | C | 1.0× | 1.0× | 1.0× | 1.0× |
 
-Raw captures in `tools/runs/`. Re-run with the same flag to refresh.
+Raw captures in `tools/runs/parallel/`. Re-run with the same flag to refresh.

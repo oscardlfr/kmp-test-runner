@@ -56,9 +56,18 @@ const enc = new Tiktoken(cl100kBase);
 // tasks to run per matched module, which generated files to slurp afterwards,
 // and how to discover modules (most use the glob filter; `changed` uses git).
 // Approach B/C just dispatch to `kmp-test <cliSubcommand> [--json]`.
+// Feature shape:
+//   skipApproachA       — true for kmp-test-only subcommands (info, describe)
+//                         that have no raw-gradle equivalent. Approach A is
+//                         skipped; only B+C captures are written.
+//   acceptsModuleFilter — false when `kmp-test <subcommand>` doesn't accept
+//                         `--module-filter`. info is the only such case today.
+//                         Defaults to true elsewhere.
 export const FEATURES = {
   parallel: {
     cliSubcommand: 'parallel',
+    skipApproachA: false,
+    acceptsModuleFilter: true,
     gradleTasksForModules: (modules, opts) =>
       modules.map((m) => `:${m}:${opts.testTask || 'test'}`),
     isReport: (full) =>
@@ -68,6 +77,8 @@ export const FEATURES = {
   },
   coverage: {
     cliSubcommand: 'coverage',
+    skipApproachA: false,
+    acceptsModuleFilter: true,
     gradleTasksForModules: (modules) =>
       modules.flatMap((m) => [`:${m}:koverXmlReport`, `:${m}:koverHtmlReport`]),
     isReport: (full) =>
@@ -76,6 +87,8 @@ export const FEATURES = {
   },
   changed: {
     cliSubcommand: 'changed',
+    skipApproachA: false,
+    acceptsModuleFilter: true,
     gradleTasksForModules: (modules, opts) =>
       modules.map((m) => `:${m}:${opts.testTask || 'test'}`),
     isReport: (full) =>
@@ -87,11 +100,30 @@ export const FEATURES = {
   },
   benchmark: {
     cliSubcommand: 'benchmark',
+    skipApproachA: false,
+    acceptsModuleFilter: true,
     gradleTasksForModules: (modules, opts) =>
       modules.map((m) => `:${m}:${opts.benchmarkTask || 'jvmBenchmark'}`),
     isReport: (full) =>
       full.includes('build') && full.includes('reports') && full.includes('benchmarks') && full.endsWith('.json'),
     resolveModules: (projectRoot, opts) => filterModulesByGlob(projectRoot, opts.moduleFilter),
+  },
+  // v0.9 — agent-query subcommands. No raw-gradle baseline; B+C only.
+  info: {
+    cliSubcommand: 'info',
+    skipApproachA: true,
+    acceptsModuleFilter: false, // `kmp-test info` is global; rejects per-module filters
+    gradleTasksForModules: () => [],
+    isReport: () => false,
+    resolveModules: () => [],
+  },
+  describe: {
+    cliSubcommand: 'describe',
+    skipApproachA: true,
+    acceptsModuleFilter: true,
+    gradleTasksForModules: () => [],
+    isReport: () => false,
+    resolveModules: () => [],
   },
 };
 
@@ -154,7 +186,7 @@ export function parseArgs(argv) {
   // --project-root is only required for the gradle mode. In cross-model mode
   // we read existing captures from tools/runs/<feature>/ instead.
   if (out.anthropicModels.length === 0 && !out.projectRoot) {
-    console.error('Usage: node tools/measure-token-cost.js --project-root <path> [--feature parallel|coverage|changed|benchmark] [--module-filter <pat>] [--test-task <name>] [--benchmark-task <name>] [--changed-range <rev>] [--runs N]');
+    console.error('Usage: node tools/measure-token-cost.js --project-root <path> [--feature parallel|coverage|changed|benchmark|info|describe] [--module-filter <pat>] [--test-task <name>] [--benchmark-task <name>] [--changed-range <rev>] [--runs N]');
     console.error('       node tools/measure-token-cost.js [--feature <name>] --anthropic-models <csv> [--anthropic-api-key <key>]   # re-tokenise existing captures');
     console.error('       Reads ANTHROPIC_API_KEY (primary) and ANTHROPIC_API_KEY_FALLBACK (auto-fallback on 401) from env.');
     process.exit(2);
@@ -310,7 +342,9 @@ export function buildKmpTestCliInvocation(opts, withJson) {
   const args = [feature.cliSubcommand];
   if (withJson) args.push('--json');
   args.push('--project-root', opts.projectRoot);
-  if (opts.moduleFilter) args.push('--module-filter', opts.moduleFilter);
+  if (opts.moduleFilter && feature.acceptsModuleFilter !== false) {
+    args.push('--module-filter', opts.moduleFilter);
+  }
   return { cmd: process.execPath, args: [cli, ...args] };
 }
 
@@ -565,11 +599,15 @@ function runGradleMode(opts) {
   if (!existsSync(runsDir)) mkdirSync(runsDir, { recursive: true });
 
   const featureLabel = opts.feature;
-  const approaches = [
-    { id: 'A', label: `raw gradle + ${featureLabel} report parsing`, run: () => runApproachA(opts) },
-    { id: 'B', label: `kmp-test ${featureLabel} (markdown)`,           run: () => runApproachB(opts) },
-    { id: 'C', label: `kmp-test ${featureLabel} --json`,               run: () => runApproachC(opts) },
-  ];
+  const featureCfg = FEATURES[opts.feature];
+  // Approach A skipped for kmp-test-only subcommands (info, describe) — they
+  // have no raw-gradle equivalent, so the agent baseline is just B vs C.
+  const approaches = [];
+  if (!featureCfg.skipApproachA) {
+    approaches.push({ id: 'A', label: `raw gradle + ${featureLabel} report parsing`, run: () => runApproachA(opts) });
+  }
+  approaches.push({ id: 'B', label: `kmp-test ${featureLabel} (markdown)`, run: () => runApproachB(opts) });
+  approaches.push({ id: 'C', label: `kmp-test ${featureLabel} --json`,     run: () => runApproachC(opts) });
 
   const results = {};
   for (const a of approaches) {
@@ -608,10 +646,10 @@ function runGradleMode(opts) {
   console.log('');
   console.log('| Approach | Tokens (mean) | Bytes (mean) | Duration (mean) | vs C |');
   console.log('|----------|--------------:|-------------:|----------------:|-----:|');
-  for (const id of ['A', 'B', 'C']) {
-    const r = results[id];
+  for (const a of approaches) {
+    const r = results[a.id];
     const vsC = ratio(r.tokens.mean, results.C.tokens.mean);
-    console.log(`| **${id}** — ${r.label} | ${fmt(r.tokens.mean)} | ${fmt(r.bytes.mean)} | ${fmt(Math.round(r.duration_ms.mean / 1000))}s | ${vsC} |`);
+    console.log(`| **${a.id}** — ${r.label} | ${fmt(r.tokens.mean)} | ${fmt(r.bytes.mean)} | ${fmt(Math.round(r.duration_ms.mean / 1000))}s | ${vsC} |`);
   }
   console.log('');
   if (opts.runs > 1) {
@@ -619,9 +657,9 @@ function runGradleMode(opts) {
     console.log('');
     console.log('| Approach | Tokens std | min | max |');
     console.log('|----------|-----------:|----:|----:|');
-    for (const id of ['A', 'B', 'C']) {
-      const r = results[id];
-      console.log(`| ${id} | ${fmt(r.tokens.std)} | ${fmt(r.tokens.min)} | ${fmt(r.tokens.max)} |`);
+    for (const a of approaches) {
+      const r = results[a.id];
+      console.log(`| ${a.id} | ${fmt(r.tokens.std)} | ${fmt(r.tokens.min)} | ${fmt(r.tokens.max)} |`);
     }
   }
   console.log('');

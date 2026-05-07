@@ -5,6 +5,13 @@ dist/
 # Root-level only — npm/c8 test-coverage output. The measurement captures live
 # under tools/runs/coverage/ and must NOT be ignored.
 /coverage/
+
+# v0.9 step 8: Approach A captures are raw gradle stdout + slurped HTML/XML
+# reports — on a real KMP project (e.g. shared-kmp-libs) the coverage A capture
+# is ~74 MB. They're locally regenerable by re-running `node tools/measure-token-cost.js`.
+# B (markdown) + C (JSON) captures and cross-model-results-*.txt remain tracked
+# (small + load-bearing for evidence files like MEASUREMENT-V0.9-NOTES.md).
+tools/runs/*/A-run*.txt
 .gradle/
 build/
 .idea/
