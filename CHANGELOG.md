@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-XX
+
+**Summary.** Closes the v0.9 line. Headline themes: `parallel` parity-gap closure with `kmp-test android` (PR #146 — 6 flags brought to `--test-type androidInstrumented`), `--gradle-args` global passthrough escape hatch (PR #147 — Tier 2 of the Gradle-config adapter), DX-parity bundle (PR #148 — `--variant` truly global + `kmp-test info` + `kmp-test describe` + `kmp-test update`), opt-in concurrency Tier 3 `--isolated` (PR #149 — `--project-cache-dir <tmp>` per run for parallel multi-agent fan-out), cross-platform parity in CI (PR #150 — 4 static sub-checks on ubuntu replacing the dropped iOS/macOS TestKit matrix), buildable cross-platform E2E fixture (PR #151 — synthetic KMP fixture under `tests/fixtures/kmp-cross-platform-e2e/`), manual macOS validation gate (PRs #153/#154/#155 — driver + probe mode + 3 inline-fixed bug closures from the wet pass on real hardware), token-cost re-measurement on `shared-kmp-libs` core-* (PR #156 — coverage A overflows Anthropic's `count_tokens` endpoint, the load-bearing finding), README + CHANGELOG refresh (this PR). Vitest 816 → 1078 (+262 across the line). Released 2026-05-XX.
+
+### Documentation — v0.9 step 9: README v0.9 refresh + CHANGELOG [0.9.0] (2026-05-XX)
+
+Last v0.9 step before tagging — documents the surface that landed across PRs #146–#156 and re-frames the token-cost narrative against `shared-kmp-libs` core-* (the v0.9 step 8 evidence).
+
+- **README hero token-cost narrative** re-framed against `shared-kmp-libs` core-* — different reference project, dual-track gradle-vs-`--json` story, 413-overflow callout. Cross-feature summary table + per-feature drill-down tables (parallel / coverage / changed / benchmark) + A:C savings ratio rebuilt from `MEASUREMENT-V0.9-NOTES.md` + `tools/runs/cross-model-results-*.txt`. Coverage-A 413-overflow promoted to lead position (single most striking data point: the 74 MB raw kover capture cannot even be tokenised against an Anthropic model in one request — `kmp-test coverage --json` renders the same signal in 372 cl100k tokens).
+- **Hero practical-impact paragraph** updated with shared-kmp-libs numbers — 5-iteration agent loop now ~6.6 M / ~5.6 M / ~1.2 M / ~143 M tokens for parallel / changed / benchmark / coverage (vs sub-5K each on `--json`).
+- **Flag reference table** gained 6 rows: `--clear-data`, `--auto-retry`, `--device <serial>`, `--device-task <name>`, `--flavor <name>`, `--module-filter <regex>`. `--variant` row scope-tagged as truly global (was per-subcommand pre-v0.9).
+- **Subcommands table** gained 3 rows: `info`, `describe`, `update`. New "Agent-query subcommands" section before "Gradle Plugin" with one-paragraph entries + envelope examples + flag lists for each.
+- **Canonical `class=<FQN>#<method>` filter shape** documented in the `--test-filter` section with the migration note from the legacy `class=` + `method=` separate-args form (still parsed for backward compat; the wire form to AGP is now uniformly the combined single-arg shape — the only one Microbenchmark honors).
+- **AI-agent envelope JSON example** (the hero side-by-side block) bumped to `version: "0.9.0"` + new `isolated:{}` + `skipped:[]` + expanded `coverage:{}` fields. Dry-run JSON example version bumped too.
+- **CHANGELOG `[0.9.0]` section** assembled per-PR — Summary paragraph (mirroring [0.8.0]'s shape) plus this entry plus the previously-unreleased v0.9 step 1–7 entries that already lived in the `[Unreleased]` body.
+- **No production code changed**; vitest 1078 unchanged (no test changes).
+
+### Performance — v0.9 step 8: token-cost re-measurement on `shared-kmp-libs` core-* (2026-05-07)
+
+Closes the v0.8.0 BACKLOG entry "Re-measure token-cost numbers" — the cl100k_base re-measurement landed in the v0.8.1 README footnote, but the cross-model Anthropic re-tokenisation was deferred to v0.9 due to API key issues at the time. PR #156 picks up where v0.8.1 left off, against a real KMP composite project rather than the small v0.4 fixture.
+
+- **Full matrix re-run** against `shared-kmp-libs` core-* — 4 gradle-backed features × 3 approaches × 4 tokenizers + 2 agent-query subcommands × 2 approaches × 4 tokenizers (info / describe have no raw-gradle equivalent). Per-feature single capture; agent-query 3-run captures for determinism.
+- **`tools/measure-token-cost.js`** extended with `info` + `describe` features. Per-feature `skipApproachA: true` flag turns off A capture for agent-query subcommands; `acceptsModuleFilter: true` flag controls `--module-filter` propagation for the few features that consume it (parallel / coverage; not changed / benchmark / info / describe).
+- **Headline numbers** — coverage A=28.7M cl100k tokens (74 MB kover reports) → C=372 = **77,114× reduction**; parallel A=1.33M → C=843 = 1,579×; changed A=1.12M → C=144 = 7,766×; benchmark A=245K → C=309 = 793×; info B=185 / C=345; describe B=1,476 / C=7,005.
+- **Load-bearing finding: coverage A overflows Anthropic's `count_tokens` endpoint** (413 `request_too_large`) on every Claude family — even Anthropic's tokenizer cannot process raw gradle on a real KMP project's coverage capture. Documented in `MEASUREMENT-V0.9-NOTES.md` and surfaced in the README hero + coverage drill-down narrative.
+- **Info / describe agent-query inversion** — for these two C > B (info: 345 > 185; describe: 7,005 > 1,476) because `--json` exposes more structured detail an agent can pivot on (paths, modules, resolved tasks, coverage metadata). Different design intent than test-running subcommands → different optimization shape.
+- **Approach A captures gitignored** — `.gitignore` now matches `tools/runs/*/A-run*.txt`. The 74 MB coverage A capture is locally regenerable by re-running the gradle command; the cl100k_base + Anthropic counts in `cross-model-results-<feature>.txt` carry forward all the load-bearing numbers.
+- **Vitest 1068 → 1078** (+10). Evidence: `MEASUREMENT-V0.9-NOTES.md` (top-level) + `tools/runs/cross-model-results-{parallel,coverage,changed,benchmark,info,describe}.txt`. README prose deferred to step 9 (re-framing required, not a one-line tweak).
+
 ### Fixed + Docs — v0.9 step 7 close-out: wet validation + 3 inline bug fixes + BACKLOG marked DONE (2026-05-06)
 
 Closes the v0.9 macOS validation gate work end-to-end. The wet pass (real gradle invocations against the in-repo fixture + `shared-kmp-libs` + `KaMPKit`, with the S22 attached for instrumented cells) surfaced 3 genuine bugs — all fixed inline in this PR per `feedback_close_in_one_session.md`, none deferred to a follow-up session.
