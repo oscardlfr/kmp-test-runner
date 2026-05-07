@@ -19,6 +19,9 @@ import {
   shouldKeepIsolated,
   cleanupIsolatedDir,
   buildIsolatedField,
+  splitCsv,
+  globToRegex,
+  matchModuleFilter,
 } from '../../lib/orchestrator-utils.js';
 
 let workDir;
@@ -186,5 +189,100 @@ describe('buildIsolatedField', () => {
 
   it('coerces null cache_dir consistently', () => {
     expect(buildIsolatedField({ enabled: true }).cache_dir).toBe(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 step 9.3 (Bug #3) — module-filter helpers (splitCsv, globToRegex,
+// matchModuleFilter). Lifted from parallel-orchestrator into shared utils so
+// android + benchmark + describe all use the same normalization.
+// ---------------------------------------------------------------------------
+describe('splitCsv', () => {
+  it('splits comma list and trims whitespace', () => {
+    expect(splitCsv('a, b ,c')).toEqual(['a', 'b', 'c']);
+  });
+  it('drops empties + handles falsy input', () => {
+    expect(splitCsv('')).toEqual([]);
+    expect(splitCsv(null)).toEqual([]);
+    expect(splitCsv(undefined)).toEqual([]);
+    expect(splitCsv('a,,b,')).toEqual(['a', 'b']);
+  });
+});
+
+describe('globToRegex', () => {
+  it('translates * to .* and anchors both ends', () => {
+    expect(globToRegex('*').test('anything')).toBe(true);
+    expect(globToRegex('foo-*').test('foo-bar')).toBe(true);
+    expect(globToRegex('foo-*').test('xfoo-bar')).toBe(false);
+    expect(globToRegex('*-bar').test('foo-bar')).toBe(true);
+  });
+  it('translates ? to . (single-char wildcard)', () => {
+    expect(globToRegex('foo-?').test('foo-x')).toBe(true);
+    expect(globToRegex('foo-?').test('foo-xx')).toBe(false);
+  });
+  it('escapes regex metacharacters in literal segments', () => {
+    expect(globToRegex('foo.bar').test('foo.bar')).toBe(true);
+    expect(globToRegex('foo.bar').test('fooXbar')).toBe(false);
+  });
+});
+
+describe('matchModuleFilter — substring vs glob semantics', () => {
+  // Pre-v0.9-step-9.3 behavior contract preserved:
+  // - bare strings = substring (android + benchmark legacy)
+  // - patterns with * or ? = glob (parallel legacy)
+  it('empty / "*" filter matches everything', () => {
+    expect(matchModuleFilter('foo', '')).toBe(true);
+    expect(matchModuleFilter('foo', '*')).toBe(true);
+    expect(matchModuleFilter('foo', null)).toBe(true);
+    expect(matchModuleFilter('foo', undefined)).toBe(true);
+  });
+
+  it('bare string = substring (android/benchmark contract)', () => {
+    expect(matchModuleFilter('feature-auth', 'feature')).toBe(true);
+    expect(matchModuleFilter('feature-auth', 'auth')).toBe(true);
+    expect(matchModuleFilter('feature-auth', 'core')).toBe(false);
+  });
+
+  it('glob pattern = anchored match', () => {
+    expect(matchModuleFilter('feature-auth', 'feature-*')).toBe(true);
+    expect(matchModuleFilter('feature-auth', 'feature')).toBe(true);  // substring
+    // Glob "feature" (no wildcard) is treated as substring; "feature-*" is glob.
+    expect(matchModuleFilter('core-feature-auth', 'feature-*')).toBe(false);  // anchored
+    expect(matchModuleFilter('core-feature-auth', 'feature')).toBe(true);     // substring
+  });
+
+  it('comma-separated CSV: any pattern matches', () => {
+    expect(matchModuleFilter('core', 'core,domain')).toBe(true);
+    expect(matchModuleFilter('domain', 'core,domain')).toBe(true);
+    expect(matchModuleFilter('shared', 'core,domain')).toBe(false);
+  });
+
+  // Bug #3 repro: `:`-prefix dual-test.
+  it(':-prefix filter matches colon-stripped name (Bug #3 repro)', () => {
+    expect(matchModuleFilter('benchmark', ':benchmark')).toBe(true);
+    expect(matchModuleFilter(':benchmark', ':benchmark')).toBe(true);
+    expect(matchModuleFilter('benchmark', 'benchmark')).toBe(true);
+    expect(matchModuleFilter(':benchmark', 'benchmark')).toBe(true);
+  });
+
+  it(':-prefix glob matches both colon-stripped and colon-prefixed', () => {
+    expect(matchModuleFilter('benchmark', ':bench*')).toBe(true);
+    expect(matchModuleFilter(':benchmark-storage', ':bench*')).toBe(true);
+    expect(matchModuleFilter('benchmark-storage', ':bench*')).toBe(true);
+  });
+
+  it('nested module path matches by short suffix', () => {
+    // gradle-internal: ':feature:auth:impl' → bare 'feature:auth:impl'
+    // Glob 'impl' is substring (no wildcard) → matches anywhere in name.
+    expect(matchModuleFilter('feature:auth:impl', 'impl')).toBe(true);
+    // Anchored glob 'impl' (we don't support implicit anchoring on bare strings).
+    // Use 'impl*' for prefix or '*impl' for suffix.
+    expect(matchModuleFilter('feature:auth:impl', '*:impl')).toBe(true);
+  });
+
+  it('comma-separated mix of substring + glob', () => {
+    expect(matchModuleFilter('core-result', 'core-result,benchmark-*')).toBe(true);
+    expect(matchModuleFilter('benchmark-storage', 'core-result,benchmark-*')).toBe(true);
+    expect(matchModuleFilter('feature-auth', 'core-result,benchmark-*')).toBe(false);
   });
 });

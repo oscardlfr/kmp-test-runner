@@ -627,6 +627,64 @@ describe('runAndroid --module-filter', () => {
     expect(envelope.android.instrumented_modules.sort()).toEqual(['feature-auth', 'feature-feed']);
     expect(envelope.android.instrumented_modules).not.toContain('core');
   });
+
+  // v0.9 step 9.3 (Bug #3) — `:`-prefix filter regression. Pre-fix
+  // `applyModuleFilter` did `m.name.includes(filter)` against the
+  // colon-stripped name, so `:benchmark` matched 0 modules. matchModuleFilter
+  // dual-tests against bare + `:`-prefixed forms.
+  it(':-prefix filter matches colon-stripped module name (Bug #3)', async () => {
+    const dir = makeProject([
+      { name: 'benchmark' }, { name: 'benchmark-storage' }, { name: 'core' },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--module-filter', ':benchmark'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.android.instrumented_modules.sort()).toEqual(['benchmark', 'benchmark-storage']);
+    expect(envelope.android.instrumented_modules).not.toContain('core');
+  });
+
+  it('glob pattern matches anchored module names (Bug #3)', async () => {
+    const dir = makeProject([
+      { name: 'core-result' }, { name: 'core-common' }, { name: 'feature-auth' },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--module-filter', 'core-*'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.android.instrumented_modules.sort()).toEqual(['core-common', 'core-result']);
+    expect(envelope.android.instrumented_modules).not.toContain('feature-auth');
+  });
+
+  it('comma-separated CSV with mix of substring + glob (Bug #3)', async () => {
+    const dir = makeProject([
+      { name: 'core-result' }, { name: 'benchmark-storage' }, { name: 'feature-auth' },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--module-filter', 'core-result,benchmark-*'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.android.instrumented_modules.sort()).toEqual(['benchmark-storage', 'core-result']);
+    expect(envelope.android.instrumented_modules).not.toContain('feature-auth');
+  });
 });
 
 // ---------------------------------------------------------------------------
