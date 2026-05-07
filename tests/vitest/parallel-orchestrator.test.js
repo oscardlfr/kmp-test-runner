@@ -2693,3 +2693,53 @@ describe('--isolated cache-dir injection (v0.9 step 4)', () => {
     rmSync(envelope.isolated.cache_dir, { recursive: true, force: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// v0.9 step 9.5 (Bug #5) — coverage envelope shape parity. Pre-fix
+// parallel-orchestrator's state.coverage was {tool, missed_lines} only,
+// missing the kover/jacoco module lists that android + coverage emit. Now
+// included + populated from project-model coveragePlugin per discovered module.
+// ---------------------------------------------------------------------------
+describe('runParallel coverage envelope shape parity (Bug #5)', () => {
+  it('coverage block always includes modules_with_kover_plugin + modules_with_jacoco_plugin', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain'] }]);
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--dry-run', '--test-type', 'common'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    // dry-run uses cli.js#buildDryRunReport which already had the fields,
+    // but verifying anyway for shape stability.
+    expect(envelope.coverage).toHaveProperty('modules_with_kover_plugin');
+    expect(envelope.coverage).toHaveProperty('modules_with_jacoco_plugin');
+    expect(Array.isArray(envelope.coverage.modules_with_kover_plugin)).toBe(true);
+    expect(Array.isArray(envelope.coverage.modules_with_jacoco_plugin)).toBe(true);
+  });
+
+  it('populates kover/jacoco lists from coveragePlugin field on real run', async () => {
+    const dir = makeProject([
+      { name: 'k', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+        build: `plugins { kotlin("jvm"); id("org.jetbrains.kotlinx.kover") }\n` },
+      { name: 'j', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+        build: `plugins { kotlin("jvm"); id("jacoco") }\n` },
+      { name: 'plain', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+        build: `plugins { kotlin("jvm") }\n` },
+    ]);
+    const spawn = makeSpawnStub({ stdoutLines: [
+      '> Task :k:test',
+      '1 tests completed',
+      'BUILD SUCCESSFUL',
+    ]});
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+    });
+    expect(envelope.coverage.modules_with_kover_plugin).toContain('k');
+    expect(envelope.coverage.modules_with_jacoco_plugin).toContain('j');
+    expect(envelope.coverage.modules_with_kover_plugin).not.toContain('plain');
+    expect(envelope.coverage.modules_with_jacoco_plugin).not.toContain('plain');
+  });
+});
