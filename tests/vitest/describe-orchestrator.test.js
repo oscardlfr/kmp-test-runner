@@ -208,6 +208,89 @@ describe('platformsFromAnalysis', () => {
   it('null analysis → []', () => {
     expect(platformsFromAnalysis(null)).toEqual([]);
   });
+
+  // ---------------------------------------------------------------------
+  // v0.9 step 9.4 (Bug #4) — gradleTasks augmentation. Static-only undercounts
+  // platforms when convention plugins emit targets without leaving visible
+  // source-set dirs (shared-kmp-libs `:core-result` repro: only `androidMain`
+  // on disk, but gradle exposes `desktopTest`/`iosSimulatorArm64Test`/...).
+  // ---------------------------------------------------------------------
+  it('gradleTasks augments platforms — desktopTest → jvm', () => {
+    expect(platformsFromAnalysis(
+      { sourceSets: { androidMain: true } },
+      [':core-result:desktopTest', ':core-result:testAndroidHostTest']
+    ).sort()).toEqual(['android', 'jvm']);
+  });
+
+  it('gradleTasks augments platforms — full KMP target set (Bug #4 repro)', () => {
+    // shared-kmp-libs :core-result: declares jvm("desktop") + androidLibrary +
+    // iosX64/iosArm64/iosSimulatorArm64 + macosArm64 via convention plugin.
+    // Static scan only finds androidMain; probe should add jvm/ios/macos.
+    expect(platformsFromAnalysis(
+      { type: 'kmp', sourceSets: { androidMain: true, commonMain: true }, androidDsl: 'androidLibrary' },
+      [
+        ':core-result:desktopTest',
+        ':core-result:iosSimulatorArm64Test',
+        ':core-result:iosX64Test',
+        ':core-result:iosArm64Test',
+        ':core-result:macosArm64Test',
+        ':core-result:testAndroidHostTest',
+      ]
+    )).toEqual(['jvm', 'android', 'ios', 'macos']);
+  });
+
+  it('gradleTasks: jsTest + wasmJsTest → js + wasmJs', () => {
+    expect(platformsFromAnalysis(
+      { sourceSets: {} },
+      [':m:jsTest', ':m:wasmJsTest']
+    ).sort()).toEqual(['js', 'wasmJs']);
+  });
+
+  it('gradleTasks: testDebugUnitTest / connectedDebugAndroidTest → android', () => {
+    expect(platformsFromAnalysis(
+      { sourceSets: {} },
+      [':m:testDebugUnitTest', ':m:connectedDebugAndroidTest']
+    )).toEqual(['android']);
+  });
+
+  it('gradleTasks: jvmTest (legacy KMP target name) → jvm', () => {
+    expect(platformsFromAnalysis(
+      { sourceSets: {} },
+      [':m:jvmTest']
+    )).toEqual(['jvm']);
+  });
+
+  it('null gradleTasks falls through to static-only behavior (no regression)', () => {
+    expect(platformsFromAnalysis(
+      { sourceSets: { androidMain: true } },
+      null
+    )).toEqual(['android']);
+    expect(platformsFromAnalysis(
+      { sourceSets: { androidMain: true } }
+    )).toEqual(['android']);
+  });
+
+  it('static + gradle merge — deduplicated', () => {
+    expect(platformsFromAnalysis(
+      { sourceSets: { androidMain: true, jvmMain: true } },
+      [':m:desktopTest', ':m:testDebugUnitTest']
+    ).sort()).toEqual(['android', 'jvm']);
+  });
+
+  it('arbitrary user task names ignored (only canonical KMP/AGP shapes)', () => {
+    expect(platformsFromAnalysis(
+      { sourceSets: {} },
+      [':m:myCustomTestTask', ':m:somethingElse', ':m:assemble']
+    )).toEqual([]);
+  });
+
+  it('preserves stable platform ordering: jvm/android/ios/macos/js/wasmJs', () => {
+    // Probed in random order — output ordering should be canonical.
+    expect(platformsFromAnalysis(
+      { sourceSets: {} },
+      [':m:wasmJsTest', ':m:macosArm64Test', ':m:jsTest', ':m:iosSimulatorArm64Test', ':m:desktopTest', ':m:testDebugUnitTest']
+    )).toEqual(['jvm', 'android', 'ios', 'macos', 'js', 'wasmJs']);
+  });
 });
 
 describe('aggregateCoverageTool', () => {
