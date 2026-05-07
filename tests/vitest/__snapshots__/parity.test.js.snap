@@ -56,6 +56,12 @@ exports[`parity / envelope JSON schema snapshot > benchmark --dry-run --json env
   "duration_ms": "<DURATION_MS>",
   "errors": [],
   "exit_code": 0,
+  "isolated": {
+    "cache_dir": null,
+    "enabled": false,
+    "kept": false,
+    "locked": true,
+  },
   "modules": [],
   "plan": {
     "final_args": "<PLATFORM_SPECIFIC>",
@@ -91,6 +97,12 @@ exports[`parity / envelope JSON schema snapshot > changed --dry-run --json --sta
   "duration_ms": "<DURATION_MS>",
   "errors": [],
   "exit_code": 0,
+  "isolated": {
+    "cache_dir": null,
+    "enabled": false,
+    "kept": false,
+    "locked": true,
+  },
   "modules": [],
   "plan": {
     "final_args": "<PLATFORM_SPECIFIC>",
@@ -126,6 +138,12 @@ exports[`parity / envelope JSON schema snapshot > coverage --dry-run --json enve
   "duration_ms": "<DURATION_MS>",
   "errors": [],
   "exit_code": 0,
+  "isolated": {
+    "cache_dir": null,
+    "enabled": false,
+    "kept": false,
+    "locked": true,
+  },
   "modules": [],
   "plan": {
     "final_args": "<PLATFORM_SPECIFIC>",
@@ -324,6 +342,12 @@ exports[`parity / envelope JSON schema snapshot > parallel --dry-run --json enve
   "duration_ms": "<DURATION_MS>",
   "errors": [],
   "exit_code": 0,
+  "isolated": {
+    "cache_dir": null,
+    "enabled": false,
+    "kept": false,
+    "locked": true,
+  },
   "modules": [],
   "plan": {
     "final_args": "<PLATFORM_SPECIFIC>",

@@ -193,4 +193,50 @@ describe('parity / envelope JSON schema snapshot', () => {
       expect(normalized).toMatchSnapshot();
     });
   }
+
+  // v0.9 step 9.6 (Bug #6) — isolated dry-run envelope. Pre-fix the
+  // `--isolated --dry-run` envelope was missing the top-level `isolated:{}`
+  // field; only `plan.spawn_args` carried `-Isolated`. Now populated from
+  // peekIsolatedFlags upstream of cli.js#buildDryRunReport for shape parity
+  // with real-run envelopes.
+  describe('--isolated --dry-run populates top-level isolated:{} field (Bug #6)', () => {
+    const ISOLATED_CASES = [
+      { sub: 'parallel',  args: ['--dry-run', '--json', '--isolated'] },
+      { sub: 'changed',   args: ['--dry-run', '--json', '--staged-only', '--isolated'] },
+      { sub: 'android',   args: ['--dry-run', '--json', '--isolated'] },
+      { sub: 'benchmark', args: ['--dry-run', '--json', '--isolated'] },
+    ];
+    for (const { sub, args } of ISOLATED_CASES) {
+      it(`${sub} ${args.join(' ')} surfaces isolated.enabled:true`, () => {
+        const fullArgs = ['--project-root', fixtureRoot, ...args];
+        const { envelope, stdout, exitCode } = runSubcommand(sub, fullArgs, { cwd: fixtureRoot });
+        if (!envelope) {
+          const preview = stdout.slice(0, 600);
+          throw new Error(`No JSON envelope for '${sub}' (exit ${exitCode}). stdout preview: ${preview}`);
+        }
+        expect(envelope.isolated).toBeDefined();
+        expect(envelope.isolated.enabled).toBe(true);
+        // Dry-run never resolves a real cache dir — null is the contract.
+        expect(envelope.isolated.cache_dir).toBeNull();
+        expect(envelope.isolated.kept).toBe(false);
+        expect(envelope.isolated.locked).toBe(true);
+      });
+    }
+
+    it('parallel --isolated-cache-dir <path> --dry-run captures cache_dir override', () => {
+      const fullArgs = ['--project-root', fixtureRoot,
+        '--dry-run', '--json', '--isolated-cache-dir', '/tmp/my-cache'];
+      const { envelope } = runSubcommand('parallel', fullArgs, { cwd: fixtureRoot });
+      expect(envelope.isolated).toBeDefined();
+      expect(envelope.isolated.enabled).toBe(true);
+      expect(envelope.isolated.cache_dir).toBe('/tmp/my-cache');
+    });
+
+    it('parallel --isolated-no-lock --dry-run flips locked:false', () => {
+      const fullArgs = ['--project-root', fixtureRoot,
+        '--dry-run', '--json', '--isolated', '--isolated-no-lock'];
+      const { envelope } = runSubcommand('parallel', fullArgs, { cwd: fixtureRoot });
+      expect(envelope.isolated.locked).toBe(false);
+    });
+  });
 });
