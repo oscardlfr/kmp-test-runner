@@ -1038,3 +1038,70 @@ describe('--isolated cache-dir injection (v0.9 step 4)', () => {
     expect(existsSync(userCache)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v0.9 step 9.5 (Bug #5) — coverage envelope shape parity. Pre-fix android
+// emitted empty kover/jacoco arrays (field present but never populated).
+// Now populated from project-model coveragePlugin per discovered module.
+// ---------------------------------------------------------------------------
+describe('runAndroid coverage block populates kover/jacoco module lists (Bug #5)', () => {
+  it('populates modules_with_kover_plugin from coveragePlugin=kover modules', async () => {
+    const dir = makeProject([
+      { name: 'a', build: `plugins { id("com.android.library"); id("org.jetbrains.kotlinx.kover") }\nandroid { namespace = "test.a" }\n` },
+      { name: 'b', build: `plugins { id("com.android.library") }\nandroid { namespace = "test.b" }\n` },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.coverage.modules_with_kover_plugin).toContain('a');
+    expect(envelope.coverage.modules_with_kover_plugin).not.toContain('b');
+    expect(envelope.coverage.modules_with_jacoco_plugin).toEqual([]);
+  });
+
+  it('populates modules_with_jacoco_plugin from coveragePlugin=jacoco modules', async () => {
+    const dir = makeProject([
+      { name: 'a', build: `plugins { id("com.android.library"); id("jacoco") }\nandroid { namespace = "test.a" }\n` },
+      { name: 'b', build: `plugins { id("com.android.library") }\nandroid { namespace = "test.b" }\n` },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.coverage.modules_with_jacoco_plugin).toContain('a');
+    expect(envelope.coverage.modules_with_jacoco_plugin).not.toContain('b');
+    expect(envelope.coverage.modules_with_kover_plugin).toEqual([]);
+  });
+
+  it('mixed kover + jacoco modules → both lists populated', async () => {
+    const dir = makeProject([
+      { name: 'k', build: `plugins { id("com.android.library"); id("org.jetbrains.kotlinx.kover") }\nandroid { namespace = "test.k" }\n` },
+      { name: 'j', build: `plugins { id("com.android.library"); id("jacoco") }\nandroid { namespace = "test.j" }\n` },
+      { name: 'plain', build: `plugins { id("com.android.library") }\nandroid { namespace = "test.plain" }\n` },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.coverage.modules_with_kover_plugin).toEqual(['k']);
+    expect(envelope.coverage.modules_with_jacoco_plugin).toEqual(['j']);
+  });
+});
