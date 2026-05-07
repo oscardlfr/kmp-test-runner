@@ -11,6 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Summary.** Closes the v0.9 line. Headline themes: `parallel` parity-gap closure with `kmp-test android` (PR #146 — 6 flags brought to `--test-type androidInstrumented`), `--gradle-args` global passthrough escape hatch (PR #147 — Tier 2 of the Gradle-config adapter), DX-parity bundle (PR #148 — `--variant` truly global + `kmp-test info` + `kmp-test describe` + `kmp-test update`), opt-in concurrency Tier 3 `--isolated` (PR #149 — `--project-cache-dir <tmp>` per run for parallel multi-agent fan-out), cross-platform parity in CI (PR #150 — 4 static sub-checks on ubuntu replacing the dropped iOS/macOS TestKit matrix), buildable cross-platform E2E fixture (PR #151 — synthetic KMP fixture under `tests/fixtures/kmp-cross-platform-e2e/`), manual macOS validation gate (PRs #153/#154/#155 — driver + probe mode + 3 inline-fixed bug closures from the wet pass on real hardware), token-cost re-measurement on `shared-kmp-libs` core-* (PR #156 — coverage A overflows Anthropic's `count_tokens` endpoint, the load-bearing finding), README + CHANGELOG refresh (this PR). Vitest 816 → 1078 (+262 across the line). Released 2026-05-XX.
 
+### Fixed — v0.9 step 9.6: `isolated:{}` envelope field in `--dry-run` (Bug #6) (2026-05-08)
+
+`kmp-test parallel --isolated --dry-run --json` (and the android / benchmark / changed equivalents) emitted an envelope WITHOUT a top-level `isolated:{}` field, even when the user supplied `--isolated`. Only `plan.spawn_args` reflected the `-Isolated` flag, forcing agents to inspect the spawn-arg shape to confirm isolation intent — inconsistent with real-run envelopes (which always carry `isolated:{}` populated from `buildIsolatedField`).
+
+Root cause: `cli.js#main` intercepts `--dry-run` upstream of orchestrator dispatch (`L2312`) and calls its own `buildDryRunReport` directly. The orchestrators' real-run paths (parallel L1242, android L323) do set `envelope.isolated = isolatedField` but those lines are never reached for dry-run. `cli.js#buildDryRunReport` lacked the `isolated` parameter entirely.
+
+- **`lib/cli.js#buildDryRunReport`** now accepts an optional `isolated` parameter; appended to the envelope when supplied.
+- **`lib/cli.js#main` dry-run branch** computes `isolatedField` from the already-peeked `isolatedFlags` (`{enabled, cache_dir, kept:false /* dry-run never persists */, locked: !noLock}`) and passes it to `buildDryRunReport`. Mirrors the real-run shape.
+- **Live verification** (S22 R3CT30KAMEH attached, dry-run only — no gradle dispatch on dry-run by definition):
+  ```
+  parallel --isolated --dry-run --json:
+    PRE:  envelope has plan.spawn_args=[..., '-Isolated', ...] but NO top-level isolated field
+    POST: envelope.isolated = {enabled:true, cache_dir:null, kept:false, locked:true}
+  parallel --isolated-cache-dir /tmp/my-cache --isolated-no-lock --dry-run:
+    POST: envelope.isolated = {enabled:true, cache_dir:'/tmp/my-cache', kept:false, locked:false}
+  ```
+- **Vitest 1118 → 1124** (+6 regression tests in `parity.test.js` covering `--isolated --dry-run` for parallel/changed/android/benchmark + `--isolated-cache-dir` override + `--isolated-no-lock` flip). 4 dry-run snapshot files updated to include the new field (parallel/changed/benchmark/coverage). The android `--list-only` snapshot is unchanged because it goes through a different envelope-construction path that already had the field.
+
 ### Fixed — v0.9 step 9.5: coverage envelope shape parity (Bug #5) (2026-05-07)
 
 The `coverage:{}` envelope block was inconsistent across orchestrators: pre-fix `parallel-orchestrator`'s `state.coverage` carried only `{tool, missed_lines}` while `android-orchestrator` and `coverage-orchestrator` already carried `modules_with_kover_plugin: []` / `modules_with_jacoco_plugin: []` (but android emitted them empty — placeholder shape, never populated from project-model data). Agents pivoting on `coverage_plugin` distribution had to fall back to a separate `kmp-test describe` round-trip.
