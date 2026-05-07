@@ -354,9 +354,9 @@ describe('runCrossModelMode', () => {
 // ---------------------------------------------------------------------------
 
 describe('FEATURES registry', () => {
-  it('exposes exactly the four supported features', () => {
-    expect(VALID_FEATURES.sort()).toEqual(['benchmark', 'changed', 'coverage', 'parallel']);
-    expect(Object.keys(FEATURES).sort()).toEqual(['benchmark', 'changed', 'coverage', 'parallel']);
+  it('exposes exactly the six supported features (4 gradle-backed + 2 agent-query)', () => {
+    expect(VALID_FEATURES.sort()).toEqual(['benchmark', 'changed', 'coverage', 'describe', 'info', 'parallel']);
+    expect(Object.keys(FEATURES).sort()).toEqual(['benchmark', 'changed', 'coverage', 'describe', 'info', 'parallel']);
   });
   it('every entry exposes the dispatch shape', () => {
     for (const [name, feat] of Object.entries(FEATURES)) {
@@ -364,7 +364,22 @@ describe('FEATURES registry', () => {
       expect(typeof feat.gradleTasksForModules, `${name}.gradleTasksForModules`).toBe('function');
       expect(typeof feat.isReport, `${name}.isReport`).toBe('function');
       expect(typeof feat.resolveModules, `${name}.resolveModules`).toBe('function');
+      expect(typeof feat.skipApproachA, `${name}.skipApproachA`).toBe('boolean');
+      expect(typeof feat.acceptsModuleFilter, `${name}.acceptsModuleFilter`).toBe('boolean');
     }
+  });
+  it('gradle-backed features (parallel/coverage/changed/benchmark) opt out of skipApproachA', () => {
+    expect(FEATURES.parallel.skipApproachA).toBe(false);
+    expect(FEATURES.coverage.skipApproachA).toBe(false);
+    expect(FEATURES.changed.skipApproachA).toBe(false);
+    expect(FEATURES.benchmark.skipApproachA).toBe(false);
+  });
+  it.each(['info', 'describe'])('agent-query feature %s opts into skipApproachA', (name) => {
+    expect(FEATURES[name].skipApproachA).toBe(true);
+  });
+  it('info opts out of acceptsModuleFilter; describe opts in', () => {
+    expect(FEATURES.info.acceptsModuleFilter).toBe(false);
+    expect(FEATURES.describe.acceptsModuleFilter).toBe(true);
   });
   it('parallel + changed produce :module:test tasks (default testTask)', () => {
     expect(FEATURES.parallel.gradleTasksForModules(['core-x'], {})).toEqual([':core-x:test']);
@@ -423,7 +438,7 @@ describe('parseArgs --feature', () => {
     const out = parseArgs(['--project-root', '/tmp/x']);
     expect(out.feature).toBe('parallel');
   });
-  it.each(['parallel', 'coverage', 'changed', 'benchmark'])(
+  it.each(['parallel', 'coverage', 'changed', 'benchmark', 'info', 'describe'])(
     'accepts --feature %s', (feature) => {
       const out = parseArgs(['--project-root', '/tmp/x', '--feature', feature]);
       expect(out.feature).toBe(feature);
@@ -638,7 +653,7 @@ describe('buildApproachAInvocation', () => {
 });
 
 describe('buildKmpTestCliInvocation', () => {
-  it.each(['parallel', 'coverage', 'changed', 'benchmark'])(
+  it.each(['parallel', 'coverage', 'changed', 'benchmark', 'info', 'describe'])(
     '%s subcommand is forwarded as the first cli arg', (feature) => {
       const inv = buildKmpTestCliInvocation({ feature, projectRoot: '/tmp/x' }, false);
       expect(inv.cmd).toBe(process.execPath);
@@ -665,6 +680,20 @@ describe('buildKmpTestCliInvocation', () => {
   it('omits --module-filter when not set', () => {
     const inv = buildKmpTestCliInvocation({ feature: 'parallel', projectRoot: '/tmp/x' }, false);
     expect(inv.args).not.toContain('--module-filter');
+  });
+  it('describe forwards --module-filter when set (acceptsModuleFilter=true)', () => {
+    const inv = buildKmpTestCliInvocation({
+      feature: 'describe', projectRoot: '/tmp/x', moduleFilter: 'core-*',
+    }, false);
+    expect(inv.args).toContain('--module-filter');
+    expect(inv.args).toContain('core-*');
+  });
+  it('info does NOT forward --module-filter even when set (acceptsModuleFilter=false)', () => {
+    const inv = buildKmpTestCliInvocation({
+      feature: 'info', projectRoot: '/tmp/x', moduleFilter: 'core-*',
+    }, false);
+    expect(inv.args).not.toContain('--module-filter');
+    expect(inv.args).not.toContain('core-*');
   });
 });
 
