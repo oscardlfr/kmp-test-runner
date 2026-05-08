@@ -3279,6 +3279,23 @@ describe('peekIsolatedFlags', () => {
     expect(r.cacheDir).toBe('/tmp/c');
     expect(r.noLock).toBe(true);
   });
+
+  // v0.9 session 2 Bug-F — `--isolated-no-lock` implies `--isolated`. The
+  // `parallel --help` text documents the implication; pre-fix passing
+  // `--isolated-no-lock` alone produced `{enabled:false, noLock:true}` (a
+  // nonsensical shape — locked:false but no isolation actually applied).
+  it('Bug-F: --isolated-no-lock alone implies enabled (mirrors --isolated-cache-dir)', () => {
+    const r = peekIsolatedFlags(['--isolated-no-lock', '--project-root', '/x']);
+    expect(r.enabled).toBe(true);
+    expect(r.noLock).toBe(true);
+    expect(r.cacheDir).toBe(null);
+  });
+  it('Bug-F regression: --isolated-cache-dir alone does NOT flip noLock', () => {
+    const r = peekIsolatedFlags(['--isolated-cache-dir', '/tmp/x', '--project-root', '/x']);
+    expect(r.enabled).toBe(true);
+    expect(r.cacheDir).toBe('/tmp/x');
+    expect(r.noLock).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

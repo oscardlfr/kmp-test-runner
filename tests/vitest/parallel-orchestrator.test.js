@@ -215,6 +215,21 @@ describe('parseArgs', () => {
     expect(opts.coverageTool).toBe('none');
   });
 
+  // v0.9 session 2 Bug-E — `--coverage-only` implies `--skip-tests`. The
+  // `parallel --help` text documents the implication; pre-fix the parser set
+  // only `coverageOnly`, so `runParallel` still dispatched the test suite
+  // before reaching the coverage-only filter at line ~1330.
+  it('Bug-E: --coverage-only implies --skip-tests', () => {
+    const opts = parseArgs(['--coverage-only']);
+    expect(opts.coverageOnly).toBe(true);
+    expect(opts.skipTests).toBe(true);
+  });
+  it('Bug-E: --coverage-only with explicit --skip-tests is idempotent', () => {
+    const opts = parseArgs(['--coverage-only', '--skip-tests']);
+    expect(opts.coverageOnly).toBe(true);
+    expect(opts.skipTests).toBe(true);
+  });
+
   it('parses v0.9 step 1 parity-gap flags (#1-#5)', () => {
     const opts = parseArgs([
       '--device', 'R3CT30KAMEH',
@@ -1181,7 +1196,14 @@ describe('runParallel', () => {
     expect(passedArgs[idx + 1]).toBe('custom-report.md');
   });
 
-  it('--coverage-only filters modules to those listed in --coverage-modules', async () => {
+  // v0.9 session 2 Bug-E — `--coverage-only` implies `--skip-tests`, so the
+  // dispatch routes to coverage-orchestrator BEFORE the parallel-orchestrator's
+  // own `opts.coverageOnly && opts.coverageModules` module filter at line ~1331
+  // can fire (it's now unreachable when coverageOnly is set; left in place for
+  // direct `node lib/runner.js parallel --coverage-modules ...` calls without
+  // --coverage-only). Test confirms the new routing: stubCoverage IS invoked
+  // and receives `--coverage-modules` so the eventual report is filtered.
+  it('Bug-E: --coverage-only routes to runCoverage with --coverage-modules forwarded', async () => {
     const dir = makeProject([
       { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
       { name: 'feature', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
@@ -1189,19 +1211,18 @@ describe('runParallel', () => {
     ]);
     const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
     const stubCoverage = makeRunCoverageStub();
-    const { envelope } = await runParallel({
+    await runParallel({
       projectRoot: dir,
       args: ['--test-type', 'common', '--coverage-only', '--coverage-modules', 'core,feature'],
       spawn,
       log: () => {},
       runCoverageInjection: stubCoverage,
     });
-    // Only `core` + `feature` reached the test dispatch, `shared` was filtered out.
-    // v0.9 drift #2 — modules[] is array of objects with `.name`.
-    const names = envelope.modules.map(m => m.name);
-    expect(names).toContain('core');
-    expect(names).toContain('feature');
-    expect(names).not.toContain('shared');
+    expect(stubCoverage.calls.length).toBe(1);
+    const passedArgs = stubCoverage.calls[0].args;
+    expect(passedArgs).toContain('--coverage-modules');
+    const idx = passedArgs.indexOf('--coverage-modules');
+    expect(passedArgs[idx + 1]).toBe('core,feature');
   });
 
   it('--benchmark invokes runBenchmark stub with --config', async () => {

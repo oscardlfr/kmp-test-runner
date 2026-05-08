@@ -61,6 +61,18 @@ describe('parseIsolatedArgs', () => {
     expect(r.args).toEqual(['--variant', 'debug']);
   });
 
+  // v0.9 session 2 Bug-F — `--isolated-no-lock` alone must imply enabled.
+  // Pre-fix this returned `{enabled:false, noLock:true}` because the branch
+  // didn't mirror `--isolated-cache-dir`'s implication. The cli.js peek and
+  // this orchestrator-side parser must agree on the shape.
+  it('Bug-F: --isolated-no-lock alone implies enabled', () => {
+    const r = parseIsolatedArgs(['--isolated-no-lock', '--variant', 'debug']);
+    expect(r.enabled).toBe(true);
+    expect(r.noLock).toBe(true);
+    expect(r.cacheDir).toBe(null);
+    expect(r.args).toEqual(['--variant', 'debug']);
+  });
+
   it('handles all three flags together in any order', () => {
     const r = parseIsolatedArgs(['--variant', 'debug', '--isolated-no-lock', '--isolated', '--isolated-cache-dir', '/x']);
     expect(r.enabled).toBe(true);
