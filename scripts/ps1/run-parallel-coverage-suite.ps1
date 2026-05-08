@@ -72,7 +72,13 @@ param(
     # (cli.js consumes it; forwarded here for envelope mirroring).
     [switch]$Isolated,
     [string]$IsolatedCacheDir = "",
-    [switch]$IsolatedNoLock
+    [switch]$IsolatedNoLock,
+    # 2026-05-08 v0.9 step 9.8 (Bug #7) — `--list-only` mirrors the android
+    # subcommand's flag. Short-circuits parallel-orchestrator before any
+    # gradle dispatch, emitting the post-filter module set + skipped[] +
+    # coverage block. Param-block whitelist needed because the wrapper has
+    # `passthrough: false` (cli.js strips kebab→PascalCase upstream).
+    [switch]$ListOnly
 )
 
 $ErrorActionPreference = "Continue"
@@ -123,6 +129,8 @@ if ($GradleArgs) {
 if ($Isolated)         { $kmpArgv += @('--isolated') }
 if ($IsolatedCacheDir) { $kmpArgv += @('--isolated-cache-dir', $IsolatedCacheDir) }
 if ($IsolatedNoLock)   { $kmpArgv += @('--isolated-no-lock') }
+# 2026-05-08 v0.9 step 9.8 (Bug #7) — --list-only passthrough.
+if ($ListOnly)         { $kmpArgv += @('--list-only') }
 
 $kmpScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $kmpRunner = Join-Path $kmpScriptDir '..\..\lib\runner.js'
