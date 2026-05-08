@@ -28,7 +28,7 @@ import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { runAndroid, parseArgs, parseTestCounts } from '../../lib/android-orchestrator.js';
+import { runAndroid, parseArgs, parseTestCounts, parseTestFailures } from '../../lib/android-orchestrator.js';
 import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 
 let workDir;
@@ -1103,5 +1103,88 @@ describe('runAndroid coverage block populates kover/jacoco module lists (Bug #5)
 
     expect(envelope.coverage.modules_with_kover_plugin).toEqual(['k']);
     expect(envelope.coverage.modules_with_jacoco_plugin).toEqual(['j']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 wet-audit drift #4: _errors.json#testFailures[] populates from non-
+// AssertionError throws. Pre-fix `/AssertionError[:\s].+/g` missed
+// IllegalStateException, NullPointerException, etc. — leading to empty
+// testFailures[] even when tests.failed > 0. Surfaced during the iOS-side
+// wet audit (PR #168, J2-watch: Compose IllegalStateException on Wear OS).
+// ---------------------------------------------------------------------------
+describe('parseTestFailures (drift #4)', () => {
+  it('captures canonical AGP shape with FQN class + test name + cause', () => {
+    const log = `> Task :wearApp:connectedDebugAndroidTest
+com.surrus.peopleinspace.wear.tests.PeopleListScreenTest > testPeopleListScreen[Watch5x05] FAILED
+    java.lang.IllegalStateException: No compose hierarchies found in the app
+        at androidx.compose.ui.test.junit4.AndroidComposeTestRule.<clinit>(AndroidComposeTestRule.kt:42)
+BUILD FAILED in 1m3s
+`;
+    const f = parseTestFailures(log);
+    expect(f).toHaveLength(1);
+    expect(f[0].test).toBe('com.surrus.peopleinspace.wear.tests.PeopleListScreenTest.testPeopleListScreen');
+    expect(f[0].cause).toMatch(/IllegalStateException.*No compose hierarchies/);
+  });
+
+  it('captures multiple test failures with different exception types', () => {
+    const log = `com.example.FooTest > a[Pixel-7] FAILED
+    java.lang.NullPointerException: foo
+        at ...
+com.example.BarTest > b[Pixel-7] FAILED
+    org.junit.AssertionError: expected:<1> but was:<2>
+        at ...
+`;
+    const f = parseTestFailures(log);
+    expect(f).toHaveLength(2);
+    expect(f[0]).toEqual({ test: 'com.example.FooTest.a', cause: expect.stringContaining('NullPointerException') });
+    expect(f[1]).toEqual({ test: 'com.example.BarTest.b', cause: expect.stringContaining('AssertionError') });
+  });
+
+  it('captures host JVM tests (no [device-id] suffix)', () => {
+    const log = `com.example.HostTest > testIt FAILED
+    org.opentest4j.AssertionFailedError: expected 1 but was 2
+`;
+    const f = parseTestFailures(log);
+    expect(f).toHaveLength(1);
+    expect(f[0].test).toBe('com.example.HostTest.testIt');
+  });
+
+  it('falls back to wide *Exception/*Error scan when canonical shape absent', () => {
+    // Pre-fix shape (only-cause-line, no `> testName FAILED` header).
+    const log = `Some prefix...
+java.lang.IllegalStateException: No compose hierarchies found
+java.lang.NullPointerException: at line 42`;
+    const f = parseTestFailures(log);
+    expect(f.length).toBeGreaterThan(0);
+    expect(f[0].test).toBeNull();
+    expect(f.some(x => x.cause.includes('IllegalStateException'))).toBe(true);
+    expect(f.some(x => x.cause.includes('NullPointerException'))).toBe(true);
+  });
+
+  it('returns empty array when no failure markers in stdout', () => {
+    expect(parseTestFailures('BUILD SUCCESSFUL in 5s\nAll tests passed.\n')).toEqual([]);
+    expect(parseTestFailures('')).toEqual([]);
+  });
+
+  it('canonical match preempts fallback (no double-counting)', () => {
+    const log = `com.x.T > t[Pixel] FAILED
+    java.lang.IllegalStateException: oh no
+        at ...
+`;
+    const f = parseTestFailures(log);
+    expect(f).toHaveLength(1);  // not 2 — fallback not triggered when canonical fired
+    expect(f[0].test).toBe('com.x.T.t');
+  });
+
+  it('dedupes repeated canonical matches by test FQN', () => {
+    const log = `com.x.T > t[Pixel] FAILED
+    java.lang.IllegalStateException: first
+com.x.T > t[Pixel] FAILED
+    java.lang.IllegalStateException: second
+`;
+    const f = parseTestFailures(log);
+    expect(f).toHaveLength(1);
+    expect(f[0].cause).toMatch(/first/);  // first wins
   });
 });
