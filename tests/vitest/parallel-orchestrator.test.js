@@ -2881,3 +2881,71 @@ describe('runParallel --list-only short-circuits before gradle dispatch (Bug #7)
     expect(envelope.isolated.enabled).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v0.9 wet-audit drift #1: legit-skip when --module-filter matches modules
+// but every match fails the per-leg test-type target check (no jvm target,
+// no commonTest, env SKIP_*_MODULES, etc.). Pre-fix emitted `no_test_modules`
+// + exit 3 even though the skipped[] entries already explained the skip.
+// Post-fix: skipped[] entries carry the diagnostic, errors[] stays empty,
+// exit 0. Filter-actually-matched-nothing still surfaces the error at
+// runParallel's top-level (modules.length === 0 guard at line 1348).
+// ---------------------------------------------------------------------------
+describe('runParallel legit-skip exit semantics (drift #1)', () => {
+  it('exit 0 when filter matches a module but no module supports the test-type leg', async () => {
+    const dir = makeProject([
+      // Android-only module: no commonMain / jvmMain / jvmTest → no `common` target.
+      { name: 'androidonly', sourceSets: ['androidMain', 'androidUnitTest'],
+        build: `plugins { id("com.android.library") }\n` },
+    ]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', ':androidonly'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.errors).toEqual([]);
+    expect(envelope.skipped.length).toBeGreaterThan(0);
+    expect(envelope.skipped[0].module).toBe('androidonly');
+    expect(envelope.skipped[0].reason).toMatch(/common/);
+    expect(envelope.tests).toEqual({
+      total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0,
+    });
+  });
+
+  it('regression: filter actually matches nothing still surfaces no_test_modules + exit 3', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', ':nonexistent'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0]?.code).toBe('no_test_modules');
+  });
+
+  it('exit 0 with --module-filter=* when matched Android-only modules cannot serve --test-type common', async () => {
+    // Two Android-only modules with their own unit-test source sets so they
+    // survive the `auto-skip-untested` filter and reach executeLeg's per-leg
+    // task pick (which then routes both to skipped[] for the `common` leg).
+    // Pre-fix: emitted "No modules support the requested --test-type=common" + exit 3.
+    // Post-fix: skipped[] explains both, errors[] empty, exit 0.
+    const dir = makeProject([
+      { name: 'a', sourceSets: ['androidMain', 'androidUnitTest'],
+        build: `plugins { id("com.android.library") }\n` },
+      { name: 'b', sourceSets: ['androidMain', 'androidUnitTest'],
+        build: `plugins { id("com.android.library") }\n` },
+    ]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.errors).toEqual([]);
+    expect(envelope.skipped.length).toBe(2);
+  });
+});
