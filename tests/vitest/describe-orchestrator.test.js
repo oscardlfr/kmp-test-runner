@@ -12,7 +12,7 @@
 //   7. Missing settings.gradle.kts → no_project error code
 //   8. --skip-probe path returns model from static analysis only
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -320,6 +320,66 @@ describe('parseArgs', () => {
 
   it('--module-filter takes value', () => {
     expect(parseArgs(['--module-filter', '^core']).moduleFilter).toBe('^core');
+  });
+
+  // v0.9 wet-audit drift #5: positional argument binds to --module-filter.
+  // Pre-fix: `kmp-test describe :core-result` silently dropped the positional
+  // and returned the unfiltered module set, hiding the usage mistake.
+  describe('drift #5 — positional --module-filter shorthand', () => {
+    it('binds a single positional to moduleFilter', () => {
+      expect(parseArgs([':core-result']).moduleFilter).toBe(':core-result');
+    });
+
+    it('explicit --module-filter wins over later positional', () => {
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const r = parseArgs(['--module-filter', ':first', ':second']);
+        expect(r.moduleFilter).toBe(':first');
+        expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining(":second"));
+      } finally {
+        stderrSpy.mockRestore();
+      }
+    });
+
+    it('first positional wins over later positional', () => {
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const r = parseArgs([':first', ':second']);
+        expect(r.moduleFilter).toBe(':first');
+        expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining(":second"));
+      } finally {
+        stderrSpy.mockRestore();
+      }
+    });
+
+    it('skips global --project-root <value> so its value is not bound as positional', () => {
+      const r = parseArgs(['--project-root', '/some/path', ':core-result']);
+      expect(r.moduleFilter).toBe(':core-result');
+    });
+
+    it('skips global --java-home <value>', () => {
+      const r = parseArgs(['--java-home', '/jdks/21', ':core']);
+      expect(r.moduleFilter).toBe(':core');
+    });
+
+    it('skips boolean globals --ignore-jdk-mismatch / --no-adb', () => {
+      expect(parseArgs(['--ignore-jdk-mismatch', ':a']).moduleFilter).toBe(':a');
+      expect(parseArgs(['--no-adb', ':b']).moduleFilter).toBe(':b');
+    });
+
+    it('positional with --skip-probe + --no-cache combines correctly', () => {
+      const r = parseArgs(['--skip-probe', ':core', '--no-cache']);
+      expect(r.moduleFilter).toBe(':core');
+      expect(r.skipProbe).toBe(true);
+      expect(r.noCache).toBe(true);
+    });
+
+    it('end-to-end: runDescribe applies positional filter', () => {
+      const dir = makeProject([{ name: 'app' }, { name: 'core-result' }, { name: 'core-common' }]);
+      const { envelope } = runDescribe({ projectRoot: dir, args: ['--skip-probe', 'core-result'] });
+      const names = envelope.describe.modules.map(m => m.name);
+      expect(names).toEqual([':core-result']);
+    });
   });
 });
 
