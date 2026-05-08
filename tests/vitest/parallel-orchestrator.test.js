@@ -265,6 +265,38 @@ describe('expandNoCoverageAlias', () => {
     expect(expandNoCoverageAlias(['--foo', '--no-coverage', '--bar']))
       .toEqual(['--foo', '--coverage-tool', 'none', '--bar']);
   });
+  // Wet audit 2026-05-08 (cell I1c): `--gradle-args=--info` (POSIX = form)
+  // was silently dropped because the switch matches the FULL token. Split
+  // `--flag=value` into `[--flag, value]` so callers can use either syntax.
+  it('splits --flag=value into [--flag, value]', () => {
+    expect(expandNoCoverageAlias(['--gradle-args=--info']))
+      .toEqual(['--gradle-args', '--info']);
+    expect(expandNoCoverageAlias(['--module-filter=core-result']))
+      .toEqual(['--module-filter', 'core-result']);
+    expect(expandNoCoverageAlias(['--test-type=common']))
+      .toEqual(['--test-type', 'common']);
+  });
+  it('splits on first = only (value may contain =)', () => {
+    expect(expandNoCoverageAlias(['--gradle-args=-Pfoo=bar']))
+      .toEqual(['--gradle-args', '-Pfoo=bar']);
+  });
+  it('does NOT split short flags or non-flag tokens with =', () => {
+    expect(expandNoCoverageAlias(['-Pfoo=bar', 'core=err']))
+      .toEqual(['-Pfoo=bar', 'core=err']);
+  });
+  it('parseArgs accepts --module-filter=value (= form)', () => {
+    const opts = parseArgs(['--module-filter=core-result']);
+    expect(opts.moduleFilter).toBe('core-result');
+  });
+  it('parseArgs accepts --test-type=value (= form)', () => {
+    const opts = parseArgs(['--test-type=common']);
+    expect(opts.testType).toBe('common');
+    expect(opts.testTypeExplicit).toBe(true);
+  });
+  it('parseArgs accepts --gradle-args=value (= form)', () => {
+    const opts = parseArgs(['--gradle-args=--info --rerun-tasks']);
+    expect(opts.gradleArgs).toEqual(['--info', '--rerun-tasks']);
+  });
 });
 
 describe('splitCsv', () => {
