@@ -12,6 +12,7 @@ import path from 'node:path';
 
 import {
   SCHEMA_VERSION,
+  MODEL_FINGERPRINT,
   computeCacheKey,
   aggregateJdkSignals,
   parseSettingsIncludes,
@@ -2098,6 +2099,55 @@ describe('buildProjectModel', () => {
     await new Promise(r => setTimeout(r, 5));
     const b = buildProjectModel(dir, { skipProbe: true, useCache: false });
     expect(b.generatedAt).not.toBe(a.generatedAt);
+  });
+
+  // Wet audit 2026-05-08 (B4 cell): Bug #4 fix (commit ae02317) changed
+  // platformsFromAnalysis output WITHOUT bumping SCHEMA_VERSION, so caches
+  // generated days earlier silently kept returning `platforms:["android"]` for
+  // shared-kmp-libs:core-result instead of the expected
+  // `["jvm","android","ios","macos"]`. Embedding the introspector source-file
+  // fingerprint in the cache file forces auto-invalidation on any logic change.
+  it('persists modelFingerprint in the cached model JSON', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const m = buildProjectModel(dir, { skipProbe: true });
+    expect(m.modelFingerprint).toBe(MODEL_FINGERPRINT);
+    expect(m.modelFingerprint).toMatch(/^[0-9a-f]{12}$/);
+    const onDisk = JSON.parse(readFileSync(
+      path.join(dir, '.kmp-test-runner', 'cache', `model-${m.cacheKey}.json`),
+      'utf8'
+    ));
+    expect(onDisk.modelFingerprint).toBe(MODEL_FINGERPRINT);
+  });
+
+  it('discards cached model when modelFingerprint is missing (pre-fix cache)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const m1 = buildProjectModel(dir, { skipProbe: true });
+    const cacheFile = path.join(dir, '.kmp-test-runner', 'cache', `model-${m1.cacheKey}.json`);
+    // Simulate a pre-fix cache: no modelFingerprint, with a stale generatedAt.
+    const stale = JSON.parse(readFileSync(cacheFile, 'utf8'));
+    delete stale.modelFingerprint;
+    stale.generatedAt = '2026-05-04T19:29:34.353Z';
+    writeFileSync(cacheFile, JSON.stringify(stale));
+    const m2 = buildProjectModel(dir, { skipProbe: true });
+    // Rebuilt: generatedAt advanced AND fingerprint repopulated.
+    expect(m2.generatedAt).not.toBe('2026-05-04T19:29:34.353Z');
+    expect(m2.modelFingerprint).toBe(MODEL_FINGERPRINT);
+  });
+
+  it('discards cached model when modelFingerprint differs (introspector changed)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const m1 = buildProjectModel(dir, { skipProbe: true });
+    const cacheFile = path.join(dir, '.kmp-test-runner', 'cache', `model-${m1.cacheKey}.json`);
+    const stale = JSON.parse(readFileSync(cacheFile, 'utf8'));
+    stale.modelFingerprint = 'deadbeefcafe';
+    stale.generatedAt = '2026-05-04T19:29:34.353Z';
+    writeFileSync(cacheFile, JSON.stringify(stale));
+    const m2 = buildProjectModel(dir, { skipProbe: true });
+    expect(m2.generatedAt).not.toBe('2026-05-04T19:29:34.353Z');
+    expect(m2.modelFingerprint).toBe(MODEL_FINGERPRINT);
   });
 
   // v0.8.0 cache subdir migration — dual-read fallback for legacy `.kmp-test-runner-cache/`
