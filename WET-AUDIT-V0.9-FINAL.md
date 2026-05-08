@@ -97,22 +97,31 @@ Fix: extend `expandNoCoverageAlias` in both orchestrators to pre-split `--<name>
 | L2b | shared-kmp-libs | `android` | `--test-filter "*NetworkStressTest"` | ✅ | – | 3 | correct user-facing shape |
 | L3b | shared-kmp-libs | `parallel --test-type androidInstrumented` | `--test-filter "*NetworkStressTest"` | ✅ | 31.4s | 1 | parity with `kmp-test android` |
 
-## Drift findings (non-blocking, not fixed in this audit)
+## Drift findings — ALL FIXED in-session (2026-05-08, post-audit follow-up)
 
-These are envelope/UX inconsistencies the audit surfaced but the user did not flag for inline-fix. Recommended for v0.10 or later.
+All 5 drifts surfaced by the wet audit were closed before tagging v0.9.0 (per the standing rule: pre-release validation gates fix in same session, no v0.10 milestone deferral). Fixed in PRs #169–#173 against `develop`. Each fix carries vitest regression coverage; each fix-PR squash-merged via the standard 7-check matrix.
 
-1. **`exit 3` on legit-skip with no remaining modules** (C1, E1, E2). When `--module-filter <X>` matches a module that is then legitimately filtered out by `--test-type` (e.g. KaMPKit `:shared` has no JVM target), the orchestrator emits `errors[{code:"no_test_modules"}]` and exits 3. The `errors[]` discriminator is correct, but exit 3 (`environment error`) is confusing — agent code branching on exit code reads it as a real failure. `tests.total:0 + skipped[].reason:"no <type> target"` would justify exit 0.
+| # | Drift | Fix-PR | Vitest delta |
+|---|---|---|---|
+| 1 | `exit 3` on legit-skip when filter matches but no leg target | [#170](https://github.com/oscardlfr/kmp-test-runner/pull/170) | +3 |
+| 2 | `modules[]` shape parity between list-only and wet | [#171](https://github.com/oscardlfr/kmp-test-runner/pull/171) | +1 (refactor net 0) |
+| 3 | `parallel --test-type androidInstrumented` missing `android:{}` block | [#172](https://github.com/oscardlfr/kmp-test-runner/pull/172) | +3 |
+| 4 | `_errors.json#testFailures[]` empty for non-AssertionError throws | [#173](https://github.com/oscardlfr/kmp-test-runner/pull/173) | +7 |
+| 5 | `describe :core-result` positional silently dropped | [#169](https://github.com/oscardlfr/kmp-test-runner/pull/169) | +7 |
 
-2. **`modules[]` shape difference between list-only vs wet** (B vs C). `--list-only` emits objects (`{name, type, coverage_plugin, test_build_type, has_flavor, android_dsl_variant}`), but wet runs emit bare strings (`["common"]`). Either is fine alone; the contrast across one envelope schema is the drift.
+Total: vitest 1142 → 1165 (+23 regression tests). develop tip post-sweep: `21c0a0d` (drift #4 closure).
 
-3. **`parallel --test-type androidInstrumented` does not populate `individual_total` or `android.device_serial`** (K4, L3b). Both fields are populated by `kmp-test android`. The two paths should expose the same agent-readable shape.
+### Per-drift summary
 
-4. **`_errors.json` doesn't capture instrumented test runtime failures** (J2 + J2-watch). The structured error file populates `compilationErrors[]` correctly (proven by J5 demo with 3 unresolved refs) but does NOT populate `testFailures[]` when an instrumented test throws at runtime. Two distinct repros:
-   - J2 (S22 phone): `:wearApp:connectedDebugAndroidTest FAILED` with 0 tests — `_errors.json` empty.
-   - J2-watch (Galaxy Watch SM_L705F): 2 tests ran, `testPeopleListScreen` threw `IllegalStateException: No compose hierarchies found in the app` — `_errors.json` STILL empty (`compilationErrors:[], testFailures:[], crashes:[]`), even though the gradle stdout has the full stack trace and the parser already correctly counted `tests:{total:2,passed:1,failed:1}` in the top-level envelope.
-   The fix is to thread the `Tests M/N completed. (S skipped) (F failed)` parser output to also populate `testFailures[]` with the failing test FQN + cause (extractable from the `> testName[device] FAILED` + indented stack trace lines). Lets agents diagnose runtime failures without fetching `wearApp.log`.
+1. **Drift #1** — `executeLeg` step 3 now distinguishes "filter matched nothing" (exit 3, preserved) from "filter matched modules but every match was skipped for this leg" (exit 0, no error). The skipped[] entries carry the diagnostic. Multi-leg `--test-type all` retains the legacy emission so the F2 demotion logic still produces `no_test_modules_for_leg` warnings.
 
-5. **`describe` `module-filter` does not accept positional shape** (B4 first attempt). I tried `kmp-test describe :core-result --json` and got 0 modules without an error message; the working form is `--module-filter core-result`. The positional form is silently ignored.
+2. **Drift #2** — extracted the `--list-only` short-circuit's inline shape into `canonicalModuleEntry(mod)`. Both list-only and wet-run paths now emit `[{name, type, coverage_plugin, test_build_type, has_flavor, android_dsl, android_dsl_variant}]`.
+
+3. **Drift #3** — when `legResults` contains an androidInstrumented leg, parallel-orchestrator populates `parsed.android = {device_serial, device_task, flavor}` from already-resolved values. `cli.js#buildJsonReport` propagates to top-level. `tests.individual_total` was already populated via WS-8.
+
+4. **Drift #4** — new `parseTestFailures(stdout)` helper captures the canonical AGP shape (`<ClassFQN> > <testName>[device-id] FAILED\n    <ExceptionFQN>: <message>`) into `{test, cause}` entries. Falls back to wide `*Exception/*Error` scan when canonical absent. Dedupes repeated FQNs.
+
+5. **Drift #5** — describe-orchestrator `parseArgs` binds the first positional token to `moduleFilter` (parity with explicit `--module-filter`); subsequent positionals warn on stderr. Globals consumed via cli.js lookup (`--project-root`, `--java-home`, `--ignore-jdk-mismatch`) explicitly skipped so their values don't bind as positionals.
 
 ## What was NOT validated wet
 
@@ -126,6 +135,6 @@ These are envelope/UX inconsistencies the audit surfaced but the user did not fl
   - macOS host (jvm/desktop, iosSimulatorArm64Test, macosArm64Test) — 5 testbeds × multiple test-types
   - Samsung Galaxy S22 phone — `kmp-test android` instrumented (3 tests on `shared-kmp-libs:benchmark-network`)
   - Samsung Galaxy Watch (SM_L705F) via wireless ADB — `kmp-test android --device <ip:port>` instrumented (2 tests on `PeopleInSpace:wearApp`, parseTestCounts handled new-plugin format on a Wear device for the first time)
-- Both bugs surfaced were fixed inline and merged to `develop` (PR #166 + PR #167); the 5 drift findings (incl. drift #4 reinforced by J2-watch) are envelope/UX clarifications, none are dispatch correctness regressions.
-- **Vitest baseline**: 1142/1143 (1 preexisting `parity.test.js#info --json --no-adb` snapshot drift on the audit machine where `JAVA_HOME` is unset; passes in CI).
-- **Recommendation**: tag `v0.9.0` (BACKLOG step 10). The audit closes with 0 unfixed bugs and 5 documented drifts queued as v0.10 candidates.
+- Both bugs surfaced inline (#166 + #167) AND all 5 drifts (#169–#173) were fixed in the same release window per the standing pre-release rule. None of the original drift findings were deferred to v0.10.
+- **Vitest baseline (post-sweep)**: 1165 (+23 from drift PRs). 1 preexisting `parity.test.js#info --json --no-adb` snapshot drift on the audit machine where `JAVA_HOME` is unset; passes in CI.
+- **Recommendation**: tag `v0.9.0` (BACKLOG step 10). The audit closes with 0 unfixed bugs and 0 deferred drifts. develop tip: `21c0a0d`.
