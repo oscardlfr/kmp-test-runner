@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Summary.** Closes the v0.9 line. Headline themes: `parallel` parity-gap closure with `kmp-test android` (PR #146 — 6 flags brought to `--test-type androidInstrumented`), `--gradle-args` global passthrough escape hatch (PR #147 — Tier 2 of the Gradle-config adapter), DX-parity bundle (PR #148 — `--variant` truly global + `kmp-test info` + `kmp-test describe` + `kmp-test update`), opt-in concurrency Tier 3 `--isolated` (PR #149 — `--project-cache-dir <tmp>` per run for parallel multi-agent fan-out), cross-platform parity in CI (PR #150 — 4 static sub-checks on ubuntu replacing the dropped iOS/macOS TestKit matrix), buildable cross-platform E2E fixture (PR #151 — synthetic KMP fixture under `tests/fixtures/kmp-cross-platform-e2e/`), manual macOS validation gate (PRs #153/#154/#155 — driver + probe mode + 3 inline-fixed bug closures from the wet pass on real hardware), token-cost re-measurement on `shared-kmp-libs` core-* (PR #156 — coverage A overflows Anthropic's `count_tokens` endpoint, the load-bearing finding), README + CHANGELOG refresh (this PR). Vitest 816 → 1078 (+262 across the line). Released 2026-05-XX.
 
+### Fixed — v0.9 win-audit Bug-I: `--java-home` and `--no-jdk-autoselect` now documented in `<sub> --help` (2026-05-08)
+
+Both flags were parsed at cli.js (`getJavaHomeOverride` line ~754, `extractNoJdkAutoselect` line ~762) and listed in `tests/vitest/_parity-helpers.js#CLI_GLOBAL_FLAGS`, but `SUBCOMMAND_HELP` didn't mention them. The existing parity audit at `parity.test.js` filters CLI_GLOBAL_FLAGS out of its drift check (the flags ARE parsed, so the "every documented flag has a parser case" direction is fine), so the doc gap went unsurfaced for v0.9.
+
+- **`lib/cli.js`** — added 2 rows uniformly (mirroring the existing `--ignore-jdk-mismatch` shape) to `parallel`, `changed`, `android`, `coverage`, `benchmark`, and `describe` SUBCOMMAND_HELP blocks. `info` / `update` / `doctor` skipped — they don't gate on JDK toolchain.
+- **`tests/vitest/parity.test.js`** — new `SUBCOMMAND_HELP mentions --java-home and --no-jdk-autoselect (Bug-I)` assertion in the flag-matrix audit, parameterized over the 6 JDK-annotated subcommands. Explicit positive check (the existing audit filters these out via CLI_GLOBAL_FLAGS membership).
+- **Live verification:** `kmp-test parallel --help | grep -E 'java-home|no-jdk-autoselect|ignore-jdk-mismatch'` now lists all three; describe likewise.
+- **Vitest 1218 → 1224** (+6 parametrized parity assertions).
+
 ### Added — v0.9 win-audit Bug-B + Bug-C + Bug-D: input validation pass (`invalid_flag_value`, `invalid_regex`) (2026-05-08)
 
 The Windows-side audit found that every orchestrator silently accepted invalid input: enum flags (`--test-type bogus`, `--coverage-tool bogus`, `--platform bogus`) fell through to confusing "task not found" errors at gradle time; numeric flags (`--max-workers abc`, `--timeout -1`, `--max-failures NaN`) coerced silently to 0/NaN; `describe --module-filter "[unclosed"` swallowed the regex compile error and returned the unfiltered set, hiding the user's mistake.

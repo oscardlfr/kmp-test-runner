@@ -53,6 +53,22 @@ describe('parity / flag-matrix audit', () => {
         expect(documentedNotParsed).toEqual([]);
       });
 
+      // v0.9 session 2 Bug-I — `--java-home` and `--no-jdk-autoselect` exist
+      // in CLI_GLOBAL_FLAGS and the underlying parsers (cli.js:getJavaHomeOverride,
+      // extractNoJdkAutoselect) but were missing from SUBCOMMAND_HELP. The
+      // existing "every documented flag has a parser case" check filters these
+      // out via CLI_GLOBAL_FLAGS membership, so add an explicit positive
+      // assertion that the help text mentions both by literal name. Skip
+      // `info` + `update` + `doctor` which don't gate on JDK toolchain.
+      const JDK_ANNOTATED_SUBS = new Set(['parallel', 'changed', 'android', 'coverage', 'benchmark', 'describe']);
+      if (JDK_ANNOTATED_SUBS.has(sub)) {
+        it('SUBCOMMAND_HELP mentions --java-home and --no-jdk-autoselect (Bug-I)', () => {
+          const documented = getDocumentedFlagsForSubcommand(sub);
+          expect(documented.has('--java-home')).toBe(true);
+          expect(documented.has('--no-jdk-autoselect')).toBe(true);
+        });
+      }
+
       it('every orchestrator-parsed flag is documented in SUBCOMMAND_HELP', () => {
         const documented = getDocumentedFlagsForSubcommand(sub);
         const orchestratorRel = SUBCOMMAND_TO_ORCHESTRATOR[sub];
