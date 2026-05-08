@@ -2908,6 +2908,66 @@ describe('runParallel --list-only short-circuits before gradle dispatch (Bug #7)
 // same `modules[]` field across paths had to branch on shape. Post-fix both
 // paths emit canonical objects via `canonicalModuleEntry`.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// v0.9 wet-audit drift #3: parallel --test-type androidInstrumented should
+// surface `android:{device_serial, device_task, flavor}` (parity with
+// `kmp-test android`'s top-level android:{} block). `individual_total` was
+// already tracked via WS-8 — verify it propagates too.
+// ---------------------------------------------------------------------------
+describe('runParallel androidInstrumented envelope parity (drift #3)', () => {
+  it('surfaces top-level android:{device_serial, device_task, flavor} when leg dispatched', async () => {
+    const dir = makeProject([
+      { name: 'app', sourceSets: ['main', 'androidInstrumentedTest'],
+        build: `plugins { id("com.android.library") }\n` },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--module-filter', ':app'],
+      // Stub adb to return the S22-style serial so resolvedDeviceSerial populates.
+      env: { KMP_TEST_FAKE_DEVICES: 'R3CT30KAMEH' },
+      spawn: makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 2s\n' }),
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.android).toBeDefined();
+    expect(envelope.android).toHaveProperty('device_serial');
+    expect(envelope.android).toHaveProperty('device_task');
+    expect(envelope.android).toHaveProperty('flavor');
+  });
+
+  it('does NOT surface android:{} when no androidInstrumented leg dispatched', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn: makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n' }),
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.android).toBeUndefined();
+  });
+
+  it('individual_total tracks even on common-leg path (regression — WS-8 still works)', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn: makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n' }),
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.tests).toHaveProperty('individual_total');
+    expect(typeof envelope.tests.individual_total).toBe('number');
+  });
+});
+
 describe('runParallel modules[] shape parity (drift #2)', () => {
   it('wet-run modules[] has same object shape as --list-only', async () => {
     const dir = makeProject([
