@@ -2743,3 +2743,109 @@ describe('runParallel coverage envelope shape parity (Bug #5)', () => {
     expect(envelope.coverage.modules_with_jacoco_plugin).not.toContain('plain');
   });
 });
+
+// ---------------------------------------------------------------------------
+// v0.9 step 9.8 (Bug #7) — `--list-only` short-circuit. Pre-fix `parallel`
+// silently ignored the flag (documented for `android` only) and dispatched
+// gradle, exiting with `no_summary`. Post-fix mirrors android: emit the
+// post-filter module set on `modules[]`, populate `skipped[]` + coverage,
+// exit 0 before any gradle dispatch.
+// ---------------------------------------------------------------------------
+describe('runParallel --list-only short-circuits before gradle dispatch (Bug #7)', () => {
+  it('emits modules[] + skipped[] + coverage, exits 0, no spawn calls', async () => {
+    const dir = makeProject([
+      { name: 'core',    sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'feature', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list-only'],
+      spawn,
+      log: () => {},
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.exit_code).toBe(0);
+    expect(envelope.modules.length).toBe(2);
+    expect(envelope.modules.map(m => m.name).sort()).toEqual(['core', 'feature']);
+    expect(envelope.errors).toEqual([]);
+    expect(envelope.parallel?.list_only).toBe(true);
+    // No gradle dispatch — only model-build spawn calls (project-model probe)
+    // are expected; the gradlew test invocations should not happen.
+    const gradleCalls = spawn.calls.filter(c => /gradlew/.test(c[0] || c.join(' ')));
+    // Allow 0 or 1 gradle calls (project-model probe is OK; test dispatch is not).
+    expect(gradleCalls.length).toBeLessThanOrEqual(1);
+  });
+
+  it('--list-only respects --module-filter — only filtered modules emitted', async () => {
+    const dir = makeProject([
+      { name: 'core',           sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'feature',        sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'benchmark-core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list-only', '--module-filter', 'core'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    // Substring "core" → matches "core" + "benchmark-core" (per Bug #3 contract).
+    const names = envelope.modules.map(m => m.name).sort();
+    expect(names).toContain('core');
+    expect(names).toContain('benchmark-core');
+    expect(names).not.toContain('feature');
+  });
+
+  it('--list-only with empty filter result still surfaces no_test_modules error (consistent with full run)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list-only', '--module-filter', 'nonexistent'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).not.toBe(0);
+    expect(envelope.errors[0]?.code).toBe('no_test_modules');
+  });
+
+  it('--list-only populates coverage.modules_with_kover_plugin (parity with full-run shape)', async () => {
+    const dir = makeProject([
+      { name: 'k', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+        build: `plugins { kotlin("jvm"); id("org.jetbrains.kotlinx.kover") }\n` },
+      { name: 'plain', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+        build: `plugins { kotlin("jvm") }\n` },
+    ]);
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list-only'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(envelope.coverage.modules_with_kover_plugin).toContain('k');
+    expect(envelope.coverage.modules_with_kover_plugin).not.toContain('plain');
+  });
+
+  it('--list (alias for --list-only) accepted', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.parallel?.list_only).toBe(true);
+  });
+
+  it('--list-only carries top-level isolated:{} field (shape parity)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list-only', '--isolated'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(envelope.isolated).toBeDefined();
+    expect(envelope.isolated.enabled).toBe(true);
+  });
+});
