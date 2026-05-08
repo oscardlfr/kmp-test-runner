@@ -128,6 +128,18 @@ describe('runDescribe missing project', () => {
     expect(envelope.errors[0].code).toBe('no_project');
     expect(exitCode).toBe(2);
   });
+
+  // v0.9 wet-audit F-1 regression — envelope.exit_code MUST match the
+  // orchestrator's process exit (CONFIG_ERROR / 2). Pre-fix envErrorJson
+  // hardcoded ENV_ERROR / 3 in the envelope while the caller exited 2.
+  it('F-1 regression: envelope.exit_code equals returned exitCode (CONFIG_ERROR/2)', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-describe-empty-'));
+    workDir = dir;
+    const { envelope, exitCode } = runDescribe({ projectRoot: dir, args: [] });
+    expect(exitCode).toBe(2);
+    expect(envelope.exit_code).toBe(2);
+    expect(envelope.exit_code).toBe(exitCode);
+  });
 });
 
 describe('discoverCompositeBuilds', () => {
