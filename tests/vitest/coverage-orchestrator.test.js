@@ -171,6 +171,25 @@ describe('expandNoCoverageAlias', () => {
     expect(expandNoCoverageAlias(['--project-root', '/x', '--no-coverage', '--json']))
       .toEqual(['--project-root', '/x', '--coverage-tool', 'none', '--json']);
   });
+  // Wet audit 2026-05-08 (cell I1c): the parser switch matches whole tokens,
+  // so `--coverage-tool=kover` was silently dropped. expandNoCoverageAlias
+  // splits `--flag=value` into `[--flag, value]` so both forms work.
+  it('splits POSIX-style --flag=value into separate tokens', () => {
+    expect(expandNoCoverageAlias(['--coverage-tool=kover']))
+      .toEqual(['--coverage-tool', 'kover']);
+  });
+  it('splits only on the FIRST = (preserves = inside the value)', () => {
+    expect(expandNoCoverageAlias(['--gradle-args=-Pfoo=bar']))
+      .toEqual(['--gradle-args', '-Pfoo=bar']);
+  });
+  it('does not split short flags or non-flag tokens', () => {
+    expect(expandNoCoverageAlias(['-Pfoo=bar', 'value=raw']))
+      .toEqual(['-Pfoo=bar', 'value=raw']);
+  });
+  it('parseArgs accepts --coverage-tool=kover (= form)', () => {
+    const opts = parseArgs(['--coverage-tool=kover']);
+    expect(opts.coverageTool).toBe('kover');
+  });
 });
 
 describe('aggregateClassRows', () => {
