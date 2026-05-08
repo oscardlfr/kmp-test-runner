@@ -108,6 +108,18 @@ describe('translateFlagForPowerShell', () => {
   it('handles multi-word flags correctly', () => {
     expect(translateFlagForPowerShell('--benchmark-config')).toBe('-BenchmarkConfig');
   });
+
+  // v0.9 session 2 Bug-A.1 — POSIX `--name=value` form must preserve value verbatim.
+  // Both these inputs failed pre-fix because the dash-segment PascalCase walk
+  // ran over the entire token (head + value):
+  //   --module-filter=:core-result → -ModuleFilter=:coreResult  (mangled value `core-result` → `coreResult`)
+  //   --gradle-args=--rerun-tasks  → -GradleArgs=RerunTasks     (lost the value's leading `--`)
+  it('preserves dashed value verbatim in POSIX --name=value form', () => {
+    expect(translateFlagForPowerShell('--module-filter=:core-result')).toBe('-ModuleFilter=:core-result');
+  });
+  it('preserves --prefixed value verbatim in POSIX --name=value form', () => {
+    expect(translateFlagForPowerShell('--gradle-args=--rerun-tasks')).toBe('-GradleArgs=--rerun-tasks');
+  });
 });
 
 // v0.9 step 2 — PowerShell binds [string[]] params via comma syntax which is
