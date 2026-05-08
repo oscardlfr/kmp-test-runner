@@ -1118,8 +1118,15 @@ describe('runParallel', () => {
     });
     expect(envelope.tests.passed).toBeGreaterThan(0);
     expect(envelope.modules.length).toBeGreaterThan(0);
-    expect(envelope.modules).toContain('core');
-    expect(envelope.modules).toContain('feature');
+    // v0.9 drift #2 — modules[] is now an array of canonical objects with
+    // `{name, type, coverage_plugin, test_build_type, has_flavor,
+    //   android_dsl, android_dsl_variant}` (parity with --list-only).
+    const names = envelope.modules.map(m => m.name);
+    expect(names).toContain('core');
+    expect(names).toContain('feature');
+    expect(envelope.modules[0]).toHaveProperty('type');
+    expect(envelope.modules[0]).toHaveProperty('coverage_plugin');
+    expect(envelope.modules[0]).toHaveProperty('test_build_type');
   });
 
   it('--fresh-daemon spawns gradlew --stop before main dispatch', async () => {
@@ -1190,9 +1197,11 @@ describe('runParallel', () => {
       runCoverageInjection: stubCoverage,
     });
     // Only `core` + `feature` reached the test dispatch, `shared` was filtered out.
-    expect(envelope.modules).toContain('core');
-    expect(envelope.modules).toContain('feature');
-    expect(envelope.modules).not.toContain('shared');
+    // v0.9 drift #2 — modules[] is array of objects with `.name`.
+    const names = envelope.modules.map(m => m.name);
+    expect(names).toContain('core');
+    expect(names).toContain('feature');
+    expect(names).not.toContain('shared');
   });
 
   it('--benchmark invokes runBenchmark stub with --config', async () => {
@@ -1413,7 +1422,8 @@ describe('runParallel', () => {
     // have been marked failed by defense-in-depth.
     expect(envelope.tests.passed).toBe(1);
     expect(envelope.tests.failed).toBe(1);
-    expect(envelope.modules).toContain('healthy');
+    // v0.9 drift #2 — modules[] is array of objects with `.name`.
+    expect(envelope.modules.map(m => m.name)).toContain('healthy');
     expect(envelope.errors.some(e => e.module === 'broken')).toBe(true);
     expect(envelope.errors.some(e => e.module === 'healthy')).toBe(false);
     // Spawn called 1 (one-shot) + 2 (per-module retry) = 3 times.
@@ -2891,6 +2901,49 @@ describe('runParallel --list-only short-circuits before gradle dispatch (Bug #7)
 // exit 0. Filter-actually-matched-nothing still surfaces the error at
 // runParallel's top-level (modules.length === 0 guard at line 1348).
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// v0.9 wet-audit drift #2: modules[] shape parity between list-only and wet.
+// Pre-fix: list-only emitted `[{name, type, coverage_plugin, ...}]` (objects)
+// but wet runs emitted `["core-result"]` (bare strings). Agents reading the
+// same `modules[]` field across paths had to branch on shape. Post-fix both
+// paths emit canonical objects via `canonicalModuleEntry`.
+// ---------------------------------------------------------------------------
+describe('runParallel modules[] shape parity (drift #2)', () => {
+  it('wet-run modules[] has same object shape as --list-only', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const wetRun = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn: makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' }),
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    const listOnlyRun = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list-only'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    // Both paths emit object arrays.
+    expect(Array.isArray(wetRun.envelope.modules)).toBe(true);
+    expect(Array.isArray(listOnlyRun.envelope.modules)).toBe(true);
+    expect(typeof wetRun.envelope.modules[0]).toBe('object');
+    expect(typeof listOnlyRun.envelope.modules[0]).toBe('object');
+    // Same canonical key set.
+    const wetKeys = Object.keys(wetRun.envelope.modules[0]).sort();
+    const listKeys = Object.keys(listOnlyRun.envelope.modules[0]).sort();
+    expect(wetKeys).toEqual(listKeys);
+    // Required keys present.
+    expect(wetKeys).toEqual([
+      'android_dsl', 'android_dsl_variant', 'coverage_plugin',
+      'has_flavor', 'name', 'test_build_type', 'type',
+    ]);
+  });
+});
+
 describe('runParallel legit-skip exit semantics (drift #1)', () => {
   it('exit 0 when filter matches a module but no module supports the test-type leg', async () => {
     const dir = makeProject([
