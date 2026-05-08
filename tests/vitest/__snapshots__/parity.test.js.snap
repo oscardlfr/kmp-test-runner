@@ -30,6 +30,7 @@ exports[`parity / envelope JSON schema snapshot > android --list-only --json env
   },
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
+  "schema_version": 1,
   "skipped": [],
   "subcommand": "android",
   "tests": {
@@ -71,6 +72,7 @@ exports[`parity / envelope JSON schema snapshot > benchmark --dry-run --json env
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
+  "schema_version": 1,
   "skipped": [],
   "subcommand": "benchmark",
   "tests": {
@@ -112,6 +114,7 @@ exports[`parity / envelope JSON schema snapshot > changed --dry-run --json --sta
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
+  "schema_version": 1,
   "skipped": [],
   "subcommand": "changed",
   "tests": {
@@ -153,6 +156,7 @@ exports[`parity / envelope JSON schema snapshot > coverage --dry-run --json enve
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
+  "schema_version": 1,
   "skipped": [],
   "subcommand": "coverage",
   "tests": {
@@ -217,6 +221,7 @@ exports[`parity / envelope JSON schema snapshot > describe --json --skip-probe e
   "exit_code": 0,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
+  "schema_version": 1,
   "skipped": [],
   "subcommand": "describe",
   "tests": {
@@ -256,6 +261,7 @@ exports[`parity / envelope JSON schema snapshot > doctor --json envelope shape i
     "workers_max": "<null>",
   },
   "project_root": "<PROJECT_ROOT>",
+  "schema_version": 1,
   "subcommand": "doctor",
   "tool": "kmp-test",
   "version": "<KMP_TEST_VERSION>",
@@ -316,6 +322,7 @@ exports[`parity / envelope JSON schema snapshot > info --json --no-adb envelope 
   },
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
+  "schema_version": 1,
   "skipped": [],
   "subcommand": "info",
   "tests": {
@@ -357,6 +364,7 @@ exports[`parity / envelope JSON schema snapshot > parallel --dry-run --json enve
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
+  "schema_version": 1,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -382,6 +390,7 @@ exports[`parity / envelope JSON schema snapshot > update --check --json envelope
   "exit_code": 0,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
+  "schema_version": 1,
   "skipped": [],
   "subcommand": "update",
   "tests": {

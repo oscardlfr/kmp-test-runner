@@ -194,6 +194,22 @@ describe('parity / envelope JSON schema snapshot', () => {
     });
   }
 
+  // v0.9 session 2 Bug-K — top-level `schema_version: 1` on every envelope.
+  // Explicit assertion (not a snapshot) so a future refactor that drops the
+  // field is caught without snapshot churn — and so the value is locked at
+  // exactly 1 (a `null` or `'1'` would still fit the shape but break the
+  // contract). Pre-fix only `describe.schema_version` (sourced from project-
+  // model) existed; agents had no version handle for the CLI envelope itself.
+  for (const { sub, args, env, skipFixture } of CASES) {
+    it(`${sub} envelope carries top-level schema_version === 1 (Bug-K)`, () => {
+      const cwd = skipFixture ? REPO_ROOT : fixtureRoot;
+      const fullArgs = skipFixture ? args : ['--project-root', fixtureRoot, ...args];
+      const { envelope } = runSubcommand(sub, fullArgs, { cwd, env });
+      expect(envelope).toBeTruthy();
+      expect(envelope.schema_version).toBe(1);
+    });
+  }
+
   // v0.9 step 9.6 (Bug #6) — isolated dry-run envelope. Pre-fix the
   // `--isolated --dry-run` envelope was missing the top-level `isolated:{}`
   // field; only `plan.spawn_args` carried `-Isolated`. Now populated from
