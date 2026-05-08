@@ -362,9 +362,8 @@ describe('parseArgs', () => {
       expect(r.moduleFilter).toBe(':core');
     });
 
-    it('skips boolean globals --ignore-jdk-mismatch / --no-adb', () => {
+    it('skips boolean global --ignore-jdk-mismatch', () => {
       expect(parseArgs(['--ignore-jdk-mismatch', ':a']).moduleFilter).toBe(':a');
-      expect(parseArgs(['--no-adb', ':b']).moduleFilter).toBe(':b');
     });
 
     it('positional with --skip-probe + --no-cache combines correctly', () => {
