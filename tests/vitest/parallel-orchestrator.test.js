@@ -1562,6 +1562,85 @@ describe('runParallel', () => {
     expect(moduleFailed.setup_failed).toBe(true);
   });
 
+  // Bonus finding from 2026-05-09 wet-audit. Pre-fix `parallel --test-type
+  // androidInstrumented` (no `--device`, no `--clear-data`) skipped the
+  // adb probe entirely, so `envelope.android.device_serial` always
+  // returned `''` even when a device was connected — paridad gap with
+  // the `kmp-test android` subcommand which always probes.
+  it('androidInstrumented populates android.device_serial from adb probe (no --device)', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const adbProbe = () => [{ serial: 'PROBED-X1', type: 'physical', model: 'TestDevice' }];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(0);
+    expect(envelope.android).toBeDefined();
+    expect(envelope.android.device_serial).toBe('PROBED-X1');
+  });
+
+  it('androidInstrumented surfaces empty device_serial when adb has no devices (no failure)', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const adbProbe = () => []; // no devices connected
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    // Best-effort probe: empty serial is fine; orchestrator does NOT
+    // fail (gradle will surface its own error if it actually needs a
+    // device). No instrumented_setup_failed pushed — best-effort, not strict.
+    expect(exitCode).toBe(0);
+    expect(envelope.android).toBeDefined();
+    expect(envelope.android.device_serial).toBe('');
+    expect(envelope.errors.find(e => e.code === 'instrumented_setup_failed')).toBeUndefined();
+  });
+
+  it('androidInstrumented picks first device when multiple connected, no --device (gradle default)', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const adbProbe = () => [
+      { serial: 'FIRST', type: 'physical', model: 'A' },
+      { serial: 'SECOND', type: 'emulator', model: 'B' },
+    ];
+
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(envelope.android.device_serial).toBe('FIRST');
+  });
+
   it('module_failed WITH XML evidence → errors[] has NO setup_failed flag (OBS-A negative)', async () => {
     const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
     // Pre-write a JUnit XML with one failing testcase. The stale-XML
@@ -2870,7 +2949,6 @@ describe('runParallel --auto-retry + --clear-data (v0.9 step 1, flags #1 + #2)',
         // Plain AGP (no productFlavors block).
         build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
     ]);
-    makeAndroidApp('app');
     const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
     const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
 
@@ -3542,7 +3620,6 @@ describe('--isolated runtime-race guard (OBS-4)', () => {
         sourceSets: ['androidInstrumentedTest'],
         build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
     ]);
-    makeAndroidApp('app');
     const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
     const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
     const { exitCode } = await runParallel({
