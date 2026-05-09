@@ -1034,6 +1034,20 @@ describe('junitTestCountFor', () => {
     workDir = dir;
     expect(junitTestCountFor(dir, ':missing:test')).toBe(0);
   });
+
+  // OBS-A from 2026-05-09 — symmetric counting on AGP path.
+  it('counts testcases in AGP outputs/androidTest-results/connected/ for instrumented tasks', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-test-'));
+    workDir = dir;
+    const agpDir = path.join(
+      dir, 'mod', 'build', 'outputs', 'androidTest-results',
+      'connected', 'androidMain',
+    );
+    mkdirSync(agpDir, { recursive: true });
+    writeFileSync(path.join(agpDir, 'TEST-Foo.xml'),
+      '<testsuite><testcase/><testcase/></testsuite>');
+    expect(junitTestCountFor(dir, ':mod:androidConnectedCheck')).toBe(2);
+  });
 });
 
 // ===========================================================================
@@ -1154,6 +1168,61 @@ describe('junitTestFailuresFor (BUG-1)', () => {
     expect(junitTestFailuresFor(dir, ':core:jvmTest', future)).toEqual([]);
     // sinceMs=0 disables the guard.
     expect(junitTestFailuresFor(dir, ':core:jvmTest', 0)).toHaveLength(1);
+  });
+
+  // OBS-A from 2026-05-09 wet-audit (shared-kmp-libs benchmark-storage).
+  // AGP's androidConnectedCheck (and connected${Variant}AndroidTest)
+  // emit JUnit XML to `build/outputs/androidTest-results/connected/
+  // <sourceSet>/TEST-*.xml`, NOT `build/test-results/<task>/`. Pre-fix
+  // junitTestFailuresFor only walked the latter, so failures from
+  // instrumented tasks never populated `modules[].test_failures[]` —
+  // agents had to walk the file system to discriminate.
+  it('walks AGP outputs/androidTest-results/connected/ path for instrumented tasks', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-fail-'));
+    workDir = dir;
+    const agpDir = path.join(
+      dir, 'benchmark-storage', 'build', 'outputs', 'androidTest-results',
+      'connected', 'androidMain',
+    );
+    mkdirSync(agpDir, { recursive: true });
+    writeFileSync(
+      path.join(agpDir, 'TEST-SM-S908B - 16-_benchmark-storage-.xml'),
+      '<testsuite name="com.foo.StressTest" tests="2" failures="1">' +
+      '<testcase name="passes" classname="com.foo.StressTest" time="0.1"/>' +
+      '<testcase name="oomFails" classname="com.foo.StressTest" time="42.0">' +
+      '<failure type="java.lang.OutOfMemoryError" message="heap exhausted"/>' +
+      '</testcase></testsuite>'
+    );
+    const failures = junitTestFailuresFor(dir, ':benchmark-storage:androidConnectedCheck');
+    expect(failures).toHaveLength(1);
+    expect(failures[0].test).toBe('com.foo.StressTest.oomFails');
+    expect(failures[0].type).toBe('java.lang.OutOfMemoryError');
+  });
+
+  it('walks BOTH test-results/<task>/ AND outputs/androidTest-results/connected/ (instrumented + JVM unioned)', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-fail-'));
+    workDir = dir;
+    // Legacy path (some KMP/AGP setups emit BOTH paths for connectedCheck —
+    // gradle JvmTestTask + AGP's connected aggregator). Make sure we don't
+    // duplicate-count or skip either source.
+    const legacyDir = path.join(dir, 'mod', 'build', 'test-results', 'androidConnectedCheck');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(path.join(legacyDir, 'TEST-LegacyClass.xml'),
+      '<testsuite><testcase name="legacy_fail" classname="com.foo.LegacyClass">' +
+      '<failure type="AssertionError" message="legacy bad"/></testcase></testsuite>');
+    const agpDir = path.join(
+      dir, 'mod', 'build', 'outputs', 'androidTest-results', 'connected', 'androidMain',
+    );
+    mkdirSync(agpDir, { recursive: true });
+    writeFileSync(path.join(agpDir, 'TEST-AgpClass.xml'),
+      '<testsuite><testcase name="agp_fail" classname="com.foo.AgpClass">' +
+      '<failure type="AssertionError" message="agp bad"/></testcase></testsuite>');
+    const failures = junitTestFailuresFor(dir, ':mod:androidConnectedCheck');
+    const tests = failures.map(f => f.test).sort();
+    expect(tests).toEqual([
+      'com.foo.AgpClass.agp_fail',
+      'com.foo.LegacyClass.legacy_fail',
+    ]);
   });
 });
 
@@ -1466,6 +1535,65 @@ describe('runParallel', () => {
     expect(envelope.tests.failed).toBeGreaterThan(0);
     expect(envelope.errors.some(e => e.code === 'module_failed')).toBe(true);
     expect(exitCode).toBe(1);
+  });
+
+  // OBS-A from 2026-05-09 wet-audit. When a gradle task fails AND no
+  // JUnit XML evidence exists (compile-time / runner-setup failure),
+  // pre-fix the envelope surfaced plain `module_failed` with empty
+  // `test_failures[]` — agents could not distinguish "test ran and
+  // failed" from "test never ran". Fix marks setup_failed:true when
+  // both junitTestFailuresFor and junitTestCountFor return empty.
+  it('module_failed + no XML evidence → errors[].setup_failed:true (OBS-A)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    // failTasks marks the task as failed, but the spawn stub does NOT
+    // create any TEST-*.xml files — mimics a compile-time failure.
+    const spawn = makeSpawnStub({ failTasks: [':core:jvmTest'], stdout: '> Task :core:jvmTest\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(exitCode).toBe(1);
+    const moduleFailed = envelope.errors.find(e => e.code === 'module_failed' && e.module === 'core');
+    expect(moduleFailed).toBeDefined();
+    expect(moduleFailed.setup_failed).toBe(true);
+  });
+
+  it('module_failed WITH XML evidence → errors[] has NO setup_failed flag (OBS-A negative)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    // Pre-write a JUnit XML with one failing testcase. The stale-XML
+    // guard filters by mtime < state.runStartMs; bump mtime to the
+    // future so the file passes regardless of when runParallel starts.
+    const xmlDir = path.join(dir, 'core', 'build', 'test-results', 'jvmTest');
+    mkdirSync(xmlDir, { recursive: true });
+    const xmlPath = path.join(xmlDir, 'TEST-RealFailures.xml');
+    writeFileSync(xmlPath,
+      '<testsuite><testcase name="boom" classname="com.foo.RealFailures">' +
+      '<failure type="AssertionError" message="real test failure"/>' +
+      '</testcase></testsuite>');
+    // Bump mtime to +60s so the stale-XML guard always lets it through.
+    const future = new Date(Date.now() + 60_000);
+    utimesSync(xmlPath, future, future);
+    const spawn = makeSpawnStub({ failTasks: [':core:jvmTest'], stdout: '> Task :core:jvmTest\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(exitCode).toBe(1);
+    const moduleFailed = envelope.errors.find(e => e.code === 'module_failed' && e.module === 'core');
+    expect(moduleFailed).toBeDefined();
+    // setup_failed must NOT be set when XML evidence exists.
+    expect(moduleFailed.setup_failed).toBeUndefined();
+    // test_failures populated as a regression-anti-flake.
+    const coreModule = envelope.modules.find(m => m.name === 'core');
+    expect(coreModule.test_failures.length).toBeGreaterThan(0);
   });
 
   it('WS-1: "Cannot locate tasks" → all modules marked failed by classifyTaskResults', async () => {
