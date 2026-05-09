@@ -123,21 +123,25 @@ Describe 'Test-ModuleHasTestSources (lib/Script-Utils.ps1)' {
 # lives in tests/vitest/parallel-orchestrator.test.js + the kmp-test --json
 # envelope tests below (the agent-facing contract).
 
-Describe 'parallel: filter that rejects everything → exits 3' {
+# wet-audit-v0.9-part2 OBS-3 — exit-code split for `no_test_modules`:
+# user-supplied filter (--module-filter / --exclude-modules) that drops
+# every module is now CONFIG_ERROR (2). Project-empty (no filter, project
+# genuinely empty) stays ENV_ERROR (3). See CHANGELOG entry.
+Describe 'parallel: filter that rejects everything → exits 2 (CONFIG_ERROR)' {
 
     BeforeEach {
         $script:WorkDir = Join-Path $TestDrive ("proj-" + [guid]::NewGuid().ToString('N').Substring(0,8))
         New-FakeMultiModuleProject -Path $script:WorkDir
     }
 
-    It 'exits 3 with helpful message when filter excludes all' {
+    It 'exits 2 with helpful message when filter excludes all' {
         $script = $script:Parallel
         $work = $script:WorkDir
         $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
             (& pwsh -NoLogo -NoProfile -File $script -ProjectRoot $work -ModuleFilter '*' `
                 -ExcludeModules 'core-*,feature-*' -IgnoreJdkMismatch 2>&1) -join "`n"
         }
-        $LASTEXITCODE | Should -Be 3
+        $LASTEXITCODE | Should -Be 2
         $output | Should -Match 'No modules (found|support)'
     }
 }
@@ -168,17 +172,22 @@ Describe 'kmp-test --json: skipped[] and no_test_modules envelope' {
         $firstLine | Should -Match '"reason":"no test source set'
     }
 
-    It 'no_test_modules code fires when filter excludes all' {
+    It 'no_test_modules code + CONFIG_ERROR (2) + caused_by_filter:true when filter excludes all' {
+        # wet-audit-v0.9-part2 OBS-3 — exit 1→2 split: filter-miss is
+        # CONFIG_ERROR; project-empty stays ENV_ERROR (3). The `no_test_modules`
+        # discriminator is preserved with new `caused_by_filter:bool` field.
         $cli = Join-Path $script:RepoRoot 'bin\kmp-test.js'
         $work = $script:WorkDir
         $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
             (& node $cli --json parallel --project-root $work --module-filter '*' `
                 --exclude-modules 'core-*,feature-*' 2>&1) -join "`n"
         }
-        $LASTEXITCODE | Should -Be 3
+        $LASTEXITCODE | Should -Be 2
         $firstLine = ($output -split "`n" | Where-Object { $_ -match '^\{' } | Select-Object -First 1)
         $firstLine | Should -Not -BeNullOrEmpty
         $firstLine | Should -Match '"code":"no_test_modules"'
+        $firstLine | Should -Match '"caused_by_filter":true'
+        $firstLine | Should -Match '"exit_code":2'
         $firstLine | Should -Not -Match '"code":"no_summary"'
     }
 }
