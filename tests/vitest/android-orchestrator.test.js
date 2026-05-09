@@ -264,6 +264,51 @@ Finished 99 tests on Bogus-Device`;
       modules_with_jacoco_plugin: [],
     });
   });
+
+  // wet-audit-v0.9-part2 OBS-6 — `--list-only` populates top-level
+  // `modules[]` (matching wet-run shape) and echoes `--device <serial>`
+  // to `android.device_serial`. Pre-fix list-only left top-level
+  // `modules: []` empty and dropped the user-supplied --device value,
+  // forcing agents to special-case the list-only envelope.
+  it('--list-only populates top-level modules[] (mirrors wet-run shape)', async () => {
+    const dir = makeProject([{ name: 'foo' }, { name: 'bar' }, { name: 'baz' }]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.modules).toEqual(['bar', 'baz', 'foo']); // sorted by discoverAndroidModules
+    expect(envelope.android.instrumented_modules).toEqual(['bar', 'baz', 'foo']);
+    // The two arrays must be the same content (different field names but
+    // identical ordering / membership).
+    expect(envelope.modules).toEqual(envelope.android.instrumented_modules);
+  });
+
+  it('--list-only echoes --device <serial> to android.device_serial (OBS-6)', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only', '--device', 'R3CT30KAMEH'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.android.device_serial).toBe('R3CT30KAMEH');
+  });
+
+  it('--list-only without --device leaves android.device_serial empty (back-compat)', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.android.device_serial).toBe('');
+  });
 });
 
 // ---------------------------------------------------------------------------

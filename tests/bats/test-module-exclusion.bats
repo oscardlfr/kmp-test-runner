@@ -102,10 +102,14 @@ teardown() {
 # tests/vitest/parallel-orchestrator.test.js + the --json parallel envelope
 # integration tests below (which are the agent-facing contract anyway).
 
-@test "parallel: filter that rejects everything → exits 3 with helpful message" {
+@test "parallel: filter that rejects everything → exits 2 (CONFIG_ERROR) with helpful message" {
+    # wet-audit-v0.9-part2 OBS-3 — user-supplied filter (--exclude-modules)
+    # that drops every module is a USAGE error, not an ENV error. Exit code
+    # 1→2 in this release; pre-OBS-3 was 3 (ENV_ERROR). See CHANGELOG
+    # "wet-audit part 2" entry under [Unreleased].
     run bash "$PARALLEL" --project-root "$WORK_DIR" --module-filter "*" \
         --exclude-modules "core-*,feature-*" --ignore-jdk-mismatch
-    [ "$status" -eq 3 ]
+    [ "$status" -eq 2 ]
     [[ "$output" == *"No modules found"* || "$output" == *"No modules support"* ]]
 }
 
@@ -124,13 +128,19 @@ teardown() {
 
 # v0.6.2 Gap 1.1: --json envelope carries code:"no_test_modules" when filter
 # yields zero modules. Discriminates the parse-gap fallback.
-@test "kmp-test --json parallel: no_test_modules code fires when filter excludes all" {
+# wet-audit-v0.9-part2 OBS-3 — exit 1→2 split: filter-miss (user-supplied
+# --module-filter / --exclude-modules) is now CONFIG_ERROR (2). Project-empty
+# (no filter, project genuinely empty) stays ENV_ERROR (3). The discriminator
+# code 'no_test_modules' is preserved with new `caused_by_filter:bool` field.
+@test "kmp-test --json parallel: no_test_modules code + CONFIG_ERROR (2) + caused_by_filter:true when filter excludes all" {
     run node bin/kmp-test.js --json parallel --project-root "$WORK_DIR" --module-filter "*" \
         --exclude-modules "core-*,feature-*"
-    [ "$status" -eq 3 ]
+    [ "$status" -eq 2 ]
     first_line=$(echo "$output" | grep -m1 '^{' || true)
     [ -n "$first_line" ]
     [[ "$first_line" == *'"code":"no_test_modules"'* ]]
+    [[ "$first_line" == *'"caused_by_filter":true'* ]]
+    [[ "$first_line" == *'"exit_code":2'* ]]
     # Generic no_summary fallback must NOT also fire when the discriminator hits.
     [[ "$first_line" != *'"code":"no_summary"'* ]]
 }

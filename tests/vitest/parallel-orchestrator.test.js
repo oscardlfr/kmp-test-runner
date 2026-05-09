@@ -2730,7 +2730,12 @@ describe('runParallel --auto-retry + --clear-data (v0.9 step 1, flags #1 + #2)',
     });
   });
 
-  it('--flavor when no module declares productFlavors → flavor_unused warning', async () => {
+  // wet-audit-v0.9-part2 OBS-7 — `--flavor <name>` against a project where
+  // no module declares productFlavors {} now hard-fails as CONFIG_ERROR (2)
+  // instead of emitting a soft warning + exit 0. Pre-fix (v0.9 step 1)
+  // the misconfiguration produced `warnings[].code:'flavor_unused'` that
+  // CI gates routinely missed.
+  it('--flavor when no module declares productFlavors → CONFIG_ERROR + flavor_unused error (OBS-7)', async () => {
     const dir = makeProject([
       { name: 'app',
         sourceSets: ['androidInstrumentedTest'],
@@ -2750,10 +2755,13 @@ describe('runParallel --auto-retry + --clear-data (v0.9 step 1, flags #1 + #2)',
       runCoverageInjection: makeRunCoverageStub(),
     });
 
-    expect(exitCode).toBe(0);
-    const warning = envelope.warnings.find(w => w.code === 'flavor_unused');
-    expect(warning).toBeDefined();
-    expect(warning.flavor).toBe('staging');
+    expect(exitCode).toBe(2); // CONFIG_ERROR
+    const error = envelope.errors.find(e => e.code === 'flavor_unused');
+    expect(error).toBeDefined();
+    expect(error.flavor).toBe('staging');
+    // Lock that the legacy soft-warning is no longer emitted (single source
+    // of truth on errors[]).
+    expect(envelope.warnings.find(w => w.code === 'flavor_unused')).toBeUndefined();
   });
 
   it('--auto-retry skipped when cascade-isolation already retried (mutual exclusion)', async () => {
@@ -3218,7 +3226,11 @@ describe('runParallel legit-skip exit semantics (drift #1)', () => {
     });
   });
 
-  it('regression: filter actually matches nothing still surfaces no_test_modules + exit 3', async () => {
+  // wet-audit-v0.9-part2 OBS-3 — exit-code split: user-supplied filter that
+  // matches nothing is now CONFIG_ERROR (2) (usage error). Project-genuinely-
+  // empty stays ENV_ERROR (3). Both still discriminated by errors[].code:
+  // 'no_test_modules' + new `caused_by_filter:bool` field.
+  it('regression: filter actually matches nothing → no_test_modules + CONFIG_ERROR (OBS-3)', async () => {
     const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
     const { envelope, exitCode } = await runParallel({
       projectRoot: dir,
@@ -3226,8 +3238,9 @@ describe('runParallel legit-skip exit semantics (drift #1)', () => {
       spawn: makeSpawnStub(),
       log: () => {},
     });
-    expect(exitCode).toBe(3);
+    expect(exitCode).toBe(2); // CONFIG_ERROR — user typed a filter that matched nothing
     expect(envelope.errors[0]?.code).toBe('no_test_modules');
+    expect(envelope.errors[0]?.caused_by_filter).toBe(true);
   });
 
   it('exit 0 with --module-filter=* when matched Android-only modules cannot serve --test-type common', async () => {
@@ -3251,5 +3264,150 @@ describe('runParallel legit-skip exit semantics (drift #1)', () => {
     expect(exitCode).toBe(0);
     expect(envelope.errors).toEqual([]);
     expect(envelope.skipped.length).toBe(2);
+  });
+});
+
+// ===========================================================================
+// wet-audit-v0.9-part2 OBS-3 — `no_test_modules` exit-code split
+// ===========================================================================
+describe('no_test_modules exit-code split (OBS-3)', () => {
+  it('user filter matches nothing → CONFIG_ERROR (2) + caused_by_filter:true', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', 'definitely-not-here'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2); // CONFIG_ERROR
+    expect(envelope.errors[0]?.code).toBe('no_test_modules');
+    expect(envelope.errors[0]?.caused_by_filter).toBe(true);
+  });
+
+  it('--exclude-modules dropping all → CONFIG_ERROR (2) + caused_by_filter:true', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--exclude-modules', '*'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors[0]?.caused_by_filter).toBe(true);
+  });
+
+  it('project genuinely empty (no filter) → ENV_ERROR (3) + caused_by_filter:false', async () => {
+    // Project has only modules with no test source sets → empty post-default-filter.
+    // No --module-filter supplied; the empty result is environmental, not user error.
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain'] }]); // no *Test* set
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'], // default --module-filter '*'
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(3); // ENV_ERROR — project really has nothing testable
+    expect(envelope.errors[0]?.code).toBe('no_test_modules');
+    expect(envelope.errors[0]?.caused_by_filter).toBe(false);
+  });
+});
+
+// ===========================================================================
+// wet-audit-v0.9-part2 OBS-4 — `--isolated` runtime-race guard
+// ===========================================================================
+describe('--isolated runtime-race guard (OBS-4)', () => {
+  function makeAndroidApp(name = 'app') {
+    const modDir = path.join(workDir, name);
+    const manifestDir = path.join(modDir, 'src', 'main');
+    mkdirSync(manifestDir, { recursive: true });
+    writeFileSync(path.join(manifestDir, 'AndroidManifest.xml'),
+      `<manifest package="com.example.${name}"/>`);
+  }
+
+  it('rejects --isolated --test-type ios with isolated_runtime_race', async () => {
+    const dir = makeProject([{ name: 'shared' }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'ios', '--isolated'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2); // CONFIG_ERROR
+    expect(envelope.errors[0].code).toBe('isolated_runtime_race');
+    expect(envelope.errors[0].test_type).toBe('ios');
+  });
+
+  it('rejects --isolated --test-type all (expansion includes ios)', async () => {
+    const dir = makeProject([{ name: 'shared' }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'all', '--isolated'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors[0].code).toBe('isolated_runtime_race');
+    expect(envelope.errors[0].test_type).toBe('all');
+  });
+
+  it('rejects --isolated --test-type androidInstrumented WITHOUT --device', async () => {
+    const dir = makeProject([{ name: 'app' }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--isolated'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors[0].code).toBe('isolated_runtime_race');
+    expect(envelope.errors[0].test_type).toBe('androidInstrumented');
+  });
+
+  it('ALLOWS --isolated --test-type androidInstrumented WITH --device <serial>', async () => {
+    // Caller asserts each concurrent process targets its own device.
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    makeAndroidApp('app');
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+    const { exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--isolated', '--device', 'X'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).not.toBe(2); // not a CONFIG_ERROR — combo accepted
+  });
+
+  it('ALLOWS --isolated --test-type jvm (no shared runtime resources)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const { exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'jvm', '--isolated'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).not.toBe(2);
+  });
+
+  it('ALLOWS --isolated --test-type macos (host-native, gradle handles)', async () => {
+    const dir = makeProject([{ name: 'shared' }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const { exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'macos', '--isolated'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    // May be 3 if no macOS modules discovered, but NOT a 2 (CONFIG_ERROR).
+    expect(exitCode).not.toBe(2);
   });
 });

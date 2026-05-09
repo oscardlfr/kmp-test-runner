@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — v0.9 wet-audit part 2: `ENVELOPE_SCHEMA_VERSION` bumped 1 → 2 (2026-05-09)
+
+The wet audit (`WET-AUDIT-V0.9-PART2-RESULTS.md`) surfaced 6 contract observations across the v0.9 CLI surface. Three of them change exit-code or error-code semantics and trigger a `schema_version` bump per the policy in `lib/cli.js#ENVELOPE_SCHEMA_VERSION`. Three are additive and ride the same bump for cohesion.
+
+**Breaking semantic changes (drive the bump):**
+
+- **OBS-3 — `no_test_modules` exit-code split.** Pre-bump: every `no_test_modules` discriminator returned `ENV_ERROR (3)`, conflating "user typed a filter that matched nothing" (usage error) with "project genuinely has no test modules" (env error). Post-bump: emission carries `caused_by_filter: bool`. When `--module-filter` (non-default) or `--exclude-modules` produced the empty match → `CONFIG_ERROR (2)`. When the project has no modules supporting the requested test-type → `ENV_ERROR (3)` preserved. CI gates that branched on exit 3 for filter typos must update.
+- **OBS-7 — `flavor_unused` promoted to `errors[]` + `CONFIG_ERROR (2)`.** Pre-bump: `--flavor <name>` against a project with no `productFlavors {}` emitted a soft `warnings[].code:'flavor_unused'` + exit 0. CI gates routinely missed user typos. Post-bump: same code surfaces on `errors[]` instead, exit_code = 2. The legacy warning is no longer emitted (single source of truth).
+- **OBS-4 — new `isolated_runtime_race` discriminator + `CONFIG_ERROR (2)`.** `--isolated` isolates Gradle's `--project-cache-dir` and lockfile but does NOT protect against shared runtime resources (iOS simulator, ADB, Konan). Combining `--isolated --test-type ios` (or `all`, or `androidInstrumented` without `--device <serial>`) now returns `errors[].code:'isolated_runtime_race'` + exit 2 before any gradle work. Allowed combos: jvm/desktop/macos/common/androidUnit, plus androidInstrumented WITH --device. Reproduced wet (audit L1.F): KaMPKit × 2 concurrent `parallel --test-type ios --isolated` had 1/2 fail on sim race.
+
+**Additive changes (ride the bump for cohesion, no breakage):**
+
+- **OBS-1 — `doctor` envelope shape unified.** Pre-fix: doctor envelope had 9 keys; other subcommand envelopes had 14-16. Same `schema_version: 1` described two distinct shapes. Post-fix: doctor adds `tests/modules/skipped/coverage/errors/warnings` empty defaults so generic envelope-readers no longer special-case `subcommand:"doctor"`.
+- **OBS-2 — `--dry-run --json` plan enumerates resolved modules.** Pre-fix: `plan` carried only spawn-cmd info. Post-fix: `plan.modules[]` (canonical entries, mirroring `--list-only`) + `plan.skipped[]` populated for `parallel`/`changed` subcommands by invoking `buildProjectModel` + `applyModuleFilters` without spawning gradle. First-invocation cold-start is no longer instant; subsequent dry-runs are fast (cache hit).
+- **OBS-6 — `kmp-test android --list-only` populates top-level `modules[]` + echoes `--device <serial>`.** Pre-fix: list-only left top-level `modules: []` empty (forcing agents to pivot on `android.instrumented_modules[]`) and dropped the user-supplied `--device` value. Post-fix: list-only and wet-run shapes match; `android.device_serial` echoes the input.
+
+**Migration note for `--json` consumers:**
+
+- Branch on `envelope.schema_version === 2` for the new exit-code semantics.
+- New `errors[].caused_by_filter:bool` field on `no_test_modules` discriminates filter-miss vs project-empty.
+- New `errors[].code:'isolated_runtime_race'` may surface when concurrent fan-out hits the new guard.
+- `flavor_unused` now lives on `errors[]` instead of `warnings[]`; agents reading `warnings[].code` for the discriminator must move the read.
+
 ## [0.9.0] — 2026-05-XX
 
 **Summary.** Closes the v0.9 line. Headline themes: `parallel` parity-gap closure with `kmp-test android` (PR #146 — 6 flags brought to `--test-type androidInstrumented`), `--gradle-args` global passthrough escape hatch (PR #147 — Tier 2 of the Gradle-config adapter), DX-parity bundle (PR #148 — `--variant` truly global + `kmp-test info` + `kmp-test describe` + `kmp-test update`), opt-in concurrency Tier 3 `--isolated` (PR #149 — `--project-cache-dir <tmp>` per run for parallel multi-agent fan-out), cross-platform parity in CI (PR #150 — 4 static sub-checks on ubuntu replacing the dropped iOS/macOS TestKit matrix), buildable cross-platform E2E fixture (PR #151 — synthetic KMP fixture under `tests/fixtures/kmp-cross-platform-e2e/`), manual macOS validation gate (PRs #153/#154/#155 — driver + probe mode + 3 inline-fixed bug closures from the wet pass on real hardware), token-cost re-measurement on `shared-kmp-libs` core-* (PR #156 — coverage A overflows Anthropic's `count_tokens` endpoint, the load-bearing finding), README + CHANGELOG refresh (this PR). Vitest 816 → 1078 (+262 across the line). Released 2026-05-XX.

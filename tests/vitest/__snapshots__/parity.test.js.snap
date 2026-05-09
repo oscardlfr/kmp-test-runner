@@ -30,7 +30,7 @@ exports[`parity / envelope JSON schema snapshot > android --list-only --json env
   },
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 1,
+  "schema_version": 2,
   "skipped": [],
   "subcommand": "android",
   "tests": {
@@ -66,13 +66,15 @@ exports[`parity / envelope JSON schema snapshot > benchmark --dry-run --json env
   "modules": [],
   "plan": {
     "final_args": "<PLATFORM_SPECIFIC>",
+    "modules": [],
     "script_path": "<PLATFORM_SPECIFIC>",
+    "skipped": [],
     "spawn_args": "<PLATFORM_SPECIFIC>",
     "spawn_cmd": "<PLATFORM_SPECIFIC>",
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 1,
+  "schema_version": 2,
   "skipped": [],
   "subcommand": "benchmark",
   "tests": {
@@ -108,13 +110,25 @@ exports[`parity / envelope JSON schema snapshot > changed --dry-run --json --sta
   "modules": [],
   "plan": {
     "final_args": "<PLATFORM_SPECIFIC>",
+    "modules": [
+      {
+        "android_dsl": false,
+        "android_dsl_variant": null,
+        "coverage_plugin": null,
+        "has_flavor": false,
+        "name": "mod",
+        "test_build_type": null,
+        "type": "kmp",
+      },
+    ],
     "script_path": "<PLATFORM_SPECIFIC>",
+    "skipped": [],
     "spawn_args": "<PLATFORM_SPECIFIC>",
     "spawn_cmd": "<PLATFORM_SPECIFIC>",
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 1,
+  "schema_version": 2,
   "skipped": [],
   "subcommand": "changed",
   "tests": {
@@ -150,13 +164,15 @@ exports[`parity / envelope JSON schema snapshot > coverage --dry-run --json enve
   "modules": [],
   "plan": {
     "final_args": "<PLATFORM_SPECIFIC>",
+    "modules": [],
     "script_path": "<PLATFORM_SPECIFIC>",
+    "skipped": [],
     "spawn_args": "<PLATFORM_SPECIFIC>",
     "spawn_cmd": "<PLATFORM_SPECIFIC>",
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 1,
+  "schema_version": 2,
   "skipped": [],
   "subcommand": "coverage",
   "tests": {
@@ -221,7 +237,7 @@ exports[`parity / envelope JSON schema snapshot > describe --json --skip-probe e
   "exit_code": 0,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 1,
+  "schema_version": 2,
   "skipped": [],
   "subcommand": "describe",
   "tests": {
@@ -246,7 +262,12 @@ exports[`parity / envelope JSON schema snapshot > doctor --json envelope shape i
       "value": "<string>",
     },
   ],
+  "coverage": {
+    "missed_lines": null,
+    "tool": "none",
+  },
   "duration_ms": "<DURATION_MS>",
+  "errors": [],
   "exit_code": 0,
   "gradle_config": {
     "caching": "<boolean>",
@@ -260,11 +281,20 @@ exports[`parity / envelope JSON schema snapshot > doctor --json envelope shape i
     },
     "workers_max": "<null>",
   },
+  "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 1,
+  "schema_version": 2,
+  "skipped": [],
   "subcommand": "doctor",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
   "tool": "kmp-test",
   "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
 }
 `;
 
@@ -322,7 +352,7 @@ exports[`parity / envelope JSON schema snapshot > info --json --no-adb envelope 
   },
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 1,
+  "schema_version": 2,
   "skipped": [],
   "subcommand": "info",
   "tests": {
@@ -358,13 +388,25 @@ exports[`parity / envelope JSON schema snapshot > parallel --dry-run --json enve
   "modules": [],
   "plan": {
     "final_args": "<PLATFORM_SPECIFIC>",
+    "modules": [
+      {
+        "android_dsl": false,
+        "android_dsl_variant": null,
+        "coverage_plugin": null,
+        "has_flavor": false,
+        "name": "mod",
+        "test_build_type": null,
+        "type": "kmp",
+      },
+    ],
     "script_path": "<PLATFORM_SPECIFIC>",
+    "skipped": [],
     "spawn_args": "<PLATFORM_SPECIFIC>",
     "spawn_cmd": "<PLATFORM_SPECIFIC>",
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 1,
+  "schema_version": 2,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -390,7 +432,7 @@ exports[`parity / envelope JSON schema snapshot > update --check --json envelope
   "exit_code": 0,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 1,
+  "schema_version": 2,
   "skipped": [],
   "subcommand": "update",
   "tests": {
