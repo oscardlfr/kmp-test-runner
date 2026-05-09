@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-09
+
 ### Changed — v0.9 wet-audit part 2: `ENVELOPE_SCHEMA_VERSION` bumped 1 → 2 (2026-05-09)
 
 The pre-tag wet audit surfaced 6 contract observations across the v0.9 CLI surface. Three of them change exit-code or error-code semantics and trigger a `schema_version` bump per the policy in `lib/cli.js#ENVELOPE_SCHEMA_VERSION`. Three are additive and ride the same bump for cohesion. Reference: [`docs/envelope-contract.md`](docs/envelope-contract.md).
@@ -30,9 +32,7 @@ The pre-tag wet audit surfaced 6 contract observations across the v0.9 CLI surfa
 - New `errors[].code:'isolated_runtime_race'` may surface when concurrent fan-out hits the new guard.
 - `flavor_unused` now lives on `errors[]` instead of `warnings[]`; agents reading `warnings[].code` for the discriminator must move the read.
 
-## [0.9.0] — 2026-05-XX
-
-**Summary.** Closes the v0.9 line. Headline themes: `parallel` parity-gap closure with `kmp-test android` (PR #146 — 6 flags brought to `--test-type androidInstrumented`), `--gradle-args` global passthrough escape hatch (PR #147 — Tier 2 of the Gradle-config adapter), DX-parity bundle (PR #148 — `--variant` truly global + `kmp-test info` + `kmp-test describe` + `kmp-test update`), opt-in concurrency Tier 3 `--isolated` (PR #149 — `--project-cache-dir <tmp>` per run for parallel multi-agent fan-out), cross-platform parity in CI (PR #150 — 4 static sub-checks on ubuntu replacing the dropped iOS/macOS TestKit matrix), buildable cross-platform E2E fixture (PR #151 — synthetic KMP fixture under `tests/fixtures/kmp-cross-platform-e2e/`), manual macOS validation gate (PRs #153/#154/#155 — driver + probe mode + 3 inline-fixed bug closures from the wet pass on real hardware), token-cost re-measurement on a reference KMP composite project (PR #156 — coverage A overflows Anthropic's `count_tokens` endpoint, the load-bearing finding), README + CHANGELOG refresh (this PR). Vitest 816 → 1078 (+262 across the line). Released 2026-05-XX.
+**Summary.** Closes the v0.9 line. Headline themes: `parallel` parity-gap closure with `kmp-test android` (PR #146 — 6 flags brought to `--test-type androidInstrumented`), `--gradle-args` global passthrough escape hatch (PR #147 — Tier 2 of the Gradle-config adapter), DX-parity bundle (PR #148 — `--variant` truly global + `kmp-test info` + `kmp-test describe` + `kmp-test update`), opt-in concurrency Tier 3 `--isolated` (PR #149 — `--project-cache-dir <tmp>` per run for parallel multi-agent fan-out), cross-platform parity in CI (PR #150 — 4 static sub-checks on ubuntu replacing the dropped iOS/macOS TestKit matrix), buildable cross-platform E2E fixture (PR #151 — synthetic KMP fixture under `tests/fixtures/kmp-cross-platform-e2e/`), manual macOS validation gate (PRs #153/#154/#155 — driver + probe mode + 3 inline-fixed bug closures from the wet pass on real hardware), token-cost re-measurement on a reference KMP composite project (PR #156 — coverage A overflows Anthropic's `count_tokens` endpoint, the load-bearing finding), README + CHANGELOG refresh (this PR). Vitest 816 → 1273 (+457 across the line). Released 2026-05-09.
 
 ### Fixed — v0.9 wet-audit F-1: `envErrorJson` envelope `exit_code` matches the orchestrator's process exit (2026-05-09)
 
@@ -223,7 +223,7 @@ Pre-release validation against NowInAndroid `:core:data` surfaced a broken type-
 - **Live verification.** NIA `:core:data` describe envelope flips `type: 'unknown'` → `type: 'android'`; `parallel --test-type androidUnit --module-filter ":core:data"` dry-run dispatches correctly (no more `no_test_modules`). `a reference KMP composite project :core-result` regression guard: `type: 'kmp'`, `androidDsl: 'androidLibrary'`, `androidDslVariant: 'kmpAndroidLibrary'`, `coveragePlugin: 'kover'` — all unchanged. S22 Ultra (<device-serial>) E2E confirmed.
 - **Vitest 1080 → 1087** (+7 regression tests covering NIA `apply(plugin=...)` form, NIA `apply<JacocoPlugin>()` form, a reference KMP composite project `pluginManager.apply` form, `.asProvider()` parent-alias resolution, precompiled-script `plugins { id(...) }`, descriptor without `.kt` source backwards-compat, and the analyzeModule alias-expansion E2E).
 
-### Documentation — v0.9 step 9: README v0.9 refresh + CHANGELOG [0.9.0] (2026-05-XX)
+### Documentation — v0.9 step 9: README v0.9 refresh + CHANGELOG [0.9.0] (2026-05-09)
 
 Last v0.9 step before tagging — documents the surface that landed across PRs #146–#156 and re-frames the token-cost narrative against a reference KMP composite project (the v0.9 step 8 evidence).
 
