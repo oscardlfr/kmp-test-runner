@@ -6,32 +6,32 @@ Standalone parallel test runner for Kotlin Multiplatform and Android Gradle proj
 
 For an AI coding agent re-running a workflow on every change, the cheapest path matters. Four `kmp-test` features × three observation strategies × four tokenizers — every cell measured ([methodology](docs/token-cost-measurement.md)).
 
-- **A.** Raw `./gradlew` + reading every generated report file — what an agent does without `kmp-test`.
-- **B.** `kmp-test <feature>` — markdown-summarised stdout.
-- **C.** `kmp-test <feature> --json` — single-line JSON envelope (agentic mode).
+- 🔻 **A. Baseline.** Raw `./gradlew` + reading every generated report file — what an agent does **without** `kmp-test`. The cost we're competing against.
+- 🟢 **B. Ours — `kmp-test <feature>`.** Markdown-summarised stdout. Drop-in replacement.
+- 🟢 **C. Ours — `kmp-test <feature> --json`.** Single-line JSON envelope. **Recommended for agents.**
 
-Measured against `shared-kmp-libs` core-* (a real KMP composite project — multi-module, KMP + AGP, with coverage and benchmark) on Windows + JDK 21, single run per approach. Every cell in every table is a real `messages.countTokens` API count (Claude columns) or `cl100k_base` offline count via `js-tiktoken`. Bar width = `value / table-max` rendered in unicode block characters — visual scale is faithful to the underlying numbers.
+Measured against a real multi-module KMP composite project (KMP + AGP, with coverage and benchmark) on Windows + JDK 21, single run per approach. Every cell in every table is a real `messages.countTokens` API count (Claude columns) or `cl100k_base` offline count via `js-tiktoken`. Bar width = `value / table-max` rendered in unicode block characters — visual scale is faithful to the underlying numbers.
 
-> **Provenance.** Numbers measured 2026-05-07 against `shared-kmp-libs` core-* (composite-build root, KMP + AGP + multi-module + coverage + benchmark). Raw captures: [`tools/runs/<feature>/`](tools/runs/) · per-tokenizer evidence: [`tools/runs/cross-model-results-<feature>.txt`](tools/runs/) · methodology + reproduction notes: [`MEASUREMENT-V0.9-NOTES.md`](MEASUREMENT-V0.9-NOTES.md). Approach A captures are gitignored — locally regenerable by re-running the gradle command, ~74 MB on the coverage feature alone.
+> **Provenance.** Numbers measured 2026-05-07 against a real KMP composite project (composite-build root, KMP + AGP + multi-module + coverage + benchmark). Raw captures: [`tools/runs/<feature>/`](tools/runs/) · per-tokenizer evidence: [`tools/runs/cross-model-results-<feature>.txt`](tools/runs/). 🔻 baseline (A) captures are gitignored — locally regenerable by re-running the gradle command, ~74 MB on the coverage feature alone.
 
 ### Cross-feature summary — 4 features × 3 approaches × 4 tokenizers
 
-🟢 marks `kmp-test` rows (B = default markdown output, C = `--json` agentic envelope). Approach A is the raw `./gradlew + report parsing` baseline an agent does without `kmp-test`. `sonnet-4-6` and `haiku-4-5` share a tokenizer (identical counts on every cell) so they're merged into a single column. Per-feature visual bars are in the [drill-down tables](#per-feature-drill-down) below — this view is numbers only for scannability.
+🔻 marks the **baseline** (raw `./gradlew + report parsing`, what an agent does **without** `kmp-test`). 🟢 marks **our approaches** (B = `kmp-test`, C = `kmp-test --json`). Each feature triplet reads top-to-bottom as baseline → ours → ours-agentic. `sonnet-4-6` and `haiku-4-5` share a tokenizer (identical counts on every cell) so they're merged into a single column. Per-feature visual bars are in the [drill-down tables](#per-feature-drill-down) below — this view is numbers only for scannability.
 
-| Feature · Approach                       |   🟦 cl100k_base |    🟥 opus-4-7   | 🟩🟧 sonnet · haiku |
-|------------------------------------------|-----------------:|-----------------:|--------------------:|
-| `parallel`  · A. raw `./gradlew`         |        1,331,036 |        2,183,843 |           1,777,893 |
-| 🟢 `parallel`  · B. `kmp-test`           |           16,556 |           30,134 |              21,372 |
-| 🟢 `parallel`  · C. `kmp-test --json`    |          **843** |        **1,396** |           **1,063** |
-| `coverage`  · A. raw `./gradlew`         |   **28,686,309** | _413 too large_  |    _413 too large_  |
-| 🟢 `coverage`  · B. `kmp-test`           |              682 |            1,176 |                 895 |
-| 🟢 `coverage`  · C. `kmp-test --json`    |          **372** |          **623** |             **470** |
-| `changed`   · A. raw `./gradlew`         |        1,118,241 |        1,835,175 |           1,494,157 |
-| 🟢 `changed`   · B. `kmp-test`           |               91 |              171 |                 115 |
-| 🟢 `changed`   · C. `kmp-test --json`    |          **144** |          **274** |             **182** |
-| `benchmark` · A. raw `./gradlew`         |          245,140 |          323,638 |             283,750 |
-| 🟢 `benchmark` · B. `kmp-test`           |              305 |              572 |                 374 |
-| 🟢 `benchmark` · C. `kmp-test --json`    |          **309** |          **573** |             **363** |
+| Feature · Approach                                  |   🟦 cl100k_base |    🟥 opus-4-7   | 🟩🟧 sonnet · haiku |
+|-----------------------------------------------------|-----------------:|-----------------:|--------------------:|
+| 🔻 `parallel`  · A. baseline (raw `./gradlew`)      |        1,331,036 |        2,183,843 |           1,777,893 |
+| 🟢 `parallel`  · B. ours · `kmp-test`               |           16,556 |           30,134 |              21,372 |
+| 🟢 `parallel`  · C. **ours** · `kmp-test --json`    |          **843** |        **1,396** |           **1,063** |
+| 🔻 `coverage`  · A. baseline (raw `./gradlew`)      |   **28,686,309** | _413 too large_  |    _413 too large_  |
+| 🟢 `coverage`  · B. ours · `kmp-test`               |              682 |            1,176 |                 895 |
+| 🟢 `coverage`  · C. **ours** · `kmp-test --json`    |          **372** |          **623** |             **470** |
+| 🔻 `changed`   · A. baseline (raw `./gradlew`)      |        1,118,241 |        1,835,175 |           1,494,157 |
+| 🟢 `changed`   · B. ours · `kmp-test`               |               91 |              171 |                 115 |
+| 🟢 `changed`   · C. **ours** · `kmp-test --json`    |          **144** |          **274** |             **182** |
+| 🔻 `benchmark` · A. baseline (raw `./gradlew`)      |          245,140 |          323,638 |             283,750 |
+| 🟢 `benchmark` · B. ours · `kmp-test`               |              305 |              572 |                 374 |
+| 🟢 `benchmark` · C. **ours** · `kmp-test --json`    |          **309** |          **573** |             **363** |
 
 A:C savings ratio per feature, per tokenizer:
 
@@ -43,36 +43,36 @@ A:C savings ratio per feature, per tokenizer:
 | `benchmark`  |             793× |               565× |               782× |               782× |
 
 Two observations carry across every feature:
-- **Tokenizer transition.** `claude-sonnet-4-6` and `claude-haiku-4-5` share a tokenizer (identical counts to the unit on every cell). `claude-opus-4-7` ships a new tokenizer that produces 30–100% more tokens for the same input — most visibly on heavy XML/HTML payloads (approach A).
+- **Tokenizer transition.** `claude-sonnet-4-6` and `claude-haiku-4-5` share a tokenizer (identical counts to the unit on every cell). `claude-opus-4-7` ships a new tokenizer that produces 30–100% more tokens for the same input — most visibly on heavy XML/HTML payloads (🔻 baseline A).
 - **C stays under 1.5K tokens** for every gradle-backed feature regardless of feature or tokenizer — the agentic `--json` envelope strips the workload down to `{exit_code, tests, modules, errors[]}` and stays tiny no matter how heavy the underlying gradle did. **Coverage is the most striking**: even Anthropic's own `count_tokens` endpoint returns `413 request_too_large` on the 74 MB raw `./gradlew + koverHtmlReport` capture (28.7 M cl100k tokens) — the canonical agent-side workload literally cannot be tokenised in one HTTP request, while `kmp-test coverage --json` renders the same signal in 372 cl100k tokens.
 
 ### Per-feature drill-down
 
-Each per-feature table is scaled to its own max for the A column (raw `./gradlew`). 🟢 columns are `kmp-test`-driven (B = markdown stdout, C = `--json` envelope); shown as numbers only since the bars would be sub-1-char anyway — the visual asymmetry between A and 🟢 B/C is the savings story.
+Each per-feature table is scaled to its own max for the 🔻 A column (the baseline an agent runs **without** `kmp-test`). 🟢 columns are **our approaches** (B = `kmp-test` markdown, C = `kmp-test --json`); shown as numbers only because the bars would be sub-1-char anyway — **that visual asymmetry between the heavy 🔻 baseline and the tiny 🟢 ours IS the savings story**.
 
 #### `parallel` — full test suite
 
 A bars scaled to `2,183,843` (opus).
 
-| Model            | A. raw `./gradlew`                  | 🟢 B. `kmp-test` | 🟢 C. `--json` |    A:C |
-|------------------|-------------------------------------|-----------------:|---------------:|-------:|
-| 🟦 `cl100k_base` | `1,331,036 ████████████`            |           16,556 |        **843** | 1,579× |
-| 🟥 `opus-4-7`    | `2,183,843 ████████████████████`    |           30,134 |      **1,396** | 1,564× |
-| 🟩 `sonnet-4-6`  | `1,777,893 ████████████████`        |           21,372 |      **1,063** | 1,673× |
-| 🟧 `haiku-4-5`   | `1,777,893 ████████████████`        |           21,372 |      **1,063** | 1,673× |
+| Model            | 🔻 A. baseline (raw `./gradlew`)    | 🟢 B. ours · `kmp-test` | 🟢 C. ours · `--json` |    A:C |
+|------------------|-------------------------------------|------------------------:|----------------------:|-------:|
+| 🟦 `cl100k_base` | `1,331,036 ████████████`            |                  16,556 |               **843** | 1,579× |
+| 🟥 `opus-4-7`    | `2,183,843 ████████████████████`    |                  30,134 |             **1,396** | 1,564× |
+| 🟩 `sonnet-4-6`  | `1,777,893 ████████████████`        |                  21,372 |             **1,063** | 1,673× |
+| 🟧 `haiku-4-5`   | `1,777,893 ████████████████`        |                  21,372 |             **1,063** | 1,673× |
 
 Captures: [`tools/runs/parallel/`](tools/runs/parallel/) · evidence: [`tools/runs/cross-model-results-parallel.txt`](tools/runs/cross-model-results-parallel.txt).
 
 #### `coverage` — Kover XML + HTML reports
 
-The single largest data point in the whole measurement — and the only cell where Anthropic's own `count_tokens` endpoint cannot return a number. A `koverXmlReport` + `koverHtmlReport` invocation against `shared-kmp-libs` core-* generates **74 MB of kover HTML/XML** under `build/reports/kover/**`. cl100k_base scores it at 28.7 M tokens; Anthropic's API returns `413 request_too_large` on every Claude family. The same signal renders in 372 cl100k tokens through `kmp-test coverage --json`.
+The single largest data point in the whole measurement — and the only cell where Anthropic's own `count_tokens` endpoint cannot return a number. A `koverXmlReport` + `koverHtmlReport` invocation against the reference KMP composite project generates **74 MB of kover HTML/XML** under `build/reports/kover/**`. cl100k_base scores it at 28.7 M tokens; Anthropic's API returns `413 request_too_large` on every Claude family. The same signal renders in 372 cl100k tokens through `kmp-test coverage --json`.
 
-| Model            | A. raw `./gradlew`                                  | 🟢 B. `kmp-test` | 🟢 C. `--json` |         A:C |
-|------------------|-----------------------------------------------------|-----------------:|---------------:|------------:|
-| 🟦 `cl100k_base` | `28,686,309 ████████████████████`                   |              682 |        **372** | **77,114×** |
-| 🟥 `opus-4-7`    | _413 request_too_large — 74 MB capture_             |            1,176 |        **623** |  _overflow_ |
-| 🟩 `sonnet-4-6`  | _413 request_too_large — 74 MB capture_             |              895 |        **470** |  _overflow_ |
-| 🟧 `haiku-4-5`   | _413 request_too_large — 74 MB capture_             |              895 |        **470** |  _overflow_ |
+| Model            | 🔻 A. baseline (raw `./gradlew`)                    | 🟢 B. ours · `kmp-test` | 🟢 C. ours · `--json` |         A:C |
+|------------------|-----------------------------------------------------|------------------------:|----------------------:|------------:|
+| 🟦 `cl100k_base` | `28,686,309 ████████████████████`                   |                     682 |               **372** | **77,114×** |
+| 🟥 `opus-4-7`    | _413 request_too_large — 74 MB capture_             |                   1,176 |               **623** |  _overflow_ |
+| 🟩 `sonnet-4-6`  | _413 request_too_large — 74 MB capture_             |                     895 |               **470** |  _overflow_ |
+| 🟧 `haiku-4-5`   | _413 request_too_large — 74 MB capture_             |                     895 |               **470** |  _overflow_ |
 
 What this means in practice: an agent that follows the canonical "run gradle and read the reports" pattern produces a payload it cannot even fit into a single API call to count its own size, let alone fit into a 200 K context window. Coverage is ~144× a single context window per iteration. Captures: [`tools/runs/coverage/`](tools/runs/coverage/) · evidence: [`tools/runs/cross-model-results-coverage.txt`](tools/runs/cross-model-results-coverage.txt).
 
@@ -80,12 +80,12 @@ What this means in practice: an agent that follows the canonical "run gradle and
 
 A bars scaled to `1,835,175` (opus).
 
-| Model            | A. raw `./gradlew`                  | 🟢 B. `kmp-test` | 🟢 C. `--json` |    A:C |
-|------------------|-------------------------------------|-----------------:|---------------:|-------:|
-| 🟦 `cl100k_base` | `1,118,241 ████████████`            |               91 |        **144** | 7,766× |
-| 🟥 `opus-4-7`    | `1,835,175 ████████████████████`    |              171 |        **274** | 6,698× |
-| 🟩 `sonnet-4-6`  | `1,494,157 ████████████████`        |              115 |        **182** | 8,210× |
-| 🟧 `haiku-4-5`   | `1,494,157 ████████████████`        |              115 |        **182** | 8,210× |
+| Model            | 🔻 A. baseline (raw `./gradlew`)    | 🟢 B. ours · `kmp-test` | 🟢 C. ours · `--json` |    A:C |
+|------------------|-------------------------------------|------------------------:|----------------------:|-------:|
+| 🟦 `cl100k_base` | `1,118,241 ████████████`            |                      91 |               **144** | 7,766× |
+| 🟥 `opus-4-7`    | `1,835,175 ████████████████████`    |                     171 |               **274** | 6,698× |
+| 🟩 `sonnet-4-6`  | `1,494,157 ████████████████`        |                     115 |               **182** | 8,210× |
+| 🟧 `haiku-4-5`   | `1,494,157 ████████████████`        |                     115 |               **182** | 8,210× |
 
 B/C dispatch through the full parallel coverage suite (broader scope than A's single `:module:desktopTest`), so wall-clock time isn't apples-to-apples — token count is. Captures: [`tools/runs/changed/`](tools/runs/changed/) · evidence: [`tools/runs/cross-model-results-changed.txt`](tools/runs/cross-model-results-changed.txt).
 
@@ -93,14 +93,14 @@ B/C dispatch through the full parallel coverage suite (broader scope than A's si
 
 A bars scaled to `323,638` (opus).
 
-| Model            | A. raw `./gradlew`                  | 🟢 B. `kmp-test` | 🟢 C. `--json` |  A:C |
-|------------------|-------------------------------------|-----------------:|---------------:|-----:|
-| 🟦 `cl100k_base` | `245,140 ███████████████`           |              305 |        **309** | 793× |
-| 🟥 `opus-4-7`    | `323,638 ████████████████████`      |              572 |        **573** | 565× |
-| 🟩 `sonnet-4-6`  | `283,750 ██████████████████`        |              374 |        **363** | 782× |
-| 🟧 `haiku-4-5`   | `283,750 ██████████████████`        |              374 |        **363** | 782× |
+| Model            | 🔻 A. baseline (raw `./gradlew`)    | 🟢 B. ours · `kmp-test` | 🟢 C. ours · `--json` |  A:C |
+|------------------|-------------------------------------|------------------------:|----------------------:|-----:|
+| 🟦 `cl100k_base` | `245,140 ███████████████`           |                     305 |               **309** | 793× |
+| 🟥 `opus-4-7`    | `323,638 ████████████████████`      |                     572 |               **573** | 565× |
+| 🟩 `sonnet-4-6`  | `283,750 ██████████████████`        |                     374 |               **363** | 782× |
+| 🟧 `haiku-4-5`   | `283,750 ██████████████████`        |                     374 |               **363** | 782× |
 
-A is the only heavy column on this slice — `shared-kmp-libs` core-* benchmark modules carry the kotlinx-benchmark plugin but no `@Benchmark` functions, so B and C both reduce to compact summary envelopes. On a project with active benchmarks B grows because the markdown report inlines per-run scores by design; C stays small (the JSON envelope keeps the exit-status / counts shape regardless of how many benchmarks ran). Captures: [`tools/runs/benchmark/`](tools/runs/benchmark/) · evidence: [`tools/runs/cross-model-results-benchmark.txt`](tools/runs/cross-model-results-benchmark.txt).
+A is the only heavy column on this slice — the reference project's benchmark modules carry the kotlinx-benchmark plugin but no `@Benchmark` functions, so B and C both reduce to compact summary envelopes. On a project with active benchmarks B grows because the markdown report inlines per-run scores by design; C stays small (the JSON envelope keeps the exit-status / counts shape regardless of how many benchmarks ran). Captures: [`tools/runs/benchmark/`](tools/runs/benchmark/) · evidence: [`tools/runs/cross-model-results-benchmark.txt`](tools/runs/cross-model-results-benchmark.txt).
 
 ### How the numbers are produced
 
@@ -338,7 +338,7 @@ The `unitTestTask` field stays separate — KMP modules with both `jvmTest` and 
 
 Heterogeneous projects (some modules with kover, some with jacoco, some with neither) are first-class — the `auto` mode + per-module probe will pick the right task per module and skip cleanly when none is applied. The aggregated report still works across mixed tools.
 
-> **Convention-plugin coverage detection (v0.6.1+).** Projects that distribute coverage via a convention plugin (`build-logic/<X>/` registers `Plugin<Project>` classes or precompiled-script plugins) get per-module inheritance: only modules that explicitly apply a coverage-adding convention plugin id are reported as having `coveragePlugin: 'kover' | 'jacoco'`. Detection is heuristic-first via the convention class / filename (`/Jacoco|Kover/i`); pre-v0.6.1 broad inheritance is preserved as a fallback for `Plugin<Project>` setups without a `gradlePlugin{}` block (shared-kmp-libs's kover and similar setups continue to work unchanged). Concretely: nowinandroid drops from "all 35 modules report jacoco" to the 13 that actually apply it.
+> **Convention-plugin coverage detection (v0.6.1+).** Projects that distribute coverage via a convention plugin (`build-logic/<X>/` registers `Plugin<Project>` classes or precompiled-script plugins) get per-module inheritance: only modules that explicitly apply a coverage-adding convention plugin id are reported as having `coveragePlugin: 'kover' | 'jacoco'`. Detection is heuristic-first via the convention class / filename (`/Jacoco|Kover/i`); pre-v0.6.1 broad inheritance is preserved as a fallback for `Plugin<Project>` setups without a `gradlePlugin{}` block (kover composites without a `gradlePlugin{}` registration block continue to work unchanged). Concretely: nowinandroid drops from "all 35 modules report jacoco" to the 13 that actually apply it.
 
 ### Heterogeneous projects (modules without tests)
 
@@ -443,7 +443,7 @@ Drop a `.kmp-test-runner.json` at your project root to pin stable defaults inste
 
 ```json
 {
-  "sharedProject": { "name": "shared-kmp-libs", "path": "../shared-kmp-libs" },
+  "sharedProject": { "name": "shared-libs", "path": "../shared-libs" },
   "defaults":     { "testType": "common", "coverageTool": "kover", "excludeModules": "*:test-fakes" },
   "skip":         { "android": ["legacy-app"], "ios": ["benchmark-android-test"] }
 }
@@ -507,7 +507,7 @@ BUILD SUCCESSFUL
 {"tool":"kmp-test","subcommand":"parallel","version":"0.9.0","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16,"modules_with_kover_plugin":["core-foo","core-bar"],"modules_with_jacoco_plugin":[]},"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true},"skipped":[],"errors":[],"warnings":[]}
 ```
 
-That's ~300 bytes — roughly **80–200 tokens** vs. tens of thousands for approach A. For an agent running tests on every iteration of a coding loop, the difference compounds quickly. The full per-tokenizer table is at the [top of this README](#why-this-exists--token-cost-per-agent-test-run-iteration); methodology and the captured run output are in [`docs/token-cost-measurement.md`](docs/token-cost-measurement.md).
+That's ~300 bytes — roughly **80–200 tokens** vs. tens of thousands for the 🔻 baseline (A). For an agent running tests on every iteration of a coding loop, the difference compounds quickly. The full per-tokenizer table is at the [top of this README](#why-this-exists--token-cost-per-agent-test-run-iteration); methodology and the captured run output are in [`docs/token-cost-measurement.md`](docs/token-cost-measurement.md).
 
 ### Why this gap matters
 
@@ -646,7 +646,7 @@ kmp-test describe --json --module-filter "core-*"
 #     "coverage_plugin":"kover","test_build_type":null,"has_flavor":false,
 #     "android_dsl":"androidLibrary","android_dsl_variant":null}],
 #   "coverage_tool":"kover",
-#   "dependency_graph":{"composite_builds":["../shared-kmp-libs"],"included_modules":[":core-result",":core-network"]},
+#   "dependency_graph":{"composite_builds":["../shared-libs"],"included_modules":[":core-result",":core-network"]},
 #   "jdk_requirement":{"min":17,"agp":17}}}
 ```
 
