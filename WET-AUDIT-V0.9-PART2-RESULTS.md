@@ -138,46 +138,38 @@ Device: Samsung S22 Ultra (Exynos), Serial `R3CT30KAMEH`, Model `SM-S908B`, Andr
 
 ---
 
-## Final v0.9 release verdict
+## What this audit closed (factual, no verdict)
 
-### What this audit closed
+- **iOS gap closed (in evidence)**: `parallel --test-type ios` wet'd on KaMPKit + PeopleInSpace; `changed --test-type ios` wet'd for the first time. Both pass exit 0.
+- **macOS native validated (in evidence)**: 3 modules of shared-kmp-libs pass `parallel --test-type macos`, 57 individual tests.
+- **3 fixes wet-revalidated** (PR #183 → `3209cf5`): BUG-1 testFailures, BUG-2 coverage gate, OBS-5 envErrorJson code.
+- **Schema invariant holds**: 47/47 captured envelopes carry `schema_version: 1`; F-1 regression (envelope.exit_code = process exit) preserved.
+- **Parity flags PR #146**: 6/6 plumb correctly via dry-run; 1 integrated wet against S22 echo'd `device_serial` + `device_task` post-run.
 
-- ✅ **iOS gap CLOSED**: `parallel --test-type ios` validated wet on KaMPKit + PeopleInSpace; `changed --test-type ios` validated for the first time (was a known-untested combo).
-- ✅ **macOS native validated**: 3 modules of shared-kmp-libs run cleanly with `parallel --test-type macos`.
-- ✅ **Coverage gate works**: `--min-missed-lines` now fires correctly (fixed in PR #183).
-- ✅ **testFailures contract uniform**: `parallel/changed` now emit `modules[].test_failures[]` for failed tasks (fixed in PR #183).
-- ✅ **Concurrency tier 3** (`--isolated`): JVM concurrency works perfectly. iOS concurrency races on simulator state — documented as OBS-4, NOT an `--isolated` bug.
-- ✅ **Schema invariant**: 47/47 envelopes have `schema_version: 1`; F-1 regression (envelope.exit_code = process exit) preserved.
-- ✅ **Parity flags PR #146**: 6/6 plumb correctly to wrapper script + 1 integrated wet run echo'd `device_serial` + `device_task` post-run.
+## Open findings — pending user classification
 
-### What v0.9 ships with as known limitations (catalogued, not blockers)
+The audit surfaced **9 total findings** (3 fixed inline in PR #183; 6 still open). Classifications below describe the *behavior*; whether each is a v0.9 blocker, a v0.9.x follow-up, or a deferred backlog item is the user's decision and is NOT recorded here.
 
-- **OBS-1**: `doctor` envelope shape divergent (9 keys vs 14-16 on other subcommands). Schema 1 covers two distinct shapes — agents writing generic envelope-readers must special-case `subcommand:"doctor"`.
-- **OBS-2**: `--dry-run` plan output is at spawn-cmd level, not resolved-modules level.
-- **OBS-3** (reclassified): `no_test_modules → exit 3` is an intentional design (legacy wrapper compat); not a bug.
-- **OBS-4**: `--isolated` doesn't protect against runtime resource races (iOS simulator, ADB).
-- **OBS-6**: `--list-only` envelope leaves top-level `modules[]` empty + `android.device_serial` not echoed.
-- **OBS-7**: `--flavor` silently no-ops on projects without productFlavors.
-
-### Verdict
-
-**v0.9 is RELEASE-READY** modulo the user's policy decision on:
-1. Whether to ship the OBS-1 → OBS-7 catalogue as-is and revisit in v0.9.x doc work, OR
-2. Tighten any of OBS-6 / OBS-7 (low-cost behavior fixes — warning emission) before tag.
-
-Recommendation: ship v0.9 with the current `develop` HEAD (`3209cf5`) and open follow-up tickets for OBS-1, OBS-6, OBS-7 if/when consumer feedback surfaces real friction. The audit has demonstrated:
-- The 5 workspace projects all pass smoke + describe + the targeted wet cells.
-- The S22 Ultra integration path is clean (no Android-specific regressions).
-- Both iOS and macOS native paths execute correctly on macOS-host (Windows can't validate, deliberately scoped out).
-- The 3 PR #146 parity flags + the `--isolated` family + `--min-missed-lines` gate + `test_failures[]` contract all behave as documented in `develop` post-`3209cf5`.
+| ID | File:Line | Behavior | Fix complexity (rough) |
+|---|---|---|---|
+| OBS-1 | `lib/cli.js:2080-2102` `runDoctor` | `doctor` envelope has 9 keys; `info`/`describe`/`parallel` envelopes have 14-16 keys (added `errors`, `warnings`, `modules`, `tests`, `coverage`, `skipped`). Same `schema_version: 1` describes two distinct shapes. | Small — add empty arrays/objects to runDoctor envelope (~10 lines + tests) |
+| OBS-2 | `lib/cli.js#buildDryRunReport` | `--dry-run --json` plan output is at spawn-cmd level (`spawn_cmd`, `spawn_args`, `script_path`, `final_args`, `test_filter`); does NOT enumerate which modules would actually receive the dispatch. Agents wanting "what would run" must invoke `describe` separately. | Medium — would need to invoke project-model + filter resolution from buildDryRunReport (~30 lines + tests) |
+| OBS-3 | `lib/parallel-orchestrator.js:1740-1751` | `no_test_modules` discriminator (mac-audit Gap 1.1) maps to ENV_ERROR (exit 3). Code comment says "mirrors legacy wrapper's exit 3 path". I previously reclassified this from a bug-candidate to an observation based on the comment alone — **that's a milestone-shape decision, not mine**. | Small — change one Set entry; impact spans CI consumers that branch on exit 3 |
+| OBS-4 | `lib/parallel-orchestrator.js#--isolated` family | `--isolated` isolates Gradle's `--project-cache-dir` and lockfile, but does NOT protect against shared runtime resources: iOS simulator, ADB daemon, system-wide Konan caches. Concurrent `parallel --test-type ios --isolated` runs WILL race on simulator state. Reproduced wet (L1.F): KaMPKit × 2 ios → A failed, B passed. | Doc-only (cheap): warning emission in `--isolated` help text. Real fix (resource isolation) is out-of-scope for v0.9. |
+| OBS-6 | `lib/android-orchestrator.js#runAndroid --list-only` path | `--list-only` populates `android.instrumented_modules[]` but top-level `modules[]` stays empty. `android.device_serial` is also empty in the list-only envelope (set later only after a real run). Agents reading `modules[]` length must instead pivot on `android.instrumented_modules[]`. | Small — populate top-level `modules[]` from `instrumented_modules` + echo `device_serial` when supplied (~15 lines + tests) |
+| OBS-7 | `scripts/sh/run-parallel-coverage-suite.sh` (computed task chain) | `--flavor <name>` silently no-ops when the project has no productFlavors. Reproduced (L2.C-W2): `parallel --test-type androidInstrumented --flavor nonexistentFlavorName --module-filter di-contracts` → exit 0 with default `connectedDebugAndroidTest` task. User typo / wrong flavor doesn't surface. | Small — wrapper warns or fails when supplied flavor doesn't yield a known task; OR Node-side validates against project-model `has_flavor` (~20 lines + tests) |
 
 ### Audit metrics
 
-- **Cells executed total**: 38 (Part 1) + 19 (Part 2) + 4 wet revalidations of bug-fixes = **61 cells**.
+- **Cells executed total**: 38 (Part 1) + 19 (Part 2) + 4 wet revalidations = **61 cells**.
 - **Wet projects**: 5 / 5 workspace (KaMPKit, PeopleInSpace, Confetti, di-patterns-demo, shared-kmp-libs).
-- **Bugs found**: 3 (all CLOSED in PR #183 → 3209cf5).
-- **Observations**: 7 (1 reclassified, 6 catalogued).
+- **Bugs found**: 3 (BUG-1, BUG-2, OBS-5) — all CLOSED in PR #183 (`3209cf5`).
+- **Observations**: 6 (OBS-1, OBS-2, OBS-3, OBS-4, OBS-6, OBS-7) — all OPEN, awaiting user classification.
 - **Audit walltime**: ~2 hours (Part 1: ~1h, fix PR cycle: ~30min, Part 2: ~30min).
 - **Disk impact**: -1.3 GB net (preserved `~/.gradle/caches/modules-2/` per memory rule).
 - **CI**: PR #183 green on 12/12 checks (Linux + Windows + macOS).
+
+### Decision still owed by the user
+
+For each OBS-N above, the user must choose: (a) block v0.9 release until fixed, (b) fix in v0.9.x, or (c) defer further. Until those decisions are recorded, this doc carries no release-readiness verdict.
 
