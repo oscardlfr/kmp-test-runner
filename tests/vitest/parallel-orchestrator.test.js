@@ -2892,6 +2892,50 @@ describe('runParallel --auto-retry + --clear-data (v0.9 step 1, flags #1 + #2)',
     expect(envelope.warnings.find(w => w.code === 'flavor_unused')).toBeUndefined();
   });
 
+  // OBS-B (2026-05-09 wet-audit follow-up) — the comment at
+  // parallel-orchestrator.js claims the flavor_unused check "runs before
+  // any gradle dispatch so we don't waste a build cycle." Pre-fix the
+  // error was pushed to state.errors but execution proceeded to the
+  // gradle dispatch (~66s wasted on real DawSync run). Lock that the
+  // orchestrator now early-returns: zero gradle (or adb) spawns.
+  it('flavor_unused early-exits before any gradle dispatch (OBS-B)', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    makeAndroidApp('app');
+    const spawnCalls = [];
+    const spawn = (cmd, args, opts) => {
+      spawnCalls.push({ cmd, args: [...args] });
+      // Return a benign success in case the orchestrator does invoke a
+      // model-probe spawn upstream (which is allowed; only gradle test
+      // dispatch must be skipped).
+      return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+    };
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--flavor', 'nonexistent'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(2);
+    expect(envelope.errors.find(e => e.code === 'flavor_unused')).toBeDefined();
+    // Lock: zero gradle test-task spawns (anything matching connectedDebugAndroidTest
+    // / connectedCheck / *AndroidTest is forbidden post-fix).
+    const gradleTestSpawns = spawnCalls.filter(c =>
+      c.args.some(a => /connectedDebugAndroidTest|connectedCheck|AndroidTest$/i.test(a))
+    );
+    expect(gradleTestSpawns).toEqual([]);
+    // Lock: parallel.legs[] is empty (no leg dispatched).
+    expect((envelope.parallel?.legs || []).length).toBe(0);
+  });
+
   it('--auto-retry skipped when cascade-isolation already retried (mutual exclusion)', async () => {
     const dir = makeProject([
       { name: 'app',
