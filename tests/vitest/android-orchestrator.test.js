@@ -28,7 +28,7 @@ import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { runAndroid } from '../../lib/android-orchestrator.js';
+import { runAndroid, parseArgs, parseTestCounts, parseTestFailures } from '../../lib/android-orchestrator.js';
 import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 
 let workDir;
@@ -191,6 +191,123 @@ describe('runAndroid WS-10 (--list-only same source as count)', () => {
       expect(lines.some(l => l.includes(`- ${name}`))).toBe(true);
     }
     expect(exitCode).toBe(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // parseTestCounts — both legacy and new KMP-Android plugin formats.
+  // Surfaced 2026-05-06 by v0.9 step 7 wet validation against
+  // shared-kmp-libs `:benchmark-network` on a real S22: gradle emitted
+  // `Finished 3 tests on SM-S908B - 16` + `BUILD SUCCESSFUL` but the
+  // legacy-only parser reported testsPassed=0, hiding the actual run.
+  // ---------------------------------------------------------------------------
+  it('parseTestCounts: legacy AGP format → counts populate correctly', () => {
+    const log = `> Task :module:connectedDebugAndroidTest
+12 tests completed, 1 failed, 2 skipped
+BUILD SUCCESSFUL`;
+    const c = parseTestCounts(log);
+    expect(c).toEqual({ total: 12, failed: 1, skipped: 2, passed: 9 });
+  });
+
+  it('parseTestCounts: new KMP-Android plugin "Finished N tests on <device>" → uses device-test reporter', () => {
+    const log = `> Task :benchmark-network:connectedAndroidDeviceTest
+Starting 3 tests on SM-S908B - 16
+SM-S908B - 16 Tests 0/3 completed. (0 skipped) (0 failed)
+SM-S908B - 16 Tests 2/3 completed. (0 skipped) (0 failed)
+Finished 3 tests on SM-S908B - 16
+BUILD SUCCESSFUL in 41s`;
+    const c = parseTestCounts(log);
+    expect(c).toEqual({ total: 3, failed: 0, skipped: 0, passed: 3 });
+  });
+
+  it('parseTestCounts: new format with failures takes the latest progress snapshot', () => {
+    const log = `Starting 5 tests on Pixel-7
+Pixel-7 Tests 1/5 completed. (0 skipped) (0 failed)
+Pixel-7 Tests 3/5 completed. (1 skipped) (1 failed)
+Pixel-7 Tests 4/5 completed. (1 skipped) (2 failed)
+Finished 5 tests on Pixel-7`;
+    const c = parseTestCounts(log);
+    expect(c).toEqual({ total: 5, failed: 2, skipped: 1, passed: 2 });
+  });
+
+  it('parseTestCounts: legacy format takes precedence when both present (avoid double-count)', () => {
+    const log = `7 tests completed, 0 failed, 0 skipped
+Finished 99 tests on Bogus-Device`;
+    const c = parseTestCounts(log);
+    expect(c).toEqual({ total: 7, failed: 0, skipped: 0, passed: 7 });
+  });
+
+  it('parseTestCounts: no recognized pattern → all zeros (fallback)', () => {
+    expect(parseTestCounts('')).toEqual({ total: 0, failed: 0, skipped: 0, passed: 0 });
+    expect(parseTestCounts('BUILD SUCCESSFUL\nNothing else relevant'))
+      .toEqual({ total: 0, failed: 0, skipped: 0, passed: 0 });
+  });
+
+  // Surfaced 2026-05-06 by tools/macos-validation-gate.mjs --mode probe
+  // against shared-kmp-libs and KaMPKit. The android orchestrator was
+  // emitting an incomplete coverage block ({ tool, missed_lines }) that
+  // didn't match the envelope contract used by every other subcommand
+  // and the parity snapshot. Lock the full shape: tool + missed_lines +
+  // both modules_with_*_plugin arrays, even when empty.
+  it('--list-only envelope coverage block matches the canonical full shape', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.coverage).toEqual({
+      tool: 'auto',
+      missed_lines: null,
+      modules_with_kover_plugin: [],
+      modules_with_jacoco_plugin: [],
+    });
+  });
+
+  // wet-audit-v0.9-part2 OBS-6 — `--list-only` populates top-level
+  // `modules[]` (matching wet-run shape) and echoes `--device <serial>`
+  // to `android.device_serial`. Pre-fix list-only left top-level
+  // `modules: []` empty and dropped the user-supplied --device value,
+  // forcing agents to special-case the list-only envelope.
+  it('--list-only populates top-level modules[] (mirrors wet-run shape)', async () => {
+    const dir = makeProject([{ name: 'foo' }, { name: 'bar' }, { name: 'baz' }]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.modules).toEqual(['bar', 'baz', 'foo']); // sorted by discoverAndroidModules
+    expect(envelope.android.instrumented_modules).toEqual(['bar', 'baz', 'foo']);
+    // The two arrays must be the same content (different field names but
+    // identical ordering / membership).
+    expect(envelope.modules).toEqual(envelope.android.instrumented_modules);
+  });
+
+  it('--list-only echoes --device <serial> to android.device_serial (OBS-6)', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only', '--device', 'R3CT30KAMEH'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.android.device_serial).toBe('R3CT30KAMEH');
+  });
+
+  it('--list-only without --device leaves android.device_serial empty (back-compat)', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.android.device_serial).toBe('');
   });
 });
 
@@ -555,6 +672,64 @@ describe('runAndroid --module-filter', () => {
     expect(envelope.android.instrumented_modules.sort()).toEqual(['feature-auth', 'feature-feed']);
     expect(envelope.android.instrumented_modules).not.toContain('core');
   });
+
+  // v0.9 step 9.3 (Bug #3) — `:`-prefix filter regression. Pre-fix
+  // `applyModuleFilter` did `m.name.includes(filter)` against the
+  // colon-stripped name, so `:benchmark` matched 0 modules. matchModuleFilter
+  // dual-tests against bare + `:`-prefixed forms.
+  it(':-prefix filter matches colon-stripped module name (Bug #3)', async () => {
+    const dir = makeProject([
+      { name: 'benchmark' }, { name: 'benchmark-storage' }, { name: 'core' },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--module-filter', ':benchmark'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.android.instrumented_modules.sort()).toEqual(['benchmark', 'benchmark-storage']);
+    expect(envelope.android.instrumented_modules).not.toContain('core');
+  });
+
+  it('glob pattern matches anchored module names (Bug #3)', async () => {
+    const dir = makeProject([
+      { name: 'core-result' }, { name: 'core-common' }, { name: 'feature-auth' },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--module-filter', 'core-*'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.android.instrumented_modules.sort()).toEqual(['core-common', 'core-result']);
+    expect(envelope.android.instrumented_modules).not.toContain('feature-auth');
+  });
+
+  it('comma-separated CSV with mix of substring + glob (Bug #3)', async () => {
+    const dir = makeProject([
+      { name: 'core-result' }, { name: 'benchmark-storage' }, { name: 'feature-auth' },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--module-filter', 'core-result,benchmark-*'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.android.instrumented_modules.sort()).toEqual(['benchmark-storage', 'core-result']);
+    expect(envelope.android.instrumented_modules).not.toContain('feature-auth');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -587,10 +762,13 @@ describe('runAndroid KMP_TEST_SKIP_ADB=1', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Case 14 — --test-filter Class#method emits both .class= and .method= -P args
+// Case 14 — --test-filter Class#method emits combined class=FQN#method -P arg
+// (v0.9 step 1, flag #6: the canonical AGP/AndroidJUnitRunner shape that
+// ALWAYS works including under Microbenchmark — separate `.class=` + `.method=`
+// args were silently missing the method filter for Microbenchmark, BACKLOG L329).
 // ---------------------------------------------------------------------------
-describe('runAndroid --test-filter Class#method (Gap E v0.5.2)', () => {
-  it('emits both -P...class= AND -P...method= to gradle', async () => {
+describe('runAndroid --test-filter Class#method (v0.9 step 1, flag #6)', () => {
+  it('emits combined -P...class=FQN#method (single arg, no separate .method=)', async () => {
     const dir = makeProject([{ name: 'a' }]);
     const spawn = makeSpawnStub();
     const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
@@ -606,11 +784,11 @@ describe('runAndroid --test-filter Class#method (Gap E v0.5.2)', () => {
     const args = effectiveGradleArgs(gradleCalls[0]);
     const classArg = args.find(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.class='));
     const methodArg = args.find(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.method='));
-    expect(classArg).toBe('-Pandroid.testInstrumentationRunnerArguments.class=com.example.MyTest');
-    expect(methodArg).toBe('-Pandroid.testInstrumentationRunnerArguments.method=shouldDoX');
+    expect(classArg).toBe('-Pandroid.testInstrumentationRunnerArguments.class=com.example.MyTest#shouldDoX');
+    expect(methodArg).toBeUndefined();
   });
 
-  it('class-only filter emits ONLY .class= (no .method=)', async () => {
+  it('class-only filter emits ONLY .class= (no method portion, no fake `#`)', async () => {
     const dir = makeProject([{ name: 'a' }]);
     const spawn = makeSpawnStub();
     const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
@@ -623,7 +801,8 @@ describe('runAndroid --test-filter Class#method (Gap E v0.5.2)', () => {
     });
 
     const args = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
-    expect(args.some(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.class='))).toBe(true);
+    const classArg = args.find(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.class='));
+    expect(classArg).toBe('-Pandroid.testInstrumentationRunnerArguments.class=com.example.MyTest');
     expect(args.some(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.method='))).toBe(false);
   });
 });
@@ -674,5 +853,383 @@ describe('runAndroid --dry-run (F1)', () => {
     expect(envelope.plan.flavor).toBe('staging');
     expect(spawn.calls.length).toBe(0);
     expect(exitCode).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 step 2 — --gradle-args global escape hatch.
+//   Tokens are appended LAST in the per-module gradleArgs so users can
+//   override CLI defaults via gradle's last-wins flag semantics. Repeatable.
+// ---------------------------------------------------------------------------
+describe('runAndroid --gradle-args escape hatch (v0.9 step 2)', () => {
+  it('parseArgs accumulates --gradle-args across invocations + whitespace-splits', () => {
+    const single = parseArgs(['--gradle-args', '--no-parallel --max-workers 1']);
+    expect(single.gradleArgs).toEqual(['--no-parallel', '--max-workers', '1']);
+
+    const multi = parseArgs([
+      '--gradle-args', '--no-parallel',
+      '--gradle-args', '-Pfoo=bar',
+    ]);
+    expect(multi.gradleArgs).toEqual(['--no-parallel', '-Pfoo=bar']);
+
+    const empty = parseArgs([]);
+    expect(empty.gradleArgs).toEqual([]);
+  });
+
+  it('per-module dispatch appends --gradle-args tokens LAST in gradleArgs', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: [
+        '--gradle-args', '--no-parallel',
+        '--gradle-args', '-Pfoo=bar',
+      ],
+      spawn,
+      adbProbe,
+    });
+
+    const args = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
+    expect(args).toContain('--no-parallel');
+    expect(args).toContain('-Pfoo=bar');
+    expect(args).toContain('--continue');
+    // User tokens appended AFTER --continue (CLI defaults precede escape-hatch).
+    const idxContinue = args.indexOf('--continue');
+    const idxNoParallel = args.indexOf('--no-parallel');
+    const idxFoo = args.indexOf('-Pfoo=bar');
+    expect(idxNoParallel).toBeGreaterThan(idxContinue);
+    expect(idxFoo).toBeGreaterThan(idxNoParallel);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 step 3 — --variant Android variant selector
+// ---------------------------------------------------------------------------
+describe('runAndroid --variant (v0.9 step 3)', () => {
+  it('--variant release composes :mod:connectedReleaseAndroidTest', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: ['--variant', 'release'],
+      spawn,
+      adbProbe,
+    });
+
+    const eArgs = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
+    expect(eArgs).toContain(':a:connectedReleaseAndroidTest');
+    expect(eArgs).not.toContain(':a:connectedDebugAndroidTest');
+  });
+
+  it('--variant debug composes :mod:connectedDebugAndroidTest (explicit)', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: ['--variant', 'debug'],
+      spawn,
+      adbProbe,
+    });
+
+    const eArgs = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
+    expect(eArgs).toContain(':a:connectedDebugAndroidTest');
+  });
+
+  it('--variant all composes :mod:connectedAndroidTest (umbrella)', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: ['--variant', 'all'],
+      spawn,
+      adbProbe,
+    });
+
+    const eArgs = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
+    expect(eArgs).toContain(':a:connectedAndroidTest');
+    expect(eArgs).not.toContain(':a:connectedDebugAndroidTest');
+    expect(eArgs).not.toContain(':a:connectedReleaseAndroidTest');
+  });
+
+  it('--variant auto (default) preserves project-model resolution / falls back to Debug', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: [],   // no --variant — defaults to 'auto'
+      spawn,
+      adbProbe,
+    });
+
+    const eArgs = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
+    // Project-model probe is disabled in tests; falls through to static
+    // connectedDebugAndroidTest. The 'auto' branch is exercised either
+    // through deviceTestTask or static fallback — both paths picked Debug.
+    expect(eArgs).toContain(':a:connectedDebugAndroidTest');
+  });
+
+  it('--device-task override beats --variant', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: ['--variant', 'release', '--device-task', 'androidConnectedCheck'],
+      spawn,
+      adbProbe,
+    });
+
+    const eArgs = effectiveGradleArgs(findGradleCalls(spawn.calls)[0]);
+    expect(eArgs).toContain(':a:androidConnectedCheck');
+    expect(eArgs).not.toContain(':a:connectedReleaseAndroidTest');
+  });
+
+  it('parseArgs --variant <value> stores lowercased value', () => {
+    expect(parseArgs(['--variant', 'Release']).variant).toBe('release');
+    expect(parseArgs(['--variant', 'all']).variant).toBe('all');
+    expect(parseArgs(['--android-variant', 'DEBUG']).variant).toBe('debug');
+    expect(parseArgs([]).variant).toBe('auto');
+  });
+
+  it('--dry-run echoes variant in plan', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--dry-run', '--variant', 'release'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.dry_run).toBe(true);
+    expect(envelope.plan.variant).toBe('release');
+  });
+});
+
+// v0.9 step 4 — `--isolated` for `kmp-test android`.
+// Per-module gradle dispatch loop must inject --project-cache-dir on every
+// spawn; cleanup runs after the loop; envelope surfaces isolated:{}.
+describe('--isolated cache-dir injection (v0.9 step 4)', () => {
+  it('--isolated --dry-run emits envelope.isolated; no spawn, no mkdir', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--dry-run', '--isolated'],
+      spawn,
+      adbProbe,
+    });
+    expect(envelope.isolated).toBeDefined();
+    expect(envelope.isolated.enabled).toBe(true);
+    expect(envelope.isolated.cache_dir).toMatch(/[\\/]\.kmp-test-runner[\\/]cache-isolated[\\/]/);
+    expect(existsSync(envelope.isolated.cache_dir)).toBe(false);
+  });
+
+  it('--isolated injects --project-cache-dir on every per-module spawn + cleans up', async () => {
+    const dir = makeProject([{ name: 'a' }, { name: 'b' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--isolated'],
+      spawn,
+      adbProbe,
+    });
+    expect(envelope.isolated.enabled).toBe(true);
+    const cacheDir = envelope.isolated.cache_dir;
+    expect(cacheDir).toBeTruthy();
+    const gradleCalls = findGradleCalls(spawn.calls);
+    expect(gradleCalls.length).toBe(2);
+    for (const c of gradleCalls) {
+      const flat = effectiveGradleArgs(c).join(' ');
+      expect(flat).toContain('--project-cache-dir');
+      expect(flat).toContain(cacheDir);
+    }
+    // Cleanup happened.
+    expect(envelope.isolated.kept).toBe(false);
+    expect(existsSync(cacheDir)).toBe(false);
+  });
+
+  it('--isolated-cache-dir <path> is preserved (kept:true, dir survives)', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const userCache = path.join(dir, 'my-android-cache');
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--isolated-cache-dir', userCache],
+      spawn,
+      adbProbe,
+    });
+    expect(envelope.isolated.cache_dir).toBe(userCache);
+    expect(envelope.isolated.kept).toBe(true);
+    expect(existsSync(userCache)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 step 9.5 (Bug #5) — coverage envelope shape parity. Pre-fix android
+// emitted empty kover/jacoco arrays (field present but never populated).
+// Now populated from project-model coveragePlugin per discovered module.
+// ---------------------------------------------------------------------------
+describe('runAndroid coverage block populates kover/jacoco module lists (Bug #5)', () => {
+  it('populates modules_with_kover_plugin from coveragePlugin=kover modules', async () => {
+    const dir = makeProject([
+      { name: 'a', build: `plugins { id("com.android.library"); id("org.jetbrains.kotlinx.kover") }\nandroid { namespace = "test.a" }\n` },
+      { name: 'b', build: `plugins { id("com.android.library") }\nandroid { namespace = "test.b" }\n` },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.coverage.modules_with_kover_plugin).toContain('a');
+    expect(envelope.coverage.modules_with_kover_plugin).not.toContain('b');
+    expect(envelope.coverage.modules_with_jacoco_plugin).toEqual([]);
+  });
+
+  it('populates modules_with_jacoco_plugin from coveragePlugin=jacoco modules', async () => {
+    const dir = makeProject([
+      { name: 'a', build: `plugins { id("com.android.library"); id("jacoco") }\nandroid { namespace = "test.a" }\n` },
+      { name: 'b', build: `plugins { id("com.android.library") }\nandroid { namespace = "test.b" }\n` },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.coverage.modules_with_jacoco_plugin).toContain('a');
+    expect(envelope.coverage.modules_with_jacoco_plugin).not.toContain('b');
+    expect(envelope.coverage.modules_with_kover_plugin).toEqual([]);
+  });
+
+  it('mixed kover + jacoco modules → both lists populated', async () => {
+    const dir = makeProject([
+      { name: 'k', build: `plugins { id("com.android.library"); id("org.jetbrains.kotlinx.kover") }\nandroid { namespace = "test.k" }\n` },
+      { name: 'j', build: `plugins { id("com.android.library"); id("jacoco") }\nandroid { namespace = "test.j" }\n` },
+      { name: 'plain', build: `plugins { id("com.android.library") }\nandroid { namespace = "test.plain" }\n` },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(envelope.coverage.modules_with_kover_plugin).toEqual(['k']);
+    expect(envelope.coverage.modules_with_jacoco_plugin).toEqual(['j']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 wet-audit drift #4: _errors.json#testFailures[] populates from non-
+// AssertionError throws. Pre-fix `/AssertionError[:\s].+/g` missed
+// IllegalStateException, NullPointerException, etc. — leading to empty
+// testFailures[] even when tests.failed > 0. Surfaced during the iOS-side
+// wet audit (PR #168, J2-watch: Compose IllegalStateException on Wear OS).
+// ---------------------------------------------------------------------------
+describe('parseTestFailures (drift #4)', () => {
+  it('captures canonical AGP shape with FQN class + test name + cause', () => {
+    const log = `> Task :wearApp:connectedDebugAndroidTest
+com.surrus.peopleinspace.wear.tests.PeopleListScreenTest > testPeopleListScreen[Watch5x05] FAILED
+    java.lang.IllegalStateException: No compose hierarchies found in the app
+        at androidx.compose.ui.test.junit4.AndroidComposeTestRule.<clinit>(AndroidComposeTestRule.kt:42)
+BUILD FAILED in 1m3s
+`;
+    const f = parseTestFailures(log);
+    expect(f).toHaveLength(1);
+    expect(f[0].test).toBe('com.surrus.peopleinspace.wear.tests.PeopleListScreenTest.testPeopleListScreen');
+    expect(f[0].cause).toMatch(/IllegalStateException.*No compose hierarchies/);
+  });
+
+  it('captures multiple test failures with different exception types', () => {
+    const log = `com.example.FooTest > a[Pixel-7] FAILED
+    java.lang.NullPointerException: foo
+        at ...
+com.example.BarTest > b[Pixel-7] FAILED
+    org.junit.AssertionError: expected:<1> but was:<2>
+        at ...
+`;
+    const f = parseTestFailures(log);
+    expect(f).toHaveLength(2);
+    expect(f[0]).toEqual({ test: 'com.example.FooTest.a', cause: expect.stringContaining('NullPointerException') });
+    expect(f[1]).toEqual({ test: 'com.example.BarTest.b', cause: expect.stringContaining('AssertionError') });
+  });
+
+  it('captures host JVM tests (no [device-id] suffix)', () => {
+    const log = `com.example.HostTest > testIt FAILED
+    org.opentest4j.AssertionFailedError: expected 1 but was 2
+`;
+    const f = parseTestFailures(log);
+    expect(f).toHaveLength(1);
+    expect(f[0].test).toBe('com.example.HostTest.testIt');
+  });
+
+  it('falls back to wide *Exception/*Error scan when canonical shape absent', () => {
+    // Pre-fix shape (only-cause-line, no `> testName FAILED` header).
+    const log = `Some prefix...
+java.lang.IllegalStateException: No compose hierarchies found
+java.lang.NullPointerException: at line 42`;
+    const f = parseTestFailures(log);
+    expect(f.length).toBeGreaterThan(0);
+    expect(f[0].test).toBeNull();
+    expect(f.some(x => x.cause.includes('IllegalStateException'))).toBe(true);
+    expect(f.some(x => x.cause.includes('NullPointerException'))).toBe(true);
+  });
+
+  it('returns empty array when no failure markers in stdout', () => {
+    expect(parseTestFailures('BUILD SUCCESSFUL in 5s\nAll tests passed.\n')).toEqual([]);
+    expect(parseTestFailures('')).toEqual([]);
+  });
+
+  it('canonical match preempts fallback (no double-counting)', () => {
+    const log = `com.x.T > t[Pixel] FAILED
+    java.lang.IllegalStateException: oh no
+        at ...
+`;
+    const f = parseTestFailures(log);
+    expect(f).toHaveLength(1);  // not 2 — fallback not triggered when canonical fired
+    expect(f[0].test).toBe('com.x.T.t');
+  });
+
+  it('dedupes repeated canonical matches by test FQN', () => {
+    const log = `com.x.T > t[Pixel] FAILED
+    java.lang.IllegalStateException: first
+com.x.T > t[Pixel] FAILED
+    java.lang.IllegalStateException: second
+`;
+    const f = parseTestFailures(log);
+    expect(f).toHaveLength(1);
+    expect(f[0].cause).toMatch(/first/);  // first wins
   });
 });

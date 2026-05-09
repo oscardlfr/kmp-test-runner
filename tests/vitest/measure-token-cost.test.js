@@ -88,6 +88,20 @@ describe('parseArgs', () => {
     expect(out.runs).toBe(5);
     expect(out.testTask).toBe('desktopTest');
   });
+
+  it('parses --anthropic-api-key as a CLI override', () => {
+    const out = parseArgs([
+      '--anthropic-models', 'claude-opus-4-7',
+      '--anthropic-api-key', 'sk-ant-test-key-123',
+    ]);
+    expect(out.anthropicApiKey).toBe('sk-ant-test-key-123');
+    expect(out.anthropicModels).toEqual(['claude-opus-4-7']);
+  });
+
+  it('defaults anthropicApiKey to null when --anthropic-api-key is omitted', () => {
+    const out = parseArgs(['--anthropic-models', 'claude-opus-4-7']);
+    expect(out.anthropicApiKey).toBeNull();
+  });
 });
 
 describe('countTokensAnthropic', () => {
@@ -139,6 +153,63 @@ describe('countTokensAnthropic', () => {
     const r = await countTokensAnthropic(client, 'claude-opus-4-7', 'x');
     expect(r.ok).toBe(false);
     expect(r.error.length).toBeLessThanOrEqual(80);
+  });
+
+  // Multi-account fallback path. When the primary client returns 401 and a
+  // fallback client is provided, retry once on the fallback before giving up.
+
+  it('falls back to fallbackClient on 401 and returns the fallback result', async () => {
+    const primaryMock = vi.fn().mockRejectedValueOnce({ status: 401, message: 'invalid key' });
+    const fallbackMock = vi.fn().mockResolvedValueOnce({ input_tokens: 99 });
+    const primary = { messages: { countTokens: primaryMock } };
+    const fallback = { messages: { countTokens: fallbackMock } };
+
+    const r = await countTokensAnthropic(primary, 'claude-opus-4-7', 'hello', fallback);
+
+    expect(r).toEqual({ ok: true, tokens: 99, usedFallback: true });
+    expect(primaryMock).toHaveBeenCalledTimes(1);
+    expect(fallbackMock).toHaveBeenCalledTimes(1);
+    expect(fallbackMock).toHaveBeenCalledWith({
+      model: 'claude-opus-4-7',
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+  });
+
+  it('does NOT invoke fallbackClient when primary succeeds', async () => {
+    const primaryMock = vi.fn().mockResolvedValueOnce({ input_tokens: 7 });
+    const fallbackMock = vi.fn();
+    const primary = { messages: { countTokens: primaryMock } };
+    const fallback = { messages: { countTokens: fallbackMock } };
+
+    const r = await countTokensAnthropic(primary, 'claude-opus-4-7', 'x', fallback);
+
+    expect(r).toEqual({ ok: true, tokens: 7 });
+    expect(r.usedFallback).toBeUndefined();
+    expect(primaryMock).toHaveBeenCalledTimes(1);
+    expect(fallbackMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves auth_failed when primary returns 401 and no fallback is provided', async () => {
+    countTokensMock.mockRejectedValueOnce({ status: 401, message: 'invalid key' });
+    const client = { messages: { countTokens: countTokensMock } };
+    // fallbackClient omitted (defaults to null) — exercises the original
+    // single-client behaviour as a regression guard.
+    const r = await countTokensAnthropic(client, 'claude-opus-4-7', 'x');
+    expect(r).toEqual({ ok: false, error: 'auth_failed' });
+    expect(r.usedFallback).toBeUndefined();
+  });
+
+  it('returns fallback error code when both primary and fallback fail', async () => {
+    const primaryMock = vi.fn().mockRejectedValueOnce({ status: 401, message: 'invalid key' });
+    const fallbackMock = vi.fn().mockRejectedValueOnce({ status: 401, message: 'also invalid' });
+    const primary = { messages: { countTokens: primaryMock } };
+    const fallback = { messages: { countTokens: fallbackMock } };
+
+    const r = await countTokensAnthropic(primary, 'claude-opus-4-7', 'x', fallback);
+
+    expect(r).toEqual({ ok: false, error: 'auth_failed', usedFallback: true });
+    expect(primaryMock).toHaveBeenCalledTimes(1);
+    expect(fallbackMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -283,9 +354,9 @@ describe('runCrossModelMode', () => {
 // ---------------------------------------------------------------------------
 
 describe('FEATURES registry', () => {
-  it('exposes exactly the four supported features', () => {
-    expect(VALID_FEATURES.sort()).toEqual(['benchmark', 'changed', 'coverage', 'parallel']);
-    expect(Object.keys(FEATURES).sort()).toEqual(['benchmark', 'changed', 'coverage', 'parallel']);
+  it('exposes exactly the six supported features (4 gradle-backed + 2 agent-query)', () => {
+    expect(VALID_FEATURES.sort()).toEqual(['benchmark', 'changed', 'coverage', 'describe', 'info', 'parallel']);
+    expect(Object.keys(FEATURES).sort()).toEqual(['benchmark', 'changed', 'coverage', 'describe', 'info', 'parallel']);
   });
   it('every entry exposes the dispatch shape', () => {
     for (const [name, feat] of Object.entries(FEATURES)) {
@@ -293,7 +364,22 @@ describe('FEATURES registry', () => {
       expect(typeof feat.gradleTasksForModules, `${name}.gradleTasksForModules`).toBe('function');
       expect(typeof feat.isReport, `${name}.isReport`).toBe('function');
       expect(typeof feat.resolveModules, `${name}.resolveModules`).toBe('function');
+      expect(typeof feat.skipApproachA, `${name}.skipApproachA`).toBe('boolean');
+      expect(typeof feat.acceptsModuleFilter, `${name}.acceptsModuleFilter`).toBe('boolean');
     }
+  });
+  it('gradle-backed features (parallel/coverage/changed/benchmark) opt out of skipApproachA', () => {
+    expect(FEATURES.parallel.skipApproachA).toBe(false);
+    expect(FEATURES.coverage.skipApproachA).toBe(false);
+    expect(FEATURES.changed.skipApproachA).toBe(false);
+    expect(FEATURES.benchmark.skipApproachA).toBe(false);
+  });
+  it.each(['info', 'describe'])('agent-query feature %s opts into skipApproachA', (name) => {
+    expect(FEATURES[name].skipApproachA).toBe(true);
+  });
+  it('info opts out of acceptsModuleFilter; describe opts in', () => {
+    expect(FEATURES.info.acceptsModuleFilter).toBe(false);
+    expect(FEATURES.describe.acceptsModuleFilter).toBe(true);
   });
   it('parallel + changed produce :module:test tasks (default testTask)', () => {
     expect(FEATURES.parallel.gradleTasksForModules(['core-x'], {})).toEqual([':core-x:test']);
@@ -352,7 +438,7 @@ describe('parseArgs --feature', () => {
     const out = parseArgs(['--project-root', '/tmp/x']);
     expect(out.feature).toBe('parallel');
   });
-  it.each(['parallel', 'coverage', 'changed', 'benchmark'])(
+  it.each(['parallel', 'coverage', 'changed', 'benchmark', 'info', 'describe'])(
     'accepts --feature %s', (feature) => {
       const out = parseArgs(['--project-root', '/tmp/x', '--feature', feature]);
       expect(out.feature).toBe(feature);
@@ -567,7 +653,7 @@ describe('buildApproachAInvocation', () => {
 });
 
 describe('buildKmpTestCliInvocation', () => {
-  it.each(['parallel', 'coverage', 'changed', 'benchmark'])(
+  it.each(['parallel', 'coverage', 'changed', 'benchmark', 'info', 'describe'])(
     '%s subcommand is forwarded as the first cli arg', (feature) => {
       const inv = buildKmpTestCliInvocation({ feature, projectRoot: '/tmp/x' }, false);
       expect(inv.cmd).toBe(process.execPath);
@@ -594,6 +680,20 @@ describe('buildKmpTestCliInvocation', () => {
   it('omits --module-filter when not set', () => {
     const inv = buildKmpTestCliInvocation({ feature: 'parallel', projectRoot: '/tmp/x' }, false);
     expect(inv.args).not.toContain('--module-filter');
+  });
+  it('describe forwards --module-filter when set (acceptsModuleFilter=true)', () => {
+    const inv = buildKmpTestCliInvocation({
+      feature: 'describe', projectRoot: '/tmp/x', moduleFilter: 'core-*',
+    }, false);
+    expect(inv.args).toContain('--module-filter');
+    expect(inv.args).toContain('core-*');
+  });
+  it('info does NOT forward --module-filter even when set (acceptsModuleFilter=false)', () => {
+    const inv = buildKmpTestCliInvocation({
+      feature: 'info', projectRoot: '/tmp/x', moduleFilter: 'core-*',
+    }, false);
+    expect(inv.args).not.toContain('--module-filter');
+    expect(inv.args).not.toContain('core-*');
   });
 });
 

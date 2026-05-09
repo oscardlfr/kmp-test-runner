@@ -4,45 +4,52 @@
 
 ---
 
-## ROADMAP (post-v0.8.0 — added 2026-05-05)
+## ROADMAP (locked 2026-05-05 — user-decided buckets)
 
-> Milestone view of OPEN items. Order within each milestone reflects intended development sequence (later items may depend on earlier ones — for v0.9 in particular, token-cost re-measurement + README refresh come AFTER all envelope-shape-changing flags land so the docs reflect the final v0.9 surface). Detailed entries below; search by title.
+> Milestone view of OPEN items. Order within each milestone is **load-bearing**: features land FIRST, validation gates next, token-cost re-measurement after that, README refresh LAST (right before tagging the release). This applies uniformly to v0.9 and v0.10. Detailed entries below; search by title.
+>
+> **Hard rule**: Claude sessions cannot create v0.11 or move items to v1.0 without explicit user consent. See `CLAUDE.md` "Project conventions" + memory `feedback_release_milestone_decisions.md`.
 
-### v0.8.1 — patch (docs + diagnostics, no API change)
+### v0.9 — minor (locked 2026-05-05)
 
-Bundled or 2-3 small PRs. Total ≈ 4-5h. Independent of v0.9 work.
+1. **parallel parity-gap (6 flags)** — `--clear-data`, `--auto-retry`, `--device <serial>`, `--flavor <name>`, `--device-task <name>`, `class=<FQN>#<method>` filter shape. ~3-4h. See entry "v0.9 — parallel parity gap" below.
+2. **`--gradle-args` passthrough** — Tier 2 of "Adapt CLI to Gradle config". ~1h. See entry "Adapt CLI to project's Gradle config" Tier 2.
+3. **DX-parity bundle** — global `--variant`, `kmp-test describe`, `kmp-test info`, `kmp-test update`. ~4-8h. See entry "DX/UX parity audit" — high-value 4 items.
+4. **Concurrency Tier 3 `--isolated` flag** — opt-in `--project-cache-dir <tmp>` per run. ~3-4h. See entry "Concurrent-invocation safety" Tier 3.
+5. **Cross-platform parity check in CI** — flag matrix audit + envelope schema snapshot + README ↔ code drift detection + platform-behaviour matrix. ~4-5h. New entry below.
+6. ✅ **Buildable cross-platform E2E fixture (build only, NO CI matrix)** — DONE 2026-05-06 (PR #151 / `f296d21` on develop). Synthetic KMP fixture under `tests/fixtures/kmp-cross-platform-e2e/` with `:sample` exercising `jvm()` + `js(IR)` + `wasmJs` + `iosX64`/`iosSimulatorArm64`/`iosArm64` + `macosArm64` + `androidLibrary { withHostTestBuilder { } }`. Pinned Kotlin 2.3.20 / AGP 9.0.1 / Gradle 9.1.0. Vitest 1004 → 1018 (+14 in `tests/vitest/cross-platform-fixture.test.js`). Zero new CI minutes. See L975 entry below for closure details.
+7. ✅ **macOS validation gate** — DONE 2026-05-06 (PRs #153 + #154 + #155 on develop). Manual smoke driver `tools/macos-validation-gate.mjs` with 4 modes (`dry`/`probe`/`scoped`/`full`); 45-cell matrix. Probe sweep on the 3 KMP projects (in-repo fixture + the reference KMP composite project + `KaMPKit`) reports **44 PASS / 0 DRIFT / 1 SKIP**. **Wet pass** (real gradle invocations across jvm/desktop/jsTest/wasmJsTest/iosSimulatorArm64Test/macosArm64Test/testAndroidHostTest, plus `kmp-test android` instrumented on a connected Samsung S22) executed real tests on real hardware — surfaced **3 inline-fixed bugs** (gradlew exec-bit on the v0.9 fixture, parallel-orchestrator hybrid-plugin gate, android-orchestrator parseTestCounts new-plugin format). Evidence: the macOS gate summary + the macOS gate wet-results notes (PR #155). See L372 entry below for closure details.
+8. ✅ **Token-cost re-measurement** — DONE 2026-05-07 (PR #<TBD> on develop). Re-ran the full matrix on a reference KMP composite project (4 gradle-backed + 2 agent-query features). `tools/measure-token-cost.js` extended with `info` + `describe` features (B+C only — no raw-gradle equivalent); `skipApproachA` + `acceptsModuleFilter` per-feature flags. New numbers committed under `tools/runs/`. Headline: coverage A=28.7M cl100k tokens (74 MB kover reports) → C=372 = **77,114× reduction**; coverage A overflows Anthropic's `count_tokens` (413 request_too_large) — even Anthropic's own tokenizer can't process raw gradle on a real KMP project. Vitest 1068 → 1078 (+10). Evidence: the v0.9 measurement notes. README prose deferred to step 9 (re-framing required, not a one-line tweak). See L412 entry below for closure details.
+9. ✅ **README v0.9 refresh + CHANGELOG** — DONE 2026-05-XX (PR #<num>). Token-cost narrative re-framed against a reference KMP composite project (consumed the v0.9 measurement notes); 6 new flag rows + 3 new subcommand entries documented; canonical `class=<FQN>#<method>` filter shape documented; AI-agent envelope JSON example bumped to `version: "0.9.0"`; CHANGELOG `[0.9.0]` section assembled per-PR (steps 1–9). Vitest 1078 unchanged. v0.9.0 release ceremony (step 10) unblocked.
+10. **Tag v0.9.0** — release ceremony per the v0.8.0 / v0.8.1 pattern (intermediate develop PR + clean-cut release/main PR with `git read-tree --reset -u`).
 
-1. **Community standards** — `.github/ISSUE_TEMPLATE/{bug_report,feature_request}.md` + `.github/PULL_REQUEST_TEMPLATE.md` (see "v0.7.x / v0.8 — Community standards"). 30-45min.
-2. **Doctor: surface `gradle_config{}` diagnostic** — Tier 1 of "Adapt CLI to project's Gradle config" entry. Pure additive `--json` field on `kmp-test doctor`, no behavior change. 30min.
-3. **Concurrency Tier 2 docs** — full collision matrix in `docs/concurrency.md` (Tier 1 shipped v0.3.8). See "Concurrent-invocation safety" entry. 30min.
-4. **README refresh + token-cost re-measurement** — refresh README post-v0.7.0 + v0.8.0 surface; re-run `tools/measure-token-cost.js` matrix; update flag tables; remove stale `--shared-project-name`. See "v0.8.0 — README refresh + token-cost re-measurement" entry. 2-3h.
+### v0.10 — minor (locked 2026-05-05)
 
-### v0.9 — minor (new features + behavior surface)
+1. **ANSI color auto-detect** — TTY/piped detection in `lib/<feature>-orchestrator.js` print logic. ~1-2h.
+2. **CLI auto-respect `gradle.properties`** — Tier 3 of adapter. Drop `--parallel` injection when `org.gradle.parallel=false`, etc. Behavior change with migration note. ~2-3h.
+3. **Per-project config user-global** — `~/.kmp-test/config.json` keyed by git-remote / project name. Extends `lib/project-config.js`. ~6-10h.
+4. **Research direction A — Google `android` skills system viability** — investigate whether the skills system supports tools that spawn gradle. ~2-3h research. If positive → ship the manifest (~1h). If negative → drop with user authorization.
+5. **Research direction B — `android describe` JSON discovery** — verify it enumerates KMP-non-AGP modules against the reference KMP composite project. ~2h research. If positive → ship the opt-in fallback in `lib/project-model.js` (~3-4h). If negative → drop with user authorization.
+6. **macOS validation gate** — same shape as v0.9 step 7. ~2-3h.
+7. **Token-cost re-measurement** — captures any v0.10 envelope changes. ~2-3h.
+8. **README v0.10 refresh + CHANGELOG** — last step before tagging. ~2-3h.
+9. **Tag v0.10.0** — release ceremony.
 
-**Order is load-bearing**: parameters land FIRST (steps 1-3) so envelope shape stabilises, THEN token-cost re-measurement (step 4) captures the new shape, THEN README v0.9 refresh (step 5) documents the final surface. Steps 6-7 follow as separable feature work.
+### ❌ DROPPED 2026-05-05 (decided OUT — not deleted, kept for traceability)
 
-1. **`parallel --test-type androidInstrumented` parity-gap** — 6 new flags: `--clear-data`, `--auto-retry`, `--device <serial>`, `--flavor <name>`, `--device-task <name>`, `class=<FQN>#<method>` filter shape. One PR per flag, or bundled. ~115 LOC + 11 vitest. See "v0.9 — `kmp-test parallel --test-type androidInstrumented` parity gap" entry.
-2. **`--gradle-args` passthrough** — Tier 2 of CLI/Gradle adapter. Generic gradle args injection. ~1h.
-3. **DX-parity bundle from android CLI** — global `--variant` flag (cross-subcommand), `kmp-test describe`, `kmp-test info`, `kmp-test update`. See "DX/UX parity audit — borrow good ideas" entry, high-value 4 items. ~4-8h.
-4. **Token-cost re-measurement across the new v0.9 surface** — after steps 1-3 land, capture envelope-shape token costs for new fields (`retries[]`, `pre_run_actions`, etc.) + the new subcommands (`describe`, `info`). See "v0.9 — Token-cost re-measurement after parity-gap + DX-parity land" entry below (NEW 2026-05-05). ~2-3h.
-5. **README v0.9 refresh** — document the new flags + subcommands + updated token-cost numbers + DX-parity surface. See "v0.9 — README refresh after parity-gap + DX-parity + token-cost re-measurement" entry below (NEW 2026-05-05). ~2-3h.
-6. **`kmp-test` as Google `android` skill** — package as discoverable skill in Google's `android skills` system. See "Integrate with Google's `android` CLI for agents" entry. ~3-4h.
-7. **Buildable cross-platform E2E fixture** (DEFERRED from v0.8.0 release-blocker) — synthetic KMP fixture with all targets + CI matrix with macOS-real-execution. See "v0.8.x / v0.9 — Buildable cross-platform E2E fixture" entry. ~6-10h + CI flakiness budget. The "KMP target tier intel" entry is informational input for this.
+- **DX-parity lower-priority items** (`kmp-test docs`, `kmp-test devices`, `kmp-test sdk`, subcommand grouping verb/noun) — solap with `--help`, `adb devices`, `doctor`, and the verb/noun grouping is breaking change without agentic value. User decision 2026-05-05.
+- **iOS/macOS TestKit matrix in CI** — incompatible with CI minute budget rule (`feedback_ci_minutes_minimal_macos.md`). Coverage replaced by step 5 (cross-platform parity check in CI) + step 7 (manual macOS validation gate). User decision 2026-05-05.
 
-### Deferred (v1.0+ or pending trigger)
+### 🅿️ PARKED — promote on user trigger
 
-- **Per-project config presets — user-global aspect** — promote when a user is blocked.
-- **CLI auto-respect `gradle.properties`** (Tier 3 of adapter) — behavior change, needs migration note → v1.0.
-- **DX-parity lower-priority items** (`kmp-test docs`/`devices`/`sdk`, subcommand grouping) — trigger at 8+ commands.
-- **Use `android describe` JSON for module discovery** — pending review of KMP-non-AGP module enumeration support.
-- **Concurrency Tier 3: `--isolated` flag** — opt-in `--project-cache-dir` per run for parallel CI fan-out. ~3-4h. Promote on user surface.
-- **Other QUEUED ideas** — ANSI color auto-detect, Maven Central publish, iOS/macOS TestKit matrix.
+- **Maven Central publish for the Gradle plugin** — needs Sonatype account. Promote when account exists.
+- **VitePress/MkDocs docs site** — promote when README exceeds 1500 lines (today: 716).
 
 ### Project conventions (do-not-do list)
 
-> Cross-cutting rules that aren't backlog items but have to live somewhere visible. CLAUDE.md is the canonical source — these are pointers so a future session reading BACKLOG.md sees them.
-
-- **README is clean — no "What's new in vX" sections.** Per-version highlight blocks belong in `CHANGELOG.md` only. The README must read as if the project were timeless: what it does, how to install it, how to use it. Pre-v1, accumulating "What's new in v0.7 / v0.8 / ..." subsections turns the README into release-notes scaffolding. Removed twice (v0.7 README pass + v0.8.1) — see the rule in [`CLAUDE.md` "Architecture decisions worth knowing"](CLAUDE.md). If a fresh-session prompt asks for a "What's new" section, treat it as an instruction to update CHANGELOG.md instead and call out the diff to the user.
+- **README "What's new in vX" sections** — don't add. Per-version highlight blocks belong in `CHANGELOG.md` only. Removed twice. See `CLAUDE.md` + `feedback_readme_no_whats_new.md`.
+- **Milestone decisions belong to the user.** Claude must NEVER create v0.11 or move items to v1.0 unilaterally. On blockers / errors: ASK. See `CLAUDE.md` + `feedback_release_milestone_decisions.md`.
+- **CI macOS minutes** — keep heavy mac jobs OFF the per-PR matrix. Per-PR matrix runs only `build (macos-latest)` + `installer-e2e (macos-latest)`. iOS / TestKit / E2E mac runs are manual / `workflow_dispatch` only. See `CLAUDE.md` + `feedback_ci_minutes_minimal_macos.md`.
 
 ---
 
@@ -160,7 +167,7 @@ Post-migration target: ~470 LOC of residual shell across 8 wrapper files (12× r
 
 1. **Input contracts:** flags `--project-root`, `--device <serial>`, `--module-filter`, `--skip-app`, `--verbose`, `--flavor`, `--auto-retry`, `--clear-data`, `--list | --list-only`, `--test-filter`, `--device-task <name>` (KMP `androidLibrary { }` DSL escape hatch), `--ignore-jdk-mismatch`, `--java-home`, `--no-jdk-autoselect`, `--dry-run`, `--json`, `--force`. Env vars: `JAVA_HOME`, `KMP_TEST_SKIP_ADB`, `KMP_GRADLE_TIMEOUT_MS`.
 2. **Output contract:** standard envelope; `parseAndroidSummary` (`lib/cli.js:878`) already in Node and stays put. **Adds:** `android:{device_serial, device_task, flavor, instrumented_modules:[]}` top-level field (closes WS-10's empty-name renderer by construction — orchestrator builds the rendered list from the same data the count derives from). Preserves discriminators `instrumented_setup_failed` / `task_not_found` / `unsupported_class_version`.
-3. **Test plan:** `tests/vitest/android-orchestrator.test.js` contracts that module detection consolidates through `lib/project-model.js#resolveTasksFor` `deviceTestTask` (same source as `parallel --test-type androidInstrumented` — closes WS-3); `--list-only` never renders empty names (closes WS-10); no adb device → `errors[].code:"instrumented_setup_failed"`, `exit_code:3` (NOT silent pass — per PRODUCT criterion 5); `--device-task` override propagates verbatim. **e2e on mom's MacBook** (S22 Ultra `R3CT30KAMEH`): `cd Confetti && kmp-test android --json` → 4 modules detected (matches `parallel --test-type androidInstrumented`); `--list-only` renders 4 non-empty names; `adb kill-server; cd KaMPKit && kmp-test android` → `instrumented_setup_failed`.
+3. **Test plan:** `tests/vitest/android-orchestrator.test.js` contracts that module detection consolidates through `lib/project-model.js#resolveTasksFor` `deviceTestTask` (same source as `parallel --test-type androidInstrumented` — closes WS-3); `--list-only` never renders empty names (closes WS-10); no adb device → `errors[].code:"instrumented_setup_failed"`, `exit_code:3` (NOT silent pass — per PRODUCT criterion 5); `--device-task` override propagates verbatim. **e2e on mom's MacBook** (S22 Ultra `<device-serial>`): `cd Confetti && kmp-test android --json` → 4 modules detected (matches `parallel --test-type androidInstrumented`); `--list-only` renders 4 non-empty names; `adb kill-server; cd KaMPKit && kmp-test android` → `instrumented_setup_failed`.
 4. **Bugs closed by construction:** **WS-3** (`kmp-test android` finds 0 modules where `parallel` finds 4 — single source of truth via project model); **WS-10** (`--list-only` empty-name renderer). **Adb-orphan flake** in `tests/installer/install.bats` on macos-latest may close as a side-effect (orchestrator honors `KMP_TEST_SKIP_ADB=1`); defer formal closure until empirically validated post-migration.
 5. **LOC delta:** 784 (sh) + 649 (ps1) = **1,433** today → ≤50 + ≤50 wrappers + ~400-500 in `lib/android-orchestrator.js`. **Net: ~-880 LOC (61% reduction — largest single drop, due to accumulated KMP DSL detection complexity in bash).**
 6. **Risks / gotchas:** `tests/bats/test-android.bats` + `test-android-summary-counts.bats` and `tests/pester/Android-Summary-Counts.Tests.ps1` shrink to wrapper contracts. `parseAndroidSummary` + `parseAndroidModuleTableFallback` stay put (orchestrator emits the same banner shape). Preserve `JSON SUMMARY` block on stdout, per-module log files at `<project>/build/logcat/<run-id>/` surfaced via `errors[].log_file` / `logcat_file` / `errors_file` (Bug G v0.5.2), and the `--device-task` escape hatch.
@@ -220,7 +227,7 @@ Stays in CI as a regression-guard against Bash 3.2 patterns in the remaining bas
 - **Gate 1 — Cross-OS CLI parity workflow (`cross-os-parity.yml`)**: ❌ NEVER IMPLEMENTED. File doesn't exist. Deferred past v0.8.0; the existing 7-required-check matrix (build × ubuntu/win + secrets-scan + gradle-plugin-test + installer-e2e × ubuntu/win + Commit Lint) plus informational bats-macos + build-macos + gradle-plugin-test-ios + installer-e2e-macos provides parity coverage in practice. A dedicated `cross-os-parity.yml` envelope-diff workflow remains a v0.9 candidate.
 - **Gate 2 — Cross-platform E2E fixture project**: DEFERRED to v0.8.x/v0.9 (see entry below; ~6-10h fixture + flakiness budget not justified for v0.8.0 given the 6 fix-PRs already absorbed the release-validation budget). The "promoted to release-blocker" claim below is now superseded.
 - **Gate 3 — Branch-protection promotions of `bats-macos` + `gradle-plugin-test-ios` to required**: DEFERRED opportunistic. Both jobs are passing reliably (PR #118 closed bats-macos; gradle-plugin-test-ios passes on every recent PR). Promotion is a 1-2h Settings change + verification PR — schedule post-tag.
-- **Gate 4 — Wide-smoke release validation on maintainer's macOS**: ✅ DONE via wide-smoke pass-9-mac (PR #129, 2026-05-04). Real iOS/macOS execution validated against shared-kmp-libs + 4 other projects; bucket counts match Win-side baseline.
+- **Gate 4 — Wide-smoke release validation on maintainer's macOS**: ✅ DONE via wide-smoke pass-9-mac (PR #129, 2026-05-04). Real iOS/macOS execution validated against a reference KMP composite project + 4 other projects; bucket counts match Win-side baseline.
 
 **Net assessment**: v0.8.0 ships on the existing 7-required-check matrix + the 6 fix-PRs (A-F) + PR7-bis docs polish + PR8 release tag. The original gate framework was retroactively too strict for what v0.8.0 actually delivers (a Node-migration milestone, not an iOS-coverage milestone). The 4 listed items below remain the historical specification of the gate as drafted 2026-05-02; they're tracked individually for v0.9 planning rather than v0.8.0 blockers.
 
@@ -251,17 +258,17 @@ This entry is the **terminal acceptance criteria** for the v0.8 PIVOT. It is not
 - Re-using an existing OSS KMP project as the cross-platform E2E fixture — see Buildable cross-platform E2E fixture entry below for that decision.
 - ~~New CLI features.~~ **Carve-out (2026-05-03):** the project-level config file entry below (covers `sharedProjectName` + stable defaults) IS in v0.8.0 scope — closing the README ↔ tool surface gap honestly requires it rather than just deleting the misleading flag doc line.
 
-### v0.8.0 — Execution-summary classifier under-reports non-JVM test task RUNTIME failures (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 + Mac/Win post-toolchain-fix re-runs)
+### ✅ DONE 2026-05-04 (PR #130 / f95b57c) — v0.8.0 — Execution-summary classifier under-reports non-JVM test task RUNTIME failures (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 + Mac/Win post-toolchain-fix re-runs)
 
 **Status: DONE — fix-PR-E shipped 2026-05-04 (PR #130 / `f95b57c`).** Two surgical changes in `executeLeg` (lib/parallel-orchestrator.js): (1) cascade trigger semantic refined to `no_evidence === taskList.length`; (2) post-step-5 alignment rebuilds `execSummary` from `classifyTaskResults` so tasks marked 'failed' get bucketed to `execution.failed` regardless of execMode. 762 → 768 vitest. Live S22 Ultra validated `execution.failed: 0→1` on `:benchmark-storage:androidConnectedCheck`. OS-parity invariant restored (`execution.failed === errors.filter(c='module_failed').length`). Original entry text preserved below for context.
 
-**Status (historical):** OPEN — **RELEASE-BLOCKER for v0.8.0**. Initially scoped to K/N native test tasks only (`macosArm64Test`, `iosX/Sim/ArmTest`). After post-toolchain-fix re-runs of shared-kmp-libs with **device connected** (Win: S22 Ultra, Mac: S25 Ultra), the same classifier gap surfaced on AGP instrumented tasks too: `connectedAndroidDeviceTest` (Mac) and `androidConnectedCheck` (Win). Three task classes confirmed affected; scope is generalized to "non-JVM test task RUNTIME failures".
+**Status (historical):** OPEN — **RELEASE-BLOCKER for v0.8.0**. Initially scoped to K/N native test tasks only (`macosArm64Test`, `iosX/Sim/ArmTest`). After post-toolchain-fix re-runs of a reference KMP composite project with **device connected** (Win: S22 Ultra, Mac: S25 Ultra), the same classifier gap surfaced on AGP instrumented tasks too: `connectedAndroidDeviceTest` (Mac) and `androidConnectedCheck` (Win). Three task classes confirmed affected; scope is generalized to "non-JVM test task RUNTIME failures".
 
 **Pre-S22/S25 wide-smoke runs always hit the infrastructure-failure path** on `connectedAndroidDeviceTest` (no device → adb returns nothing → gradle aborts pre-test-runner). That output shape the classifier DOES recognize → `execution.failed` was correct. With a real device, the SAME task class fails at the runtime test phase, which uses different output shape → classifier blind, `execution.failed: 0` despite real failures in `errors[]`.
 
 The `[FAIL]`-line fallback catches all three task classes correctly, so end-user envelopes are functionally correct via `errors[]`. Structured `execution.failed` counter is wrong on K/N + AGP instrumented runtime failures.
 
-**Repro envelope from pass-9-mac on shared-kmp-libs (`--test-type=all`):**
+**Repro envelope from pass-9-mac on a reference KMP composite project (`--test-type=all`):**
 
 ```json
 {
@@ -283,11 +290,11 @@ The `[FAIL]`-line fallback catches all three task classes correctly, so end-user
 
 **Why Windows could not have caught this:**
 
-K/N `macosArm64Test` requires a macOS host. Windows wide-smoke runs never dispatch the macos leg (gradle refuses to compile the target on Windows). Pass-8 + pass-9 on Windows triaged shared-kmp-libs's macos leg as never-executed.
+K/N `macosArm64Test` requires a macOS host. Windows wide-smoke runs never dispatch the macos leg (gradle refuses to compile the target on Windows). Pass-8 + pass-9 on Windows triaged the reference project's macos leg as never-executed.
 
 **Hypothesis to confirm:**
 
-Same classifier gap likely exists for `iosSimulatorArm64Test` / `iosX64Test` / `iosArm64Test` since they share the K/N test task output shape with `macosArm64Test`. Pass-9-mac on shared-kmp-libs didn't dispatch iOS legs (`skipped[]` = 11 with reason "no ios target") — repro would land on a project with iOS targets (Confetti/KaMPKit candidates).
+Same classifier gap likely exists for `iosSimulatorArm64Test` / `iosX64Test` / `iosArm64Test` since they share the K/N test task output shape with `macosArm64Test`. Pass-9-mac on a reference KMP composite project didn't dispatch iOS legs (`skipped[]` = 11 with reason "no ios target") — repro would land on a project with iOS targets (Confetti/KaMPKit candidates).
 
 **Why this matters even though end-user envelope is correct:**
 
@@ -299,12 +306,12 @@ Same classifier gap likely exists for `iosSimulatorArm64Test` / `iosX64Test` / `
 
 1. Identify the K/N task-result line pattern in `lib/parallel-orchestrator.js` that the current classifier misses. Likely the K/N test task summary line uses different formatting than JVM `Test` task output.
 2. Extend the execution-summary regex / state-machine to count K/N native test failures into `execution.failed`.
-3. Add 2-3 vitest cases covering native task output shapes (use real captured output from shared-kmp-libs pass-9-mac forensic artifacts as fixtures).
+3. Add 2-3 vitest cases covering native task output shapes (use real captured output from a reference KMP composite project pass-9-mac forensic artifacts as fixtures).
 4. No envelope-shape change — the `errors[]` fallback continues to work; this is purely about correcting the structured counter.
 
 **Forensic artifacts (Mac-side):**
 
-`.smoke/pass-9-mac-all/{Confetti,KaMPKit,PeopleInSpace,shared-kmp-libs}.{json,out,err,meta.json}` on the Mac. To be published in the follow-up `WIDE-SMOKE-PASS-9-MAC.md` PR.
+`.smoke/pass-9-mac-all/{Confetti,KaMPKit,PeopleInSpace,a reference KMP composite project}.{json,out,err,meta.json}` on the Mac. To be published in the follow-up `WIDE-SMOKE-PASS-9-MAC.md` PR.
 
 **Out of scope:**
 
@@ -313,13 +320,13 @@ Same classifier gap likely exists for `iosSimulatorArm64Test` / `iosX64Test` / `
 
 ---
 
-### v0.8.0 — `--test-filter` on `parallel --test-type androidInstrumented` blindly pushes `--tests` to AGP `connectedAndroidTest` (RELEASE-BLOCKER, surfaced 2026-05-05 dipatternsdemo live validation)
+### ✅ DONE 2026-05-05 (PR #135 / 89e3cba) — v0.8.0 — `--test-filter` on `parallel --test-type androidInstrumented` blindly pushes `--tests` to AGP `connectedAndroidTest` (RELEASE-BLOCKER, surfaced 2026-05-05 a multi-module DI sample live validation)
 
-**Status: DONE — fix-PR-G shipped 2026-05-05.** Live repro on dipatternsdemo: `kmp-test parallel --test-type androidInstrumented --module-filter benchmark --test-filter <FQN>` → gradle errored `Unknown command-line option '--tests'` → BUILD FAILED in 1s. Audit of `dispatchLeg` (`lib/parallel-orchestrator.js:547-549`) showed `--tests <pattern>` was pushed unconditionally for every leg. JvmTestTask, KotlinNativeTest, KotlinJsTest accept `--tests`; AGP `AndroidConnectedTest` does not — it expects `-Pandroid.testInstrumentationRunnerArguments.{class,method}` (per https://developer.android.com/studio/test/command-line). The dedicated `kmp-test android` and `kmp-test benchmark` subcommands already had the right translation (`lib/android-orchestrator.js#buildFilterArgs` + benchmark-orchestrator); only `parallel` was the gap.
+**Status: DONE — fix-PR-G shipped 2026-05-05.** Live repro on a multi-module DI sample: `kmp-test parallel --test-type androidInstrumented --module-filter benchmark --test-filter <FQN>` → gradle errored `Unknown command-line option '--tests'` → BUILD FAILED in 1s. Audit of `dispatchLeg` (`lib/parallel-orchestrator.js:547-549`) showed `--tests <pattern>` was pushed unconditionally for every leg. JvmTestTask, KotlinNativeTest, KotlinJsTest accept `--tests`; AGP `AndroidConnectedTest` does not — it expects `-Pandroid.testInstrumentationRunnerArguments.{class,method}` (per https://developer.android.com/studio/test/command-line). The dedicated `kmp-test android` and `kmp-test benchmark` subcommands already had the right translation (`lib/android-orchestrator.js#buildFilterArgs` + benchmark-orchestrator); only `parallel` was the gap.
 
-Fix: new `buildFilterArgs(testFilter, testType, projectRoot)` mirrors the android-orchestrator translation. When `testType === 'androidInstrumented'`, the filter resolves through `resolveAndroidTestFilter` + `splitClassMethod` (both already exported from `lib/cli.js`) and emits the canonical `-Pandroid.testInstrumentationRunnerArguments.class=<FQN>` (+ `.method=<m>` when present). All other test types preserve `--tests <pattern>` (regression guard for JVM / K/N / KJS legs). `dispatchLeg` now threads `testType` through to the helper. **+9 vitest cases** (797 → 806 passing): 8 unit tests covering each test type's translation + 1 integration test through `runParallel` confirming the JVM-side `--tests` regression guard at the spawn site. Live verified end-to-end on dipatternsdemo `:benchmark`: `[PASS] benchmark` with `connected/release/` outputs created (vs the pre-fix BUILD FAILED). Audit of all other gradle args pushed by `dispatchLeg` (`--parallel`, `--continue`, `--max-workers=N`) confirms they are universal gradle CLI flags accepted by every task class — no other JvmTestTask-only flag leaks into the AGP path.
+Fix: new `buildFilterArgs(testFilter, testType, projectRoot)` mirrors the android-orchestrator translation. When `testType === 'androidInstrumented'`, the filter resolves through `resolveAndroidTestFilter` + `splitClassMethod` (both already exported from `lib/cli.js`) and emits the canonical `-Pandroid.testInstrumentationRunnerArguments.class=<FQN>` (+ `.method=<m>` when present). All other test types preserve `--tests <pattern>` (regression guard for JVM / K/N / KJS legs). `dispatchLeg` now threads `testType` through to the helper. **+9 vitest cases** (797 → 806 passing): 8 unit tests covering each test type's translation + 1 integration test through `runParallel` confirming the JVM-side `--tests` regression guard at the spawn site. Live verified end-to-end on a multi-module DI sample `:benchmark`: `[PASS] benchmark` with `connected/release/` outputs created (vs the pre-fix BUILD FAILED). Audit of all other gradle args pushed by `dispatchLeg` (`--parallel`, `--continue`, `--max-workers=N`) confirms they are universal gradle CLI flags accepted by every task class — no other JvmTestTask-only flag leaks into the AGP path.
 
-**Side observation (NOT a regression — pre-existing in `kmp-test android` and `kmp-test benchmark`).** The AndroidJUnitRunner method-level filter shape `class=<FQN>` + `method=<m>` (separate `-P` args) is not honored by all instrumented runners — Microbenchmark in particular runs all class methods despite the `method` arg. Repro: live dipatternsdemo run with `--test-filter "...DiBenchmark.lazyInit_noDeps_daggerB_analytics"` resolved to class+method correctly but 14 of 14 DiBenchmark methods ran instead of 1. The canonical AGP/AndroidJUnitRunner shape that ALWAYS works is the combined `class=<FQN>#<method>` single arg. Tracked under v0.9 follow-up entry below ("parallel parity gap").
+**Side observation (NOT a regression — pre-existing in `kmp-test android` and `kmp-test benchmark`).** The AndroidJUnitRunner method-level filter shape `class=<FQN>` + `method=<m>` (separate `-P` args) is not honored by all instrumented runners — Microbenchmark in particular runs all class methods despite the `method` arg. Repro: live a multi-module DI sample run with `--test-filter "...DiBenchmark.lazyInit_noDeps_daggerB_analytics"` resolved to class+method correctly but 14 of 14 DiBenchmark methods ran instead of 1. The canonical AGP/AndroidJUnitRunner shape that ALWAYS works is the combined `class=<FQN>#<method>` single arg. Tracked under v0.9 follow-up entry below ("parallel parity gap").
 
 ---
 
@@ -344,6 +351,70 @@ Fix: new `buildFilterArgs(testFilter, testType, projectRoot)` mirrors the androi
 
 ---
 
+### v0.9 — Cross-platform parity check in CI (NEW 2026-05-05)
+
+**Status: OPEN, scheduled as step 5 of v0.9 milestone (per ROADMAP).** Replaces the dropped iOS/macOS TestKit-in-CI matrix with a lightweight static parity check that catches drift between flag tables, envelope schema, README, and platform-behavior matrix without burning macOS minutes (`feedback_ci_minutes_minimal_macos.md`).
+
+**Scope — 4 sub-checks:**
+1. **Flag matrix audit** — vitest spec that enumerates every CLI subcommand × every flag, asserting platform-applicability matches the README "Platforms supported" table. Catches drift like "added `--device` to `parallel` but forgot to update README".
+2. **Envelope JSON schema snapshot** — golden-file snapshot of the `kmp-test ... --json` output shape for each subcommand (using a dry-run mode where possible). Any envelope-shape change forces a deliberate snapshot update.
+3. **README ↔ code drift detection** — regex over README flag table compared against the actual `bin/kmp-test.js` argv parser. Detects flags documented but not parsed, or parsed but not documented.
+4. **Platform-behavior matrix lock-in** — vitest spec asserting which gradle task name / source set each `--test-type` resolves to per platform (e.g. `--test-type ios` → `iosSimulatorArm64Test` candidate chain). Catches dispatch-table regressions.
+
+**Acceptance:** 4 new vitest specs (or 1 with 4 describe blocks) + a CI step that runs them on every PR. **No new macOS minutes** — all checks run on `ubuntu-latest`. Failure messages must be actionable ("README says X, code does Y, fix one of them").
+
+**Estimated effort:** ~4-5h.
+
+**Out of scope:** runtime gradle dispatch validation against real projects (that's step 7, manual). E2E flake tests (those are real-execution territory).
+
+---
+
+### ✅ SHIPPED 2026-05-06 (v0.9 step 7, PRs #153 + #154 + #155 on develop) — macOS validation gate (manual smoke before tagging)
+
+**Closure summary.** New `tools/macos-validation-gate.mjs` driver — 45-cell matrix (`{parallel, changed} × 7 --test-type values × 3 projects = 42` + `android × 3 projects = 3`) against the in-repo fixture + the reference KMP composite project + `KaMPKit`. Four modes:
+- `--mode dry` — enumerate cells, no spawn (for matrix-shape sanity).
+- `--mode probe` — spawn `kmp-test <sub> --dry-run|--list-only --json` per cell. Captures REAL envelopes without invoking gradle (orchestrators short-circuit). Disk-safe at any free-space level.
+- `--mode scoped` — spawn `kmp-test` per cell with `--module-filter <smallest>`. One gradle daemon per cell. For wet-validation when disk allows.
+- `--mode full` — unfiltered sweep, gated by `--i-have-20gb-free` (encodes `feedback_disk_space_awareness.md` rule in code).
+
+Drift detection by path-only shape diff against `tests/vitest/__snapshots__/parity.test.js.snap` (with `normalizeForShapeDiff` mirroring `_parity-helpers.js#PLATFORM_SPECIFIC_KEY` collapse, empty-array `[]` symmetry, array-child runtime-vs-contract distinction). Per-cell artifacts `.smoke/macos-gate-v0.9/<safe>.{out,err,json,meta.json}`.
+
+`--mode probe` against the 3 projects on develop tip (`0d8cc34`): **44 PASS / 0 DRIFT / 1 SKIP** (the single skip is the in-repo fixture's android cell, `no-instrumented-target` — the fixture has no instrumented android tests by design).
+
+The probe sweep surfaced **one genuine envelope-contract drift** mid-PR: `lib/android-orchestrator.js` was emitting an incomplete `coverage` block (`{ tool, missed_lines }`) in three places (`--list-only`, `KMP_TEST_SKIP_ADB=1`, main per-module dispatch state) instead of the canonical `{ tool, missed_lines, modules_with_kover_plugin: [], modules_with_jacoco_plugin: [] }` that every other subcommand emits. Fixed inline in PR #154 with a regression test in `tests/vitest/android-orchestrator.test.js` (per `feedback_close_in_one_session.md` — bugs surfaced in the milestone's session get fixed in the same session, not deferred to follow-up PRs).
+
+**Wet pass (PR #155).** Real gradle invocations against the 3 projects, with the Samsung S22 attached for instrumented cells. Cells exercised: jvm/desktop, jsTest/wasmJsTest (in-repo fixture), iosSimulatorArm64Test, macosArm64Test, testAndroidHostTest (KaMPKit hybrid pattern), `connectedAndroidDeviceTest` on the S22 (`benchmark-network` from a reference KMP composite project ran 3 instrumented tests, `BUILD SUCCESSFUL`). 14 wet cells executed. Three additional bugs surfaced and fixed inline in PR #155 (per `feedback_close_in_one_session.md`):
+
+1. **`tests/fixtures/kmp-cross-platform-e2e/gradlew` had no execute bit** (git mode `100644` instead of `100755`) — first wet cell hit `permission denied: ./gradlew`. Fixed via `git update-index --chmod=+x`. Other read-only `tests/fixtures/build-logic-*` fixtures keep `100644` intentionally (static parser tests, never invoke gradle).
+2. **`lib/parallel-orchestrator.js#pickGradleTaskFor('androidUnit')` early-return missed the hybrid plugin pattern.** KaMPKit `:shared` uses `com.android.library` plugin + `kotlin { android { withHostTestBuilder {} } }` DSL → parser surfaces `androidDsl=null` + `androidDslVariant='kmpAndroidLibrary'`. Gate previously only checked `type` + `androidDsl`. Extended to include `androidDslVariant`. Regression test in `tests/vitest/parallel-orchestrator.test.js`.
+3. **`lib/android-orchestrator.js#parseTestCounts` only handled the legacy AGP format.** The new KMP-Android plugin's `connectedAndroidDeviceTest` reporter emits `"Starting N tests on <device>"` + progress lines + `"Finished N tests on <device>"`. a reference KMP composite project `:benchmark-network` ran 3 real tests on the S22 with `BUILD SUCCESSFUL`, but the envelope reported `testsPassed: 0`. Added fallback regex chain: legacy first, then `Finished N tests` for total + last progress line for failed/skipped. 5 regression tests in `tests/vitest/android-orchestrator.test.js`.
+
+Evidence: the macOS gate summary (probe shape-validation, auto-generated) + the macOS gate wet-results notes (wet evidence with cell-by-cell table) — both committed in PR #155. The gate can be re-run anytime: `--mode probe` (~5s, no gradle, disk-safe at any free-space level) for shape drift; `--mode scoped` for module-filtered wet runs; `--mode full` (gated by `--i-have-20gb-free`) for the unfiltered sweep. Out-of-scope (deliberately): iOS simulator on a reference KMP composite project benchmark modules — the `KmpBenchmarkConventionPlugin.kt` declares only `jvm("desktop")` + `macosArm64()` + `androidLibrary {}`, no iOS targets. Coincides with memory `reference_kmp_benchmark_platforms.md`.
+
+Vitest delta: 1018 → 1068 (+50 across the three PRs: 32 in `tests/vitest/macos-validation-gate.test.js` for the gate driver itself; 11 in the same file for probe-mode behavior + shape-diff refinements; 7 in `tests/vitest/android-orchestrator.test.js` (1 coverage-shape + 5 parseTestCounts + 1 hybrid-pattern via parallel-orchestrator); 1 in `tests/vitest/parallel-orchestrator.test.js` for the KaMPKit hybrid androidUnit gate). Manual-only; not wired into CI per `feedback_ci_minutes_minimal_macos.md`.
+
+---
+
+**[Original entry — preserved for traceability]**
+
+**Status: OPEN, scheduled as step 7 of v0.9 milestone (per ROADMAP).** With iOS/macOS TestKit dropped from the per-PR CI matrix (`feedback_ci_minutes_minimal_macos.md`), the only mac coverage is `build (macos-latest)` (vitest, ~30s) + `installer-e2e (macos-latest)` (~20s). Drift in real iOS/macOS gradle dispatch is invisible until manual validation. This gate runs **once before tagging v0.9.0**, against a curated set of real KMP projects.
+
+**Scope:** matrix of `{kmp-test parallel, kmp-test changed, kmp-test android}` × `{--test-type common, jvm, android, ios, macos, all}` × `{v0.9 fixture (step 6), a reference KMP composite project, KaMPKit}`. Capture each run's JSON envelope; diff against expected shape from step 5's snapshot tests. Any drift becomes a fix-PR before the v0.9 tag.
+
+**Acceptance:** all subcommand × test-type × project combinations produce envelopes matching the step-5 snapshots. Tooling: a small `tools/macos-validation-gate.mjs` script that drives the matrix and produces a markdown summary (mirrors the `tools/wide-smoke-pass-9-mac.mjs` pattern from v0.8.0). Failures captured as gitignored evidence files at repo root; each becomes a fix-PR docked to the v0.9 ramp.
+
+**Estimated effort:** ~2-3h validation run + N×fix-PRs (open-ended; bounds set by what the gate surfaces).
+
+**Out of scope:** automating this in CI (explicitly NOT desired per `feedback_ci_minutes_minimal_macos.md`). The gate stays manual on a secondary local machine.
+
+---
+
+### ✅ DONE 2026-05-07 (PR #<TBD>) — v0.9 — Token-cost re-measurement after parity-gap + DX-parity land
+
+**Status: DONE 2026-05-07.** Closed in this session. Full matrix re-run on a reference KMP composite project (4 gradle-backed: parallel/coverage/changed/benchmark; 2 agent-query: info/describe). `tools/measure-token-cost.js` extended with `skipApproachA` + `acceptsModuleFilter` per-feature flags so info/describe (no raw-gradle equivalent) can be measured B+C only. Vitest 1068 → 1078 (+10 cases). Headline numbers (cl100k_base, single run on real KMP project): parallel 1331036→843 = 1579×; coverage 28686309→372 = **77,114×**; changed 1118241→144 = 7766×; benchmark 245140→309 = 793×. **Coverage Approach A overflows Anthropic's `count_tokens` endpoint** (413 request_too_large) — even Anthropic's own tokenizer cannot process raw gradle output for a real coverage run. Cross-model captures committed under `tools/runs/cross-model-results-<feature>.txt` for all 6 features × 3 Claude families (Opus 4.7 / Sonnet 4.6 / Haiku 4.5). Anthropic models tokenize ~1.5–1.7× cl100k_base on long captures (cost reduction is even more dramatic on real Anthropic models). Evidence: the v0.9 measurement notes at repo root. README prose deferred to step 9 — re-framing is required (different reference project, dual-track gradle vs --json story, mention of the coverage 413-overflow), not a one-line tweak. Also closes the v0.8.0 cross-model deferral at L1042.
+
+---
+
 ### v0.9 — Token-cost re-measurement after parity-gap + DX-parity land (NEW 2026-05-05)
 
 **Status: OPEN, scheduled as step 4 of v0.9 milestone (per ROADMAP).** After the 6 parity-gap flags (entry above) AND the DX-parity bundle (`--variant` global, `kmp-test describe`, `kmp-test info`, `kmp-test update` — see "DX/UX parity audit" entry) land, re-run the full `tools/measure-token-cost.js` matrix to capture the new envelope shape and the new subcommands. The original token-cost claim ("13K → 100 token reduction for AI agents", "~542K → ~500 tokens for the coverage 5-iter loop") was calibrated at v0.5.0; the v0.8.0 envelope is structurally identical but the v0.9 parity-gap + DX-parity adds `retries[]` (auto-retry), `pre_run_actions` (clear-data), `device.serial` field (device targeting), `describe`-mode JSON shape, etc. — every additive field that an agent might consume.
@@ -353,7 +424,7 @@ Fix: new `buildFilterArgs(testFilter, testType, projectRoot)` mirrors the androi
 **Tasks:**
 1. Audit each merged v0.9 PR's envelope diff: collect the additive fields. Bucket: `{shape-changing | shape-preserving}`. Skip the shape-preserving flags (`--device <serial>` doesn't change stdout shape, only adb target).
 2. Extend `tools/measure-token-cost.js` to include the new subcommands (`kmp-test describe`, `kmp-test info`) in its measurement matrix.
-3. Run the full matrix on `shared-kmp-libs` (or KaMPKit). 4 features × 3 approaches × cross-model. ~$10-15 USD in API calls.
+3. Run the full matrix on the reference KMP composite project (or KaMPKit). 4 features × 3 approaches × cross-model. ~$10-15 USD in API calls.
 4. Update the README "Why this exists — token cost per agent test-run iteration" tables with v0.9 numbers + a timestamp note ("Measured at v0.9.0 on YYYY-MM-DD").
 5. Bump `tests/vitest/measure-token-cost.test.js` baselines if any changed.
 
@@ -363,9 +434,13 @@ Fix: new `buildFilterArgs(testFilter, testType, projectRoot)` mirrors the androi
 
 ---
 
-### v0.9 — README refresh after parity-gap + DX-parity + token-cost re-measurement (NEW 2026-05-05)
+### ✅ DONE 2026-05-XX (PR #<num>) — v0.9 — README refresh after parity-gap + DX-parity + token-cost re-measurement
 
-**Status: OPEN, scheduled as step 5 of v0.9 milestone (per ROADMAP).** After steps 1-4 of v0.9 land, refresh the README to document the new surface. This is the v0.9-milestone analogue of the "v0.8.0 README refresh" entry (which covers v0.7.0+v0.8.0 surface and ships in v0.8.1 per ROADMAP). The v0.9 refresh covers ONLY what's new in v0.9 on top of v0.8.x.
+**Status: SHIPPED 2026-05-XX (PR #<num>) on develop.** Last v0.9 step before tagging. README hero token-cost narrative re-framed against a reference KMP composite project — different reference project, dual-track gradle-vs-`--json` story, coverage-A 413-overflow callout. Cross-feature summary + per-feature drill-down + savings-ratio tables rebuilt from the v0.9 measurement notes + `tools/runs/cross-model-results-*.txt`. Hero practical-impact paragraph updated to a reference KMP composite project numbers (5-iter agent loop now ~6.6 M / ~5.6 M / ~1.2 M / ~143 M tokens for parallel / changed / benchmark / coverage; sub-5K each on `--json`). Flag reference table gained 6 rows (`--clear-data` / `--auto-retry` / `--device` / `--device-task` / `--flavor` / `--module-filter`); subcommands table gained 3 rows (`info` / `describe` / `update`); new "Agent-query subcommands" section before "Gradle Plugin" with envelope examples + flag lists for each. Canonical `class=<FQN>#<method>` filter shape documented in `--test-filter` section with migration note from the legacy `class=` + `method=` separate-args form. AI-agent envelope JSON example bumped to `version: "0.9.0"` + new `isolated:{}` / `skipped:[]` / expanded `coverage:{}` fields. CHANGELOG `[0.9.0]` section assembled per-PR — Summary paragraph (mirroring [0.8.0]'s shape) plus per-step entries (1–9). Vitest 1078 unchanged (no test changes). 13/13 CI green. v0.9.0 release ceremony (step 10) unblocked.
+
+**Original scope** (preserved for traceability — all landed):
+
+After steps 1-4 of v0.9 land, refresh the README to document the new surface. This is the v0.9-milestone analogue of the "v0.8.0 README refresh" entry (which covers v0.7.0+v0.8.0 surface and ships in v0.8.1 per ROADMAP). The v0.9 refresh covers ONLY what's new in v0.9 on top of v0.8.x.
 
 **Tasks:**
 1. **New flags** under each subcommand's flag table: `--clear-data`, `--auto-retry`, `--device <serial>`, `--flavor <name>`, `--device-task <name>`, global `--variant`, `--gradle-args`. Document precedence rules + interaction with existing flags.
@@ -381,24 +456,24 @@ Fix: new `buildFilterArgs(testFilter, testType, projectRoot)` mirrors the androi
 
 ---
 
-### v0.8.0 — `--variant` flag honored on the instrumented (`androidInstrumented`) dispatch path (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 against dipatternsdemo)
+### ✅ DONE 2026-05-05 (PR #131 + #134) — v0.8.0 — `--variant` flag honored on the instrumented (`androidInstrumented`) dispatch path (RELEASE-BLOCKER, surfaced 2026-05-04 wide-smoke pass-9 against a multi-module DI sample)
 
-**Status (2026-05-05 follow-up): DONE — fix-PR-F-bis closes a regression in fix-PR-F's coverage on the probed-task path.** The original fix-PR-F (PR #131) only honored `--variant` + `testBuildType` in the AGP fallback branch (when `r.deviceTestTask === null`). After dipatternsdemo commit `058a520` enabled `connectedDebugAndroidTest` alongside the canonical `connectedReleaseAndroidTest` via `androidComponents.beforeVariants`, gradleTasks contained both and `resolveTasksFor.deviceTestTask` matched Debug first → early-return at `parallel-orchestrator.js:391` bypassed the variant logic → orchestrator dispatched `connectedDebugAndroidTest` even though `testBuildType="release"` and the parser correctly resolved it. fix-PR-F-bis lands two surgical changes: (1) `lib/project-model.js#resolveTasksFor` candidate chain prepends `connected{TestBuildType}AndroidTest` when `analysis.testBuildType` is set, fixing all consumers (parallel/android/benchmark/coverage/changed) uniformly; (2) `pickGradleTaskFor('androidInstrumented')` in `lib/parallel-orchestrator.js` reorders the AGP source-set branch BEFORE the probe early-return so explicit `--variant debug|release` overrides win regardless of probed task name. **+10 vitest cases** (775 → 797 passing). Live verified inline against the real cached gradleTasks for dipatternsdemo `:benchmark`. Probe-wins legacy contract preserved for non-AGP / no-source-set modules.
+**Status (2026-05-05 follow-up): DONE — fix-PR-F-bis closes a regression in fix-PR-F's coverage on the probed-task path.** The original fix-PR-F (PR #131) only honored `--variant` + `testBuildType` in the AGP fallback branch (when `r.deviceTestTask === null`). After a multi-module DI sample commit `058a520` enabled `connectedDebugAndroidTest` alongside the canonical `connectedReleaseAndroidTest` via `androidComponents.beforeVariants`, gradleTasks contained both and `resolveTasksFor.deviceTestTask` matched Debug first → early-return at `parallel-orchestrator.js:391` bypassed the variant logic → orchestrator dispatched `connectedDebugAndroidTest` even though `testBuildType="release"` and the parser correctly resolved it. fix-PR-F-bis lands two surgical changes: (1) `lib/project-model.js#resolveTasksFor` candidate chain prepends `connected{TestBuildType}AndroidTest` when `analysis.testBuildType` is set, fixing all consumers (parallel/android/benchmark/coverage/changed) uniformly; (2) `pickGradleTaskFor('androidInstrumented')` in `lib/parallel-orchestrator.js` reorders the AGP source-set branch BEFORE the probe early-return so explicit `--variant debug|release` overrides win regardless of probed task name. **+10 vitest cases** (775 → 797 passing). Live verified inline against the real cached gradleTasks for a multi-module DI sample `:benchmark`. Probe-wins legacy contract preserved for non-AGP / no-source-set modules.
 
 **Status: DONE — fix-PR-F shipped 2026-05-05.** Two bundled changes in `lib/parallel-orchestrator.js` + `lib/project-model.js`:
 
 1. **Orchestrator helper.** New `androidConnectedTask(gradlePath, variant, mod)` mirrors `androidUnitTask`: `--variant {auto,debug,release,all}` honored + `mod.testBuildType === 'release'` respected for static per-module variant selection. Hardcoded `connectedDebugAndroidTest` at line 396 replaced. `kmpAndroidLibrary` branch unchanged (no Debug/Release split in the new plugin).
 2. **Parser enhancement.** `lib/project-model.js#analyzeModule` now resolves single-file `val NAME = ... ?: "literal"` and `val NAME = "literal"` patterns when `testBuildType = NAME` references a variable. Out of scope: `project.findProperty()` lookups against `gradle.properties`, multi-file refs (`buildSrc`, root build), conditional expressions — those still fall through to null.
 
-Help text in `lib/cli.js` updated to reflect that `--variant` now applies to both unit + instrumented dispatch. **768 → 775 vitest** (5 orchestrator cases + 2 parser cases + 1 existing parser test updated). Live verified against dipatternsdemo under default `--variant auto`: `:benchmark:connectedReleaseAndroidTest` dispatched (auto-resolved from `val benchmarkBuildType = (...) ?: "release"`) and `:sample-multimodule:connectedDebugAndroidTest` dispatched (no testBuildType, AGP default). Both accepted by gradle. Fully closes the pass-9 dipatternsdemo `task_not_found` repro under default args — no user workaround required.
+Help text in `lib/cli.js` updated to reflect that `--variant` now applies to both unit + instrumented dispatch. **768 → 775 vitest** (5 orchestrator cases + 2 parser cases + 1 existing parser test updated). Live verified against a multi-module DI sample under default `--variant auto`: `:benchmark:connectedReleaseAndroidTest` dispatched (auto-resolved from `val benchmarkBuildType = (...) ?: "release"`) and `:sample-multimodule:connectedDebugAndroidTest` dispatched (no testBuildType, AGP default). Both accepted by gradle. Fully closes the pass-9 a multi-module DI sample `task_not_found` repro under default args — no user workaround required.
 
 **The asymmetry today:**
 
-`lib/parallel-orchestrator.js#androidUnitTask` (line 306) honors `--variant {auto,debug,release,all}` AND respects `mod.testBuildType === 'release'` for static per-module variant selection. So unit-test runs against benchmark-style modules (e.g. dipatternsdemo's `:benchmark` with `testBuildType = "release"`) correctly dispatch `:m:testReleaseUnitTest` under default `--variant auto`.
+`lib/parallel-orchestrator.js#androidUnitTask` (line 306) honors `--variant {auto,debug,release,all}` AND respects `mod.testBuildType === 'release'` for static per-module variant selection. So unit-test runs against benchmark-style modules (e.g. a multi-module DI sample's `:benchmark` with `testBuildType = "release"`) correctly dispatch `:m:testReleaseUnitTest` under default `--variant auto`.
 
 The instrumented path (`selectTaskForLeg` case `androidInstrumented`, lines 373-399) hardcodes `connectedDebugAndroidTest`. No `mod.testBuildType` lookup, no variant honoring. Modules with `testBuildType = "release"` (which only generate `connectedReleaseAndroidTest`) fail with `task_not_found` on every default sweep.
 
-**Repro (any time):** dipatternsdemo `:benchmark` (legacy `com.android.library`, `testBuildType = "release"`) dispatched via `kmp-test parallel --test-type=androidInstrumented` — gradle responds `Cannot locate tasks that match ':benchmark:connectedDebugAndroidTest' as task 'connectedDebugAndroidTest' not found in project ':benchmark'.`
+**Repro (any time):** a multi-module DI sample `:benchmark` (legacy `com.android.library`, `testBuildType = "release"`) dispatched via `kmp-test parallel --test-type=androidInstrumented` — gradle responds `Cannot locate tasks that match ':benchmark:connectedDebugAndroidTest' as task 'connectedDebugAndroidTest' not found in project ':benchmark'.`
 
 **Fix shape (next session):**
 
@@ -415,11 +490,11 @@ The instrumented path (`selectTaskForLeg` case `androidInstrumented`, lines 373-
    - `--variant all` emits both legs
 
 **Repro projects (parking):**
-- dipatternsdemo (`:benchmark`, `:sample-multimodule`)
+- a multi-module DI sample (`:benchmark`, `:sample-multimodule`)
 - Any benchmark module across the wide-smoke matrix that uses `testBuildType = "release"`
 
 **Why this IS blocking v0.8.0 (corrected 2026-05-04 second incident):**
-Initially framed as "not blocking" because pass-9 bucket counts match pass-8 (3/14/13/0/0/0) and the dipatternsdemo failures happened in both passes. User pushed back: "no va a ser para la 0.8.x — tiene que estar antes". Standing rule per `feedback_dont_defer_to_post_release.md`: any bug found during a release-validation gate gets root-caused and fixed before the version tag. The "pre-existing in earlier pass" framing does NOT exempt the bug from the rule — pass-7 and pass-8 just happened to not stress this path. Pass-9 surfaced it; fix it pre-tag.
+Initially framed as "not blocking" because pass-9 bucket counts match pass-8 (3/14/13/0/0/0) and the a multi-module DI sample failures happened in both passes. User pushed back: "no va a ser para la 0.8.x — tiene que estar antes". Standing rule per `feedback_dont_defer_to_post_release.md`: any bug found during a release-validation gate gets root-caused and fixed before the version tag. The "pre-existing in earlier pass" framing does NOT exempt the bug from the rule — pass-7 and pass-8 just happened to not stress this path. Pass-9 surfaced it; fix it pre-tag.
 
 **Out of scope:**
 - Changing the default variant from auto to anything else
@@ -438,7 +513,7 @@ Initially framed as "not blocking" because pass-9 bucket counts match pass-8 (3/
 
 2. **Phantom commented modules** — `lib/project-model.js#parseSettingsIncludes` did NOT strip Kotlin comments before matching `\binclude\b`, so `// include(":benchmark-android-test")` was treated as a live module. Gradle then errored at task resolution (`project 'benchmark-android-test' not found`), which combined with EINVAL silent-pass produced the false GREEN. Fixed by mirroring `orchestrator-utils.js#stripKotlinComments`. Schema bumped 2 → 3 to invalidate stale `.kmp-test-runner-cache/model-*.json` entries that contain phantom modules. 4 regression tests added in `tests/vitest/project-model.test.js`.
 
-3. **stderr filter swallowed gradle's actual error context** — `executeLeg`'s pre-fix filter only forwarded lines matching `Cannot locate|FAILURE:|BUILD FAILED|UnsupportedClassVersionError|Failed to install`. The `* What went wrong:`, `> Could not resolve`, `Android Gradle plugin requires Java 17` and similar diagnostic blocks were dropped. Widened to forward `> Task :*`, `* What went wrong:`, `* Try:`, `Caused by:`, AGP/JDK requirement messages, plugin-resolution errors, and capped at 60 lines/leg with a "(N more suppressed)" footer. Wide-smoke surfaced TaskFlow's actual error: `Android Gradle plugin requires Java 17 to run. You are currently using Java 11`.
+3. **stderr filter swallowed gradle's actual error context** — `executeLeg`'s pre-fix filter only forwarded lines matching `Cannot locate|FAILURE:|BUILD FAILED|UnsupportedClassVersionError|Failed to install`. The `* What went wrong:`, `> Could not resolve`, `Android Gradle plugin requires Java 17` and similar diagnostic blocks were dropped. Widened to forward `> Task :*`, `* What went wrong:`, `* Try:`, `Caused by:`, AGP/JDK requirement messages, plugin-resolution errors, and capped at 60 lines/leg with a "(N more suppressed)" footer. Wide-smoke surfaced a private KMP application's actual error: `Android Gradle plugin requires Java 17 to run. You are currently using Java 11`.
 
 **Wide-smoke trajectory across 6 fix passes:**
 
@@ -449,33 +524,33 @@ Initially framed as "not blocking" because pass-9 bucket counts match pass-8 (3/
 | REAL-RED | 0 | 14 | 11 | 8 | 9 | 8 | 6 |
 | NO-MODULES | 9 | 9 | 9 | 9 | 9 | 9 | 9 |
 
-P6 flips: `dipatternsdemo`, `PeopleInSpace-main` to GREEN (instrumented-only skip + default jvm() detection + ANDROID_HOME auto-set). The 6 remaining REDs are honest:
-- `DawSync` — 5 tests desync with refactored production
-- `OmniSound` — 1 missing `DesktopPKCEGenerator` cascades 7 features
+P6 flips: a multi-module DI sample, `PeopleInSpace-main` to GREEN (instrumented-only skip + default jvm() detection + ANDROID_HOME auto-set). The 6 remaining REDs are honest:
+- a private KMP application — 5 tests desync with refactored production
+- a private KMP application — 1 missing `DesktopPKCEGenerator` cascades 7 features
 - `gyg` — 1 real test failing (`LoadingAndErrorStatesTest`)
 - `nav3-recipes` — `NavigatorTest.kt` references removed `RouteV2`/`Navigator`
 - `nowinandroid` — `:foryou:impl` Prod variant missing dep + 2 real tests
 - `Confetti-main` — `:wearApp` 2 real tests fail (`WorkManagerTest`, `ComplicationScreenshotTest`)
 
 Notable per-project flips:
-- **shared-kmp-libs**: silent-pass-38 → cross-contaminated-37-fail → 35/2 → 35/2 → **63/0** (jvm("desktop") fix unlocked all modules)
-- **TaskFlow**: silent-pass-1 → JDK-mismatch-fail → JDK-mismatch-fail → **PASS** (AGP-aware JDK fix)
+- **a reference KMP composite project**: silent-pass-38 → cross-contaminated-37-fail → 35/2 → 35/2 → **63/0** (jvm("desktop") fix unlocked all modules)
+- **a private KMP application**: silent-pass-1 → JDK-mismatch-fail → JDK-mismatch-fail → **PASS** (AGP-aware JDK fix)
 - **Confetti-main**: silent-pass-4 → cascade-fail-4 → fake-green-via-cascade → REAL-RED-2/2 (cascade isolation honest, then per-module isolation honest)
 - **nowinandroid**: silent-pass-14 → real-RED → real-RED (real Kotlin compile error in `:feature:foryou:impl` — repo bug, not CLI)
 
-REAL-GREEN flips after Pass 3: TaskFlow (AGP 8.8.2 → JDK 17 picked correctly), Confetti-main (cascade-isolation: `:shared:jvmTest` succeeds when isolated from broken `:androidApp`), kotlinconf-app-main + FileKit-main (cache invalidation + AGP fix). Pre-existing REAL-GREEN: android-challenge, androidify-main.
+REAL-GREEN flips after Pass 3: a private KMP application (AGP 8.8.2 → JDK 17 picked correctly), Confetti-main (cascade-isolation: `:shared:jvmTest` succeeds when isolated from broken `:androidApp`), kotlinconf-app-main + FileKit-main (cache invalidation + AGP fix). Pre-existing REAL-GREEN: android-challenge, androidify-main.
 
 **The 8 remaining REAL-REDs** (decompose by root cause):
 
 - **2 are REAL test failures** — gyg (`LoadingAndErrorStatesTest.errorStateWithRetryShowsButton FAILED`), nowinandroid (`feature:foryou:impl` + `lint` test tasks fail). The CLI is correctly surfacing real project bugs.
-- **1 is a project-model task-name discovery bug** — shared-kmp-libs sends gradle `:core-X:desktopTest` for 37 modules; gradle says `Cannot locate tasks that match` for each one (per-module retry confirmed each individually fails). The convention plugin shape is registering tasks under different names than the project model expects. Separate v0.7.x BACKLOG entry candidate.
-- **5 need per-project investigation** — DawSync, OmniSound, dipatternsdemo, nav3-recipes, PeopleInSpace — could be real test failures, JDK/dep issues, or more orchestrator bugs. The widened stderr filter now exposes their real errors so investigation is straightforward.
+- **1 is a project-model task-name discovery bug** — a reference KMP composite project sends gradle `:core-X:desktopTest` for 37 modules; gradle says `Cannot locate tasks that match` for each one (per-module retry confirmed each individually fails). The convention plugin shape is registering tasks under different names than the project model expects. Separate v0.7.x BACKLOG entry candidate.
+- **5 need per-project investigation** — a private KMP application, a private KMP application, a multi-module DI sample, nav3-recipes, PeopleInSpace — could be real test failures, JDK/dep issues, or more orchestrator bugs. The widened stderr filter now exposes their real errors so investigation is straightforward.
 
 **The 11 REAL-REDs decompose as follows (root-cause categories that the orchestrator could mitigate but doesn't yet):**
 
-- **JDK auto-select picks the bytecode `jvmTarget` instead of AGP's required runtime JDK.** TaskFlow has `jvmTarget = "11"` in `app/build.gradle.kts` so the orchestrator chose JDK 11; AGP 8.8.2 needs JDK 17 to RUN (separate from bytecode target). Manual `JAVA_HOME=jdk-17 ./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL in 1m 8s. Affects: TaskFlow, possibly DawSync / OmniSound / dipatternsdemo / gyg / nav3-recipes / FileKit (all show similar fast-fail patterns). Fix: in `lib/jdk-catalogue.js` discoverer / `lib/cli.js#preflightJdkCheck`, prefer the AGP-version-implied JDK over the project's `jvmTarget`. AGP version → required JDK table is publicly documented (`https://developer.android.com/build/releases/gradle-plugin#compatibility`).
+- **JDK auto-select picks the bytecode `jvmTarget` instead of AGP's required runtime JDK.** a private KMP application has `jvmTarget = "11"` in `app/build.gradle.kts` so the orchestrator chose JDK 11; AGP 8.8.2 needs JDK 17 to RUN (separate from bytecode target). Manual `JAVA_HOME=jdk-17 ./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL in 1m 8s. Affects: a private KMP application, possibly a private KMP application / a private KMP application / a multi-module DI sample / gyg / nav3-recipes / FileKit (all show similar fast-fail patterns). Fix: in `lib/jdk-catalogue.js` discoverer / `lib/cli.js#preflightJdkCheck`, prefer the AGP-version-implied JDK over the project's `jvmTarget`. AGP version → required JDK table is publicly documented (`https://developer.android.com/build/releases/gradle-plugin#compatibility`).
 
-- **One-shot multi-module dispatch + `--continue` + evaluation-time abort cascades.** When the orchestrator dispatches `:a:test :b:test :c:test` in ONE gradle invocation, if module A fails at evaluation phase (plugin resolution, AGP-JDK mismatch, missing SDK), gradle aborts BEFORE reaching B and C. defense-in-depth correctly marks all three as failed (none have `> Task :foo:bar` evidence in stdout). Confetti-main reproduces this: `:shared:jvmTest` succeeds in 1m 44s when invoked alone, fails when bundled with `:androidApp:testDebugUnitTest` whose evaluation aborts. Affects: Confetti-main, shared-kmp-libs (37 modules cascade-fail because some configuration bug aborts the whole graph), OmniSound, etc. Fix options: (a) per-module gradle dispatch (slower but isolates failures); (b) detect evaluation-phase abort vs task-execution failure and report differently; (c) `--no-continue` retry split when first invocation aborts at evaluation.
+- **One-shot multi-module dispatch + `--continue` + evaluation-time abort cascades.** When the orchestrator dispatches `:a:test :b:test :c:test` in ONE gradle invocation, if module A fails at evaluation phase (plugin resolution, AGP-JDK mismatch, missing SDK), gradle aborts BEFORE reaching B and C. defense-in-depth correctly marks all three as failed (none have `> Task :foo:bar` evidence in stdout). Confetti-main reproduces this: `:shared:jvmTest` succeeds in 1m 44s when invoked alone, fails when bundled with `:androidApp:testDebugUnitTest` whose evaluation aborts. Affects: Confetti-main, a reference KMP composite project (37 modules cascade-fail because some configuration bug aborts the whole graph), a private KMP application, etc. Fix options: (a) per-module gradle dispatch (slower but isolates failures); (b) detect evaluation-phase abort vs task-execution failure and report differently; (c) `--no-continue` retry split when first invocation aborts at evaluation.
 
 - **(Already noted) jvm()→jvmTest fallback** in project model — separate `v0.7.x` BACKLOG entry below; surfaces here as `[SKIP] X (no resolvable test task)` in nowinandroid (4 modules skipped: app, core:database, core:ui, sync:work).
 
@@ -505,17 +580,17 @@ spawnSync("gradlew.bat", [...], { cwd, encoding:"utf8", shell:true }) // → sta
 6. No `errors[]` row added; top-level `exit_code` stays 0.
 7. Envelope reports GREEN with `tests.passed = modules.length` for a project where gradle was **never invoked**.
 
-**Wide-smoke evidence** (23 gradle-rooted projects under `C:/Users/34645/AndroidStudioProjects/`, run via `.smoke/run.sh`):
+**Wide-smoke evidence** (23 gradle-rooted projects under `<workspace>/<project> run via `.smoke/run.sh`):
 
 | Project | reported | reality | leg.exit | duration |
 |---|---|---|---|---|
-| DawSync | GREEN, 20/20 passed, 7393 individual | NEVER RAN (manual `gradlew tasks` → BUILD FAILED 16s) | 1 | 722ms |
-| OmniSound | GREEN, 10/10 passed, 4063 individual | NEVER RAN | 1 | 241ms |
-| TaskFlow | GREEN, 1/1 passed | NEVER RAN (manual gradle → BUILD FAILED 1s, gradle.properties JAVA_HOME issue) | 1 | 11ms |
+| a private KMP application | GREEN, 20/20 passed, 7393 individual | NEVER RAN (manual `gradlew tasks` → BUILD FAILED 16s) | 1 | 722ms |
+| a private KMP application | GREEN, 10/10 passed, 4063 individual | NEVER RAN | 1 | 241ms |
+| a private KMP application | GREEN, 1/1 passed | NEVER RAN (manual gradle → BUILD FAILED 1s, gradle.properties JAVA_HOME issue) | 1 | 11ms |
 | android-challenge | GREEN, 1/1 | NEVER RAN | 1 | 13ms |
-| dipatternsdemo | GREEN, 3/3, 68 individual | NEVER RAN | 1 | 116ms |
+| a multi-module DI sample | GREEN, 3/3, 68 individual | NEVER RAN | 1 | 116ms |
 | gyg | GREEN, 1/1, 26 individual | NEVER RAN | 1 | 20ms |
-| shared-kmp-libs | GREEN, 38/38 passed, 317 individual | NEVER RAN | 1 | 681ms |
+| a reference KMP composite project | GREEN, 38/38 passed, 317 individual | NEVER RAN | 1 | 681ms |
 | nav3-recipes / nowinandroid / Confetti / PeopleInSpace / androidify / kotlinconf / FileKit | GREEN, all passed | NEVER RAN | 1 | 38–143ms |
 | dokka-markdown / Nav3Guide-scenes / DroidconKotlin / KMedia / KaMPKit / NYTimes-KMP / Nav3Guide-master / kmp-basic-sample / kmp-production-sample | AMBER (`no_test_modules`) | discovery short-circuited before dispatch | n/a | 11–36ms |
 
@@ -528,7 +603,7 @@ spawnSync("gradlew.bat", [...], { cwd, encoding:"utf8", shell:true }) // → sta
 - `tests/bats/*` runs on Linux only (no `.bat`).
 - `tests/pester/*` exists but the v0.8 PIVOT shrank Pester contracts to "wrapper invokes node" assertions (sub-entry 5 removed `Invoke-ScriptSmoke.Tests.ps1` 206→? lines), losing the integration-test coverage that would have caught EINVAL.
 - The `gradle-plugin-test-ios` informational job runs on macOS, not Windows.
-- Manual repo-owner testing happened on shared-kmp-libs with `--test-type androidUnit --module-filter X` — same EINVAL bug, but I read the `tests.passed:1` as success during sub-entry 5 dev. (`leg.exit_code:1` was also visible but dismissed at the time.)
+- Manual repo-owner testing happened on a reference KMP composite project with `--test-type androidUnit --module-filter X` — same EINVAL bug, but I read the `tests.passed:1` as success during sub-entry 5 dev. (`leg.exit_code:1` was also visible but dismissed at the time.)
 
 **Fix (trivial, ~5 LOC × 5 orchestrators = ~25 LOC):**
 
@@ -574,17 +649,17 @@ Caveats:
 
 **✅ Finding F2 — `--test-type all` per-leg `no_test_modules` forced exit 3 (FIXED 2026-05-03).** Per-leg empties demoted to `warnings[].code:"no_test_modules_for_leg"` when at least one other leg produced test results. +1 vitest case. PR `feature/sub-entry-5-followups`.
 
-**✅ Finding F3 — `tests.individual_total:0` on UP-TO-DATE / FROM-CACHE runs (FIXED 2026-05-03).** Root cause confirmed via Windows-side repro on dipatternsdemo: 4 valid `TEST-*.xml` files at the canonical `<module>/build/test-results/<taskShort>/` path containing 68 testcases, but `mtime` from a prior run (~8 days old). The post-PR #116 stale-XML guard at `lib/parallel-orchestrator.js#junitTestCountFor` (filter `mtime >= state.runStartMs`) false-discarded all 68 because gradle marked the task UP-TO-DATE and AGP didn't rewrite the XMLs. Fix: bypass the guard in `executeLeg` when `classifyTaskExecutionMode` returns `up_to_date` or `from_cache` — gradle has already confirmed the existing XMLs reflect the current source state in those modes, so they're not stale by definition. Modes `fresh` / `failed` / `no_evidence` keep the guard active to preserve the original PR #116 protection against bash-wrapper-era leftovers. Verified live: dipatternsdemo `individual_total` flips `0 → 68`. +3 vitest cases (`F3 fix: UP-TO-DATE …`, `F3 fix: FROM-CACHE …`, `F3 fix: fresh tasks still discard stale TEST-*.xml`).
+**✅ Finding F3 — `tests.individual_total:0` on UP-TO-DATE / FROM-CACHE runs (FIXED 2026-05-03).** Root cause confirmed via Windows-side repro on a multi-module DI sample: 4 valid `TEST-*.xml` files at the canonical `<module>/build/test-results/<taskShort>/` path containing 68 testcases, but `mtime` from a prior run (~8 days old). The post-PR #116 stale-XML guard at `lib/parallel-orchestrator.js#junitTestCountFor` (filter `mtime >= state.runStartMs`) false-discarded all 68 because gradle marked the task UP-TO-DATE and AGP didn't rewrite the XMLs. Fix: bypass the guard in `executeLeg` when `classifyTaskExecutionMode` returns `up_to_date` or `from_cache` — gradle has already confirmed the existing XMLs reflect the current source state in those modes, so they're not stale by definition. Modes `fresh` / `failed` / `no_evidence` keep the guard active to preserve the original PR #116 protection against bash-wrapper-era leftovers. Verified live: a multi-module DI sample `individual_total` flips `0 → 68`. +3 vitest cases (`F3 fix: UP-TO-DATE …`, `F3 fix: FROM-CACHE …`, `F3 fix: fresh tasks still discard stale TEST-*.xml`).
 
 ### ✅ v0.8.0 — JDK auto-select prefers AGP runtime JDK over `jvmTarget` (DONE 2026-05-03 in `8b4c92f` / PR #116 + closeout PR `fix/jdk-auto-select-agp-runtime`)
 
-**Surfaced 2026-05-03 during the post-EINVAL wide-smoke pass on Windows.** TaskFlow declares `jvmTarget = "11"` in `app/build.gradle.kts` so the orchestrator's JDK auto-select picked JDK 11; AGP 8.8.2 needs JDK 17 to RUN (separate from bytecode target — bytecode 11 means "produce class files compatible with Java 11 runtime", which is a different question from "what JDK does the gradle build itself need"). Manual override `JAVA_HOME=jdk-17 ./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL in 1m 8s, confirming the bug.
+**Surfaced 2026-05-03 during the post-EINVAL wide-smoke pass on Windows.** a private KMP application declares `jvmTarget = "11"` in `app/build.gradle.kts` so the orchestrator's JDK auto-select picked JDK 11; AGP 8.8.2 needs JDK 17 to RUN (separate from bytecode target — bytecode 11 means "produce class files compatible with Java 11 runtime", which is a different question from "what JDK does the gradle build itself need"). Manual override `JAVA_HOME=jdk-17 ./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL in 1m 8s, confirming the bug.
 
-**Affected (wide-smoke evidence 2026-05-03):** TaskFlow (definitive); strong fast-fail patterns in DawSync, OmniSound, dipatternsdemo, gyg, nav3-recipes, FileKit. All showed JDK-mismatch shape: gradle aborted in <1s with `Android Gradle plugin requires Java 17 to run` once stderr filter widening (PR #116) exposed the real error.
+**Affected (wide-smoke evidence 2026-05-03):** a private KMP application (definitive); strong fast-fail patterns in a private KMP application, a private KMP application, a multi-module DI sample, gyg, nav3-recipes, FileKit. All showed JDK-mismatch shape: gradle aborted in <1s with `Android Gradle plugin requires Java 17 to run` once stderr filter widening (PR #116) exposed the real error.
 
 **Fix landed in two commits:**
 
-1. **`8b4c92f` (bundled into PR #116, merged 2026-05-03)** — `lib/project-model.js` gains `detectAgpVersion(projectRoot)` (probes `gradle/libs.versions.toml [versions]` for `agp`/`android-gradle`/`androidGradlePlugin`/`android` keys, then plugins-DSL `id("com.android.*") version "..."`, then buildscript `com.android.tools.build:gradle:X.Y.Z`) + `agpRequiredJdk(version)` mapping (4→8, 7→11, 8→17, 9→17). The AGP-implied JDK joins `aggregateJdkSignals.signals[]` so the strictest signal wins. `agpVersion` exposed on the result envelope. 7 vitest regression cases added under `'AGP-implied runtime JDK'` (catalog 8.8.2 + 7.4.2, plugins-DSL 8.5.0, buildscript 8.2.1, TaskFlow shape, higher project toolchain wins, no-AGP KMP). Live-validated: TaskFlow now picks JDK 17, BUILD SUCCESSFUL in 4s.
+1. **`8b4c92f` (bundled into PR #116, merged 2026-05-03)** — `lib/project-model.js` gains `detectAgpVersion(projectRoot)` (probes `gradle/libs.versions.toml [versions]` for `agp`/`android-gradle`/`androidGradlePlugin`/`android` keys, then plugins-DSL `id("com.android.*") version "..."`, then buildscript `com.android.tools.build:gradle:X.Y.Z`) + `agpRequiredJdk(version)` mapping (4→8, 7→11, 8→17, 9→17). The AGP-implied JDK joins `aggregateJdkSignals.signals[]` so the strictest signal wins. `agpVersion` exposed on the result envelope. 7 vitest regression cases added under `'AGP-implied runtime JDK'` (catalog 8.8.2 + 7.4.2, plugins-DSL 8.5.0, buildscript 8.2.1, a private KMP application shape, higher project toolchain wins, no-AGP KMP). Live-validated: a private KMP application now picks JDK 17, BUILD SUCCESSFUL in 4s.
 
 2. **PR3 closeout `fix/jdk-auto-select-agp-runtime` (2026-05-03)** — `preflightJdkCheck` now returns `agpVersion` so the auto-select `[NOTICE]` banner can include `project applies AGP X.Y.Z` for diagnostic clarity. +1 AGP 9.0 regression vitest case (locks `9.x → 17` mapping; cite to live AGP 9.2.0 docs). +2 cli.test.js cases for the AGP-aware notice text.
 
@@ -604,29 +679,29 @@ Caveats:
 - AGP 8.8+ → JDK 17
 - AGP 9.x → JDK 17 (live AGP 9.2.0 docs confirm this; an earlier draft of this entry incorrectly stated "AGP 9.0+ → JDK 21")
 
-**Follow-up — wide-smoke pass-7:** the 5 per-project investigations (DawSync, OmniSound, dipatternsdemo, nav3-recipes, PeopleInSpace) are now unblocked. Once re-run, persistent REDs are repo-level test failures, not orchestrator bugs. Tracked as PR4 (`chore/wide-smoke-pass-7`).
+**Follow-up — wide-smoke pass-7:** the 5 per-project investigations (a private KMP application, a private KMP application, a multi-module DI sample, nav3-recipes, PeopleInSpace) are now unblocked. Once re-run, persistent REDs are repo-level test failures, not orchestrator bugs. Tracked as PR4 (`chore/wide-smoke-pass-7`).
 
 ### v0.8.0 — Cascade isolation: per-module retry when one-shot dispatch aborts at evaluation phase (surfaced 2026-05-03 wide-smoke; **DONE 2026-05-04 in PR5 — `fix/cascade-isolation-retry`**)
 
-**Surfaced 2026-05-03 during the wide-smoke pass on Confetti-main and shared-kmp-libs.** When the orchestrator dispatches `:a:test :b:test :c:test` in ONE gradle invocation with `--continue`, and module `:a` fails at the **evaluation phase** (plugin resolution, AGP-JDK mismatch, SDK location not found, missing dep), gradle aborts BEFORE reaching `:b` and `:c`. The post-#116 defense-in-depth correctly marks all three as failed (none have `> Task :foo:bar` evidence in stdout) — but this is **honest RED for the wrong reason**: `:b` and `:c` would have succeeded in isolation.
+**Surfaced 2026-05-03 during the wide-smoke pass on Confetti-main and a reference KMP composite project.** When the orchestrator dispatches `:a:test :b:test :c:test` in ONE gradle invocation with `--continue`, and module `:a` fails at the **evaluation phase** (plugin resolution, AGP-JDK mismatch, SDK location not found, missing dep), gradle aborts BEFORE reaching `:b` and `:c`. The post-#116 defense-in-depth correctly marks all three as failed (none have `> Task :foo:bar` evidence in stdout) — but this is **honest RED for the wrong reason**: `:b` and `:c` would have succeeded in isolation.
 
 **Affected (wide-smoke evidence 2026-05-03):**
 - **Confetti-main**: `:shared:jvmTest` succeeds in 1m 44s when invoked alone; fails when bundled with `:androidApp:testDebugUnitTest` whose evaluation aborts. Cascade-isolated retry confirmed `:shared` is real-green.
-- **shared-kmp-libs**: 37 modules cascade-fail because some configuration bug aborts the whole graph at evaluation. Per-module retry isolates the actual broken modules.
+- **a reference KMP composite project**: 37 modules cascade-fail because some configuration bug aborts the whole graph at evaluation. Per-module retry isolates the actual broken modules.
 - Likely affects most multi-module projects with one misconfigured module at evaluation time.
 
-**Note:** PR #116 already added a "one-shot dispatch aborted before any task ran — retrying per-module" path (parallel-orchestrator.js#executeLeg step 4a) which fires when `legExit !== 0 && taskList.length > 1 && !anyTaskMentioned`. It correctly classifies each retry independently. **What's pending:** verifying the cascade isolation handles every shape we've observed (especially mixed evaluation-vs-execution failures in the same dispatch — when SOME tasks ran and SOME aborted) and that it scales to the 37-module shared-kmp-libs case without timing out.
+**Note:** PR #116 already added a "one-shot dispatch aborted before any task ran — retrying per-module" path (parallel-orchestrator.js#executeLeg step 4a) which fires when `legExit !== 0 && taskList.length > 1 && !anyTaskMentioned`. It correctly classifies each retry independently. **What's pending:** verifying the cascade isolation handles every shape we've observed (especially mixed evaluation-vs-execution failures in the same dispatch — when SOME tasks ran and SOME aborted) and that it scales to the 37-module a reference KMP composite project case without timing out.
 
-**Wide-smoke pass-7 evidence (2026-05-04, PR4):** the cascade-isolation pattern affects **8 of 30** projects swept (`DawSync, dipatternsdemo, OmniSound, nav3-recipes, WakeTheCave, WakeTheCave_clean, WakeTheCave_ref, FileKit-main`). Detection signature: per-leg `execution.failed === 0 && execution.no_evidence > 0` while emitting `module_failed` for every dispatched task. **PR #116's retry path did NOT fire** in any of these cases despite all documented conditions matching (`legExit !== 0 && taskList.length > 1 && !anyTaskMentioned`):
+**Wide-smoke pass-7 evidence (2026-05-04, PR4):** the cascade-isolation pattern affects **8 of 30** projects swept (`a private KMP application, a multi-module DI sample, a private KMP application, nav3-recipes, WakeTheCave, WakeTheCave_clean, WakeTheCave_ref, FileKit-main`). Detection signature: per-leg `execution.failed === 0 && execution.no_evidence > 0` while emitting `module_failed` for every dispatched task. **PR #116's retry path did NOT fire** in any of these cases despite all documented conditions matching (`legExit !== 0 && taskList.length > 1 && !anyTaskMentioned`):
 - `WakeTheCave` stderr is 1 line (only the JDK [NOTICE] auto-select); no `retrying per-module` message anywhere in stdout/stderr.
 - 8 cases × 0 retry firings = retry condition is too narrow OR the retry message is suppressed OR `anyTaskMentioned` is incorrectly truthy.
-- One MIXED case: `shared-kmp-libs` — cascade in `androidUnit` leg + REAL failures in `androidInstrumented` leg. Validates that the per-leg detection (not per-project) is the right granularity.
+- One MIXED case: the reference KMP composite project — cascade in `androidUnit` leg + REAL failures in `androidInstrumented` leg. Validates that the per-leg detection (not per-project) is the right granularity.
 
 **Fix verification (UPDATED for pass-7):**
 1. **Re-investigate why retry doesn't fire** on the 8 pass-7 cases. Add `console.error` instrumentation around the `executeLeg` step 4a guard to see which condition fails.
 2. Reproduce `WakeTheCave` cascade on Windows (118 tasks × 4 legs, all `no_evidence`); confirm post-fix retry isolates the actual broken module(s).
-3. Reproduce `DawSync` 48-task cascade (4 legs); confirm per-leg detection works (each cascade leg gets its own retry).
-4. Reproduce `shared-kmp-libs` MIXED case (cascade in androidUnit + real failures in androidInstrumented); confirm retry fires only for the cascade leg.
+3. Reproduce a private KMP application 48-task cascade (4 legs); confirm per-leg detection works (each cascade leg gets its own retry).
+4. Reproduce the reference KMP composite project MIXED case (cascade in androidUnit + real failures in androidInstrumented); confirm retry fires only for the cascade leg.
 5. Add ≥3 vitest cases: (a) leg with all-`no_evidence` triggers retry, (b) leg with mixed real failures + `no_evidence` does NOT trigger retry (real failures take priority), (c) WakeTheCave-shape: 4 legs all-cascade triggers retry on every leg independently.
 6. Add the cascade-detection signature to the orchestrator's emitted envelope as a new field (e.g. `parallel.legs[].cascade_detected: boolean`) so downstream agents can branch on it without re-deriving from execution counters.
 
@@ -642,7 +717,7 @@ Caveats:
 - **Tests:** +6 vitest cases (702 total, 696 baseline). Pure cascade single-leg, single-task cascade (drops `>1`), real failures NOT triggering retry, mid-line `Task` mention regression guard (the false-positive that fooled the old guard), mixed-in-leg conservative non-trigger, envelope-shape lock for the new boolean fields.
 - **Live verification:** wide-smoke re-run of all 8 cascade cases on Windows; `RED-orchestrator-cascade` bucket dropped from 8 → 0. Cases redistributed: 7 → `RED-repo` (modules genuinely broken at evaluation phase, retry confirmed), 1 → outcome per project's actual gradle exit. WIDE-SMOKE-PASS-7-postfix.md captures the post-fix bucket counts.
 
-### v0.8.0 — Confetti-main `unsupported_class_version` despite PR3's AGP-aware JDK auto-select (surfaced 2026-05-04 wide-smoke pass-7)
+### ✅ DONE 2026-05-04 (PR #127 / 049828a) — v0.8.0 — Confetti-main `unsupported_class_version` despite PR3's AGP-aware JDK auto-select (surfaced 2026-05-04 wide-smoke pass-7)
 
 **Surfaced 2026-05-04 in PR4 wide-smoke pass-7.** Confetti-main classified as RED-repo (1 module_failed, 133 testcases ran). The `errors[]` array contains both `module_failed` AND `unsupported_class_version` — meaning the JDK gate did fire after PR3's AGP-aware auto-select selected a JDK. PR3 was supposed to prevent exactly this by picking the AGP-required JDK runtime over the project's `jvmTarget`.
 
@@ -657,54 +732,54 @@ Caveats:
 
 **Ship-when:** v0.8.0 nice-to-have (not release-blocker — Confetti is an external sample; user repos that hit this should already be addressable via `--java-home` override).
 
-### v0.8.0 — `task_not_found` paired with `module_failed` in 4 projects (project-model task-name overreach; surfaced 2026-05-04 wide-smoke pass-7)
+### ✅ DONE 2026-05-04 (PRs #125 + #126) — v0.8.0 — `task_not_found` paired with `module_failed` in 4 projects (project-model task-name overreach; surfaced 2026-05-04 wide-smoke pass-7)
 
 **Status: DONE 2026-05-05 — closed by fix-PR-A (#125) + fix-PR-D (#126) + fix-PR-F (#131).** Re-validated live 2026-05-05 against the 3 of 4 originally-affected projects:
 
 | Project | Pre-fix L533 | Post-fix-PR-A/D/F (2026-05-05 live) | Closure |
 |---|---|---|---|
-| DawSync | 1 task_not_found + 48 module_failed | 0 + 0 (24 modules clean-skipped, mostly via fix-PR-D `withHostTestBuilder{}` opt-in) | ✅ |
-| shared-kmp-libs | 1 task_not_found + 66 module_failed | 0 + 0 (69 modules clean-skipped via fix-PR-D) | ✅ |
-| dipatternsdemo `:benchmark` testDebugUnitTest | task_not_found | parser variable-resolution (fix-PR-F) auto-resolves `testBuildType = benchmarkBuildType` → `testReleaseUnitTest` | ✅ |
+| a private KMP application | 1 task_not_found + 48 module_failed | 0 + 0 (24 modules clean-skipped, mostly via fix-PR-D `withHostTestBuilder{}` opt-in) | ✅ |
+| a reference KMP composite project | 1 task_not_found + 66 module_failed | 0 + 0 (69 modules clean-skipped via fix-PR-D) | ✅ |
+| a multi-module DI sample `:benchmark` testDebugUnitTest | task_not_found | parser variable-resolution (fix-PR-F) auto-resolves `testBuildType = benchmarkBuildType` → `testReleaseUnitTest` | ✅ |
 | FileKit-main | 1 + 4 | Project not properly set up locally (no gradlew.bat in current path) — kmp-test correctly errors with structured `no gradlew` message; not a regression | n/a (validate post-tag if user re-clones) |
 
 Root cause was three-fold: (1) source-set gate missing on AGP-fallback dispatch path (fix-PR-A); (2) kmpAndroidLibrary plugin opt-in detection missing (fix-PR-D); (3) `testBuildType` variable expressions parser-blind (fix-PR-F bundled with parser enhancement). All three closed in v0.8.0 fix-PR ramp. Original entry text preserved below for context.
 
-**Surfaced 2026-05-04 in PR4 wide-smoke pass-7.** Four projects emit BOTH `module_failed` and `task_not_found` discriminators in the same envelope: DawSync, dipatternsdemo, shared-kmp-libs, FileKit-main. The `task_not_found` example from dipatternsdemo: "Cannot locate tasks that match `:benchmark:testDebugUnitTest` as task `testDebugUnitTest` not found in project `:benchmark`."
+**Surfaced 2026-05-04 in PR4 wide-smoke pass-7.** Four projects emit BOTH `module_failed` and `task_not_found` discriminators in the same envelope: a private KMP application, a multi-module DI sample, a reference KMP composite project, FileKit-main. The `task_not_found` example from a multi-module DI sample: "Cannot locate tasks that match `:benchmark:testDebugUnitTest` as task `testDebugUnitTest` not found in project `:benchmark`."
 
 **Root cause hypothesis:** The orchestrator's project model (`lib/project-model.js`) infers a task name (e.g. `testDebugUnitTest`) for the module from generic patterns, but THIS particular module (`:benchmark`) doesn't expose that task — perhaps it has only `connectedDebugAndroidTest` (instrumented) or a custom test task. The model's predict-from-source-sets fallback (added in PR #116) might be predicting a task that doesn't actually exist in gradle.
 
 **Investigation steps:**
-1. Read `dipatternsdemo/.kmp-test-runner-cache/model-*.json` for `:benchmark` module's `gradleTasks` and `sourceSets` arrays.
+1. Read `a multi-module DI sample/.kmp-test-runner-cache/model-*.json` for `:benchmark` module's `gradleTasks` and `sourceSets` arrays.
 2. If `gradleTasks` is null but `sourceSets.androidUnitTest === true`, the predictTaskFromSourceSets fallback (project-model.js:841-884) is the culprit — it predicts `testDebugUnitTest` even though gradle's task graph doesn't expose it.
 3. Fix: when the model probe ran successfully but `gradleTasks` is empty for a module, treat that module as untestable for that test-type rather than predicting a task name.
 
-**Affected (in addition to dipatternsdemo):**
-- DawSync — 1 task_not_found alongside 48 module_failed (entangled with cascade-isolation entry above).
-- shared-kmp-libs — 1 task_not_found alongside 66 module_failed.
+**Affected (in addition to a multi-module DI sample):**
+- a private KMP application — 1 task_not_found alongside 48 module_failed (entangled with cascade-isolation entry above).
+- a reference KMP composite project — 1 task_not_found alongside 66 module_failed.
 - FileKit-main — 1 task_not_found alongside 4 module_failed.
 
 **Effort:** ~2-3h.
 
 **Ship-when:** v0.8.0 nice-to-have. Lower priority than cascade-isolation fix because the impact is "1-2 false dispatches per multi-module project" rather than "entire project marked RED".
 
-### v0.8.0 — Wide-smoke per-project triage: confirm REDs are repo-level vs orchestrator (surfaced 2026-05-03)
+### ✅ DONE 2026-05-04 (wide-smoke pass-9 + pass-9-mac) — v0.8.0 — Wide-smoke per-project triage: confirm REDs are repo-level vs orchestrator (surfaced 2026-05-03)
 
-**Status: DONE — process completed via wide-smoke passes 7 (PR4 / `020ea86`), 8 (during PR6 era), and 9 (PR #129 / `61704f3`).** All 6 REAL-REDs from the original triage classified as repo-bugs (DawSync 5-test desync, OmniSound DesktopPKCEGenerator, gyg LoadingAndErrorStatesTest, nav3-recipes RouteV2/Navigator, nowinandroid `:foryou:impl`, Confetti-main `:wearApp` 2 tests). The "5 per-project investigations" carve-out (DawSync, OmniSound, dipatternsdemo, nav3-recipes, PeopleInSpace) resolved: dipatternsdemo + DawSync now pass via fix-PR-A through F (validated 2026-05-05); the other 3 remain repo-level bugs documented in pass-9 results. Pass-9 final bucket counts (per `project_v0_8_0_pass_9_shipped.md`): match pass-8 baseline 3 GREEN / 14 SKIP / 13 RED-repo / 0 cascade. Original entry text preserved below for context.
+**Status: DONE — process completed via wide-smoke passes 7 (PR4 / `020ea86`), 8 (during PR6 era), and 9 (PR #129 / `61704f3`).** All 6 REAL-REDs from the original triage classified as repo-bugs (a private KMP application 5-test desync, a private KMP application DesktopPKCEGenerator, gyg LoadingAndErrorStatesTest, nav3-recipes RouteV2/Navigator, nowinandroid `:foryou:impl`, Confetti-main `:wearApp` 2 tests). The "5 per-project investigations" carve-out (a private KMP application, a private KMP application, a multi-module DI sample, nav3-recipes, PeopleInSpace) resolved: a multi-module DI sample + a private KMP application now pass via fix-PR-A through F (validated 2026-05-05); the other 3 remain repo-level bugs documented in pass-9 results. Pass-9 final bucket counts (per `project_v0_8_0_pass_9_shipped.md`): match pass-8 baseline 3 GREEN / 14 SKIP / 13 RED-repo / 0 cascade. Original entry text preserved below for context.
 
 **Surfaced 2026-05-03 wide-smoke against 23 KMP/Android projects on Windows post-EINVAL.** After the spawn fix + 13 collateral fixes (PR #116), the wide-smoke produced 8 REAL-GREEN, 6 REAL-RED, 9 NO-MODULES. The 6 REAL-REDs decompose into:
 
 | Project | Suspected root cause | Confirm in v0.8.0? |
 |---|---|---|
-| DawSync | 5 tests desync with refactored production | Repo-level (skip) |
-| OmniSound | 1 missing `DesktopPKCEGenerator` cascades 7 features | Repo-level (skip) |
+| a private KMP application | 5 tests desync with refactored production | Repo-level (skip) |
+| a private KMP application | 1 missing `DesktopPKCEGenerator` cascades 7 features | Repo-level (skip) |
 | gyg | 1 real test failing (`LoadingAndErrorStatesTest`) | Repo-level (skip) |
 | nav3-recipes | `NavigatorTest.kt` references removed `RouteV2`/`Navigator` | Repo-level (skip) |
 | nowinandroid | `:foryou:impl` Prod variant missing dep + 2 real tests | Repo-level (skip) |
 | Confetti-main | `:wearApp` 2 real tests fail (`WorkManagerTest`, `ComplicationScreenshotTest`) | Repo-level (skip) |
 
 **Plus the 5 per-project investigations** (still pending):
-- DawSync, OmniSound, dipatternsdemo, nav3-recipes, PeopleInSpace — flagged as "could be real test failures, JDK/dep issues, or more orchestrator bugs" pre-AGP-JDK fix. Once the AGP-JDK fix above lands, re-run wide-smoke and each of these will resolve to one of: (a) real repo bug → document and skip, (b) orchestrator bug → file own entry.
+- a private KMP application, a private KMP application, a multi-module DI sample, nav3-recipes, PeopleInSpace — flagged as "could be real test failures, JDK/dep issues, or more orchestrator bugs" pre-AGP-JDK fix. Once the AGP-JDK fix above lands, re-run wide-smoke and each of these will resolve to one of: (a) real repo bug → document and skip, (b) orchestrator bug → file own entry.
 
 **Process for v0.8.0:**
 1. Land the AGP-JDK fix (entry above).
@@ -758,10 +833,10 @@ The `sourceSets.jvmTest: true` is enough signal to predict `unitTestTask: "jvmTe
 
 
 
-**Surfaced 2026-05-03 during e2e validation of the new `--benchmark` / `--benchmark-config` parallel hook against `shared-kmp-libs:benchmark-io`.** `--config smoke` completes in ~1-3s; `--config stress` legitimately needs 30+ minutes (full JMH warmup + measurement iterations across 5 benchmarks). The orchestrator's default `KMP_GRADLE_TIMEOUT_MS=1800000` (30 min) is calibrated to detect hung daemons but trips on legitimate stress runs.
+**Surfaced 2026-05-03 during e2e validation of the new `--benchmark` / `--benchmark-config` parallel hook against `a reference KMP composite project:benchmark-io`.** `--config smoke` completes in ~1-3s; `--config stress` legitimately needs 30+ minutes (full JMH warmup + measurement iterations across 5 benchmarks). The orchestrator's default `KMP_GRADLE_TIMEOUT_MS=1800000` (30 min) is calibrated to detect hung daemons but trips on legitimate stress runs.
 
 **Observed behavior (validated):**
-- `kmp-test benchmark --config stress --module-filter benchmark-io --platform jvm` against shared-kmp-libs hit the 1800s timeout with the message `"gradle invocation exceeded 1800s timeout — likely a hung daemon"`. Plumbing was correct — task `:benchmark-io:desktopStressBenchmark` dispatched, gradle ran the JMH stress harness, just exceeded the budget.
+- `kmp-test benchmark --config stress --module-filter benchmark-io --platform jvm` against a reference KMP composite project hit the 1800s timeout with the message `"gradle invocation exceeded 1800s timeout — likely a hung daemon"`. Plumbing was correct — task `:benchmark-io:desktopStressBenchmark` dispatched, gradle ran the JMH stress harness, just exceeded the budget.
 - Exit code anomaly: orchestrator emits the timeout message but reports exit code 0 to the caller. Pre-existing in benchmark-orchestrator, not introduced by the parallel `--benchmark` hook. Worth a separate audit (timeout-as-warning vs timeout-as-error semantics).
 
 **Proposal — adaptive timeout default by config:**
@@ -843,15 +918,15 @@ Same symptom referenced in pre-existing comment at `.github/workflows/ci.yml:70-
 
 **Surfaced 2026-05-03 during the README ↔ tool-surface audit.** `--shared-project-name` is documented in the README's CLI flag tables (line 409 + line 639), but **has never existed as a CLI flag**. The legacy bash wrapper only ever read the `SHARED_PROJECT_NAME` env var; the Gradle plugin exposes it as a real DSL property (`sharedProjectName = "..."`).
 
-The repo owner's workflow makes the design tension visible: their main project depends on `shared-kmp-libs` (a sibling project that's a pure-libraries package). The shared-project relationship is **stable per-checkout** — it doesn't change between runs. A per-invocation CLI flag is the wrong shape; project-level config is.
+The repo owner's workflow makes the design tension visible: their main project depends on the reference KMP composite project (a sibling project that's a pure-libraries package). The shared-project relationship is **stable per-checkout** — it doesn't change between runs. A per-invocation CLI flag is the wrong shape; project-level config is.
 
 **Proposal — `.kmp-test-runner.json` (or `.kmp-test-runner.yml` / TOML) at project root:**
 
 ```json
 {
   "sharedProject": {
-    "name": "shared-kmp-libs",
-    "path": "../shared-kmp-libs"
+    "name": "a reference KMP composite project",
+    "path": "../a reference KMP composite project"
   },
   "defaults": {
     "testType": "common",
@@ -884,13 +959,13 @@ CLI flags continue to override config-file defaults (per-invocation precedence: 
 - Per-invocation flags that genuinely vary per CI job: `--json`, `--dry-run`, `--test-filter`, `--ignore-jdk-mismatch`, `--fresh-daemon`. These stay flag-only.
 - Schema validation / autocompletion — defer to v0.9 with a published JSON schema.
 
-**Effort:** ~4-6h (config loader in `lib/cli.js`, CLI > env > config precedence resolver, migration code for `SHARED_PROJECT_NAME` → file, vitest for precedence + parse). **Promoted to v0.8.0 release-blocker** (2026-05-03) — closing the `--shared-project-name` README↔CLI gap honestly requires this rather than just deleting the doc line. Without project-level config the user's "main project depends on shared-kmp-libs" workflow has no clean shape (env var is a workaround, not a feature). Lands as a dedicated PR before the v0.8.0 release readiness gate.
+**Effort:** ~4-6h (config loader in `lib/cli.js`, CLI > env > config precedence resolver, migration code for `SHARED_PROJECT_NAME` → file, vitest for precedence + parse). **Promoted to v0.8.0 release-blocker** (2026-05-03) — closing the `--shared-project-name` README↔CLI gap honestly requires this rather than just deleting the doc line. Without project-level config the user's "main project depends on a reference KMP composite project" workflow has no clean shape (env var is a workaround, not a feature). Lands as a dedicated PR before the v0.8.0 release readiness gate.
 
 ### v0.8.0 — Move CLI-emitted artifacts into a single `.kmp-test-runner/` subdir (surfaced 2026-05-03; promoted to v0.8.0 release-blocker 2026-05-03) — **DONE 2026-05-04 (PR6 — bundled with `.kmp-test-runner.json` config)**
 
-**Surfaced 2026-05-03 during e2e validation of `kmp-test coverage --coverage-tool kover` on `shared-kmp-libs`.** The orchestrator scatters CLI-generated artifacts at the project root, mixed with the user's actual files:
+**Surfaced 2026-05-03 during e2e validation of `kmp-test coverage --coverage-tool kover` on the reference KMP composite project.** The orchestrator scatters CLI-generated artifacts at the project root, mixed with the user's actual files:
 
-- `coverage-full-report-<runId>.md` (one per run — ~20 accumulated in shared-kmp-libs after a week of iteration)
+- `coverage-full-report-<runId>.md` (one per run — ~20 accumulated in a reference KMP composite project after a week of iteration)
 - `coverage-full-report.md` (legacy alias — overwritten each run)
 - `androidtest-logs/<timestamp>/` (legacy `kmp-test android` log dir — pre-v0.8 sub-entry 3)
 - `.kmp-test-runner-cache/` (project-model + gradle-tasks cache — already in subdir, only correctly-grouped artifact)
@@ -933,9 +1008,17 @@ Users currently have no clean way to gitignore CLI output without enumerating ev
 
 **Ship-when:** **v0.8.0 release-blocker** (promoted 2026-05-03 — every known bug/improvement closes before tag). Lands as a dedicated PR after the project-level config file PR (the two pair: `.kmp-test-runner.json` config + `.kmp-test-runner/` artifacts share the same root). Cache layer keeps the dual-read transition behavior intact for one release so users coming from v0.7.x don't lose their cached models on first upgrade.
 
-### v0.8.x / v0.9 — Buildable cross-platform E2E fixture project (DEFERRED 2026-05-05 from v0.8.0 release-blocker)
+### ✅ SHIPPED 2026-05-06 (v0.9 step 6, PR #151 / `f296d21` on develop) — Buildable cross-platform E2E fixture project
 
-**Status: DEFERRED 2026-05-05.** Originally framed as "promoted to release-blocker per release-readiness gate #2" (entry above L172). Demoted to v0.8.x/v0.9 candidate because: (1) the 6 fix-PRs (A-F) absorbed the v0.8.0 release-validation budget; (2) ~6-10h fixture build + open-ended CI flakiness budget is not justified pre-tag when wide-smoke pass-9-mac (PR #129) already validates real iOS/macOS execution against shared-kmp-libs + 4 other projects; (3) the existing 7-required-check matrix + informational macOS jobs (build-macos, bats-macos, gradle-plugin-test-ios, installer-e2e-macos) provide acceptable CI coverage. Promote back to release-blocker at v0.9 when the milestone scope can absorb the flakiness work. Original entry text preserved below.
+**Closure summary.** New `tests/fixtures/kmp-cross-platform-e2e/` — a single buildable `:sample` module exercising every supported KMP target: `jvm()`, `js(IR) { nodejs() }`, `wasmJs { nodejs() }`, `iosX64()` + `iosSimulatorArm64()` + `iosArm64()`, `macosArm64()`, and `androidLibrary { … withHostTestBuilder { } }` (AGP 9 native KMP-Android plugin `com.android.kotlin.multiplatform.library`). Pinned to Kotlin 2.3.20 / AGP 9.0.1 / Gradle 9.1.0 (matches the reference KMP composite project + a private KMP application production). Wrapper jar (~45 KB) vendored from `gradle-plugin/`. New `tests/vitest/cross-platform-fixture.test.js` with 14 specs across 3 groups (structural integrity / `buildProjectModel` direct call / `kmp-test describe` spawn-based). Vitest 1004 → 1018. New `tests/fixtures/README.md` indexing all 10 fixtures. `.gitignore` exception for the fixture's source-of-truth `gradle.properties`. `.gitattributes` rules locking gradlew (LF) / gradlew.bat (CRLF) / gradle-wrapper.jar (binary). **Zero new CI minutes** — runs on existing `build (ubuntu-latest)` + `build (windows-latest)` jobs. Local Windows verify: `./gradlew :sample:tasks` lists per-target test tasks including `testAndroidHostTest`. **Deliberately skipped:** Gradle TestKit acceptance test invoking `:sample:tasks` against the fixture — would force AGP 9 + compileSdk 36 + Kotlin 2.3 plugin downloads on every `gradle-plugin-test (ubuntu-latest)` run, adding 3-5 min + network risk without proportional value (the static parser is what the fixture is for). Real iOS/macOS task execution stays on v0.9 step 7 (manual macOS gate). Original deferred-entry text preserved below for traceability.
+
+---
+
+**[Original entry — preserved for traceability]**
+
+**Updated 2026-05-05** — scope reduced to **build only, no CI matrix** per `feedback_ci_minutes_minimal_macos.md`. Real iOS/macOS execution validation moved to v0.9 step 7 (manual macOS validation gate). The CI-matrix paragraphs below (`e2e-cross-platform.yml`, per-OS jobs) are **HISTORICAL — superseded 2026-05-05** — kept for traceability but NOT the current direction. Current scope: the fixture builds (so `kmp-test` discovery + dispatch can be exercised against it), but per-PR CI does NOT run iOS/macOS test tasks against it. Scheduled as **v0.9 step 6** in ROADMAP.
+
+**Status: DEFERRED 2026-05-05.** Originally framed as "promoted to release-blocker per release-readiness gate #2" (entry above L172). Demoted to v0.8.x/v0.9 candidate because: (1) the 6 fix-PRs (A-F) absorbed the v0.8.0 release-validation budget; (2) ~6-10h fixture build + open-ended CI flakiness budget is not justified pre-tag when wide-smoke pass-9-mac (PR #129) already validates real iOS/macOS execution against a reference KMP composite project + 4 other projects; (3) the existing 7-required-check matrix + informational macOS jobs (build-macos, bats-macos, gradle-plugin-test-ios, installer-e2e-macos) provide acceptable CI coverage. Promote back to release-blocker at v0.9 when the milestone scope can absorb the flakiness work. Original entry text preserved below.
 
 **Surfaced 2026-05-01 during v0.7.0 Phase 3 review.** The current iOS / macOS test coverage is the same shape as JS/Wasm/Android — model unit tests, wrapper integration tests with stub `gradlew`, Gradle TestKit acceptance — but **no real iOS / macOS test execution in CI**. This is in parity with the rest of the platforms (Android instrumented + JS/Wasm also lack real-task CI runs), so v0.7.0 ships honestly. But it's the largest single piece of testing debt the project carries: every "iOS support works" claim today rests on wide-smoke validation against the user's local KMP projects, which doesn't survive in green/red CI history.
 
@@ -947,7 +1030,7 @@ Users currently have no clean way to gitignore CLI output without enumerating ev
 - Trivial passing test in each test source set (`commonTest`, `jvmTest`, `jsTest`, `wasmJsTest`, `iosX64Test`, `iosSimulatorArm64Test`, `macosArm64Test`, `androidUnitTest`)
 - Pinned Kotlin + AGP versions in `gradle/libs.versions.toml`
 
-**CI matrix** (new workflow `e2e-cross-platform.yml`):
+**[HISTORICAL — superseded 2026-05-05] CI matrix** (new workflow `e2e-cross-platform.yml`):
 - `e2e (ubuntu-latest)`: runs `kmp-test parallel --test-type common` + `--test-type androidUnit` + `--test-type ios` (dispatch only — no simulator) + `--test-type macos` (dispatch only) + JS-via-jvmTest fallback. Verifies the wrapper picks the right per-module task in the JSON envelope (no real test execution beyond JVM).
 - `e2e (windows-latest)`: same as ubuntu — Pester / bash-via-Git-Bash parity check.
 - `e2e (macos-latest)`: full iOS + macOS execution. Boots simulator (Approach B fallback if needed), runs `:module:iosSimulatorArm64Test` and `:module:macosArm64Test` for real. This is the only place where iOS actually runs.
@@ -955,7 +1038,7 @@ Users currently have no clean way to gitignore CLI output without enumerating ev
 **Risk + cost:**
 - **Risk**: high CI flakiness from network deps (Maven plugin downloads), Xcode version drift on macos-latest, simulator boot races. Initial implementation could spend 50% of effort fighting infrastructure.
 - **Cost**: ~6-10h to build a working fixture + reliable CI. Net new bytes in the repo: ~70KB for `gradle-wrapper.jar` (binary).
-- **Per-run CI cost**: macOS minutes are 10× ubuntu minutes — full E2E job could add 5-10 min per CI run, ~50 min macOS-equivalent per PR.
+- **[HISTORICAL — superseded 2026-05-05] Per-run CI cost**: macOS minutes are 10× ubuntu minutes — full E2E job could add 5-10 min per CI run, ~50 min macOS-equivalent per PR. (No longer applicable: per-PR CI does NOT run mac/iOS targets against this fixture; manual validation handles that.)
 
 **When to ship:**
 - v0.7.x patch — if a v0.7 user surfaces an iOS regression that the unit/integration suite missed, this becomes urgent.
@@ -966,7 +1049,7 @@ Users currently have no clean way to gitignore CLI output without enumerating ev
 - Re-using an existing real-world OSS KMP project (Confetti / KaMPKit) as the fixture — version drift makes our CI flakier than a pinned synthetic; only revisit if synthetic proves too much work.
 - Replacing the wide-smoke local validation gate (`feedback_release_wide_smoke.md`). Both should coexist: wide-smoke catches integration-level bugs against real projects; the synthetic E2E catches regressions deterministically.
 
-### v0.8.0 — README refresh + token-cost re-measurement across all CLI tools (surfaced 2026-05-03)
+### ✅ DONE 2026-05-07 (v0.9 step 8) — surface refresh shipped 2026-05-05 (v0.8.1); cross-model re-tokenisation closed in v0.9 step 8 — v0.8.0 — README refresh + token-cost re-measurement across all CLI tools (surfaced 2026-05-03)
 
 **Surfaced 2026-05-03 after sub-entry 5 + PR #116 + sub-entry-5-followups landed.** The README has not been refreshed since v0.6.x; v0.7.0 (iOS/macOS surface), the v0.8 STRATEGIC PIVOT (5 orchestrators migrated to Node), the EINVAL spawn fix (PR #116), and the new flags restored in PR #115 follow-up (`--fresh-daemon`, `--output-file`, `--coverage-only`, `--benchmark` + `--benchmark-config`) all need to land in the user-facing docs before v0.8.0 tag.
 
@@ -979,7 +1062,7 @@ Concurrently, `tests/vitest/measure-token-cost.test.js` was last calibrated agai
 - `kmp-test doctor` — `--json` + human
 
 **Tasks:**
-1. Run the full token-cost measurement matrix on a representative project (e.g. shared-kmp-libs or KaMPKit) and record before/after/reduction-ratio numbers per subcommand.
+1. Run the full token-cost measurement matrix on a representative project (e.g. a reference KMP composite project or KaMPKit) and record before/after/reduction-ratio numbers per subcommand.
 2. Refresh README sections: "Why kmp-test-runner" lead numbers, "AI agents and JSON envelope" examples, the per-subcommand flag tables (add `--fresh-daemon` / `--output-file` / `--coverage-only` / `--benchmark` / `--benchmark-config` / `--dry-run` to whichever subcommands accept them post-F1).
 3. Verify "Platforms supported" table still matches `lib/project-model.js` candidate chains.
 4. Audit README's tool surface against `lib/cli.js#COMMANDS` — add a separate BACKLOG entry below for any tool dropped during the migration.
@@ -1007,9 +1090,9 @@ Concurrently, `tests/vitest/measure-token-cost.test.js` was last calibrated agai
 
 **Ship-when:** No standalone PR — findings already documented; remediation lands as part of the README refresh PR. Close this entry when README refresh ships.
 
-### v0.8 — KMP target tier intel for iOS/macOS strategy (surfaced 2026-05-02 during sub-entry 3 validation in shared-kmp-libs)
+### v0.8 — KMP target tier intel for iOS/macOS strategy (surfaced 2026-05-02 during sub-entry 3 validation in a reference KMP composite project)
 
-**Source:** repo owner's investigation in shared-kmp-libs while validating sub-entry 3 (PR #113). Captures the current Kotlin/Native target tier status that affects (a) the v0.7.0 `resolveTasksFor` candidate-chain design (`iosX64Test → iosArm64Test → iosSimulatorArm64Test` for `iosTestTask`; `macosX64Test → macosArm64Test → macosTest` for `macosTestTask`), (b) the v0.8.0 release-readiness gate's "Buildable cross-platform E2E fixture" target matrix, and (c) the `gradle-plugin-test-ios` informational job's promotion criteria.
+**Source:** repo owner's investigation in a reference KMP composite project while validating sub-entry 3 (PR #113). Captures the current Kotlin/Native target tier status that affects (a) the v0.7.0 `resolveTasksFor` candidate-chain design (`iosX64Test → iosArm64Test → iosSimulatorArm64Test` for `iosTestTask`; `macosX64Test → macosArm64Test → macosTest` for `macosTestTask`), (b) the v0.8.0 release-readiness gate's "Buildable cross-platform E2E fixture" target matrix, and (c) the `gradle-plugin-test-ios` informational job's promotion criteria.
 
 **Tier table (Kotlin 2.x current state):**
 
@@ -1153,7 +1236,7 @@ Pattern is the **idiomatic one already used in this same file at line 792** for 
 
 **Suggested first PR for the v0.7.x patch run** — small, isolated, evidence-rich, high signal-to-effort. Good warm-up before tackling WS-1 (which is the architecturally trickiest of the wide-smoke findings).
 
-### v0.7.x / v0.8 — Community standards (issue + PR templates)
+### ✅ DONE 2026-05-05 (v0.8.1 / PR #142) — v0.7.x / v0.8 — Community standards (issue + PR templates)
 
 **Surfaced 2026-05-01.** GitHub flags the repo as missing two community-standards files:
 
@@ -1167,7 +1250,7 @@ Both are tiny single-file additions (~50-100 lines each). Pair with a CONTRIBUTI
 **Surfaced 2026-05-01 during v0.7.0 README revamp.** The token-cost numbers in the README were captured at v0.5.0. The JSON envelope shape barely changed since (additive fields only — `skipped[]` in v0.6.2, `iosTestTask` / `macosTestTask` in v0.7.0 when those test types are picked), so the numbers remain representative within ±5%. But the date is now stale.
 
 Refresh approach:
-- Re-run `tools/measure-token-cost.js` against `shared-kmp-libs` for all 4 features × 3 approaches × cross-model. ~$10-15 USD in Anthropic API calls.
+- Re-run `tools/measure-token-cost.js` against the reference KMP composite project for all 4 features × 3 approaches × cross-model. ~$10-15 USD in Anthropic API calls.
 - Add a new column / row showing iOS or macOS dispatch token cost (different envelope content vs JVM).
 - Update the timestamp note in the README (currently absent — should say "Measured at v0.X.Y on YYYY-MM-DD").
 - Optional: bump bar resolution / column widths if the new layout (post-v0.7.0 redesign) exposes any awkward wraps.
@@ -1228,7 +1311,7 @@ Estimated effort: 2-3h total for Gaps 1.1-1.3. Patch bump (no API break, additiv
 
 Original entry text preserved below.
 
-When running `kmp-test parallel` against many KMP projects in one session, each project may require a different JDK (KaMPKit JDK 11 / nav3-recipes JDK 11 / Confetti JDK 17 / shared-kmp-libs JDK 21). Today the user must restart the shell with a different `JAVA_HOME` between projects, or pass `--ignore-jdk-mismatch` to bypass the gate. Wide-smoke surface 2026-04-30: 4/20 surveyed projects exited 3 with `jdk_mismatch` because the host's `java -version` was 21.
+When running `kmp-test parallel` against many KMP projects in one session, each project may require a different JDK (KaMPKit JDK 11 / nav3-recipes JDK 11 / Confetti JDK 17 / a reference KMP composite project JDK 21). Today the user must restart the shell with a different `JAVA_HOME` between projects, or pass `--ignore-jdk-mismatch` to bypass the gate. Wide-smoke surface 2026-04-30: 4/20 surveyed projects exited 3 with `jdk_mismatch` because the host's `java -version` was 21.
 
 Investigation questions:
 1. **Detect installed JDKs** — common locations on each platform (Eclipse Adoptium / Zulu / Microsoft Build / SAP / `/usr/libexec/java_home -V` on macOS / `update-alternatives --list java` on Linux / `where java` + Registry on Windows). Build a catalogue at startup.
@@ -1261,7 +1344,7 @@ Today every `kmp-test ...` invocation has to carry this knowledge as flags + env
   ```json
   {
     "projects": {
-      "shared-kmp-libs": {
+      "a reference KMP composite project": {
         "java_home": "C:/Program Files/Zulu/zulu-21",
         "benchmark": { "config": "main" }
       },
@@ -1271,7 +1354,7 @@ Today every `kmp-test ...` invocation has to carry this knowledge as flags + env
     }
   }
   ```
-- `kmp-test benchmark --project shared-kmp-libs` reads the preset and applies env + flags.
+- `kmp-test benchmark --project a reference KMP composite project` reads the preset and applies env + flags.
 - Or auto-detect by `cwd` when no `--project` is passed.
 - Doctor extension (Bug F in v0.5.1 Phase 4) could write the JDK requirement back into the config when it detects `jvmTarget = JVM_N` so the next invocation Just Works.
 
@@ -1289,9 +1372,9 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 - **Bug H — `gradle_timeout` exit code consistency** _(DONE in PR #55 step 9, was an open gap)_ — wrapper-script keying-on-bash-exit got 1 (TEST_FAIL) while the JSON envelope reported `exit_code: 3` (ENV_ERROR). Now both agree on 3.
 
-### Side-issue documented in shared-kmp-libs (NOT a kmp-test-runner bug)
+### Side-issue documented in a reference KMP composite project (NOT a kmp-test-runner bug)
 
-- `benchmark-storage` with `kmp-test benchmark --config main --platform jvm` on JDK 21 Windows produces `org.gradle.launcher.daemon.client.DaemonDisappearedException`. The CLI handles this cleanly — emits structured `errors[].code = "module_failed"` envelope. Likely root cause is **MMKV native lib + kotlinx-benchmark + Gradle 9.1 + JDK 21 + Windows** combo (the `BenchmarkMmkvAdapter` class crashes the daemon JVM during benchmark fork). To fix in **shared-kmp-libs side**: try `--no-configuration-cache`, increase `org.gradle.jvmargs=-Xmx8g`, isolate the failing benchmark, or update kotlinx-benchmark plugin version. Other benchmark modules (V13: `*benchmark-network*`) run cleanly with the same setup.
+- `benchmark-storage` with `kmp-test benchmark --config main --platform jvm` on JDK 21 Windows produces `org.gradle.launcher.daemon.client.DaemonDisappearedException`. The CLI handles this cleanly — emits structured `errors[].code = "module_failed"` envelope. Likely root cause is **MMKV native lib + kotlinx-benchmark + Gradle 9.1 + JDK 21 + Windows** combo (the `BenchmarkMmkvAdapter` class crashes the daemon JVM during benchmark fork). To fix in **a reference KMP composite project side**: try `--no-configuration-cache`, increase `org.gradle.jvmargs=-Xmx8g`, isolate the failing benchmark, or update kotlinx-benchmark plugin version. Other benchmark modules (V13: `*benchmark-network*`) run cleanly with the same setup.
 
 ### Deferred
 
@@ -1305,7 +1388,7 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 **Status: DONE in v0.4** (PRs #34–#37). All 4 in-scope features (`parallel` / `coverage` / `changed` / `benchmark`) shipped with cross-tokenizer measurement (`cl100k_base` + `opus-4-7` + `sonnet-4-6` + `haiku-4-5`) in the README's "Why this exists — token cost per agent test-run iteration" section (line ~5). Chart redesign landed as one markdown bar table per feature (no Mermaid). `android` (instrumented) deferred per the entry's explicit out-of-scope clause; `doctor` skipped per the entry's "too small" note. Original entry text preserved below.
 
-Today's measurement (PRs #27–#29) covers **one** scenario: `kmp-test parallel` with Kover coverage on a single failing module of `shared-kmp-libs`. The "127–154× cheaper than raw gradle" claim in the README only stands up for that scenario. The CLI ships several other features the same agent-cost story applies to but we haven't measured:
+Today's measurement (PRs #27–#29) covers **one** scenario: `kmp-test parallel` with Kover coverage on a single failing module of the reference KMP composite project. The "127–154× cheaper than raw gradle" claim in the README only stands up for that scenario. The CLI ships several other features the same agent-cost story applies to but we haven't measured:
 
 - **`coverage`** (= `parallel --skip-tests`) — "I already ran tests, just regenerate the report." Approach A is `./gradlew koverXmlReport` (or `jacocoXmlReport`) + read the aggregated report; B/C are `kmp-test coverage` markdown / `--json`. Hypothesis: the largest A:C ratio of the lot, because A drops the test logs but the aggregated XML is still huge.
 - **`changed`** — incremental retry of changed modules. Approach A is `git diff` filter + per-module raw gradle + reports for that subset; B/C are `kmp-test changed --json`. Hypothesis: matches `parallel`'s ratio but at smaller absolute scale.
@@ -1315,7 +1398,7 @@ Today's measurement (PRs #27–#29) covers **one** scenario: `kmp-test parallel`
 
 **Coverage-tool variation worth one extra column.** The default is Kover; JaCoCo is supported but currently undocumented in the README (separate quick-fix entry below). For one project run it twice (Kover, JaCoCo) and tabulate side-by-side — the A row will diverge (different XML schemas), B/C should be identical (CLI normalises). One row per coverage tool answers "does the savings claim depend on Kover?"
 
-**Reference projects.** Stick with `shared-kmp-libs` for v0.4 (consistent variables — same module count, same deps, same JDK). Other personal KMP projects are tempting cross-validation but at least one larger one (43 modules) hung on Windows MinGW already (per current docs) — adding a third project doesn't validate the claim more, it just adds tokens spent.
+**Reference projects.** Stick with the reference KMP composite project for v0.4 (consistent variables — same module count, same deps, same JDK). Other personal KMP projects are tempting cross-validation but at least one larger one (43 modules) hung on Windows MinGW already (per current docs) — adding a third project doesn't validate the claim more, it just adds tokens spent.
 
 **Chart redesign (mandatory).** 4 features × 3 approaches × 4 tokenizers = 48 bars in one chart is unreadable. Two viable layouts:
 - **One chart per feature** at the top of `docs/token-cost-measurement.md`, then a single "summary" row in the README with feature on x-axis and `A:C ratio` on y-axis (one number per feature). README stays scannable, doc has the full breakdown.
@@ -1366,7 +1449,7 @@ Today's escape hatches:
 
 **Three levels, ship cheapest first:**
 
-1. **Doctor surfacing (~30min)** — `kmp-test doctor` reads `<project>/gradle.properties` (and `~/.gradle/gradle.properties`) and prints the resolved values for `org.gradle.parallel`, `org.gradle.workers.max`, `org.gradle.caching`, `org.gradle.daemon`, `org.gradle.jvmargs`, `org.gradle.configureondemand`. Pure diagnostic — surfaces mismatches between project intent and what the CLI is about to do. Adds a `gradle_config{}` section to `--json` output. Zero behavior change.
+1. **✅ Doctor surfacing — DONE in v0.8.1 (PR #142).** `kmp-test doctor --json` carries a top-level `gradle_config{}` object with the resolved values for `org.gradle.parallel`, `workers.max`, `caching`, `daemon`, `jvmargs`, `configureondemand` from `<project>/gradle.properties` merged on top of `~/.gradle/gradle.properties`. Pure diagnostic — no behavior change. (Tier 2 below scheduled as **v0.9 step 2**; Tier 3 as **v0.10 step 2**.)
 2. **Generic pass-through (~1h)** — `--gradle-args "..."` global flag that appends arbitrary tokens to the gradlew invocation. Lets any agent or user inject `--no-parallel`, `--no-build-cache`, `--max-workers 1`, `-Pflag=value`, etc. Documented as an escape hatch — the CLI still has its opinionated defaults. Lower precedence than dedicated flags.
 3. **Auto-detect + respect (~2-3h)** — read `gradle.properties` at startup; if `org.gradle.parallel=false`, drop the `--parallel` injection; if `workers.max` is set, do not pass `--max-workers` unless explicitly overridden on the CLI; if `caching=false`, don't fight it. Most invasive — changes default behavior. Needs migration note ("`kmp-test parallel` no longer always parallelizes — set `org.gradle.parallel=true` if you want the previous behavior, or pass `--max-workers >1`").
 
@@ -1415,7 +1498,7 @@ The official `android` CLI's `describe` subcommand emits a JSON document of buil
 
 Open questions: (1) does `describe` cover KMP-only (non-Android) modules, or only AGP-rooted ones? (2) what's the schema stability guarantee, esp. for multi-module multi-target KMP? (3) fallback path when `android` CLI isn't installed — keep bash discovery as default, opt-in via `--use-android-describe` flag.
 
-Estimated effort: 3–4h research + refactor in `scripts/sh/lib/`. Pending review on (1) above before committing — if `describe` doesn't enumerate KMP non-AGP modules it's not a drop-in replacement.
+Estimated effort: ~2h research first to confirm `android describe` enumerates KMP-non-AGP modules (test against the reference KMP composite project), then ~3-4h refactor in `lib/project-model.js` if research is positive. Scheduled as **v0.10 step 5 (research-first)** — if research is negative, the entry gets dropped per user direction (`feedback_release_milestone_decisions.md` allows the user to authorize drops on case-by-case basis after research). Note: the legacy reference to `scripts/sh/lib/` above predates the v0.8 Node-pivot — discovery now lives in `lib/project-model.js`.
 
 ### Concurrent-invocation safety (multi-agent scenarios)
 
@@ -1435,7 +1518,7 @@ When multiple AI agents (or humans, or CI matrix shards) run `kmp-test` against 
 **Three tiers — Tier 1 shipped in v0.3.8 (2026-04-26):**
 
 1. **Cheap hardening (~1h)** — ✅ **DONE in v0.3.8**: PID-suffixed `TEMP_LOG`; run-id `YYYYMMDD-HHMMSS-PID6` versioned report filenames + legacy mirror; advisory lockfile at `<project>/.kmp-test-runner.lock` with `{schema, pid, start_time, subcommand, project_root, version}` JSON; `--force` global flag bypasses a live lock; stale-lock reclaim (PID dead) is automatic; SIGINT/SIGTERM/uncaughtException handlers clean up. `--json` mode surfaces `errors[].code = "lock_held"`. Doctor + dry-run skip the lock.
-2. **Audit + docs (~30min)** — partly done (Tier 1 ships with `docs/concurrency.md` stub); full collision matrix (subcommand × resource × outcome) still queued.
+2. **✅ Audit + docs — DONE in v0.8.1 (PR #142).** Full Tier 2 collision matrix landed in `docs/concurrency.md` — 10-row subcommand × resource × outcome × mitigation-status table. Tier 3 (`--isolated`) flips deferred rows when it ships (scheduled as **v0.9 step 4**).
 3. **Opt-in isolation (~3-4h)** — queued: `--isolated` global flag → injects `--project-cache-dir <tmp>` into every gradle invocation, giving each run its own `.gradle/` cache. Slow (no cache hits), but truly parallel-safe. Ideal for CI multi-agent fan-out.
 
 Out of scope for this item: cross-host coordination (use a real lock manager), Gradle-internal concurrency tuning, or rewriting the daemon model.
@@ -1455,18 +1538,18 @@ Out of scope for this item: cross-host coordination (use a real lock manager), G
   - **Bug 1 (#73)** — `--dry-run` no longer blocks on JDK toolchain mismatch. Pre-flight `preflightJdkCheck` now skipped when `dryRun === true`. 13/17 projects in the smoke survey hit this — `--dry-run` is for plan inspection, not run validation, so gating it on a JDK mismatch defeats the purpose. Real runs (`parallel`/`changed`/etc.) still gate. Smoke validated against KaMPKit (JDK 11) on JDK 17 host: dry-run exits 0 with plan instead of `jdk_mismatch` error.
   - **Bug 5 (#74)** — `--no-coverage` alias for `--coverage-tool none`. Users naturally reach for `--no-coverage` based on most-CLI conventions; pre-fix neither sh nor ps1 scripts wired it up — only `--coverage-tool none` worked. New `expandNoCoverageAlias` helper expands at the CLI normalization layer BEFORE flag translation, so `kmp-test parallel --no-coverage` works on both Linux and Windows. If `--coverage-tool` is already explicit, user choice wins (conservative). Smoke validated against KaMPKit: PS1 spawn args now contain `-CoverageTool none`, not the rejected `-NoCoverage`.
   - **Bug 2 (#75)** — `analyzeModule` now classifies `com.android.test` and `kotlin("android")` modules as Android. Pre-fix the AGP plugin pattern only matched `library|application`; `com.android.test` modules (Confetti's `androidBenchmark`) fell through to `type=unknown`. New `hasKotlinAndroidPlugin` regex catches both `kotlin("android")` and `id("org.jetbrains.kotlin.android")`. Real-world validated against Confetti: `androidApp` AND `androidBenchmark` now both `type=android`. Out of scope: version-catalog `alias(libs.plugins.<...>)` form (covers nav3-recipes / Confetti's modern modules — separate v0.7 scope).
-  - **Bug 6 (#76)** — `detectBuildLogicCoverageHints` distinguishes CONVENTION vs SELF kover/jacoco signals. Pre-fix the naive `\bjacoco\b` scan over all build-logic files false-positived on nowinandroid (`build-logic/convention/build.gradle.kts` only NAMES jacoco-related convention plugins via `register("...Jacoco...")` blocks — but jacoco isn't applied for build-logic itself or for consumer modules from this file). Discrimination now uses path heuristic + registration-noise stripping: files under `build-logic/<X>/src/main/...` → CONVENTION; files outside → SELF (after stripping `register(...) { ... }`, `implementationClass = ...`, `id = libs.plugins.<...>`, `pluginId = ...`, `asProvider().get().pluginId`, and comments). `analyzeModule` only inherits when kind === 'convention'. Return-shape break: `{ hasKover: bool, hasJacoco: bool }` → `{ hasKover: 'convention'\|'self'\|null, ... }`. Real-world validated: nowinandroid → `hasJacoco: 'convention'` (correctly detects real `Plugin<Project>` jacoco classes under `src/main/kotlin/`); shared-kmp-libs → `hasKover: 'convention'` (continues to inherit kover for all 71 modules). Out of scope: per-module convention-plugin application detection (which modules apply `nowinandroid.android.application.jacoco`?) — needs version-catalog plugin-id mapping, separate v0.7 scope. Three CI fixtures locked under `tests/fixtures/build-logic-{convention,self,noise}-jacoco/` are loaded by both bats and Pester via `node --input-type=module -e "..."` to keep the JS classifier as the single source of truth.
+  - **Bug 6 (#76)** — `detectBuildLogicCoverageHints` distinguishes CONVENTION vs SELF kover/jacoco signals. Pre-fix the naive `\bjacoco\b` scan over all build-logic files false-positived on nowinandroid (`build-logic/convention/build.gradle.kts` only NAMES jacoco-related convention plugins via `register("...Jacoco...")` blocks — but jacoco isn't applied for build-logic itself or for consumer modules from this file). Discrimination now uses path heuristic + registration-noise stripping: files under `build-logic/<X>/src/main/...` → CONVENTION; files outside → SELF (after stripping `register(...) { ... }`, `implementationClass = ...`, `id = libs.plugins.<...>`, `pluginId = ...`, `asProvider().get().pluginId`, and comments). `analyzeModule` only inherits when kind === 'convention'. Return-shape break: `{ hasKover: bool, hasJacoco: bool }` → `{ hasKover: 'convention'\|'self'\|null, ... }`. Real-world validated: nowinandroid → `hasJacoco: 'convention'` (correctly detects real `Plugin<Project>` jacoco classes under `src/main/kotlin/`); a reference KMP composite project → `hasKover: 'convention'` (continues to inherit kover for all 71 modules). Out of scope: per-module convention-plugin application detection (which modules apply `nowinandroid.android.application.jacoco`?) — needs version-catalog plugin-id mapping, separate v0.7 scope. Three CI fixtures locked under `tests/fixtures/build-logic-{convention,self,noise}-jacoco/` are loaded by both bats and Pester via `node --input-type=module -e "..."` to keep the JS classifier as the single source of truth.
   - **Bug 3 (#77)** — JS / Wasm source-set + task support in the project model. `analyzeModule` enumerates 3 additional source-set directories (`jsTest`, `wasmJsTest`, `wasmWasiTest`); `resolveTasksFor` adds `jsTest`/`wasmJsTest` as `unitTestTask` candidates AFTER the JVM ones (KMP+JS modules still pick `jvmTest`); new `webTestTask` field surfaces JS/Wasm test invocation explicitly. Sh and ps1 readers grow `pm_get_web_test_task` / `Get-PmWebTestTask`. Real-world validated against compose-multiplatform/html: `core`, `benchmark-core`, `compose-compiler-integration` all now report `sourceSets.jsTest=true` (previously these source sets weren't enumerated at all). Out of scope: actual JS test EXECUTION in CI (requires Node + browser drivers; v0.6.x follow-up). One CI fixture under `tests/fixtures/kmp-with-js/` covers both JS-only fallback (`:web-only`) and KMP+JS regression (`:kmp-multi`).
   - **Deferred to v0.7**: iOS source-set + task support (Bug 4). Adds 30% of the complexity for ~5% of KMP projects (3/17 with iosTest in survey). Requires macOS GitHub Actions runner job + Xcode integration + xcodebuild OR `gradlew iosSimulatorArm64Test` + simulator boot orchestration. Estimated 6-8h + CI hardware costs.
 
-- 2026-04-30: **v0.5.2** — "Minor-gaps milestone." Five non-blocking follow-ups from the v0.5.1 ship cycle (Phase 4 D1+D4 deferrals + post-ship validation findings + one DX gap). Suite at release: ~326 vitest + ~159 bats + ~147 Pester (+ ~37/~14/~17 over v0.5.1 baseline). Real-world validated against shared-kmp-libs on Windows + S22 Ultra + JDK 21:
+- 2026-04-30: **v0.5.2** — "Minor-gaps milestone." Five non-blocking follow-ups from the v0.5.1 ship cycle (Phase 4 D1+D4 deferrals + post-ship validation findings + one DX gap). Suite at release: ~326 vitest + ~159 bats + ~147 Pester (+ ~37/~14/~17 over v0.5.1 baseline). Real-world validated against a reference KMP composite project on Windows + S22 Ultra + JDK 21:
   - **Gap E (#63)** — Android `--test-filter` method-level filtering. `kmp-test android --test-filter "FQN#method"` and `--test-filter "FQN.method"` now run a single test method via AndroidJUnitRunner. cli.js splits class+method, resolves wildcards in the class part as before, recombines as `<resolvedClass>#<method>` on the wire; platform scripts (sh + ps1) detect `#` and emit BOTH `-Pandroid.testInstrumentationRunnerArguments.class=` AND `.method=` flags. Same gap closed for `kmp-test benchmark --platform android`. Smoke validated end-to-end on S22 Ultra against `:core-encryption:AndroidEncryptionServiceTest#test_encrypt_returnsBase64EncodedString` and `.test_decrypt_recoversOriginalPlaintext` (heuristic form). Tests: +13 vitest, +5 bats, +2 Pester.
   - **Gap D (#64)** — `summary.json` counter shape regression coverage. PR #54 fixed the PS1 single-item-pipeline collapse where `$modules.Count` returned hashtable-key count (5/11) instead of array length (1) on single-module runs. Bash side audited clean (`${!result_names[@]}` indexed iteration, no `${#hash[@]}` bug-pattern). New `tests/bats/test-android-summary-counts.bats` (5 tests) + `tests/pester/Android-Summary-Counts.Tests.ps1` (9 tests including a negative-guard against the bug-pattern returning) lock the contract at source level. Real-world validated during Gap E smoke run — single-module produced `totalModules:1, passedModules:1, modules.length:1`.
   - **Gap B (#65)** — JDK gate walker unification via ProjectModel fast-path. `gate_jdk_mismatch` (sh) + `Invoke-JdkMismatchGate` (ps1) now consult `pm_get_jdk_requirement` / `Get-PmJdkRequirement` first; the JS canonical walker (9-dir exclude list + depth=12) returns the MAX-of-signals into the model JSON's `jdkRequirement.min`. Legacy walkers (sh: 4 dirs unbounded, ps1: 5 dirs unbounded) preserved as fallback when model.json absent. Eliminates exclusion-list drift. Tests: +2 bats, +2 Pester.
-  - **Gap C (#66)** — Cache-key SHA byte-parity across walkers AND across host platforms. JS / bash / PS1 now produce IDENTICAL SHAs for the same logical content regardless of file line endings (CRLF / LF / mixed) or runner OS. Strategy: every walker normalizes by stripping ALL `\r` then trailing `\n+` before hashing — bash uses `tr -d '\r'`, JS uses `s.replace(/\r/g, '').replace(/\n+$/, '')`, PS1 uses `-replace '\r', ''` then `-replace '\n+$', ''`. Pre-fix: Linux bash `$(cat)` only stripped LF (left stray `\r`), Windows Git Bash text-mode read collapsed CRLF→LF transparently — Linux/Windows hashes diverged. Validated against shared-kmp-libs (71 build files): `57f70e4c119d81bfd4ba8590f96025e7c3d4cfcb` on every walker. Tests: +6 vitest, +4 bats, +5 Pester (+ 1 negative guard that fixtures with same logical content but different line endings hash identically).
-  - **Gap A (#67)** — Build-logic kover/jacoco detection ported into JS + coverage-task prediction in `resolveTasksFor`. New `lib/project-model.js#detectBuildLogicCoverageHints` walks `build-logic/**/*.{gradle.kts,kt}` (previously only the bash `detect_coverage_tool` scanned this location). `analyzeModule` ORs the per-module signal with the project-wide hint; `resolveTasksFor` predicts `coverageTask` from `(coveragePlugin, type)` when probe data is missing (kover+kmp → `koverXmlReportDesktop`, etc.). Closes the practical gap of "fast-path returns null when it shouldn't": shared-kmp-libs went from 0/71 to 69/71 modules with `resolved.coverageTask` populated. Tests: +16 vitest. **Scope reduction** — deletion of `detect_coverage_tool` / `get_coverage_gradle_task` from sh + ps1 deferred to a future milestone since the legacy chain is still load-bearing for projects without a model.json (no probe + no model = legacy file scan is the only detection path). The pre-work alone closed the user-visible gap.
+  - **Gap C (#66)** — Cache-key SHA byte-parity across walkers AND across host platforms. JS / bash / PS1 now produce IDENTICAL SHAs for the same logical content regardless of file line endings (CRLF / LF / mixed) or runner OS. Strategy: every walker normalizes by stripping ALL `\r` then trailing `\n+` before hashing — bash uses `tr -d '\r'`, JS uses `s.replace(/\r/g, '').replace(/\n+$/, '')`, PS1 uses `-replace '\r', ''` then `-replace '\n+$', ''`. Pre-fix: Linux bash `$(cat)` only stripped LF (left stray `\r`), Windows Git Bash text-mode read collapsed CRLF→LF transparently — Linux/Windows hashes diverged. Validated against a reference KMP composite project (71 build files): `57f70e4c119d81bfd4ba8590f96025e7c3d4cfcb` on every walker. Tests: +6 vitest, +4 bats, +5 Pester (+ 1 negative guard that fixtures with same logical content but different line endings hash identically).
+  - **Gap A (#67)** — Build-logic kover/jacoco detection ported into JS + coverage-task prediction in `resolveTasksFor`. New `lib/project-model.js#detectBuildLogicCoverageHints` walks `build-logic/**/*.{gradle.kts,kt}` (previously only the bash `detect_coverage_tool` scanned this location). `analyzeModule` ORs the per-module signal with the project-wide hint; `resolveTasksFor` predicts `coverageTask` from `(coveragePlugin, type)` when probe data is missing (kover+kmp → `koverXmlReportDesktop`, etc.). Closes the practical gap of "fast-path returns null when it shouldn't": a reference KMP composite project went from 0/71 to 69/71 modules with `resolved.coverageTask` populated. Tests: +16 vitest. **Scope reduction** — deletion of `detect_coverage_tool` / `get_coverage_gradle_task` from sh + ps1 deferred to a future milestone since the legacy chain is still load-bearing for projects without a model.json (no probe + no model = legacy file scan is the only detection path). The pre-work alone closed the user-visible gap.
 
-- 2026-04-29: **v0.5.1** — "Real-world validation hardening, round 2 + Phase 4 ProjectModel refactor". Closes 11 bugs surfaced when v0.5.0 was tested against (a) a 13-module Android-only Gradle 9 project on macOS and (b) `shared-kmp-libs` on Windows + S22 Ultra physical device + JDK 21:
+- 2026-04-29: **v0.5.1** — "Real-world validation hardening, round 2 + Phase 4 ProjectModel refactor". Closes 11 bugs surfaced when v0.5.0 was tested against (a) a 13-module Android-only Gradle 9 project on macOS and (b) the reference KMP composite project on Windows + S22 Ultra physical device + JDK 21:
   - **Bug G (#52)** — `--json` envelope now surfaces real signal for `android` + `benchmark` failures. `parseScriptOutput` dispatches per-subcommand (android JSON SUMMARY, benchmark `[OK]/[FAIL]` lines + Result tally, parallel/changed/coverage legacy). New `errors[].code` discriminators (`task_not_found`, `instrumented_setup_failed`, `unsupported_class_version` w/ `class_file_version` + `runtime_version` fields, `module_failed` w/ `log_file`/`logcat_file`/`errors_file` paths). New top-level `benchmark` envelope field `{config, total, passed, failed}`. PS1 parity for benchmark per-task lines.
   - **Bug F (#52)** — JDK toolchain pre-flight gate detects three signals: `jvmToolchain(N)`, `JvmTarget.JVM_N`, `JavaVersion.VERSION_N`; takes MAX. Was: only `jvmToolchain(N)` matched, so projects pinning `jvmTarget = JVM_21` in build-logic without a toolchain crashed at runtime instead of being blocked pre-flight. Function renamed `findRequiredJdkVersion`. SH/PS1 parity.
   - **`--test-filter '*Foo*'` substring resolution (#52)** — wildcards now interpret as wildcards: `*Scale*` → `ScaleBenchmark`. Was: regex word-boundary failed when the next char was a word char.
@@ -1480,7 +1563,7 @@ Out of scope for this item: cross-host coordination (use a real lock manager), G
   - **PS1 single-item-pipeline collapse (#54)** — `run-android-tests.ps1` summary counts wrapped in `@(...)` to force array semantics. Was: `summary.json: { totalModules: 5, passedModules: 11, modules.length: 1 }` because `Where-Object` results collapsed to a hashtable and `.Count` returned the number of HASHTABLE KEYS instead of the array length.
   - **Phase 4 ProjectModel consolidation refactor (#55)** — single canonical introspector `lib/project-model.js` builds a JSON ProjectModel JSON file at `<project>/.kmp-test-runner-cache/model-<sha1>.json`. Sh and ps1 readers parse it via python3 / `ConvertFrom-Json`; legacy detection runs unchanged when the model is absent. Migrated call-sites: `findRequiredJdkVersion`, `module_has_test_sources`, android device-task selection, coverage-task selection — all delegate to `pm_get_*` / `Get-Pm*` first. 10 atomic commits + 47 new tests. Future detection bugs become a one-place fix.
   - Suite at release: **297 vitest + ~110 bats + ~99 Pester** (was 246 + 87 + 74 at v0.5.0). Coverage 95.84% lines / 84.03% branches on `lib/**/*.js`.
-  - Real-world validation against shared-kmp-libs (Win + S22 Ultra + JDK 21): V8 (android tier 1 with model-*.json), V10/V12-real (parallel cold + warm), V13 (benchmark `--config main --platform jvm` happy-path 22s 1/1 passed), V9 (Bug H ETIMEDOUT structured envelope). Coverage report: 95.1% TOTAL on core-encryption modules.
+  - Real-world validation against a reference KMP composite project (Win + S22 Ultra + JDK 21): V8 (android tier 1 with model-*.json), V10/V12-real (parallel cold + warm), V13 (benchmark `--config main --platform jvm` happy-path 22s 1/1 passed), V9 (Bug H ETIMEDOUT structured envelope). Coverage report: 95.1% TOTAL on core-encryption modules.
 
 - 2026-04-27: **v0.5.0** — "Real-world Mac validation hardening." Four production bugs surfaced on macOS running v0.4.1 against a 20-module Android-only KMP project, all bundled into one milestone:
   - **Bug A (#43)** — JDK toolchain mismatch becomes BLOCKING by default. Was: warning printed and script continued, then tests failed downstream with `UnsupportedClassVersionError`. Now: exits 3 with a per-OS `JAVA_HOME` hint; `--ignore-jdk-mismatch` / `-IgnoreJdkMismatch` downgrades to WARN; `gradle.properties` `org.gradle.java.home` bypasses the check (gradle's explicit override wins). 12 vitest + 9 bats + 6 Pester. Shared helpers `scripts/sh/lib/jdk-check.sh` + `scripts/ps1/lib/Jdk-Check.ps1`.
@@ -1491,7 +1574,7 @@ Out of scope for this item: cross-host coordination (use a real lock manager), G
   - Suite totals at release: **221 vitest + 87 bats + 74 Pester**. README banner deferred per design decision.
 
 - 2026-04-26: **v0.3.8** — Tier 1 concurrent-invocation safety. Advisory lockfile at `<project>/.kmp-test-runner.lock` (`{schema:1, pid, start_time, subcommand, project_root, version}` JSON); `--force` global flag bypasses live lock; stale-PID reclaim is automatic; SIGINT/SIGTERM/uncaughtException cleanup hooks; `--json` mode emits `errors[].code = "lock_held"`. Run-id naming `YYYYMMDD-HHMMSS-PID6` for `coverage-full-report-<id>.md`, `benchmark-report-<id>.md`, and `gradle-parallel-tests-<id>.log`; legacy stable filenames retained as a last-finished mirror so existing consumers keep working. Tests: 121 vitest (96% line coverage on cli.js, +30 lockfile-specific cases) + 12 bats (`tests/bats/test-concurrency.bats`, 3 skipped under MinGW due to MSYS PID semantics — Linux CI runs all of them) + 10 Pester 5 (`tests/pester/Concurrency.Tests.ps1`). `doctor` and `--dry-run` skip the lock since they're read-only.
-- 2026-04-26: **Real token-cost metrics for the "Agentic usage" claim** — `tools/measure-token-cost.js` (Node + js-tiktoken; `--project-root`, `--module-filter`, `--test-task`, `--runs`) runs the three approaches (A: raw `./gradlew + read build/reports/**`, B: `kmp-test parallel`, C: `kmp-test parallel --json`) against any KMP project and emits a markdown table with token counts. First run against `shared-kmp-libs:core-result:desktopTest` produced **A 12,816 tok / B 376 tok / C 100 tok** — `--json` is **128× cheaper than raw gradle**. Captured run logs committed to `tools/runs/`; methodology + caveats in `docs/token-cost-measurement.md`; README "Agentic usage" section updated to link the doc. Replaces the prior qualitative claim with a self-auditable measurement.
+- 2026-04-26: **Real token-cost metrics for the "Agentic usage" claim** — `tools/measure-token-cost.js` (Node + js-tiktoken; `--project-root`, `--module-filter`, `--test-task`, `--runs`) runs the three approaches (A: raw `./gradlew + read build/reports/**`, B: `kmp-test parallel`, C: `kmp-test parallel --json`) against any KMP project and emits a markdown table with token counts. First run against `a reference KMP composite project:core-result:desktopTest` produced **A 12,816 tok / B 376 tok / C 100 tok** — `--json` is **128× cheaper than raw gradle**. Captured run logs committed to `tools/runs/`; methodology + caveats in `docs/token-cost-measurement.md`; README "Agentic usage" section updated to link the doc. Replaces the prior qualitative claim with a self-auditable measurement.
 - 2026-04-26: **v0.3.7** — DX & agentic features bundle. `--dry-run` (skip spawn, print/JSON the resolved plan), `kmp-test doctor` subcommand (5 env checks: Node, shell, gradlew, JDK, ADB; human table + `--json` array), and `--test-filter <pattern>` passthrough (gradle `--tests` for JVM, `-Pandroid.testInstrumentationRunnerArguments.class=` for Android with `*Pattern*` → FQN resolution by source scan). Plus Conventional Commits enforcement on PR titles via `.github/workflows/commit-lint.yml` (adapted inline from AndroidCommonDoc reusable workflow — repo stays standalone). 91 vitest + 52 bats tests. **Branch protection must be updated to add `commit-lint / 🔤 Commit Lint` as required check.**
 - 2026-04-25: **v0.3.6** — `auto-tag.yml` → `publish-release.yml` cascade now fires automatically via `workflow_call` (no PAT, no rotation). v0.3.5 had needed manual `gh workflow run -f tag=...` to ship artefacts because GitHub blocks `GITHUB_TOKEN`-pushed events from triggering downstream workflows. v0.3.6's merge was the first 100 %-hands-off cascade end-to-end (auto-tag → release artefacts → npm publish → gradle publish), ~90 sec from merge to all artefacts visible. (PR #15 + #16)
 - 2026-04-25: **v0.3.5** — `scripts/install.ps1` `Resolve-LatestVersion` now works in PowerShell 7+ via new `Get-LocationHeader` helper (the old `$Response.Headers["Location"]` indexer threw on `HttpResponseHeaders`). Also added `develop` to `ci.yml` triggers (PR-to-develop checks were not running). Was the first real exercise of the auto-publish pipeline (v0.3.4's was a no-op for auto-tag). Caught while validating v0.3.4 install.ps1 against the live GitHub Release. (PR #13 + #14)

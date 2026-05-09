@@ -12,6 +12,7 @@ import path from 'node:path';
 
 import {
   SCHEMA_VERSION,
+  MODEL_FINGERPRINT,
   computeCacheKey,
   aggregateJdkSignals,
   parseSettingsIncludes,
@@ -884,11 +885,13 @@ describe('parseBuildLogicPluginDescriptors (v0.6.x Gap 4)', () => {
       pluginId: 'com.example.foo',
       className: 'FooConventionPlugin',
       addsCoverage: null,
+      appliedPlugins: [],
     });
     expect(ds.find(d => d.pluginId === 'com.example.bar.jacoco')).toEqual({
       pluginId: 'com.example.bar.jacoco',
       className: 'BarJacocoConventionPlugin',
       addsCoverage: 'jacoco',
+      appliedPlugins: [],
     });
   });
 
@@ -982,6 +985,243 @@ nowinandroid-android-application-jacoco = { id = "myproj.android.application.jac
     const ds = parseBuildLogicPluginDescriptors(dir);
     expect(ds).toHaveLength(1);
     expect(ds[0].pluginId).toBe('com.example.foo');
+  });
+
+  // ------------------------------------------------------------------
+  // v0.9 step 9.2 (Bug #2) — appliedPlugins extraction from .kt source.
+  // NIA pattern: alias resolves to non-canonical literal id; the convention
+  // plugin's `apply(plugin = "com.android.library")` body is invisible
+  // without source-scan. parseBuildLogicPluginDescriptors now walks .kt
+  // files and records appliedPlugins per descriptor by class name.
+  // ------------------------------------------------------------------
+  it('NIA pattern: extracts appliedPlugins from `apply(plugin = "...")` in .kt source', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      `[plugins]
+nowinandroid-android-library = { id = "nowinandroid.android.library" }
+`);
+    mkdirSync(path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin'), { recursive: true });
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'build.gradle.kts'),
+      `gradlePlugin {
+        plugins {
+          register("androidLibrary") {
+            id = libs.plugins.nowinandroid.android.library.get().pluginId
+            implementationClass = "AndroidLibraryConventionPlugin"
+          }
+        }
+      }`);
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin', 'AndroidLibraryConventionPlugin.kt'),
+      `class AndroidLibraryConventionPlugin : Plugin<Project> {
+        override fun apply(target: Project) {
+          with(target) {
+            apply(plugin = "com.android.library")
+            apply(plugin = "nowinandroid.android.lint")
+          }
+        }
+      }`);
+    const ds = parseBuildLogicPluginDescriptors(dir);
+    expect(ds).toHaveLength(1);
+    expect(ds[0].pluginId).toBe('nowinandroid.android.library');
+    expect(ds[0].className).toBe('AndroidLibraryConventionPlugin');
+    expect(ds[0].appliedPlugins).toEqual(expect.arrayContaining(['com.android.library', 'nowinandroid.android.lint']));
+  });
+
+  it('NIA pattern: detects coveragePlugin via `apply<JacocoPlugin>()` Kotlin generic form', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      `[plugins]
+nowinandroid-jacoco = { id = "nowinandroid.android.library.jacoco" }
+`);
+    mkdirSync(path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin'), { recursive: true });
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'build.gradle.kts'),
+      `gradlePlugin {
+        plugins {
+          register("jacoco") {
+            id = libs.plugins.nowinandroid.jacoco.get().pluginId
+            implementationClass = "AndroidLibraryJacocoConventionPlugin"
+          }
+        }
+      }`);
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin', 'AndroidLibraryJacocoConventionPlugin.kt'),
+      `import org.gradle.testing.jacoco.plugins.JacocoPlugin
+       class AndroidLibraryJacocoConventionPlugin : Plugin<Project> {
+        override fun apply(target: Project) {
+          with(target) { apply<JacocoPlugin>() }
+        }
+      }`);
+    const ds = parseBuildLogicPluginDescriptors(dir);
+    expect(ds).toHaveLength(1);
+    expect(ds[0].addsCoverage).toBe('jacoco');
+    expect(ds[0].appliedPlugins).toEqual(['jacoco']);
+  });
+
+  it('shared-kmp-libs pattern: extracts appliedPlugins from `pluginManager.apply("...")` form', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'build-logic', 'src', 'main', 'kotlin'), { recursive: true });
+    writeFileSync(path.join(dir, 'build-logic', 'build.gradle.kts'),
+      `gradlePlugin {
+        plugins {
+          register("kmpLibrary") {
+            id = "com.example.kmp.library"
+            implementationClass = "KmpLibraryConventionPlugin"
+          }
+        }
+      }`);
+    writeFileSync(path.join(dir, 'build-logic', 'src', 'main', 'kotlin', 'KmpLibraryConventionPlugin.kt'),
+      `class KmpLibraryConventionPlugin : Plugin<Project> {
+        override fun apply(target: Project) {
+          with(target) {
+            with(pluginManager) {
+              apply("org.jetbrains.kotlin.multiplatform")
+              apply("com.android.kotlin.multiplatform.library")
+              apply("org.jetbrains.kotlinx.kover")
+            }
+          }
+        }
+      }`);
+    const ds = parseBuildLogicPluginDescriptors(dir);
+    expect(ds).toHaveLength(1);
+    expect(ds[0].appliedPlugins).toEqual(expect.arrayContaining([
+      'org.jetbrains.kotlin.multiplatform',
+      'com.android.kotlin.multiplatform.library',
+      'org.jetbrains.kotlinx.kover',
+    ]));
+    // addsCoverage refined from appliedPlugins (class name doesn't match Kover regex).
+    expect(ds[0].addsCoverage).toBe('kover');
+  });
+
+  it('precompiled-script .gradle.kts: extracts appliedPlugins from `plugins { id("...") }` block', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin'), { recursive: true });
+    writeFileSync(
+      path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin', 'myproj.kmp-base.gradle.kts'),
+      `plugins {
+        id("org.jetbrains.kotlin.multiplatform")
+        id("org.jetbrains.kotlinx.kover")
+      }`);
+    const ds = parseBuildLogicPluginDescriptors(dir);
+    expect(ds).toHaveLength(1);
+    expect(ds[0].pluginId).toBe('myproj.kmp-base');
+    expect(ds[0].appliedPlugins).toEqual(expect.arrayContaining([
+      'org.jetbrains.kotlin.multiplatform',
+      'org.jetbrains.kotlinx.kover',
+    ]));
+    expect(ds[0].addsCoverage).toBe('kover');
+  });
+
+  it('resolves libs.plugins.<X>.asProvider().get().pluginId (NIA parent-alias form)', () => {
+    // NIA's `nowinandroid-android-library` parent alias coexists with
+    // children `nowinandroid-android-library-{compose,jacoco,...}`. Kotlin
+    // DSL forces `.asProvider()` to disambiguate parent from nested.
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      `[plugins]
+nowinandroid-android-library = { id = "nowinandroid.android.library" }
+nowinandroid-android-library-jacoco = { id = "nowinandroid.android.library.jacoco" }
+`);
+    mkdirSync(path.join(dir, 'build-logic', 'convention'), { recursive: true });
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'build.gradle.kts'),
+      `gradlePlugin {
+        plugins {
+          register("androidLibrary") {
+            id = libs.plugins.nowinandroid.android.library.asProvider().get().pluginId
+            implementationClass = "AndroidLibraryConventionPlugin"
+          }
+          register("androidLibraryJacoco") {
+            id = libs.plugins.nowinandroid.android.library.jacoco.get().pluginId
+            implementationClass = "AndroidLibraryJacocoConventionPlugin"
+          }
+        }
+      }`);
+    const ds = parseBuildLogicPluginDescriptors(dir);
+    expect(ds).toHaveLength(2);
+    expect(ds.find(d => d.pluginId === 'nowinandroid.android.library')).toBeDefined();
+    expect(ds.find(d => d.pluginId === 'nowinandroid.android.library.jacoco')).toBeDefined();
+  });
+
+  it('descriptor without .kt source returns appliedPlugins:[] (backwards-compat)', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'build-logic', 'convention'), { recursive: true });
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'build.gradle.kts'),
+      `gradlePlugin {
+        plugins {
+          register("noSource") {
+            id = "com.example.no.source"
+            implementationClass = "NoSourceConventionPlugin"
+          }
+        }
+      }`);
+    // No corresponding .kt file in src/main/kotlin/.
+    const ds = parseBuildLogicPluginDescriptors(dir);
+    expect(ds).toHaveLength(1);
+    expect(ds[0].appliedPlugins).toEqual([]);
+  });
+});
+
+// ------------------------------------------------------------------
+// v0.9 step 9.2 (Bug #2) — analyzeModule expands aliases through
+// descriptor.appliedPlugins. NIA `:core:data` repro: pre-fix returns
+// type='unknown' because the alias resolves to a non-canonical literal.
+// Post-fix: expandedPluginIds inherits "com.android.library" from the
+// convention plugin's apply() body → type='android' fires.
+// ------------------------------------------------------------------
+describe('analyzeModule alias expansion via convention-plugin appliedPlugins (Bug #2)', () => {
+  function makeNiaLikeProject() {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+    writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+      `[plugins]
+nowinandroid-android-library = { id = "nowinandroid.android.library" }
+nowinandroid-android-library-jacoco = { id = "nowinandroid.android.library.jacoco" }
+`);
+    mkdirSync(path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin'), { recursive: true });
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'build.gradle.kts'),
+      `gradlePlugin {
+        plugins {
+          register("androidLibrary") {
+            id = libs.plugins.nowinandroid.android.library.get().pluginId
+            implementationClass = "AndroidLibraryConventionPlugin"
+          }
+          register("androidLibraryJacoco") {
+            id = libs.plugins.nowinandroid.android.library.jacoco.get().pluginId
+            implementationClass = "AndroidLibraryJacocoConventionPlugin"
+          }
+        }
+      }`);
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin', 'AndroidLibraryConventionPlugin.kt'),
+      `class AndroidLibraryConventionPlugin : Plugin<Project> {
+        override fun apply(target: Project) {
+          target.pluginManager.apply("com.android.library")
+        }
+      }`);
+    writeFileSync(path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin', 'AndroidLibraryJacocoConventionPlugin.kt'),
+      `class AndroidLibraryJacocoConventionPlugin : Plugin<Project> {
+        override fun apply(target: Project) { apply<JacocoPlugin>() }
+      }`);
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":core:data")');
+    mkdirSync(path.join(dir, 'core', 'data'), { recursive: true });
+    writeFileSync(path.join(dir, 'core', 'data', 'build.gradle.kts'),
+      `plugins {
+        alias(libs.plugins.nowinandroid.android.library)
+        alias(libs.plugins.nowinandroid.android.library.jacoco)
+      }
+      android { namespace = "com.example.data" }`);
+    return dir;
+  }
+
+  it('expands non-canonical alias literal to com.android.library via appliedPlugins', () => {
+    const dir = makeNiaLikeProject();
+    const analysis = analyzeModule(dir, ':core:data');
+    expect(analysis.type).toBe('android');
+  });
+
+  it('inherits jacoco coverage from convention plugin apply<JacocoPlugin>() body', () => {
+    const dir = makeNiaLikeProject();
+    const analysis = analyzeModule(dir, ':core:data');
+    expect(analysis.coveragePlugin).toBe('jacoco');
   });
 });
 
@@ -1861,6 +2101,55 @@ describe('buildProjectModel', () => {
     expect(b.generatedAt).not.toBe(a.generatedAt);
   });
 
+  // Wet audit 2026-05-08 (B4 cell): Bug #4 fix (commit ae02317) changed
+  // platformsFromAnalysis output WITHOUT bumping SCHEMA_VERSION, so caches
+  // generated days earlier silently kept returning `platforms:["android"]` for
+  // shared-kmp-libs:core-result instead of the expected
+  // `["jvm","android","ios","macos"]`. Embedding the introspector source-file
+  // fingerprint in the cache file forces auto-invalidation on any logic change.
+  it('persists modelFingerprint in the cached model JSON', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const m = buildProjectModel(dir, { skipProbe: true });
+    expect(m.modelFingerprint).toBe(MODEL_FINGERPRINT);
+    expect(m.modelFingerprint).toMatch(/^[0-9a-f]{12}$/);
+    const onDisk = JSON.parse(readFileSync(
+      path.join(dir, '.kmp-test-runner', 'cache', `model-${m.cacheKey}.json`),
+      'utf8'
+    ));
+    expect(onDisk.modelFingerprint).toBe(MODEL_FINGERPRINT);
+  });
+
+  it('discards cached model when modelFingerprint is missing (pre-fix cache)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const m1 = buildProjectModel(dir, { skipProbe: true });
+    const cacheFile = path.join(dir, '.kmp-test-runner', 'cache', `model-${m1.cacheKey}.json`);
+    // Simulate a pre-fix cache: no modelFingerprint, with a stale generatedAt.
+    const stale = JSON.parse(readFileSync(cacheFile, 'utf8'));
+    delete stale.modelFingerprint;
+    stale.generatedAt = '2026-05-04T19:29:34.353Z';
+    writeFileSync(cacheFile, JSON.stringify(stale));
+    const m2 = buildProjectModel(dir, { skipProbe: true });
+    // Rebuilt: generatedAt advanced AND fingerprint repopulated.
+    expect(m2.generatedAt).not.toBe('2026-05-04T19:29:34.353Z');
+    expect(m2.modelFingerprint).toBe(MODEL_FINGERPRINT);
+  });
+
+  it('discards cached model when modelFingerprint differs (introspector changed)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const m1 = buildProjectModel(dir, { skipProbe: true });
+    const cacheFile = path.join(dir, '.kmp-test-runner', 'cache', `model-${m1.cacheKey}.json`);
+    const stale = JSON.parse(readFileSync(cacheFile, 'utf8'));
+    stale.modelFingerprint = 'deadbeefcafe';
+    stale.generatedAt = '2026-05-04T19:29:34.353Z';
+    writeFileSync(cacheFile, JSON.stringify(stale));
+    const m2 = buildProjectModel(dir, { skipProbe: true });
+    expect(m2.generatedAt).not.toBe('2026-05-04T19:29:34.353Z');
+    expect(m2.modelFingerprint).toBe(MODEL_FINGERPRINT);
+  });
+
   // v0.8.0 cache subdir migration — dual-read fallback for legacy `.kmp-test-runner-cache/`
   it('writes new cache to .kmp-test-runner/cache/ (NOT to legacy .kmp-test-runner-cache/)', () => {
     const dir = makeProject();
@@ -2197,5 +2486,39 @@ describe('buildProjectModel applies build-logic hints (Gap A integration)', () =
     const m = buildProjectModel(dir, { skipProbe: true });
     expect(m.modules[':core-foo'].coveragePlugin).toBe('kover');
     expect(m.modules[':core-foo'].resolved.coverageTask).toBe('koverXmlReportDesktop');
+  });
+});
+
+describe('probeGradleTasksCached spawn wrapper (regression for v0.9 EINVAL bug)', () => {
+  // Surfaced 2026-05-07 against shared-kmp-libs core-* during v0.9.0
+  // pre-release validation. probeGradleTasksCached invoked
+  // `spawnSync(gradlewPath, [...])` directly. Windows hosts (Node 18.20.2+)
+  // returned `EINVAL` because gradlew.bat can't be spawned directly
+  // post-CVE-2024-27980. The probe failed silently, gradleTasks stayed
+  // unpopulated, and 5 KMP modules whose targets came from a convention plugin
+  // (`com.grinx.shared.kmp.library` declares `jvm("desktop")` / `iosX64()` /
+  // etc. inside the plugin, not in the consumer build.gradle.kts) reported
+  // test_tasks as all-null → kmp-test parallel/coverage refused to dispatch
+  // them with `errors[].code: "no_test_modules"`.
+  //
+  // Fix: route through `spawnGradle` from `lib/orchestrator-utils.js` which
+  // wraps via `cmd.exe /d /s /c` on Windows. This was the same bug class fixed
+  // in v0.8 sub-entry-1 for the orchestrators; the gradle-tasks probe was the
+  // last spawn site missed.
+  //
+  // This test is structural — if a future refactor reverts to raw spawnSync,
+  // it'll fail at module-import time.
+
+  it('lib/project-model.js imports spawnGradle from orchestrator-utils', () => {
+    const src = readFileSync(path.join(process.cwd(), 'lib/project-model.js'), 'utf8');
+    expect(src).toMatch(/import\s*\{\s*spawnGradle\s*\}\s*from\s*['"]\.\/orchestrator-utils\.js['"]/);
+  });
+
+  it('probeGradleTasksCached invokes spawnGradle(spawnSync, …), never raw spawnSync(wrapperPath, …)', () => {
+    const src = readFileSync(path.join(process.cwd(), 'lib/project-model.js'), 'utf8');
+    const probeBlock = src.match(/function\s+probeGradleTasksCached[\s\S]+?\n\}/);
+    expect(probeBlock).toBeTruthy();
+    expect(probeBlock[0]).toMatch(/spawnGradle\s*\(\s*spawnSync\s*,\s*wrapperPath\s*,/);
+    expect(probeBlock[0]).not.toMatch(/spawnSync\s*\(\s*wrapperPath\s*,/);
   });
 });

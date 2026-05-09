@@ -57,6 +57,8 @@ import {
   partitionBySkipEnv,
   legsForAll,
   junitTestCountFor,
+  junitTestFailuresFor,
+  extractTestcaseFailures,
   classifyTaskResults,
   applyModuleFilters,
   hasAnyTestSourceSet,
@@ -126,7 +128,7 @@ function makeSpawnStub({ status = 0, stdout = 'BUILD SUCCESSFUL\n', stderr = '',
 
 // Stub for runCoverage (in-process call). Records invocations and returns a
 // canned envelope so the parallel orchestrator can merge it.
-function makeRunCoverageStub({ coverage = null } = {}) {
+function makeRunCoverageStub({ coverage = null, errors = null, exitCode = 0 } = {}) {
   const calls = [];
   const fn = async (opts) => {
     calls.push(opts);
@@ -139,8 +141,9 @@ function makeRunCoverageStub({ coverage = null } = {}) {
           modules_with_kover_plugin: [],
           modules_with_jacoco_plugin: [],
         },
+        errors: errors ?? [],
       },
-      exitCode: 0,
+      exitCode,
     };
   };
   fn.calls = calls;
@@ -214,12 +217,103 @@ describe('parseArgs', () => {
     const opts = parseArgs(['--no-coverage']);
     expect(opts.coverageTool).toBe('none');
   });
+
+  // v0.9 session 2 Bug-E — `--coverage-only` implies `--skip-tests`. The
+  // `parallel --help` text documents the implication; pre-fix the parser set
+  // only `coverageOnly`, so `runParallel` still dispatched the test suite
+  // before reaching the coverage-only filter at line ~1330.
+  it('Bug-E: --coverage-only implies --skip-tests', () => {
+    const opts = parseArgs(['--coverage-only']);
+    expect(opts.coverageOnly).toBe(true);
+    expect(opts.skipTests).toBe(true);
+  });
+  it('Bug-E: --coverage-only with explicit --skip-tests is idempotent', () => {
+    const opts = parseArgs(['--coverage-only', '--skip-tests']);
+    expect(opts.coverageOnly).toBe(true);
+    expect(opts.skipTests).toBe(true);
+  });
+
+  it('parses v0.9 step 1 parity-gap flags (#1-#5)', () => {
+    const opts = parseArgs([
+      '--device', 'R3CT30KAMEH',
+      '--device-task', 'androidConnectedCheck',
+      '--auto-retry',
+      '--clear-data',
+      '--flavor', 'staging',
+    ]);
+    expect(opts.device).toBe('R3CT30KAMEH');
+    expect(opts.deviceTaskOverride).toBe('androidConnectedCheck');
+    expect(opts.autoRetry).toBe(true);
+    expect(opts.clearData).toBe(true);
+    expect(opts.flavor).toBe('staging');
+  });
+
+  it('v0.9 parity flags default to off / empty', () => {
+    const opts = parseArgs([]);
+    expect(opts.device).toBe('');
+    expect(opts.deviceTaskOverride).toBe('');
+    expect(opts.autoRetry).toBe(false);
+    expect(opts.clearData).toBe(false);
+    expect(opts.flavor).toBe('');
+  });
+
+  it('v0.9 step 2 — --gradle-args accumulates across multiple invocations', () => {
+    const opts = parseArgs([
+      '--gradle-args', '--no-parallel',
+      '--gradle-args', '-Pfoo=bar',
+    ]);
+    expect(opts.gradleArgs).toEqual(['--no-parallel', '-Pfoo=bar']);
+  });
+
+  it('v0.9 step 2 — --gradle-args whitespace-splits a single multi-token argument', () => {
+    const opts = parseArgs([
+      '--gradle-args', '--no-parallel --max-workers 1 -Pfoo=bar',
+    ]);
+    expect(opts.gradleArgs).toEqual(['--no-parallel', '--max-workers', '1', '-Pfoo=bar']);
+  });
+
+  it('v0.9 step 2 — gradleArgs default is empty array', () => {
+    const opts = parseArgs([]);
+    expect(opts.gradleArgs).toEqual([]);
+  });
 });
 
 describe('expandNoCoverageAlias', () => {
   it('substitutes --no-coverage in place', () => {
     expect(expandNoCoverageAlias(['--foo', '--no-coverage', '--bar']))
       .toEqual(['--foo', '--coverage-tool', 'none', '--bar']);
+  });
+  // Wet audit 2026-05-08 (cell I1c): `--gradle-args=--info` (POSIX = form)
+  // was silently dropped because the switch matches the FULL token. Split
+  // `--flag=value` into `[--flag, value]` so callers can use either syntax.
+  it('splits --flag=value into [--flag, value]', () => {
+    expect(expandNoCoverageAlias(['--gradle-args=--info']))
+      .toEqual(['--gradle-args', '--info']);
+    expect(expandNoCoverageAlias(['--module-filter=core-result']))
+      .toEqual(['--module-filter', 'core-result']);
+    expect(expandNoCoverageAlias(['--test-type=common']))
+      .toEqual(['--test-type', 'common']);
+  });
+  it('splits on first = only (value may contain =)', () => {
+    expect(expandNoCoverageAlias(['--gradle-args=-Pfoo=bar']))
+      .toEqual(['--gradle-args', '-Pfoo=bar']);
+  });
+  it('does NOT split short flags or non-flag tokens with =', () => {
+    expect(expandNoCoverageAlias(['-Pfoo=bar', 'core=err']))
+      .toEqual(['-Pfoo=bar', 'core=err']);
+  });
+  it('parseArgs accepts --module-filter=value (= form)', () => {
+    const opts = parseArgs(['--module-filter=core-result']);
+    expect(opts.moduleFilter).toBe('core-result');
+  });
+  it('parseArgs accepts --test-type=value (= form)', () => {
+    const opts = parseArgs(['--test-type=common']);
+    expect(opts.testType).toBe('common');
+    expect(opts.testTypeExplicit).toBe(true);
+  });
+  it('parseArgs accepts --gradle-args=value (= form)', () => {
+    const opts = parseArgs(['--gradle-args=--info --rerun-tasks']);
+    expect(opts.gradleArgs).toEqual(['--info', '--rerun-tasks']);
   });
 });
 
@@ -448,6 +542,113 @@ describe('pickGradleTaskFor', () => {
     });
   });
 
+  // 2026-05-05 v0.9 step 1 (flag #4) — `--flavor <name>` weaves into
+  // `connected${Cap}${Variant}AndroidTest`. Modules with hasFlavor=true
+  // get the flavor weave; modules without hasFlavor see the flag as a no-op
+  // (parallel.warnings[].code='flavor_unused' surfaces at the runParallel
+  // level when no module has hasFlavor at all).
+  describe('--flavor weave on androidConnectedTask (v0.9 step 1, flag #4)', () => {
+    const flavorModule = {
+      name: 'app',
+      type: 'android',
+      androidDsl: true,
+      hasFlavor: true,
+      sourceSets: { androidInstrumentedTest: true },
+      resolved: { deviceTestTask: null },
+    };
+
+    it('--flavor staging --variant debug → connectedStagingDebugAndroidTest', () => {
+      expect(pickGradleTaskFor(flavorModule, 'androidInstrumented', {
+        androidVariant: 'debug', flavor: 'staging',
+      }).task).toBe(':app:connectedStagingDebugAndroidTest');
+    });
+
+    it('--flavor staging --variant release → connectedStagingReleaseAndroidTest', () => {
+      expect(pickGradleTaskFor(flavorModule, 'androidInstrumented', {
+        androidVariant: 'release', flavor: 'staging',
+      }).task).toBe(':app:connectedStagingReleaseAndroidTest');
+    });
+
+    it('--flavor staging --variant all → connectedStagingAndroidTest (umbrella)', () => {
+      expect(pickGradleTaskFor(flavorModule, 'androidInstrumented', {
+        androidVariant: 'all', flavor: 'staging',
+      }).task).toBe(':app:connectedStagingAndroidTest');
+    });
+
+    it('--flavor staging --variant auto + testBuildType=release → connectedStagingReleaseAndroidTest', () => {
+      const releaseFlavor = { ...flavorModule, testBuildType: 'release' };
+      expect(pickGradleTaskFor(releaseFlavor, 'androidInstrumented', {
+        androidVariant: 'auto', flavor: 'staging',
+      }).task).toBe(':app:connectedStagingReleaseAndroidTest');
+    });
+
+    it('--flavor staging on a module without hasFlavor → no-op (no flavor in task name)', () => {
+      const flatModule = {
+        ...flavorModule,
+        hasFlavor: false,
+      };
+      expect(pickGradleTaskFor(flatModule, 'androidInstrumented', {
+        androidVariant: 'debug', flavor: 'staging',
+      }).task).toBe(':app:connectedDebugAndroidTest');
+    });
+  });
+
+  // 2026-05-05 v0.9 step 1 (flag #5) — `--device-task <name>` preempts every
+  // other resolution path on the androidInstrumented branch. Mirrors the
+  // dedicated `kmp-test android` subcommand's escape hatch (BACKLOG L195-198).
+  describe('--device-task override (v0.9 step 1, flag #5)', () => {
+    it('preempts deviceTestTask probe', () => {
+      expect(pickGradleTaskFor(androidModule, 'androidInstrumented', {
+        deviceTaskOverride: 'androidConnectedCheck',
+      }).task).toBe(':app:androidConnectedCheck');
+    });
+
+    it('preempts kmpAndroidLibrary androidConnectedCheck default', () => {
+      const kmpLib = {
+        name: 'kmp-feat',
+        type: 'kmp',
+        androidDsl: true,
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidDeviceTest: true },
+        resolved: { deviceTestTask: null },
+      };
+      expect(pickGradleTaskFor(kmpLib, 'androidInstrumented', {
+        deviceTaskOverride: 'connectedDebugAndroidTest',
+      }).task).toBe(':kmp-feat:connectedDebugAndroidTest');
+    });
+
+    it('preempts AGP fallback to connected${Variant}AndroidTest', () => {
+      const fallbackModule = {
+        name: 'app',
+        type: 'android',
+        androidDsl: true,
+        sourceSets: { androidInstrumentedTest: true },
+        resolved: { deviceTestTask: null },
+        testBuildType: 'release',
+      };
+      // testBuildType="release" would normally pick connectedReleaseAndroidTest;
+      // override forces a different name verbatim.
+      expect(pickGradleTaskFor(fallbackModule, 'androidInstrumented', {
+        deviceTaskOverride: 'customConnectedTest',
+        androidVariant: 'auto',
+      }).task).toBe(':app:customConnectedTest');
+    });
+
+    it('does NOT apply to non-androidInstrumented test types (e.g. common, ios, androidUnit)', () => {
+      // The override is only consumed in the androidInstrumented branch; other
+      // branches see opts.deviceTaskOverride but ignore it.
+      expect(pickGradleTaskFor(kmpModule, 'common', {
+        deviceTaskOverride: 'androidConnectedCheck',
+      }).task).toBe(':shared:jvmTest');
+      expect(pickGradleTaskFor(kmpModule, 'ios', {
+        deviceTaskOverride: 'androidConnectedCheck',
+      }).task).toBe(':shared:iosSimulatorArm64Test');
+      expect(pickGradleTaskFor(androidModule, 'androidUnit', {
+        deviceTaskOverride: 'androidConnectedCheck',
+      }).task).toBe(':app:testDebugUnitTest');
+    });
+  });
+
   // 2026-05-05 — fix-PR-F-bis: --variant + testBuildType honored even when
   // the project model already resolved a deviceTestTask. Repro from
   // dipatternsdemo `:benchmark` post commit 058a520
@@ -599,6 +800,27 @@ describe('pickGradleTaskFor', () => {
       };
       const r = pickGradleTaskFor(mod, 'androidUnit');
       expect(r.task).toBe(':core-firebase-native:testAndroidHostTest');
+      expect(r.reason).toBe('');
+    });
+
+    // Surfaced live by v0.9 step 7 wet validation against KaMPKit's `:shared`
+    // (2026-05-06). KaMPKit uses the hybrid pattern: `com.android.library`
+    // plugin AT THE TOP + `kotlin { android { withHostTestBuilder {} } }`
+    // DSL inside the `kotlin {}` block. The parser surfaces type='kmp' +
+    // androidDsl=null (no `androidLibrary {}` block) + androidDslVariant=
+    // 'kmpAndroidLibrary' (legacy DSL with new opt-in). The orchestrator's
+    // androidUnit early-return previously only consulted `type` and
+    // `androidDsl`, so this combo hit `'no androidUnit target'` even though
+    // `testAndroidHostTest` would have run cleanly. Lock the dispatch.
+    it('androidUnit: kmpAndroidLibrary with androidDsl=null (KaMPKit hybrid) → dispatches testAndroidHostTest', () => {
+      const mod = {
+        name: 'shared', type: 'kmp', androidDsl: null,
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidUnitTest: true, commonTest: true, iosTest: true, iosMain: true },
+        resolved: { unitTestTask: null },
+      };
+      const r = pickGradleTaskFor(mod, 'androidUnit');
+      expect(r.task).toBe(':shared:testAndroidHostTest');
       expect(r.reason).toBe('');
     });
 
@@ -812,6 +1034,196 @@ describe('junitTestCountFor', () => {
     workDir = dir;
     expect(junitTestCountFor(dir, ':missing:test')).toBe(0);
   });
+
+  // OBS-A from 2026-05-09 — symmetric counting on AGP path.
+  it('counts testcases in AGP outputs/androidTest-results/connected/ for instrumented tasks', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-test-'));
+    workDir = dir;
+    const agpDir = path.join(
+      dir, 'mod', 'build', 'outputs', 'androidTest-results',
+      'connected', 'androidMain',
+    );
+    mkdirSync(agpDir, { recursive: true });
+    writeFileSync(path.join(agpDir, 'TEST-Foo.xml'),
+      '<testsuite><testcase/><testcase/></testsuite>');
+    expect(junitTestCountFor(dir, ':mod:androidConnectedCheck')).toBe(2);
+  });
+});
+
+// ===========================================================================
+// wet-audit-v0.9-part2 BUG-1 — junit XML failure extraction
+// ===========================================================================
+describe('extractTestcaseFailures (BUG-1)', () => {
+  it('skips passing self-closing testcases', () => {
+    const xml = '<testsuite><testcase name="ok" classname="C" time="0.1"/></testsuite>';
+    const out = [];
+    extractTestcaseFailures(xml, out);
+    expect(out).toEqual([]);
+  });
+
+  it('skips skipped tests (AssumptionViolatedException etc.)', () => {
+    const xml = `<testsuite>
+      <testcase name="skipped" classname="C" time="0.1">
+        <skipped message="org.junit.AssumptionViolatedException" type="org.junit.AssumptionViolatedException"/>
+      </testcase>
+    </testsuite>`;
+    const out = [];
+    extractTestcaseFailures(xml, out);
+    expect(out).toEqual([]);
+  });
+
+  it('extracts <failure> children with type + message attrs', () => {
+    const xml = `<testsuite>
+      <testcase name="testFoo" classname="com.example.FooTest" time="0.1">
+        <failure type="java.lang.AssertionError" message="expected: &lt;true&gt; but was: &lt;false&gt;">
+          full stack trace here
+        </failure>
+      </testcase>
+    </testsuite>`;
+    const out = [];
+    extractTestcaseFailures(xml, out);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toEqual({
+      test: 'com.example.FooTest.testFoo',
+      cause: 'expected: <true> but was: <false>',
+      type: 'java.lang.AssertionError',
+    });
+  });
+
+  it('extracts <error> children (test infrastructure errors)', () => {
+    const xml = `<testsuite>
+      <testcase name="testBar" classname="com.example.BarTest">
+        <error type="java.lang.RuntimeException" message="setup failed"/>
+      </testcase>
+    </testsuite>`;
+    const out = [];
+    extractTestcaseFailures(xml, out);
+    expect(out).toHaveLength(1);
+    expect(out[0].cause).toBe('setup failed');
+    expect(out[0].type).toBe('java.lang.RuntimeException');
+  });
+
+  it('falls back to first body line when message attr missing', () => {
+    const xml = `<testsuite>
+      <testcase name="testBaz" classname="com.example.BazTest">
+        <failure type="kotlin.AssertionError">kotlin.AssertionError: assertion failed
+at com.example.BazTest.testBaz(BazTest.kt:42)</failure>
+      </testcase>
+    </testsuite>`;
+    const out = [];
+    extractTestcaseFailures(xml, out);
+    expect(out[0].cause).toBe('kotlin.AssertionError: assertion failed');
+  });
+
+  it('handles multiple testcases with mixed pass / fail / skip', () => {
+    const xml = `<testsuite>
+      <testcase name="pass" classname="C"/>
+      <testcase name="fail1" classname="C"><failure type="E" message="m1"/></testcase>
+      <testcase name="skipped" classname="C"><skipped/></testcase>
+      <testcase name="fail2" classname="C"><failure type="F" message="m2"/></testcase>
+    </testsuite>`;
+    const out = [];
+    extractTestcaseFailures(xml, out);
+    expect(out.map(f => f.test)).toEqual(['C.fail1', 'C.fail2']);
+  });
+});
+
+describe('junitTestFailuresFor (BUG-1)', () => {
+  it('walks build/test-results/<task>/TEST-*.xml and aggregates failures', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-fail-'));
+    workDir = dir;
+    const taskDir = path.join(dir, 'core', 'build', 'test-results', 'jvmTest');
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(path.join(taskDir, 'TEST-com.foo.AlphaTest.xml'),
+      '<testsuite><testcase name="ok" classname="com.foo.AlphaTest"/>' +
+      '<testcase name="bad" classname="com.foo.AlphaTest">' +
+      '<failure type="AssertionError" message="alpha bad"/></testcase></testsuite>');
+    writeFileSync(path.join(taskDir, 'TEST-com.foo.BetaTest.xml'),
+      '<testsuite><testcase name="bad" classname="com.foo.BetaTest">' +
+      '<failure type="AssertionError" message="beta bad"/></testcase></testsuite>');
+    const failures = junitTestFailuresFor(dir, ':core:jvmTest');
+    expect(failures).toHaveLength(2);
+    expect(failures.map(f => f.test).sort()).toEqual([
+      'com.foo.AlphaTest.bad',
+      'com.foo.BetaTest.bad',
+    ]);
+  });
+
+  it('returns [] when directory missing', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-fail-'));
+    workDir = dir;
+    expect(junitTestFailuresFor(dir, ':missing:test')).toEqual([]);
+  });
+
+  it('respects sinceMs stale-XML guard', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-fail-'));
+    workDir = dir;
+    const taskDir = path.join(dir, 'core', 'build', 'test-results', 'jvmTest');
+    mkdirSync(taskDir, { recursive: true });
+    const xmlPath = path.join(taskDir, 'TEST-Stale.xml');
+    writeFileSync(xmlPath,
+      '<testsuite><testcase name="bad" classname="C"><failure message="stale"/></testcase></testsuite>');
+    // Future sinceMs filters out the file regardless of mtime.
+    const future = Date.now() + 60_000;
+    expect(junitTestFailuresFor(dir, ':core:jvmTest', future)).toEqual([]);
+    // sinceMs=0 disables the guard.
+    expect(junitTestFailuresFor(dir, ':core:jvmTest', 0)).toHaveLength(1);
+  });
+
+  // OBS-A from 2026-05-09 wet-audit (shared-kmp-libs benchmark-storage).
+  // AGP's androidConnectedCheck (and connected${Variant}AndroidTest)
+  // emit JUnit XML to `build/outputs/androidTest-results/connected/
+  // <sourceSet>/TEST-*.xml`, NOT `build/test-results/<task>/`. Pre-fix
+  // junitTestFailuresFor only walked the latter, so failures from
+  // instrumented tasks never populated `modules[].test_failures[]` —
+  // agents had to walk the file system to discriminate.
+  it('walks AGP outputs/androidTest-results/connected/ path for instrumented tasks', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-fail-'));
+    workDir = dir;
+    const agpDir = path.join(
+      dir, 'benchmark-storage', 'build', 'outputs', 'androidTest-results',
+      'connected', 'androidMain',
+    );
+    mkdirSync(agpDir, { recursive: true });
+    writeFileSync(
+      path.join(agpDir, 'TEST-SM-S908B - 16-_benchmark-storage-.xml'),
+      '<testsuite name="com.foo.StressTest" tests="2" failures="1">' +
+      '<testcase name="passes" classname="com.foo.StressTest" time="0.1"/>' +
+      '<testcase name="oomFails" classname="com.foo.StressTest" time="42.0">' +
+      '<failure type="java.lang.OutOfMemoryError" message="heap exhausted"/>' +
+      '</testcase></testsuite>'
+    );
+    const failures = junitTestFailuresFor(dir, ':benchmark-storage:androidConnectedCheck');
+    expect(failures).toHaveLength(1);
+    expect(failures[0].test).toBe('com.foo.StressTest.oomFails');
+    expect(failures[0].type).toBe('java.lang.OutOfMemoryError');
+  });
+
+  it('walks BOTH test-results/<task>/ AND outputs/androidTest-results/connected/ (instrumented + JVM unioned)', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-fail-'));
+    workDir = dir;
+    // Legacy path (some KMP/AGP setups emit BOTH paths for connectedCheck —
+    // gradle JvmTestTask + AGP's connected aggregator). Make sure we don't
+    // duplicate-count or skip either source.
+    const legacyDir = path.join(dir, 'mod', 'build', 'test-results', 'androidConnectedCheck');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(path.join(legacyDir, 'TEST-LegacyClass.xml'),
+      '<testsuite><testcase name="legacy_fail" classname="com.foo.LegacyClass">' +
+      '<failure type="AssertionError" message="legacy bad"/></testcase></testsuite>');
+    const agpDir = path.join(
+      dir, 'mod', 'build', 'outputs', 'androidTest-results', 'connected', 'androidMain',
+    );
+    mkdirSync(agpDir, { recursive: true });
+    writeFileSync(path.join(agpDir, 'TEST-AgpClass.xml'),
+      '<testsuite><testcase name="agp_fail" classname="com.foo.AgpClass">' +
+      '<failure type="AssertionError" message="agp bad"/></testcase></testsuite>');
+    const failures = junitTestFailuresFor(dir, ':mod:androidConnectedCheck');
+    const tests = failures.map(f => f.test).sort();
+    expect(tests).toEqual([
+      'com.foo.AgpClass.agp_fail',
+      'com.foo.LegacyClass.legacy_fail',
+    ]);
+  });
 });
 
 // ===========================================================================
@@ -914,8 +1326,61 @@ describe('runParallel', () => {
     });
     expect(envelope.tests.passed).toBeGreaterThan(0);
     expect(envelope.modules.length).toBeGreaterThan(0);
-    expect(envelope.modules).toContain('core');
-    expect(envelope.modules).toContain('feature');
+    // v0.9 drift #2 — modules[] is now an array of canonical objects with
+    // `{name, type, coverage_plugin, test_build_type, has_flavor,
+    //   android_dsl, android_dsl_variant}` (parity with --list-only).
+    const names = envelope.modules.map(m => m.name);
+    expect(names).toContain('core');
+    expect(names).toContain('feature');
+    expect(envelope.modules[0]).toHaveProperty('type');
+    expect(envelope.modules[0]).toHaveProperty('coverage_plugin');
+    expect(envelope.modules[0]).toHaveProperty('test_build_type');
+  });
+
+  // wet-audit-v0.9-part2 BUG-2 — coverage gate breach (errors[].code:
+  // 'coverage_threshold_exceeded') propagates from in-process runCoverage
+  // through state.errors and promotes the parallel envelope to exit 1.
+  it('coverage_threshold_exceeded from in-process runCoverage promotes exit to TEST_FAIL', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub({
+      coverage: { tool: 'kover', missed_lines: 317, modules_contributing: 1 },
+      errors: [{
+        code: 'coverage_threshold_exceeded',
+        message: 'Coverage threshold exceeded: 317 missed lines > 50',
+        threshold: 50,
+        missed_lines: 317,
+      }],
+      exitCode: 1,
+    });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--coverage-tool', 'kover', '--min-missed-lines', '50'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.errors.some(e => e.code === 'coverage_threshold_exceeded')).toBe(true);
+    expect(envelope.coverage.missed_lines).toBe(317);
+    expect(exitCode).toBe(1); // TEST_FAIL
+  });
+
+  it('coverage envelope errors:[] (no gate) leaves exit_code unchanged', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub({
+      coverage: { tool: 'kover', missed_lines: 10, modules_contributing: 1 },
+      errors: [], // no gate breach
+    });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--coverage-tool', 'kover'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.errors.filter(e => e.code === 'coverage_threshold_exceeded').length).toBe(0);
+    expect(exitCode).toBe(0);
   });
 
   it('--fresh-daemon spawns gradlew --stop before main dispatch', async () => {
@@ -970,7 +1435,14 @@ describe('runParallel', () => {
     expect(passedArgs[idx + 1]).toBe('custom-report.md');
   });
 
-  it('--coverage-only filters modules to those listed in --coverage-modules', async () => {
+  // v0.9 session 2 Bug-E — `--coverage-only` implies `--skip-tests`, so the
+  // dispatch routes to coverage-orchestrator BEFORE the parallel-orchestrator's
+  // own `opts.coverageOnly && opts.coverageModules` module filter at line ~1331
+  // can fire (it's now unreachable when coverageOnly is set; left in place for
+  // direct `node lib/runner.js parallel --coverage-modules ...` calls without
+  // --coverage-only). Test confirms the new routing: stubCoverage IS invoked
+  // and receives `--coverage-modules` so the eventual report is filtered.
+  it('Bug-E: --coverage-only routes to runCoverage with --coverage-modules forwarded', async () => {
     const dir = makeProject([
       { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
       { name: 'feature', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
@@ -978,17 +1450,18 @@ describe('runParallel', () => {
     ]);
     const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
     const stubCoverage = makeRunCoverageStub();
-    const { envelope } = await runParallel({
+    await runParallel({
       projectRoot: dir,
       args: ['--test-type', 'common', '--coverage-only', '--coverage-modules', 'core,feature'],
       spawn,
       log: () => {},
       runCoverageInjection: stubCoverage,
     });
-    // Only `core` + `feature` reached the test dispatch, `shared` was filtered out.
-    expect(envelope.modules).toContain('core');
-    expect(envelope.modules).toContain('feature');
-    expect(envelope.modules).not.toContain('shared');
+    expect(stubCoverage.calls.length).toBe(1);
+    const passedArgs = stubCoverage.calls[0].args;
+    expect(passedArgs).toContain('--coverage-modules');
+    const idx = passedArgs.indexOf('--coverage-modules');
+    expect(passedArgs[idx + 1]).toBe('core,feature');
   });
 
   it('--benchmark invokes runBenchmark stub with --config', async () => {
@@ -1064,6 +1537,144 @@ describe('runParallel', () => {
     expect(exitCode).toBe(1);
   });
 
+  // OBS-A from 2026-05-09 wet-audit. When a gradle task fails AND no
+  // JUnit XML evidence exists (compile-time / runner-setup failure),
+  // pre-fix the envelope surfaced plain `module_failed` with empty
+  // `test_failures[]` — agents could not distinguish "test ran and
+  // failed" from "test never ran". Fix marks setup_failed:true when
+  // both junitTestFailuresFor and junitTestCountFor return empty.
+  it('module_failed + no XML evidence → errors[].setup_failed:true (OBS-A)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    // failTasks marks the task as failed, but the spawn stub does NOT
+    // create any TEST-*.xml files — mimics a compile-time failure.
+    const spawn = makeSpawnStub({ failTasks: [':core:jvmTest'], stdout: '> Task :core:jvmTest\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(exitCode).toBe(1);
+    const moduleFailed = envelope.errors.find(e => e.code === 'module_failed' && e.module === 'core');
+    expect(moduleFailed).toBeDefined();
+    expect(moduleFailed.setup_failed).toBe(true);
+  });
+
+  // Bonus finding from 2026-05-09 wet-audit. Pre-fix `parallel --test-type
+  // androidInstrumented` (no `--device`, no `--clear-data`) skipped the
+  // adb probe entirely, so `envelope.android.device_serial` always
+  // returned `''` even when a device was connected — paridad gap with
+  // the `kmp-test android` subcommand which always probes.
+  it('androidInstrumented populates android.device_serial from adb probe (no --device)', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const adbProbe = () => [{ serial: 'PROBED-X1', type: 'physical', model: 'TestDevice' }];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(0);
+    expect(envelope.android).toBeDefined();
+    expect(envelope.android.device_serial).toBe('PROBED-X1');
+  });
+
+  it('androidInstrumented surfaces empty device_serial when adb has no devices (no failure)', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const adbProbe = () => []; // no devices connected
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    // Best-effort probe: empty serial is fine; orchestrator does NOT
+    // fail (gradle will surface its own error if it actually needs a
+    // device). No instrumented_setup_failed pushed — best-effort, not strict.
+    expect(exitCode).toBe(0);
+    expect(envelope.android).toBeDefined();
+    expect(envelope.android.device_serial).toBe('');
+    expect(envelope.errors.find(e => e.code === 'instrumented_setup_failed')).toBeUndefined();
+  });
+
+  it('androidInstrumented picks first device when multiple connected, no --device (gradle default)', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const adbProbe = () => [
+      { serial: 'FIRST', type: 'physical', model: 'A' },
+      { serial: 'SECOND', type: 'emulator', model: 'B' },
+    ];
+
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(envelope.android.device_serial).toBe('FIRST');
+  });
+
+  it('module_failed WITH XML evidence → errors[] has NO setup_failed flag (OBS-A negative)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    // Pre-write a JUnit XML with one failing testcase. The stale-XML
+    // guard filters by mtime < state.runStartMs; bump mtime to the
+    // future so the file passes regardless of when runParallel starts.
+    const xmlDir = path.join(dir, 'core', 'build', 'test-results', 'jvmTest');
+    mkdirSync(xmlDir, { recursive: true });
+    const xmlPath = path.join(xmlDir, 'TEST-RealFailures.xml');
+    writeFileSync(xmlPath,
+      '<testsuite><testcase name="boom" classname="com.foo.RealFailures">' +
+      '<failure type="AssertionError" message="real test failure"/>' +
+      '</testcase></testsuite>');
+    // Bump mtime to +60s so the stale-XML guard always lets it through.
+    const future = new Date(Date.now() + 60_000);
+    utimesSync(xmlPath, future, future);
+    const spawn = makeSpawnStub({ failTasks: [':core:jvmTest'], stdout: '> Task :core:jvmTest\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(exitCode).toBe(1);
+    const moduleFailed = envelope.errors.find(e => e.code === 'module_failed' && e.module === 'core');
+    expect(moduleFailed).toBeDefined();
+    // setup_failed must NOT be set when XML evidence exists.
+    expect(moduleFailed.setup_failed).toBeUndefined();
+    // test_failures populated as a regression-anti-flake.
+    const coreModule = envelope.modules.find(m => m.name === 'core');
+    expect(coreModule.test_failures.length).toBeGreaterThan(0);
+  });
+
   it('WS-1: "Cannot locate tasks" → all modules marked failed by classifyTaskResults', async () => {
     const dir = makeProject([
       { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
@@ -1125,6 +1736,43 @@ describe('runParallel', () => {
     expect(args).toContain('--continue');
   });
 
+  // v0.9 step 2 — --gradle-args escape hatch: tokens appended LAST so users
+  // can override CLI defaults via gradle's last-wins flag semantics.
+  it('--gradle-args tokens are appended LAST in dispatchLeg gradleArgs', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub();
+    const stubCoverage = makeRunCoverageStub();
+    await runParallel({
+      projectRoot: dir,
+      args: [
+        '--test-type', 'common',
+        '--gradle-args', '--no-parallel',
+        '--gradle-args', '-Pfoo=bar',
+      ],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    const gradleCall = spawn.calls.find(isGradleCall);
+    expect(gradleCall).toBeTruthy();
+    const args = effectiveGradleArgs(gradleCall);
+    // Both user tokens must appear in the spawn args.
+    expect(args).toContain('--no-parallel');
+    expect(args).toContain('-Pfoo=bar');
+    // CLI default --parallel still emitted (escape-hatch overrides via gradle's
+    // last-wins, not by suppression at the orchestrator layer).
+    expect(args).toContain('--parallel');
+    // Order check: user tokens come AFTER the CLI defaults so gradle wins-last
+    // resolves the user's intent. We assert idxParallel < idxNoParallel and
+    // both user tokens appear in the order they were passed on the CLI.
+    const idxParallel = args.indexOf('--parallel');
+    const idxNoParallel = args.indexOf('--no-parallel');
+    const idxFoo = args.indexOf('-Pfoo=bar');
+    expect(idxParallel).toBeGreaterThanOrEqual(0);
+    expect(idxNoParallel).toBeGreaterThan(idxParallel);
+    expect(idxFoo).toBeGreaterThan(idxNoParallel);
+  });
+
   // 2026-05-03 wide-smoke regression: when gradle aborts at evaluation phase
   // (one module's plugin/compile fails before any task runs), --continue +
   // multi-module dispatch produced 4 misleading [FAIL] lines. Confetti repro:
@@ -1172,7 +1820,8 @@ describe('runParallel', () => {
     // have been marked failed by defense-in-depth.
     expect(envelope.tests.passed).toBe(1);
     expect(envelope.tests.failed).toBe(1);
-    expect(envelope.modules).toContain('healthy');
+    // v0.9 drift #2 — modules[] is array of objects with `.name`.
+    expect(envelope.modules.map(m => m.name)).toContain('healthy');
     expect(envelope.errors.some(e => e.module === 'broken')).toBe(true);
     expect(envelope.errors.some(e => e.module === 'healthy')).toBe(false);
     // Spawn called 1 (one-shot) + 2 (per-module retry) = 3 times.
@@ -1934,7 +2583,15 @@ describe('execution.failed counter on non-JVM task failures (fix-PR-E)', () => {
 // `kmp-test parallel --test-type androidInstrumented --test-filter <X>`
 // with `Unknown command-line option '--tests'`. Mirrors
 // `lib/android-orchestrator.js#buildFilterArgs`.
-describe('buildFilterArgs (fix-PR-G)', () => {
+//
+// 2026-05-05 v0.9 step 1 (flag #6) — method-bearing filters now emit the
+// COMBINED single-arg shape `class=<FQN>#<method>` instead of separate
+// `class=` + `method=` args. The combined form is the canonical AGP /
+// AndroidJUnitRunner shape that ALWAYS works (per BACKLOG.md L329) — the
+// pre-v0.9 separate-args shape silently missed Microbenchmark method
+// filtering (live repro on dipatternsdemo: 14 of 14 DiBenchmark methods
+// ran instead of 1). Pre-v0.9 cases re-asserted below.
+describe('buildFilterArgs (fix-PR-G + v0.9 step 1 flag #6)', () => {
   it('androidInstrumented + FQN class → -P class only', () => {
     const args = buildFilterArgs('com.grinwich.benchmark.DiBenchmark', 'androidInstrumented', '/tmp/np');
     expect(args).toEqual([
@@ -1942,28 +2599,45 @@ describe('buildFilterArgs (fix-PR-G)', () => {
     ]);
   });
 
-  it('androidInstrumented + FQN#method (canonical separator) → -P class + method', () => {
+  it('androidInstrumented + FQN#method (canonical separator) → combined single arg', () => {
     const args = buildFilterArgs(
       'com.grinwich.benchmark.DiBenchmark#lazyInit_noDeps_daggerB_analytics',
       'androidInstrumented',
       '/tmp/np',
     );
     expect(args).toEqual([
-      '-Pandroid.testInstrumentationRunnerArguments.class=com.grinwich.benchmark.DiBenchmark',
-      '-Pandroid.testInstrumentationRunnerArguments.method=lazyInit_noDeps_daggerB_analytics',
+      '-Pandroid.testInstrumentationRunnerArguments.class=com.grinwich.benchmark.DiBenchmark#lazyInit_noDeps_daggerB_analytics',
     ]);
   });
 
-  it('androidInstrumented + FQN.method (heuristic split, lowerCamel last segment) → -P class + method', () => {
+  it('androidInstrumented + FQN.method (heuristic split, lowerCamel last segment) → combined single arg', () => {
     const args = buildFilterArgs(
       'com.grinwich.benchmark.DiBenchmark.lazyInit_noDeps_daggerB_analytics',
       'androidInstrumented',
       '/tmp/np',
     );
     expect(args).toEqual([
-      '-Pandroid.testInstrumentationRunnerArguments.class=com.grinwich.benchmark.DiBenchmark',
-      '-Pandroid.testInstrumentationRunnerArguments.method=lazyInit_noDeps_daggerB_analytics',
+      '-Pandroid.testInstrumentationRunnerArguments.class=com.grinwich.benchmark.DiBenchmark#lazyInit_noDeps_daggerB_analytics',
     ]);
+  });
+
+  it('androidInstrumented + FQN#method does NOT emit a separate .method= arg (Microbenchmark fix)', () => {
+    const args = buildFilterArgs(
+      'com.foo.Bench#one',
+      'androidInstrumented',
+      '/tmp/np',
+    );
+    expect(args).toHaveLength(1);
+    expect(args[0]).toBe('-Pandroid.testInstrumentationRunnerArguments.class=com.foo.Bench#one');
+    expect(args.some(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.method='))).toBe(false);
+  });
+
+  it('androidInstrumented + class-only does NOT inject a fake `#` (regression guard)', () => {
+    const args = buildFilterArgs('com.foo.Bench', 'androidInstrumented', '/tmp/np');
+    expect(args).toEqual([
+      '-Pandroid.testInstrumentationRunnerArguments.class=com.foo.Bench',
+    ]);
+    expect(args[0].includes('#')).toBe(false);
   });
 
   it('androidUnit (testDebugUnitTest = JvmTestTask) preserves --tests pattern', () => {
@@ -2022,5 +2696,967 @@ describe('runParallel: --test-filter on common leg preserves --tests (fix-PR-G r
     expect(args).toContain('com.example.MyTest');
     // No -Pandroid.* leak into JVM legs.
     expect(args.some(a => a.startsWith('-Pandroid.testInstrumentationRunner'))).toBe(false);
+  });
+});
+
+// Spawn stub that reproduces the "first call fails, retry passes" pattern
+// used by --auto-retry tests. The `failNthGradleCall` option specifies which
+// 1-indexed gradle call should return failure (others pass). Adb calls always
+// pass with no output. Differentiates adb from gradle by command name.
+function makeAutoRetrySpawnStub({ failNthGradleCall = 1, failTasks = [] } = {}) {
+  const calls = [];
+  let gradleCallNum = 0;
+  const fn = (cmd, args, opts) => {
+    calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null, env: opts?.env ?? null });
+    if (cmd === 'adb') {
+      return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+    }
+    // Gradle call (gradlew or cmd.exe wrapping gradlew on Windows).
+    gradleCallNum++;
+    const eArgs = effectiveGradleArgs({ cmd, args });
+    const taskArg = eArgs.find(a => typeof a === 'string' && a.startsWith(':'));
+    let stdout = 'BUILD SUCCESSFUL\n';
+    if (taskArg) stdout = `> Task ${taskArg}\n${taskArg} ${gradleCallNum === failNthGradleCall ? 'FAILED' : ''}\nBUILD ${gradleCallNum === failNthGradleCall ? 'FAILED' : 'SUCCESSFUL'}\n`;
+    const status = gradleCallNum === failNthGradleCall || failTasks.includes(taskArg) ? 1 : 0;
+    return { status, stdout, stderr: '', signal: null, error: null };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+// 2026-05-05 v0.9 step 1 (flag #3) — `--device <serial>` validates against
+// adb output and injects ANDROID_SERIAL into the gradle dispatch env. The
+// envelope surfaces `parallel.legs[i].device.serial` on the
+// androidInstrumented leg only (clean shape — agents branch on field
+// presence). Adb probe failure modes (no devices / serial not found) emit
+// `instrumented_setup_failed` + exit 3, mirroring `kmp-test android`.
+describe('runParallel --device <serial> (v0.9 step 1, flag #3)', () => {
+  it('validates against adb probe + threads ANDROID_SERIAL into dispatchEnv', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const adbProbe = () => [
+      { serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' },
+      { serial: 'emulator-5554', type: 'emulator', model: 'sdk' },
+    ];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--device', 'R3CT30KAMEH'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(0);
+    // Envelope surfaces resolved device on the androidInstrumented leg.
+    const leg = envelope.parallel.legs.find(l => l.test_type === 'androidInstrumented');
+    expect(leg).toBeDefined();
+    expect(leg.device).toEqual({ serial: 'R3CT30KAMEH' });
+
+    // Gradle spawn env got ANDROID_SERIAL.
+    const gradleCalls = spawn.calls.filter(c => isGradleCall(c) && !isStopCall(c));
+    expect(gradleCalls.length).toBeGreaterThanOrEqual(1);
+    expect(gradleCalls[0].env.ANDROID_SERIAL).toBe('R3CT30KAMEH');
+  });
+
+  it('--device with no adb devices → instrumented_setup_failed, exit 3', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--device', 'NOPE'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('instrumented_setup_failed');
+    // No gradle dispatch happened.
+    expect(spawn.calls.filter(c => isGradleCall(c) && !isStopCall(c))).toEqual([]);
+  });
+
+  it('--device with serial not in probe → instrumented_setup_failed, exit 3', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--device', 'NOPE'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('instrumented_setup_failed');
+    expect(envelope.errors[0].message).toMatch(/Available: X/);
+  });
+
+  it('--device with no androidInstrumented leg → no probe (silent no-op)', async () => {
+    const dir = makeProject([
+      { name: 'shared', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :shared:jvmTest\n' });
+    let probeCalled = false;
+    const adbProbe = () => { probeCalled = true; return []; };
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--device', 'R3CT30KAMEH'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(0);
+    expect(probeCalled).toBe(false);
+    // No device field on the common leg.
+    const leg = envelope.parallel.legs.find(l => l.test_type === 'common');
+    expect(leg.device).toBeUndefined();
+  });
+});
+
+// 2026-05-05 v0.9 step 1 (flags #1 + #2) — `--auto-retry` re-dispatches
+// failed instrumented tasks once. `--clear-data` (precondition: --auto-retry)
+// invokes adb shell pm clear before each retry attempt. Mutually exclusive
+// with PR5 cascade-isolation: cascade fires when every task is no_evidence
+// (eval-phase abort); auto-retry fires when at least one task ran but came
+// back failed.
+describe('runParallel --auto-retry + --clear-data (v0.9 step 1, flags #1 + #2)', () => {
+  function makeAndroidApp(name = 'app') {
+    const modDir = path.join(workDir, name);
+    const manifestDir = path.join(modDir, 'src', 'main');
+    mkdirSync(manifestDir, { recursive: true });
+    writeFileSync(path.join(manifestDir, 'AndroidManifest.xml'),
+      `<manifest package="com.example.${name}"/>`);
+  }
+
+  it('--auto-retry re-dispatches failed task once → final exit 0 + retries[]', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    makeAndroidApp('app');
+    // First gradle call fails (one-shot dispatch); second (per-task retry) passes.
+    const spawn = makeAutoRetrySpawnStub({ failNthGradleCall: 1 });
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--auto-retry'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    const leg = envelope.parallel.legs.find(l => l.test_type === 'androidInstrumented');
+    expect(leg.retries).toBeDefined();
+    expect(leg.retries).toHaveLength(1);
+    expect(leg.retries[0]).toMatchObject({
+      module: 'app', attempt: 2, status: 'passed',
+    });
+    expect(leg.exit_code).toBe(0);
+    expect(exitCode).toBe(0);
+  });
+
+  it('--auto-retry without --clear-data does NOT call adb shell pm clear', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    makeAndroidApp('app');
+    const spawn = makeAutoRetrySpawnStub({ failNthGradleCall: 1 });
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--auto-retry'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    // No adb pm clear call.
+    const adbCalls = spawn.calls.filter(c => c.cmd === 'adb' && c.args.includes('clear'));
+    expect(adbCalls).toEqual([]);
+  });
+
+  it('--auto-retry --clear-data invokes adb pm clear with resolved package + records pre_run_actions', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    makeAndroidApp('app');
+    const spawn = makeAutoRetrySpawnStub({ failNthGradleCall: 1 });
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--auto-retry', '--clear-data'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    // adb shell pm clear <pkg> was invoked with the manifest's package.
+    const pmClearCall = spawn.calls.find(c => c.cmd === 'adb' && c.args.includes('clear'));
+    expect(pmClearCall).toBeDefined();
+    expect(pmClearCall.args).toEqual(['-s', 'X', 'shell', 'pm', 'clear', 'com.example.app']);
+
+    // Envelope records the action for downstream consumers / agents.
+    const leg = envelope.parallel.legs.find(l => l.test_type === 'androidInstrumented');
+    expect(leg.pre_run_actions).toBeDefined();
+    expect(leg.pre_run_actions[0]).toMatchObject({
+      module: 'app', action: 'pm_clear', package: 'com.example.app',
+    });
+  });
+
+  // wet-audit-v0.9-part2 OBS-7 — `--flavor <name>` against a project where
+  // no module declares productFlavors {} now hard-fails as CONFIG_ERROR (2)
+  // instead of emitting a soft warning + exit 0. Pre-fix (v0.9 step 1)
+  // the misconfiguration produced `warnings[].code:'flavor_unused'` that
+  // CI gates routinely missed.
+  it('--flavor when no module declares productFlavors → CONFIG_ERROR + flavor_unused error (OBS-7)', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        // Plain AGP (no productFlavors block).
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--flavor', 'staging'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(2); // CONFIG_ERROR
+    const error = envelope.errors.find(e => e.code === 'flavor_unused');
+    expect(error).toBeDefined();
+    expect(error.flavor).toBe('staging');
+    // Lock that the legacy soft-warning is no longer emitted (single source
+    // of truth on errors[]).
+    expect(envelope.warnings.find(w => w.code === 'flavor_unused')).toBeUndefined();
+  });
+
+  // OBS-B (2026-05-09 wet-audit follow-up) — the comment at
+  // parallel-orchestrator.js claims the flavor_unused check "runs before
+  // any gradle dispatch so we don't waste a build cycle." Pre-fix the
+  // error was pushed to state.errors but execution proceeded to the
+  // gradle dispatch (~66s wasted on real DawSync run). Lock that the
+  // orchestrator now early-returns: zero gradle (or adb) spawns.
+  it('flavor_unused early-exits before any gradle dispatch (OBS-B)', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    makeAndroidApp('app');
+    const spawnCalls = [];
+    const spawn = (cmd, args, opts) => {
+      spawnCalls.push({ cmd, args: [...args] });
+      // Return a benign success in case the orchestrator does invoke a
+      // model-probe spawn upstream (which is allowed; only gradle test
+      // dispatch must be skipped).
+      return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+    };
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--flavor', 'nonexistent'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(2);
+    expect(envelope.errors.find(e => e.code === 'flavor_unused')).toBeDefined();
+    // Lock: zero gradle test-task spawns (anything matching connectedDebugAndroidTest
+    // / connectedCheck / *AndroidTest is forbidden post-fix).
+    const gradleTestSpawns = spawnCalls.filter(c =>
+      c.args.some(a => /connectedDebugAndroidTest|connectedCheck|AndroidTest$/i.test(a))
+    );
+    expect(gradleTestSpawns).toEqual([]);
+    // Lock: parallel.legs[] is empty (no leg dispatched).
+    expect((envelope.parallel?.legs || []).length).toBe(0);
+  });
+
+  it('--auto-retry skipped when cascade-isolation already retried (mutual exclusion)', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    makeAndroidApp('app');
+    // Cascade-isolation trigger: leg exit ≠ 0 + every task `no_evidence`.
+    // No `Task :app:connectedDebugAndroidTest` mention → no_evidence.
+    const calls = [];
+    let gradleCallNum = 0;
+    const spawn = (cmd, args, opts) => {
+      calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null, env: opts?.env ?? null });
+      if (cmd === 'adb') return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+      gradleCallNum++;
+      // First call: cascade trigger (exit 1, no task mention).
+      // Subsequent calls (per-module retries from cascade): same shape so
+      // tasks are still classified as failed/no_evidence.
+      return {
+        status: 1,
+        stdout: 'BUILD FAILED\n',
+        stderr: '',
+        signal: null,
+        error: null,
+      };
+    };
+    spawn.calls = calls;
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--auto-retry'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    const leg = envelope.parallel.legs.find(l => l.test_type === 'androidInstrumented');
+    // Cascade fired (per-module retry), auto-retry was skipped → no
+    // retries[] entries on the leg (cascade is exposed via cascade_detected
+    // + retry_fired; auto-retry's retries[] is distinct).
+    expect(leg.cascade_detected).toBe(true);
+    expect(leg.retry_fired).toBe(true);
+    expect(leg.retries).toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// v0.9 step 4 — `--isolated` Tier 3 concurrency flag.
+// Verifies that --isolated injects --project-cache-dir into every gradle
+// spawn, that the envelope surfaces the isolated:{} field, that cleanup
+// fires on success, and that --dry-run skips both mkdir and cleanup.
+// ===========================================================================
+describe('--isolated cache-dir injection (v0.9 step 4)', () => {
+  it('--isolated --dry-run emits envelope.isolated with would-be path; no spawn, no mkdir', async () => {
+    const dir = makeProject([{ name: 'core' }]);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--module-filter', 'core', '--dry-run', '--isolated'],
+      spawn,
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.isolated).toBeDefined();
+    expect(envelope.isolated.enabled).toBe(true);
+    expect(envelope.isolated.cache_dir).toMatch(/[\\/]\.kmp-test-runner[\\/]cache-isolated[\\/]/);
+    expect(envelope.isolated.kept).toBe(false);
+    expect(envelope.isolated.locked).toBe(true);
+    // No gradle dispatch on dry-run.
+    expect(spawn.calls.filter(c => isGradleCall(c.args)).length).toBe(0);
+    // The would-be cache_dir must NOT exist (dryRun:true skipped mkdir).
+    expect(existsSync(envelope.isolated.cache_dir)).toBe(false);
+  });
+
+  it('--isolated injects --project-cache-dir into every gradle spawn and cleans up after', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', 'core', '--isolated'],
+      spawn,
+      runCoverageInjection: stubCoverage,
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.isolated.enabled).toBe(true);
+    const cacheDir = envelope.isolated.cache_dir;
+    expect(cacheDir).toBeTruthy();
+    // Every gradle invocation receives `--project-cache-dir <cacheDir>`.
+    const gradleCalls = spawn.calls.filter(c => isGradleCall(c));
+    expect(gradleCalls.length).toBeGreaterThan(0);
+    for (const call of gradleCalls) {
+      const flat = effectiveGradleArgs(call).join(' ');
+      expect(flat).toContain('--project-cache-dir');
+      expect(flat).toContain(cacheDir);
+    }
+    // Cleanup happened: the auto-generated dir was removed (kept:false).
+    expect(envelope.isolated.kept).toBe(false);
+    expect(existsSync(cacheDir)).toBe(false);
+  });
+
+  it('--isolated-cache-dir <path> is preserved (kept:true, dir survives run)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const userCache = path.join(dir, 'my-cache');
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', 'core', '--isolated-cache-dir', userCache],
+      spawn,
+      runCoverageInjection: stubCoverage,
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.isolated.enabled).toBe(true);
+    expect(envelope.isolated.cache_dir).toBe(userCache);
+    expect(envelope.isolated.kept).toBe(true);
+    // User-supplied dir survives cleanup.
+    expect(existsSync(userCache)).toBe(true);
+  });
+
+  it('without --isolated → envelope.isolated reports enabled:false; no --project-cache-dir injected', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', 'core'],
+      spawn,
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.isolated).toEqual({
+      enabled: false, cache_dir: null, kept: false, locked: true,
+    });
+    const gradleCalls = spawn.calls.filter(c => isGradleCall(c));
+    expect(gradleCalls.length).toBeGreaterThan(0);
+    for (const call of gradleCalls) {
+      expect(effectiveGradleArgs(call).join(' ')).not.toContain('--project-cache-dir');
+    }
+  });
+
+  it('--isolated-no-lock surfaces locked:false in envelope', async () => {
+    const dir = makeProject([{ name: 'core' }]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--module-filter', 'core', '--dry-run', '--isolated', '--isolated-no-lock'],
+      spawn,
+    });
+    expect(envelope.isolated.locked).toBe(false);
+  });
+
+  it('KMP_TEST_KEEP_ISOLATED=1 skips cleanup of auto-generated dir', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', 'core', '--isolated'],
+      env: { ...process.env, KMP_TEST_KEEP_ISOLATED: '1' },
+      spawn,
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.isolated.kept).toBe(true);
+    expect(existsSync(envelope.isolated.cache_dir)).toBe(true);
+    // Test-side cleanup of the auto-generated dir (afterEach removes workDir
+    // recursively, so this is technically belt-and-braces).
+    rmSync(envelope.isolated.cache_dir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 step 9.5 (Bug #5) — coverage envelope shape parity. Pre-fix
+// parallel-orchestrator's state.coverage was {tool, missed_lines} only,
+// missing the kover/jacoco module lists that android + coverage emit. Now
+// included + populated from project-model coveragePlugin per discovered module.
+// ---------------------------------------------------------------------------
+describe('runParallel coverage envelope shape parity (Bug #5)', () => {
+  it('coverage block always includes modules_with_kover_plugin + modules_with_jacoco_plugin', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain'] }]);
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--dry-run', '--test-type', 'common'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    // dry-run uses cli.js#buildDryRunReport which already had the fields,
+    // but verifying anyway for shape stability.
+    expect(envelope.coverage).toHaveProperty('modules_with_kover_plugin');
+    expect(envelope.coverage).toHaveProperty('modules_with_jacoco_plugin');
+    expect(Array.isArray(envelope.coverage.modules_with_kover_plugin)).toBe(true);
+    expect(Array.isArray(envelope.coverage.modules_with_jacoco_plugin)).toBe(true);
+  });
+
+  it('populates kover/jacoco lists from coveragePlugin field on real run', async () => {
+    const dir = makeProject([
+      { name: 'k', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+        build: `plugins { kotlin("jvm"); id("org.jetbrains.kotlinx.kover") }\n` },
+      { name: 'j', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+        build: `plugins { kotlin("jvm"); id("jacoco") }\n` },
+      { name: 'plain', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+        build: `plugins { kotlin("jvm") }\n` },
+    ]);
+    const spawn = makeSpawnStub({ stdoutLines: [
+      '> Task :k:test',
+      '1 tests completed',
+      'BUILD SUCCESSFUL',
+    ]});
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+    });
+    expect(envelope.coverage.modules_with_kover_plugin).toContain('k');
+    expect(envelope.coverage.modules_with_jacoco_plugin).toContain('j');
+    expect(envelope.coverage.modules_with_kover_plugin).not.toContain('plain');
+    expect(envelope.coverage.modules_with_jacoco_plugin).not.toContain('plain');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 step 9.8 (Bug #7) — `--list-only` short-circuit. Pre-fix `parallel`
+// silently ignored the flag (documented for `android` only) and dispatched
+// gradle, exiting with `no_summary`. Post-fix mirrors android: emit the
+// post-filter module set on `modules[]`, populate `skipped[]` + coverage,
+// exit 0 before any gradle dispatch.
+// ---------------------------------------------------------------------------
+describe('runParallel --list-only short-circuits before gradle dispatch (Bug #7)', () => {
+  it('emits modules[] + skipped[] + coverage, exits 0, no spawn calls', async () => {
+    const dir = makeProject([
+      { name: 'core',    sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'feature', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list-only'],
+      spawn,
+      log: () => {},
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.exit_code).toBe(0);
+    expect(envelope.modules.length).toBe(2);
+    expect(envelope.modules.map(m => m.name).sort()).toEqual(['core', 'feature']);
+    expect(envelope.errors).toEqual([]);
+    expect(envelope.parallel?.list_only).toBe(true);
+    // No gradle dispatch — only model-build spawn calls (project-model probe)
+    // are expected; the gradlew test invocations should not happen.
+    const gradleCalls = spawn.calls.filter(c => /gradlew/.test(c[0] || c.join(' ')));
+    // Allow 0 or 1 gradle calls (project-model probe is OK; test dispatch is not).
+    expect(gradleCalls.length).toBeLessThanOrEqual(1);
+  });
+
+  it('--list-only respects --module-filter — only filtered modules emitted', async () => {
+    const dir = makeProject([
+      { name: 'core',           sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'feature',        sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'benchmark-core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list-only', '--module-filter', 'core'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    // Substring "core" → matches "core" + "benchmark-core" (per Bug #3 contract).
+    const names = envelope.modules.map(m => m.name).sort();
+    expect(names).toContain('core');
+    expect(names).toContain('benchmark-core');
+    expect(names).not.toContain('feature');
+  });
+
+  it('--list-only with empty filter result still surfaces no_test_modules error (consistent with full run)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list-only', '--module-filter', 'nonexistent'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).not.toBe(0);
+    expect(envelope.errors[0]?.code).toBe('no_test_modules');
+  });
+
+  it('--list-only populates coverage.modules_with_kover_plugin (parity with full-run shape)', async () => {
+    const dir = makeProject([
+      { name: 'k', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+        build: `plugins { kotlin("jvm"); id("org.jetbrains.kotlinx.kover") }\n` },
+      { name: 'plain', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+        build: `plugins { kotlin("jvm") }\n` },
+    ]);
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list-only'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(envelope.coverage.modules_with_kover_plugin).toContain('k');
+    expect(envelope.coverage.modules_with_kover_plugin).not.toContain('plain');
+  });
+
+  it('--list (alias for --list-only) accepted', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.parallel?.list_only).toBe(true);
+  });
+
+  it('--list-only carries top-level isolated:{} field (shape parity)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list-only', '--isolated'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(envelope.isolated).toBeDefined();
+    expect(envelope.isolated.enabled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 wet-audit drift #1: legit-skip when --module-filter matches modules
+// but every match fails the per-leg test-type target check (no jvm target,
+// no commonTest, env SKIP_*_MODULES, etc.). Pre-fix emitted `no_test_modules`
+// + exit 3 even though the skipped[] entries already explained the skip.
+// Post-fix: skipped[] entries carry the diagnostic, errors[] stays empty,
+// exit 0. Filter-actually-matched-nothing still surfaces the error at
+// runParallel's top-level (modules.length === 0 guard at line 1348).
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// v0.9 wet-audit drift #2: modules[] shape parity between list-only and wet.
+// Pre-fix: list-only emitted `[{name, type, coverage_plugin, ...}]` (objects)
+// but wet runs emitted `["core-result"]` (bare strings). Agents reading the
+// same `modules[]` field across paths had to branch on shape. Post-fix both
+// paths emit canonical objects via `canonicalModuleEntry`.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// v0.9 wet-audit drift #3: parallel --test-type androidInstrumented should
+// surface `android:{device_serial, device_task, flavor}` (parity with
+// `kmp-test android`'s top-level android:{} block). `individual_total` was
+// already tracked via WS-8 — verify it propagates too.
+// ---------------------------------------------------------------------------
+describe('runParallel androidInstrumented envelope parity (drift #3)', () => {
+  it('surfaces top-level android:{device_serial, device_task, flavor} when leg dispatched', async () => {
+    const dir = makeProject([
+      { name: 'app', sourceSets: ['main', 'androidInstrumentedTest'],
+        build: `plugins { id("com.android.library") }\n` },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--module-filter', ':app'],
+      // Stub adb to return the S22-style serial so resolvedDeviceSerial populates.
+      env: { KMP_TEST_FAKE_DEVICES: 'R3CT30KAMEH' },
+      spawn: makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 2s\n' }),
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.android).toBeDefined();
+    expect(envelope.android).toHaveProperty('device_serial');
+    expect(envelope.android).toHaveProperty('device_task');
+    expect(envelope.android).toHaveProperty('flavor');
+  });
+
+  it('does NOT surface android:{} when no androidInstrumented leg dispatched', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn: makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n' }),
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.android).toBeUndefined();
+  });
+
+  it('individual_total tracks even on common-leg path (regression — WS-8 still works)', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn: makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n' }),
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.tests).toHaveProperty('individual_total');
+    expect(typeof envelope.tests.individual_total).toBe('number');
+  });
+});
+
+describe('runParallel modules[] shape parity (drift #2)', () => {
+  it('wet-run modules[] has same object shape as --list-only', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const wetRun = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn: makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' }),
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    const listOnlyRun = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list-only'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    // Both paths emit object arrays.
+    expect(Array.isArray(wetRun.envelope.modules)).toBe(true);
+    expect(Array.isArray(listOnlyRun.envelope.modules)).toBe(true);
+    expect(typeof wetRun.envelope.modules[0]).toBe('object');
+    expect(typeof listOnlyRun.envelope.modules[0]).toBe('object');
+    // Same canonical key set.
+    const wetKeys = Object.keys(wetRun.envelope.modules[0]).sort();
+    const listKeys = Object.keys(listOnlyRun.envelope.modules[0]).sort();
+    expect(wetKeys).toEqual(listKeys);
+    // Required keys present.
+    expect(wetKeys).toEqual([
+      'android_dsl', 'android_dsl_variant', 'coverage_plugin',
+      'has_flavor', 'name', 'test_build_type', 'type',
+    ]);
+  });
+});
+
+describe('runParallel legit-skip exit semantics (drift #1)', () => {
+  it('exit 0 when filter matches a module but no module supports the test-type leg', async () => {
+    const dir = makeProject([
+      // Android-only module: no commonMain / jvmMain / jvmTest → no `common` target.
+      { name: 'androidonly', sourceSets: ['androidMain', 'androidUnitTest'],
+        build: `plugins { id("com.android.library") }\n` },
+    ]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', ':androidonly'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.errors).toEqual([]);
+    expect(envelope.skipped.length).toBeGreaterThan(0);
+    expect(envelope.skipped[0].module).toBe('androidonly');
+    expect(envelope.skipped[0].reason).toMatch(/common/);
+    expect(envelope.tests).toEqual({
+      total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0,
+    });
+  });
+
+  // wet-audit-v0.9-part2 OBS-3 — exit-code split: user-supplied filter that
+  // matches nothing is now CONFIG_ERROR (2) (usage error). Project-genuinely-
+  // empty stays ENV_ERROR (3). Both still discriminated by errors[].code:
+  // 'no_test_modules' + new `caused_by_filter:bool` field.
+  it('regression: filter actually matches nothing → no_test_modules + CONFIG_ERROR (OBS-3)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', ':nonexistent'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2); // CONFIG_ERROR — user typed a filter that matched nothing
+    expect(envelope.errors[0]?.code).toBe('no_test_modules');
+    expect(envelope.errors[0]?.caused_by_filter).toBe(true);
+  });
+
+  it('exit 0 with --module-filter=* when matched Android-only modules cannot serve --test-type common', async () => {
+    // Two Android-only modules with their own unit-test source sets so they
+    // survive the `auto-skip-untested` filter and reach executeLeg's per-leg
+    // task pick (which then routes both to skipped[] for the `common` leg).
+    // Pre-fix: emitted "No modules support the requested --test-type=common" + exit 3.
+    // Post-fix: skipped[] explains both, errors[] empty, exit 0.
+    const dir = makeProject([
+      { name: 'a', sourceSets: ['androidMain', 'androidUnitTest'],
+        build: `plugins { id("com.android.library") }\n` },
+      { name: 'b', sourceSets: ['androidMain', 'androidUnitTest'],
+        build: `plugins { id("com.android.library") }\n` },
+    ]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.errors).toEqual([]);
+    expect(envelope.skipped.length).toBe(2);
+  });
+});
+
+// ===========================================================================
+// wet-audit-v0.9-part2 OBS-3 — `no_test_modules` exit-code split
+// ===========================================================================
+describe('no_test_modules exit-code split (OBS-3)', () => {
+  it('user filter matches nothing → CONFIG_ERROR (2) + caused_by_filter:true', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', 'definitely-not-here'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2); // CONFIG_ERROR
+    expect(envelope.errors[0]?.code).toBe('no_test_modules');
+    expect(envelope.errors[0]?.caused_by_filter).toBe(true);
+  });
+
+  it('--exclude-modules dropping all → CONFIG_ERROR (2) + caused_by_filter:true', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--exclude-modules', '*'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors[0]?.caused_by_filter).toBe(true);
+  });
+
+  it('project genuinely empty (no filter) → ENV_ERROR (3) + caused_by_filter:false', async () => {
+    // Project has only modules with no test source sets → empty post-default-filter.
+    // No --module-filter supplied; the empty result is environmental, not user error.
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain'] }]); // no *Test* set
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'], // default --module-filter '*'
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(3); // ENV_ERROR — project really has nothing testable
+    expect(envelope.errors[0]?.code).toBe('no_test_modules');
+    expect(envelope.errors[0]?.caused_by_filter).toBe(false);
+  });
+});
+
+// ===========================================================================
+// wet-audit-v0.9-part2 OBS-4 — `--isolated` runtime-race guard
+// ===========================================================================
+describe('--isolated runtime-race guard (OBS-4)', () => {
+  function makeAndroidApp(name = 'app') {
+    const modDir = path.join(workDir, name);
+    const manifestDir = path.join(modDir, 'src', 'main');
+    mkdirSync(manifestDir, { recursive: true });
+    writeFileSync(path.join(manifestDir, 'AndroidManifest.xml'),
+      `<manifest package="com.example.${name}"/>`);
+  }
+
+  it('rejects --isolated --test-type ios with isolated_runtime_race', async () => {
+    const dir = makeProject([{ name: 'shared' }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'ios', '--isolated'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2); // CONFIG_ERROR
+    expect(envelope.errors[0].code).toBe('isolated_runtime_race');
+    expect(envelope.errors[0].test_type).toBe('ios');
+  });
+
+  it('rejects --isolated --test-type all (expansion includes ios)', async () => {
+    const dir = makeProject([{ name: 'shared' }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'all', '--isolated'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors[0].code).toBe('isolated_runtime_race');
+    expect(envelope.errors[0].test_type).toBe('all');
+  });
+
+  it('rejects --isolated --test-type androidInstrumented WITHOUT --device', async () => {
+    const dir = makeProject([{ name: 'app' }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--isolated'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors[0].code).toBe('isolated_runtime_race');
+    expect(envelope.errors[0].test_type).toBe('androidInstrumented');
+  });
+
+  it('ALLOWS --isolated --test-type androidInstrumented WITH --device <serial>', async () => {
+    // Caller asserts each concurrent process targets its own device.
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+    const { exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--isolated', '--device', 'X'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).not.toBe(2); // not a CONFIG_ERROR — combo accepted
+  });
+
+  it('ALLOWS --isolated --test-type jvm (no shared runtime resources)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const { exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'jvm', '--isolated'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).not.toBe(2);
+  });
+
+  it('ALLOWS --isolated --test-type macos (host-native, gradle handles)', async () => {
+    const dir = makeProject([{ name: 'shared' }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const { exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'macos', '--isolated'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    // May be 3 if no macOS modules discovered, but NOT a 2 (CONFIG_ERROR).
+    expect(exitCode).not.toBe(2);
   });
 });

@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runBenchmark, resolveBenchmarkTimeoutMs, BENCHMARK_TIMEOUT_DEFAULTS_MS } from '../../lib/benchmark-orchestrator.js';
+import { runBenchmark, resolveBenchmarkTimeoutMs, BENCHMARK_TIMEOUT_DEFAULTS_MS, parseArgs } from '../../lib/benchmark-orchestrator.js';
 import { resolveBenchmarkOuterTimeoutMs, BENCHMARK_OUTER_TIMEOUTS_MS } from '../../lib/cli.js';
 import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 
@@ -347,7 +347,7 @@ describe('runBenchmark --test-filter', () => {
     );
   });
 
-  it('android: # split → emits BOTH .class= AND .method= props', async () => {
+  it('android: # split → emits combined .class=FQN#method (v0.9 step 1, flag #6)', async () => {
     const dir = copyFixture();
     const spawn = makeSpawnStub();
 
@@ -358,13 +358,15 @@ describe('runBenchmark --test-filter', () => {
       adbProbe: () => [{ serial: 'X', type: 'physical', model: 'Y' }],
     });
 
-    const argsStr = effectiveGradleArgs(spawn.calls[0]).join(' ');
-    expect(argsStr).toContain(
-      '-Pandroid.testInstrumentationRunnerArguments.class=com.example.Bench'
+    const args = effectiveGradleArgs(spawn.calls[0]);
+    const classArg = args.find(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.class='));
+    expect(classArg).toBe(
+      '-Pandroid.testInstrumentationRunnerArguments.class=com.example.Bench#testFoo'
     );
-    expect(argsStr).toContain(
-      '-Pandroid.testInstrumentationRunnerArguments.method=testFoo'
-    );
+    // Microbenchmark fix: separate `.method=` arg is NOT emitted (the combined
+    // shape narrows down to the single method; the separate-args form was
+    // silently running every method in the class).
+    expect(args.some(a => a.startsWith('-Pandroid.testInstrumentationRunnerArguments.method='))).toBe(false);
   });
 });
 
@@ -669,5 +671,184 @@ describe('resolveBenchmarkOuterTimeoutMs (v0.8.0 — cli.js outer adaptive)', ()
   it('--config flag absent → smoke default (matches orchestrator parseArgs default)', () => {
     expect(resolveBenchmarkOuterTimeoutMs([], {}))
       .toBe(BENCHMARK_OUTER_TIMEOUTS_MS.smoke);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 step 2 — --gradle-args global escape hatch.
+// ---------------------------------------------------------------------------
+describe('runBenchmark --gradle-args escape hatch (v0.9 step 2)', () => {
+  it('parseArgs accumulates --gradle-args across invocations + whitespace-splits', () => {
+    const single = parseArgs(['--gradle-args', '--no-parallel --max-workers 1']);
+    expect(single.gradleArgs).toEqual(['--no-parallel', '--max-workers', '1']);
+
+    const multi = parseArgs([
+      '--gradle-args', '--no-parallel',
+      '--gradle-args', '-Pfoo=bar',
+    ]);
+    expect(multi.gradleArgs).toEqual(['--no-parallel', '-Pfoo=bar']);
+
+    const empty = parseArgs([]);
+    expect(empty.gradleArgs).toEqual([]);
+  });
+
+  it('per-platform dispatch appends --gradle-args tokens LAST in gradleArgs', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+
+    await runBenchmark({
+      projectRoot: dir,
+      args: [
+        '--platform', 'jvm',
+        '--gradle-args', '--no-parallel',
+        '--gradle-args', '-Pfoo=bar',
+      ],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    const args = effectiveGradleArgs(spawn.calls[0]);
+    expect(args).toContain('--no-parallel');
+    expect(args).toContain('-Pfoo=bar');
+    expect(args).toContain('--continue');
+    // User tokens AFTER --continue.
+    const idxContinue = args.indexOf('--continue');
+    const idxNoParallel = args.indexOf('--no-parallel');
+    const idxFoo = args.indexOf('-Pfoo=bar');
+    expect(idxNoParallel).toBeGreaterThan(idxContinue);
+    expect(idxFoo).toBeGreaterThan(idxNoParallel);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.9 step 3 — --variant Android variant selector for benchmarks
+// ---------------------------------------------------------------------------
+describe('runBenchmark --variant (v0.9 step 3)', () => {
+  it('parseArgs --variant <value> stores lowercased value; default auto', () => {
+    expect(parseArgs(['--variant', 'Release']).variant).toBe('release');
+    expect(parseArgs(['--variant', 'all']).variant).toBe('all');
+    expect(parseArgs(['--android-variant', 'DEBUG']).variant).toBe('debug');
+    expect(parseArgs([]).variant).toBe('auto');
+  });
+
+  it('--variant release on android dispatches :mod:connectedReleaseAndroidTest', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+
+    await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'android', '--variant', 'release'],
+      spawn,
+      adbProbe,
+    });
+
+    const args = effectiveGradleArgs(spawn.calls[0]);
+    expect(args).toContain(':bench-android:connectedReleaseAndroidTest');
+    expect(args).not.toContain(':bench-android:connectedAndroidTest');
+  });
+
+  it('--variant debug on android dispatches :mod:connectedDebugAndroidTest', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+
+    await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'android', '--variant', 'debug'],
+      spawn,
+      adbProbe,
+    });
+
+    const args = effectiveGradleArgs(spawn.calls[0]);
+    expect(args).toContain(':bench-android:connectedDebugAndroidTest');
+  });
+
+  it('--variant has no effect on jvm benchmarks (variant-agnostic by design)', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+
+    await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--variant', 'release'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    // JVM benchmarks compose desktopSmokeBenchmark regardless of --variant.
+    const args = effectiveGradleArgs(spawn.calls[0]);
+    expect(args.some(a => /desktop.*Benchmark/.test(a))).toBe(true);
+    expect(args.some(a => /connected.*AndroidTest/.test(a))).toBe(false);
+  });
+
+  it('--dry-run echoes variant in plan', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+
+    const { envelope } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--dry-run', '--variant', 'release'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    expect(envelope.dry_run).toBe(true);
+    expect(envelope.plan.variant).toBe('release');
+  });
+});
+
+// v0.9 step 4 — `--isolated` for `kmp-test benchmark`. JVM benchmarks
+// dispatch one gradle spawn per (module, platform) tuple; verify each one
+// receives --project-cache-dir + cleanup runs after the loop.
+describe('--isolated cache-dir injection (v0.9 step 4)', () => {
+  it('--isolated --dry-run emits envelope.isolated; no spawn, no mkdir', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+    const { envelope } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke', '--dry-run', '--isolated'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.isolated).toBeDefined();
+    expect(envelope.isolated.enabled).toBe(true);
+    expect(existsSync(envelope.isolated.cache_dir)).toBe(false);
+    expect(spawn.calls.length).toBe(0);
+  });
+
+  it('--isolated injects --project-cache-dir on jvm benchmark spawn + cleans up', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+    const { envelope } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke', '--isolated'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.isolated.enabled).toBe(true);
+    const cacheDir = envelope.isolated.cache_dir;
+    const gradleCalls = spawn.calls.filter(isGradleCall);
+    expect(gradleCalls.length).toBe(1);
+    const flat = effectiveGradleArgs(gradleCalls[0]).join(' ');
+    expect(flat).toContain('--project-cache-dir');
+    expect(flat).toContain(cacheDir);
+    // Auto-generated dir cleaned up.
+    expect(envelope.isolated.kept).toBe(false);
+    expect(existsSync(cacheDir)).toBe(false);
+  });
+
+  it('--isolated-cache-dir <path> is preserved (kept:true, dir survives)', async () => {
+    const dir = copyFixture();
+    const userCache = path.join(dir, 'my-bench-cache');
+    const spawn = makeSpawnStub();
+    const { envelope } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke', '--isolated-cache-dir', userCache],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.isolated.cache_dir).toBe(userCache);
+    expect(envelope.isolated.kept).toBe(true);
+    expect(existsSync(userCache)).toBe(true);
   });
 });

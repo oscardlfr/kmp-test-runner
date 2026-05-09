@@ -1,0 +1,39 @@
+{
+  "_comment": "Allowlist for parity.test.js sub-check 3 (README ↔ code drift). Each entry justifies a deliberate gap between what the parsers accept and what the README's `### Flag reference` table documents. The README table is curated for the parallel/coverage flow; subcommand-specific flags live in their `kmp-test <sub> --help` text instead. Adding a new flag to a parser without a corresponding README row should require either a doc update OR a deliberate allowlist entry with a category here.",
+  "parsedButNotInReadme": [
+    "--help",
+    "--version",
+    "--force",
+    "--timeout",
+    "--device",
+    "--device-task",
+    "--auto-retry",
+    "--clear-data",
+    "--flavor",
+    "--staged-only",
+    "--show-modules-only",
+    "--max-failures",
+    "--skip-app",
+    "--verbose",
+    "--list",
+    "--list-only",
+    "--platform",
+    "--ignore-gradle-timeout",
+    "--no-adb",
+    "--skip-probe",
+    "--no-cache",
+    "--check",
+    "--prefix",
+    "--prerelease"
+  ],
+  "_categories": {
+    "globalMeta": ["--help", "--version", "--force"],
+    "androidSubcommand": ["--device", "--device-task", "--auto-retry", "--clear-data", "--flavor", "--skip-app", "--verbose", "--list", "--list-only"],
+    "changedSubcommand": ["--staged-only", "--show-modules-only", "--max-failures"],
+    "benchmarkSubcommand": ["--platform", "--timeout", "--ignore-gradle-timeout"],
+    "infoSubcommand": ["--no-adb"],
+    "describeSubcommand": ["--skip-probe", "--no-cache"],
+    "updateSubcommand": ["--check", "--prefix", "--prerelease"]
+  },
+  "readmeButNotParsed": []
+}
