@@ -126,7 +126,7 @@ function makeSpawnStub({ status = 0, stdout = 'BUILD SUCCESSFUL\n', stderr = '',
 
 // Stub for runCoverage (in-process call). Records invocations and returns a
 // canned envelope so the parallel orchestrator can merge it.
-function makeRunCoverageStub({ coverage = null } = {}) {
+function makeRunCoverageStub({ coverage = null, errors = null, exitCode = 0 } = {}) {
   const calls = [];
   const fn = async (opts) => {
     calls.push(opts);
@@ -139,8 +139,9 @@ function makeRunCoverageStub({ coverage = null } = {}) {
           modules_with_kover_plugin: [],
           modules_with_jacoco_plugin: [],
         },
+        errors: errors ?? [],
       },
-      exitCode: 0,
+      exitCode,
     };
   };
   fn.calls = calls;
@@ -1142,6 +1143,52 @@ describe('runParallel', () => {
     expect(envelope.modules[0]).toHaveProperty('type');
     expect(envelope.modules[0]).toHaveProperty('coverage_plugin');
     expect(envelope.modules[0]).toHaveProperty('test_build_type');
+  });
+
+  // wet-audit-v0.9-part2 BUG-2 — coverage gate breach (errors[].code:
+  // 'coverage_threshold_exceeded') propagates from in-process runCoverage
+  // through state.errors and promotes the parallel envelope to exit 1.
+  it('coverage_threshold_exceeded from in-process runCoverage promotes exit to TEST_FAIL', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub({
+      coverage: { tool: 'kover', missed_lines: 317, modules_contributing: 1 },
+      errors: [{
+        code: 'coverage_threshold_exceeded',
+        message: 'Coverage threshold exceeded: 317 missed lines > 50',
+        threshold: 50,
+        missed_lines: 317,
+      }],
+      exitCode: 1,
+    });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--coverage-tool', 'kover', '--min-missed-lines', '50'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.errors.some(e => e.code === 'coverage_threshold_exceeded')).toBe(true);
+    expect(envelope.coverage.missed_lines).toBe(317);
+    expect(exitCode).toBe(1); // TEST_FAIL
+  });
+
+  it('coverage envelope errors:[] (no gate) leaves exit_code unchanged', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub({
+      coverage: { tool: 'kover', missed_lines: 10, modules_contributing: 1 },
+      errors: [], // no gate breach
+    });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--coverage-tool', 'kover'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.errors.filter(e => e.code === 'coverage_threshold_exceeded').length).toBe(0);
+    expect(exitCode).toBe(0);
   });
 
   it('--fresh-daemon spawns gradlew --stop before main dispatch', async () => {
