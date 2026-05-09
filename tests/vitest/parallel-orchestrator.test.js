@@ -2730,7 +2730,12 @@ describe('runParallel --auto-retry + --clear-data (v0.9 step 1, flags #1 + #2)',
     });
   });
 
-  it('--flavor when no module declares productFlavors → flavor_unused warning', async () => {
+  // wet-audit-v0.9-part2 OBS-7 — `--flavor <name>` against a project where
+  // no module declares productFlavors {} now hard-fails as CONFIG_ERROR (2)
+  // instead of emitting a soft warning + exit 0. Pre-fix (v0.9 step 1)
+  // the misconfiguration produced `warnings[].code:'flavor_unused'` that
+  // CI gates routinely missed.
+  it('--flavor when no module declares productFlavors → CONFIG_ERROR + flavor_unused error (OBS-7)', async () => {
     const dir = makeProject([
       { name: 'app',
         sourceSets: ['androidInstrumentedTest'],
@@ -2750,10 +2755,13 @@ describe('runParallel --auto-retry + --clear-data (v0.9 step 1, flags #1 + #2)',
       runCoverageInjection: makeRunCoverageStub(),
     });
 
-    expect(exitCode).toBe(0);
-    const warning = envelope.warnings.find(w => w.code === 'flavor_unused');
-    expect(warning).toBeDefined();
-    expect(warning.flavor).toBe('staging');
+    expect(exitCode).toBe(2); // CONFIG_ERROR
+    const error = envelope.errors.find(e => e.code === 'flavor_unused');
+    expect(error).toBeDefined();
+    expect(error.flavor).toBe('staging');
+    // Lock that the legacy soft-warning is no longer emitted (single source
+    // of truth on errors[]).
+    expect(envelope.warnings.find(w => w.code === 'flavor_unused')).toBeUndefined();
   });
 
   it('--auto-retry skipped when cascade-isolation already retried (mutual exclusion)', async () => {
