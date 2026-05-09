@@ -444,7 +444,7 @@ exports[`parity / envelope JSON schema snapshot > update --check --json envelope
   "tool": "kmp-test",
   "update": {
     "action": "check-only",
-    "current_version": "0.8.1",
+    "current_version": "<KMP_TEST_VERSION>",
     "install_command": null,
     "latest_source": "stub",
     "latest_version": "99.99.99",

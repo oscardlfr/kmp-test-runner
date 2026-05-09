@@ -226,9 +226,11 @@ export function normalizeEnvelopeForSnapshot(envelope, projectRoot) {
       for (const [k, val] of Object.entries(v)) {
         if (k === 'project_root') {
           out[k] = '<PROJECT_ROOT>';
-        } else if (k === 'version' && typeof val === 'string' && /^\d+\.\d+\.\d+/.test(val)) {
-          // Top-level kmp-test version — pin via placeholder so snapshot
-          // doesn't churn on every package.json bump.
+        } else if ((k === 'version' || k === 'current_version') && typeof val === 'string' && /^\d+\.\d+\.\d+/.test(val)) {
+          // kmp-test version — pin via placeholder so snapshot doesn't churn
+          // on every package.json bump. Covers top-level `version` AND nested
+          // `update.current_version` (the update subcommand echoes the local
+          // package.json version).
           out[k] = '<KMP_TEST_VERSION>';
         } else if (VOLATILE_KEY.test(k)) {
           out[k] = `<${k.toUpperCase()}>`;
