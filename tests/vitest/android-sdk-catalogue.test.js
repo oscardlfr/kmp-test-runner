@@ -70,12 +70,25 @@ describe('maybeAugmentEnvWithAndroidSdk', () => {
     expect(out.ANDROID_HOME).toBeUndefined();
   });
 
-  it('returns env unchanged when project has sdk.dir in local.properties', () => {
+  it('augments env from local.properties sdk.dir (so adb on PATH stays callable)', () => {
+    // Pre-2026-05-09 behavior: when local.properties had sdk.dir, this
+    // function returned env unchanged because gradle reads sdk.dir
+    // directly via SdkLocator. But the orchestrator's Node-side
+    // `defaultAdbProbe` (orchestrator-utils.js) spawns bare `adb` from
+    // PATH — which still ENOENT'd when the user's PATH didn't include
+    // platform-tools. Fix: set ANDROID_HOME (harmless when gradle
+    // prefers sdk.dir) AND prepend `${sdk.dir}/platform-tools` to PATH.
     const dir = makeProject();
-    writeFileSync(path.join(dir, 'local.properties'), 'sdk.dir=C:/foo\n');
-    const env = {};
+    // Use the temp dir itself as a plausible "sdk path" since it exists.
+    const fakeSdk = dir.replace(/\\/g, '/');
+    writeFileSync(path.join(dir, 'local.properties'), `sdk.dir=${fakeSdk}\n`);
+    const env = { PATH: '/usr/bin' };
     const out = maybeAugmentEnvWithAndroidSdk(dir, env);
-    expect(out.ANDROID_HOME).toBeUndefined();
+    expect(out.ANDROID_HOME).toBe(path.normalize(fakeSdk));
+    expect(out.ANDROID_SDK_ROOT).toBe(path.normalize(fakeSdk));
+    const sep = process.platform === 'win32' ? ';' : ':';
+    expect(out.PATH.split(sep)[0])
+      .toBe(path.join(path.normalize(fakeSdk), 'platform-tools'));
   });
 
   it('emits NOTICE log line when SDK auto-detected and set', () => {
@@ -92,6 +105,61 @@ describe('maybeAugmentEnvWithAndroidSdk', () => {
     expect(out.ANDROID_HOME).toBe(realSdk);
     expect(out.ANDROID_SDK_ROOT).toBe(realSdk);
     expect(lines.some(l => /\[NOTICE\]/.test(l) && /ANDROID_HOME/.test(l))).toBe(true);
+  });
+
+  // wet-audit-v0.9-release — discovered 2026-05-09 on real shared-kmp-libs
+  // sweep. The orchestrator's `defaultAdbProbe` (lib/orchestrator-utils.js)
+  // calls `spawnSync('adb', ['devices', '-l'])` from PATH. When the user's
+  // ANDROID_HOME isn't set AND `${ANDROID_HOME}/platform-tools` isn't on
+  // PATH (common on Windows shells without manual config), the auto-set of
+  // ANDROID_HOME wasn't enough — adb still ENOENT'd, and every instrumented
+  // path returned `instrumented_setup_failed` despite a live S22 device.
+  // Fix: when augmenting env with auto-discovered ANDROID_HOME, also
+  // prepend `${sdkPath}/platform-tools` to PATH so adb (and other SDK
+  // binaries) become callable in the same env mutation.
+  describe('PATH augmentation for platform-tools (so adb is callable)', () => {
+    it('prepends ${ANDROID_HOME}/platform-tools to PATH when auto-set fires', () => {
+      const realSdk = discoverAndroidSdk();
+      if (!realSdk) return; // graceful no-op on hosts without an SDK
+      const dir = makeProject();
+      const env = { PATH: '/usr/bin' };
+      const out = maybeAugmentEnvWithAndroidSdk(dir, env);
+      expect(out.ANDROID_HOME).toBe(realSdk);
+      const sep = process.platform === 'win32' ? ';' : ':';
+      const expectedPlatformTools = path.join(realSdk, 'platform-tools');
+      expect(out.PATH).toBeDefined();
+      expect(out.PATH.split(sep)[0]).toBe(expectedPlatformTools);
+    });
+
+    it('preserves existing PATH entries after the prepended platform-tools', () => {
+      const realSdk = discoverAndroidSdk();
+      if (!realSdk) return;
+      const dir = makeProject();
+      const env = { PATH: '/usr/bin:/sbin' };
+      const out = maybeAugmentEnvWithAndroidSdk(dir, env);
+      const sep = process.platform === 'win32' ? ';' : ':';
+      const segs = out.PATH.split(sep);
+      expect(segs[0]).toBe(path.join(realSdk, 'platform-tools'));
+      // Original entries preserved verbatim (joined back together).
+      expect(segs.slice(1).join(sep)).toBe('/usr/bin:/sbin');
+    });
+
+    it('sets PATH to platform-tools alone when env had no PATH', () => {
+      const realSdk = discoverAndroidSdk();
+      if (!realSdk) return;
+      const dir = makeProject();
+      const env = {}; // no PATH
+      const out = maybeAugmentEnvWithAndroidSdk(dir, env);
+      expect(out.PATH).toBe(path.join(realSdk, 'platform-tools'));
+    });
+
+    it('returns env unchanged (no PATH mutation) when ANDROID_HOME already set', () => {
+      const dir = makeProject();
+      const env = { ANDROID_HOME: '/some/explicit/path', PATH: '/usr/bin' };
+      const out = maybeAugmentEnvWithAndroidSdk(dir, env);
+      expect(out).toBe(env); // same reference — no mutation at all
+      expect(out.PATH).toBe('/usr/bin');
+    });
   });
 });
 
@@ -207,10 +275,12 @@ describe('discoverAndroidSdk', () => {
 describe('runner.js AGP-gated process.env augmentation (composition)', () => {
   let savedAndroidHome;
   let savedAndroidSdkRoot;
+  let savedPath;
 
   beforeEach(() => {
     savedAndroidHome = process.env.ANDROID_HOME;
     savedAndroidSdkRoot = process.env.ANDROID_SDK_ROOT;
+    savedPath = process.env.PATH;
     delete process.env.ANDROID_HOME;
     delete process.env.ANDROID_SDK_ROOT;
   });
@@ -220,6 +290,8 @@ describe('runner.js AGP-gated process.env augmentation (composition)', () => {
     else delete process.env.ANDROID_HOME;
     if (savedAndroidSdkRoot !== undefined) process.env.ANDROID_SDK_ROOT = savedAndroidSdkRoot;
     else delete process.env.ANDROID_SDK_ROOT;
+    if (savedPath !== undefined) process.env.PATH = savedPath;
+    else delete process.env.PATH;
   });
 
   // Mirrors the runner.js block at lib/runner.js after the JDK preflight gate.
@@ -232,6 +304,9 @@ describe('runner.js AGP-gated process.env augmentation (composition)', () => {
     if (augmented !== process.env) {
       process.env.ANDROID_HOME = augmented.ANDROID_HOME;
       process.env.ANDROID_SDK_ROOT = augmented.ANDROID_SDK_ROOT;
+      // wet-audit-v0.9-release fix mirror — also propagate PATH so the
+      // orchestrator's Node-side adb probe can locate adb.
+      if (augmented.PATH) process.env.PATH = augmented.PATH;
       return { fired: true, agpVersion: sig.agpVersion };
     }
     return { fired: false, agpVersion: sig.agpVersion };
@@ -280,15 +355,25 @@ describe('runner.js AGP-gated process.env augmentation (composition)', () => {
     expect(process.env.ANDROID_HOME).toBeUndefined();
   });
 
-  it('does NOT inject when AGP project has sdk.dir in local.properties', () => {
+  it('injects from local.properties sdk.dir on AGP project (so adb on PATH)', () => {
+    // Pre-2026-05-09 behavior: helper short-circuited at projectHasSdkDir
+    // and runner did not augment env. Result: ANDROID_HOME stayed unset
+    // AND `${sdk.dir}/platform-tools` stayed off PATH, so the
+    // orchestrator's Node-side `defaultAdbProbe` couldn't locate adb
+    // even though gradle could (gradle reads sdk.dir directly).
+    // New behavior: helper reads sdk.dir and augments env so the
+    // orchestrator's Node-side adb probe succeeds.
     const dir = makeAgpCatalogProject();
-    writeFileSync(path.join(dir, 'local.properties'), 'sdk.dir=C:/some/sdk\n');
+    // Use the tmp dir itself as the sdk path — guaranteed to exist.
+    const fakeSdk = dir.replace(/\\/g, '/');
+    writeFileSync(path.join(dir, 'local.properties'), `sdk.dir=${fakeSdk}\n`);
     const result = applyRunnerAugmentation(dir);
-    // Gate hits (agpVersion !== null) but helper short-circuits at line 155
-    // (projectHasSdkDir) — local.properties precedence preserved.
-    expect(result.fired).toBe(false);
+    expect(result.fired).toBe(true);
     expect(result.agpVersion).toBe('8.7.3');
-    expect(process.env.ANDROID_HOME).toBeUndefined();
+    expect(process.env.ANDROID_HOME).toBe(path.normalize(fakeSdk));
+    const sep = process.platform === 'win32' ? ';' : ':';
+    const platformTools = path.join(path.normalize(fakeSdk), 'platform-tools');
+    expect((process.env.PATH || '').split(sep)[0]).toBe(platformTools);
   });
 
   it('injects when AGP declared via root build.gradle.kts inline DSL + host has SDK', () => {
