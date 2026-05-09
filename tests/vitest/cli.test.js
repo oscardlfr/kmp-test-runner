@@ -575,6 +575,26 @@ describe('envErrorJson', () => {
     expect(obj.errors[0].message).toBe('no gradlew');
     expect(JSON.parse(JSON.stringify(obj))).toEqual(obj);
   });
+
+  // wet-audit-v0.9-part2 OBS-5 — when caller passes a `code`, it must surface
+  // on errors[0].code so agents can branch on the discriminator without
+  // re-parsing message text. Pre-fix two call sites (no_gradlew, missing_shell)
+  // omitted code; this test locks both shape paths.
+  it('surfaces caller-supplied code on errors[0].code', () => {
+    const obj = envErrorJson({
+      subcommand: 'parallel', projectRoot: '/x', durationMs: 0,
+      message: 'no gradlew found in /nonexistent', code: 'no_gradlew',
+    });
+    expect(obj.errors[0].code).toBe('no_gradlew');
+    expect(obj.errors[0].message).toBe('no gradlew found in /nonexistent');
+  });
+
+  it('omits code key entirely when caller passes none (back-compat)', () => {
+    const obj = envErrorJson({
+      subcommand: 'parallel', projectRoot: '/x', durationMs: 0, message: 'plain',
+    });
+    expect('code' in obj.errors[0]).toBe(false);
+  });
 });
 
 describe('main() — exit codes & flow', () => {
