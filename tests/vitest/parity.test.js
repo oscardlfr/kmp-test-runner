@@ -210,19 +210,25 @@ describe('parity / envelope JSON schema snapshot', () => {
     });
   }
 
-  // v0.9 session 2 Bug-K — top-level `schema_version: 1` on every envelope.
+  // v0.9 session 2 Bug-K — top-level `schema_version` on every envelope.
   // Explicit assertion (not a snapshot) so a future refactor that drops the
   // field is caught without snapshot churn — and so the value is locked at
-  // exactly 1 (a `null` or `'1'` would still fit the shape but break the
-  // contract). Pre-fix only `describe.schema_version` (sourced from project-
-  // model) existed; agents had no version handle for the CLI envelope itself.
+  // the canonical integer (a `null` or `'2'` would still fit the shape but
+  // break the contract). Pre-Bug-K only `describe.schema_version` (sourced
+  // from project-model) existed; agents had no version handle for the CLI
+  // envelope itself.
+  //
+  // Bumped 1 → 2 in wet-audit v0.9 part 2: OBS-3 (no_test_modules CONFIG vs
+  // ENV split) + OBS-7 (flavor_unused → CONFIG_ERROR) + OBS-4 (isolated
+  // runtime-race CONFIG_ERROR) all change exit-code/error-code semantics
+  // per the bump policy in lib/cli.js#ENVELOPE_SCHEMA_VERSION comment.
   for (const { sub, args, env, skipFixture } of CASES) {
-    it(`${sub} envelope carries top-level schema_version === 1 (Bug-K)`, () => {
+    it(`${sub} envelope carries top-level schema_version === 2 (Bug-K + wet-audit OBS-3/4/7)`, () => {
       const cwd = skipFixture ? REPO_ROOT : fixtureRoot;
       const fullArgs = skipFixture ? args : ['--project-root', fixtureRoot, ...args];
       const { envelope } = runSubcommand(sub, fullArgs, { cwd, env });
       expect(envelope).toBeTruthy();
-      expect(envelope.schema_version).toBe(1);
+      expect(envelope.schema_version).toBe(2);
     });
   }
 

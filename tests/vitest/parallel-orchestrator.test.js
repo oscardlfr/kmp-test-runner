@@ -3226,7 +3226,11 @@ describe('runParallel legit-skip exit semantics (drift #1)', () => {
     });
   });
 
-  it('regression: filter actually matches nothing still surfaces no_test_modules + exit 3', async () => {
+  // wet-audit-v0.9-part2 OBS-3 — exit-code split: user-supplied filter that
+  // matches nothing is now CONFIG_ERROR (2) (usage error). Project-genuinely-
+  // empty stays ENV_ERROR (3). Both still discriminated by errors[].code:
+  // 'no_test_modules' + new `caused_by_filter:bool` field.
+  it('regression: filter actually matches nothing → no_test_modules + CONFIG_ERROR (OBS-3)', async () => {
     const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
     const { envelope, exitCode } = await runParallel({
       projectRoot: dir,
@@ -3234,8 +3238,9 @@ describe('runParallel legit-skip exit semantics (drift #1)', () => {
       spawn: makeSpawnStub(),
       log: () => {},
     });
-    expect(exitCode).toBe(3);
+    expect(exitCode).toBe(2); // CONFIG_ERROR — user typed a filter that matched nothing
     expect(envelope.errors[0]?.code).toBe('no_test_modules');
+    expect(envelope.errors[0]?.caused_by_filter).toBe(true);
   });
 
   it('exit 0 with --module-filter=* when matched Android-only modules cannot serve --test-type common', async () => {
@@ -3259,6 +3264,51 @@ describe('runParallel legit-skip exit semantics (drift #1)', () => {
     expect(exitCode).toBe(0);
     expect(envelope.errors).toEqual([]);
     expect(envelope.skipped.length).toBe(2);
+  });
+});
+
+// ===========================================================================
+// wet-audit-v0.9-part2 OBS-3 — `no_test_modules` exit-code split
+// ===========================================================================
+describe('no_test_modules exit-code split (OBS-3)', () => {
+  it('user filter matches nothing → CONFIG_ERROR (2) + caused_by_filter:true', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', 'definitely-not-here'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2); // CONFIG_ERROR
+    expect(envelope.errors[0]?.code).toBe('no_test_modules');
+    expect(envelope.errors[0]?.caused_by_filter).toBe(true);
+  });
+
+  it('--exclude-modules dropping all → CONFIG_ERROR (2) + caused_by_filter:true', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--exclude-modules', '*'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors[0]?.caused_by_filter).toBe(true);
+  });
+
+  it('project genuinely empty (no filter) → ENV_ERROR (3) + caused_by_filter:false', async () => {
+    // Project has only modules with no test source sets → empty post-default-filter.
+    // No --module-filter supplied; the empty result is environmental, not user error.
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain'] }]); // no *Test* set
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'], // default --module-filter '*'
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(3); // ENV_ERROR — project really has nothing testable
+    expect(envelope.errors[0]?.code).toBe('no_test_modules');
+    expect(envelope.errors[0]?.caused_by_filter).toBe(false);
   });
 });
 

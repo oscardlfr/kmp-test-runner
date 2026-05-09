@@ -1612,7 +1612,10 @@ describe('main() — doctor subcommand', () => {
     }
     const json = JSON.parse(captured.join('').trim());
     // Baseline shape (shared across subcommand envelopes).
-    expect(json.schema_version).toBe(1);
+    // schema_version bumped 1 → 2 in this same release window for the
+    // OBS-3 + OBS-7 + OBS-4 exit-code semantics changes; the OBS-1 doctor
+    // unification is additive but rides the same bump.
+    expect(json.schema_version).toBe(2);
     expect(json.tool).toBe('kmp-test');
     expect(json).toHaveProperty('subcommand', 'doctor');
     expect(json).toHaveProperty('version');

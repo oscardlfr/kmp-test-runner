@@ -181,7 +181,7 @@ describe('invalid args envelope shape', () => {
   it('carries top-level schema_version, tool, subcommand, exit_code', async () => {
     const result = await runParallel({ projectRoot: '/tmp/nonexistent-stub', args: ['--test-type', 'bogus'] });
     expect(result.envelope.tool).toBe('kmp-test');
-    expect(result.envelope.schema_version).toBe(1);
+    expect(result.envelope.schema_version).toBe(2);
     expect(result.envelope.subcommand).toBe('parallel');
     expect(result.envelope.exit_code).toBe(EXIT.CONFIG_ERROR);
     expect(result.envelope.tests).toEqual({ total: 0, passed: 0, failed: 0, skipped: 0 });
