@@ -153,12 +153,69 @@ describe('maybeAugmentEnvWithAndroidSdk', () => {
       expect(out.PATH).toBe(path.join(realSdk, 'platform-tools'));
     });
 
-    it('returns env unchanged (no PATH mutation) when ANDROID_HOME already set', () => {
+    it('no-op when ANDROID_HOME points to non-existent path (do not silently break user setup)', () => {
       const dir = makeProject();
-      const env = { ANDROID_HOME: '/some/explicit/path', PATH: '/usr/bin' };
+      const env = {
+        ANDROID_HOME: '/totally/made/up/sdk',
+        PATH: '/usr/bin',
+      };
       const out = maybeAugmentEnvWithAndroidSdk(dir, env);
-      expect(out).toBe(env); // same reference — no mutation at all
-      expect(out.PATH).toBe('/usr/bin');
+      // Path doesn't exist → can't safely augment. Return env as-is so
+      // user gets the existing failure path with their own diagnostic
+      // (vs. a silent fallback that masks misconfiguration).
+      expect(out).toBe(env);
+    });
+
+    // OBS-D fix (2026-05-09 audit follow-up) — when user has set
+    // ANDROID_HOME explicitly but their PATH doesn't contain
+    // `${ANDROID_HOME}/platform-tools`, the orchestrator's Node-side
+    // adb probe still ENOENTs. Defensively prepend platform-tools to
+    // PATH while leaving ANDROID_HOME untouched (respects user's
+    // explicit choice; only adds the binary discovery path).
+    it('augments PATH defensively when ANDROID_HOME explicit but platform-tools missing from PATH', () => {
+      const dir = makeProject();
+      const explicitSdk = dir; // tmp dir — guaranteed to exist
+      const env = {
+        ANDROID_HOME: explicitSdk,
+        PATH: '/usr/bin',
+      };
+      const out = maybeAugmentEnvWithAndroidSdk(dir, env);
+      expect(out.ANDROID_HOME).toBe(explicitSdk); // user choice preserved
+      const sep = process.platform === 'win32' ? ';' : ':';
+      const ptDir = path.join(explicitSdk, 'platform-tools');
+      expect(out.PATH.split(sep)[0]).toBe(ptDir);
+      expect(out.PATH.split(sep).slice(1).join(sep)).toBe('/usr/bin');
+    });
+
+    it('augments PATH defensively when ANDROID_SDK_ROOT (legacy) explicit but platform-tools missing', () => {
+      const dir = makeProject();
+      const legacySdk = dir;
+      const env = {
+        ANDROID_SDK_ROOT: legacySdk,
+        PATH: '/usr/bin',
+      };
+      const out = maybeAugmentEnvWithAndroidSdk(dir, env);
+      // ANDROID_SDK_ROOT preserved; ANDROID_HOME NOT auto-set (user chose
+      // legacy var explicitly).
+      expect(out.ANDROID_SDK_ROOT).toBe(legacySdk);
+      expect(out.ANDROID_HOME).toBeUndefined();
+      const sep = process.platform === 'win32' ? ';' : ':';
+      const ptDir = path.join(legacySdk, 'platform-tools');
+      expect(out.PATH.split(sep)[0]).toBe(ptDir);
+    });
+
+    it('no-op when ANDROID_HOME set AND PATH already contains platform-tools', () => {
+      const dir = makeProject();
+      const sep = process.platform === 'win32' ? ';' : ':';
+      const explicitSdk = dir;
+      const ptDir = path.join(explicitSdk, 'platform-tools');
+      const env = {
+        ANDROID_HOME: explicitSdk,
+        PATH: `${ptDir}${sep}/usr/bin`,
+      };
+      const out = maybeAugmentEnvWithAndroidSdk(dir, env);
+      expect(out).toBe(env); // same reference — no mutation
+      expect(out.PATH).toBe(`${ptDir}${sep}/usr/bin`);
     });
   });
 });
