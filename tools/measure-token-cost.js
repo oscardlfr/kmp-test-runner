@@ -25,6 +25,16 @@
 //   node tools/measure-token-cost.js \
 //     --feature coverage \
 //     --anthropic-models claude-opus-4-7,claude-sonnet-4-6,claude-haiku-4-5
+//
+//   # Multi-account workflows: set both keys, the tool auto-falls-back on 401:
+//   export ANTHROPIC_API_KEY=sk-ant-account-A...
+//   export ANTHROPIC_API_KEY_FALLBACK=sk-ant-account-B...
+//   node tools/measure-token-cost.js --feature parallel \
+//     --anthropic-models claude-opus-4-7
+//
+//   # One-shot CLI override (skips env entirely):
+//   node tools/measure-token-cost.js --feature parallel \
+//     --anthropic-models claude-opus-4-7 --anthropic-api-key sk-ant-...
 
 import { spawnSync } from 'node:child_process';
 import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
@@ -46,9 +56,18 @@ const enc = new Tiktoken(cl100kBase);
 // tasks to run per matched module, which generated files to slurp afterwards,
 // and how to discover modules (most use the glob filter; `changed` uses git).
 // Approach B/C just dispatch to `kmp-test <cliSubcommand> [--json]`.
+// Feature shape:
+//   skipApproachA       — true for kmp-test-only subcommands (info, describe)
+//                         that have no raw-gradle equivalent. Approach A is
+//                         skipped; only B+C captures are written.
+//   acceptsModuleFilter — false when `kmp-test <subcommand>` doesn't accept
+//                         `--module-filter`. info is the only such case today.
+//                         Defaults to true elsewhere.
 export const FEATURES = {
   parallel: {
     cliSubcommand: 'parallel',
+    skipApproachA: false,
+    acceptsModuleFilter: true,
     gradleTasksForModules: (modules, opts) =>
       modules.map((m) => `:${m}:${opts.testTask || 'test'}`),
     isReport: (full) =>
@@ -58,6 +77,8 @@ export const FEATURES = {
   },
   coverage: {
     cliSubcommand: 'coverage',
+    skipApproachA: false,
+    acceptsModuleFilter: true,
     gradleTasksForModules: (modules) =>
       modules.flatMap((m) => [`:${m}:koverXmlReport`, `:${m}:koverHtmlReport`]),
     isReport: (full) =>
@@ -66,6 +87,8 @@ export const FEATURES = {
   },
   changed: {
     cliSubcommand: 'changed',
+    skipApproachA: false,
+    acceptsModuleFilter: true,
     gradleTasksForModules: (modules, opts) =>
       modules.map((m) => `:${m}:${opts.testTask || 'test'}`),
     isReport: (full) =>
@@ -77,11 +100,30 @@ export const FEATURES = {
   },
   benchmark: {
     cliSubcommand: 'benchmark',
+    skipApproachA: false,
+    acceptsModuleFilter: true,
     gradleTasksForModules: (modules, opts) =>
       modules.map((m) => `:${m}:${opts.benchmarkTask || 'jvmBenchmark'}`),
     isReport: (full) =>
       full.includes('build') && full.includes('reports') && full.includes('benchmarks') && full.endsWith('.json'),
     resolveModules: (projectRoot, opts) => filterModulesByGlob(projectRoot, opts.moduleFilter),
+  },
+  // v0.9 — agent-query subcommands. No raw-gradle baseline; B+C only.
+  info: {
+    cliSubcommand: 'info',
+    skipApproachA: true,
+    acceptsModuleFilter: false, // `kmp-test info` is global; rejects per-module filters
+    gradleTasksForModules: () => [],
+    isReport: () => false,
+    resolveModules: () => [],
+  },
+  describe: {
+    cliSubcommand: 'describe',
+    skipApproachA: true,
+    acceptsModuleFilter: true,
+    gradleTasksForModules: () => [],
+    isReport: () => false,
+    resolveModules: () => [],
   },
 };
 
@@ -111,6 +153,10 @@ export function parseArgs(argv) {
     changedRange: 'HEAD~1..HEAD',
     feature: 'parallel',
     anthropicModels: [],
+    // anthropicApiKey: optional CLI override. When set, OVERRIDES both
+    // ANTHROPIC_API_KEY env var and ANTHROPIC_API_KEY_FALLBACK fallback path
+    // (one-shot escape hatch for measurement against an arbitrary account).
+    anthropicApiKey: null,
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--project-root' && argv[i + 1]) { out.projectRoot = argv[++i]; continue; }
@@ -132,12 +178,17 @@ export function parseArgs(argv) {
       out.anthropicModels = parseAnthropicModels(argv[++i]);
       continue;
     }
+    if (argv[i] === '--anthropic-api-key' && argv[i + 1]) {
+      out.anthropicApiKey = argv[++i];
+      continue;
+    }
   }
   // --project-root is only required for the gradle mode. In cross-model mode
   // we read existing captures from tools/runs/<feature>/ instead.
   if (out.anthropicModels.length === 0 && !out.projectRoot) {
-    console.error('Usage: node tools/measure-token-cost.js --project-root <path> [--feature parallel|coverage|changed|benchmark] [--module-filter <pat>] [--test-task <name>] [--benchmark-task <name>] [--changed-range <rev>] [--runs N]');
-    console.error('       node tools/measure-token-cost.js [--feature <name>] --anthropic-models <csv>   # re-tokenise existing captures');
+    console.error('Usage: node tools/measure-token-cost.js --project-root <path> [--feature parallel|coverage|changed|benchmark|info|describe] [--module-filter <pat>] [--test-task <name>] [--benchmark-task <name>] [--changed-range <rev>] [--runs N]');
+    console.error('       node tools/measure-token-cost.js [--feature <name>] --anthropic-models <csv> [--anthropic-api-key <key>]   # re-tokenise existing captures');
+    console.error('       Reads ANTHROPIC_API_KEY (primary) and ANTHROPIC_API_KEY_FALLBACK (auto-fallback on 401) from env.');
     process.exit(2);
   }
   if (out.projectRoot) out.projectRoot = path.resolve(out.projectRoot);
@@ -291,7 +342,9 @@ export function buildKmpTestCliInvocation(opts, withJson) {
   const args = [feature.cliSubcommand];
   if (withJson) args.push('--json');
   args.push('--project-root', opts.projectRoot);
-  if (opts.moduleFilter) args.push('--module-filter', opts.moduleFilter);
+  if (opts.moduleFilter && feature.acceptsModuleFilter !== false) {
+    args.push('--module-filter', opts.moduleFilter);
+  }
   return { cmd: process.execPath, args: [cli, ...args] };
 }
 
@@ -374,10 +427,16 @@ function simplifyAnthropicError(err) {
   return String(err);
 }
 
-export async function countTokensAnthropic(client, model, text) {
+export async function countTokensAnthropic(client, model, text, fallbackClient = null) {
   // Wraps client.messages.countTokens in a per-call try/catch so one model's
   // failure (e.g. a typo'd model id) doesn't abort the whole run. The SDK
   // applies its own retry policy for 429/5xx before throwing.
+  //
+  // When `fallbackClient` is provided AND the primary client returns 401
+  // (auth_failed), retry once on the fallback. Use case: the user has two
+  // Anthropic accounts (ANTHROPIC_API_KEY + ANTHROPIC_API_KEY_FALLBACK) and
+  // one of them has been rotated/revoked. The fallback path is purely
+  // additive — when not provided, behaviour is identical to the original.
   try {
     const r = await client.messages.countTokens({
       model,
@@ -388,7 +447,22 @@ export async function countTokensAnthropic(client, model, text) {
     }
     return { ok: true, tokens: r.input_tokens };
   } catch (err) {
-    return { ok: false, error: simplifyAnthropicError(err) };
+    const errCode = simplifyAnthropicError(err);
+    if (errCode === 'auth_failed' && fallbackClient) {
+      try {
+        const r = await fallbackClient.messages.countTokens({
+          model,
+          messages: [{ role: 'user', content: text }],
+        });
+        if (typeof r?.input_tokens !== 'number') {
+          return { ok: false, error: 'no_input_tokens_in_response', usedFallback: true };
+        }
+        return { ok: true, tokens: r.input_tokens, usedFallback: true };
+      } catch (err2) {
+        return { ok: false, error: simplifyAnthropicError(err2), usedFallback: true };
+      }
+    }
+    return { ok: false, error: errCode };
   }
 }
 
@@ -432,10 +506,13 @@ export function summariseCrossModelVariation(rows, models) {
   return out;
 }
 
-export async function runCrossModelMode(opts, sdkFactory, sink = console, runsDir) {
+export async function runCrossModelMode(opts, sdkFactory, sink = console, runsDir, fallbackSdkFactory = null) {
   // sink: { log, error } — injected for tests so we can capture stdout/stderr.
   // sdkFactory: () => Anthropic-like client. Defaults to a real one in main().
   // runsDir: explicit override; when omitted, derived from opts.feature.
+  // fallbackSdkFactory: optional () => Anthropic-like client. When set, used
+  //   as a fallback when the primary client returns 401 (auth_failed). See
+  //   countTokensAnthropic for the retry semantics.
   const dir = runsDir || featureRunsDir(opts.feature || 'parallel');
   const captures = loadCaptures(dir);
   if (captures.length === 0) {
@@ -445,13 +522,19 @@ export async function runCrossModelMode(opts, sdkFactory, sink = console, runsDi
     return { exitCode: 2, rows: [], variation: [] };
   }
   const client = sdkFactory();
+  const fallbackClient = fallbackSdkFactory ? fallbackSdkFactory() : null;
+  let sawFallbackUse = false;
   const rows = [];
   for (const cap of captures) {
     const cl100k = countTokensCl100k(cap.text);
     const perModel = {};
     for (const model of opts.anthropicModels) {
       sink.error(`[count] ${cap.file} × ${model}…`);
-      const result = await countTokensAnthropic(client, model, cap.text);
+      const result = await countTokensAnthropic(client, model, cap.text, fallbackClient);
+      if (result.usedFallback && !sawFallbackUse) {
+        sink.error('[note] primary ANTHROPIC_API_KEY returned 401; using ANTHROPIC_API_KEY_FALLBACK for the rest of this run');
+        sawFallbackUse = true;
+      }
       perModel[model] = result.ok ? result.tokens : `[error: ${result.error}]`;
     }
     rows.push({ approach: cap.approach, file: cap.file, cl100k, perModel });
@@ -516,11 +599,15 @@ function runGradleMode(opts) {
   if (!existsSync(runsDir)) mkdirSync(runsDir, { recursive: true });
 
   const featureLabel = opts.feature;
-  const approaches = [
-    { id: 'A', label: `raw gradle + ${featureLabel} report parsing`, run: () => runApproachA(opts) },
-    { id: 'B', label: `kmp-test ${featureLabel} (markdown)`,           run: () => runApproachB(opts) },
-    { id: 'C', label: `kmp-test ${featureLabel} --json`,               run: () => runApproachC(opts) },
-  ];
+  const featureCfg = FEATURES[opts.feature];
+  // Approach A skipped for kmp-test-only subcommands (info, describe) — they
+  // have no raw-gradle equivalent, so the agent baseline is just B vs C.
+  const approaches = [];
+  if (!featureCfg.skipApproachA) {
+    approaches.push({ id: 'A', label: `raw gradle + ${featureLabel} report parsing`, run: () => runApproachA(opts) });
+  }
+  approaches.push({ id: 'B', label: `kmp-test ${featureLabel} (markdown)`, run: () => runApproachB(opts) });
+  approaches.push({ id: 'C', label: `kmp-test ${featureLabel} --json`,     run: () => runApproachC(opts) });
 
   const results = {};
   for (const a of approaches) {
@@ -559,10 +646,10 @@ function runGradleMode(opts) {
   console.log('');
   console.log('| Approach | Tokens (mean) | Bytes (mean) | Duration (mean) | vs C |');
   console.log('|----------|--------------:|-------------:|----------------:|-----:|');
-  for (const id of ['A', 'B', 'C']) {
-    const r = results[id];
+  for (const a of approaches) {
+    const r = results[a.id];
     const vsC = ratio(r.tokens.mean, results.C.tokens.mean);
-    console.log(`| **${id}** — ${r.label} | ${fmt(r.tokens.mean)} | ${fmt(r.bytes.mean)} | ${fmt(Math.round(r.duration_ms.mean / 1000))}s | ${vsC} |`);
+    console.log(`| **${a.id}** — ${r.label} | ${fmt(r.tokens.mean)} | ${fmt(r.bytes.mean)} | ${fmt(Math.round(r.duration_ms.mean / 1000))}s | ${vsC} |`);
   }
   console.log('');
   if (opts.runs > 1) {
@@ -570,9 +657,9 @@ function runGradleMode(opts) {
     console.log('');
     console.log('| Approach | Tokens std | min | max |');
     console.log('|----------|-----------:|----:|----:|');
-    for (const id of ['A', 'B', 'C']) {
-      const r = results[id];
-      console.log(`| ${id} | ${fmt(r.tokens.std)} | ${fmt(r.tokens.min)} | ${fmt(r.tokens.max)} |`);
+    for (const a of approaches) {
+      const r = results[a.id];
+      console.log(`| ${a.id} | ${fmt(r.tokens.std)} | ${fmt(r.tokens.min)} | ${fmt(r.tokens.max)} |`);
     }
   }
   console.log('');
@@ -582,14 +669,31 @@ function runGradleMode(opts) {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.anthropicModels.length > 0) {
-    if (!process.env.ANTHROPIC_API_KEY) {
+    // Key resolution precedence:
+    //   1. --anthropic-api-key <key>    — CLI override (overrides both env vars)
+    //   2. ANTHROPIC_API_KEY            — env primary
+    //   3. ANTHROPIC_API_KEY_FALLBACK   — env secondary, used when primary returns 401
+    const cliKey = opts.anthropicApiKey;
+    const primaryKey = cliKey || process.env.ANTHROPIC_API_KEY;
+    // When --anthropic-api-key is set, fallback is intentionally suppressed —
+    // a CLI-supplied key is an explicit "use this and only this" choice.
+    const fallbackKey = cliKey ? null : (process.env.ANTHROPIC_API_KEY_FALLBACK || null);
+
+    if (!primaryKey) {
       console.error(
-        'Error: --anthropic-models requires the ANTHROPIC_API_KEY environment variable.\n' +
-        '       Set it in your shell, e.g. `export ANTHROPIC_API_KEY=sk-ant-…`'
+        'Error: --anthropic-models needs at least one Anthropic API key.\n' +
+        '       Provide one of:\n' +
+        '         --anthropic-api-key <key>          (CLI override; overrides env)\n' +
+        '         export ANTHROPIC_API_KEY=sk-ant-…  (primary key)\n' +
+        '       Optionally set ANTHROPIC_API_KEY_FALLBACK=sk-ant-… for automatic\n' +
+        '       fallback when the primary returns 401 (multi-account workflows).'
       );
       process.exit(2);
     }
-    const result = await runCrossModelMode(opts, () => new Anthropic());
+
+    const sdkFactory = () => new Anthropic({ apiKey: primaryKey });
+    const fallbackSdkFactory = fallbackKey ? () => new Anthropic({ apiKey: fallbackKey }) : null;
+    const result = await runCrossModelMode(opts, sdkFactory, console, undefined, fallbackSdkFactory);
     process.exit(result.exitCode);
   }
   runGradleMode(opts);

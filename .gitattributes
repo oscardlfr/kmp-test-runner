@@ -12,8 +12,16 @@ tests/vitest/measure-token-cost.test.js text eol=lf
 # em-dashes in headers / prose that break Windows vitest without LF.
 tools/sync-versions.js text eol=lf
 tests/vitest/sync-versions.test.js text eol=lf
+# v0.9 step 7 macOS validation gate driver — same em-dash trigger.
+tools/macos-validation-gate.mjs text eol=lf
+tests/vitest/macos-validation-gate.test.js text eol=lf
 
 # Fixture wrapper scripts: gradlew (POSIX) needs LF; gradlew.bat needs CRLF
 # so cmd.exe parses it correctly across hosts.
 tests/fixtures/fake-gradlew/gradlew text eol=lf
 tests/fixtures/fake-gradlew/gradlew.bat text eol=crlf
+
+# v0.9 step 6 cross-platform E2E fixture — wrapper line endings + binary jar.
+tests/fixtures/kmp-cross-platform-e2e/gradlew text eol=lf
+tests/fixtures/kmp-cross-platform-e2e/gradlew.bat text eol=crlf
+tests/fixtures/kmp-cross-platform-e2e/gradle/wrapper/gradle-wrapper.jar binary

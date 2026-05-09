@@ -171,6 +171,25 @@ describe('expandNoCoverageAlias', () => {
     expect(expandNoCoverageAlias(['--project-root', '/x', '--no-coverage', '--json']))
       .toEqual(['--project-root', '/x', '--coverage-tool', 'none', '--json']);
   });
+  // Wet audit 2026-05-08 (cell I1c): the parser switch matches whole tokens,
+  // so `--coverage-tool=kover` was silently dropped. expandNoCoverageAlias
+  // splits `--flag=value` into `[--flag, value]` so both forms work.
+  it('splits POSIX-style --flag=value into separate tokens', () => {
+    expect(expandNoCoverageAlias(['--coverage-tool=kover']))
+      .toEqual(['--coverage-tool', 'kover']);
+  });
+  it('splits only on the FIRST = (preserves = inside the value)', () => {
+    expect(expandNoCoverageAlias(['--gradle-args=-Pfoo=bar']))
+      .toEqual(['--gradle-args', '-Pfoo=bar']);
+  });
+  it('does not split short flags or non-flag tokens', () => {
+    expect(expandNoCoverageAlias(['-Pfoo=bar', 'value=raw']))
+      .toEqual(['-Pfoo=bar', 'value=raw']);
+  });
+  it('parseArgs accepts --coverage-tool=kover (= form)', () => {
+    const opts = parseArgs(['--coverage-tool=kover']);
+    expect(opts.coverageTool).toBe('kover');
+  });
 });
 
 describe('aggregateClassRows', () => {
@@ -197,6 +216,52 @@ describe('aggregateClassRows', () => {
     const agg = aggregateClassRows(rows, 5);
     expect(agg.filteredRows).toHaveLength(1);
     expect(agg.filteredRows[0]).toContain('Cls2');
+  });
+
+  // wet-audit-v0.9-part2 BUG-2 — `unfilteredGrand*` totals reflect the project's
+  // full coverage even when a row-filter is in effect. Pre-fix the envelope's
+  // `coverage.missed_lines` reflected the filtered subset, hiding the real gap
+  // from agents and breaking the documented `--min-missed-lines` fail-gate.
+  it('exposes unfiltered totals so the envelope reports project truth', () => {
+    const rows = [
+      'mod-a|pkg|src.kt|Cls|10|2|12|83.3|3,5',
+      'mod-a|pkg|src2.kt|Cls2|5|10|15|33.3|6,7,8,9',
+      'mod-b|pkg|src.kt|Cls|0|7|7|0|1,2,3,4,5,6,7',
+    ];
+    const agg = aggregateClassRows(rows, 5);
+    // post-filter (row-filter narrows markdown report)
+    expect(agg.filteredRows.length).toBeLessThan(rows.length);
+    // pre-filter (gate + envelope use these)
+    expect(agg.unfilteredGrandMissed).toBe(19); // 2 + 10 + 7
+    expect(agg.unfilteredGrandCovered).toBe(15); // 10 + 5 + 0
+    expect(agg.unfilteredGrandTotal).toBe(34);   // 12 + 15 + 7
+  });
+});
+
+// wet-audit-v0.9-part2 BUG-2 — fail-gate semantics. Locks the contract that
+// `--min-missed-lines N > 0` fails when the project's UNFILTERED missed_lines
+// total exceeds N (strict greater-than). Threshold of 0 disables the gate.
+// End-to-end propagation through runParallel is covered in
+// parallel-orchestrator.test.js#coverage_threshold_exceeded.
+describe('runCoverage — --min-missed-lines fail-gate (BUG-2)', () => {
+  function gateBreaches(rows, threshold) {
+    const agg = aggregateClassRows(rows, 0);
+    return threshold > 0 && agg.unfilteredGrandMissed > threshold;
+  }
+
+  it('fires when unfiltered missed > threshold', () => {
+    const rows = ['mod-a|pkg|src.kt|Cls|0|100|100|0|1-100'];
+    expect(gateBreaches(rows, 50)).toBe(true);
+  });
+
+  it('does NOT fire when minMissedLines=0 (default — disabled)', () => {
+    const rows = ['mod-a|pkg|src.kt|Cls|0|100|100|0|1-100'];
+    expect(gateBreaches(rows, 0)).toBe(false);
+  });
+
+  it('does NOT fire when missed equals threshold (strict greater-than)', () => {
+    const rows = ['mod-a|pkg|src.kt|Cls|0|50|50|0|1-50'];
+    expect(gateBreaches(rows, 50)).toBe(false);
   });
 });
 
@@ -514,5 +579,25 @@ describe('runCoverage', () => {
     expect(pythonCalls[0].cmd).toBe('python3');
     expect(pythonCalls[0].args).toHaveLength(3);
     expect(pythonCalls[0].args[2]).toBe('a');
+  });
+
+  // v0.9 step 4 — coverage silently ignores --isolated. Coverage doesn't
+  // spawn gradle (Python XML parser only), so the cache-dir flag has no
+  // surface to attach to. The orchestrator must not error out and must
+  // not surface an `isolated:{}` envelope field (would be misleading).
+  it('--isolated is silently ignored (no envelope field, no error)', async () => {
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'a', 'kover');
+    const spawn = makeSpawnStub({
+      rowsByModule: { 'a': ['a|p|F.kt|F|1|0|1|100|'] },
+    });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--isolated', '--isolated-cache-dir', '/tmp/x', '--isolated-no-lock'],
+      spawn,
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.errors).toEqual([]);
+    expect(envelope.isolated).toBeUndefined();
   });
 });

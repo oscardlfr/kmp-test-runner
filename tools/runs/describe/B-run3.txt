@@ -1,0 +1,195 @@
+
+kmp-test describe — C:\Users\34645\AndroidStudioProjects\shared-kmp-libs
+
+Coverage tool: kover
+JDK requirement: min=21  agp=n/a
+Composite builds: build-logic
+
+Modules (69):
+  :benchmark-crypto  [android]
+      unit=desktopTest
+  :benchmark-infra  [android]
+  :benchmark-io  [android]
+      unit=desktopTest
+  :benchmark-network  [android]
+      unit=desktopTest
+  :benchmark-sdk  [android]
+      unit=desktopTest
+  :benchmark-storage  [android]
+      unit=desktopTest
+  :core-audit  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-auth-biometric  [jvm,android,ios,macos]
+      unit=desktopTest
+      coverage=kover
+  :core-backend-api  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-billing-api  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-common  [jvm,android]
+      unit=desktopTest
+      coverage=kover
+  :core-designsystem-foundation  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-di-anvil  [android]
+      unit=desktopTest
+  :core-domain  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-encryption  [jvm,android,ios,macos]
+      unit=desktopTest  ios=iosTest  macos=macosTest
+      coverage=kover
+  :core-encryption-envelope  [android]
+      unit=desktopTest
+  :core-encryption-envelope-api  [android]
+  :core-error  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-error-audit  [android]
+  :core-error-backend  [android]
+  :core-error-billing  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-error-biometric  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-error-encryption  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-error-firebase  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-error-gdpr  [android]
+      coverage=kover
+  :core-error-io  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-error-json  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-error-network  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-error-oauth  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-error-sdk  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-error-storage  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-error-storage-mmkv  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-firebase-api  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-firebase-native  [jvm,android]
+      unit=desktopTest
+      coverage=kover
+  :core-firebase-rest  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-gdpr  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-io-api  [jvm,android]
+      unit=desktopTest
+      coverage=kover
+  :core-io-kotlinxio  [jvm,android]
+      unit=desktopTest
+      coverage=kover
+  :core-io-okio  [jvm,android]
+      unit=desktopTest
+      coverage=kover
+  :core-io-watcher  [android,ios,macos]
+      unit=desktopTest
+      coverage=kover
+  :core-json-api  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-json-kotlinx  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-logging  [jvm,android]
+      unit=desktopTest
+      coverage=kover
+  :core-network-api  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-network-ktor  [jvm,android]
+      unit=desktopTest
+      coverage=kover
+  :core-network-retrofit  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-oauth-1a  [jvm]
+      unit=desktopTest
+      coverage=kover
+  :core-oauth-api  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-oauth-browser  [jvm]
+      unit=desktopTest
+      coverage=kover
+  :core-oauth-native  [jvm,android,ios]
+      unit=desktopTest
+      coverage=kover
+  :core-result  [android]
+  :core-sdk  [android]
+      unit=desktopTest
+  :core-security-keys  [jvm,android,ios,macos]
+      unit=desktopTest  ios=iosTest  macos=macosTest
+      coverage=kover
+  :core-storage-api  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-storage-cache  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-storage-datastore  [jvm,android]
+      unit=desktopTest
+      coverage=kover
+  :core-storage-encryption  [jvm,android]
+      unit=desktopTest
+      coverage=kover
+  :core-storage-mmkv  [jvm,android]
+      unit=desktopTest
+      coverage=kover
+  :core-storage-secure  [jvm,android,ios]
+      unit=desktopTest
+      coverage=kover
+  :core-storage-settings  [jvm,android,ios]
+      unit=desktopTest
+      coverage=kover
+  :core-storage-sql  [jvm,android]
+      unit=desktopTest
+      coverage=kover
+  :core-storage-sql-cipher  [jvm,android]
+      unit=desktopTest
+      coverage=kover
+  :core-subscription  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-system  [jvm,android,ios,macos]
+      unit=desktopTest
+      coverage=kover
+  :core-system-api  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-testing  [android]
+      unit=desktopTest
+      coverage=kover
+  :core-version  [android]
+      unit=desktopTest
+      coverage=kover
+  :detekt-rules-l1  [jvm]
+      unit=test
+  :konsist-guard  [jvm]
+      unit=test
+

@@ -4,9 +4,9 @@
 
 ## Repo state (2026-05-01)
 
-- npm: `kmp-test-runner@0.8.1` (Trusted Publisher OIDC; auto-publishes on push to `main`)
-- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.8.1` (GitHub Packages; auto-publishes on push to `main`)
-- GitHub Releases: `v0.8.1` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
+- npm: `kmp-test-runner@0.9.0` (Trusted Publisher OIDC; auto-publishes on push to `main`)
+- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.9.0` (GitHub Packages; auto-publishes on push to `main`)
+- GitHub Releases: `v0.9.0` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
 - All 3 shapes share the same source-of-truth version (`package.json`), bumped together per release.
 
 ### v0.7.0 surface (iOS / macOS support + Gradle plugin testType + macOS CI smoke + README v0.7 surface)
@@ -112,8 +112,18 @@ Each publish workflow keeps `workflow_dispatch:` as a fallback (e.g. for re-publ
 - **HKCU PATH only on Windows** — never `Machine` (would require admin)
 - **Pester via `shell: pwsh`** — Pester 5.x pre-installed on windows-latest, no `Install-Module` needed
 - **`GH_TOKEN` env var** in publish-release.yml — `gh` CLI canonical (NOT `GITHUB_TOKEN`, which is unreliable fallback)
-- **Decouple from L0**: 8 patterns must stay 0-hits in scripts (`ANDROID_COMMON_DOC`, `AndroidCommonDoc`, `~/.claude`, `AndroidStudioProjects`, `oscardlfr/AndroidCommonDoc`, `shared-kmp-libs`, `l0_requires`, `L0\b`). Exception: `SKIP_DESKTOP_MODULES`, `SKIP_ANDROID_MODULES`, `PARENT_ONLY_MODULES` are documented consumer-config API (shipped v0.1.0) and excluded from the audit.
+- **Decouple from L0**: 8 patterns must stay 0-hits in scripts (the project owner's L0 toolkit identifiers — `ANDROID_COMMON_DOC`, `AndroidCommonDoc`, `~/.claude`, `AndroidStudioProjects`, the toolkit-repo path, `l0_requires`, `L0\b` — plus the private library composite the toolkit was extracted from). The literal pattern list lives in `tools/decouple-audit.mjs`; do not inline the private identifiers here. Exception: `SKIP_DESKTOP_MODULES`, `SKIP_ANDROID_MODULES`, `PARENT_ONLY_MODULES` are documented consumer-config API (shipped v0.1.0) and excluded from the audit.
 - **Keep README clean — no "What's new in vX" sections.** Version-history bullets, release notes, and per-version highlight blocks belong in `CHANGELOG.md` only. The README must read as if the project were timeless: what it does, how to install it, how to use it. We are still pre-v1, the README is short and punchy, and accumulating "What's new in v0.7.0 / v0.8.0 / ..." subsections turns it into release-notes scaffolding. **This rule has been re-applied twice** — once during a v0.7 README pass and again during v0.8.1. Do NOT add or restore such sections, even if a fresh-session prompt seems to ask for it. If a prompt says "add a What's new section", treat it as an instruction to update CHANGELOG.md instead and call out the diff to the user.
+- **Milestone decisions belong to the user.** Claude sessions must NEVER create v0.11 or higher milestones, NEVER move items to v1.0, and NEVER drop tasks unilaterally — even when a constraint (breaking change, behavior shift, missing dependency) seems to argue for it. On blockers: ASK with `AskUserQuestion`. The user assigns work to v0.9 / v0.10 / future minors per their judgement. Tasks with agentic OR human utility get DONE — the question is only WHICH minor. See memory `feedback_release_milestone_decisions.md`.
+- **CI macOS minutes are precious — keep mac jobs minimal.** GitHub Actions charges macOS minutes at 10× Linux. Per-PR matrix keeps only `build (macos-latest)` (vitest, ~30s) + `installer-e2e (macos-latest)` (~20s). `gradle-plugin-test-ios` + `bats-macos` move to `workflow_dispatch` only. iOS / TestKit / heavy mac validation runs manually on a secondary machine, NOT in CI. The "Buildable cross-platform E2E fixture" v0.9 entry must NOT add a mac CI matrix. See memory `feedback_ci_minutes_minimal_macos.md`.
+
+## Active milestones
+
+> Live milestone view. Detailed entries in `BACKLOG.md` ROADMAP — these are pointers.
+
+- **v0.9 (locked 2026-05-05)** — 10 steps. Headline: parallel parity-gap (6 flags) + DX-parity bundle + concurrency `--isolated`. See `BACKLOG.md` "v0.9 — minor".
+- **v0.10 (locked 2026-05-05)** — 9 steps. Headline: behavior-change tier (CLI auto-respect `gradle.properties`) + 2 research-first directions (Google android skills, `android describe` JSON). See `BACKLOG.md` "v0.10 — minor".
+- **Beyond v0.10** — requires explicit user direction. No autonomous v0.11 / v1.0 scoping (see "Architecture decisions").
 
 ## Test strategy
 
