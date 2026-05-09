@@ -1583,6 +1583,53 @@ describe('main() — doctor subcommand', () => {
     expect(typeof json.exit_code).toBe('number');
   });
 
+  // wet-audit-v0.9-part2 OBS-1 — doctor envelope shape unified with
+  // info/describe/parallel/etc. Pre-fix doctor had only 9 keys (missing
+  // tests, modules, skipped, coverage, errors, warnings); other subcommands
+  // had 14-16. Same schema_version:1 covered two distinct shapes. Now all
+  // subcommand envelopes share the same baseline keys + their subcommand-
+  // specific extras (doctor: checks + gradle_config).
+  it('doctor --json envelope shares baseline shape with other subcommands (OBS-1)', () => {
+    spawnMock.mockImplementation((cmd) => {
+      if (cmd === 'java') return { status: 0, stderr: 'openjdk version "17.0.1"\n' };
+      return { status: 0 };
+    });
+    const captured = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+    try {
+      process.argv = ['node', 'kmp-test.js', 'doctor', '--json', '--project-root', tmpdir()];
+      main();
+    } finally {
+      process.stdout.write = origWrite;
+    }
+    const json = JSON.parse(captured.join('').trim());
+    // Baseline shape (shared across subcommand envelopes).
+    expect(json.schema_version).toBe(1);
+    expect(json.tool).toBe('kmp-test');
+    expect(json).toHaveProperty('subcommand', 'doctor');
+    expect(json).toHaveProperty('version');
+    expect(json).toHaveProperty('project_root');
+    expect(json).toHaveProperty('exit_code');
+    expect(json).toHaveProperty('duration_ms');
+    expect(json).toHaveProperty('tests');
+    expect(json.tests).toEqual({ total: 0, passed: 0, failed: 0, skipped: 0 });
+    expect(json).toHaveProperty('modules');
+    expect(json.modules).toEqual([]);
+    expect(json).toHaveProperty('skipped');
+    expect(json.skipped).toEqual([]);
+    expect(json).toHaveProperty('coverage');
+    expect(json.coverage.tool).toBe('none');
+    expect(json).toHaveProperty('errors');
+    expect(json.errors).toEqual([]);
+    expect(json).toHaveProperty('warnings');
+    expect(json.warnings).toEqual([]);
+    // Doctor-specific top-level extras.
+    expect(json).toHaveProperty('checks');
+    expect(Array.isArray(json.checks)).toBe(true);
+    expect(json).toHaveProperty('gradle_config');
+  });
+
   it('doctor --help prints help and returns SUCCESS without spawning checks', () => {
     process.argv = ['node', 'kmp-test.js', 'doctor', '--help'];
     expect(main()).toBe(EXIT.SUCCESS);
