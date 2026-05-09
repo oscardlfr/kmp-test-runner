@@ -57,6 +57,8 @@ import {
   partitionBySkipEnv,
   legsForAll,
   junitTestCountFor,
+  junitTestFailuresFor,
+  extractTestcaseFailures,
   classifyTaskResults,
   applyModuleFilters,
   hasAnyTestSourceSet,
@@ -1031,6 +1033,127 @@ describe('junitTestCountFor', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-test-'));
     workDir = dir;
     expect(junitTestCountFor(dir, ':missing:test')).toBe(0);
+  });
+});
+
+// ===========================================================================
+// wet-audit-v0.9-part2 BUG-1 — junit XML failure extraction
+// ===========================================================================
+describe('extractTestcaseFailures (BUG-1)', () => {
+  it('skips passing self-closing testcases', () => {
+    const xml = '<testsuite><testcase name="ok" classname="C" time="0.1"/></testsuite>';
+    const out = [];
+    extractTestcaseFailures(xml, out);
+    expect(out).toEqual([]);
+  });
+
+  it('skips skipped tests (AssumptionViolatedException etc.)', () => {
+    const xml = `<testsuite>
+      <testcase name="skipped" classname="C" time="0.1">
+        <skipped message="org.junit.AssumptionViolatedException" type="org.junit.AssumptionViolatedException"/>
+      </testcase>
+    </testsuite>`;
+    const out = [];
+    extractTestcaseFailures(xml, out);
+    expect(out).toEqual([]);
+  });
+
+  it('extracts <failure> children with type + message attrs', () => {
+    const xml = `<testsuite>
+      <testcase name="testFoo" classname="com.example.FooTest" time="0.1">
+        <failure type="java.lang.AssertionError" message="expected: &lt;true&gt; but was: &lt;false&gt;">
+          full stack trace here
+        </failure>
+      </testcase>
+    </testsuite>`;
+    const out = [];
+    extractTestcaseFailures(xml, out);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toEqual({
+      test: 'com.example.FooTest.testFoo',
+      cause: 'expected: <true> but was: <false>',
+      type: 'java.lang.AssertionError',
+    });
+  });
+
+  it('extracts <error> children (test infrastructure errors)', () => {
+    const xml = `<testsuite>
+      <testcase name="testBar" classname="com.example.BarTest">
+        <error type="java.lang.RuntimeException" message="setup failed"/>
+      </testcase>
+    </testsuite>`;
+    const out = [];
+    extractTestcaseFailures(xml, out);
+    expect(out).toHaveLength(1);
+    expect(out[0].cause).toBe('setup failed');
+    expect(out[0].type).toBe('java.lang.RuntimeException');
+  });
+
+  it('falls back to first body line when message attr missing', () => {
+    const xml = `<testsuite>
+      <testcase name="testBaz" classname="com.example.BazTest">
+        <failure type="kotlin.AssertionError">kotlin.AssertionError: assertion failed
+at com.example.BazTest.testBaz(BazTest.kt:42)</failure>
+      </testcase>
+    </testsuite>`;
+    const out = [];
+    extractTestcaseFailures(xml, out);
+    expect(out[0].cause).toBe('kotlin.AssertionError: assertion failed');
+  });
+
+  it('handles multiple testcases with mixed pass / fail / skip', () => {
+    const xml = `<testsuite>
+      <testcase name="pass" classname="C"/>
+      <testcase name="fail1" classname="C"><failure type="E" message="m1"/></testcase>
+      <testcase name="skipped" classname="C"><skipped/></testcase>
+      <testcase name="fail2" classname="C"><failure type="F" message="m2"/></testcase>
+    </testsuite>`;
+    const out = [];
+    extractTestcaseFailures(xml, out);
+    expect(out.map(f => f.test)).toEqual(['C.fail1', 'C.fail2']);
+  });
+});
+
+describe('junitTestFailuresFor (BUG-1)', () => {
+  it('walks build/test-results/<task>/TEST-*.xml and aggregates failures', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-fail-'));
+    workDir = dir;
+    const taskDir = path.join(dir, 'core', 'build', 'test-results', 'jvmTest');
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(path.join(taskDir, 'TEST-com.foo.AlphaTest.xml'),
+      '<testsuite><testcase name="ok" classname="com.foo.AlphaTest"/>' +
+      '<testcase name="bad" classname="com.foo.AlphaTest">' +
+      '<failure type="AssertionError" message="alpha bad"/></testcase></testsuite>');
+    writeFileSync(path.join(taskDir, 'TEST-com.foo.BetaTest.xml'),
+      '<testsuite><testcase name="bad" classname="com.foo.BetaTest">' +
+      '<failure type="AssertionError" message="beta bad"/></testcase></testsuite>');
+    const failures = junitTestFailuresFor(dir, ':core:jvmTest');
+    expect(failures).toHaveLength(2);
+    expect(failures.map(f => f.test).sort()).toEqual([
+      'com.foo.AlphaTest.bad',
+      'com.foo.BetaTest.bad',
+    ]);
+  });
+
+  it('returns [] when directory missing', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-fail-'));
+    workDir = dir;
+    expect(junitTestFailuresFor(dir, ':missing:test')).toEqual([]);
+  });
+
+  it('respects sinceMs stale-XML guard', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-fail-'));
+    workDir = dir;
+    const taskDir = path.join(dir, 'core', 'build', 'test-results', 'jvmTest');
+    mkdirSync(taskDir, { recursive: true });
+    const xmlPath = path.join(taskDir, 'TEST-Stale.xml');
+    writeFileSync(xmlPath,
+      '<testsuite><testcase name="bad" classname="C"><failure message="stale"/></testcase></testsuite>');
+    // Future sinceMs filters out the file regardless of mtime.
+    const future = Date.now() + 60_000;
+    expect(junitTestFailuresFor(dir, ':core:jvmTest', future)).toEqual([]);
+    // sinceMs=0 disables the guard.
+    expect(junitTestFailuresFor(dir, ':core:jvmTest', 0)).toHaveLength(1);
   });
 });
 
