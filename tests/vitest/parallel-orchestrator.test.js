@@ -3261,3 +3261,103 @@ describe('runParallel legit-skip exit semantics (drift #1)', () => {
     expect(envelope.skipped.length).toBe(2);
   });
 });
+
+// ===========================================================================
+// wet-audit-v0.9-part2 OBS-4 — `--isolated` runtime-race guard
+// ===========================================================================
+describe('--isolated runtime-race guard (OBS-4)', () => {
+  function makeAndroidApp(name = 'app') {
+    const modDir = path.join(workDir, name);
+    const manifestDir = path.join(modDir, 'src', 'main');
+    mkdirSync(manifestDir, { recursive: true });
+    writeFileSync(path.join(manifestDir, 'AndroidManifest.xml'),
+      `<manifest package="com.example.${name}"/>`);
+  }
+
+  it('rejects --isolated --test-type ios with isolated_runtime_race', async () => {
+    const dir = makeProject([{ name: 'shared' }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'ios', '--isolated'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2); // CONFIG_ERROR
+    expect(envelope.errors[0].code).toBe('isolated_runtime_race');
+    expect(envelope.errors[0].test_type).toBe('ios');
+  });
+
+  it('rejects --isolated --test-type all (expansion includes ios)', async () => {
+    const dir = makeProject([{ name: 'shared' }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'all', '--isolated'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors[0].code).toBe('isolated_runtime_race');
+    expect(envelope.errors[0].test_type).toBe('all');
+  });
+
+  it('rejects --isolated --test-type androidInstrumented WITHOUT --device', async () => {
+    const dir = makeProject([{ name: 'app' }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--isolated'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors[0].code).toBe('isolated_runtime_race');
+    expect(envelope.errors[0].test_type).toBe('androidInstrumented');
+  });
+
+  it('ALLOWS --isolated --test-type androidInstrumented WITH --device <serial>', async () => {
+    // Caller asserts each concurrent process targets its own device.
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    makeAndroidApp('app');
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+    const { exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--isolated', '--device', 'X'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).not.toBe(2); // not a CONFIG_ERROR — combo accepted
+  });
+
+  it('ALLOWS --isolated --test-type jvm (no shared runtime resources)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const { exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'jvm', '--isolated'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).not.toBe(2);
+  });
+
+  it('ALLOWS --isolated --test-type macos (host-native, gradle handles)', async () => {
+    const dir = makeProject([{ name: 'shared' }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const { exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'macos', '--isolated'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    // May be 3 if no macOS modules discovered, but NOT a 2 (CONFIG_ERROR).
+    expect(exitCode).not.toBe(2);
+  });
+});
