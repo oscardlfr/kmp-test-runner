@@ -330,6 +330,58 @@ Fix: new `buildFilterArgs(testFilter, testType, projectRoot)` mirrors the androi
 
 ---
 
+### post-v0.9 — `kmp-test coverage --skip-tests` doubles the `--skip-tests` flag → ps1 wrapper hard-rejects (surfaced 2026-05-10 PR-09 wet-validation gate)
+
+**Status: OPEN, milestone-pending.** Pre-existing — confirmed reproducible at `f0f6f0a` (pre-PR-09 baseline) with byte-identical output. NOT a PR-09 regression. Surfaced incidentally while running the post-PR-09 wet-validation gate against `shared-kmp-libs`.
+
+**Symptom (Windows + pwsh):**
+```
+> kmp-test coverage --skip-tests --json --project-root <project>
+run-parallel-coverage-suite.ps1: Cannot bind parameter because parameter 'SkipTests' is specified more than once.
+```
+Exit code 1, envelope `errors[].code = "no_summary"`. Schema shape preserved (sv=2) but the run never executes any work.
+
+**Cause:** `lib/cli.js#COMMANDS.coverage` declares `prefix: ['--skip-tests']` (canonical wire form for the coverage subcommand — coverage always skips tests by definition). The dispatcher concatenates `[...cmd.prefix, ...userArgs]` into `finalArgs` without dedup. When the user passes `--skip-tests` explicitly (as the README example arguably suggests), the kebab→PowerShell translator produces `-SkipTests -SkipTests` and pwsh's parameter-binder fails immediately.
+
+**Fix candidates (one PR):**
+1. **Dedup before spawn.** In `lib/runners/script-dispatcher.js` (post-PR-09), filter duplicates from `finalArgs` for known boolean flags (`--skip-tests`, `--include-shared`, `--include-untested`, `--no-coverage`, `--ignore-jdk-mismatch`, `--list-only`, `--no-jdk-autoselect`, `--isolated*`, `--coverage-only`). ~20 LOC + 2 vitest. Lowest risk, fixes the class.
+2. **Drop the implicit prefix.** Remove `prefix: ['--skip-tests']` from `COMMANDS.coverage` and require users to pass it themselves. Breaks the contract that `kmp-test coverage` (with no flags) skips tests by default.
+3. **README clarification only.** Document that `--skip-tests` is implicit on coverage. Surface-level fix; doesn't address the dedup hole for other flags.
+
+Recommended: (1). Dedup is the right invariant; the underlying class is "user passes a flag the prefix already injects". Same trap could hit `kmp-test parallel --include-shared` (no prefix injection today) or future subcommand prefixes.
+
+**Risk:** LOW. Mechanical fix in a single function. Snapshot suite (PR-00) covers the envelope shape.
+
+**Effort:** ~30 min implementation + smoke wet against `shared-kmp-libs`.
+
+---
+
+### post-v0.9 — `benchmark --platform jvm --config smoke` against shared-kmp-libs hits inner gradle timeout on 1 of 5 modules (OBSERVATION — surfaced 2026-05-10 PR-09 wet-validation gate)
+
+**Status: OBSERVATION, milestone-pending.** Pre-existing — output byte-identical between `f0f6f0a` baseline and post-PR-09. NOT a PR-09 regression. The CLI behaves correctly (raises canonical `gradle_timeout` envelope, ec=3, sv=2, `benchmark.timed_out: 1`).
+
+**Symptom:**
+```
+> kmp-test benchmark --platform jvm --config smoke --json --project-root <shared-kmp-libs>
+# 5m20s wall time, 4/5 modules pass, 1 hits the inner 300000ms (5min) timeout
+exit_code: 3
+benchmark: { config: "smoke", total: 5, passed: 4, failed: 0, timed_out: 1, platforms: ["jvm"], timeout_ms: 300000 }
+errors[]: [{ code: "gradle_timeout" }]
+```
+
+**Cause analysis:** the `smoke` config sets the inner per-module timeout to 300000ms = 5min (see `lib/benchmark-orchestrator.js#BENCHMARK_TIMEOUT_DEFAULTS_MS`). One of the 5 jvm benchmark modules in `shared-kmp-libs` legitimately exceeds 5min on this machine. Could be:
+- (a) Project-side: that benchmark is genuinely too slow for smoke and should be excluded or moved to `--config main`.
+- (b) CLI-side: `smoke` inner timeout is too tight for some real-world projects and should be bumped.
+- (c) Both: project tags slow benchmarks + CLI bumps the floor slightly.
+
+**Action: needs user / project owner decision.** This is not a CLI bug per se — the CLI surfaces the timeout cleanly. The question is policy: do we ship with `smoke` = 5min inner, document the constraint, and let users skip slow modules via `--module-filter`? Or do we bump the inner timeout (e.g. to 10min for `smoke`) so loose-tolerance projects pass without filtering?
+
+**Risk if untouched:** users running `benchmark smoke` against projects with long-running benchmarks see flaky timeout failures. Already documented behavior; not a contract violation.
+
+**Effort:** triage only (~10 min) until policy decided. If bump: ~15 LOC in `benchmark-orchestrator.js` + 1 vitest.
+
+---
+
 ### v0.9 — `kmp-test parallel --test-type androidInstrumented` parity gap with `kmp-test android` subcommand (surfaced 2026-05-05 during fix-PR-G audit)
 
 **Status: OPEN, deferred from v0.8.0.** The `kmp-test android` subcommand offers several instrumented-test ergonomics that the `parallel --test-type androidInstrumented` path does not surface today. None BREAK an existing flow (so they're not v0.8.0 release-blockers — fix-PR-G closed the only blocker), but they're features users will reasonably expect on the unified `parallel` path. Closing the gap is mostly mechanical: thread the missing flags through `parseArgs` + `dispatchLeg` + per-module retry path.
