@@ -19,10 +19,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, '..', '..');
 export const BIN_PATH = path.join(REPO_ROOT, 'bin', 'kmp-test.js');
 
-// Subcommand → orchestrator file. doctor lives inline in lib/cli.js and has
-// no orchestrator file, so its flag set is parsed from cli.js#runDoctor.
+// Subcommand → orchestrator file(s). String for single-file orchestrators;
+// array when the parser surface is split across multiple files. doctor lives
+// inline in lib/cli.js and has no orchestrator file, so its flag set is
+// parsed from cli.js#runDoctor.
+//
+// PR-10 (refactor pre-v0.10) — `parallel` parseArgs was extracted from
+// `lib/parallel-orchestrator.js` to `lib/orchestrators/parallel/dispatch.js`
+// while the residual file kept gradle-arg emits (--stop, --coverage-tool,
+// etc.) and the runParallel composition. Both paths must be scanned.
 export const SUBCOMMAND_TO_ORCHESTRATOR = Object.freeze({
-  parallel:  'lib/parallel-orchestrator.js',
+  parallel:  ['lib/parallel-orchestrator.js', 'lib/orchestrators/parallel/dispatch.js'],
   changed:   'lib/changed-orchestrator.js',
   android:   'lib/android-orchestrator.js',
   benchmark: 'lib/benchmark-orchestrator.js',
@@ -375,11 +382,15 @@ export function getParsedFlagsForSubcommand(sub) {
   // `--project-root`/`--json`/`--help`/etc. mention as "documented but not
   // parsed by orchestrator".
   for (const f of CLI_GLOBAL_FLAGS) flags.add(f);
-  // Orchestrator-side literals.
+  // Orchestrator-side literals. Mapping value can be a string (single file)
+  // or array (split across multiple files — see PR-10 `parallel` split).
   const rel = SUBCOMMAND_TO_ORCHESTRATOR[sub];
   if (rel) {
-    for (const f of extractFlagsFromOrchestratorSource(path.join(REPO_ROOT, rel))) {
-      flags.add(f);
+    const paths = Array.isArray(rel) ? rel : [rel];
+    for (const p of paths) {
+      for (const f of extractFlagsFromOrchestratorSource(path.join(REPO_ROOT, p))) {
+        flags.add(f);
+      }
     }
   } else if (sub === 'doctor') {
     // doctor parses its args inline in lib/cli.js. Scan only the runDoctor
