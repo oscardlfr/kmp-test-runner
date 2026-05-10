@@ -1,0 +1,419 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`characterization / invalid-args envelopes > benchmark --platform bogus → CONFIG_ERROR envelope 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "allowed": [
+        "android",
+        "jvm",
+        "all",
+      ],
+      "code": "invalid_flag_value",
+      "flag": "--platform",
+      "message": "--platform: invalid value 'bogus' — expected one of [android, jvm, all]",
+      "value": "bogus",
+    },
+  ],
+  "exit_code": 2,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "benchmark",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`characterization / invalid-args envelopes > benchmark --timeout abc → CONFIG_ERROR envelope 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "code": "invalid_flag_value",
+      "flag": "--timeout",
+      "message": "--timeout: invalid value 'abc' — expected a non-negative integer",
+      "value": "abc",
+    },
+  ],
+  "exit_code": 2,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "benchmark",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`characterization / invalid-args envelopes > coverage --coverage-tool bogus → CONFIG_ERROR envelope 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "allowed": [
+        "auto",
+        "kover",
+        "jacoco",
+        "none",
+      ],
+      "code": "invalid_flag_value",
+      "flag": "--coverage-tool",
+      "message": "--coverage-tool: invalid value 'bogus' — expected one of [auto, kover, jacoco, none]",
+      "value": "bogus",
+    },
+  ],
+  "exit_code": 2,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "coverage",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`characterization / invalid-args envelopes > parallel --coverage-tool bogus → CONFIG_ERROR envelope 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "allowed": [
+        "auto",
+        "kover",
+        "jacoco",
+        "none",
+      ],
+      "code": "invalid_flag_value",
+      "flag": "--coverage-tool",
+      "message": "--coverage-tool: invalid value 'bogus' — expected one of [auto, kover, jacoco, none]",
+      "value": "bogus",
+    },
+  ],
+  "exit_code": 2,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "parallel",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`characterization / invalid-args envelopes > parallel --max-failures 1.5 (non-integer) → CONFIG_ERROR envelope 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "code": "invalid_flag_value",
+      "flag": "--max-failures",
+      "message": "--max-failures: invalid value '1.5' — expected a non-negative integer",
+      "value": "1.5",
+    },
+  ],
+  "exit_code": 2,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "parallel",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`characterization / invalid-args envelopes > parallel --max-workers -1 (negative) → CONFIG_ERROR envelope 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "code": "invalid_flag_value",
+      "flag": "--max-workers",
+      "message": "--max-workers: invalid value '-1' — expected a non-negative integer",
+      "value": "-1",
+    },
+  ],
+  "exit_code": 2,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "parallel",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`characterization / invalid-args envelopes > parallel --max-workers abc (NaN) → CONFIG_ERROR envelope 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "code": "invalid_flag_value",
+      "flag": "--max-workers",
+      "message": "--max-workers: invalid value 'abc' — expected a non-negative integer",
+      "value": "abc",
+    },
+  ],
+  "exit_code": 2,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "parallel",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`characterization / invalid-args envelopes > parallel --test-type bogus → CONFIG_ERROR envelope 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "allowed": [
+        "common",
+        "jvm",
+        "android",
+        "androidUnit",
+        "androidInstrumented",
+        "ios",
+        "macos",
+        "js",
+        "wasm",
+        "all",
+        "desktop",
+      ],
+      "code": "invalid_flag_value",
+      "flag": "--test-type",
+      "message": "--test-type: invalid value 'bogus' — expected one of [common, jvm, android, androidUnit, androidInstrumented, ios, macos, js, wasm, all, desktop]",
+      "value": "bogus",
+    },
+  ],
+  "exit_code": 2,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "parallel",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`characterization / variation envelopes > parallel --isolated --dry-run populates isolated:{} alongside plan 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "dry_run": true,
+  "duration_ms": "<DURATION_MS>",
+  "errors": [],
+  "exit_code": 0,
+  "isolated": {
+    "cache_dir": null,
+    "enabled": true,
+    "kept": false,
+    "locked": true,
+  },
+  "modules": [],
+  "plan": {
+    "final_args": "<PLATFORM_SPECIFIC>",
+    "modules": [
+      {
+        "android_dsl": false,
+        "android_dsl_variant": null,
+        "coverage_plugin": null,
+        "has_flavor": false,
+        "name": "mod",
+        "test_build_type": null,
+        "type": "kmp",
+      },
+    ],
+    "script_path": "<PLATFORM_SPECIFIC>",
+    "skipped": [],
+    "spawn_args": "<PLATFORM_SPECIFIC>",
+    "spawn_cmd": "<PLATFORM_SPECIFIC>",
+    "test_filter": null,
+  },
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "parallel",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`characterization / variation envelopes > parallel --test-filter SomeTestClass populates plan.test_filter 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "dry_run": true,
+  "duration_ms": "<DURATION_MS>",
+  "errors": [],
+  "exit_code": 0,
+  "isolated": {
+    "cache_dir": null,
+    "enabled": false,
+    "kept": false,
+    "locked": true,
+  },
+  "modules": [],
+  "plan": {
+    "final_args": "<PLATFORM_SPECIFIC>",
+    "modules": [
+      {
+        "android_dsl": false,
+        "android_dsl_variant": null,
+        "coverage_plugin": null,
+        "has_flavor": false,
+        "name": "mod",
+        "test_build_type": null,
+        "type": "kmp",
+      },
+    ],
+    "script_path": "<PLATFORM_SPECIFIC>",
+    "skipped": [],
+    "spawn_args": "<PLATFORM_SPECIFIC>",
+    "spawn_cmd": "<PLATFORM_SPECIFIC>",
+    "test_filter": "SomeTestClass",
+  },
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "parallel",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
