@@ -1,38 +1,5 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`characterization / environment-error envelopes > parallel in dir without gradlew → no_gradlew envelope 1`] = `
-{
-  "coverage": {
-    "missed_lines": null,
-    "modules_with_jacoco_plugin": [],
-    "modules_with_kover_plugin": [],
-    "tool": "auto",
-  },
-  "duration_ms": "<DURATION_MS>",
-  "errors": [
-    {
-      "code": "no_gradlew",
-      "message": "no gradlew.bat found in <PROJECT_ROOT>",
-    },
-  ],
-  "exit_code": 3,
-  "modules": [],
-  "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
-  "skipped": [],
-  "subcommand": "parallel",
-  "tests": {
-    "failed": 0,
-    "passed": 0,
-    "skipped": 0,
-    "total": 0,
-  },
-  "tool": "kmp-test",
-  "version": "<KMP_TEST_VERSION>",
-  "warnings": [],
-}
-`;
-
 exports[`characterization / invalid-args envelopes > benchmark --platform bogus → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {

@@ -135,23 +135,45 @@ describe('characterization / invalid-args envelopes', () => {
 // ---------------------------------------------------------------------------
 //
 // Locks the envErrorJson shape via the no_gradlew path. After PR-06 (extract
-// shell-runner.js), this snapshot must remain identical — the gradlew probe
-// happens BEFORE shell dispatch, so PR-06 shouldn't move it, but the snapshot
-// is the safety net if it does.
+// shell-runner.js), this contract must remain — the gradlew probe happens
+// BEFORE shell dispatch, so PR-06 shouldn't move it.
+//
+// Uses explicit shape assertions (NOT toMatchSnapshot) because the error
+// message is OS-specific: Windows emits "no gradlew.bat found in …" while
+// Linux/macOS emit "no gradlew found in …". The wire contract is the envelope
+// SHAPE + error code + exit code — the human-facing message is intentionally
+// OS-localized and isn't part of the agent-facing contract.
 
 describe('characterization / environment-error envelopes', () => {
-  it('parallel in dir without gradlew → no_gradlew envelope', () => {
+  it('parallel in dir without gradlew → no_gradlew envelope shape', () => {
     const fullArgs = ['--project-root', bareDir, '--json'];
     const { envelope, stdout, exitCode } = runSubcommand('parallel', fullArgs, { cwd: bareDir });
     if (!envelope) {
       const preview = stdout.slice(0, 600);
       throw new Error(`No envelope (exit ${exitCode}). stdout: ${preview}`);
     }
-    expect(envelope.exit_code).toBe(3);
+    // Lock the envelope shape — every key on envErrorJson must be present.
+    expect(envelope).toMatchObject({
+      tool: 'kmp-test',
+      schema_version: 2,
+      subcommand: 'parallel',
+      exit_code: 3,
+      tests: { total: 0, passed: 0, failed: 0, skipped: 0 },
+      modules: [],
+      skipped: [],
+      coverage: {
+        tool: 'auto',
+        missed_lines: null,
+        modules_with_kover_plugin: [],
+        modules_with_jacoco_plugin: [],
+      },
+      warnings: [],
+    });
     expect(envelope.errors).toHaveLength(1);
-    expect(envelope.errors[0].code).toBe('no_gradlew');
-    const normalized = normalizeEnvelopeForSnapshot(envelope, bareDir);
-    expect(normalized).toMatchSnapshot();
+    expect(envelope.errors[0]).toMatchObject({ code: 'no_gradlew' });
+    expect(envelope.errors[0].message).toMatch(/^no gradlew(\.bat)? found in /);
+    expect(typeof envelope.duration_ms).toBe('number');
+    expect(typeof envelope.version).toBe('string');
   });
 });
 
