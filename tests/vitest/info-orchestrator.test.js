@@ -12,11 +12,15 @@
 //   5. JDK present → jdk:{version, java_home, note}
 //   6. info never fails — exit 0 even when probes WARN
 //   7. envelope.info present alongside standard subcommand block
+//   8. info.jdk_catalogue parity with doctor (vendors with commas survive)
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { vi, describe, it, expect, afterEach } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+
+const discoverInstalledJdksMock = vi.hoisted(() => vi.fn(() => []));
+vi.mock('../../lib/jdk-catalogue.js', () => ({ discoverInstalledJdks: discoverInstalledJdksMock }));
 
 import { runInfo, formatInfoText } from '../../lib/info-orchestrator.js';
 
@@ -150,6 +154,66 @@ describe('runInfo never fails (exit 0 always)', () => {
       expect(envelope.errors).toEqual([]);
       expect(envelope.exit_code).toBe(0);
       expect(exitCode).toBe(0);
+    } finally {
+      delete process.env.KMP_TEST_SKIP_ADB;
+    }
+  });
+});
+
+describe('runInfo jdk_catalogue parity with doctor', () => {
+  // Wet-validation gate post-PR-10 (2026-05-10): doctor reported 4 JDK installs
+  // (incl. one with vendor "Azul Systems, Inc.") but info reported only 3 — the
+  // comma in the vendor name broke the message-string split parser. The fix
+  // skips the round-trip through doctor's human-readable check.message and
+  // reads installedJdks directly, so vendors with commas survive intact.
+  afterEach(() => {
+    discoverInstalledJdksMock.mockReturnValue([]);
+  });
+
+  it('jdk_catalogue includes all installs even when a vendor name contains a comma', () => {
+    discoverInstalledJdksMock.mockReturnValue([
+      { majorVersion: 11, vendor: 'Eclipse Adoptium' },
+      { majorVersion: 17, vendor: 'Eclipse Adoptium' },
+      { majorVersion: 21, vendor: 'Azul Systems, Inc.' }, // ← comma in vendor name
+      { majorVersion: 23, vendor: 'Eclipse Adoptium' },
+    ]);
+    const dir = makeTempProject();
+    process.env.KMP_TEST_SKIP_ADB = '1';
+    try {
+      const { envelope } = runInfo({ projectRoot: dir, args: [] });
+      expect(envelope.info.jdk_catalogue).toHaveLength(4);
+      expect(envelope.info.jdk_catalogue[2]).toEqual({ major: 21, vendor: 'Azul Systems, Inc.' });
+      expect(envelope.info.jdk_catalogue.map(e => e.major)).toEqual([11, 17, 21, 23]);
+    } finally {
+      delete process.env.KMP_TEST_SKIP_ADB;
+    }
+  });
+
+  it('jdk_catalogue empty array when no installs detected', () => {
+    discoverInstalledJdksMock.mockReturnValue([]);
+    const dir = makeTempProject();
+    process.env.KMP_TEST_SKIP_ADB = '1';
+    try {
+      const { envelope } = runInfo({ projectRoot: dir, args: [] });
+      expect(envelope.info.jdk_catalogue).toEqual([]);
+    } finally {
+      delete process.env.KMP_TEST_SKIP_ADB;
+    }
+  });
+
+  it('jdk_catalogue entries use {major, vendor} shape (not {majorVersion, ...})', () => {
+    discoverInstalledJdksMock.mockReturnValue([
+      { majorVersion: 17, vendor: 'Eclipse Adoptium' },
+    ]);
+    const dir = makeTempProject();
+    process.env.KMP_TEST_SKIP_ADB = '1';
+    try {
+      const { envelope } = runInfo({ projectRoot: dir, args: [] });
+      const entry = envelope.info.jdk_catalogue[0];
+      expect(entry).toHaveProperty('major');
+      expect(entry).toHaveProperty('vendor');
+      expect(entry).not.toHaveProperty('majorVersion');
+      expect(entry.major).toBe(17);
     } finally {
       delete process.env.KMP_TEST_SKIP_ADB;
     }
