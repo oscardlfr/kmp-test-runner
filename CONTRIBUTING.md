@@ -57,7 +57,7 @@ git checkout -b feature/my-change
 
 Follow the conventions in [`CLAUDE.md`](CLAUDE.md) (the project's instructions for AI coding agents — they double as the human contributor guide):
 
-- **Decouple from L0.** Never reference `oscardlfr/AndroidCommonDoc`, `~/.claude`, `AndroidStudioProjects`, `shared-kmp-libs`, or `L0` in scripts/CI. (See `CLAUDE.md` "Decouple from L0" — 8 patterns must stay 0-hits in scripts.)
+- **Decouple from L0.** Never reference the maintainer's private toolkit identifiers, home-directory paths, IDE project directories, or any private library composite project name in scripts/CI/docs/tests. (See `CLAUDE.md` "Decouple from L0" — these patterns must stay 0-hits across committed text.)
 - **SH and PS1 must stay in parity.** If you change a `scripts/sh/*.sh`, update the corresponding `scripts/ps1/*.ps1` and vice versa. The 4 `kmp-test` subcommand scripts (`run-parallel-coverage-suite`, `run-changed-modules-tests`, `run-android-tests`, `run-benchmarks`) all have both shells.
 - **Consumer-config env vars are API.** `SKIP_DESKTOP_MODULES`, `SKIP_ANDROID_MODULES`, `PARENT_ONLY_MODULES` are documented public API since v0.1.0 — don't break them.
 - **No `local` keyword outside bash functions.** Causes syntax errors on strict Linux bash.

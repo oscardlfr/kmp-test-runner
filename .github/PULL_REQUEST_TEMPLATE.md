@@ -71,5 +71,5 @@ Example:
 2. Built artifact locally: `bash scripts/build-artifact.sh 0.8.1 dist/`
 3. Installed: `bash scripts/install.sh --version 0.8.1 --prefix /tmp/kmp --archive dist/...tar.gz`
 4. Verified: `/tmp/kmp/lib/bin/kmp-test.js --version` → 0.8.1
-5. Ran against shared-kmp-libs: `kmp-test parallel --module-filter ":core-*"` → all green
+5. Ran against a multi-module KMP project: `kmp-test parallel --module-filter ":core-*"` → all green
 -->

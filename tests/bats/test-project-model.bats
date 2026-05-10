@@ -30,9 +30,9 @@ EOF
   "generatedAt": "2026-04-29T00:00:00Z",
   "cacheKey": "$SHA",
   "jdkRequirement": { "min": 21, "signals": [] },
-  "settingsIncludes": [":core-encryption", ":core-jvm-only"],
+  "settingsIncludes": [":sample-encryption", ":core-jvm-only"],
   "modules": {
-    ":core-encryption": {
+    ":sample-encryption": {
       "type": "kmp",
       "androidDsl": "androidLibrary",
       "hasFlavor": false,
@@ -88,7 +88,7 @@ teardown() {
 @test "pm_get_unit_test_task resolves to desktopTest for KMP module" {
     # shellcheck disable=SC1090
     source "$MODEL_LIB"
-    result="$(pm_get_unit_test_task "$WORK_DIR" "core-encryption")"
+    result="$(pm_get_unit_test_task "$WORK_DIR" "sample-encryption")"
     [ "$result" = "desktopTest" ]
 }
 
@@ -104,7 +104,7 @@ teardown() {
 @test "pm_get_device_test_task resolves to androidConnectedCheck for KMP androidLibrary{}" {
     # shellcheck disable=SC1090
     source "$MODEL_LIB"
-    result="$(pm_get_device_test_task "$WORK_DIR" "core-encryption")"
+    result="$(pm_get_device_test_task "$WORK_DIR" "sample-encryption")"
     [ "$result" = "androidConnectedCheck" ]
 }
 
@@ -125,21 +125,21 @@ teardown() {
 @test "pm_get_coverage_task returns empty when no plugin applied to module" {
     # shellcheck disable=SC1090
     source "$MODEL_LIB"
-    result="$(pm_get_coverage_task "$WORK_DIR" "core-encryption")"
+    result="$(pm_get_coverage_task "$WORK_DIR" "sample-encryption")"
     [ -z "$result" ]
 }
 
 @test "pm_module_type reports kmp / jvm correctly" {
     # shellcheck disable=SC1090
     source "$MODEL_LIB"
-    [ "$(pm_module_type "$WORK_DIR" "core-encryption")" = "kmp" ]
+    [ "$(pm_module_type "$WORK_DIR" "sample-encryption")" = "kmp" ]
     [ "$(pm_module_type "$WORK_DIR" "core-jvm-only")" = "jvm" ]
 }
 
 @test "pm_module_has_tests returns true / false based on sourceSets[]" {
     # shellcheck disable=SC1090
     source "$MODEL_LIB"
-    [ "$(pm_module_has_tests "$WORK_DIR" "core-encryption")" = "true" ]
+    [ "$(pm_module_has_tests "$WORK_DIR" "sample-encryption")" = "true" ]
     [ "$(pm_module_has_tests "$WORK_DIR" "core-jvm-only")" = "true" ]
 }
 
@@ -178,18 +178,18 @@ PY
     result="$(pm_get_jdk_requirement "$WORK_DIR")"
     [ -z "$result" ]
     # And the function still exits 0 — caller doesn't need to error-trap.
-    pm_get_unit_test_task "$WORK_DIR" "core-encryption"
+    pm_get_unit_test_task "$WORK_DIR" "sample-encryption"
 }
 
 # Phase 4 step 4 — module_has_test_sources two-arg form prefers the model.
 @test "module_has_test_sources (2-arg form): rc 0 when model says module has tests" {
     # shellcheck disable=SC1090
     source "scripts/sh/lib/script-utils.sh"
-    # Model fixture (set up in setup()) says core-encryption has commonTest.
+    # Model fixture (set up in setup()) says sample-encryption has commonTest.
     # Filesystem fallback would say NO (no src/* dirs created) — proving the
     # model fast-path is used.
     set +e
-    module_has_test_sources "$WORK_DIR" "core-encryption"
+    module_has_test_sources "$WORK_DIR" "sample-encryption"
     rc=$?
     set -e
     [ "$rc" -eq 0 ]
@@ -198,16 +198,16 @@ PY
 @test "module_has_test_sources (2-arg form): rc 1 when model says no test sources" {
     # shellcheck disable=SC1090
     source "scripts/sh/lib/script-utils.sh"
-    # Patch model to set all sourceSets to false for core-encryption.
+    # Patch model to set all sourceSets to false for sample-encryption.
     python3 - "$WORK_DIR/.kmp-test-runner-cache/model-${SHA}.json" << 'PY'
 import json, sys
 with open(sys.argv[1], 'r', encoding='utf-8') as f: m = json.load(f)
-for k in m['modules'][':core-encryption']['sourceSets']:
-    m['modules'][':core-encryption']['sourceSets'][k] = False
+for k in m['modules'][':sample-encryption']['sourceSets']:
+    m['modules'][':sample-encryption']['sourceSets'][k] = False
 with open(sys.argv[1], 'w', encoding='utf-8') as f: json.dump(m, f)
 PY
     set +e
-    module_has_test_sources "$WORK_DIR" "core-encryption"
+    module_has_test_sources "$WORK_DIR" "sample-encryption"
     rc=$?
     set -e
     [ "$rc" -eq 1 ]
@@ -218,9 +218,9 @@ PY
     source "scripts/sh/lib/script-utils.sh"
     # No model JSON → must walk the filesystem.
     rm -rf "$WORK_DIR/.kmp-test-runner-cache"
-    mkdir -p "$WORK_DIR/core-encryption/src/commonTest"
+    mkdir -p "$WORK_DIR/sample-encryption/src/commonTest"
     set +e
-    module_has_test_sources "$WORK_DIR" "core-encryption"
+    module_has_test_sources "$WORK_DIR" "sample-encryption"
     rc=$?
     set -e
     [ "$rc" -eq 0 ]

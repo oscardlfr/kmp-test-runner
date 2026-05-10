@@ -73,9 +73,9 @@ export const PROJECTS = [
     hasAndroidInstrumented: false, // androidLibrary { withHostTestBuilder } only
   },
   {
-    name: 'shared-kmp-libs',
-    path: path.join(WORKSPACE, 'shared-kmp-libs'),
-    scopedModule: ':core-result',
+    name: 'private-lib',
+    path: path.join(WORKSPACE, 'private-lib'),
+    scopedModule: ':sample-result',
     hasAndroidInstrumented: true,
   },
   {
@@ -220,7 +220,7 @@ function buildCell({ sub, testType, proj, opts, skipReason }) {
   }
   if (opts.mode === 'scoped' && proj.scopedModule) {
     // Strip leading `:` — the CLI's --module-filter is a name-glob,
-    // not a gradle path. `:core-result` → `core-result`.
+    // not a gradle path. `:sample-result` → `sample-result`.
     const pattern = proj.scopedModule.replace(/^:/, '');
     args.push('--module-filter', pattern);
   }

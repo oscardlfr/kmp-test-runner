@@ -2,16 +2,24 @@
 *.env.local
 node_modules/
 dist/
+
+# Local Claude Code settings (contain machine-specific permission allowlists
+# that may include absolute paths and private project references — not
+# portable, never commit).
+.claude/
 # Root-level only — npm/c8 test-coverage output. The measurement captures live
 # under tools/runs/coverage/ and must NOT be ignored.
 /coverage/
 
-# v0.9 step 8: Approach A captures are raw gradle stdout + slurped HTML/XML
-# reports — on a real KMP project (e.g. shared-kmp-libs) the coverage A capture
-# is ~74 MB. They're locally regenerable by re-running `node tools/measure-token-cost.js`.
-# B (markdown) + C (JSON) captures and cross-model-results-*.txt remain tracked
-# (small + load-bearing for evidence files like MEASUREMENT-V0.9-NOTES.md).
+# v0.9 step 8: per-feature run captures (Approach A raw gradle stdout, B
+# markdown, C JSON) are forensic outputs locally regenerable by re-running
+# `node tools/measure-token-cost.js`. They're not tracked because the captures
+# inevitably contain absolute paths + module names from whichever project the
+# measurement ran against. The aggregate `cross-model-results-*.txt` files
+# (small, anonymized) remain tracked as the canonical published evidence.
 tools/runs/*/A-run*.txt
+tools/runs/*/B-run*.txt
+tools/runs/*/C-run*.txt
 .gradle/
 build/
 .idea/

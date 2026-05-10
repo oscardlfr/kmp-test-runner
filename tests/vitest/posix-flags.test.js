@@ -29,7 +29,7 @@ describe('expandPosixEqualsForm — unit', () => {
   });
 
   it('passes through positional arguments', () => {
-    expect(expandPosixEqualsForm([':core-result', 'task'])).toEqual([':core-result', 'task']);
+    expect(expandPosixEqualsForm([':foo-bar', 'task'])).toEqual([':foo-bar', 'task']);
   });
 
   it('preserves multiple `=` signs in value (only the first splits)', () => {
@@ -49,10 +49,10 @@ describe('expandPosixEqualsForm — unit', () => {
   });
 
   it('handles a mixed argv (flag, posix-flag, positional, equals-in-value)', () => {
-    const input = ['--device', 'R3CT', '--module-filter=:core-result', ':extra', '--gradle-args=--info'];
+    const input = ['--device', 'R3CT', '--module-filter=:foo-bar', ':extra', '--gradle-args=--info'];
     expect(expandPosixEqualsForm(input)).toEqual([
       '--device', 'R3CT',
-      '--module-filter', ':core-result',
+      '--module-filter', ':foo-bar',
       ':extra',
       '--gradle-args', '--info',
     ]);
@@ -95,7 +95,7 @@ const ORCHESTRATOR_CASES = [
     name: 'describe',
     parser: parseDescribe,
     flag: '--module-filter',
-    value: ':core-result',
+    value: ':foo-bar',
     getter: (out) => out.moduleFilter,
   },
 ];

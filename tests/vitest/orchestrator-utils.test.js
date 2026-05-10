@@ -279,8 +279,8 @@ describe('matchModuleFilter — substring vs glob semantics', () => {
 
   it(':-prefix glob matches both colon-stripped and colon-prefixed', () => {
     expect(matchModuleFilter('benchmark', ':bench*')).toBe(true);
-    expect(matchModuleFilter(':benchmark-storage', ':bench*')).toBe(true);
-    expect(matchModuleFilter('benchmark-storage', ':bench*')).toBe(true);
+    expect(matchModuleFilter(':bench-store', ':bench*')).toBe(true);
+    expect(matchModuleFilter('bench-store', ':bench*')).toBe(true);
   });
 
   it('nested module path matches by short suffix', () => {
@@ -293,8 +293,8 @@ describe('matchModuleFilter — substring vs glob semantics', () => {
   });
 
   it('comma-separated mix of substring + glob', () => {
-    expect(matchModuleFilter('core-result', 'core-result,benchmark-*')).toBe(true);
-    expect(matchModuleFilter('benchmark-storage', 'core-result,benchmark-*')).toBe(true);
-    expect(matchModuleFilter('feature-auth', 'core-result,benchmark-*')).toBe(false);
+    expect(matchModuleFilter('sample-result', 'sample-result,bench-*')).toBe(true);
+    expect(matchModuleFilter('bench-store', 'sample-result,bench-*')).toBe(true);
+    expect(matchModuleFilter('feature-auth', 'sample-result,bench-*')).toBe(false);
   });
 });
