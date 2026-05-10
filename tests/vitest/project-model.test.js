@@ -2509,13 +2509,16 @@ describe('probeGradleTasksCached spawn wrapper (regression for v0.9 EINVAL bug)'
   // This test is structural — if a future refactor reverts to raw spawnSync,
   // it'll fail at module-import time.
 
-  it('lib/project-model.js imports spawnGradle from orchestrator-utils', () => {
-    const src = readFileSync(path.join(process.cwd(), 'lib/project-model.js'), 'utf8');
-    expect(src).toMatch(/import\s*\{\s*spawnGradle\s*\}\s*from\s*['"]\.\/orchestrator-utils\.js['"]/);
+  // PR-08 (refactor pre-v0.10): probeGradleTasksCached + the spawnGradle
+  // wrapper import moved to lib/project/cache.js. The structural assertion
+  // is the same — only the file path changed.
+  it('lib/project/cache.js imports spawnGradle from orchestrator-utils', () => {
+    const src = readFileSync(path.join(process.cwd(), 'lib/project/cache.js'), 'utf8');
+    expect(src).toMatch(/import\s*\{\s*spawnGradle\s*\}\s*from\s*['"]\.\.\/orchestrator-utils\.js['"]/);
   });
 
   it('probeGradleTasksCached invokes spawnGradle(spawnSync, …), never raw spawnSync(wrapperPath, …)', () => {
-    const src = readFileSync(path.join(process.cwd(), 'lib/project-model.js'), 'utf8');
+    const src = readFileSync(path.join(process.cwd(), 'lib/project/cache.js'), 'utf8');
     const probeBlock = src.match(/function\s+probeGradleTasksCached[\s\S]+?\n\}/);
     expect(probeBlock).toBeTruthy();
     expect(probeBlock[0]).toMatch(/spawnGradle\s*\(\s*spawnSync\s*,\s*wrapperPath\s*,/);
