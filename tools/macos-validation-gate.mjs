@@ -56,8 +56,9 @@ const SNAPSHOT_FILE = path.join(
 const ENVELOPE_BEGIN = '__KMP_TEST_ENVELOPE_V1_BEGIN__';
 const ENVELOPE_END   = '__KMP_TEST_ENVELOPE_V1_END__';
 
-const WORKSPACE       = '/Volumes/XcodeOscar/kmp-test-workspace';
-const TMPDIR_OVERRIDE = '/Volumes/XcodeOscar/.tmp';
+const WORKSPACE       = process.env.KMP_WORKSPACE || path.resolve(REPO_ROOT, '..');
+const TMPDIR_OVERRIDE = process.env.KMP_TMPDIR    || path.join(WORKSPACE, '.tmp');
+console.error(`[NOTICE] WORKSPACE = ${WORKSPACE}`);
 
 // ─── matrix dimensions ─────────────────────────────────────────────────────
 

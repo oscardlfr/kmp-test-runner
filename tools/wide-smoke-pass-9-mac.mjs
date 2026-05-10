@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 // tools/wide-smoke-pass-9-mac.mjs — macOS-side wide-smoke pass-9 sweep, the
 // counterpart to tools/wide-smoke-pass-9.mjs (Windows). Targets the 4 KMP
-// projects available in /Volumes/XcodeOscar/kmp-test-workspace/ (Confetti,
-// KaMPKit, PeopleInSpace, private-lib) with overlap on the Windows
-// matrix names (Confetti-main / KaMPKit-main / PeopleInSpace-main).
+// projects available in $KMP_WORKSPACE/ (Confetti, KaMPKit, PeopleInSpace,
+// private-lib) with overlap on the Windows matrix names (Confetti-main /
+// KaMPKit-main / PeopleInSpace-main).
 //
 // Three modes via --test-type:
 //   all   — parity sweep vs Windows pass-8 baseline (covers JVM/desktop/common)
@@ -36,7 +36,8 @@ const KMP_TEST   = path.join(REPO_ROOT, 'bin', 'kmp-test.js');
 const ENVELOPE_BEGIN = '__KMP_TEST_ENVELOPE_V1_BEGIN__';
 const ENVELOPE_END   = '__KMP_TEST_ENVELOPE_V1_END__';
 
-const WORKSPACE = '/Volumes/XcodeOscar/kmp-test-workspace';
+const WORKSPACE = process.env.KMP_WORKSPACE || path.resolve(REPO_ROOT, '..');
+console.error(`[NOTICE] WORKSPACE = ${WORKSPACE}`);
 
 // 4 gradle roots — the subset of pass-9's 30-project matrix that is
 // reproducible on this Mac. Names mirror their Windows counterparts (without
