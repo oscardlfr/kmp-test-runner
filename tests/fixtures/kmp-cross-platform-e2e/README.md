@@ -36,4 +36,4 @@ Locked in `gradle/libs.versions.toml`:
 - Gradle `9.1.0` (via the wrapper)
 - compileSdk `36` / minSdk `26`
 
-These match the production pin-set used by the user's `shared-kmp-libs` and `DawSync` repos circa 2026, so the fixture stays representative without diverging.
+These match the production pin-set used by the maintainer's private KMP repos circa 2026, so the fixture stays representative without diverging.

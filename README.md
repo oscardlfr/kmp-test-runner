@@ -445,7 +445,7 @@ Drop a `.kmp-test-runner.json` at your project root to pin stable defaults inste
 {
   "sharedProject": { "name": "shared-libs", "path": "../shared-libs" },
   "defaults":     { "testType": "common", "coverageTool": "kover", "excludeModules": "*:test-fakes" },
-  "skip":         { "android": ["legacy-app"], "ios": ["benchmark-android-test"] }
+  "skip":         { "android": ["legacy-app"], "ios": ["bench-android"] }
 }
 ```
 
@@ -640,13 +640,13 @@ Emits the project model — modules, test tasks per platform, coverage detection
 ```sh
 kmp-test describe --json --module-filter "core-*"
 # {"tool":"kmp-test","subcommand":"describe","exit_code":0,"describe":{
-#   "modules":[{"name":":core-result","path":"…","type":"kmp",
+#   "modules":[{"name":":sample-result","path":"…","type":"kmp",
 #     "platforms":["jvm","android","ios","js"],
 #     "test_tasks":{"unit":"jvmTest","device":"connectedDebugAndroidTest","web":"jsTest","ios":"iosSimulatorArm64Test","macos":null},
 #     "coverage_plugin":"kover","test_build_type":null,"has_flavor":false,
 #     "android_dsl":"androidLibrary","android_dsl_variant":null}],
 #   "coverage_tool":"kover",
-#   "dependency_graph":{"composite_builds":["../shared-libs"],"included_modules":[":core-result",":core-network"]},
+#   "dependency_graph":{"composite_builds":["../shared-libs"],"included_modules":[":sample-result",":core-network"]},
 #   "jdk_requirement":{"min":17,"agp":17}}}
 ```
 

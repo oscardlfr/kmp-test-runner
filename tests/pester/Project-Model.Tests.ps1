@@ -30,9 +30,9 @@ BeforeAll {
             generatedAt      = '2026-04-29T00:00:00Z'
             cacheKey         = $sha
             jdkRequirement   = @{ min = 21; signals = @() }
-            settingsIncludes = @(':core-encryption', ':core-jvm-only')
+            settingsIncludes = @(':sample-encryption', ':core-jvm-only')
             modules          = @{
-                ':core-encryption' = @{
+                ':sample-encryption' = @{
                     type            = 'kmp'
                     androidDsl      = 'androidLibrary'
                     hasFlavor       = $false
@@ -99,7 +99,7 @@ Describe 'Get-PmUnitTestTask' {
     It 'resolves to desktopTest for the KMP module' {
         $dir = New-PmFixture
         try {
-            (Get-PmUnitTestTask -ProjectRoot $dir -Module 'core-encryption') | Should -Be 'desktopTest'
+            (Get-PmUnitTestTask -ProjectRoot $dir -Module 'sample-encryption') | Should -Be 'desktopTest'
         } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
     }
 
@@ -116,7 +116,7 @@ Describe 'Get-PmDeviceTestTask' {
     It 'resolves to androidConnectedCheck for KMP androidLibrary{} module' {
         $dir = New-PmFixture
         try {
-            (Get-PmDeviceTestTask -ProjectRoot $dir -Module 'core-encryption') | Should -Be 'androidConnectedCheck'
+            (Get-PmDeviceTestTask -ProjectRoot $dir -Module 'sample-encryption') | Should -Be 'androidConnectedCheck'
         } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
     }
 
@@ -139,7 +139,7 @@ Describe 'Get-PmCoverageTask' {
     It 'returns $null when no plugin applied to module' {
         $dir = New-PmFixture
         try {
-            (Get-PmCoverageTask -ProjectRoot $dir -Module 'core-encryption') | Should -BeNullOrEmpty
+            (Get-PmCoverageTask -ProjectRoot $dir -Module 'sample-encryption') | Should -BeNullOrEmpty
         } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
     }
 }
@@ -148,7 +148,7 @@ Describe 'Get-PmModuleType' {
     It 'reports kmp / jvm correctly' {
         $dir = New-PmFixture
         try {
-            (Get-PmModuleType -ProjectRoot $dir -Module 'core-encryption') | Should -Be 'kmp'
+            (Get-PmModuleType -ProjectRoot $dir -Module 'sample-encryption') | Should -Be 'kmp'
             (Get-PmModuleType -ProjectRoot $dir -Module 'core-jvm-only')   | Should -Be 'jvm'
         } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
     }
@@ -158,7 +158,7 @@ Describe 'Get-PmModuleHasTests' {
     It 'returns $true when at least one source set is present' {
         $dir = New-PmFixture
         try {
-            (Get-PmModuleHasTests -ProjectRoot $dir -Module 'core-encryption') | Should -BeTrue
+            (Get-PmModuleHasTests -ProjectRoot $dir -Module 'sample-encryption') | Should -BeTrue
             (Get-PmModuleHasTests -ProjectRoot $dir -Module 'core-jvm-only')   | Should -BeTrue
         } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
     }
@@ -203,7 +203,7 @@ Describe 'Fail-soft on malformed JSON' {
             $file = (Get-ChildItem $cacheDir -Filter 'model-*.json')[0].FullName
             Set-Content -Path $file -Value '{ not valid json' -Encoding UTF8
             (Get-PmJdkRequirement -ProjectRoot $dir) | Should -BeNullOrEmpty
-            (Get-PmUnitTestTask -ProjectRoot $dir -Module 'core-encryption') | Should -BeNullOrEmpty
+            (Get-PmUnitTestTask -ProjectRoot $dir -Module 'sample-encryption') | Should -BeNullOrEmpty
         } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
     }
 }
@@ -222,7 +222,7 @@ Describe 'Test-ModuleHasTestSources (Phase 4 step 4 — model fast-path)' {
         try {
             # Filesystem has NO src/* dirs — so a $true answer proves the
             # model path was taken (fixture sets commonTest = $true).
-            (Test-ModuleHasTestSources -ProjectRoot $dir -Module 'core-encryption') | Should -BeTrue
+            (Test-ModuleHasTestSources -ProjectRoot $dir -Module 'sample-encryption') | Should -BeTrue
         } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
     }
 
@@ -233,11 +233,11 @@ Describe 'Test-ModuleHasTestSources (Phase 4 step 4 — model fast-path)' {
             $cacheDir = Join-Path $dir '.kmp-test-runner-cache'
             $file = (Get-ChildItem $cacheDir -Filter 'model-*.json')[0].FullName
             $obj = ConvertFrom-Json (Get-Content $file -Raw)
-            foreach ($prop in $obj.modules.':core-encryption'.sourceSets.PSObject.Properties) {
+            foreach ($prop in $obj.modules.':sample-encryption'.sourceSets.PSObject.Properties) {
                 $prop.Value = $false
             }
             Set-Content -Path $file -Value (ConvertTo-Json $obj -Depth 10) -Encoding UTF8
-            (Test-ModuleHasTestSources -ProjectRoot $dir -Module 'core-encryption') | Should -BeFalse
+            (Test-ModuleHasTestSources -ProjectRoot $dir -Module 'sample-encryption') | Should -BeFalse
         } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
     }
 
@@ -245,8 +245,8 @@ Describe 'Test-ModuleHasTestSources (Phase 4 step 4 — model fast-path)' {
         $dir = New-PmFixture
         try {
             Remove-Item -Recurse -Force (Join-Path $dir '.kmp-test-runner-cache') -ErrorAction SilentlyContinue
-            New-Item -ItemType Directory -Path (Join-Path $dir 'core-encryption\src\commonTest') -Force | Out-Null
-            (Test-ModuleHasTestSources -ProjectRoot $dir -Module 'core-encryption') | Should -BeTrue
+            New-Item -ItemType Directory -Path (Join-Path $dir 'sample-encryption\src\commonTest') -Force | Out-Null
+            (Test-ModuleHasTestSources -ProjectRoot $dir -Module 'sample-encryption') | Should -BeTrue
         } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
     }
 

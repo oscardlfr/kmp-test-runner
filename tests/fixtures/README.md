@@ -31,7 +31,7 @@ A single `:sample` module exercising every supported target in one place:
 - `macosArm64()`
 - `androidLibrary { … withHostTestBuilder { } }` (AGP 9 native KMP-Android plugin `com.android.kotlin.multiplatform.library`)
 
-Pinned to Kotlin `2.3.20` + AGP `9.0.1` + Gradle `9.1.0` (matches the user's production `shared-kmp-libs` + `DawSync` repos circa 2026). Per-PR CI does **not** execute iOS/macOS test tasks against this fixture — that's the manual macOS validation gate (v0.9 step 7). Vitest exercises the static parser (`buildProjectModel({ skipProbe: true })`) + the spawn-based `kmp-test describe` envelope.
+Pinned to Kotlin `2.3.20` + AGP `9.0.1` + Gradle `9.1.0` (matches the maintainer's private KMP repos circa 2026). Per-PR CI does **not** execute iOS/macOS test tasks against this fixture — that's the manual macOS validation gate (v0.9 step 7). Vitest exercises the static parser (`buildProjectModel({ skipProbe: true })`) + the spawn-based `kmp-test describe` envelope.
 
 The Gradle wrapper jar (`gradle/wrapper/gradle-wrapper.jar`, ~45 KB) is vendored from `gradle-plugin/gradle/wrapper/` so all Gradle invocations in the repo share the same minor (`9.1.0`).
 

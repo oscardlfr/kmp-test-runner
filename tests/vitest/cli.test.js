@@ -126,10 +126,10 @@ describe('translateFlagForPowerShell', () => {
   // v0.9 session 2 Bug-A.1 — POSIX `--name=value` form must preserve value verbatim.
   // Both these inputs failed pre-fix because the dash-segment PascalCase walk
   // ran over the entire token (head + value):
-  //   --module-filter=:core-result → -ModuleFilter=:coreResult  (mangled value `core-result` → `coreResult`)
+  //   --module-filter=:foo-bar → -ModuleFilter=:fooBar  (mangled value `foo-bar` → `fooBar`)
   //   --gradle-args=--rerun-tasks  → -GradleArgs=RerunTasks     (lost the value's leading `--`)
   it('preserves dashed value verbatim in POSIX --name=value form', () => {
-    expect(translateFlagForPowerShell('--module-filter=:core-result')).toBe('-ModuleFilter=:core-result');
+    expect(translateFlagForPowerShell('--module-filter=:foo-bar')).toBe('-ModuleFilter=:foo-bar');
   });
   it('preserves --prefixed value verbatim in POSIX --name=value form', () => {
     expect(translateFlagForPowerShell('--gradle-args=--rerun-tasks')).toBe('-GradleArgs=--rerun-tasks');
@@ -422,10 +422,10 @@ describe('parseScriptOutput', () => {
   });
 
   it('deduplicates identical [SKIP] entries from stdout+stderr overlap', () => {
-    const line = '[SKIP] core-result (no test source set)\n';
+    const line = '[SKIP] sample-result (no test source set)\n';
     const r = parseScriptOutput(line, line, []);
     expect(r.skipped).toEqual([
-      { module: 'core-result', reason: 'no test source set' },
+      { module: 'sample-result', reason: 'no test source set' },
     ]);
   });
 
@@ -2205,7 +2205,7 @@ describe('parseScriptOutput — benchmark subcommand summary', () => {
 
 describe('parseScriptOutput — error code discriminators', () => {
   it('extracts code "task_not_found" from "Cannot locate tasks" gradle error', () => {
-    const stderr = "Cannot locate tasks that match ':core-encryption:connectedDebugAndroidTest' as task 'connectedDebugAndroidTest' not found in project ':core-encryption'.";
+    const stderr = "Cannot locate tasks that match ':sample-encryption:connectedDebugAndroidTest' as task 'connectedDebugAndroidTest' not found in project ':sample-encryption'.";
     const r = parseScriptOutput('', stderr, [], 'android');
     const tnf = r.errors.find(e => e.code === 'task_not_found');
     expect(tnf).toBeDefined();

@@ -175,8 +175,8 @@ function Test-ModuleHasTask {
     # `gradlew tasks --all` emits `module:task - description` (NO leading
     # colon) at column 0. Earlier versions of this probe required a `:`
     # prefix in the needle, which never matched and caused every probe to
-    # fall back to the legacy umbrella task (Bug observed in shared-kmp-libs:
-    # `core-encryption:androidConnectedCheck` was in cache but probe rc=1).
+    # fall back to the legacy umbrella task (Bug observed in a private project:
+    # `<module>:androidConnectedCheck` was in cache but probe rc=1).
     $mod = $Module.TrimStart(':')
     $needle = "${mod}:${Task}"
     $pattern = "(^|\s)" + [regex]::Escape($needle) + "(\s|$)"

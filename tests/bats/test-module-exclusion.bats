@@ -32,25 +32,25 @@ EOF
     chmod +x "$WORK_DIR/bin/java"
 
     # Minimal multi-module KMP project:
-    #   :core-domain   (has tests)
+    #   :sample-domain   (has tests)
     #   :feature-home  (has tests)
     #   :api           (NO tests by convention)
     #   :build-logic   (NO tests by convention)
     cat > "$WORK_DIR/settings.gradle.kts" << 'EOF'
 rootProject.name = "test-project"
-include(":core-domain")
+include(":sample-domain")
 include(":feature-home")
 include(":api")
 include(":build-logic")
 EOF
 
-    for mod in core-domain feature-home api build-logic; do
+    for mod in sample-domain feature-home api build-logic; do
         mkdir -p "$WORK_DIR/$mod"
         echo "kotlin { jvmToolchain(17) }" > "$WORK_DIR/$mod/build.gradle.kts"
     done
 
-    # Only core-domain and feature-home have test source sets.
-    mkdir -p "$WORK_DIR/core-domain/src/commonTest"
+    # Only sample-domain and feature-home have test source sets.
+    mkdir -p "$WORK_DIR/sample-domain/src/commonTest"
     mkdir -p "$WORK_DIR/feature-home/src/test"
 
     export PATH="$WORK_DIR/bin:$PATH"
@@ -72,7 +72,7 @@ teardown() {
 
 @test "module_has_test_sources: true when src/commonTest exists" {
     source "$UTILS"
-    run module_has_test_sources "$WORK_DIR/core-domain"
+    run module_has_test_sources "$WORK_DIR/sample-domain"
     [ "$status" -eq 0 ]
 }
 

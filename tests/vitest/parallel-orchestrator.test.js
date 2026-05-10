@@ -289,8 +289,8 @@ describe('expandNoCoverageAlias', () => {
   it('splits --flag=value into [--flag, value]', () => {
     expect(expandNoCoverageAlias(['--gradle-args=--info']))
       .toEqual(['--gradle-args', '--info']);
-    expect(expandNoCoverageAlias(['--module-filter=core-result']))
-      .toEqual(['--module-filter', 'core-result']);
+    expect(expandNoCoverageAlias(['--module-filter=sample-result']))
+      .toEqual(['--module-filter', 'sample-result']);
     expect(expandNoCoverageAlias(['--test-type=common']))
       .toEqual(['--test-type', 'common']);
   });
@@ -303,8 +303,8 @@ describe('expandNoCoverageAlias', () => {
       .toEqual(['-Pfoo=bar', 'core=err']);
   });
   it('parseArgs accepts --module-filter=value (= form)', () => {
-    const opts = parseArgs(['--module-filter=core-result']);
-    expect(opts.moduleFilter).toBe('core-result');
+    const opts = parseArgs(['--module-filter=sample-result']);
+    expect(opts.moduleFilter).toBe('sample-result');
   });
   it('parseArgs accepts --test-type=value (= form)', () => {
     const opts = parseArgs(['--test-type=common']);
@@ -491,7 +491,7 @@ describe('pickGradleTaskFor', () => {
   // 2026-05-05 — fix-PR-F: --variant flag on androidInstrumented dispatch.
   // Mirror of the androidUnit variant suite. The fallback path for AGP
   // modules without a probed deviceTestTask must honor --variant +
-  // mod.testBuildType to fix dipatternsdemo :benchmark (testBuildType =
+  // mod.testBuildType to fix di-sample :benchmark (testBuildType =
   // "release" → only :benchmark:connectedReleaseAndroidTest exists).
   describe('--variant flag for Android instrumented tests', () => {
     // Fixture: AGP-fallback path (deviceTestTask null forces fallback to
@@ -651,7 +651,7 @@ describe('pickGradleTaskFor', () => {
 
   // 2026-05-05 — fix-PR-F-bis: --variant + testBuildType honored even when
   // the project model already resolved a deviceTestTask. Repro from
-  // dipatternsdemo `:benchmark` post commit 058a520
+  // di-sample `:benchmark` post commit 058a520
   // (androidComponents.beforeVariants enabled connectedDebugAndroidTest
   // alongside the testBuildType="release" canonical
   // connectedReleaseAndroidTest). Pre-fix, the early-return on
@@ -675,7 +675,7 @@ describe('pickGradleTaskFor', () => {
     };
 
     it('AGP+source-set+probe(Debug)+testBuildType="release"+variant=auto → connectedReleaseAndroidTest', () => {
-      // The exact dipatternsdemo `:benchmark` regression case: probe-populated
+      // The exact di-sample `:benchmark` regression case: probe-populated
       // Debug task name is now ignored in favor of testBuildType-aware variant
       // selection in androidConnectedTask.
       expect(pickGradleTaskFor(probedReleaseModule, 'androidInstrumented', { androidVariant: 'auto' }).task)
@@ -714,7 +714,7 @@ describe('pickGradleTaskFor', () => {
   // `androidLibrary {}` DSL but no androidUnitTest / androidInstrumentedTest
   // source set must be skipped, not dispatched (AGP doesn't create the task →
   // task_not_found + module_failed). 4 projects affected pre-fix:
-  // shared-kmp-libs (+66 false positives), DawSync, dipatternsdemo, FileKit-main.
+  // private-lib (+66 false positives), PrivAndroidApp, di-sample, FileKit-main.
   describe('Bug A: source-set gate for androidUnit/androidInstrumented', () => {
     it('androidUnit: KMP+androidLibrary DSL with no androidUnitTest source set → null', () => {
       const mod = {
@@ -793,13 +793,13 @@ describe('pickGradleTaskFor', () => {
   describe('Bug D: kmpAndroidLibrary plugin dispatch (testAndroidHostTest / androidConnectedCheck)', () => {
     it('androidUnit: kmpAndroidLibrary with androidUnitTest opt-in → dispatches testAndroidHostTest', () => {
       const mod = {
-        name: 'core-firebase-native', type: 'kmp', androidDsl: 'androidLibrary',
+        name: 'sample-firebase-mod', type: 'kmp', androidDsl: 'androidLibrary',
         androidDslVariant: 'kmpAndroidLibrary',
         sourceSets: { androidUnitTest: true, commonTest: true },
         resolved: { unitTestTask: null },
       };
       const r = pickGradleTaskFor(mod, 'androidUnit');
-      expect(r.task).toBe(':core-firebase-native:testAndroidHostTest');
+      expect(r.task).toBe(':sample-firebase-mod:testAndroidHostTest');
       expect(r.reason).toBe('');
     });
 
@@ -826,7 +826,7 @@ describe('pickGradleTaskFor', () => {
 
     it('androidUnit: kmpAndroidLibrary without opt-in → null with withHostTestBuilder reason', () => {
       const mod = {
-        name: 'core-firebase-native', type: 'kmp', androidDsl: 'androidLibrary',
+        name: 'sample-firebase-mod', type: 'kmp', androidDsl: 'androidLibrary',
         androidDslVariant: 'kmpAndroidLibrary',
         sourceSets: { androidUnitTest: false, commonTest: true },
         resolved: { unitTestTask: null },
@@ -838,7 +838,7 @@ describe('pickGradleTaskFor', () => {
 
     it('androidUnit: --variant=release is a no-op for kmpAndroidLibrary (no Debug/Release split)', () => {
       const mod = {
-        name: 'core-firebase-native', type: 'kmp', androidDsl: 'androidLibrary',
+        name: 'sample-firebase-mod', type: 'kmp', androidDsl: 'androidLibrary',
         androidDslVariant: 'kmpAndroidLibrary',
         sourceSets: { androidUnitTest: true },
         resolved: { unitTestTask: null },
@@ -846,24 +846,24 @@ describe('pickGradleTaskFor', () => {
       // Pass --variant=release: legacy path would emit testReleaseUnitTest;
       // new plugin path emits testAndroidHostTest regardless of the flag.
       const r = pickGradleTaskFor(mod, 'androidUnit', { androidVariant: 'release' });
-      expect(r.task).toBe(':core-firebase-native:testAndroidHostTest');
+      expect(r.task).toBe(':sample-firebase-mod:testAndroidHostTest');
     });
 
     it('androidInstrumented: kmpAndroidLibrary with androidDeviceTest opt-in → dispatches androidConnectedCheck', () => {
       const mod = {
-        name: 'benchmark-network', type: 'kmp', androidDsl: 'androidLibrary',
+        name: 'bench-net', type: 'kmp', androidDsl: 'androidLibrary',
         androidDslVariant: 'kmpAndroidLibrary',
         sourceSets: { androidDeviceTest: true, commonTest: true },
         resolved: { deviceTestTask: null },
       };
       const r = pickGradleTaskFor(mod, 'androidInstrumented');
-      expect(r.task).toBe(':benchmark-network:androidConnectedCheck');
+      expect(r.task).toBe(':bench-net:androidConnectedCheck');
       expect(r.reason).toBe('');
     });
 
     it('androidInstrumented: kmpAndroidLibrary without opt-in → null with withDeviceTestBuilder reason', () => {
       const mod = {
-        name: 'core-firebase-native', type: 'kmp', androidDsl: 'androidLibrary',
+        name: 'sample-firebase-mod', type: 'kmp', androidDsl: 'androidLibrary',
         androidDslVariant: 'kmpAndroidLibrary',
         sourceSets: { androidDeviceTest: false },
         resolved: { deviceTestTask: null },
@@ -889,7 +889,7 @@ describe('pickGradleTaskFor', () => {
     });
   });
 
-  // 2026-05-03 — instrumented-only Android module skip (dipatternsdemo
+  // 2026-05-03 — instrumented-only Android module skip (di-sample
   // :benchmark repro). No `test/`, `androidUnitTest/`, or `commonTest/`
   // source set → orchestrator skips with reason instead of dispatching a
   // hardcoded task name that gradle doesn't have.
@@ -1170,7 +1170,7 @@ describe('junitTestFailuresFor (BUG-1)', () => {
     expect(junitTestFailuresFor(dir, ':core:jvmTest', 0)).toHaveLength(1);
   });
 
-  // OBS-A from 2026-05-09 wet-audit (shared-kmp-libs benchmark-storage).
+  // OBS-A from 2026-05-09 wet-audit (private-lib bench-store).
   // AGP's androidConnectedCheck (and connected${Variant}AndroidTest)
   // emit JUnit XML to `build/outputs/androidTest-results/connected/
   // <sourceSet>/TEST-*.xml`, NOT `build/test-results/<task>/`. Pre-fix
@@ -1181,19 +1181,19 @@ describe('junitTestFailuresFor (BUG-1)', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-fail-'));
     workDir = dir;
     const agpDir = path.join(
-      dir, 'benchmark-storage', 'build', 'outputs', 'androidTest-results',
+      dir, 'bench-store', 'build', 'outputs', 'androidTest-results',
       'connected', 'androidMain',
     );
     mkdirSync(agpDir, { recursive: true });
     writeFileSync(
-      path.join(agpDir, 'TEST-SM-S908B - 16-_benchmark-storage-.xml'),
+      path.join(agpDir, 'TEST-SM-S908B - 16-_bench-store-.xml'),
       '<testsuite name="com.foo.StressTest" tests="2" failures="1">' +
       '<testcase name="passes" classname="com.foo.StressTest" time="0.1"/>' +
       '<testcase name="oomFails" classname="com.foo.StressTest" time="42.0">' +
       '<failure type="java.lang.OutOfMemoryError" message="heap exhausted"/>' +
       '</testcase></testsuite>'
     );
-    const failures = junitTestFailuresFor(dir, ':benchmark-storage:androidConnectedCheck');
+    const failures = junitTestFailuresFor(dir, ':bench-store:androidConnectedCheck');
     expect(failures).toHaveLength(1);
     expect(failures[0].test).toBe('com.foo.StressTest.oomFails');
     expect(failures[0].type).toBe('java.lang.OutOfMemoryError');
@@ -1898,7 +1898,7 @@ describe('runParallel', () => {
   // rewrite TEST-*.xml — their mtime stays from the prior run. The walker's
   // stale-XML guard (added by PR #116 to filter ~10K bash-wrapper-era XMLs)
   // would then false-discard them and report individual_total:0 on otherwise
-  // green incremental builds. Reproduced live on dipatternsdemo:
+  // green incremental builds. Reproduced live on di-sample:
   // 4 XMLs with mtime 8 days old, walker returned 0; touch + rerun → 68.
   // Fix: bypass the guard for UP-TO-DATE / FROM-CACHE execution modes.
   function writeStaleJunitXml(projectRoot, modName, taskShort, fileBase, testcaseCount, ageSec = 60) {
@@ -2366,8 +2366,8 @@ describe('cascade-isolation retry path (PR5)', () => {
 //   (2) post-step-5 alignment: rebuild execSummary from classifyTaskResults
 //       so execution.failed === errors.module_failed-count per leg.
 //
-// Repro envelopes: shared-kmp-libs Mac `macos` leg + Win `androidInstrumented`
-// leg + dipatternsdemo `androidInstrumented` leg (.smoke/pass-9/).
+// Repro envelopes: private-lib Mac `macos` leg + Win `androidInstrumented`
+// leg + di-sample `androidInstrumented` leg (.smoke/pass-9/).
 // ===========================================================================
 describe('execution.failed counter on non-JVM task failures (fix-PR-E)', () => {
   // Test 1 — K/N runtime fail with `FAILED in Xs` suffix. The strict-EOL
@@ -2468,7 +2468,7 @@ describe('execution.failed counter on non-JVM task failures (fix-PR-E)', () => {
   // Test 4 — Mixed K/N + JVM-success in same leg. 2 tasks complete cleanly
   // (matching strict-EOL → 'fresh'), 1 task runtime-fails with non-EOL FAILED.
   // Pre-fix: leg shows fresh:2, no_evidence:1, failed:0, cascade_detected=true,
-  // retry_fired=true (the dipatternsdemo Win-side bug shape — wasted gradle
+  // retry_fired=true (the di-sample Win-side bug shape — wasted gradle
   // work). Post-fix: cascade signature requires no_evidence === taskList.length,
   // which fails (1 !== 3) — no spurious retry. Alignment promotes the failing
   // task from fresh → failed, leaving fresh:2, failed:1, total preserved.
@@ -2589,7 +2589,7 @@ describe('execution.failed counter on non-JVM task failures (fix-PR-E)', () => {
 // `class=` + `method=` args. The combined form is the canonical AGP /
 // AndroidJUnitRunner shape that ALWAYS works (per BACKLOG.md L329) — the
 // pre-v0.9 separate-args shape silently missed Microbenchmark method
-// filtering (live repro on dipatternsdemo: 14 of 14 DiBenchmark methods
+// filtering (live repro on di-sample: 14 of 14 DiBenchmark methods
 // ran instead of 1). Pre-v0.9 cases re-asserted below.
 describe('buildFilterArgs (fix-PR-G + v0.9 step 1 flag #6)', () => {
   it('androidInstrumented + FQN class → -P class only', () => {
@@ -2672,7 +2672,7 @@ describe('buildFilterArgs (fix-PR-G + v0.9 step 1 flag #6)', () => {
 // the `common` leg (deterministic — no adb / device probe in path) so we
 // regression-guard the JVM-side preservation. The androidInstrumented
 // leg's translation is locked at the unit level by `buildFilterArgs` above
-// + the live dipatternsdemo run.
+// + the live di-sample run.
 describe('runParallel: --test-filter on common leg preserves --tests (fix-PR-G regression guard)', () => {
   it('common leg with --test-filter still uses --tests', async () => {
     const dir = makeProject([
@@ -2974,7 +2974,7 @@ describe('runParallel --auto-retry + --clear-data (v0.9 step 1, flags #1 + #2)',
   // parallel-orchestrator.js claims the flavor_unused check "runs before
   // any gradle dispatch so we don't waste a build cycle." Pre-fix the
   // error was pushed to state.errors but execution proceeded to the
-  // gradle dispatch (~66s wasted on real DawSync run). Lock that the
+  // gradle dispatch (~66s wasted on real PrivAndroidApp run). Lock that the
   // orchestrator now early-returns: zero gradle (or adb) spawns.
   it('flavor_unused early-exits before any gradle dispatch (OBS-B)', async () => {
     const dir = makeProject([
@@ -3353,7 +3353,7 @@ describe('runParallel --list-only short-circuits before gradle dispatch (Bug #7)
 // ---------------------------------------------------------------------------
 // v0.9 wet-audit drift #2: modules[] shape parity between list-only and wet.
 // Pre-fix: list-only emitted `[{name, type, coverage_plugin, ...}]` (objects)
-// but wet runs emitted `["core-result"]` (bare strings). Agents reading the
+// but wet runs emitted `["sample-result"]` (bare strings). Agents reading the
 // same `modules[]` field across paths had to branch on shape. Post-fix both
 // paths emit canonical objects via `canonicalModuleEntry`.
 // ---------------------------------------------------------------------------

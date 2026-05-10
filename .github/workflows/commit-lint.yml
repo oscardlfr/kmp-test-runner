@@ -3,7 +3,7 @@ name: Commit Lint
 # ──────────────────────────────────────────────────────────────────────────────
 # Conventional Commits v1.0.0 enforcement for kmp-test-runner.
 #
-# Adapted from AndroidCommonDoc/reusable-commit-lint.yml (kept inline so this
+# Adapted from private-toolkit/reusable-commit-lint.yml (kept inline so this
 # repo stays standalone — see CLAUDE.md "Decouple from L0").
 #
 # Branch protection on `main` and `develop` enforces squash-merge, so the only

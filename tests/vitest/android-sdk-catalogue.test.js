@@ -31,7 +31,7 @@ describe('projectHasSdkDir', () => {
   it('returns true when local.properties contains sdk.dir=...', () => {
     const dir = makeProject();
     writeFileSync(path.join(dir, 'local.properties'),
-      'sdk.dir=C\\:\\\\Users\\\\34645\\\\AppData\\\\Local\\\\Android\\\\Sdk\n');
+      'sdk.dir=C\\:\\\\Users\\\\me\\\\AppData\\\\Local\\\\Android\\\\Sdk\n');
     expect(projectHasSdkDir(dir)).toBe(true);
   });
 
@@ -107,7 +107,7 @@ describe('maybeAugmentEnvWithAndroidSdk', () => {
     expect(lines.some(l => /\[NOTICE\]/.test(l) && /ANDROID_HOME/.test(l))).toBe(true);
   });
 
-  // wet-audit-v0.9-release — discovered 2026-05-09 on real shared-kmp-libs
+  // wet-audit-v0.9-release — discovered 2026-05-09 on a real private KMP project
   // sweep. The orchestrator's `defaultAdbProbe` (lib/orchestrator-utils.js)
   // calls `spawnSync('adb', ['devices', '-l'])` from PATH. When the user's
   // ANDROID_HOME isn't set AND `${ANDROID_HOME}/platform-tools` isn't on
@@ -265,7 +265,7 @@ describe('inspectLocalProperties', () => {
     // The Confetti repro shape — single backslashes that get silently dropped
     // by Properties parser, yielding a non-existent path.
     writeFileSync(path.join(dir, 'local.properties'),
-      'sdk.dir=C\\:\\Users\\34645\\AppData\\Local\\Android\\Sdk\n');
+      'sdk.dir=C\\:\\Users\\me\\AppData\\Local\\Android\\Sdk\n');
     const r = inspectLocalProperties(dir);
     expect(r).toBeTruthy();
     expect(r.ok).toBe(false);

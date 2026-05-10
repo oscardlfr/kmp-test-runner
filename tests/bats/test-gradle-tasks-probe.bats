@@ -147,7 +147,7 @@ teardown() {
     # The bug: when gradle emits `core-bar:androidConnectedCheck - Runs ...`
     # at column 0, an earlier needle of `:core-bar:androidConnectedCheck`
     # never matched because the line didn't start with `:`. Real-world impact
-    # against shared-kmp-libs: probe rc=1 + fallback to umbrella task even
+    # against private-lib: probe rc=1 + fallback to umbrella task even
     # though `androidConnectedCheck` was right there in the cache.
     # shellcheck disable=SC1090
     source "$PROBE_LIB"

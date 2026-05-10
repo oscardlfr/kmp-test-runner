@@ -400,10 +400,10 @@ describe('FEATURES registry', () => {
     ]);
   });
   it('benchmark defaults to jvmBenchmark and honours --benchmark-task', () => {
-    expect(FEATURES.benchmark.gradleTasksForModules(['benchmark-io'], {}))
-      .toEqual([':benchmark-io:jvmBenchmark']);
-    expect(FEATURES.benchmark.gradleTasksForModules(['benchmark-io'], { benchmarkTask: 'nativeBenchmark' }))
-      .toEqual([':benchmark-io:nativeBenchmark']);
+    expect(FEATURES.benchmark.gradleTasksForModules(['bench-io'], {}))
+      .toEqual([':bench-io:jvmBenchmark']);
+    expect(FEATURES.benchmark.gradleTasksForModules(['bench-io'], { benchmarkTask: 'nativeBenchmark' }))
+      .toEqual([':bench-io:nativeBenchmark']);
   });
   it('isReport predicates partition cleanly per feature', () => {
     const t = '/p/m/build/reports/tests/test/index.html';
@@ -621,12 +621,12 @@ describe('buildApproachAInvocation', () => {
     expect(inv.args).toContain(':core-a:koverHtmlReport');
   });
   it('benchmark feature: honours --benchmark-task override', () => {
-    makeProject(['benchmark-io']);
+    makeProject(['bench-io']);
     const inv = buildApproachAInvocation({
-      feature: 'benchmark', projectRoot: dir, moduleFilter: 'benchmark-*', benchmarkTask: 'nativeBenchmark',
+      feature: 'benchmark', projectRoot: dir, moduleFilter: 'bench-*', benchmarkTask: 'nativeBenchmark',
     });
-    expect(inv.args).toContain(':benchmark-io:nativeBenchmark');
-    expect(inv.args).not.toContain(':benchmark-io:jvmBenchmark');
+    expect(inv.args).toContain(':bench-io:nativeBenchmark');
+    expect(inv.args).not.toContain(':bench-io:jvmBenchmark');
   });
   it('falls back to root-level :testTask when no modules match', () => {
     makeProject([]);

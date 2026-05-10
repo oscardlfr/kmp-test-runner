@@ -11,7 +11,7 @@
 // `status:null` instantly, the orchestrator's classifyTaskResults regex
 // matched nothing on the empty stdout, and the fallback path silently
 // reported every task as `[PASS]`. A 23-project wide-smoke against
-// AndroidStudioProjects on 2026-05-03 produced 14/14 false-positive GREEN
+// a real-world workspace on 2026-05-03 produced 14/14 false-positive GREEN
 // envelopes — gradle was never invoked, but the JSON said all-passed.
 //
 // This file uses a REAL spawn against a fake gradlew script (gradlew /

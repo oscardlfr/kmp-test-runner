@@ -3,7 +3,7 @@
 // tools/wide-smoke-pass-9-mac.mjs — macOS-side wide-smoke pass-9 sweep, the
 // counterpart to tools/wide-smoke-pass-9.mjs (Windows). Targets the 4 KMP
 // projects available in /Volumes/XcodeOscar/kmp-test-workspace/ (Confetti,
-// KaMPKit, PeopleInSpace, shared-kmp-libs) with overlap on the Windows
+// KaMPKit, PeopleInSpace, private-lib) with overlap on the Windows
 // matrix names (Confetti-main / KaMPKit-main / PeopleInSpace-main).
 //
 // Three modes via --test-type:
@@ -46,7 +46,7 @@ const PROJECTS = [
   { name: 'Confetti',         path: `${WORKSPACE}/Confetti`,         category: 'INTERESTING', winName: 'Confetti-main' },
   { name: 'KaMPKit',          path: `${WORKSPACE}/KaMPKit`,          category: 'NEW',         winName: 'KaMPKit-main' },
   { name: 'PeopleInSpace',    path: `${WORKSPACE}/PeopleInSpace`,    category: 'NEW',         winName: 'PeopleInSpace-main' },
-  { name: 'shared-kmp-libs',  path: `${WORKSPACE}/shared-kmp-libs`,  category: 'PR3',         winName: 'shared-kmp-libs' },
+  { name: 'private-lib',  path: `${WORKSPACE}/private-lib`,  category: 'PR3',         winName: 'private-lib' },
 ];
 
 const VALID_TEST_TYPES = new Set(['all', 'macos', 'ios']);
@@ -332,7 +332,7 @@ const PASS8_WIN = {
   'Confetti-main':       'RED-repo',
   'KaMPKit-main':        'SKIP',
   'PeopleInSpace-main':  'RED-repo',
-  'shared-kmp-libs':     'RED-repo',
+  'private-lib':     'RED-repo',
 };
 
 function emitMarkdown(results, outputPath, opts) {

@@ -292,7 +292,7 @@ describe('aggregateJdkSignals', () => {
       expect(r.agpVersion).toBe('8.2.1');
     });
 
-    it('AGP-floor wins over lower jvmTarget — TaskFlow case', () => {
+    it('AGP-floor wins over lower jvmTarget — local-app-3 case', () => {
       const dir = makeProject();
       mkdirSync(path.join(dir, 'gradle'), { recursive: true });
       writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
@@ -412,8 +412,8 @@ describe('aggregateJdkSignals', () => {
 describe('parseSettingsIncludes', () => {
   it('parses include(":mod") with double quotes', () => {
     const dir = makeProject();
-    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":core-encryption")');
-    expect(parseSettingsIncludes(dir)).toEqual([':core-encryption']);
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":sample-encryption")');
+    expect(parseSettingsIncludes(dir)).toEqual([':sample-encryption']);
   });
 
   it("parses include(':mod') with single quotes", () => {
@@ -440,8 +440,8 @@ describe('parseSettingsIncludes', () => {
     expect(parseSettingsIncludes(dir)).toEqual([]);
   });
 
-  // 2026-05-03 wide-smoke regression guard. shared-kmp-libs has
-  // `// include(":benchmark-android-test")  // TODO: AGP 9 compat` and the
+  // 2026-05-03 wide-smoke regression guard. private-lib has
+  // `// include(":bench-android")  // TODO: AGP 9 compat` and the
   // pre-fix parser treated it as a live module. The orchestrator then sent
   // gradle a task for a non-existent project, build aborted at resolution,
   // and (combined with the EINVAL silent-pass class) every project failed.
@@ -738,8 +738,8 @@ describe('analyzeModule kmpAndroidLibrary plugin (v0.8.0 fix-PR-D)', () => {
   });
 
   it('detects kmpAndroidLibrary via androidLibrary {} DSL alone (convention-plugin scenario)', () => {
-    // Repro: shared-kmp-libs `:benchmark-network` applies a convention plugin
-    // (`com.grinx.shared.kmp.benchmark`) which internally applies the new
+    // Repro: private-lib `:bench-net` applies a convention plugin
+    // (`com.example.private.shared.kmp.benchmark`) which internally applies the new
     // plugin. The module's own build.gradle.kts has neither the literal id
     // nor the alias — only the `androidLibrary { }` DSL block. The DSL block
     // is exclusive to the new plugin (legacy uses `android {}`), so its
@@ -747,7 +747,7 @@ describe('analyzeModule kmpAndroidLibrary plugin (v0.8.0 fix-PR-D)', () => {
     const dir = makeProject();
     mkdirSync(path.join(dir, 'm'), { recursive: true });
     writeFileSync(path.join(dir, 'm', 'build.gradle.kts'),
-      'plugins {\n  id("com.grinx.shared.kmp.benchmark")\n}\nkotlin {\n  androidLibrary {\n    namespace = "com.x"\n  }\n}');
+      'plugins {\n  id("com.example.private.shared.kmp.benchmark")\n}\nkotlin {\n  androidLibrary {\n    namespace = "com.x"\n  }\n}');
     const a = analyzeModule(dir, ':m');
     expect(a.androidDslVariant).toBe('kmpAndroidLibrary');
   });
@@ -764,8 +764,8 @@ describe('analyzeModule kmpAndroidLibrary plugin (v0.8.0 fix-PR-D)', () => {
     expect(a.sourceSets.androidUnitTest).toBe(true);
   });
 
-  it('withHostTestBuilder ABSENT zeros sourceSets.androidUnitTest even when src dir exists (core-firebase-native repro)', () => {
-    // Live repro from shared-kmp-libs `:core-firebase-native`. The dir has
+  it('withHostTestBuilder ABSENT zeros sourceSets.androidUnitTest even when src dir exists (sample-firebase-mod repro)', () => {
+    // Live repro from private-lib `:sample-firebase-mod`. The dir has
     // `src/androidUnitTest/kotlin/` with real test files but no
     // `withHostTestBuilder {}` opt-in declared. AGP creates no
     // `testAndroidHostTest` task → orchestrator must skip, not dispatch.
@@ -782,11 +782,11 @@ describe('analyzeModule kmpAndroidLibrary plugin (v0.8.0 fix-PR-D)', () => {
     expect(a.sourceSets.androidUnitTest).toBe(false);
   });
 
-  it('withDeviceTestBuilder {} opt-in surfaces sourceSets.androidDeviceTest = true (benchmark-network repro)', () => {
+  it('withDeviceTestBuilder {} opt-in surfaces sourceSets.androidDeviceTest = true (bench-net repro)', () => {
     const dir = makeProject();
     mkdirSync(path.join(dir, 'm'), { recursive: true });
     writeFileSync(path.join(dir, 'm', 'build.gradle.kts'),
-      'plugins {\n  id("com.grinx.shared.kmp.benchmark")\n}\n' +
+      'plugins {\n  id("com.example.private.shared.kmp.benchmark")\n}\n' +
       'kotlin {\n  androidLibrary {\n    namespace = "com.x"\n    withDeviceTestBuilder {\n      sourceSetTreeName = "test"\n    }\n  }\n}');
     const a = analyzeModule(dir, ':m');
     expect(a.androidDslVariant).toBe('kmpAndroidLibrary');
@@ -1057,7 +1057,7 @@ nowinandroid-jacoco = { id = "nowinandroid.android.library.jacoco" }
     expect(ds[0].appliedPlugins).toEqual(['jacoco']);
   });
 
-  it('shared-kmp-libs pattern: extracts appliedPlugins from `pluginManager.apply("...")` form', () => {
+  it('private-lib pattern: extracts appliedPlugins from `pluginManager.apply("...")` form', () => {
     const dir = makeProject();
     mkdirSync(path.join(dir, 'build-logic', 'src', 'main', 'kotlin'), { recursive: true });
     writeFileSync(path.join(dir, 'build-logic', 'build.gradle.kts'),
@@ -1227,7 +1227,7 @@ nowinandroid-android-library-jacoco = { id = "nowinandroid.android.library.jacoc
 
 // ------------------------------------------------------------------
 // analyzeModule named JVM targets + intermediate hierarchy groups
-// (2026-05-03 — shared-kmp-libs core-network-retrofit / core-storage-cache repro)
+// (2026-05-03 — private-lib sample-net-retrofit / sample-storage-cache repro)
 // ------------------------------------------------------------------
 describe('analyzeModule named JVM targets + hierarchy groups', () => {
   function makeKmpModule(buildScript) {
@@ -1383,7 +1383,7 @@ describe('resolveTasksFor with named JVM targets (cold cache)', () => {
     return dir;
   }
 
-  // The shared-kmp-libs `core-storage-cache` repro: jvm("desktop") declared,
+  // The private-lib `sample-storage-cache` repro: jvm("desktop") declared,
   // BUT only `commonTest/`+`jvmTest/` exist on disk (no `desktopTest/`).
   // Pre-fix: walker saw jvmTest/, picked `jvmTest`, gradle aborted with
   // "Cannot locate tasks". Post-fix: trust the named target, return
@@ -1538,7 +1538,7 @@ kotlin {
   });
 });
 
-// analyzeModule testBuildType detection (2026-05-03 dipatternsdemo repro)
+// analyzeModule testBuildType detection (2026-05-03 di-sample repro)
 // ------------------------------------------------------------------
 describe('analyzeModule testBuildType', () => {
   function makeAndroidModule(buildScript) {
@@ -1594,8 +1594,8 @@ android {
     expect(a.testBuildType).toBe('release');
   });
 
-  it('resolves variable testBuildType when val uses ?: default (dipatternsdemo shape)', () => {
-    // 2026-05-05 fix-PR-F follow-up — dipatternsdemo :benchmark uses
+  it('resolves variable testBuildType when val uses ?: default (di-sample shape)', () => {
+    // 2026-05-05 fix-PR-F follow-up — di-sample :benchmark uses
     // `val x = (project.findProperty(...) as? String) ?: "release"`.
     const dir = makeAndroidModule(`
 plugins { id("com.android.library") }
@@ -2104,7 +2104,7 @@ describe('buildProjectModel', () => {
   // Wet audit 2026-05-08 (B4 cell): Bug #4 fix (commit ae02317) changed
   // platformsFromAnalysis output WITHOUT bumping SCHEMA_VERSION, so caches
   // generated days earlier silently kept returning `platforms:["android"]` for
-  // shared-kmp-libs:core-result instead of the expected
+  // private-lib:sample-result instead of the expected
   // `["jvm","android","ios","macos"]`. Embedding the introspector source-file
   // fingerprint in the cache file forces auto-invalidation on any logic change.
   it('persists modelFingerprint in the cached model JSON', () => {
@@ -2490,13 +2490,13 @@ describe('buildProjectModel applies build-logic hints (Gap A integration)', () =
 });
 
 describe('probeGradleTasksCached spawn wrapper (regression for v0.9 EINVAL bug)', () => {
-  // Surfaced 2026-05-07 against shared-kmp-libs core-* during v0.9.0
+  // Surfaced 2026-05-07 against private-lib core-* during v0.9.0
   // pre-release validation. probeGradleTasksCached invoked
   // `spawnSync(gradlewPath, [...])` directly. Windows hosts (Node 18.20.2+)
   // returned `EINVAL` because gradlew.bat can't be spawned directly
   // post-CVE-2024-27980. The probe failed silently, gradleTasks stayed
   // unpopulated, and 5 KMP modules whose targets came from a convention plugin
-  // (`com.grinx.shared.kmp.library` declares `jvm("desktop")` / `iosX64()` /
+  // (`com.example.private.shared.kmp.library` declares `jvm("desktop")` / `iosX64()` /
   // etc. inside the plugin, not in the consumer build.gradle.kts) reported
   // test_tasks as all-null → kmp-test parallel/coverage refused to dispatch
   // them with `errors[].code: "no_test_modules"`.

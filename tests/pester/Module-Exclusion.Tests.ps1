@@ -23,23 +23,23 @@ exit /b 0
 
         $settings = @'
 rootProject.name = "test-project"
-include(":core-domain")
+include(":sample-domain")
 include(":feature-home")
 include(":api")
 include(":build-logic")
 '@
         Set-Content -Path (Join-Path $Path 'settings.gradle.kts') -Value $settings
 
-        foreach ($mod in @('core-domain', 'feature-home', 'api', 'build-logic')) {
+        foreach ($mod in @('sample-domain', 'feature-home', 'api', 'build-logic')) {
             $modPath = Join-Path $Path $mod
             New-Item -ItemType Directory -Path $modPath -Force | Out-Null
             Set-Content -Path (Join-Path $modPath 'build.gradle.kts') `
                 -Value 'kotlin { jvmToolchain(17) }'
         }
 
-        # Only core-domain + feature-home have test source sets.
+        # Only sample-domain + feature-home have test source sets.
         New-Item -ItemType Directory -Force `
-            -Path (Join-Path $Path 'core-domain\src\commonTest') | Out-Null
+            -Path (Join-Path $Path 'sample-domain\src\commonTest') | Out-Null
         New-Item -ItemType Directory -Force `
             -Path (Join-Path $Path 'feature-home\src\test') | Out-Null
     }
