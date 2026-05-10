@@ -23,6 +23,48 @@
 9. ✅ **README v0.9 refresh + CHANGELOG** — DONE 2026-05-XX (PR #<num>). Token-cost narrative re-framed against a reference KMP composite project (consumed the v0.9 measurement notes); 6 new flag rows + 3 new subcommand entries documented; canonical `class=<FQN>#<method>` filter shape documented; AI-agent envelope JSON example bumped to `version: "0.9.0"`; CHANGELOG `[0.9.0]` section assembled per-PR (steps 1–9). Vitest 1078 unchanged. v0.9.0 release ceremony (step 10) unblocked.
 10. **Tag v0.9.0** — release ceremony per the v0.8.0 / v0.8.1 pattern (intermediate develop PR + clean-cut release/main PR with `git read-tree --reset -u`).
 
+### Pre-v0.10 — refactor train tail + polish queue (locked 2026-05-10)
+
+> **Goal:** close the refactor train + privacy/governance gaps + cheap polish items BEFORE v0.10 feature work begins. This section is the execution queue from `develop` tip `3c0fe5e` (post privacy sweep PR #207) toward the start of v0.10. Order is **load-bearing** — Phase 1 + Phase 2 are sequential; Phase 3 / 4 / 5 can interleave with the train.
+>
+> Detailed entries for every item are in the body of BACKLOG.md below — search by title.
+
+**Phase 1 — quick wins before the PR-10 train (parallel-safe, ~3-4h total, 1-2 PRs)**
+
+1. **`tools/decouple-audit.mjs` real CI gate** — close the privacy regression class that PR #207 surfaced. New 13th required check on `develop` + `main`. ~1.5h. Detail: "💡 IDEA — `tools/decouple-audit.mjs` real CI gate".
+2. **`KMP_WORKSPACE` env var docs** — `tools/README.md` + log-line on script startup. ~30 min. Detail: "💡 IDEA — `KMP_WORKSPACE` env var documentation".
+3. **`'utf8'` encoding on `writeFileSync` calls** — 2 callsites in `android-orchestrator.js`. ~30 min. Detail: "💡 IDEA — Explicit `'utf8'` encoding".
+
+**Phase 2 — PR-10 train (sequential, BLOCKING all v0.10 work)**
+
+4. **PR-10a `refactor(orchestrators): extract result-rollup.js`** — junit-XML walks + execution summary classifier + F-1/F-2 demotion. Snapshot-safe. Wet smoke against the reference KMP composite project after merge.
+5. **PR-10b `refactor(orchestrators): extract cascade-retry.js`** — per-module retry state machine. Only after 10a merged + wet smoke green.
+6. **PR-10c `refactor(orchestrators): extract dispatch.js`** — per-leg gradle dispatch. Closes the split.
+7. **PR-10d wet-validation gate (post PR-10)** — full 7-project × 8-subcommand matrix. Evidence in `WET-V0.10-POST-PR10.md` repo root. **BLOQUEANTE** — v0.10 #1 doesn't start until this is green. Detail: plan section "Wet-validation gate post-PR-10 (BLOQUEANTE)" in `.claude/plans/vale-ya-hemos-sacado-resilient-dusk.md`.
+
+**Phase 3 — read-only investigation (interleavable with Phase 2)**
+
+8. **`parseArgs` duplication INVESTIGATE** — diff the 7 orchestrators' `parseArgs` bodies, decide between (a) document as accepted debt, (b) extract minimal shared layer, (c) full DSL. Investigation is zero-risk; execution depends on outcome. ~3h. Detail: "🔍 INVESTIGATE — `parseArgs` duplication".
+
+**Phase 4 — test + doc polish (post-train, ~12-15h + measurement, 4-5 small PRs)**
+
+9. **Coverage threshold gate `c8 --check-coverage --lines 80`** — ~1h. Detail: "💡 IDEA — Coverage threshold gate".
+10. **Bundle-size monitoring** — `npm pack --dry-run` budget check. ~1h. Detail: "💡 IDEA — Bundle-size monitoring".
+11. **Direct unit tests for `orchestrator-utils.js` helpers** — top 5 most-used helpers. ~6h. Detail: "💡 IDEA — Direct unit tests for `orchestrator-utils.js`".
+12. **JSDoc stubs on the npm-package public API** — 9 `run*` entry points + 5-10 `cli.js`-level helpers. ~3-4h. Detail: "💡 IDEA — JSDoc stubs on the public npm-package API".
+13. **Multi-project size-bucketed token-cost re-measurement + README reframe** — replace the single-project numbers (volatile) with size-bucketed averages (small / medium / large) computed across a real-project sample (anonymized private + named OSS). Last sub-task = README refresh. ~10-12h. Detail: "💡 IDEA — Multi-project size-bucketed token-cost re-measurement".
+
+**Phase 5 — behavior IDEA (separate user-driven decision, NOT a polish item)**
+
+14. **`benchmark` partial-success grading** — `gradle_timeout` ec=0+warning when N-1 modules passed; opt-out flag `--strict-timeouts`. NEEDS user decision on threshold + scope before scheduling. Detail: "💡 IDEA — `benchmark` partial-success grading".
+
+**Estimated end-to-end time:** Phase 1+2 ~12-15h (assuming PR-10 train takes 8-10h across 4 sub-PRs); Phase 3 read-only 3h interleaved; Phase 4 ~22-27h after train (incl. measurement). Phase 5 deferred until user prioritizes. Total queue depth: ~40-45h before v0.10 #1 (ANSI auto-detect) starts.
+
+**Hard exits (NOT in this queue):**
+- Cross-platform CI matrix expansion — ❌ DROPPED. Conflicts with `feedback_ci_minutes_minimal_macos.md` (macOS minutes are 10× Linux; manual gate on a secondary machine is the canonical replacement).
+
+---
+
 ### v0.10 — minor (locked 2026-05-05)
 
 1. **ANSI color auto-detect** — TTY/piped detection in `lib/<feature>-orchestrator.js` print logic. ~1-2h.
@@ -412,9 +454,196 @@ errors[]: [{ code: "gradle_timeout" }]
 
 ---
 
-### v0.9 — `kmp-test parallel --test-type androidInstrumented` parity gap with `kmp-test android` subcommand (surfaced 2026-05-05 during fix-PR-G audit)
+### 💡 IDEA — `tools/decouple-audit.mjs` real CI gate enforcing the privacy rule (surfaced 2026-05-10 during privacy-sweep PR #207)
 
-**Status: OPEN, deferred from v0.8.0.** The `kmp-test android` subcommand offers several instrumented-test ergonomics that the `parallel --test-type androidInstrumented` path does not surface today. None BREAK an existing flow (so they're not v0.8.0 release-blockers — fix-PR-G closed the only blocker), but they're features users will reasonably expect on the unified `parallel` path. Closing the gap is mostly mechanical: thread the missing flags through `parseArgs` + `dispatchLeg` + per-module retry path.
+**Status: IDEA, no milestone assigned.** The "Decouple from L0" rule in CLAUDE.md + CONTRIBUTING.md tells contributors private toolkit identifiers / private project names must stay 0-hits across committed text. The rule was historically enforced by a `tools/decouple-audit.mjs` script — but the script never actually existed in the repo (the doc reference was stale; PR #207 dropped it). Without an automated check, the next leak gets caught only by a reviewer's eye.
+
+**Proposal:** create the script as a real CI gate. ~50 LOC ESM module:
+- Reads a pattern list (e.g. `shared-kmp-libs`, the maintainer's home-dir, private package namespaces, etc.). Pattern list lives in the script — sentinel patterns the maintainer can extend without doc changes.
+- Walks `git ls-files` (skipping `tools/runs/` and snapshots), greps each file against the patterns.
+- Exits non-zero on any hit; prints `<file>:<line>:<match>` to stderr.
+- New CI job `decouple-audit` becomes the 13th required check on `develop` + `main`.
+
+**Effort:** ~1h implementation + 30 min wiring CI + branch protection update.
+
+**Risk:** LOW. Pure read-only script; no behavior change. The pattern list is a private maintainer concern, so the script's contents themselves carry the real list — that's fine because the script exists for the maintainer's enforcement, not for outside contributors to extend.
+
+**Why now:** PR #207's leak (the very rule's CLAUDE.md text named the patterns it forbids) is exactly the regression class this gate would have prevented. Closing it before more refactor work lands keeps the privacy invariant honest.
+
+---
+
+### 💡 IDEA — `KMP_WORKSPACE` env var documentation for tooling scripts (surfaced 2026-05-10 during privacy-sweep PR #207)
+
+**Status: IDEA, no milestone assigned.** PR #207 parameterised `tools/wide-smoke-pass-*.mjs`, `tools/wet-audit-v0.9.mjs`, `tools/macos-validation-gate.mjs` so they read `WORKSPACE` from `process.env.KMP_WORKSPACE` (with a `path.resolve(process.cwd(), '..')` fallback). The fallback works only if the user invokes the scripts from `tools/`'s parent dir; otherwise the user MUST set the env var. Currently undocumented — a contributor running `node tools/wide-smoke-pass-9.mjs` from any other cwd silently sweeps the wrong directory.
+
+**Proposal:** document the env var contract in one of:
+- A new short `tools/README.md` (preferred — keeps tooling docs co-located).
+- An entry in `CONTRIBUTING.md` "Local validation" section.
+- Both — `tools/README.md` is canonical, `CONTRIBUTING.md` cross-links.
+
+Also: make the scripts emit a `[NOTICE]` log line on startup naming the resolved workspace path so the user immediately sees what's being swept.
+
+**Effort:** ~30 min (docs + the 1-line log mutation).
+
+**Risk:** ZERO. Docs + log line.
+
+---
+
+### 💡 IDEA — Coverage threshold gate (`c8 --check-coverage --lines 80`) (surfaced 2026-05-10 during pre-PR-10 polish triage)
+
+**Status: IDEA, no milestone assigned.** `c8` already runs as part of the test pipeline (`coverage/` artefact is produced) but no threshold is enforced — coverage % can silently regress PR-by-PR. The current train (PR-01 → PR-09 + privacy sweep + Bug A) added 6 new vitest cases over a 2306-LOC churn; we don't actually know if line coverage moved.
+
+**Proposal:** add a `--check-coverage --lines 80 --branches 75 --functions 80` gate to the vitest run in CI. Tune thresholds based on the current baseline (run `c8` once locally, set thresholds at `floor(current_pct - 2)` to avoid flaky failures on edge moves).
+
+**Open questions:**
+- Where to wire: in `package.json` `test` script, or as a separate CI step?
+- Per-file thresholds vs aggregate? Aggregate is simpler; per-file (`c8 --per-file`) catches one file dragging coverage down.
+
+**Effort:** ~1h (measure baseline + tune + wire CI).
+
+**Risk:** LOW. The gate fails noisily, not silently. Existing tests already pass; this just locks the floor.
+
+---
+
+### 💡 IDEA — Bundle-size monitoring on the published npm package (surfaced 2026-05-10 during pre-PR-10 polish triage)
+
+**Status: IDEA, no milestone assigned.** `kmp-test-runner` ships as a Node CLI (`npm install -g kmp-test-runner`). The published artefact size is currently unmonitored — a refactor that pulls in a heavy transitive dep, or an unintended file inclusion, slips through silently. Today the project is intentionally zero-deps and the artefact is small (<200 KB unpacked), so a regression is observable but not gated.
+
+**Proposal:** add a CI job `bundle-size` that runs `npm pack --dry-run` and asserts the resolved tarball size is ≤ a budget (e.g. 250 KB compressed). Surface the size in the PR description via a comment for visibility. Optionally use [`size-limit`](https://github.com/ai/size-limit) — but that adds a dev-dep, so vanilla `npm pack` + `wc -c` may be preferable.
+
+**Open questions:**
+- Budget number? Run `npm pack` once on develop and set budget at `current_size + 50KB`.
+- Include `bin/` + `lib/` + `scripts/` in the package? Verify `package.json#files` is correct first.
+
+**Effort:** ~1h (measure + wire CI + README "package size" badge if desired).
+
+**Risk:** LOW. Read-only CI check; no code change. May surface that `package.json#files` is too permissive — a finding worth having.
+
+---
+
+### 💡 IDEA — Explicit `'utf8'` encoding on `writeFileSync` calls in `android-orchestrator.js` (surfaced 2026-05-10 during pre-PR-10 code-quality audit)
+
+**Status: IDEA, no milestone assigned.** `lib/android-orchestrator.js:671` + `lib/android-orchestrator.js:675` write log files via `writeFileSync(logFile, stdout)` without an explicit encoding argument. Node defaults to `'utf8'` for string content so functionally fine, but explicit is better than implicit — every other `writeFileSync` in the codebase passes the encoding string.
+
+**Proposal:** add `'utf8'` as the third arg on both calls. Trivial diff; no behavior change.
+
+**Effort:** 30 min (edit + tiny vitest sanity check).
+
+**Risk:** ZERO. Defensive coding; the implicit default is the same value.
+
+**Why now:** quick win identifiable as a "polish" item — could ride along with a PR-10 sub-PR if the file is being touched anyway, otherwise stand-alone fix.
+
+---
+
+### 💡 IDEA — Direct unit tests for `orchestrator-utils.js` exported helpers (surfaced 2026-05-10 during pre-PR-10 code-quality audit)
+
+**Status: IDEA, no milestone assigned.** `lib/orchestrator-utils.js` exports 18 helpers consumed by every orchestrator (`stripKotlinComments`, `readBuildFile`, `discoverIncludedModules`, `expandPosixEqualsForm`, `matchModuleFilter`, `validateEnum`, `validateNonNegativeInt`, etc.). They're covered indirectly via the per-orchestrator integration tests (`tests/vitest/{android,benchmark,coverage,parallel,changed,describe,info,update}-orchestrator.test.js`) but have no dedicated `tests/vitest/orchestrator-utils.test.js` for direct cases. (One `orchestrator-utils.test.js` file does exist but is light-coverage on a subset.)
+
+**Proposal:** expand `tests/vitest/orchestrator-utils.test.js` with direct cases for the top 5 most-used helpers — `stripKotlinComments` (4 callers), `readBuildFile` (3 callers), `discoverIncludedModules` (multiple), `validateEnum`, `validateNonNegativeInt`. Cover the edge cases that integration tests don't hit (malformed input, encoding edge cases, empty input).
+
+**Effort:** ~6h (write tests + verify count).
+
+**Risk:** ZERO. Pure additions; no production code change.
+
+**Value:** independent verification of the shared layer the rest of `lib/` depends on. Today a regression in `stripKotlinComments` would surface as cascading orchestrator-test failures with confusing root-cause; direct tests pinpoint the helper.
+
+---
+
+### 💡 IDEA — JSDoc stubs on the public npm-package API (surfaced 2026-05-10 during pre-PR-10 code-quality audit)
+
+**Status: IDEA, no milestone assigned.** `lib/` currently has <5% JSDoc coverage on exported functions. Inline comments are dense and high-quality (architectural notes, bug-fix annotations, repro pointers) — that is the project's documentation convention and it's intentional. **However**, the npm-package surface (`runParallel`, `runAndroid`, `runChanged`, `runCoverage`, `runBenchmark`, `runInfo`, `runDescribe`, `runUpdate`, `runDoctor` + the helpers consumers might import like `buildJsonReport`, `envErrorJson`) is what an external integrator's IDE auto-completion sees. JSDoc on those entry points is a low-cost ergonomics win that signals professional maturity to consumers.
+
+**Proposal:** add JSDoc to:
+- The 9 `run*` entry points (one block per file: signature, `@param`, `@returns`, `@example` if non-trivial).
+- The 5-10 `cli.js`-level helpers that get imported externally (`buildJsonReport`, `envErrorJson`, `EXIT`, `applyErrorCodeDiscriminators`, `resolveAndroidTestFilter`, `splitClassMethod`).
+
+Skip JSDoc for purely internal helpers — the inline comments + dense module-level header banners already document them and adding JSDoc there would duplicate without clear value.
+
+**Effort:** ~3-4h (template + write + verify the runtime contract still matches the doc).
+
+**Risk:** LOW. JSDoc is comments — no runtime behavior change. Tradeoff: roza la regla "default to no comments" del CLAUDE.md global, but JSDoc on a public API is a different category from explanatory inline comments.
+
+**Open questions for prioritization:**
+1. Bundle size: JSDoc adds bytes. Worth verifying `npm pack` size impact (cross-link to bundle-size IDEA above).
+2. CI gate: should we enforce JSDoc on every NEW exported function via a lint check? Probably overkill at this stage; revisit if multiple regressions slip.
+
+---
+
+### 💡 IDEA — Multi-project size-bucketed token-cost re-measurement (surfaced 2026-05-10 during pre-v0.10 BACKLOG ordering)
+
+**Status: IDEA, no milestone assigned.** The current README + v0.9 measurement evidence calibrate the token-cost reduction claims (e.g. "~77,114× reduction on coverage") against a SINGLE reference KMP composite project. That single-project framing is illustrative but **volatile** — the ratio depends on the project's specific module count, file sizes, kover XML output volume, plugin mix, etc. Real consumers run `kmp-test-runner` against projects of wildly different sizes; the README's headline numbers don't help an outside reader self-locate ("my project is mid-sized — what reduction should I expect?").
+
+**Proposal:** broaden the measurement matrix to several projects of varying sizes and re-frame the README narrative around size-bucketed averages.
+
+**Methodology:**
+
+1. **Keep the existing synthetic fixture as the controlled baseline** — `tests/fixtures/kmp-cross-platform-e2e/` stays as the reproducible floor (1 module, all 8 targets). Document its role explicitly in the README so the floor is auditable; the new bucket averages sit above it.
+2. **Real-project sample spanning 3 size buckets**, drawn from two pools:
+   - **OSS pool** (named, public projects under the workspace's OSS-samples subfolder): KaMPKit, PeopleInSpace, Confetti, NYTimes-KMP, FileKit, kotlinconf-app, androidify, kmp-basic-sample, kmp-production-sample, nav3-recipes, DroidconKotlin, Nav3Guide, KMedia.
+   - **Private pool** (anonymized — see privacy rule below): a handful of the maintainer's private KMP projects across small/medium/large.
+   - Bucket assignment by module count: **small** (1–5 modules), **medium** (6–20), **large** (21+).
+   - Aim for 2-3 projects per bucket per pool so averages aren't dominated by a single outlier.
+3. **For each project × each of the 6 gradle-backed features** (parallel, changed, coverage, describe, info, benchmark) run `tools/measure-token-cost.js` Approaches A / B / C and capture token counts. (`describe` + `info` are agent-query features → B+C only — already handled by the tool's `skipApproachA` flag from v0.9 step 8.)
+4. **Aggregate** by size bucket: report mean + median + spread (e.g. "median A→C reduction for medium projects: 800–1500×; small: 50–200×; large: 5000–80000×"). Cite outliers explicitly.
+5. **Privacy rule** (per `feedback_no_private_project_refs_in_public_cli.md`):
+   - OSS projects from the workspace's OSS-samples subfolder: **named** in the README + evidence. They're public.
+   - Private projects from the maintainer's workspace: **anonymized** as `private-small-A`, `private-medium-B`, `private-large-C`. NEVER name them in committed text.
+   - The new wrapper script's project list MUST come from `process.env.KMP_MEASUREMENT_PROJECTS` or a gitignored local config — NOT a hardcoded array — so private names never enter committed text. Same pattern as `KMP_WORKSPACE`.
+
+**Sub-tasks (last one is the README refresh, per user direction):**
+
+1. (~1h) Define size buckets + curate the project sample. User picks which OSS/private projects fall in which bucket. Output: a local `tools/.measurement-projects.json` template (gitignored) with the agreed list.
+2. (~3-4h) Add `tools/measure-token-cost-matrix.mjs` wrapper:
+   - Reads project list from `process.env.KMP_MEASUREMENT_PROJECTS` (path to JSON) or `tools/.measurement-projects.json` (gitignored).
+   - Iterates: for each project, runs `measure-token-cost.js` for the 6 features, captures Approach A / B / C token counts, anonymizes private project names per the bucket convention.
+   - Aggregates into bucket-keyed averages + spread statistics.
+   - Writes per-bucket evidence to `tools/runs/cross-model-results-<feature>.txt` (the canonical evidence files that ARE tracked — replacing the v0.9-step-8 single-project snapshots).
+3. (~2-3h) Run the matrix locally. Capture output. Spot-check that no private project name leaks into committed evidence (`git diff tools/runs/` + the privacy grep gate).
+4. (~1h) Curate the per-bucket aggregates. Commit the regenerated `tools/runs/cross-model-results-*.txt` with the new size-bucketed numbers.
+5. (~2h, **LAST**) Update README's "Why this exists — token cost per agent test-run iteration" section:
+   - Replace the single-project hero number with a 3-row "size bucket → median × range" table.
+   - Keep the 77,114× outlier as a "large-project ceiling" footnote with explicit context.
+   - Promote the synthetic-fixture baseline as the reproducible floor.
+   - Add CHANGELOG entry under [Unreleased] for the README refresh + measurement methodology change.
+
+**Effort:** ~10-12h end-to-end. Sits in Phase 4 of the Pre-v0.10 queue (post-PR-10 train, after the cheap polish items).
+
+**Risk:** LOW. Measurement is read-only against existing projects; tooling additions are clean. The only privacy risk is the wrapper script hardcoding private project names — explicitly mitigated by env/gitignored config (mirrors the `KMP_WORKSPACE` pattern shipped in PR #207).
+
+**Why now:** the user flagged the volatility of single-project numbers as a credibility gap for the README's claims. Reframing around bucketed averages makes the cost-reduction promise meaningful to outside consumers ("my project has 12 modules → expect ~800–1500× on coverage"). It also serves as the methodology that v0.10 step 7's re-measurement should adopt, so this IDEA effectively defines the contract that v0.10 step 7 inherits.
+
+**Cross-link:** v0.10 step 7 ("Token-cost re-measurement — captures any v0.10 envelope changes") should adopt the multi-project bucketed methodology defined here. Update the v0.10 ROADMAP entry to reference this IDEA when it gets prioritized.
+
+---
+
+### 🔍 INVESTIGATE — `parseArgs` duplication across 7 orchestrators (~125 LOC each — surfaced 2026-05-10 during pre-PR-10 code-quality audit)
+
+**Status: INVESTIGATE before deciding.** The 7 script-backed orchestrators (`android`, `benchmark`, `changed`, `coverage`, `describe`, `info`, `parallel`) + `update` each carry their own `parseArgs(argv)` implementation, ~125 LOC apiece. The audit's first instinct (and the agent's recommendation) was "accepted architectural debt — each orchestrator's flag set is genuinely unique, a shared DSL would be YAGNI". On second look that conclusion may be too quick — there's clear common scaffolding (POSIX `--name=value` expansion via `expandPosixEqualsForm`, validators like `validateEnum` / `validateNonNegativeInt`, the global flags `--project-root` / `--java-home` / `--ignore-jdk-mismatch` that EVERY orchestrator must skip). The real question isn't "shared DSL vs per-orchestrator" — it's "how much of the parseArgs body is shared vs unique, and is the shared portion big enough to extract without forcing a hostile abstraction?"
+
+**Investigation scope:**
+1. **Diff the 7 `parseArgs` bodies side-by-side.** Identify line-by-line: which lines are literal copies, which are near-copies (same shape, different flag name), which are genuinely unique to each subcommand.
+2. **Catalogue the global / shared flag set.** Today every orchestrator hand-skips `--project-root`, `--java-home`, etc. Is there a canonical `CLI_GLOBAL_FLAGS` (already exists in `tests/vitest/_parity-helpers.js` per memory) that orchestrators should consume directly via a shared helper?
+3. **Audit drift risk.** When v0.9 added `--isolated*` flags, every orchestrator had to be updated independently — confirm that all 7 actually got the flag wired or whether some silently dropped it (drift across the train).
+4. **Decide between three outcomes**:
+   - **(a) Document as accepted debt** — add a comment block to each `parseArgs` linking to a "why duplicated" rationale.
+   - **(b) Extract minimal shared layer** — pull only the genuinely-shared bits (POSIX expansion, global-flag skip set, validator imports) into `lib/parsers/argv-utils.js`. Each `parseArgs` keeps its switch but calls the shared utilities. This is what the codebase IS doing already — so the question becomes "is there more to extract".
+   - **(c) Full DSL** — declarative flag table per orchestrator, single shared parser. Highest impact, highest risk, possibly hostile to readability if flag-quirks need escape hatches.
+
+**Effort:** investigation ~3h (diff + categorize). Implementation depends on outcome: (a) ~1h docs, (b) ~6h targeted extraction, (c) ~15-20h full rewrite.
+
+**Risk:** Investigation is read-only; zero risk. Implementation risk depends on outcome.
+
+**Why this matters:** if v0.10 / v0.11 adds new flags that touch multiple subcommands (e.g. v0.10 #2 `gradle.properties` auto-respect, which would hit all of them), we'll feel this duplication as friction. Better to know now whether we're paying for accepted debt or carrying avoidable boilerplate.
+
+---
+
+### ✅ SHIPPED 2026-05-05 (v0.9 step 1, PR #146 / `4ef1f26` on develop) — `kmp-test parallel --test-type androidInstrumented` parity gap with `kmp-test android` subcommand (surfaced 2026-05-05 during fix-PR-G audit)
+
+**Status: DONE — v0.9 step 1 shipped 2026-05-05 (PR #146 / `4ef1f26`).** All 6 parity-gap flags wired into `parallel --test-type androidInstrumented` (`--clear-data`, `--auto-retry`, `--device <serial>`, `--flavor <name>`, `--device-task <name>`, canonical `class=<FQN>#<method>` filter shape). Vitest 816 → 838 (+22). 13/13 CI green. 4/6 flags live-verified on the maintainer's reference projects + S22 Ultra. Lesson: ps1 wrapper has param whitelist (sh passes through verbatim). Original entry preserved below for context.
+
+**[Original entry — preserved for traceability]**
+
+**Status (historical): OPEN, deferred from v0.8.0.** The `kmp-test android` subcommand offers several instrumented-test ergonomics that the `parallel --test-type androidInstrumented` path does not surface today. None BREAK an existing flow (so they're not v0.8.0 release-blockers — fix-PR-G closed the only blocker), but they're features users will reasonably expect on the unified `parallel` path. Closing the gap is mostly mechanical: thread the missing flags through `parseArgs` + `dispatchLeg` + per-module retry path.
 
 | Flag | Available in `kmp-test android` | Available in `kmp-test parallel --test-type androidInstrumented` | Effort |
 |---|:---:|:---:|---|
@@ -433,9 +662,13 @@ errors[]: [{ code: "gradle_timeout" }]
 
 ---
 
-### v0.9 — Cross-platform parity check in CI (NEW 2026-05-05)
+### ✅ SHIPPED 2026-05-06 (v0.9 step 5, PR #150 / `0a88797` on develop) — Cross-platform parity check in CI (NEW 2026-05-05)
 
-**Status: OPEN, scheduled as step 5 of v0.9 milestone (per ROADMAP).** Replaces the dropped iOS/macOS TestKit-in-CI matrix with a lightweight static parity check that catches drift between flag tables, envelope schema, README, and platform-behavior matrix without burning macOS minutes (`feedback_ci_minutes_minimal_macos.md`).
+**Status: DONE — v0.9 step 5 shipped 2026-05-06 (PR #150 / `0a88797`).** All 4 static sub-checks landed (flag matrix audit + envelope JSON schema snapshot + README ↔ code drift detection + platform-behaviour matrix). Vitest 963 → 1004 (+41). 13/13 CI green across ubuntu/macos/windows after 2 follow-up commits resolving snapshot portability (`PLATFORM_SPECIFIC_KEY` + `HOST_ENV_KEY` + `schemaOf()`). Surfaced + fixed ~10 undocumented flags + missing v0.9 README rows in the same PR. Original entry preserved below for context.
+
+**[Original entry — preserved for traceability]**
+
+**Status (historical): OPEN, scheduled as step 5 of v0.9 milestone (per ROADMAP).** Replaces the dropped iOS/macOS TestKit-in-CI matrix with a lightweight static parity check that catches drift between flag tables, envelope schema, README, and platform-behavior matrix without burning macOS minutes (`feedback_ci_minutes_minimal_macos.md`).
 
 **Scope — 4 sub-checks:**
 1. **Flag matrix audit** — vitest spec that enumerates every CLI subcommand × every flag, asserting platform-applicability matches the README "Platforms supported" table. Catches drift like "added `--device` to `parallel` but forgot to update README".
@@ -497,9 +730,13 @@ Vitest delta: 1018 → 1068 (+50 across the three PRs: 32 in `tests/vitest/macos
 
 ---
 
-### v0.9 — Token-cost re-measurement after parity-gap + DX-parity land (NEW 2026-05-05)
+### ✅ SHIPPED 2026-05-07 (v0.9 step 8, PR #156 / `b6402ea` on develop) — Token-cost re-measurement after parity-gap + DX-parity land (NEW 2026-05-05)
 
-**Status: OPEN, scheduled as step 4 of v0.9 milestone (per ROADMAP).** After the 6 parity-gap flags (entry above) AND the DX-parity bundle (`--variant` global, `kmp-test describe`, `kmp-test info`, `kmp-test update` — see "DX/UX parity audit" entry) land, re-run the full `tools/measure-token-cost.js` matrix to capture the new envelope shape and the new subcommands. The original token-cost claim ("13K → 100 token reduction for AI agents", "~542K → ~500 tokens for the coverage 5-iter loop") was calibrated at v0.5.0; the v0.8.0 envelope is structurally identical but the v0.9 parity-gap + DX-parity adds `retries[]` (auto-retry), `pre_run_actions` (clear-data), `device.serial` field (device targeting), `describe`-mode JSON shape, etc. — every additive field that an agent might consume.
+**Status: DONE — v0.9 step 8 shipped 2026-05-07 (PR #156 / `b6402ea`).** Full matrix re-run on the maintainer's reference KMP composite project. `tools/measure-token-cost.js` extended with `info` + `describe` features (B+C only — agent-query features without raw-gradle equivalent); per-feature `skipApproachA` + `acceptsModuleFilter` flags. 6 features × 3 Claude families captured. Headline finding: coverage A=28.7M cl100k tokens (74 MB kover) → C=372 = **77,114× reduction**; coverage A overflows Anthropic's `count_tokens` (413 too large) — load-bearing finding promoted to README v0.9 lead. Vitest 1068 → 1078 (+10). README prose deferred to step 9 (re-framing required, not a tweak). Closes the v0.8.0 cross-model deferral. **Important**: this measurement was single-project. The "💡 IDEA — Multi-project size-bucketed token-cost re-measurement" entry above defines a follow-up that broadens the methodology to size-bucketed averages. Original entry preserved below for context.
+
+**[Original entry — preserved for traceability]**
+
+**Status (historical): OPEN, scheduled as step 8 of v0.9 milestone (per ROADMAP — the "step 4" reference in the original text was a typo; canonical step is 8).** After the 6 parity-gap flags (entry above) AND the DX-parity bundle (`--variant` global, `kmp-test describe`, `kmp-test info`, `kmp-test update` — see "DX/UX parity audit" entry) land, re-run the full `tools/measure-token-cost.js` matrix to capture the new envelope shape and the new subcommands. The original token-cost claim ("13K → 100 token reduction for AI agents", "~542K → ~500 tokens for the coverage 5-iter loop") was calibrated at v0.5.0; the v0.8.0 envelope is structurally identical but the v0.9 parity-gap + DX-parity adds `retries[]` (auto-retry), `pre_run_actions` (clear-data), `device.serial` field (device targeting), `describe`-mode JSON shape, etc. — every additive field that an agent might consume.
 
 **Why AFTER all envelope-shape work lands** (load-bearing ordering): re-measuring per-flag is a dead-weight loop — each flag PR would invalidate the previous measurement. Single re-measurement at the end captures the FINAL v0.9 surface in one pass.
 
