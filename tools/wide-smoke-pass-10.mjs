@@ -50,6 +50,7 @@ const ENVELOPE_BEGIN = '__KMP_TEST_ENVELOPE_V1_BEGIN__';
 const ENVELOPE_END   = '__KMP_TEST_ENVELOPE_V1_END__';
 
 const WORKSPACE = process.env.KMP_WORKSPACE || path.resolve(process.cwd(), '..');
+console.error(`[NOTICE] WORKSPACE = ${WORKSPACE}`);
 
 // 30 gradle roots — identical set to pass-7/pass-8/pass-9 so bucket counts
 // compare directly. Categorised by PR3 sweep status. Stable ordering —

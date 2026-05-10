@@ -459,7 +459,7 @@ errors[]: [{ code: "gradle_timeout" }]
 **Status: IDEA, no milestone assigned.** The "Decouple from L0" rule in CLAUDE.md + CONTRIBUTING.md tells contributors private toolkit identifiers / private project names must stay 0-hits across committed text. The rule was historically enforced by a `tools/decouple-audit.mjs` script — but the script never actually existed in the repo (the doc reference was stale; PR #207 dropped it). Without an automated check, the next leak gets caught only by a reviewer's eye.
 
 **Proposal:** create the script as a real CI gate. ~50 LOC ESM module:
-- Reads a pattern list (e.g. `shared-kmp-libs`, the maintainer's home-dir, private package namespaces, etc.). Pattern list lives in the script — sentinel patterns the maintainer can extend without doc changes.
+- Reads a pattern list (private project / module names, the maintainer's home-dir paths, private package namespaces, etc.). Pattern list lives in the script — sentinel patterns the maintainer can extend without doc changes.
 - Walks `git ls-files` (skipping `tools/runs/` and snapshots), greps each file against the patterns.
 - Exits non-zero on any hit; prints `<file>:<line>:<match>` to stderr.
 - New CI job `decouple-audit` becomes the 13th required check on `develop` + `main`.
@@ -1132,7 +1132,7 @@ Root cause was three-fold: (1) source-set gate missing on AGP-fallback dispatch 
 
 The `sourceSets.jvmTest: true` is enough signal to predict `unitTestTask: "jvmTest"` without a gradle probe — the same way `predictedCoverage` is computed at line 694-696 as a fallback for `coverageTask`. This pattern is missing for the four other resolved fields.
 
-**Reproducer (live):** `cd /Volumes/XcodeOscar/kmp-test-workspace/Confetti && grep -c '":jvmTest"\|"jvmTest "' .kmp-test-runner-cache/tasks-*.txt` → 5 modules with `jvmTest` task; `kmp-test parallel --test-type common --json` → 5 of those are dispatched as `:moduleX:desktopTest`, gradle "Cannot locate", reactive WS-1 catches as FAIL. Direct `./gradlew :shared:jvmTest` → BUILD SUCCESSFUL.
+**Reproducer (live):** `cd $KMP_WORKSPACE/Confetti && grep -c '":jvmTest"\|"jvmTest "' .kmp-test-runner-cache/tasks-*.txt` → 5 modules with `jvmTest` task; `kmp-test parallel --test-type common --json` → 5 of those are dispatched as `:moduleX:desktopTest`, gradle "Cannot locate", reactive WS-1 catches as FAIL. Direct `./gradlew :shared:jvmTest` → BUILD SUCCESSFUL.
 
 **Fix direction:**
 
@@ -1479,9 +1479,9 @@ This pattern covers ~90-95% of integration bugs. The remaining 5% (hardware/perf
 >
 > **What replaced it:** the post-#116 wide-smoke baseline lives in BACKLOG entry "v0.8 — ✅ Silent-pass class FIXED" (line ~199) and the 3 follow-up v0.8.0 entries (JDK-AGP, cascade isolation, per-project triage). Future wide-smoke surfaces feed those entries, not this one.
 
-**Surfaced 2026-05-01 during cross-project wide-smoke validation against PeopleInSpace, Confetti (multi-module ~13 subprojects), and KaMPKit at `/Volumes/XcodeOscar/kmp-test-workspace/`. Validation hardware: Galaxy S22 Ultra (SM-S908B, Android 16, arm64-v8a, instrumented tests), iOS 26.4 Simulator runtime (10 devices: iPhone 17 Pro/Air/17e, iPad Pro M5, etc.), JDK catalogue 11/17/21, host JDK 21 default.** Eleven issues uncovered (twelfth `SKIPPED_MODULES` fix tracked separately below). Target: clear ALL before v0.8.0.
+**Surfaced 2026-05-01 during cross-project wide-smoke validation against PeopleInSpace, Confetti (multi-module ~13 subprojects), and KaMPKit at `$KMP_WORKSPACE/`. Validation hardware: Galaxy S22 Ultra (SM-S908B, Android 16, arm64-v8a, instrumented tests), iOS 26.4 Simulator runtime (10 devices: iPhone 17 Pro/Air/17e, iPad Pro M5, etc.), JDK catalogue 11/17/21, host JDK 21 default.** Eleven issues uncovered (twelfth `SKIPPED_MODULES` fix tracked separately below). Target: clear ALL before v0.8.0.
 
-The session ran an end-to-end reproducible matrix: every `--test-type {common,androidUnit,androidInstrumented,desktop,macos,ios,all}` × {PeopleInSpace, Confetti, KaMPKit} plus all five subcommands (`parallel`, `android`, `changed`, `coverage`, `benchmark`). Logs preserved at `/tmp/kmp-{pis,conf,kk}-*.log` on the host machine for evidence. The whole-session HANDOFF lives at `/Volumes/XcodeOscar/HANDOFF.md`.
+The session ran an end-to-end reproducible matrix: every `--test-type {common,androidUnit,androidInstrumented,desktop,macos,ios,all}` × {PeopleInSpace, Confetti, KaMPKit} plus all five subcommands (`parallel`, `android`, `changed`, `coverage`, `benchmark`). Logs preserved at `/tmp/kmp-{pis,conf,kk}-*.log` on the host machine for evidence. The whole-session HANDOFF lives at `$KMP_WORKSPACE/../HANDOFF.md`.
 
 **🔴 Critical (false-positive PASS / broken subcommand):**
 
@@ -1520,7 +1520,7 @@ The session ran an end-to-end reproducible matrix: every `--test-type {common,an
 
 **Aggregate effort estimate:** ~20-25h to clear all 11 (sequential), or 3-4 PRs of 5-7h each if grouped: PR1 (WS-1 + WS-5 + UX-2) — error/exit-code consistency; PR2 (WS-2) — benchmark Bash 3.2; PR3 (WS-3 + WS-10 + UX-1) — Android detection + invisible-module fix; PR4 (WS-4 + WS-6 + WS-7 + WS-8 + WS-9) — DX cleanup. Suggested order by user-impact: WS-1 → WS-2 → WS-3/UX-1 → WS-4 → DX bundle.
 
-**Wide-smoke evidence:** logs at `/tmp/kmp-{pis,conf,kk}-*.{log,json}` on mom's MacBook (2026-05-01); npm-link active there (global `kmp-test` → `/Volumes/XcodeOscar/kmp-test-workspace/kmp-test-runner`). Direct gradle reproductions captured for WS-1 evidence.
+**Wide-smoke evidence:** logs at `/tmp/kmp-{pis,conf,kk}-*.{log,json}` on the macOS validation machine (2026-05-01); npm-link active there (global `kmp-test` → `$KMP_WORKSPACE/kmp-test-runner`). Direct gradle reproductions captured for WS-1 evidence.
 
 ### ✅ OBSOLETE — `SKIPPED_MODULES[@]` unbound under Bash 3.2 set -u (resolved by v0.8 PIVOT 2026-05-03)
 
@@ -1532,7 +1532,7 @@ The session ran an end-to-end reproducible matrix: every `--test-type {common,an
 
 `scripts/sh/run-parallel-coverage-suite.sh:779` references `"${SKIPPED_MODULES[@]}"` directly. macOS Bash 3.2.57 (default) treats expansion of an empty array as unbound under `set -u`, so the script crashes BEFORE producing any test/build summary whenever no module is skipped (e.g. when `--include-untested` overrides every auto-skip, or when the project happens to have zero skip candidates).
 
-Reproducer (validated this session): `cd /Volumes/XcodeOscar/kmp-test-workspace/PeopleInSpace && kmp-test parallel --test-type common --include-untested --json`
+Reproducer (validated this session): `cd $KMP_WORKSPACE/PeopleInSpace && kmp-test parallel --test-type common --include-untested --json`
 - **Without fix**: `exit_code:1, duration_ms:1348, errors[0].code:"no_summary", tests.total:0` (script dies in ~1.3s, before gradle).
 - **With fix**: `exit_code:0, duration_ms:16581, tests.passed:7, skipped:[]` (script proceeds normally; with `--include-untested` 7 tasks run end-to-end).
 

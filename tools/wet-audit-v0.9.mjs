@@ -62,6 +62,7 @@ const ENVELOPE_END   = '__KMP_TEST_ENVELOPE_V1_END__';
 const SCHEMA_VERSION_EXPECTED = 2;
 
 const WORKSPACE = process.env.KMP_WORKSPACE || path.resolve(process.cwd(), '..');
+console.error(`[NOTICE] WORKSPACE = ${WORKSPACE}`);
 
 // 7 projects validated to have gradlew on disk. Nested wrappers point at
 // the inner gradle root (KaMPKit-main/KaMPKit-main, PeopleInSpace-main/
