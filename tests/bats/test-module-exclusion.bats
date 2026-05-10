@@ -108,7 +108,7 @@ teardown() {
     # 1→2 in this release; pre-OBS-3 was 3 (ENV_ERROR). See CHANGELOG
     # "wet-audit part 2" entry under [Unreleased].
     run bash "$PARALLEL" --project-root "$WORK_DIR" --module-filter "*" \
-        --exclude-modules "core-*,feature-*" --ignore-jdk-mismatch
+        --exclude-modules "sample-*,feature-*" --ignore-jdk-mismatch
     [ "$status" -eq 2 ]
     [[ "$output" == *"No modules found"* || "$output" == *"No modules support"* ]]
 }
@@ -134,7 +134,7 @@ teardown() {
 # code 'no_test_modules' is preserved with new `caused_by_filter:bool` field.
 @test "kmp-test --json parallel: no_test_modules code + CONFIG_ERROR (2) + caused_by_filter:true when filter excludes all" {
     run node bin/kmp-test.js --json parallel --project-root "$WORK_DIR" --module-filter "*" \
-        --exclude-modules "core-*,feature-*"
+        --exclude-modules "sample-*,feature-*"
     [ "$status" -eq 2 ]
     first_line=$(echo "$output" | grep -m1 '^{' || true)
     [ -n "$first_line" ]

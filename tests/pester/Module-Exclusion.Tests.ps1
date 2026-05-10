@@ -180,7 +180,7 @@ Describe 'kmp-test --json: skipped[] and no_test_modules envelope' {
         $work = $script:WorkDir
         $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
             (& node $cli --json parallel --project-root $work --module-filter '*' `
-                --exclude-modules 'core-*,feature-*' 2>&1) -join "`n"
+                --exclude-modules 'sample-*,feature-*' 2>&1) -join "`n"
         }
         $LASTEXITCODE | Should -Be 2
         $firstLine = ($output -split "`n" | Where-Object { $_ -match '^\{' } | Select-Object -First 1)
