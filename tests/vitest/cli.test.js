@@ -15,6 +15,7 @@ import {
   main,
   EXIT,
   resolveScript,
+  pickWindowsShell,
   ensureProjectRoot,
   getProjectRoot,
   getCoverageToolFromArgs,
@@ -86,6 +87,19 @@ describe('resolveScript', () => {
   });
   it('unknown subcommand returns null', () => {
     expect(resolveScript('xyz', 'linux')).toBeNull();
+  });
+});
+
+// PR-06 — pickWindowsShell probes pwsh first, falls back to powershell.exe.
+// Pre-PR there were no direct tests; cover both branches via spawnSync mock.
+describe('pickWindowsShell', () => {
+  it('returns "pwsh" when the probe succeeds (status 0)', () => {
+    spawnMock.mockReturnValueOnce({ status: 0 });
+    expect(pickWindowsShell()).toBe('pwsh');
+  });
+  it('falls back to "powershell.exe" when the probe fails', () => {
+    spawnMock.mockReturnValueOnce({ status: 1 });
+    expect(pickWindowsShell()).toBe('powershell.exe');
   });
 });
 
