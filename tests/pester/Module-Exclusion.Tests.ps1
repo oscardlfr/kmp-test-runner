@@ -139,7 +139,7 @@ Describe 'parallel: filter that rejects everything → exits 2 (CONFIG_ERROR)' {
         $work = $script:WorkDir
         $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
             (& pwsh -NoLogo -NoProfile -File $script -ProjectRoot $work -ModuleFilter '*' `
-                -ExcludeModules 'core-*,feature-*' -IgnoreJdkMismatch 2>&1) -join "`n"
+                -ExcludeModules 'sample-*,feature-*' -IgnoreJdkMismatch 2>&1) -join "`n"
         }
         $LASTEXITCODE | Should -Be 2
         $output | Should -Match 'No modules (found|support)'
