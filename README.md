@@ -768,6 +768,7 @@ npm test                                       # vitest (~810 tests at v0.8.1)
 npx bats tests/bats/ tests/installer/          # bats (~197 tests, Linux/macOS)
 cd gradle-plugin && ./gradlew test && cd ..    # Gradle TestKit (~12 tests)
 npm run shellcheck                             # POSIX script lint (0 warnings required)
+npm run size-check                             # bundle size budget (tarball ~210 KB)
 ```
 
 Pester runs in CI on `windows-latest`. PR titles must conform to [Conventional Commits v1.0.0](https://www.conventionalcommits.org/) (the workflow-validated PR title becomes the squash commit message).
