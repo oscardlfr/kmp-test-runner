@@ -49,3 +49,7 @@ MACOS-GATE-*.md
 MEASUREMENT-*.md
 BUGS-*.md
 AUDIT-CLI-*.md
+# Pre-v0.10 investigation outputs (read-only analyses produced before
+# committing to an extraction strategy; cross-link a memory file with the
+# distilled recommendation instead).
+INVESTIGATE-*.md
