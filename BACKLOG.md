@@ -44,7 +44,11 @@
 
 **Phase 3 — read-only investigation (interleavable with Phase 2)**
 
-8. **`parseArgs` duplication INVESTIGATE** — diff the 7 orchestrators' `parseArgs` bodies, decide between (a) document as accepted debt, (b) extract minimal shared layer, (c) full DSL. Investigation is zero-risk; execution depends on outcome. ~3h. Detail: "🔍 INVESTIGATE — `parseArgs` duplication".
+8. ✅ **`parseArgs` duplication INVESTIGATE + Option B** — INVESTIGATE closed 2026-05-11 with Option B picked (minimal shared layer). Option B shipped 2026-05-11: `lib/parsers/argv-constants.js` (3 frozen allowlists) + `splitGradleArgs` + orchestrator-side `expandNoCoverageAlias` in `lib/orchestrator-utils.js` + errors[] contract docstring. 5 orchestrators slimmed; vitest 1295 unchanged. Detail: "✅ SHIPPED — `parseArgs` duplication" below.
+
+**Phase 3.5 — `lib/` reorganization (added 2026-05-10 after wet-validation gate, single PR)**
+
+8.5. **Move `lib/*-orchestrator.js` → `lib/orchestrators/`** — close the asymmetry where top-level orchestrator entry points live in `lib/` raíz while their decomposed sub-modules already live under `lib/orchestrators/parallel/` (PR #210). 9-10 file moves + import updates in `cli.js`, `lib/runners/script-dispatcher.js`, and ~25-30 test files. Tests adapt paths to new boundary (per `feedback_refactor_tests_adapt_dont_freeze.md`). Mechanical, zero-semantic-change. **Recommended landing slot**: BEFORE Phase 4 #12 (JSDoc stubs) — better to stabilize public-API paths before documenting them. Surfaced 2026-05-10 by user during wet-validation gate post-PR-10 review. ~3-4h.
 
 **Phase 4 — test + doc polish (post-train, ~12-15h + measurement, 4-5 small PRs)**
 
@@ -58,7 +62,7 @@
 
 14. **`benchmark` partial-success grading** — `gradle_timeout` ec=0+warning when N-1 modules passed; opt-out flag `--strict-timeouts`. NEEDS user decision on threshold + scope before scheduling. Detail: "💡 IDEA — `benchmark` partial-success grading".
 
-**Estimated end-to-end time:** Phase 1+2 ~12-15h (assuming PR-10 train takes 8-10h across 4 sub-PRs); Phase 3 read-only 3h interleaved; Phase 4 ~22-27h after train (incl. measurement). Phase 5 deferred until user prioritizes. Total queue depth: ~40-45h before v0.10 #1 (ANSI auto-detect) starts.
+**Estimated end-to-end time:** Phase 1+2 ~12-15h (assuming PR-10 train takes 8-10h across 4 sub-PRs); Phase 3 read-only 3h interleaved; Phase 3.5 ~3-4h; Phase 4 ~22-27h after train (incl. measurement). Phase 5 deferred until user prioritizes. Total queue depth: ~43-50h before v0.10 #1 (ANSI auto-detect) starts.
 
 **Hard exits (NOT in this queue):**
 - Cross-platform CI matrix expansion — ❌ DROPPED. Conflicts with `feedback_ci_minutes_minimal_macos.md` (macOS minutes are 10× Linux; manual gate on a secondary machine is the canonical replacement).
@@ -615,6 +619,19 @@ Skip JSDoc for purely internal helpers — the inline comments + dense module-le
 **Cross-link:** v0.10 step 7 ("Token-cost re-measurement — captures any v0.10 envelope changes") should adopt the multi-project bucketed methodology defined here. Update the v0.10 ROADMAP entry to reference this IDEA when it gets prioritized.
 
 ---
+
+### ✅ SHIPPED 2026-05-11 — `parseArgs` duplication INVESTIGATE + Option B (Pre-v0.10 Phase 3 closure)
+
+**Status: DONE — INVESTIGATE closed 2026-05-11, Option B shipped same day.** Investigation surveyed all 8 orchestrators (the 7 script-backed + `update`); see memory `project_phase_3_parseargs_investigate_findings.md`. User picked Option B (minimal shared layer). Implementation landed in the same session:
+
+- `lib/parsers/argv-constants.js` (NEW) — 3 frozen allowlists (`TEST_TYPE_VALUES`, `COVERAGE_TOOL_VALUES`, `PLATFORM_VALUES`) as single source of truth. Previously declared 4 times across the orchestrators.
+- `lib/orchestrator-utils.js` — added `splitGradleArgs(raw)` (replaces 4 inline whitespace-split copies) + orchestrator-side `expandNoCoverageAlias(argv)` (lifted from 2 byte-identical bodies). Added `// Validation error contract` header docstring documenting the `errors[]` shape and `validateEnum`/`validateNonNegativeInt` null-return convention.
+- 5 orchestrators (`coverage`, `parallel/dispatch`, `changed`, `benchmark`, `android`) now import shared symbols. Local copies deleted; ESM re-export chains preserved via live bindings.
+- Parity fix from the original plan was UNNECESSARY in practice — `--no-coverage` is not in any subcommand-specific `SUBCOMMAND_HELP` block (it's a CLI-globals line), so the parity scan never required it. Confirmed empirically.
+
+Vitest count: 1295 → 1295 (pure extraction, no semantic change). Decouple audit clean. 9 files touched (1 new + 7 edited + BACKLOG closure).
+
+**[Original entry — preserved for traceability]**
 
 ### 🔍 INVESTIGATE — `parseArgs` duplication across 7 orchestrators (~125 LOC each — surfaced 2026-05-10 during pre-PR-10 code-quality audit)
 
