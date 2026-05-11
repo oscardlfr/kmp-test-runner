@@ -52,7 +52,7 @@
 
 **Phase 4 — test + doc polish (post-train, ~12-15h + measurement, 4-5 small PRs)**
 
-9. **Coverage threshold gate `c8 --check-coverage --lines 80`** — ~1h. Detail: "💡 IDEA — Coverage threshold gate".
+9. ✅ **Coverage threshold gate** — DONE 2026-05-11 (PR #215 / <TBD> on develop). Detail: "✅ SHIPPED — Coverage threshold gate".
 10. **Bundle-size monitoring** — `npm pack --dry-run` budget check. ~1h. Detail: "💡 IDEA — Bundle-size monitoring".
 11. **Direct unit tests for `orchestrator-utils.js` helpers** — top 5 most-used helpers. ~6h. Detail: "💡 IDEA — Direct unit tests for `orchestrator-utils.js`".
 12. **JSDoc stubs on the npm-package public API** — 9 `run*` entry points + 5-10 `cli.js`-level helpers. ~3-4h. Detail: "💡 IDEA — JSDoc stubs on the public npm-package API".
@@ -493,19 +493,26 @@ Also: make the scripts emit a `[NOTICE]` log line on startup naming the resolved
 
 ---
 
-### 💡 IDEA — Coverage threshold gate (`c8 --check-coverage --lines 80`) (surfaced 2026-05-10 during pre-PR-10 polish triage)
+### ✅ SHIPPED — Coverage threshold gate (DONE 2026-05-11 / PR #215)
 
-**Status: IDEA, no milestone assigned.** `c8` already runs as part of the test pipeline (`coverage/` artefact is produced) but no threshold is enforced — coverage % can silently regress PR-by-PR. The current train (PR-01 → PR-09 + privacy sweep + Bug A) added 6 new vitest cases over a 2306-LOC churn; we don't actually know if line coverage moved.
+**Status: DONE.** Original premise (surfaced 2026-05-10 during pre-PR-10 polish triage) was stale: `vitest.config.js` already declared `coverage.thresholds: { lines: 80, functions: 80, branches: 80, statements: 80 }` and `.github/workflows/ci.yml:98` ran `npx vitest run --coverage`. Vitest 2.x auto-enforces `coverage.thresholds` when `--coverage` runs (no `--check-coverage` flag needed — that flag belongs to `c8`/`nyc`); when a threshold is breached, vitest sets `process.exitCode = 1` and the CI step fails. The gate was already live; coverage % could not silently regress below 80%. It just couldn't rise either.
 
-**Proposal:** add a `--check-coverage --lines 80 --branches 75 --functions 80` gate to the vitest run in CI. Tune thresholds based on the current baseline (run `c8` once locally, set thresholds at `floor(current_pct - 2)` to avoid flaky failures on edge moves).
+**What this PR does:** measures the actual baseline (develop tip `91b51b0`) and retunes the floor to `max(80, floor(baseline − 2))` per metric — never lowering an existing floor, raising the three that had slack.
 
-**Open questions:**
-- Where to wire: in `package.json` `test` script, or as a separate CI step?
-- Per-file thresholds vs aggregate? Aggregate is simpler; per-file (`c8 --per-file`) catches one file dragging coverage down.
+| Metric | Baseline | Old floor | New floor | Headroom |
+|---|---|---|---|---|
+| Statements | 93.89% | 80 | **91** | 2.89pp |
+| Branches | 81.82% | 80 | **80** (unchanged) | 1.82pp |
+| Functions | 92.91% | 80 | **90** | 2.91pp |
+| Lines | 93.89% | 80 | **91** | 2.89pp |
 
-**Effort:** ~1h (measure baseline + tune + wire CI).
+Branches stays at 80 because `floor(81.82 − 2) = 79` would lower the existing floor — a regression in floor protection. The 1.82pp headroom is tighter than the other three but is the price of "no regression."
 
-**Risk:** LOW. The gate fails noisily, not silently. Existing tests already pass; this just locks the floor.
+**Deferred (deliberately, kept here as open questions for a future polish PR):**
+- Per-file thresholds (`coverage.thresholds[<glob>]: { ... }`). Today aggregate-only; one file dragging average down is invisible (e.g. `lib/runner.js` shows 0/0/0/0 across 219 lines in the same run — masked by the rest of the codebase).
+- Local enforcement via `npm test`. Today `npm test` is `vitest run` (fast, no coverage); `npm run test:coverage` is the enforcing path. CI runs the enforcing path on every PR.
+
+**Risk:** LOW — same shape as the IDEA framing. The gate still fails noisily, not silently.
 
 ---
 
