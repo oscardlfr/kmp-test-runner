@@ -166,6 +166,10 @@ export function parseArgs(argv) {
     // the chunked-counting threshold up or down depending on Anthropic's
     // observed payload limit. Pass 0 to disable chunking entirely (legacy).
     anthropicChunkBytes: null,
+    // features: optional comma-separated subset for multi-project mode.
+    // Single-project mode uses opts.feature (singular) and ignores this.
+    // Empty / omitted -> run all VALID_FEATURES per project.
+    features: [],
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--project-root' && argv[i + 1]) { out.projectRoot = argv[++i]; continue; }
@@ -204,14 +208,28 @@ export function parseArgs(argv) {
       out.anthropicChunkBytes = n;
       continue;
     }
+    if (argv[i] === '--features' && argv[i + 1]) {
+      out.features = argv[++i]
+        .split(',')
+        .map((f) => f.trim())
+        .filter(Boolean);
+      const bad = out.features.filter((f) => !VALID_FEATURES.includes(f));
+      if (bad.length) {
+        console.error(`Error: --features contains invalid entries: ${bad.join(', ')} (valid: ${VALID_FEATURES.join(', ')})`);
+        process.exit(2);
+      }
+      continue;
+    }
   }
   const envProjects = process.env.KMP_MEASUREMENT_PROJECTS || null;
-  const conventionalConfig = path.join(repoRoot, 'tools', '.measurement-projects.json');
-  const hasMultiProject = !!(out.projectsConfig || envProjects || existsSync(conventionalConfig));
   // --project-root is only required for single-project gradle mode. Cross-model
-  // mode reads existing captures; multi-project mode resolves projects from the
-  // config sources above (CLI > env > convention path).
-  if (out.anthropicModels.length === 0 && !out.projectRoot && !hasMultiProject) {
+  // mode reads existing captures; multi-project mode resolves projects from
+  // explicit signals here (--projects-config / --features / env var). The
+  // conventional path tools/.measurement-projects.json is consulted in main()
+  // when one of those signals is set but no explicit list resolves — so
+  // parseArgs stays a pure CLI parser (no filesystem access).
+  const wantsMultiProject = !!(out.projectsConfig || out.features.length > 0 || envProjects);
+  if (out.anthropicModels.length === 0 && !out.projectRoot && !wantsMultiProject) {
     console.error('Usage: node tools/measure-token-cost.js --project-root <path> [--feature parallel|coverage|changed|benchmark|info|describe] [--module-filter <pat>] [--test-task <name>] [--benchmark-task <name>] [--changed-range <rev>] [--runs N]');
     console.error('       node tools/measure-token-cost.js [--feature <name>] --anthropic-models <csv> [--anthropic-api-key <key>]   # re-tokenise existing captures');
     console.error('       node tools/measure-token-cost.js --projects-config <path>   # multi-project size-bucketed orchestration (PR #13)');

@@ -111,6 +111,40 @@ describe('parseArgs', () => {
     const out = parseArgs(['--anthropic-models', 'claude-opus-4-7']);
     expect(out.anthropicApiKey).toBeNull();
   });
+
+  it('parses --projects-config as multi-project mode entry', () => {
+    const out = parseArgs(['--projects-config', 'tools/.measurement-projects.json']);
+    expect(out.projectsConfig).toBe('tools/.measurement-projects.json');
+    expect(out.projectRoot).toBeUndefined();
+    expect(out.anthropicModels).toEqual([]);
+  });
+
+  it('parses --features csv into a string array', () => {
+    const out = parseArgs(['--features', 'parallel,coverage,info']);
+    expect(out.features).toEqual(['parallel', 'coverage', 'info']);
+    expect(out.projectRoot).toBeUndefined();
+  });
+
+  it('rejects --features with invalid feature name', () => {
+    expect(() => parseArgs(['--features', 'parallel,nope'])).toThrow('__exit__');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('parses --anthropic-chunk-bytes as a number', () => {
+    const out = parseArgs(['--anthropic-models', 'claude-opus-4-7', '--anthropic-chunk-bytes', '1048576']);
+    expect(out.anthropicChunkBytes).toBe(1048576);
+  });
+
+  it('rejects --anthropic-chunk-bytes when not a non-negative integer', () => {
+    expect(() => parseArgs(['--anthropic-chunk-bytes', '-3'])).toThrow('__exit__');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('accepts --features alone (multi-project intent without project-root)', () => {
+    const out = parseArgs(['--features', 'parallel']);
+    expect(out.features).toEqual(['parallel']);
+    expect(out.projectRoot).toBeUndefined();
+  });
 });
 
 describe('countTokensAnthropic', () => {
