@@ -53,8 +53,8 @@
 **Phase 4 — test + doc polish (post-train, ~12-15h + measurement, 4-5 small PRs)**
 
 9. ✅ **Coverage threshold gate** — DONE 2026-05-11 (PR #215 / cd719d0 on develop). Detail: "✅ SHIPPED — Coverage threshold gate".
-10. ✅ **Bundle-size monitoring** — DONE 2026-05-11 (PR #<TBD> / <TBD> on develop). `npm pack --dry-run --json` budget gate. Detail: "✅ SHIPPED — Bundle-size monitoring".
-11. **Direct unit tests for `orchestrator-utils.js` helpers** — top 5 most-used helpers. ~6h. Detail: "💡 IDEA — Direct unit tests for `orchestrator-utils.js`".
+10. ✅ **Bundle-size monitoring** — DONE 2026-05-11 (PR #216 / 3ce7e29 on develop). `npm pack --dry-run --json` budget gate. Detail: "✅ SHIPPED — Bundle-size monitoring".
+11. ✅ **Direct unit tests for `orchestrator-utils.js` helpers** — DONE 2026-05-11 (PR #<TBD> / <TBD> on develop). +32 direct tests across 6 helpers (stripKotlinComments, splitGradleArgs, expandNoCoverageAlias, discoverIncludedModules, readBuildFile, readPackageName). Vitest 1295 → 1327. Surfaced one inline-fixed bug: discoverIncludedModules single-arg regex didn't dedupe matches that were also inside multi-arg includes, contradicting the docstring's "deduplicated list" contract. Detail: "✅ SHIPPED — Direct unit tests for `orchestrator-utils.js`".
 12. **JSDoc stubs on the npm-package public API** — 9 `run*` entry points + 5-10 `cli.js`-level helpers. ~3-4h. Detail: "💡 IDEA — JSDoc stubs on the public npm-package API".
 13. **Multi-project size-bucketed token-cost re-measurement + README reframe** — replace the single-project numbers (volatile) with size-bucketed averages (small / medium / large) computed across a real-project sample (anonymized private + named OSS). Last sub-task = README refresh. ~10-12h. Detail: "💡 IDEA — Multi-project size-bucketed token-cost re-measurement".
 
@@ -516,7 +516,7 @@ Branches stays at 80 because `floor(81.82 − 2) = 79` would lower the existing 
 
 ---
 
-### ✅ SHIPPED — Bundle-size monitoring (DONE 2026-05-11 / PR #<TBD>)
+### ✅ SHIPPED — Bundle-size monitoring (DONE 2026-05-11 / PR #216 / 3ce7e29)
 
 **Status: DONE.** Original premise (surfaced 2026-05-10 during pre-PR-10 polish triage) was: `kmp-test-runner` ships as a Node CLI (`npm install -g kmp-test-runner`); the published artefact size was previously unmonitored, so a refactor pulling in heavy transitive deps or unintended files would slip through silently.
 
@@ -546,17 +546,17 @@ Branches stays at 80 because `floor(81.82 − 2) = 79` would lower the existing 
 
 ---
 
-### 💡 IDEA — Direct unit tests for `orchestrator-utils.js` exported helpers (surfaced 2026-05-10 during pre-PR-10 code-quality audit)
+### ✅ SHIPPED — Direct unit tests for `orchestrator-utils.js` exported helpers (DONE 2026-05-11 / PR #<TBD>)
 
-**Status: IDEA, no milestone assigned.** `lib/orchestrator-utils.js` exports 18 helpers consumed by every orchestrator (`stripKotlinComments`, `readBuildFile`, `discoverIncludedModules`, `expandPosixEqualsForm`, `matchModuleFilter`, `validateEnum`, `validateNonNegativeInt`, etc.). They're covered indirectly via the per-orchestrator integration tests (`tests/vitest/{android,benchmark,coverage,parallel,changed,describe,info,update}-orchestrator.test.js`) but have no dedicated `tests/vitest/orchestrator-utils.test.js` for direct cases. (One `orchestrator-utils.test.js` file does exist but is light-coverage on a subset.)
+**Status: DONE.** Original premise (surfaced 2026-05-10 during pre-PR-10 code-quality audit) was: `lib/orchestrators/orchestrator-utils.js` exports ~20 helpers consumed by every orchestrator. Most were covered only indirectly via per-orchestrator integration tests; a regression in (e.g.) `stripKotlinComments` would have surfaced as cascading orchestrator-test failures with confusing root-cause rather than pinpointed at the helper.
 
-**Proposal:** expand `tests/vitest/orchestrator-utils.test.js` with direct cases for the top 5 most-used helpers — `stripKotlinComments` (4 callers), `readBuildFile` (3 callers), `discoverIncludedModules` (multiple), `validateEnum`, `validateNonNegativeInt`. Cover the edge cases that integration tests don't hit (malformed input, encoding edge cases, empty input).
+**What this PR does:** extends `tests/vitest/orchestrator-utils.test.js` with **+32 direct tests** across 6 previously-untested helpers — `stripKotlinComments` (7), `splitGradleArgs` (5), `expandNoCoverageAlias` (6), `discoverIncludedModules` (6), `readBuildFile` (3), `readPackageName` (5). Vitest 1295 → **1327** (+32). Pure additions; the existing 36 tests (parseIsolatedArgs, resolveIsolatedDir, splitCsv, globToRegex, matchModuleFilter, etc.) stayed unchanged. Other already-covered helpers were deliberately skipped to avoid duplication: `validateEnum`/`validateNonNegativeInt` (covered in `input-validation.test.js`), `expandPosixEqualsForm` (covered in `posix-flags.test.js`), `spawnGradle` (covered in `e2e-spawn-gradle.test.js`), `defaultAdbProbe` (system-touching, deferred).
 
-**Effort:** ~6h (write tests + verify count).
+**Bug surfaced + inline-fixed:** the `discoverIncludedModules` single-arg regex `/include\s*\(\s*"(:[\w\-:]+)"/g` matches the first `":name"` of any include — including the first arg of multi-arg forms like `include(":foo", ":bar")`. Pre-fix, the single-arg loop pushed without dedupe (only the multi-arg pass had a `!out.includes` guard), so a settings file mixing single + multi forms with overlapping names produced duplicates — contradicting the docstring's "deduplicated list of module names" contract. One-line fix mirrors the multi-pass guard; the test that surfaced it (`dedupes across single + multi forms`) now passes.
 
-**Risk:** ZERO. Pure additions; no production code change.
+**lib/runner.js 0% gap stays open** (219-line entry-point dispatcher; mutates `process.env` and does dynamic-import-and-invoke; not unit-testable in isolation). Tracked as a separate future polish — a per-file threshold tweak OR a refactor for testability.
 
-**Value:** independent verification of the shared layer the rest of `lib/` depends on. Today a regression in `stripKotlinComments` would surface as cascading orchestrator-test failures with confusing root-cause; direct tests pinpoint the helper.
+**Verification:** local `npm test` → 1327. `npm run test:coverage` → all 4 thresholds (91/90/80/91) green. `node tools/decouple-audit.mjs` + `node tools/check-bundle-size.mjs` → exit 0.
 
 ---
 
