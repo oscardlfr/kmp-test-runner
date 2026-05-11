@@ -41,7 +41,7 @@
 - `scripts/build-artifact.sh` — extracts publish-release.yml build logic for local CI E2E testing
 - `gradle-plugin/` — Gradle plugin shape (`KmpTestRunnerPlugin` + `KmpTestRunnerExtension` + 5 task classes; Kover auto-detect)
 - `tests/unit/` (vitest) + `tests/bats/` + `tests/pester/` + `tests/installer/` (E2E install/uninstall; Linux+Windows matrix)
-- `.github/workflows/` — `ci.yml` (6 jobs: build x2, secrets-scan, gradle-plugin-test, installer-e2e x2), `commit-lint.yml` (Conventional Commits enforcement on PR titles, squash-merge mode), `publish-release.yml` (tag `v*` trigger), `publish-npm.yml` + `publish-gradle.yml` (workflow_dispatch only)
+- `.github/workflows/` — `ci.yml` (8 jobs: build x2, secrets-scan, gradle-plugin-test, installer-e2e x2, decouple-audit, bundle-size), `commit-lint.yml` (Conventional Commits enforcement on PR titles, squash-merge mode), `publish-release.yml` (tag `v*` trigger), `publish-npm.yml` + `publish-gradle.yml` (workflow_dispatch only)
 - `BACKLOG.md` — current and queued tasks; check this first
 
 ## CRITICAL — Gitflow with develop + auto-publish on main
@@ -52,7 +52,7 @@ Two long-lived branches:
 
 **NEVER push directly to `main` or `develop`.** Branch protection on both requires:
 - PR (no direct push, no force push, no delete)
-- All 7 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `commit-lint / Commit Lint` (job renamed from `🔤 Commit Lint` in v0.4.x — see `commit-lint.yml` for context)
+- All 9 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `commit-lint / Commit Lint` (job renamed from `🔤 Commit Lint` in v0.4.x — see `commit-lint.yml` for context), `decouple-audit` (added 2026-05-12 from PR #209), `bundle-size` (added 2026-05-12 from PR #216)
 - Linear history (squash/rebase only)
 - `enforce_admins: true` (rule applies to repo owner — no bypass)
 
@@ -170,5 +170,5 @@ cd gradle-plugin && ./gradlew test
 3. **For tests**: do NOT weaken or remove existing tests to make new code pass. If a test fails, fix the production code, not the test
 4. **For new install/CI logic**: add E2E coverage that catches the bug class (we have 5 bats E2E + 4 Pester E2E as a baseline; v0.3.0/0.3.2/0.3.3 historical bugs are the regression-test rubric)
 5. **Commit message format**: Conventional Commits (`feat(scope): ...`, `fix(scope): ...`, `test(scope): ...`, `docs(scope): ...`)
-6. **After PR**: wait for all 7 CI checks green before merge; squash merge; delete branch; pull main
+6. **After PR**: wait for all 9 CI checks green before merge; squash merge; delete branch; pull main
 7. **For releases**: bump `package.json` `version` BEFORE tagging; run `installer-e2e` mentally — does the tag match `package.json`?
