@@ -54,8 +54,8 @@
 
 9. ✅ **Coverage threshold gate** — DONE 2026-05-11 (PR #215 / cd719d0 on develop). Detail: "✅ SHIPPED — Coverage threshold gate".
 10. ✅ **Bundle-size monitoring** — DONE 2026-05-11 (PR #216 / 3ce7e29 on develop). `npm pack --dry-run --json` budget gate. Detail: "✅ SHIPPED — Bundle-size monitoring".
-11. ✅ **Direct unit tests for `orchestrator-utils.js` helpers** — DONE 2026-05-11 (PR #<TBD> / <TBD> on develop). +32 direct tests across 6 helpers (stripKotlinComments, splitGradleArgs, expandNoCoverageAlias, discoverIncludedModules, readBuildFile, readPackageName). Vitest 1295 → 1327. Surfaced one inline-fixed bug: discoverIncludedModules single-arg regex didn't dedupe matches that were also inside multi-arg includes, contradicting the docstring's "deduplicated list" contract. Detail: "✅ SHIPPED — Direct unit tests for `orchestrator-utils.js`".
-12. **JSDoc stubs on the npm-package public API** — 9 `run*` entry points + 5-10 `cli.js`-level helpers. ~3-4h. Detail: "💡 IDEA — JSDoc stubs on the public npm-package API".
+11. ✅ **Direct unit tests for `orchestrator-utils.js` helpers** — DONE 2026-05-11 (PR #217 / 502a367 on develop). +32 direct tests across 6 helpers (stripKotlinComments, splitGradleArgs, expandNoCoverageAlias, discoverIncludedModules, readBuildFile, readPackageName). Vitest 1295 → 1327. Surfaced one inline-fixed bug: discoverIncludedModules single-arg regex didn't dedupe matches that were also inside multi-arg includes, contradicting the docstring's "deduplicated list" contract. Detail: "✅ SHIPPED — Direct unit tests for `orchestrator-utils.js`".
+12. ✅ **JSDoc stubs on the npm-package public API** — DONE 2026-05-11 (PR #<TBD> / <TBD> on develop). 13 JSDoc blocks: 9 `run*` orchestrators + `runDoctor` + `runDoctorChecks` + envelope helpers (`buildJsonReport` / `buildInvalidArgsEnvelope` / `envErrorJson` / `buildDryRunReport`) + `EXIT` constant + `parseGradleConfig` + `getProjectRoot`. Terse 1-line description + `@param` + `@returns`; no multi-paragraph, no `@example`. Vitest 1327 unchanged. Detail: "✅ SHIPPED — JSDoc stubs on the public npm-package API".
 13. **Multi-project size-bucketed token-cost re-measurement + README reframe** — replace the single-project numbers (volatile) with size-bucketed averages (small / medium / large) computed across a real-project sample (anonymized private + named OSS). Last sub-task = README refresh. ~10-12h. Detail: "💡 IDEA — Multi-project size-bucketed token-cost re-measurement".
 
 **Phase 5 — behavior IDEA (separate user-driven decision, NOT a polish item)**
@@ -560,23 +560,29 @@ Branches stays at 80 because `floor(81.82 − 2) = 79` would lower the existing 
 
 ---
 
-### 💡 IDEA — JSDoc stubs on the public npm-package API (surfaced 2026-05-10 during pre-PR-10 code-quality audit)
+### ✅ SHIPPED — JSDoc stubs on the public npm-package API (DONE 2026-05-11 / PR #<TBD>)
 
-**Status: IDEA, no milestone assigned.** `lib/` currently has <5% JSDoc coverage on exported functions. Inline comments are dense and high-quality (architectural notes, bug-fix annotations, repro pointers) — that is the project's documentation convention and it's intentional. **However**, the npm-package surface (`runParallel`, `runAndroid`, `runChanged`, `runCoverage`, `runBenchmark`, `runInfo`, `runDescribe`, `runUpdate`, `runDoctor` + the helpers consumers might import like `buildJsonReport`, `envErrorJson`) is what an external integrator's IDE auto-completion sees. JSDoc on those entry points is a low-cost ergonomics win that signals professional maturity to consumers.
+**Status: DONE.** Original premise (surfaced 2026-05-10 during pre-PR-10 code-quality audit): `lib/` had <5% JSDoc coverage on exported functions; the npm-package surface that an external integrator's IDE auto-completion sees was undocumented at the JSDoc level (inline architectural comments are dense and high-quality but invisible to IDE tooling).
 
-**Proposal:** add JSDoc to:
-- The 9 `run*` entry points (one block per file: signature, `@param`, `@returns`, `@example` if non-trivial).
-- The 5-10 `cli.js`-level helpers that get imported externally (`buildJsonReport`, `envErrorJson`, `EXIT`, `applyErrorCodeDiscriminators`, `resolveAndroidTestFilter`, `splitClassMethod`).
+**What this PR does:** 13 terse JSDoc blocks inserted directly above each public entry point — 1-line description + `@param` + `@returns`, no multi-paragraph, no `@example`, no "used by X" notes.
 
-Skip JSDoc for purely internal helpers — the inline comments + dense module-level header banners already document them and adding JSDoc there would duplicate without clear value.
+| Surface                                                | Count |
+|--------------------------------------------------------|-------|
+| `run*` orchestrators (`runParallel`, `runInfo`, `runDescribe`, `runAndroid`, `runCoverage`, `runBenchmark`, `runChanged`, `runUpdate`) | 8 |
+| `runDoctor` + `runDoctorChecks` (`lib/commands/doctor.js`) | 2 |
+| Envelope helpers (`buildJsonReport`, `buildInvalidArgsEnvelope`, `envErrorJson`, `buildDryRunReport`) | 4 |
+| `EXIT` constant (`@property` per code) | 1 |
+| `parseGradleConfig` (`lib/project/jdk-preflight.js`) + `getProjectRoot` (`lib/parsers/argv.js`) | 2 |
 
-**Effort:** ~3-4h (template + write + verify the runtime contract still matches the doc).
+**Vitest 1327 unchanged** (JSDoc has no runtime impact). Bundle-size impact: tarball +2.3 KB (210.7 → 213.0 KB; 24% headroom — well within budget).
 
-**Risk:** LOW. JSDoc is comments — no runtime behavior change. Tradeoff: roza la regla "default to no comments" del CLAUDE.md global, but JSDoc on a public API is a different category from explanatory inline comments.
+**Deliberately skipped:**
+- Private helpers (the existing inline comments already cover them).
+- TypeScript `.d.ts` generation (separate work, future polish).
+- `@example` blocks (default skip — only add when call shape is genuinely non-obvious; none here qualified).
+- CI lint gate enforcing JSDoc on new exports (overkill at this stage).
 
-**Open questions for prioritization:**
-1. Bundle size: JSDoc adds bytes. Worth verifying `npm pack` size impact (cross-link to bundle-size IDEA above).
-2. CI gate: should we enforce JSDoc on every NEW exported function via a lint check? Probably overkill at this stage; revisit if multiple regressions slip.
+**Verification:** `npm test` → 1327 unchanged. `node tools/decouple-audit.mjs` → exit 0. `node tools/check-bundle-size.mjs` → exit 0 (within budget after +2.3 KB).
 
 ---
 
