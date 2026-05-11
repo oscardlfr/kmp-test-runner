@@ -52,8 +52,8 @@
 
 **Phase 4 — test + doc polish (post-train, ~12-15h + measurement, 4-5 small PRs)**
 
-9. ✅ **Coverage threshold gate** — DONE 2026-05-11 (PR #215 / <TBD> on develop). Detail: "✅ SHIPPED — Coverage threshold gate".
-10. **Bundle-size monitoring** — `npm pack --dry-run` budget check. ~1h. Detail: "💡 IDEA — Bundle-size monitoring".
+9. ✅ **Coverage threshold gate** — DONE 2026-05-11 (PR #215 / cd719d0 on develop). Detail: "✅ SHIPPED — Coverage threshold gate".
+10. ✅ **Bundle-size monitoring** — DONE 2026-05-11 (PR #<TBD> / <TBD> on develop). `npm pack --dry-run --json` budget gate. Detail: "✅ SHIPPED — Bundle-size monitoring".
 11. **Direct unit tests for `orchestrator-utils.js` helpers** — top 5 most-used helpers. ~6h. Detail: "💡 IDEA — Direct unit tests for `orchestrator-utils.js`".
 12. **JSDoc stubs on the npm-package public API** — 9 `run*` entry points + 5-10 `cli.js`-level helpers. ~3-4h. Detail: "💡 IDEA — JSDoc stubs on the public npm-package API".
 13. **Multi-project size-bucketed token-cost re-measurement + README reframe** — replace the single-project numbers (volatile) with size-bucketed averages (small / medium / large) computed across a real-project sample (anonymized private + named OSS). Last sub-task = README refresh. ~10-12h. Detail: "💡 IDEA — Multi-project size-bucketed token-cost re-measurement".
@@ -516,19 +516,19 @@ Branches stays at 80 because `floor(81.82 − 2) = 79` would lower the existing 
 
 ---
 
-### 💡 IDEA — Bundle-size monitoring on the published npm package (surfaced 2026-05-10 during pre-PR-10 polish triage)
+### ✅ SHIPPED — Bundle-size monitoring (DONE 2026-05-11 / PR #<TBD>)
 
-**Status: IDEA, no milestone assigned.** `kmp-test-runner` ships as a Node CLI (`npm install -g kmp-test-runner`). The published artefact size is currently unmonitored — a refactor that pulls in a heavy transitive dep, or an unintended file inclusion, slips through silently. Today the project is intentionally zero-deps and the artefact is small (<200 KB unpacked), so a regression is observable but not gated.
+**Status: DONE.** Original premise (surfaced 2026-05-10 during pre-PR-10 polish triage) was: `kmp-test-runner` ships as a Node CLI (`npm install -g kmp-test-runner`); the published artefact size was previously unmonitored, so a refactor pulling in heavy transitive deps or unintended files would slip through silently.
 
-**Proposal:** add a CI job `bundle-size` that runs `npm pack --dry-run` and asserts the resolved tarball size is ≤ a budget (e.g. 250 KB compressed). Surface the size in the PR description via a comment for visibility. Optionally use [`size-limit`](https://github.com/ai/size-limit) — but that adds a dev-dep, so vanilla `npm pack` + `wc -c` may be preferable.
+**What this PR does:** new `tools/check-bundle-size.mjs` (pure Node ESM, zero deps, mirrors `tools/decouple-audit.mjs` shape) runs `npm pack --dry-run --json` and fails when the would-be-published tarball or unpacked size exceeds named-constant budgets. New `bundle-size` CI job (always-runs, ubuntu-latest, no matrix) at `.github/workflows/ci.yml` after `decouple-audit`. New `npm run size-check` script in `package.json`. `*.tgz` added to `.gitignore` so accidental `npm pack` runs (without `--dry-run`) don't litter the working tree. README "Quick check before a PR" gains one row.
 
-**Open questions:**
-- Budget number? Run `npm pack` once on develop and set budget at `current_size + 50KB`.
-- Include `bin/` + `lib/` + `scripts/` in the package? Verify `package.json#files` is correct first.
+**Baseline measured 2026-05-11 on develop tip `cd719d0`:** tarball 215_614 bytes (210.6 KB) / unpacked 727_541 bytes (710.5 KB) / 76 files. **Budgets:** `tarball_budget = ceil(baseline × 1.25 / 1024) × 1024` → 270_336 bytes (264 KB tarball) / 910_336 bytes (889 KB unpacked) — +25% headroom rounded up to the next KB. Retunable in the script's named constants.
 
-**Effort:** ~1h (measure + wire CI + README "package size" badge if desired).
+**Cross-platform invocation:** on Windows, Node 20+ refuses to `spawnSync` an `npm.cmd` directly (EINVAL per CVE-2024-27980). The script routes through `cmd.exe /d /s /c` with `windowsVerbatimArguments: true`, mirroring `lib/orchestrators/orchestrator-utils.js#spawnGradle`. Command is entirely static — no injection surface, no `shell: true` (avoids DEP0190).
 
-**Risk:** LOW. Read-only CI check; no code change. May surface that `package.json#files` is too permissive — a finding worth having.
+**Branch-protection follow-up (manual, OWNER action):** add `bundle-size` to the required-status-checks list on both `develop` and `main` (Settings → Branches → Edit rule). Mirrors the pattern from `decouple-audit` (PR #209).
+
+**Verification:** local `node tools/check-bundle-size.mjs` → exit 0. `npm test` → 1295 unchanged. `node tools/decouple-audit.mjs` → exit 0.
 
 ---
 

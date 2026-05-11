@@ -31,6 +31,8 @@ build/
 # Source-of-truth fixture properties — NOT a build artefact; tracked in git.
 !tests/fixtures/kmp-cross-platform-e2e/gradle.properties
 *.log
+# npm pack artefacts when invoked without --dry-run locally
+*.tgz
 .DS_Store
 Thumbs.db
 # Pester -CI emits this NUnit XML at repo root
