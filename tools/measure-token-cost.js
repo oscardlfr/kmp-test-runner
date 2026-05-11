@@ -157,6 +157,15 @@ export function parseArgs(argv) {
     // ANTHROPIC_API_KEY env var and ANTHROPIC_API_KEY_FALLBACK fallback path
     // (one-shot escape hatch for measurement against an arbitrary account).
     anthropicApiKey: null,
+    // projectsConfig: optional path to a JSON list of {path, label, bucket}.
+    // When set (or the KMP_MEASUREMENT_PROJECTS env var or the conventional
+    // gitignored path tools/.measurement-projects.json), the tool runs in
+    // multi-project orchestration mode (PR #13).
+    projectsConfig: null,
+    // anthropicChunkBytes: override for CHUNK_THRESHOLD_BYTES. Lets ops dial
+    // the chunked-counting threshold up or down depending on Anthropic's
+    // observed payload limit. Pass 0 to disable chunking entirely (legacy).
+    anthropicChunkBytes: null,
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--project-root' && argv[i + 1]) { out.projectRoot = argv[++i]; continue; }
@@ -182,13 +191,32 @@ export function parseArgs(argv) {
       out.anthropicApiKey = argv[++i];
       continue;
     }
+    if (argv[i] === '--projects-config' && argv[i + 1]) {
+      out.projectsConfig = argv[++i];
+      continue;
+    }
+    if (argv[i] === '--anthropic-chunk-bytes' && argv[i + 1]) {
+      const n = parseInt(argv[++i], 10);
+      if (!Number.isFinite(n) || n < 0) {
+        console.error(`Error: --anthropic-chunk-bytes must be a non-negative integer (got: ${argv[i]})`);
+        process.exit(2);
+      }
+      out.anthropicChunkBytes = n;
+      continue;
+    }
   }
-  // --project-root is only required for the gradle mode. In cross-model mode
-  // we read existing captures from tools/runs/<feature>/ instead.
-  if (out.anthropicModels.length === 0 && !out.projectRoot) {
+  const envProjects = process.env.KMP_MEASUREMENT_PROJECTS || null;
+  const conventionalConfig = path.join(repoRoot, 'tools', '.measurement-projects.json');
+  const hasMultiProject = !!(out.projectsConfig || envProjects || existsSync(conventionalConfig));
+  // --project-root is only required for single-project gradle mode. Cross-model
+  // mode reads existing captures; multi-project mode resolves projects from the
+  // config sources above (CLI > env > convention path).
+  if (out.anthropicModels.length === 0 && !out.projectRoot && !hasMultiProject) {
     console.error('Usage: node tools/measure-token-cost.js --project-root <path> [--feature parallel|coverage|changed|benchmark|info|describe] [--module-filter <pat>] [--test-task <name>] [--benchmark-task <name>] [--changed-range <rev>] [--runs N]');
     console.error('       node tools/measure-token-cost.js [--feature <name>] --anthropic-models <csv> [--anthropic-api-key <key>]   # re-tokenise existing captures');
+    console.error('       node tools/measure-token-cost.js --projects-config <path>   # multi-project size-bucketed orchestration (PR #13)');
     console.error('       Reads ANTHROPIC_API_KEY (primary) and ANTHROPIC_API_KEY_FALLBACK (auto-fallback on 401) from env.');
+    console.error('       Reads KMP_MEASUREMENT_PROJECTS (newline-separated path|label|bucket) as a multi-project config alternative.');
     process.exit(2);
   }
   if (out.projectRoot) out.projectRoot = path.resolve(out.projectRoot);
@@ -427,16 +455,12 @@ function simplifyAnthropicError(err) {
   return String(err);
 }
 
-export async function countTokensAnthropic(client, model, text, fallbackClient = null) {
-  // Wraps client.messages.countTokens in a per-call try/catch so one model's
-  // failure (e.g. a typo'd model id) doesn't abort the whole run. The SDK
-  // applies its own retry policy for 429/5xx before throwing.
-  //
-  // When `fallbackClient` is provided AND the primary client returns 401
-  // (auth_failed), retry once on the fallback. Use case: the user has two
-  // Anthropic accounts (ANTHROPIC_API_KEY + ANTHROPIC_API_KEY_FALLBACK) and
-  // one of them has been rotated/revoked. The fallback path is purely
-  // additive — when not provided, behaviour is identical to the original.
+// Conservative cap below Anthropic's count_tokens payload limit. Empirically,
+// requests above ~4 MB UTF-8 trip 413 too_large; 3.5 MiB leaves headroom.
+// Override via opts.chunkBytes (or the --anthropic-chunk-bytes CLI flag).
+export const CHUNK_THRESHOLD_BYTES = 3.5 * 1024 * 1024;
+
+async function _countTokensAnthropicSingle(client, model, text, fallbackClient) {
   try {
     const r = await client.messages.countTokens({
       model,
@@ -464,6 +488,409 @@ export async function countTokensAnthropic(client, model, text, fallbackClient =
     }
     return { ok: false, error: errCode };
   }
+}
+
+// Splits a payload into chunks of at most `opts.chunkBytes` UTF-8 bytes. Tries
+// file-record boundaries (`\n=== <path> ===\n`) first — these appear in
+// approach-A captures (concatenated test/coverage report files) and yield
+// semantically-clean splits. Falls back to a byte-window slice when no
+// boundaries are present (or only 1).
+//
+// Used by the chunked path of countTokensAnthropic to recover Anthropic-side
+// token counts on payloads that would otherwise overflow count_tokens with
+// a 413. BPE tokenisers are approximately additive across chunks (≤1 token
+// of boundary error per chunk → <0.001% error at measurement scale).
+export function splitForAnthropic(text, opts = {}) {
+  const target = opts.chunkBytes ?? CHUNK_THRESHOLD_BYTES;
+  const safeText = text || '';
+  if (Buffer.byteLength(safeText, 'utf8') <= target) {
+    return [safeText];
+  }
+  const sepRe = /\n=== [^\n]+ ===\n/g;
+  const matches = [...safeText.matchAll(sepRe)];
+  if (matches.length >= 2) {
+    const out = [];
+    let current = '';
+    let lastEnd = 0;
+    for (const m of matches) {
+      const idx = m.index;
+      const segment = safeText.slice(lastEnd, idx);
+      lastEnd = idx;
+      if (current && Buffer.byteLength(current + segment, 'utf8') > target) {
+        out.push(current);
+        current = segment;
+      } else {
+        current += segment;
+      }
+    }
+    const tail = safeText.slice(lastEnd);
+    if (current && Buffer.byteLength(current + tail, 'utf8') > target) {
+      out.push(current);
+      out.push(tail);
+    } else {
+      out.push(current + tail);
+    }
+    const filtered = out.filter((c) => c.length > 0);
+    if (filtered.length >= 2) return filtered;
+    // Fall through: boundaries didn't produce multiple chunks (single record
+    // larger than target). Use the byte-window fallback below.
+  }
+  const out = [];
+  let i = 0;
+  while (i < safeText.length) {
+    let bytes = 0;
+    let j = i;
+    while (j < safeText.length && bytes < target) {
+      bytes += Buffer.byteLength(safeText[j], 'utf8');
+      j++;
+    }
+    out.push(safeText.slice(i, j));
+    i = j;
+  }
+  return out;
+}
+
+export async function countTokensAnthropic(client, model, text, fallbackClient = null, opts = {}) {
+  // Wraps client.messages.countTokens in a per-call try/catch so one model's
+  // failure (e.g. a typo'd model id) doesn't abort the whole run. The SDK
+  // applies its own retry policy for 429/5xx before throwing.
+  //
+  // When `fallbackClient` is provided AND the primary client returns 401
+  // (auth_failed), retry once on the fallback. Use case: the user has two
+  // Anthropic accounts (ANTHROPIC_API_KEY + ANTHROPIC_API_KEY_FALLBACK) and
+  // one of them has been rotated/revoked.
+  //
+  // When the payload exceeds CHUNK_THRESHOLD_BYTES (or `opts.chunkBytes`), the
+  // text is split into chunks (file-record boundaries when present, byte-window
+  // fallback otherwise) and counted per-chunk. The summed `input_tokens` is
+  // returned with `chunked: true` and `chunks: <n>`. On any chunk failure the
+  // call short-circuits with `failedChunkIndex: i` so partial counts don't
+  // silently pollute aggregates. This recovers Anthropic-side measurements on
+  // payloads that would otherwise return 413 too_large (PR #13, 2026-05-12).
+  const threshold = opts.chunkBytes ?? CHUNK_THRESHOLD_BYTES;
+  const safeText = text || '';
+  if (Buffer.byteLength(safeText, 'utf8') <= threshold) {
+    return _countTokensAnthropicSingle(client, model, safeText, fallbackClient);
+  }
+  const chunks = splitForAnthropic(safeText, { chunkBytes: threshold });
+  let total = 0;
+  let usedFallback = false;
+  for (let i = 0; i < chunks.length; i++) {
+    const r = await _countTokensAnthropicSingle(client, model, chunks[i], fallbackClient);
+    if (!r.ok) {
+      const out = {
+        ok: false,
+        error: r.error,
+        chunked: true,
+        chunks: chunks.length,
+        failedChunkIndex: i,
+      };
+      if (r.usedFallback || usedFallback) out.usedFallback = true;
+      return out;
+    }
+    total += r.tokens;
+    if (r.usedFallback) usedFallback = true;
+  }
+  const out = { ok: true, tokens: total, chunked: true, chunks: chunks.length };
+  if (usedFallback) out.usedFallback = true;
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Multi-project orchestration (PR #13 — size-bucketed token-cost re-measurement)
+// ---------------------------------------------------------------------------
+
+const VALID_BUCKETS = ['small', 'medium', 'large'];
+
+function validateProjectEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    throw new Error('project entry must be an object');
+  }
+  for (const f of ['path', 'label', 'bucket']) {
+    if (typeof entry[f] !== 'string' || !entry[f]) {
+      throw new Error(`project entry is missing ${f}`);
+    }
+  }
+  if (!VALID_BUCKETS.includes(entry.bucket)) {
+    throw new Error(`bucket must be one of ${VALID_BUCKETS.join('|')} (got ${entry.bucket})`);
+  }
+  return { path: entry.path, label: entry.label, bucket: entry.bucket };
+}
+
+export function parseProjectsConfigJson(jsonText) {
+  const parsed = JSON.parse(jsonText);
+  if (!Array.isArray(parsed)) {
+    throw new Error('expected array of {path, label, bucket}');
+  }
+  return parsed.map(validateProjectEntry);
+}
+
+export function parseProjectsConfigEnv(envValue) {
+  return envValue
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split('|');
+      if (parts.length !== 3) {
+        throw new Error(`bad line (expected path|label|bucket): ${line}`);
+      }
+      return validateProjectEntry({
+        path: parts[0].trim(),
+        label: parts[1].trim(),
+        bucket: parts[2].trim(),
+      });
+    });
+}
+
+// Resolves a projects list from the first available source. Precedence:
+//   1. cliPath        — explicit --projects-config <path>
+//   2. envValue       — KMP_MEASUREMENT_PROJECTS env var (newline-separated)
+//   3. conventionalPath — gitignored tools/.measurement-projects.json
+// Returns null when no source resolves; the caller decides whether that's an
+// error. Per the privacy hard rule (BACKLOG L608, 2026-05-11), the project
+// list MUST come from one of these sources — never a hardcoded array.
+export function resolveProjectsConfig({ cliPath, envValue, conventionalPath } = {}) {
+  if (cliPath) {
+    return parseProjectsConfigJson(readFileSync(cliPath, 'utf8'));
+  }
+  if (envValue) {
+    return parseProjectsConfigEnv(envValue);
+  }
+  if (conventionalPath && existsSync(conventionalPath)) {
+    return parseProjectsConfigJson(readFileSync(conventionalPath, 'utf8'));
+  }
+  return null;
+}
+
+// Bucket boundaries locked 2026-05-11 (BACKLOG L601). 1-5 small / 6-20 medium
+// / 21+ large. Shared with classifyProjectModulesCount() callers so all
+// committed outputs use the same labels.
+export function classifyBucket(moduleCount) {
+  if (moduleCount <= 5) return 'small';
+  if (moduleCount <= 20) return 'medium';
+  return 'large';
+}
+
+// Per-bucket aggregator: extends the per-feature `summarize()` shape with
+// median + spread (max/min ratio expressed as a percentage). The README's
+// 3-row bucket table consumes these fields directly.
+export function summarizeBucket(values) {
+  if (!values || values.length === 0) {
+    return { mean: 0, median: 0, min: 0, max: 0, spread: 0 };
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const mean = sorted.reduce((a, b) => a + b, 0) / sorted.length;
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
+  const min = sorted[0];
+  const max = sorted[sorted.length - 1];
+  const spread = min > 0 ? Math.round(((max - min) / min) * 100) : 0;
+  return { mean: Math.round(mean), median, min, max, spread };
+}
+
+// Aggregates per-project measurements into the bucket × feature × approach
+// shape consumed by the README 3-row table. Input shape:
+//   [{ label, bucket, perFeature: { <feat>: { A: {mean}, B: {mean}, C: {mean} }, ... } }, ...]
+// (The per-approach fields just need a numeric `mean` — projects that ran
+// multiple runs already pre-aggregated via summarize().) Output shape:
+//   { small: { sample: [...labels], byFeature: { <feat>: {
+//       approaches: { A|B|C: summarizeBucket(values across projects) },
+//       ratios: { A_to_C: summarizeBucket(per-project A/C ratios) }
+//     }}}, medium: {...}, large: {...} }
+// Approaches that a feature skips (e.g. info/describe skip A) yield empty
+// summaries — the formatter renders them as `-`.
+export function aggregateByBucket(perProjectResults) {
+  const out = {
+    small: { sample: [], byFeature: {} },
+    medium: { sample: [], byFeature: {} },
+    large: { sample: [], byFeature: {} },
+  };
+  for (const project of perProjectResults || []) {
+    const bucket = project.bucket;
+    if (!out[bucket]) continue;
+    out[bucket].sample.push(project.label);
+    for (const [feature, approaches] of Object.entries(project.perFeature || {})) {
+      if (!out[bucket].byFeature[feature]) {
+        out[bucket].byFeature[feature] = { _raw: { A: [], B: [], C: [], ratios_A_C: [] } };
+      }
+      const slot = out[bucket].byFeature[feature]._raw;
+      for (const a of ['A', 'B', 'C']) {
+        const v = approaches?.[a]?.mean;
+        if (typeof v === 'number') slot[a].push(v);
+      }
+      const aMean = approaches?.A?.mean;
+      const cMean = approaches?.C?.mean;
+      if (typeof aMean === 'number' && typeof cMean === 'number' && cMean > 0) {
+        slot.ratios_A_C.push(aMean / cMean);
+      }
+    }
+  }
+  for (const bucket of VALID_BUCKETS) {
+    for (const feature of Object.keys(out[bucket].byFeature)) {
+      const raw = out[bucket].byFeature[feature]._raw;
+      out[bucket].byFeature[feature] = {
+        approaches: {
+          A: summarizeBucket(raw.A),
+          B: summarizeBucket(raw.B),
+          C: summarizeBucket(raw.C),
+        },
+        ratios: { A_to_C: summarizeBucket(raw.ratios_A_C) },
+      };
+    }
+  }
+  return out;
+}
+
+function fmtRatio(n) {
+  if (!Number.isFinite(n) || n <= 0) return '-';
+  if (n >= 1000) return Math.round(n).toLocaleString('en-US') + '×';
+  return n.toFixed(1) + '×';
+}
+
+// Renders the bucketed aggregate as a markdown report. Caller writes to disk
+// at tools/runs/multi-project-token-cost-<date>/aggregate-<date>.md. The
+// README's 3-row bucket table cross-links to this file as the underlying
+// data. Anonymized labels (private-small-A etc.) MUST be used by the caller
+// — formatAggregateReport does NOT scrub identifiers.
+export function formatAggregateReport(byBucket, opts = {}) {
+  const date = opts.date || new Date().toISOString().slice(0, 10);
+  const features = opts.features || [];
+  const lines = [];
+  lines.push(`# Multi-project token-cost aggregate (${date})`);
+  lines.push('');
+  lines.push('Token-cost reduction scales with project size. The table below shows median A→C ratio per bucket per feature, computed across the sample listed under each bucket.');
+  lines.push('');
+  lines.push('| Bucket | Sample (n) | Projects |');
+  lines.push('|--------|-----------:|----------|');
+  for (const bucket of VALID_BUCKETS) {
+    const sample = byBucket[bucket]?.sample || [];
+    const projectsList = sample.length ? sample.join(', ') : '_(empty)_';
+    lines.push(`| ${bucket} | ${sample.length} | ${projectsList} |`);
+  }
+  lines.push('');
+  for (const feature of features) {
+    lines.push(`## Feature: ${feature}`);
+    lines.push('');
+    lines.push('| Bucket | A median | C median | A→C median | A→C range | A→C spread |');
+    lines.push('|--------|---------:|---------:|-----------:|-----------|-----------:|');
+    for (const bucket of VALID_BUCKETS) {
+      const slot = byBucket[bucket]?.byFeature?.[feature];
+      if (!slot) {
+        lines.push(`| ${bucket} | - | - | - | - | - |`);
+        continue;
+      }
+      const a = slot.approaches.A;
+      const c = slot.approaches.C;
+      const r = slot.ratios.A_to_C;
+      const aTok = a.median > 0 ? a.median.toLocaleString('en-US') : '-';
+      const cTok = c.median > 0 ? c.median.toLocaleString('en-US') : '-';
+      const rMed = fmtRatio(r.median);
+      const rRange = r.min > 0 && r.max > 0 ? `${fmtRatio(r.min)} – ${fmtRatio(r.max)}` : '-';
+      const rSpread = r.spread > 0 ? `${r.spread}%` : '-';
+      lines.push(`| ${bucket} | ${aTok} | ${cTok} | ${rMed} | ${rRange} | ${rSpread} |`);
+    }
+    lines.push('');
+  }
+  lines.push('---');
+  lines.push(`Generated by \`tools/measure-token-cost.js --projects-config <path>\` on ${date}.`);
+  lines.push('Per-project per-run captures are gitignored under `per-project/<label>/<feature>/{A,B,C}-run-N.txt`.');
+  return lines.join('\n') + '\n';
+}
+
+// Per-project per-feature measurement loop. Returns the same shape as the
+// per-approach object built inside runGradleMode, plus a `files` array of
+// captured filenames. Side effects: writes captures into `runsDir`. Console
+// output is intentionally suppressed — multi-project mode prints its own
+// progress; single-project mode (runGradleMode) calls this then prints the
+// detail tables.
+function measureFeatureForProject(opts, runsDir) {
+  if (!existsSync(runsDir)) mkdirSync(runsDir, { recursive: true });
+  const featureCfg = FEATURES[opts.feature];
+  const approaches = [];
+  if (!featureCfg.skipApproachA) {
+    approaches.push({ id: 'A', label: `raw gradle + ${opts.feature} report parsing`, run: () => runApproachA(opts) });
+  }
+  approaches.push({ id: 'B', label: `kmp-test ${opts.feature} (markdown)`, run: () => runApproachB(opts) });
+  approaches.push({ id: 'C', label: `kmp-test ${opts.feature} --json`,     run: () => runApproachC(opts) });
+
+  const results = {};
+  for (const a of approaches) {
+    const tokens = [];
+    const bytes = [];
+    const durations = [];
+    const files = [];
+    for (let r = 1; r <= opts.runs; r++) {
+      const fname = `${a.id}-run${r}.txt`;
+      const t0 = Date.now();
+      const output = a.run();
+      const elapsed = Date.now() - t0;
+      const outFile = path.join(runsDir, fname);
+      writeFileSync(outFile, output, 'utf8');
+      const tok = countTokensCl100k(output);
+      tokens.push(tok);
+      bytes.push(Buffer.byteLength(output, 'utf8'));
+      durations.push(elapsed);
+      files.push(outFile);
+    }
+    results[a.id] = {
+      label: a.label,
+      tokens: summarize(tokens),
+      bytes: summarize(bytes),
+      duration_ms: summarize(durations),
+      files,
+    };
+  }
+  return results;
+}
+
+// Multi-project orchestrator. Iterates over `projects` × features, captures
+// per-(project, feature) per-approach token counts, and writes the bucketed
+// aggregate markdown. Heavy I/O — invoked live during wet measurement
+// (Sub-step 3 of PR #13). The caller is responsible for resolving project
+// paths (resolveProjectsConfig) before invocation.
+//
+// Returns: { exitCode, aggregateFile, byBucket, perProjectResults, outRoot }
+export async function runMultiProjectMode(opts, projects, sink = console) {
+  const date = new Date().toISOString().slice(0, 10);
+  const outRoot = path.join(repoRoot, 'tools', 'runs', `multi-project-token-cost-${date}`);
+  mkdirSync(outRoot, { recursive: true });
+  const features = opts.features && opts.features.length
+    ? opts.features
+    : VALID_FEATURES;
+  const perProjectResults = [];
+  for (const project of projects) {
+    sink.error?.(`[multi] project: ${project.label} (bucket ${project.bucket}) — ${features.length} features`);
+    const projectResult = { label: project.label, bucket: project.bucket, perFeature: {} };
+    for (const feature of features) {
+      const featureRunsDirOut = path.join(outRoot, 'per-project', project.label, feature);
+      try {
+        const approachResults = measureFeatureForProject(
+          { ...opts, projectRoot: project.path, feature },
+          featureRunsDirOut,
+        );
+        projectResult.perFeature[feature] = {
+          A: approachResults.A?.tokens || { mean: 0 },
+          B: approachResults.B?.tokens || { mean: 0 },
+          C: approachResults.C?.tokens || { mean: 0 },
+        };
+        sink.error?.(`[multi]   ${feature}: A=${approachResults.A?.tokens?.mean ?? '-'} B=${approachResults.B?.tokens?.mean ?? '-'} C=${approachResults.C?.tokens?.mean ?? '-'}`);
+      } catch (err) {
+        sink.error?.(`[multi]   ${feature}: ERROR ${err.message}`);
+        projectResult.perFeature[feature] = { A: { mean: 0 }, B: { mean: 0 }, C: { mean: 0 }, error: err.message };
+      }
+    }
+    perProjectResults.push(projectResult);
+  }
+  const byBucket = aggregateByBucket(perProjectResults);
+  const md = formatAggregateReport(byBucket, { date, features });
+  const aggregateFile = path.join(outRoot, `aggregate-${date}.md`);
+  writeFileSync(aggregateFile, md, 'utf8');
+  sink.log?.('');
+  sink.log?.(`Aggregate written: ${path.relative(repoRoot, aggregateFile).replace(/\\/g, '/')}`);
+  return { exitCode: 0, aggregateFile, byBucket, perProjectResults, outRoot };
 }
 
 export function formatCrossModelTable(rows, models) {
@@ -523,6 +950,11 @@ export async function runCrossModelMode(opts, sdkFactory, sink = console, runsDi
   }
   const client = sdkFactory();
   const fallbackClient = fallbackSdkFactory ? fallbackSdkFactory() : null;
+  // Pass through the optional --anthropic-chunk-bytes override; the chunked
+  // path activates automatically when the payload exceeds the threshold.
+  const countOpts = typeof opts.anthropicChunkBytes === 'number'
+    ? { chunkBytes: opts.anthropicChunkBytes }
+    : {};
   let sawFallbackUse = false;
   const rows = [];
   for (const cap of captures) {
@@ -530,12 +962,15 @@ export async function runCrossModelMode(opts, sdkFactory, sink = console, runsDi
     const perModel = {};
     for (const model of opts.anthropicModels) {
       sink.error(`[count] ${cap.file} × ${model}…`);
-      const result = await countTokensAnthropic(client, model, cap.text, fallbackClient);
+      const result = await countTokensAnthropic(client, model, cap.text, fallbackClient, countOpts);
       if (result.usedFallback && !sawFallbackUse) {
         sink.error('[note] primary ANTHROPIC_API_KEY returned 401; using ANTHROPIC_API_KEY_FALLBACK for the rest of this run');
         sawFallbackUse = true;
       }
-      perModel[model] = result.ok ? result.tokens : `[error: ${result.error}]`;
+      if (result.ok && result.chunked) {
+        sink.error(`[chunk] ${cap.file} × ${model}: ${result.chunks} chunks, sum ${result.tokens} tokens`);
+      }
+      perModel[model] = result.ok ? result.tokens : `[error: ${result.error}${result.chunked ? ` chunk ${result.failedChunkIndex}/${result.chunks}` : ''}]`;
     }
     rows.push({ approach: cap.approach, file: cap.file, cl100k, perModel });
   }
@@ -596,45 +1031,15 @@ export async function runCrossModelMode(opts, sdkFactory, sink = console, runsDi
 
 function runGradleMode(opts) {
   const runsDir = featureRunsDir(opts.feature);
-  if (!existsSync(runsDir)) mkdirSync(runsDir, { recursive: true });
-
   const featureLabel = opts.feature;
-  const featureCfg = FEATURES[opts.feature];
-  // Approach A skipped for kmp-test-only subcommands (info, describe) — they
-  // have no raw-gradle equivalent, so the agent baseline is just B vs C.
-  const approaches = [];
-  if (!featureCfg.skipApproachA) {
-    approaches.push({ id: 'A', label: `raw gradle + ${featureLabel} report parsing`, run: () => runApproachA(opts) });
-  }
-  approaches.push({ id: 'B', label: `kmp-test ${featureLabel} (markdown)`, run: () => runApproachB(opts) });
-  approaches.push({ id: 'C', label: `kmp-test ${featureLabel} --json`,     run: () => runApproachC(opts) });
-
-  const results = {};
-  for (const a of approaches) {
-    const tokens = [];
-    const bytes = [];
-    const durations = [];
-    for (let r = 1; r <= opts.runs; r++) {
-      const fname = `${a.id}-run${r}.txt`;
-      const t0 = Date.now();
-      const output = a.run();
-      const elapsed = Date.now() - t0;
-      const outFile = path.join(runsDir, fname);
-      writeFileSync(outFile, output, 'utf8');
-      const tok = countTokensCl100k(output);
-      tokens.push(tok);
-      bytes.push(Buffer.byteLength(output, 'utf8'));
-      durations.push(elapsed);
-      console.error(`[run] ${a.id} run ${r}: ${tok} tokens, ${Buffer.byteLength(output, 'utf8')} bytes, ${(elapsed/1000).toFixed(1)}s → ${path.relative(repoRoot, outFile).replace(/\\/g, '/')}`);
+  const results = measureFeatureForProject(opts, runsDir);
+  for (const id of ['A', 'B', 'C']) {
+    const r = results[id];
+    if (!r) continue;
+    for (const f of r.files) {
+      console.error(`[run] ${id} → ${path.relative(repoRoot, f).replace(/\\/g, '/')}`);
     }
-    results[a.id] = {
-      label: a.label,
-      tokens: summarize(tokens),
-      bytes: summarize(bytes),
-      duration_ms: summarize(durations),
-    };
   }
-
   const ratio = (a, b) => b > 0 ? (a / b).toFixed(1) + 'x' : 'n/a';
   console.log('');
   console.log(`# Token-cost measurement (${opts.runs} run${opts.runs === 1 ? '' : 's'}) — feature: ${featureLabel}`);
@@ -646,10 +1051,11 @@ function runGradleMode(opts) {
   console.log('');
   console.log('| Approach | Tokens (mean) | Bytes (mean) | Duration (mean) | vs C |');
   console.log('|----------|--------------:|-------------:|----------------:|-----:|');
-  for (const a of approaches) {
-    const r = results[a.id];
-    const vsC = ratio(r.tokens.mean, results.C.tokens.mean);
-    console.log(`| **${a.id}** — ${r.label} | ${fmt(r.tokens.mean)} | ${fmt(r.bytes.mean)} | ${fmt(Math.round(r.duration_ms.mean / 1000))}s | ${vsC} |`);
+  const orderedIds = ['A', 'B', 'C'].filter((id) => results[id]);
+  for (const id of orderedIds) {
+    const r = results[id];
+    const vsC = ratio(r.tokens.mean, results.C?.tokens?.mean || 0);
+    console.log(`| **${id}** — ${r.label} | ${fmt(r.tokens.mean)} | ${fmt(r.bytes.mean)} | ${fmt(Math.round(r.duration_ms.mean / 1000))}s | ${vsC} |`);
   }
   console.log('');
   if (opts.runs > 1) {
@@ -657,9 +1063,9 @@ function runGradleMode(opts) {
     console.log('');
     console.log('| Approach | Tokens std | min | max |');
     console.log('|----------|-----------:|----:|----:|');
-    for (const a of approaches) {
-      const r = results[a.id];
-      console.log(`| ${a.id} | ${fmt(r.tokens.std)} | ${fmt(r.tokens.min)} | ${fmt(r.tokens.max)} |`);
+    for (const id of orderedIds) {
+      const r = results[id];
+      console.log(`| ${id} | ${fmt(r.tokens.std)} | ${fmt(r.tokens.min)} | ${fmt(r.tokens.max)} |`);
     }
   }
   console.log('');
@@ -668,6 +1074,24 @@ function runGradleMode(opts) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
+  // Multi-project orchestration mode (PR #13). Wins over single-project gradle
+  // mode when any of the 3 projects-config sources resolve to a non-empty list.
+  // Cross-model mode still wins over multi-project when --anthropic-models is
+  // also set — that combination would re-tokenise existing single-project
+  // captures, not multi-project. Multi-project + cross-model is a v0.10+ idea.
+  const conventionalConfig = path.join(repoRoot, 'tools', '.measurement-projects.json');
+  const projects = opts.anthropicModels.length === 0
+    ? resolveProjectsConfig({
+        cliPath: opts.projectsConfig,
+        envValue: process.env.KMP_MEASUREMENT_PROJECTS || null,
+        conventionalPath: conventionalConfig,
+      })
+    : null;
+  if (projects && projects.length > 0) {
+    const result = await runMultiProjectMode(opts, projects, console);
+    process.exit(result.exitCode);
+  }
+
   if (opts.anthropicModels.length > 0) {
     // Key resolution precedence:
     //   1. --anthropic-api-key <key>    — CLI override (overrides both env vars)

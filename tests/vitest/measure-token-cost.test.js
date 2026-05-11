@@ -20,6 +20,15 @@ import {
   featureRunsDir,
   buildApproachAInvocation,
   buildKmpTestCliInvocation,
+  parseProjectsConfigJson,
+  parseProjectsConfigEnv,
+  resolveProjectsConfig,
+  classifyBucket,
+  summarizeBucket,
+  splitForAnthropic,
+  aggregateByBucket,
+  formatAggregateReport,
+  CHUNK_THRESHOLD_BYTES,
 } from '../../tools/measure-token-cost.js';
 
 const countTokensMock = vi.fn();
@@ -731,5 +740,334 @@ describe('runCrossModelMode (v0.4 — derives runsDir from opts.feature)', () =>
     );
     const stdout = log.mock.calls.map((c) => c[0]).join('\n');
     expect(stdout).toMatch(/feature: parallel/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-project orchestration (PR #13 — size-bucketed token-cost re-measurement)
+// ---------------------------------------------------------------------------
+
+describe('parseProjectsConfigJson', () => {
+  it('parses an array of {path, label, bucket} entries', () => {
+    const json = JSON.stringify([
+      { path: '/tmp/foo', label: 'KaMPKit', bucket: 'small' },
+      { path: '/tmp/bar', label: 'NowInAndroid', bucket: 'large' },
+    ]);
+    expect(parseProjectsConfigJson(json)).toEqual([
+      { path: '/tmp/foo', label: 'KaMPKit', bucket: 'small' },
+      { path: '/tmp/bar', label: 'NowInAndroid', bucket: 'large' },
+    ]);
+  });
+  it('throws when payload is not an array', () => {
+    expect(() => parseProjectsConfigJson('{}')).toThrow(/expected array/);
+  });
+  it('throws when an entry is missing a required field', () => {
+    expect(() =>
+      parseProjectsConfigJson(JSON.stringify([{ path: '/x', label: 'x' }]))
+    ).toThrow(/missing bucket/);
+  });
+  it('throws when bucket is not one of small|medium|large', () => {
+    expect(() =>
+      parseProjectsConfigJson(JSON.stringify([{ path: '/x', label: 'x', bucket: 'huge' }]))
+    ).toThrow(/bucket must be/);
+  });
+});
+
+describe('parseProjectsConfigEnv', () => {
+  it('parses newline-separated path|label|bucket entries', () => {
+    const env = '/tmp/a|KaMPKit|small\n/tmp/b|Confetti|medium';
+    expect(parseProjectsConfigEnv(env)).toEqual([
+      { path: '/tmp/a', label: 'KaMPKit', bucket: 'small' },
+      { path: '/tmp/b', label: 'Confetti', bucket: 'medium' },
+    ]);
+  });
+  it('skips empty / whitespace lines', () => {
+    const env = '\n/tmp/a|x|small\n   \n/tmp/b|y|large\n\n';
+    expect(parseProjectsConfigEnv(env).length).toBe(2);
+  });
+  it('throws when a line has the wrong number of fields', () => {
+    expect(() => parseProjectsConfigEnv('/tmp/a|just-label')).toThrow(/bad line/);
+  });
+  it('throws when a line\'s bucket is invalid', () => {
+    expect(() => parseProjectsConfigEnv('/tmp/a|x|tiny')).toThrow(/bucket must be/);
+  });
+});
+
+describe('resolveProjectsConfig', () => {
+  let tmp;
+  afterEach(() => {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+    tmp = null;
+  });
+
+  it('reads from cliPath when provided (highest precedence)', () => {
+    tmp = mkdtempSync(path.join(tmpdir(), 'kmp-projects-'));
+    const cli = path.join(tmp, 'cli.json');
+    const conv = path.join(tmp, 'conv.json');
+    writeFileSync(cli, JSON.stringify([{ path: '/c', label: 'cli', bucket: 'small' }]));
+    writeFileSync(conv, JSON.stringify([{ path: '/x', label: 'conv', bucket: 'large' }]));
+    const env = '/e|env|medium';
+    const out = resolveProjectsConfig({ cliPath: cli, envValue: env, conventionalPath: conv });
+    expect(out).toEqual([{ path: '/c', label: 'cli', bucket: 'small' }]);
+  });
+
+  it('falls back to envValue when cliPath omitted', () => {
+    const env = '/e|env|medium';
+    const out = resolveProjectsConfig({ envValue: env });
+    expect(out).toEqual([{ path: '/e', label: 'env', bucket: 'medium' }]);
+  });
+
+  it('falls back to conventionalPath when cli + env both omitted and file exists', () => {
+    tmp = mkdtempSync(path.join(tmpdir(), 'kmp-projects-'));
+    const conv = path.join(tmp, 'conv.json');
+    writeFileSync(conv, JSON.stringify([{ path: '/x', label: 'conv', bucket: 'large' }]));
+    const out = resolveProjectsConfig({ conventionalPath: conv });
+    expect(out).toEqual([{ path: '/x', label: 'conv', bucket: 'large' }]);
+  });
+
+  it('returns null when no source resolves', () => {
+    expect(resolveProjectsConfig({})).toBeNull();
+    expect(resolveProjectsConfig({ conventionalPath: '/nonexistent.json' })).toBeNull();
+  });
+});
+
+describe('classifyBucket', () => {
+  it('returns small for 1..5 modules', () => {
+    expect(classifyBucket(1)).toBe('small');
+    expect(classifyBucket(5)).toBe('small');
+  });
+  it('returns medium for 6..20 modules', () => {
+    expect(classifyBucket(6)).toBe('medium');
+    expect(classifyBucket(20)).toBe('medium');
+  });
+  it('returns large for 21+ modules', () => {
+    expect(classifyBucket(21)).toBe('large');
+    expect(classifyBucket(500)).toBe('large');
+  });
+});
+
+describe('summarizeBucket', () => {
+  it('returns zeros for an empty array', () => {
+    expect(summarizeBucket([])).toEqual({ mean: 0, median: 0, min: 0, max: 0, spread: 0 });
+  });
+  it('computes median for odd-length arrays', () => {
+    expect(summarizeBucket([1, 3, 9]).median).toBe(3);
+  });
+  it('computes median as the average of the two middle values for even-length arrays', () => {
+    expect(summarizeBucket([1, 3, 5, 9]).median).toBe(4); // (3 + 5) / 2
+  });
+  it('computes spread as (max - min) / min * 100, rounded', () => {
+    // values [10, 100] -> max-min=90, min=10 -> 900%
+    expect(summarizeBucket([10, 100]).spread).toBe(900);
+  });
+  it('computes spread as 0 when min === max', () => {
+    expect(summarizeBucket([7, 7, 7]).spread).toBe(0);
+  });
+  it('preserves min and max', () => {
+    const s = summarizeBucket([5, 1, 9, 3, 7]);
+    expect(s.min).toBe(1);
+    expect(s.max).toBe(9);
+  });
+});
+
+describe('splitForAnthropic', () => {
+  it('returns a single-element array when input is small', () => {
+    expect(splitForAnthropic('hello', { chunkBytes: 1024 })).toEqual(['hello']);
+  });
+  it('returns a single-element array for empty / null input', () => {
+    expect(splitForAnthropic('', { chunkBytes: 1024 })).toEqual(['']);
+    expect(splitForAnthropic(null, { chunkBytes: 1024 })).toEqual(['']);
+  });
+  it('splits at file-record boundaries when present', () => {
+    // Build a payload with 3 file records, each ~600 bytes; threshold 1000
+    // forces at least one split, and the split must land on a `\n=== ===\n`
+    // boundary (not mid-content).
+    const blob = (n) => 'x'.repeat(600);
+    const text =
+      '\n=== /a.html ===\n' + blob() +
+      '\n=== /b.html ===\n' + blob() +
+      '\n=== /c.html ===\n' + blob();
+    const chunks = splitForAnthropic(text, { chunkBytes: 1000 });
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    // Reassembled chunks must exactly equal the input — no character lost.
+    expect(chunks.join('')).toBe(text);
+    // Every chunk except possibly the first must start with the boundary marker.
+    for (let i = 1; i < chunks.length; i++) {
+      expect(chunks[i].startsWith('\n=== ')).toBe(true);
+    }
+  });
+  it('falls back to byte-window slicing when no boundaries are present', () => {
+    const text = 'a'.repeat(5000);
+    const chunks = splitForAnthropic(text, { chunkBytes: 1500 });
+    expect(chunks.length).toBeGreaterThanOrEqual(3);
+    expect(chunks.join('')).toBe(text);
+    for (const c of chunks.slice(0, -1)) {
+      expect(Buffer.byteLength(c, 'utf8')).toBeLessThanOrEqual(1500);
+    }
+  });
+  it('uses the default CHUNK_THRESHOLD_BYTES when chunkBytes opt is omitted', () => {
+    // Just exercise the default-path; payload < default threshold -> 1 chunk.
+    expect(splitForAnthropic('small payload')).toEqual(['small payload']);
+    expect(typeof CHUNK_THRESHOLD_BYTES).toBe('number');
+    expect(CHUNK_THRESHOLD_BYTES).toBeGreaterThan(1024 * 1024); // > 1 MB
+  });
+});
+
+describe('countTokensAnthropic — chunked path for oversized payloads', () => {
+  it('uses single-call path when input <= chunk threshold (regression guard)', async () => {
+    const mock = vi.fn().mockResolvedValueOnce({ input_tokens: 11 });
+    const client = { messages: { countTokens: mock } };
+    const r = await countTokensAnthropic(client, 'claude-opus-4-7', 'tiny');
+    expect(r).toEqual({ ok: true, tokens: 11 });
+    expect(r.chunked).toBeUndefined();
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+
+  it('splits into N chunks and returns the summed token count when input > threshold', async () => {
+    // Force the chunked path by setting a tiny threshold via opts.
+    const mock = vi.fn()
+      .mockResolvedValueOnce({ input_tokens: 100 })
+      .mockResolvedValueOnce({ input_tokens: 250 })
+      .mockResolvedValueOnce({ input_tokens: 50 });
+    const client = { messages: { countTokens: mock } };
+    const text = 'x'.repeat(3000); // 3000 bytes; threshold 1000 -> 3 chunks
+    const r = await countTokensAnthropic(client, 'claude-opus-4-7', text, null, { chunkBytes: 1000 });
+    expect(r.ok).toBe(true);
+    expect(r.tokens).toBe(400); // 100 + 250 + 50
+    expect(r.chunked).toBe(true);
+    expect(r.chunks).toBe(3);
+    expect(mock).toHaveBeenCalledTimes(3);
+  });
+
+  it('marks the result as failed and stops chunking when any chunk errs', async () => {
+    const mock = vi.fn()
+      .mockResolvedValueOnce({ input_tokens: 100 })
+      .mockRejectedValueOnce({ status: 413, message: 'too large' })
+      .mockResolvedValueOnce({ input_tokens: 50 });
+    const client = { messages: { countTokens: mock } };
+    const text = 'x'.repeat(3000);
+    const r = await countTokensAnthropic(client, 'claude-opus-4-7', text, null, { chunkBytes: 1000 });
+    expect(r.ok).toBe(false);
+    expect(r.chunked).toBe(true);
+    expect(r.chunks).toBe(3);
+    expect(r.failedChunkIndex).toBe(1);
+    // Error code surfaces from simplifyAnthropicError — bad_request prefix for 400/413
+    // (413 isn't in the explicit map; falls through to the generic message branch).
+    expect(typeof r.error).toBe('string');
+    // Subsequent chunk MUST not be called once a failure is recorded.
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves fallback-client semantics across chunks (401 on first chunk routes to fallback)', async () => {
+    const primaryMock = vi.fn()
+      .mockRejectedValueOnce({ status: 401, message: 'invalid key' })
+      .mockResolvedValueOnce({ input_tokens: 30 });
+    const fallbackMock = vi.fn()
+      .mockResolvedValueOnce({ input_tokens: 200 });
+    const primary = { messages: { countTokens: primaryMock } };
+    const fallback = { messages: { countTokens: fallbackMock } };
+    const text = 'y'.repeat(2000); // 2 chunks at threshold 1000
+    const r = await countTokensAnthropic(primary, 'claude-opus-4-7', text, fallback, { chunkBytes: 1000 });
+    expect(r.ok).toBe(true);
+    expect(r.tokens).toBe(230); // 200 (fallback) + 30 (primary)
+    expect(r.chunked).toBe(true);
+    expect(r.chunks).toBe(2);
+    expect(r.usedFallback).toBe(true);
+  });
+});
+
+describe('aggregateByBucket', () => {
+  it('groups projects by bucket and surfaces sample labels', () => {
+    const result = aggregateByBucket([
+      { label: 'KaMPKit', bucket: 'small', perFeature: {} },
+      { label: 'kotlinconf-app', bucket: 'small', perFeature: {} },
+      { label: 'NowInAndroid', bucket: 'large', perFeature: {} },
+    ]);
+    expect(result.small.sample).toEqual(['KaMPKit', 'kotlinconf-app']);
+    expect(result.medium.sample).toEqual([]);
+    expect(result.large.sample).toEqual(['NowInAndroid']);
+  });
+
+  it('summarises per-feature per-approach token counts across the bucket sample', () => {
+    const result = aggregateByBucket([
+      { label: 'p1', bucket: 'small', perFeature: { parallel: { A: { mean: 1000 }, B: { mean: 200 }, C: { mean: 50 } } } },
+      { label: 'p2', bucket: 'small', perFeature: { parallel: { A: { mean: 5000 }, B: { mean: 800 }, C: { mean: 150 } } } },
+    ]);
+    const slot = result.small.byFeature.parallel;
+    expect(slot.approaches.A.mean).toBe(3000); // (1000 + 5000) / 2
+    expect(slot.approaches.A.median).toBe(3000); // (1000 + 5000) / 2
+    expect(slot.approaches.A.min).toBe(1000);
+    expect(slot.approaches.A.max).toBe(5000);
+    expect(slot.approaches.C.median).toBe(100); // (50 + 150) / 2
+  });
+
+  it('computes per-project A/C ratio and aggregates the ratios', () => {
+    const result = aggregateByBucket([
+      { label: 'p1', bucket: 'medium', perFeature: { coverage: { A: { mean: 1000 }, B: { mean: 50 }, C: { mean: 10 } } } }, // ratio 100
+      { label: 'p2', bucket: 'medium', perFeature: { coverage: { A: { mean: 500 }, B: { mean: 30 }, C: { mean: 10 } } } },  // ratio 50
+      { label: 'p3', bucket: 'medium', perFeature: { coverage: { A: { mean: 2000 }, B: { mean: 80 }, C: { mean: 10 } } } }, // ratio 200
+    ]);
+    const ratios = result.medium.byFeature.coverage.ratios.A_to_C;
+    expect(ratios.median).toBe(100); // sorted [50, 100, 200] -> median 100
+    expect(ratios.min).toBe(50);
+    expect(ratios.max).toBe(200);
+  });
+
+  it('skips bucket assignment for invalid bucket labels (defensive)', () => {
+    const result = aggregateByBucket([
+      { label: 'rogue', bucket: 'huge', perFeature: { parallel: { A: { mean: 9 }, B: {}, C: {} } } },
+    ]);
+    expect(result.small.sample).toEqual([]);
+    expect(result.medium.sample).toEqual([]);
+    expect(result.large.sample).toEqual([]);
+  });
+
+  it('omits ratios when A or C means are missing', () => {
+    const result = aggregateByBucket([
+      // info / describe skip approach A — no ratio computable
+      { label: 'p1', bucket: 'small', perFeature: { info: { B: { mean: 50 }, C: { mean: 5 } } } },
+    ]);
+    const slot = result.small.byFeature.info;
+    expect(slot.approaches.B.mean).toBe(50);
+    expect(slot.ratios.A_to_C.median).toBe(0);
+  });
+});
+
+describe('formatAggregateReport', () => {
+  it('renders the bucket roster and a per-feature table', () => {
+    const byBucket = aggregateByBucket([
+      { label: 'A1', bucket: 'small', perFeature: { parallel: { A: { mean: 1000 }, B: { mean: 200 }, C: { mean: 50 } } } },
+      { label: 'A2', bucket: 'small', perFeature: { parallel: { A: { mean: 2000 }, B: { mean: 300 }, C: { mean: 50 } } } },
+      { label: 'B1', bucket: 'large', perFeature: { parallel: { A: { mean: 50000 }, B: { mean: 800 }, C: { mean: 200 } } } },
+    ]);
+    const md = formatAggregateReport(byBucket, { date: '2026-05-12', features: ['parallel'] });
+    expect(md).toContain('Multi-project token-cost aggregate (2026-05-12)');
+    expect(md).toMatch(/\| small \| 2 \| A1, A2 \|/);
+    expect(md).toMatch(/\| large \| 1 \| B1 \|/);
+    expect(md).toContain('## Feature: parallel');
+    expect(md).toContain('A→C median');
+    // Small bucket median A/C ratio = (1000/50 + 2000/50) / 2 -> sorted [20, 40] -> median 30
+    expect(md).toMatch(/\| small \|.*\| 30\.0× \|/);
+    // Footer references both invocation + per-project capture path
+    expect(md).toContain('--projects-config');
+    expect(md).toContain('per-project/<label>/<feature>');
+  });
+
+  it('renders empty buckets as `-` cells without crashing', () => {
+    const byBucket = aggregateByBucket([
+      { label: 'A1', bucket: 'small', perFeature: { parallel: { A: { mean: 1000 }, B: { mean: 200 }, C: { mean: 50 } } } },
+    ]);
+    const md = formatAggregateReport(byBucket, { date: '2026-05-12', features: ['parallel'] });
+    expect(md).toMatch(/\| medium \| - \| - \| - \| - \| - \|/);
+    expect(md).toMatch(/\| large \| - \| - \| - \| - \| - \|/);
+  });
+
+  it('formats large ratios with thousands separators and trailing ×', () => {
+    const byBucket = aggregateByBucket([
+      { label: 'huge', bucket: 'large', perFeature: { coverage: { A: { mean: 30_000_000 }, B: { mean: 200 }, C: { mean: 10 } } } },
+    ]);
+    const md = formatAggregateReport(byBucket, { date: '2026-05-12', features: ['coverage'] });
+    // Single-project in bucket: median ratio = 30_000_000 / 10 = 3_000_000
+    expect(md).toMatch(/3,000,000×/);
   });
 });
