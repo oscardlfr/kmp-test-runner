@@ -52,7 +52,7 @@
 
 **Phase 4 — test + doc polish (post-train, ~12-15h + measurement, 4-5 small PRs)**
 
-9. ✅ **Coverage threshold gate** — DONE 2026-05-11 (PR #<TBD> / <TBD> on develop). Detail: "✅ SHIPPED — Coverage threshold gate".
+9. ✅ **Coverage threshold gate** — DONE 2026-05-11 (PR #215 / <TBD> on develop). Detail: "✅ SHIPPED — Coverage threshold gate".
 10. **Bundle-size monitoring** — `npm pack --dry-run` budget check. ~1h. Detail: "💡 IDEA — Bundle-size monitoring".
 11. **Direct unit tests for `orchestrator-utils.js` helpers** — top 5 most-used helpers. ~6h. Detail: "💡 IDEA — Direct unit tests for `orchestrator-utils.js`".
 12. **JSDoc stubs on the npm-package public API** — 9 `run*` entry points + 5-10 `cli.js`-level helpers. ~3-4h. Detail: "💡 IDEA — JSDoc stubs on the public npm-package API".
@@ -493,7 +493,7 @@ Also: make the scripts emit a `[NOTICE]` log line on startup naming the resolved
 
 ---
 
-### ✅ SHIPPED — Coverage threshold gate (DONE 2026-05-11 / PR #<TBD>)
+### ✅ SHIPPED — Coverage threshold gate (DONE 2026-05-11 / PR #215)
 
 **Status: DONE.** Original premise (surfaced 2026-05-10 during pre-PR-10 polish triage) was stale: `vitest.config.js` already declared `coverage.thresholds: { lines: 80, functions: 80, branches: 80, statements: 80 }` and `.github/workflows/ci.yml:98` ran `npx vitest run --coverage`. Vitest 2.x auto-enforces `coverage.thresholds` when `--coverage` runs (no `--check-coverage` flag needed — that flag belongs to `c8`/`nyc`); when a threshold is breached, vitest sets `process.exitCode = 1` and the CI step fails. The gate was already live; coverage % could not silently regress below 80%. It just couldn't rise either.
 
