@@ -33,10 +33,10 @@ import { mkdtempSync, cpSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { spawnGradle } from '../../lib/orchestrator-utils.js';
-import { runParallel } from '../../lib/parallel-orchestrator.js';
-import { runBenchmark } from '../../lib/benchmark-orchestrator.js';
-import { runAndroid } from '../../lib/android-orchestrator.js';
+import { spawnGradle } from '../../lib/orchestrators/orchestrator-utils.js';
+import { runParallel } from '../../lib/orchestrators/parallel-orchestrator.js';
+import { runBenchmark } from '../../lib/orchestrators/benchmark-orchestrator.js';
+import { runAndroid } from '../../lib/orchestrators/android-orchestrator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_SRC = path.join(__dirname, '..', 'fixtures', 'fake-gradlew');

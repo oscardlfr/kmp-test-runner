@@ -22,7 +22,7 @@ import {
   probeLatestVersion,
   buildInstallSpawn,
   REPO,
-} from '../../lib/update-orchestrator.js';
+} from '../../lib/orchestrators/update-orchestrator.js';
 
 // Build a stub fetch returning canned responses. `redirect` controls the
 // redirect-URL probe; `api` controls the API fallback. Each tier may be

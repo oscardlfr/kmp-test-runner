@@ -13,11 +13,11 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { expandPosixEqualsForm } from '../../lib/orchestrator-utils.js';
-import { parseArgs as parseAndroid } from '../../lib/android-orchestrator.js';
-import { parseArgs as parseBenchmark } from '../../lib/benchmark-orchestrator.js';
-import { parseArgs as parseChanged } from '../../lib/changed-orchestrator.js';
-import { parseArgs as parseDescribe } from '../../lib/describe-orchestrator.js';
+import { expandPosixEqualsForm } from '../../lib/orchestrators/orchestrator-utils.js';
+import { parseArgs as parseAndroid } from '../../lib/orchestrators/android-orchestrator.js';
+import { parseArgs as parseBenchmark } from '../../lib/orchestrators/benchmark-orchestrator.js';
+import { parseArgs as parseChanged } from '../../lib/orchestrators/changed-orchestrator.js';
+import { parseArgs as parseDescribe } from '../../lib/orchestrators/describe-orchestrator.js';
 
 describe('expandPosixEqualsForm — unit', () => {
   it('splits --name=value into [--name, value]', () => {

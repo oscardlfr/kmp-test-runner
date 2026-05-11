@@ -28,7 +28,7 @@ import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { runAndroid, parseArgs, parseTestCounts, parseTestFailures } from '../../lib/android-orchestrator.js';
+import { runAndroid, parseArgs, parseTestCounts, parseTestFailures } from '../../lib/orchestrators/android-orchestrator.js';
 import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 
 let workDir;

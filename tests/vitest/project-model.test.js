@@ -2514,7 +2514,7 @@ describe('probeGradleTasksCached spawn wrapper (regression for v0.9 EINVAL bug)'
   // is the same — only the file path changed.
   it('lib/project/cache.js imports spawnGradle from orchestrator-utils', () => {
     const src = readFileSync(path.join(process.cwd(), 'lib/project/cache.js'), 'utf8');
-    expect(src).toMatch(/import\s*\{\s*spawnGradle\s*\}\s*from\s*['"]\.\.\/orchestrator-utils\.js['"]/);
+    expect(src).toMatch(/import\s*\{\s*spawnGradle\s*\}\s*from\s*['"]\.\.\/orchestrators\/orchestrator-utils\.js['"]/);
   });
 
   it('probeGradleTasksCached invokes spawnGradle(spawnSync, …), never raw spawnSync(wrapperPath, …)', () => {

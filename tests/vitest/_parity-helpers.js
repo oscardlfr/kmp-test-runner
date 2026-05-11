@@ -25,19 +25,19 @@ export const BIN_PATH = path.join(REPO_ROOT, 'bin', 'kmp-test.js');
 // parsed from cli.js#runDoctor.
 //
 // PR-10 (refactor pre-v0.10) — `parallel` parseArgs was extracted from
-// `lib/parallel-orchestrator.js` to `lib/orchestrators/parallel/dispatch.js`
+// `lib/orchestrators/parallel-orchestrator.js` to `lib/orchestrators/parallel/dispatch.js`
 // while the residual file kept gradle-arg emits (--stop, --coverage-tool,
 // etc.) and the runParallel composition. Both paths must be scanned.
 export const SUBCOMMAND_TO_ORCHESTRATOR = Object.freeze({
-  parallel:  ['lib/parallel-orchestrator.js', 'lib/orchestrators/parallel/dispatch.js'],
-  changed:   'lib/changed-orchestrator.js',
-  android:   'lib/android-orchestrator.js',
-  benchmark: 'lib/benchmark-orchestrator.js',
-  coverage:  'lib/coverage-orchestrator.js',
+  parallel:  ['lib/orchestrators/parallel-orchestrator.js', 'lib/orchestrators/parallel/dispatch.js'],
+  changed:   'lib/orchestrators/changed-orchestrator.js',
+  android:   'lib/orchestrators/android-orchestrator.js',
+  benchmark: 'lib/orchestrators/benchmark-orchestrator.js',
+  coverage:  'lib/orchestrators/coverage-orchestrator.js',
   doctor:    null,
-  info:      'lib/info-orchestrator.js',
-  describe:  'lib/describe-orchestrator.js',
-  update:    'lib/update-orchestrator.js',
+  info:      'lib/orchestrators/info-orchestrator.js',
+  describe:  'lib/orchestrators/describe-orchestrator.js',
+  update:    'lib/orchestrators/update-orchestrator.js',
 });
 
 // Flags handled at lib/cli.js global level (before reaching the orchestrator).
