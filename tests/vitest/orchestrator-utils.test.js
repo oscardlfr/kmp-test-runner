@@ -22,6 +22,12 @@ import {
   splitCsv,
   globToRegex,
   matchModuleFilter,
+  stripKotlinComments,
+  discoverIncludedModules,
+  readBuildFile,
+  readPackageName,
+  splitGradleArgs,
+  expandNoCoverageAlias,
 } from '../../lib/orchestrators/orchestrator-utils.js';
 
 let workDir;
@@ -296,5 +302,192 @@ describe('matchModuleFilter — substring vs glob semantics', () => {
     expect(matchModuleFilter('sample-result', 'sample-result,bench-*')).toBe(true);
     expect(matchModuleFilter('bench-store', 'sample-result,bench-*')).toBe(true);
     expect(matchModuleFilter('feature-auth', 'sample-result,bench-*')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4 #11 (2026-05-11) — direct tests for the remaining exported helpers
+// previously covered only via per-orchestrator integration tests. Pins edge
+// cases + raises branch coverage on lib/orchestrators/orchestrator-utils.js.
+// ---------------------------------------------------------------------------
+
+describe('stripKotlinComments', () => {
+  it('strips bare line comment', () => {
+    expect(stripKotlinComments('// foo\n')).toBe('\n');
+  });
+  it('strips inline line comment, keeps code before', () => {
+    expect(stripKotlinComments('plugins {} // trailing comment')).toBe('plugins {} ');
+  });
+  it('strips block comment in one line', () => {
+    expect(stripKotlinComments('a /* mid */ b')).toBe('a  b');
+  });
+  it('strips multi-line block comment', () => {
+    expect(stripKotlinComments('a /* line1\nline2\n */ b')).toBe('a  b');
+  });
+  it('preserves URL-style `://` (the load-bearing reason the regex has [^:])', () => {
+    // Pre-fix the comment-stripper happily ate maven URL declarations.
+    expect(stripKotlinComments('url("https://repo.example.com")')).toBe('url("https://repo.example.com")');
+  });
+  it('returns empty input unchanged', () => {
+    expect(stripKotlinComments('')).toBe('');
+  });
+  it('returns input with no comments unchanged', () => {
+    expect(stripKotlinComments('plugins { id("foo") }')).toBe('plugins { id("foo") }');
+  });
+});
+
+describe('splitGradleArgs', () => {
+  it('returns [] for empty / null / undefined', () => {
+    expect(splitGradleArgs('')).toEqual([]);
+    expect(splitGradleArgs(null)).toEqual([]);
+    expect(splitGradleArgs(undefined)).toEqual([]);
+  });
+  it('whitespace-only input → []', () => {
+    expect(splitGradleArgs('   \t  ')).toEqual([]);
+  });
+  it('splits multi-token string on any whitespace', () => {
+    expect(splitGradleArgs('--no-parallel -Pfoo=bar')).toEqual(['--no-parallel', '-Pfoo=bar']);
+  });
+  it('collapses tabs + newlines into single whitespace boundaries', () => {
+    expect(splitGradleArgs('a\tb\nc')).toEqual(['a', 'b', 'c']);
+  });
+  it('drops empty segments (leading + trailing whitespace)', () => {
+    expect(splitGradleArgs('  --flag  value  ')).toEqual(['--flag', 'value']);
+  });
+});
+
+describe('expandNoCoverageAlias', () => {
+  it('aliases bare --no-coverage to [--coverage-tool, none]', () => {
+    expect(expandNoCoverageAlias(['--no-coverage'])).toEqual(['--coverage-tool', 'none']);
+  });
+  it('preserves other args around --no-coverage', () => {
+    expect(expandNoCoverageAlias(['--variant', 'debug', '--no-coverage', '--module-filter', 'X']))
+      .toEqual(['--variant', 'debug', '--coverage-tool', 'none', '--module-filter', 'X']);
+  });
+  it('passes argv unchanged when no --no-coverage present', () => {
+    expect(expandNoCoverageAlias(['--variant', 'debug'])).toEqual(['--variant', 'debug']);
+  });
+  it('does NOT alias --no-coverage=foo (typo — alias runs before POSIX split)', () => {
+    // Docstring contract: alias expansion runs BEFORE expandPosixEqualsForm so
+    // `--no-coverage=foo` (which doesn't exact-match `--no-coverage`) falls
+    // through the alias check, then POSIX-splits into [--no-coverage, foo].
+    expect(expandNoCoverageAlias(['--no-coverage=foo'])).toEqual(['--no-coverage', 'foo']);
+  });
+  it('also runs POSIX equals-form expansion on the result', () => {
+    expect(expandNoCoverageAlias(['--variant=debug', '--no-coverage']))
+      .toEqual(['--variant', 'debug', '--coverage-tool', 'none']);
+  });
+  it('handles multiple --no-coverage tokens (each expands)', () => {
+    expect(expandNoCoverageAlias(['--no-coverage', '--no-coverage']))
+      .toEqual(['--coverage-tool', 'none', '--coverage-tool', 'none']);
+  });
+});
+
+describe('discoverIncludedModules', () => {
+  it('returns [] when settings.gradle.kts is missing', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-disc-'));
+    expect(discoverIncludedModules(workDir)).toEqual([]);
+  });
+  it('picks up single-arg include(":foo")', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-disc-'));
+    writeFileSync(path.join(workDir, 'settings.gradle.kts'), 'include(":foo")\ninclude(":bar")\n');
+    expect(discoverIncludedModules(workDir).sort()).toEqual(['bar', 'foo']);
+  });
+  it('picks up multi-arg include(":a", ":b")', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-disc-'));
+    writeFileSync(path.join(workDir, 'settings.gradle.kts'), 'include(":alpha", ":beta", ":gamma")\n');
+    expect(discoverIncludedModules(workDir).sort()).toEqual(['alpha', 'beta', 'gamma']);
+  });
+  it('strips comments so //include(":phantom") does not surface', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-disc-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle.kts'),
+      '// include(":phantom")\n/* include(":ghost") */\ninclude(":real")\n',
+    );
+    expect(discoverIncludedModules(workDir)).toEqual(['real']);
+  });
+  it('preserves nested colon paths', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-disc-'));
+    writeFileSync(path.join(workDir, 'settings.gradle.kts'), 'include(":core:network")\n');
+    expect(discoverIncludedModules(workDir)).toEqual(['core:network']);
+  });
+  it('dedupes across single + multi forms', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-disc-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle.kts'),
+      'include(":foo")\ninclude(":foo", ":bar")\n',
+    );
+    expect(discoverIncludedModules(workDir).sort()).toEqual(['bar', 'foo']);
+  });
+});
+
+describe('readBuildFile', () => {
+  it('returns null when build.gradle.kts is missing', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-rbf-'));
+    expect(readBuildFile(workDir, 'feature:auth')).toBeNull();
+  });
+  it('reads and comment-strips build.gradle.kts for a flat module', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-rbf-'));
+    const moduleDir = path.join(workDir, 'core');
+    mkdirSync(moduleDir, { recursive: true });
+    writeFileSync(
+      path.join(moduleDir, 'build.gradle.kts'),
+      '// header comment\nplugins { id("kotlin") }\n',
+    );
+    const content = readBuildFile(workDir, 'core');
+    expect(content).toBeTruthy();
+    expect(content).toContain('plugins { id("kotlin") }');
+    expect(content).not.toContain('header comment');
+  });
+  it('resolves nested module path via `:` separator', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-rbf-'));
+    const moduleDir = path.join(workDir, 'core', 'network');
+    mkdirSync(moduleDir, { recursive: true });
+    writeFileSync(path.join(moduleDir, 'build.gradle.kts'), 'plugins { id("kotlin") }');
+    expect(readBuildFile(workDir, 'core:network')).toBe('plugins { id("kotlin") }');
+  });
+});
+
+describe('readPackageName', () => {
+  it('reads package= from src/main/AndroidManifest.xml', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-mfst-'));
+    const manifestDir = path.join(workDir, 'app', 'src', 'main');
+    mkdirSync(manifestDir, { recursive: true });
+    writeFileSync(
+      path.join(manifestDir, 'AndroidManifest.xml'),
+      '<manifest package="com.example.app" xmlns:android="http://schemas.android.com/apk/res/android"/>',
+    );
+    expect(readPackageName(workDir, 'app')).toBe('com.example.app');
+  });
+  it('falls back to src/androidMain/AndroidManifest.xml when src/main is absent', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-mfst-'));
+    const manifestDir = path.join(workDir, 'shared', 'src', 'androidMain');
+    mkdirSync(manifestDir, { recursive: true });
+    writeFileSync(
+      path.join(manifestDir, 'AndroidManifest.xml'),
+      '<manifest package="com.example.shared"/>',
+    );
+    expect(readPackageName(workDir, 'shared')).toBe('com.example.shared');
+  });
+  it('returns null when neither manifest exists', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-mfst-'));
+    expect(readPackageName(workDir, 'phantom')).toBeNull();
+  });
+  it('returns null when manifest exists but lacks package= attribute', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-mfst-'));
+    const manifestDir = path.join(workDir, 'lib', 'src', 'main');
+    mkdirSync(manifestDir, { recursive: true });
+    writeFileSync(path.join(manifestDir, 'AndroidManifest.xml'), '<manifest/>');
+    expect(readPackageName(workDir, 'lib')).toBeNull();
+  });
+  it('resolves nested module path via `:` separator', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-mfst-'));
+    const manifestDir = path.join(workDir, 'feature', 'auth', 'src', 'main');
+    mkdirSync(manifestDir, { recursive: true });
+    writeFileSync(
+      path.join(manifestDir, 'AndroidManifest.xml'),
+      '<manifest package="com.example.feature.auth"/>',
+    );
+    expect(readPackageName(workDir, 'feature:auth')).toBe('com.example.feature.auth');
   });
 });
