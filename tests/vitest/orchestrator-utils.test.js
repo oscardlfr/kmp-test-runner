@@ -22,7 +22,7 @@ import {
   splitCsv,
   globToRegex,
   matchModuleFilter,
-} from '../../lib/orchestrator-utils.js';
+} from '../../lib/orchestrators/orchestrator-utils.js';
 
 let workDir;
 afterEach(() => {

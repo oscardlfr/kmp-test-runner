@@ -64,7 +64,7 @@ import {
   hasAnyTestSourceSet,
   discoverParallelModules,
   buildFilterArgs,
-} from '../../lib/parallel-orchestrator.js';
+} from '../../lib/orchestrators/parallel-orchestrator.js';
 
 let workDir;
 afterEach(() => {

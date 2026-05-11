@@ -22,7 +22,7 @@ import path from 'node:path';
 const discoverInstalledJdksMock = vi.hoisted(() => vi.fn(() => []));
 vi.mock('../../lib/jdk-catalogue.js', () => ({ discoverInstalledJdks: discoverInstalledJdksMock }));
 
-import { runInfo, formatInfoText } from '../../lib/info-orchestrator.js';
+import { runInfo, formatInfoText } from '../../lib/orchestrators/info-orchestrator.js';
 
 let workDir;
 

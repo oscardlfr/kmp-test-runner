@@ -37,7 +37,7 @@ import {
   aggregateClassRows,
   formatLineRanges,
   coverageDisplayName,
-} from '../../lib/coverage-orchestrator.js';
+} from '../../lib/orchestrators/coverage-orchestrator.js';
 
 let workDir;
 

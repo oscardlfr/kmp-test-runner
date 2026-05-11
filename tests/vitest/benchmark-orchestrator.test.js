@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runBenchmark, resolveBenchmarkTimeoutMs, BENCHMARK_TIMEOUT_DEFAULTS_MS, parseArgs } from '../../lib/benchmark-orchestrator.js';
+import { runBenchmark, resolveBenchmarkTimeoutMs, BENCHMARK_TIMEOUT_DEFAULTS_MS, parseArgs } from '../../lib/orchestrators/benchmark-orchestrator.js';
 import { resolveBenchmarkOuterTimeoutMs, BENCHMARK_OUTER_TIMEOUTS_MS } from '../../lib/cli.js';
 import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 

@@ -25,7 +25,7 @@ import {
   aggregateCoverageTool,
   buildModuleEntry,
   parseArgs,
-} from '../../lib/describe-orchestrator.js';
+} from '../../lib/orchestrators/describe-orchestrator.js';
 
 let workDir;
 
