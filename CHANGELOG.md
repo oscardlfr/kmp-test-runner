@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Multi-project size-bucketed token-cost methodology + chunked Anthropic counting (2026-05-12)
+
+`tools/measure-token-cost.js` grows a multi-project orchestration mode and a chunked-counting path on the Anthropic side. Together they replace the single-project framing in the README ("How much does it save?") with bucketed averages computed across a real OSS sample.
+
+**Multi-project orchestrator (PR #13 — sub-steps 2a + 3):**
+
+- New CLI flag `--projects-config <path>` (JSON: `[{path, label, bucket}]`) and `--features <csv>` (default: all 6 gradle-backed + agent-query features). Multi-project mode also activates when the `KMP_MEASUREMENT_PROJECTS` env var is set (newline-separated `path|label|bucket`) or when the gitignored conventional path `tools/.measurement-projects.json` is consulted.
+- Bucketing per BACKLOG L601: **small** (1–5 modules), **medium** (6–20), **large** (21+). `classifyBucket(moduleCount)` exposed for downstream tooling.
+- Aggregation: median + min/max range + spread per bucket × feature × approach. New exports `summarizeBucket`, `aggregateByBucket`, `formatAggregateReport`.
+- Per-project per-feature per-run captures live under `tools/runs/multi-project-token-cost-<date>/per-project/<label>/<feature>/{A,B,C}-run-N.txt` (gitignored — `.gitignore` updated). Only the bucketed `aggregate-<date>.md` is committed (anonymized labels for private projects, named labels for OSS).
+- The privacy hard rule (`feedback_no_private_project_refs_in_public_cli.md`) is enforced by sourcing the project list from a gitignored JSON or env var. The `tools/decouple-audit.mjs` CI gate catches any private identifier that ends up in committed text.
+
+**Anthropic chunked counting (PR #13 — sub-step 2b — user request 2026-05-12):**
+
+- New flag `--anthropic-chunk-bytes <n>` and exported `CHUNK_THRESHOLD_BYTES` constant (default 3.5 MiB).
+- `countTokensAnthropic(client, model, text, fallbackClient = null, opts = {})` now activates a chunked path when the payload exceeds the threshold. Splits at file-record boundaries (`\n=== <path> ===\n`) when present (matches approach-A capture shape) and falls back to byte-window slicing otherwise. Per-chunk `input_tokens` are summed; the result carries `chunked: true, chunks: <n>`. Per-chunk failure short-circuits with `failedChunkIndex: i` so partial sums don't pollute aggregates.
+- Recovers Anthropic-side counts on payloads that previously hit `413 too_large` — most notably the `coverage` Approach A capture on large composites (74 MB of kover HTML/XML, 28.7 M cl100k tokens). The single-call path is preserved for payloads under threshold; existing fallback-client (`ANTHROPIC_API_KEY_FALLBACK`) semantics are preserved across chunks.
+
+**README reframe (PR #13 — sub-step 4):**
+
+- `README.md` "Why this exists" section reframed around bucketed medians instead of single-project numbers. New 3-row table shows per-bucket A/C medians + ranges for `parallel`.
+- Promotes `tests/fixtures/kmp-cross-platform-e2e/` as the reproducible floor (1 module, all 8 targets, JDK 21 only).
+- The 77,114× `coverage` outlier (private-large-A) is preserved as the explicit "large-project ceiling" with the 413 → chunked recovery narrative tied to it.
+- Per-feature drill-down tables for `parallel`/`coverage`/`changed`/`benchmark` keep the cross-tokenizer detail from v0.9 — relabeled as "private-large-A reference". Multi-project bucketed re-measurement for `coverage`/`changed`/`benchmark` is queued for v0.10 step 7.
+
+**Testing:**
+
+- `tests/vitest/measure-token-cost.test.js` 79 → 122 tests (+43). New coverage for `parseProjectsConfigJson` / `parseProjectsConfigEnv` / `resolveProjectsConfig` (4 sources, precedence) / `classifyBucket` / `summarizeBucket` (median odd/even + spread math) / `splitForAnthropic` (file-boundary + byte-window fallback) / `countTokensAnthropic` chunked path (4 cases incl. fallback-client routing across chunks). Full suite vitest 1327 → 1371. Audits clean (decouple-audit, bundle-size 213 KB / 264 KB budget).
+
 ## [0.9.0] — 2026-05-09
 
 ### Changed — v0.9 wet-audit part 2: `ENVELOPE_SCHEMA_VERSION` bumped 1 → 2 (2026-05-09)
