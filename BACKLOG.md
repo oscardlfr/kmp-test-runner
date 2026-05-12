@@ -56,7 +56,7 @@
 10. ✅ **Bundle-size monitoring** — DONE 2026-05-11 (PR #216 / 3ce7e29 on develop). `npm pack --dry-run --json` budget gate. Detail: "✅ SHIPPED — Bundle-size monitoring".
 11. ✅ **Direct unit tests for `orchestrator-utils.js` helpers** — DONE 2026-05-11 (PR #217 / 502a367 on develop). +32 direct tests across 6 helpers (stripKotlinComments, splitGradleArgs, expandNoCoverageAlias, discoverIncludedModules, readBuildFile, readPackageName). Vitest 1295 → 1327. Surfaced one inline-fixed bug: discoverIncludedModules single-arg regex didn't dedupe matches that were also inside multi-arg includes, contradicting the docstring's "deduplicated list" contract. Detail: "✅ SHIPPED — Direct unit tests for `orchestrator-utils.js`".
 12. ✅ **JSDoc stubs on the npm-package public API** — DONE 2026-05-11 (PR #<TBD> / <TBD> on develop). 13 JSDoc blocks: 9 `run*` orchestrators + `runDoctor` + `runDoctorChecks` + envelope helpers (`buildJsonReport` / `buildInvalidArgsEnvelope` / `envErrorJson` / `buildDryRunReport`) + `EXIT` constant + `parseGradleConfig` + `getProjectRoot`. Terse 1-line description + `@param` + `@returns`; no multi-paragraph, no `@example`. Vitest 1327 unchanged. Detail: "✅ SHIPPED — JSDoc stubs on the public npm-package API".
-13. **Multi-project size-bucketed token-cost re-measurement + README reframe** — replace the single-project numbers (volatile) with size-bucketed averages (small / medium / large) computed across a real-project sample (anonymized private + named OSS). Last sub-task = README refresh. ~10-12h. Detail: "💡 IDEA — Multi-project size-bucketed token-cost re-measurement".
+13. ✅ **Multi-project size-bucketed token-cost re-measurement + README reframe** — DONE 2026-05-12 (PR #<TBD> / <TBD> on develop). 6 OSS projects (KaMPKit, kotlinconf-app, kmp-production-sample, PeopleInSpace, Confetti, NowInAndroid) + reused `private-large-A` (v0.9 evidence). Sub-step 2a (multi-project orchestrator) + 2b (chunked Anthropic counting) + 3 (wet measurement) + 4 (README reframe + CHANGELOG) shipped on `tools/multi-project-token-cost-measurement` branch. README new 3-row bucket table replaces single-project narrative; per-feature drill-downs relabeled "private-large-A reference"; 77,114× coverage outlier preserved as the headline footnote with chunked-recovery narrative. Methodology caveat: NowInAndroid measured via default top-level walker (5 of 35 modules); per-project filter customization queued for v0.10 step 7. Aggregate at `tools/runs/multi-project-token-cost-2026-05-12/aggregate-2026-05-12.md`. Vitest 1327 → 1371 (+44). Detail: "✅ SHIPPED — Multi-project size-bucketed token-cost re-measurement".
 
 **Phase 5 — behavior IDEA (separate user-driven decision, NOT a polish item)**
 
@@ -77,7 +77,7 @@
 4. **Research direction A — Google `android` skills system viability** — investigate whether the skills system supports tools that spawn gradle. ~2-3h research. If positive → ship the manifest (~1h). If negative → drop with user authorization.
 5. **Research direction B — `android describe` JSON discovery** — verify it enumerates KMP-non-AGP modules against the reference KMP composite project. ~2h research. If positive → ship the opt-in fallback in `lib/project-model.js` (~3-4h). If negative → drop with user authorization.
 6. **macOS validation gate** — same shape as v0.9 step 7. ~2-3h.
-7. **Token-cost re-measurement** — captures any v0.10 envelope changes. ~2-3h.
+7. **Token-cost re-measurement** — captures any v0.10 envelope changes. Adopts the multi-project bucketed methodology shipped in PR #13 (small / medium / large × all 6 features). Also: re-measure NowInAndroid with `--module-filter "**"` to recover the full-large-bucket data point that PR #13's default top-level walker undersampled. ~2-3h.
 8. **README v0.10 refresh + CHANGELOG** — last step before tagging. ~2-3h.
 9. **Tag v0.10.0** — release ceremony.
 
@@ -586,9 +586,28 @@ Branches stays at 80 because `floor(81.82 − 2) = 79` would lower the existing 
 
 ---
 
-### 💡 IDEA — Multi-project size-bucketed token-cost re-measurement (surfaced 2026-05-10 during pre-v0.10 BACKLOG ordering)
+### ✅ SHIPPED — Multi-project size-bucketed token-cost re-measurement (PR #13 — 2026-05-12)
 
-**Status: IDEA, no milestone assigned.** The current README + v0.9 measurement evidence calibrate the token-cost reduction claims (e.g. "~77,114× reduction on coverage") against a SINGLE reference KMP composite project. That single-project framing is illustrative but **volatile** — the ratio depends on the project's specific module count, file sizes, kover XML output volume, plugin mix, etc. Real consumers run `kmp-test-runner` against projects of wildly different sizes; the README's headline numbers don't help an outside reader self-locate ("my project is mid-sized — what reduction should I expect?").
+**Status: DONE 2026-05-12.** PR #<TBD> / <TBD> on develop. Originally surfaced 2026-05-10 during pre-v0.10 BACKLOG ordering — entry preserved below for historical context.
+
+**What shipped:**
+
+- `tools/measure-token-cost.js` extended with multi-project orchestrator (`--projects-config`, `--features`, env var + conventional path resolution), bucketing helpers (`classifyBucket`, `summarizeBucket`, `aggregateByBucket`, `formatAggregateReport`), and chunked Anthropic counting (`splitForAnthropic` + `countTokensAnthropic` opts) — see commits `1e1b749` + `3d2163b`.
+- 6-project OSS wet sweep on 2026-05-12: KaMPKit, kotlinconf-app, kmp-production-sample (small), PeopleInSpace, Confetti (medium), NowInAndroid (large) + reused `private-large-A` from v0.9 evidence. Bucketed median A→C ratios: small 60×, medium 93×, large 804× (with explicit caveat that NIA's measurement undersamples because the default walker visited only top-level modules — 5 of 35 — and large-bucket spread is dominated by `private-large-A`'s 1,579× ratio).
+- README reframed to lead with the 3-row bucket table (`a7ce035`). Per-feature drill-downs relabeled "private-large-A reference". 77,114× coverage outlier preserved as the headline footnote tied to the chunked-recovery narrative. `tests/fixtures/kmp-cross-platform-e2e/` promoted as the reproducible floor.
+- CHANGELOG `[Unreleased]` covers the orchestrator + chunked counting + README reframe in a single entry.
+
+**Vitest:** 1327 → 1371 (+44). **Audits:** decouple-audit clean (private project paths sourced from gitignored `tools/.measurement-projects.json`); bundle-size 214 KB / 264 KB budget.
+
+**Follow-ups (queued for v0.10 step 7):**
+
+1. Re-measure NowInAndroid with `--module-filter "**"` to recover the full large-bucket data point. The default top-level walker is robust for nested KMP projects but undersamples deeply-nested Android projects like NIA.
+2. Multi-project bucketed re-measurement for `coverage` / `changed` / `benchmark` (this PR did parallel only because each gradle invocation takes 1-5 min × 6 projects × 4 gradle-backed features = ~2-3 hours of wall time, beyond a single session).
+3. Cross-model Anthropic per-bucket counts (this PR cites the v0.9 ±20%-of-cl100k correlation for the bucket table; the chunked-counting path is wired in but not exercised on the new captures yet).
+
+**Original IDEA entry — preserved below for traceability:**
+
+The current README + v0.9 measurement evidence calibrate the token-cost reduction claims (e.g. "~77,114× reduction on coverage") against a SINGLE reference KMP composite project. That single-project framing is illustrative but **volatile** — the ratio depends on the project's specific module count, file sizes, kover XML output volume, plugin mix, etc. Real consumers run `kmp-test-runner` against projects of wildly different sizes; the README's headline numbers don't help an outside reader self-locate ("my project is mid-sized — what reduction should I expect?").
 
 **Proposal:** broaden the measurement matrix to several projects of varying sizes and re-frame the README narrative around size-bucketed averages.
 

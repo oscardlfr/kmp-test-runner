@@ -20,6 +20,14 @@ dist/
 tools/runs/*/A-run*.txt
 tools/runs/*/B-run*.txt
 tools/runs/*/C-run*.txt
+# PR #13 (2026-05-12): multi-project per-project per-feature captures. Same
+# rationale — captures contain project-specific paths/identifiers. Only the
+# bucketed aggregate-<date>.md (anonymized labels) is tracked.
+tools/runs/multi-project-token-cost-*/per-project/**
+# PR #13: gitignored project list for multi-project measurements. NEVER
+# commit — contains private project paths. Use --projects-config <path> or
+# KMP_MEASUREMENT_PROJECTS env var as documented sources.
+tools/.measurement-projects.json
 .gradle/
 build/
 .idea/
