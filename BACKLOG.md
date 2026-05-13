@@ -493,6 +493,54 @@ Also: make the scripts emit a `[NOTICE]` log line on startup naming the resolved
 
 ---
 
+### 💡 IDEA — `info.jdk.java_home` returns `null` on macOS shells without exported `JAVA_HOME` (surfaced 2026-05-13 during v0.9.1 wet-validation gate)
+
+**Status: IDEA, no milestone assigned.** During the v0.9.1 pre-tag wet validation on macOS, `npm test` failed 1/1371 with a snapshot mismatch on `tests/vitest/parity.test.js > info --json --no-adb envelope shape is stable`: snapshot expected `jdk.java_home: "<string>"`, observed `"<null>"`. Root cause: `lib/info-orchestrator.js` reads `process.env.JAVA_HOME` literally and emits `null` when unset; on macOS, users routinely don't export `JAVA_HOME` and rely on `/usr/libexec/java_home` instead. CI always sets `JAVA_HOME` (`setup-java` action), masking the gap. With `JAVA_HOME=$(/usr/libexec/java_home -v 21) npm test` → 1371/1371 green. Not a regression of the v0.9.1 delta — the snapshot predates the 27-commit cycle. But it means anyone running the test suite locally on macOS without explicit `JAVA_HOME` sees a red test, eroding the suite's signal.
+
+**Two independent fixes (either resolves):**
+
+- **(a) Snapshot tolerance — `tests/vitest/parity.test.js`** — relax the `jdk.java_home` placeholder to accept `<string>|<null>`. ~1-line change in the normalizer. Respects the product's "don't lie about what gradle will use" stance but loses regression-detection if `null` leaks in by accident later.
+- **(b) Product fallback — `lib/info-orchestrator.js` (and probably `lib/jdk-catalogue.js`)** — when `process.env.JAVA_HOME` is empty AND `process.platform === 'darwin'`, spawn `/usr/libexec/java_home -v <major>` synchronously and use the resolved path. ~5 LOC + one `spawnSync`. The envelope now reflects what gradle will actually use, which is more useful to AI-agent consumers (the prioritized audience per `PRODUCT.md`). Cost: one extra spawn on the `info` / `doctor` critical path.
+
+**Recommendation:** (b). "info says `java_home: null` while JDK 21 is installed and `/usr/libexec/java_home` resolves it cleanly" is poor signal for an AI-agent consumer that's trying to reason about toolchain state.
+
+**Effort:** ~30 min for (a); ~1.5h for (b) including vitest coverage on the darwin fallback path.
+
+**Risk:** (a) LOW — pure test relaxation. (b) LOW — guarded by `platform === 'darwin'`, falls back to existing `null` behavior on any spawn error.
+
+**Why now:** caught by Mac wet validation — the secondary machine is the canonical surfacing point for env-shape gaps that CI masks. The next contributor onboarding on macOS will hit this within their first `npm test`.
+
+---
+
+### 💡 IDEA — `tools/macos-validation-gate.mjs --mode scoped` classifies every wet cell as DRIFT (surfaced 2026-05-13 during v0.9.1 wet-validation gate)
+
+**Status: IDEA, no milestone assigned.** During the v0.9.1 pre-tag wet validation, the gate's `--mode scoped` run reported **1 PASS / 28 DRIFT / 1 SKIP** across `--project fixture` + `--project KaMPKit`. Manual inspection of every DRIFT envelope showed `exit_code:0`, `errors:[]`, tests passing — product side fully green. Root cause: scoped mode invokes `kmp-test <sub> --module-filter <m>` (wet — gradle runs) but compares the resulting envelope against `tests/vitest/__snapshots__/parity.test.js.snap`, which was captured invoking with `--dry-run` (parallel/changed) / `--list-only` (android). Structural divergence between wet and dry shapes:
+
+| Path | dry shape (snapshot) | wet shape (scoped run) |
+|---|---|---|
+| `dry_run`, `plan.{}`, `plan.modules[]`, `plan.script_path`, `plan.spawn_args` | present | absent |
+| `parallel.legs[].execution`, `.exit_code`, `.cascade_detected` | absent | populated |
+| `android.device_serial`, `.device_task`, `.flavor` | absent (except list-only post-OBS-6) | populated |
+| `modules[].test_build_type`, `.has_flavor`, `.android_dsl`, ... | absent (array empty) | populated |
+| `coverage.modules_contributing`, `skipped[].module` | absent | populated |
+
+Drift count per cell is **18 missing + 27-36 unexpected paths** — uniform structural noise, not value-difference signal. The `--mode probe` path uses `--dry-run`/`--list-only` so envelopes match the snapshot baseline → 29/29 PASS on the same projects. Historical: v0.9.0 wet-pass (BACKLOG L21) reports "44 PASS / 0 DRIFT / 1 SKIP" — that was **probe mode**, not scoped. Real wet validation for v0.9.0 ran outside the gate (direct gradle invocations on jvm/desktop/iosSim/macosArm64). In other words: the gate's scoped mode **has never given a clean PASS even on a known-green release**, because the comparison infra is structurally misaligned.
+
+**Two fixes (mutually exclusive):**
+
+- **(a) Skip drift detection in scoped mode** — when `opts.mode === 'scoped'`, bucket as PASS iff `exit_code === 0 && errors.length === 0`, FAIL otherwise. Drop the snapshot comparison entirely for scoped. ~10 LOC in `bucketCell` (or equivalent) in `tools/macos-validation-gate.mjs`. Simple, makes scoped useful immediately. Trades structural regression detection for signal clarity.
+- **(b) Wet-snapshot baseline** — new `tests/vitest/__snapshots__/parity-wet.test.js.snap` captured from a known-green wet run; gate loads it in scoped mode. ~50-100 LOC + a regenerate workflow + tooling-side normalizer for the wet-only volatility (leg durations, cache hit/up_to_date flags, leg ordering depending on parallelism). Larger lift; higher signal floor; more maintenance burden over time.
+
+**Recommendation:** (a). The value of scoped is "gradle actually starts, legs dispatch, tests pass, envelope builds without throw" — that signal lives in `exit_code` + `errors[]`, not in path-diff against a baseline. The probe path already covers envelope-shape regression detection against the canonical (dry) snapshot.
+
+**Effort:** ~1h for (a) including vitest + a re-run of the v0.9.1 scoped sweep to confirm bucket distribution flips correctly. ~6-8h for (b) with the normalizer + regen tooling.
+
+**Risk:** (a) LOW — narrows what the gate detects but doesn't introduce false positives. (b) MEDIUM — wet snapshots are inherently noisier; risk of flake-driven snapshot churn.
+
+**Why now:** v0.9.1 will tag soon; the next macOS validation gate (v0.10 step 6) will hit the same all-DRIFT result on scoped mode unless this is closed. Without it, every release's wet pass requires manual envelope inspection — defeating the gate's purpose.
+
+---
+
 ### ✅ SHIPPED — Coverage threshold gate (DONE 2026-05-11 / PR #215)
 
 **Status: DONE.** Original premise (surfaced 2026-05-10 during pre-PR-10 polish triage) was stale: `vitest.config.js` already declared `coverage.thresholds: { lines: 80, functions: 80, branches: 80, statements: 80 }` and `.github/workflows/ci.yml:98` ran `npx vitest run --coverage`. Vitest 2.x auto-enforces `coverage.thresholds` when `--coverage` runs (no `--check-coverage` flag needed — that flag belongs to `c8`/`nyc`); when a threshold is breached, vitest sets `process.exitCode = 1` and the CI step fails. The gate was already live; coverage % could not silently regress below 80%. It just couldn't rise either.
