@@ -22,8 +22,12 @@
 //            Used by Phase B's envelope-shape drift check.
 //   scoped — spawn kmp-test per cell with --module-filter <scopedModule>
 //            so gradle only touches one module per cell. Daemons stopped
-//            between cells. Disk monitored against --abort-floor-mb. Used
-//            by Phase C with current 8.6 GiB disk.
+//            between cells. Disk monitored against --abort-floor-mb.
+//            Bucketing is OPERATIONAL (exit_code + errors[]) NOT
+//            structural — wet envelopes carry plan/legs/device fields
+//            the dry snapshot baseline lacks, so a shape diff would
+//            mark every cell DRIFT by design. Used by Phase C with
+//            current 8.6 GiB disk.
 //   full   — spawn kmp-test per cell with no module filter. Hard-errors
 //            unless --i-have-20gb-free is also passed (memory rule:
 //            feedback_disk_space_awareness.md).
@@ -444,6 +448,22 @@ function runCell(cell, opts, smokeDir, expectedShape) {
   } else if (!envelope) {
     bucket = 'ERROR';
     reason = 'no envelope emitted (orchestrator died before --json write)';
+  } else if (opts.mode === 'scoped') {
+    // Scoped mode runs gradle for real; wet envelopes carry plan.modules[],
+    // parallel.legs[], android.device_serial (and other host-specific
+    // fields) that the dry snapshot baseline doesn't, so a structural diff
+    // against expectedShape marks every cell DRIFT by design. Bucket on
+    // the operational signal — exit_code + errors[] — for clean PASS/FAIL
+    // classification. See BACKLOG IDEA "macos-validation-gate scoped
+    // misalignment" (PR #222) for the divergence table.
+    const errs = Array.isArray(envelope.errors) ? envelope.errors : [];
+    if (envelope.exit_code === 0 && errs.length === 0) {
+      bucket = 'PASS';
+      reason = `wet run green (exit 0, no errors[])`;
+    } else {
+      bucket = 'ERROR';
+      reason = `wet run failed (exit ${envelope.exit_code}, ${errs.length} errors)`;
+    }
   } else if (expectedShape) {
     const observed = extractShape(normalizeForShapeDiff(structuredClone(envelope)));
     const diff = diffShapes(expectedShape, observed);
