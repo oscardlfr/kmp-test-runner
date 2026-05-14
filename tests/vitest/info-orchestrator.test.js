@@ -14,7 +14,7 @@
 //   7. envelope.info present alongside standard subcommand block
 //   8. info.jdk_catalogue parity with doctor (vendors with commas survive)
 
-import { vi, describe, it, expect, afterEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -22,7 +22,7 @@ import path from 'node:path';
 const discoverInstalledJdksMock = vi.hoisted(() => vi.fn(() => []));
 vi.mock('../../lib/jdk-catalogue.js', () => ({ discoverInstalledJdks: discoverInstalledJdksMock }));
 
-import { runInfo, formatInfoText } from '../../lib/orchestrators/info-orchestrator.js';
+import { runInfo, formatInfoText, resolveDarwinJavaHome } from '../../lib/orchestrators/info-orchestrator.js';
 
 let workDir;
 
@@ -237,5 +237,68 @@ describe('formatInfoText', () => {
     } finally {
       delete process.env.KMP_TEST_SKIP_ADB;
     }
+  });
+});
+
+// PR-A from v0.9.1 macOS wet-validation (BACKLOG IDEA from PR #222):
+// `info.jdk.java_home` was null in mac shells without an exported
+// JAVA_HOME, breaking the parity snapshot (it expects "<string>" because
+// CI Linux's setup-java always sets the env var). `resolveDarwinJavaHome`
+// falls back to `/usr/libexec/java_home -v <major>` on darwin only;
+// linux/windows preserve the existing null behavior. The injectable
+// `spawner` arg keeps the unit tests hermetic without globally mocking
+// `node:child_process` (which would clobber other tests in this file
+// that exercise the real `runDoctorChecks` spawn chain).
+describe('resolveDarwinJavaHome (PR-A — darwin fallback)', () => {
+  let originalPlatform;
+
+  beforeEach(() => {
+    originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  });
+  afterEach(() => {
+    if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+  });
+
+  it('returns null on non-darwin without invoking the spawner', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    const spawner = vi.fn();
+    expect(resolveDarwinJavaHome('21.0.5', spawner)).toBeNull();
+    expect(spawner).not.toHaveBeenCalled();
+  });
+
+  it('returns trimmed stdout when darwin + /usr/libexec/java_home succeeds', () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    const spawner = vi.fn(() => ({
+      status: 0,
+      stdout: '/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home\n',
+      stderr: '',
+    }));
+    expect(resolveDarwinJavaHome('21.0.5', spawner))
+      .toBe('/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home');
+    expect(spawner).toHaveBeenCalledTimes(1);
+    const [cmd, args] = spawner.mock.calls[0];
+    expect(cmd).toBe('/usr/libexec/java_home');
+    expect(args).toEqual(['-v', '21']);
+  });
+
+  it('returns null on darwin when the spawner exits non-zero (no crash)', () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    const spawner = vi.fn(() => ({
+      status: 1,
+      stdout: '',
+      stderr: 'Unable to find any JVMs matching version "99".\n',
+    }));
+    expect(resolveDarwinJavaHome('99.0.0', spawner)).toBeNull();
+  });
+
+  it('parses legacy "1.8.0_392" version strings into major "1.8"', () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    const spawner = vi.fn(() => ({
+      status: 0,
+      stdout: '/Library/Java/JavaVirtualMachines/jdk-1.8.jdk/Contents/Home\n',
+      stderr: '',
+    }));
+    resolveDarwinJavaHome('1.8.0_392', spawner);
+    expect(spawner.mock.calls[0][1]).toEqual(['-v', '1.8']);
   });
 });
