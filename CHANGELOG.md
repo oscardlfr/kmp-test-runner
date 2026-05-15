@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-05-15
+
 ### Added — Multi-project size-bucketed token-cost methodology + chunked Anthropic counting (2026-05-12)
 
 `tools/measure-token-cost.js` grows a multi-project orchestration mode and a chunked-counting path on the Anthropic side. Together they replace the single-project framing in the README ("How much does it save?") with bucketed averages computed across a real OSS sample.
@@ -35,6 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Testing:**
 
 - `tests/vitest/measure-token-cost.test.js` 79 → 122 tests (+43). New coverage for `parseProjectsConfigJson` / `parseProjectsConfigEnv` / `resolveProjectsConfig` (4 sources, precedence) / `classifyBucket` / `summarizeBucket` (median odd/even + spread math) / `splitForAnthropic` (file-boundary + byte-window fallback) / `countTokensAnthropic` chunked path (4 cases incl. fallback-client routing across chunks). Full suite vitest 1327 → 1371. Audits clean (decouple-audit, bundle-size 213 KB / 264 KB budget).
+
+### Fixed — `kmp-test info` JDK catalogue parity with `doctor` on comma-vendor entries (2026-05-15)
+
+The `info` subcommand's JDK catalogue surface was filtering entries by a strict vendor whitelist that didn't match `doctor`'s parser, dropping comma-bearing vendor strings (e.g. `"Eclipse Adoptium, Inc."`) from the visible list while `doctor` showed them. PR #211 unifies on `doctor`'s parser so `info --json` emits the same entries `doctor` validates against.
+
+### Fixed — `tools/measure-macos-gate-cost.js` operational bucketing scoped on exit code (2026-05-15)
+
+PR #224: macos-gate cost-measurement runs were grouping cells by raw shape diff, masking real exit-code regressions when a benign shape change appeared simultaneously. Bucketing now scopes on `exit_code` first; shape diff is reported separately. PR #223 (companion) resolves `jdk.java_home` via `/usr/libexec/java_home` on darwin so `info` matches the system default JDK on macOS.
+
+### Fixed — `script-dispatcher` deduplicates boolean prefix flags (2026-05-10)
+
+PR #206: when boolean-flag prefixes overlapped (e.g. `--no-coverage` shadowing `--no-coverage-strict`), the dispatcher emitted the longer flag twice on spawn. Fixed by deduplicating the canonical-name set before serialization. +6 vitest regression tests.
+
+**Summary.** Patch release closing the pre-v0.10 refactor + polish train without surface changes. Headline themes: multi-project size-bucketed token-cost methodology + chunked Anthropic counting that recovers the 28.7M-token coverage Approach-A capture (PR #220 — README "Why this exists" reframed); orchestrator decomposition train (PRs #196-#204 + #210 + #213 + #214) — `lib/cli.js` 2957→1001 LOC, `lib/parallel-orchestrator.js` 1968→789 LOC, parseArgs extracted to `lib/parsers/argv-constants.js` shared layer; new CI gates `decouple-audit` + `bundle-size` (REQUIRED in branch protection since 2026-05-12); JSDoc stubs on the public npm API surface (PR #218); 32 direct orchestrator-utils unit tests (PR #217); coverage threshold gate retuned to baseline-2pp (PR #215); `kmp-test info` JDK catalogue parity with `doctor` on comma-vendor lines (PR #211); script-dispatcher boolean prefix-flag dedup (PR #206); 2 macOS-surfaced fixes pre-release (PR #223 — JDK home resolved via `/usr/libexec/java_home` on darwin; PR #224 — macos-gate bucket scoped on exit_code). No envelope schema changes — `schema_version` stays at 2. Vitest 1273 → 1375 (+102 across the line).
 
 ## [0.9.0] — 2026-05-09
 
