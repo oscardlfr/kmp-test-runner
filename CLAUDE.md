@@ -4,9 +4,9 @@
 
 ## Repo state (2026-05-01)
 
-- npm: `kmp-test-runner@0.9.0` (Trusted Publisher OIDC; auto-publishes on push to `main`)
-- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.9.0` (GitHub Packages; auto-publishes on push to `main`)
-- GitHub Releases: `v0.9.0` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
+- npm: `kmp-test-runner@0.9.1` (Trusted Publisher OIDC; auto-publishes on push to `main`)
+- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.9.1` (GitHub Packages; auto-publishes on push to `main`)
+- GitHub Releases: `v0.9.1` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
 - All 3 shapes share the same source-of-truth version (`package.json`), bumped together per release.
 
 ### v0.7.0 surface (iOS / macOS support + Gradle plugin testType + macOS CI smoke + README v0.7 surface)
