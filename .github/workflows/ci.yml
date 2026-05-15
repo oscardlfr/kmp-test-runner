@@ -114,6 +114,32 @@ jobs:
         uses: trufflesecurity/trufflehog@main
         with:
           extra_args: --only-verified
+  decouple-audit:
+    # Always runs — privacy gate is non-negotiable, even on docs-only PRs.
+    # Fails on any committed text matching the maintainer's PRIVATE_PATTERNS
+    # registry (private project / module names, home-directory paths, etc.).
+    # See `tools/decouple-audit.mjs` and CLAUDE.md "Decouple from L0".
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Decouple-from-L0 audit (tools/decouple-audit.mjs)
+        run: node tools/decouple-audit.mjs
+  bundle-size:
+    # Always runs — guards against accidental tarball growth from refactors
+    # that pull in heavy transitive deps or unintended file inclusions.
+    # Fails when the would-be-published tarball or unpacked size exceeds
+    # the named-constant budgets in tools/check-bundle-size.mjs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Bundle-size budget gate (tools/check-bundle-size.mjs)
+        run: node tools/check-bundle-size.mjs
   installer-e2e:
     needs: [decide, build]
     if: needs.decide.outputs.heavy == 'true'

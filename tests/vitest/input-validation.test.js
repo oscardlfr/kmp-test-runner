@@ -13,12 +13,12 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { validateEnum, validateNonNegativeInt } from '../../lib/orchestrator-utils.js';
-import { runParallel } from '../../lib/parallel-orchestrator.js';
-import { runChanged } from '../../lib/changed-orchestrator.js';
-import { runBenchmark } from '../../lib/benchmark-orchestrator.js';
-import { runCoverage } from '../../lib/coverage-orchestrator.js';
-import { runDescribe } from '../../lib/describe-orchestrator.js';
+import { validateEnum, validateNonNegativeInt } from '../../lib/orchestrators/orchestrator-utils.js';
+import { runParallel } from '../../lib/orchestrators/parallel-orchestrator.js';
+import { runChanged } from '../../lib/orchestrators/changed-orchestrator.js';
+import { runBenchmark } from '../../lib/orchestrators/benchmark-orchestrator.js';
+import { runCoverage } from '../../lib/orchestrators/coverage-orchestrator.js';
+import { runDescribe } from '../../lib/orchestrators/describe-orchestrator.js';
 import { EXIT } from '../../lib/cli.js';
 
 // ---------------------------------------------------------------------------

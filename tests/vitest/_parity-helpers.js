@@ -19,18 +19,25 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, '..', '..');
 export const BIN_PATH = path.join(REPO_ROOT, 'bin', 'kmp-test.js');
 
-// Subcommand → orchestrator file. doctor lives inline in lib/cli.js and has
-// no orchestrator file, so its flag set is parsed from cli.js#runDoctor.
+// Subcommand → orchestrator file(s). String for single-file orchestrators;
+// array when the parser surface is split across multiple files. doctor lives
+// inline in lib/cli.js and has no orchestrator file, so its flag set is
+// parsed from cli.js#runDoctor.
+//
+// PR-10 (refactor pre-v0.10) — `parallel` parseArgs was extracted from
+// `lib/orchestrators/parallel-orchestrator.js` to `lib/orchestrators/parallel/dispatch.js`
+// while the residual file kept gradle-arg emits (--stop, --coverage-tool,
+// etc.) and the runParallel composition. Both paths must be scanned.
 export const SUBCOMMAND_TO_ORCHESTRATOR = Object.freeze({
-  parallel:  'lib/parallel-orchestrator.js',
-  changed:   'lib/changed-orchestrator.js',
-  android:   'lib/android-orchestrator.js',
-  benchmark: 'lib/benchmark-orchestrator.js',
-  coverage:  'lib/coverage-orchestrator.js',
+  parallel:  ['lib/orchestrators/parallel-orchestrator.js', 'lib/orchestrators/parallel/dispatch.js'],
+  changed:   'lib/orchestrators/changed-orchestrator.js',
+  android:   'lib/orchestrators/android-orchestrator.js',
+  benchmark: 'lib/orchestrators/benchmark-orchestrator.js',
+  coverage:  'lib/orchestrators/coverage-orchestrator.js',
   doctor:    null,
-  info:      'lib/info-orchestrator.js',
-  describe:  'lib/describe-orchestrator.js',
-  update:    'lib/update-orchestrator.js',
+  info:      'lib/orchestrators/info-orchestrator.js',
+  describe:  'lib/orchestrators/describe-orchestrator.js',
+  update:    'lib/orchestrators/update-orchestrator.js',
 });
 
 // Flags handled at lib/cli.js global level (before reaching the orchestrator).
@@ -375,11 +382,15 @@ export function getParsedFlagsForSubcommand(sub) {
   // `--project-root`/`--json`/`--help`/etc. mention as "documented but not
   // parsed by orchestrator".
   for (const f of CLI_GLOBAL_FLAGS) flags.add(f);
-  // Orchestrator-side literals.
+  // Orchestrator-side literals. Mapping value can be a string (single file)
+  // or array (split across multiple files — see PR-10 `parallel` split).
   const rel = SUBCOMMAND_TO_ORCHESTRATOR[sub];
   if (rel) {
-    for (const f of extractFlagsFromOrchestratorSource(path.join(REPO_ROOT, rel))) {
-      flags.add(f);
+    const paths = Array.isArray(rel) ? rel : [rel];
+    for (const p of paths) {
+      for (const f of extractFlagsFromOrchestratorSource(path.join(REPO_ROOT, p))) {
+        flags.add(f);
+      }
     }
   } else if (sub === 'doctor') {
     // doctor parses its args inline in lib/cli.js. Scan only the runDoctor

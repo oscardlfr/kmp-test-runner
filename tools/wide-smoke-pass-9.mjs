@@ -20,7 +20,7 @@
 // Usage:
 //   node tools/wide-smoke-pass-9.mjs                              # full sweep
 //   node tools/wide-smoke-pass-9.mjs --output X.md --timeout 900
-//   node tools/wide-smoke-pass-9.mjs --only TaskFlow,gyg          # subset re-run
+//   node tools/wide-smoke-pass-9.mjs --only local-app-3,local-app-1          # subset re-run
 //   node tools/wide-smoke-pass-9.mjs --reclassify                 # re-classify cached envelopes
 //
 // Per-project artifacts (gitignored): .smoke/pass-9/<safe-name>.{out,err,json}
@@ -41,21 +41,22 @@ const SMOKE_DIR  = path.join(REPO_ROOT, '.smoke', 'pass-9');
 const ENVELOPE_BEGIN = '__KMP_TEST_ENVELOPE_V1_BEGIN__';
 const ENVELOPE_END   = '__KMP_TEST_ENVELOPE_V1_END__';
 
-const WORKSPACE = 'C:/Users/34645/AndroidStudioProjects';
+const WORKSPACE = process.env.KMP_WORKSPACE || path.resolve(process.cwd(), '..');
+console.error(`[NOTICE] WORKSPACE = ${WORKSPACE}`);
 
 // 30 gradle roots — identical set to pass-7 so bucket counts compare directly.
 // Categorised by PR3 sweep status. Stable ordering — alphabetical within each
 // category. (8 PR3 + 8 INTERESTING + 14 NEW)
 const PROJECTS = [
   // PR3 sweep (8) — already validated for preflightJdkCheck
-  { name: 'android-challenge',         path: `${WORKSPACE}/android-challenge`,         category: 'PR3' },
-  { name: 'DawSync',                   path: `${WORKSPACE}/DawSync`,                   category: 'PR3' },
-  { name: 'dipatternsdemo',            path: `${WORKSPACE}/dipatternsdemo`,            category: 'PR3' },
-  { name: 'dokka-markdown-plugin',     path: `${WORKSPACE}/dokka-markdown-plugin`,     category: 'PR3' },
-  { name: 'gyg',                       path: `${WORKSPACE}/gyg`,                       category: 'PR3' },
-  { name: 'OmniSound',                 path: `${WORKSPACE}/OmniSound`,                 category: 'PR3' },
-  { name: 'shared-kmp-libs',           path: `${WORKSPACE}/shared-kmp-libs`,           category: 'PR3' },
-  { name: 'TaskFlow',                  path: `${WORKSPACE}/TaskFlow`,                  category: 'PR3' },
+  { name: 'local-challenge',         path: `${WORKSPACE}/local-challenge`,         category: 'PR3' },
+  { name: 'PrivAndroidApp',                   path: `${WORKSPACE}/PrivAndroidApp`,                   category: 'PR3' },
+  { name: 'di-sample',            path: `${WORKSPACE}/di-sample`,            category: 'PR3' },
+  { name: 'local-dokka-plugin',     path: `${WORKSPACE}/local-dokka-plugin`,     category: 'PR3' },
+  { name: 'local-app-1',                       path: `${WORKSPACE}/local-app-1`,                       category: 'PR3' },
+  { name: 'local-app-2',                 path: `${WORKSPACE}/local-app-2`,                 category: 'PR3' },
+  { name: 'private-lib',           path: `${WORKSPACE}/private-lib`,           category: 'PR3' },
+  { name: 'local-app-3',                  path: `${WORKSPACE}/local-app-3`,                  category: 'PR3' },
 
   // Known interesting (8) — wild-hit cases from prior wide-smokes
   { name: 'Confetti-main',                path: `${WORKSPACE}/OFFICIAL_PROJECTS/Confetti-main/Confetti-main`,                              category: 'INTERESTING' },
@@ -68,14 +69,14 @@ const PROJECTS = [
   { name: 'NYTimes-KMP-main',             path: `${WORKSPACE}/OFFICIAL_PROJECTS/NYTimes-KMP-main/NYTimes-KMP-main`,                        category: 'INTERESTING' },
 
   // New / unmentioned (14)
-  { name: 'AndroidCommonDoc-build-logic',   path: `${WORKSPACE}/AndroidCommonDoc/build-logic`,                                              category: 'NEW' },
-  { name: 'AndroidCommonDoc-detekt-rules',  path: `${WORKSPACE}/AndroidCommonDoc/detekt-rules`,                                             category: 'NEW' },
-  { name: 'AndroidCommonDoc-konsist-tests', path: `${WORKSPACE}/AndroidCommonDoc/konsist-tests`,                                            category: 'NEW' },
+  { name: 'private-toolkit-build-logic',   path: `${WORKSPACE}/private-toolkit/build-logic`,                                              category: 'NEW' },
+  { name: 'private-toolkit-detekt-rules',  path: `${WORKSPACE}/private-toolkit/detekt-rules`,                                             category: 'NEW' },
+  { name: 'private-toolkit-konsist-tests', path: `${WORKSPACE}/private-toolkit/konsist-tests`,                                            category: 'NEW' },
   { name: 'kmp-test-runner-gradle-plugin',  path: `${WORKSPACE}/kmp-test-runner/gradle-plugin`,                                             category: 'NEW' },
-  { name: 'WakeTheCave',                    path: `${WORKSPACE}/WakeTheCave/WakeTheCave`,                                                   category: 'NEW' },
-  { name: 'WakeTheCave_clean',              path: `${WORKSPACE}/WakeTheCave/WakeTheCave_clean`,                                             category: 'NEW' },
-  { name: 'WakeTheCave_ref',                path: `${WORKSPACE}/WakeTheCave/WakeTheCave_ref`,                                               category: 'NEW' },
-  { name: 'FileKit-main',                   path: `${WORKSPACE}/Nueva carpeta/FileKit-main/FileKit-main`,                                   category: 'NEW' },
+  { name: 'private-android-app',                    path: `${WORKSPACE}/private-android-app/private-android-app`,                                                   category: 'NEW' },
+  { name: 'private-android-app-clean',              path: `${WORKSPACE}/private-android-app/private-android-app-clean`,                                             category: 'NEW' },
+  { name: 'private-android-app-ref',                path: `${WORKSPACE}/private-android-app/private-android-app-ref`,                                               category: 'NEW' },
+  { name: 'FileKit-main',                   path: `${WORKSPACE}/OTHER/FileKit-main/FileKit-main`,                                   category: 'NEW' },
   { name: 'androidify-main',                path: `${WORKSPACE}/OFFICIAL_PROJECTS/androidify-main/androidify-main`,                         category: 'NEW' },
   { name: 'KaMPKit-main',                   path: `${WORKSPACE}/OFFICIAL_PROJECTS/KaMPKit-main/KaMPKit-main`,                               category: 'NEW' },
   { name: 'kmp-basic-sample-master',        path: `${WORKSPACE}/OFFICIAL_PROJECTS/kmp-basic-sample-master/kmp-basic-sample-master`,        category: 'NEW' },
@@ -321,7 +322,7 @@ function runOneProject(proj, opts) {
 // Parse elapsed durations from the streaming run.log so reclassify can
 // preserve per-project timings even when meta.json was never written
 // (initial sweep predates the meta-write logic). Lines look like:
-// "[GREEN] android-challenge in 1m 12s — 1 testcases ran"
+// "[GREEN] local-challenge in 1m 12s — 1 testcases ran"
 function loadRunLogElapsed() {
   const runLog = path.join(SMOKE_DIR, 'run.log');
   const map = new Map();
@@ -421,7 +422,7 @@ function emitMarkdown(results, outputPath) {
   lines.push('');
   lines.push('Orchestrator HEAD: `0cd5432` (v0.8.0 fix-PR-C tip — A+D+B+C cumulative: source-set gate, KMP `androidLibrary{}` plugin opt-in, JDK preserve-host, `ANDROID_HOME` export for JVM legs).');
   lines.push('');
-  lines.push('Goal: zero regression vs pass-8 baseline (3 GREEN / 14 SKIP / 13 RED-repo / 0 cascade). Improvements expected on Bug A repros (orchestrator over-dispatch — shared-kmp-libs, dipatternsdemo, FileKit-main, WakeTheCave variants), Bug D repros (KMP `androidLibrary{}` plugin — shared-kmp-libs/:core-firebase-native), Bug B repros (JDK preserve-host notice — TaskFlow, Confetti), Bug C repros (`ANDROID_HOME` notice — Nav3Guide-scenes). Any flip from GREEN/SKIP → RED-orchestrator-cascade or RED-orchestrator blocks the v0.8.0 tag.');
+  lines.push('Goal: zero regression vs pass-8 baseline (3 GREEN / 14 SKIP / 13 RED-repo / 0 cascade). Improvements expected on Bug A repros (orchestrator over-dispatch — private-lib, di-sample, FileKit-main, private-android-app variants), Bug D repros (KMP `androidLibrary{}` plugin — private-lib/:sample-firebase-mod), Bug B repros (JDK preserve-host notice — local-app-3, Confetti), Bug C repros (`ANDROID_HOME` notice — Nav3Guide-scenes). Any flip from GREEN/SKIP → RED-orchestrator-cascade or RED-orchestrator blocks the v0.8.0 tag.');
   lines.push('');
   lines.push('## Key findings');
   lines.push('');
@@ -508,14 +509,14 @@ function emitMarkdown(results, outputPath) {
   lines.push('|---|---|---|---|');
   // Pass-8 buckets for all 30 projects (from WIDE-SMOKE-PASS-8.md L37-L66).
   const PASS8_PROJECTS = {
-    'android-challenge':              'GREEN',
-    'DawSync':                        'RED-repo',
-    'dipatternsdemo':                 'RED-repo',
-    'dokka-markdown-plugin':          'SKIP',
-    'gyg':                            'RED-repo',
-    'OmniSound':                      'RED-repo',
-    'shared-kmp-libs':                'RED-repo',
-    'TaskFlow':                       'GREEN',
+    'local-challenge':              'GREEN',
+    'PrivAndroidApp':                        'RED-repo',
+    'di-sample':                 'RED-repo',
+    'local-dokka-plugin':          'SKIP',
+    'local-app-1':                            'RED-repo',
+    'local-app-2':                      'RED-repo',
+    'private-lib':                'RED-repo',
+    'local-app-3':                       'GREEN',
     'Confetti-main':                  'RED-repo',
     'DroidconKotlin-main':            'SKIP',
     'KMedia-main':                    'SKIP',
@@ -524,13 +525,13 @@ function emitMarkdown(results, outputPath) {
     'Nav3Guide-scenes':               'SKIP',
     'nowinandroid':                   'RED-repo',
     'NYTimes-KMP-main':               'SKIP',
-    'AndroidCommonDoc-build-logic':   'SKIP',
-    'AndroidCommonDoc-detekt-rules':  'SKIP',
-    'AndroidCommonDoc-konsist-tests': 'SKIP',
+    'private-toolkit-build-logic':   'SKIP',
+    'private-toolkit-detekt-rules':  'SKIP',
+    'private-toolkit-konsist-tests': 'SKIP',
     'kmp-test-runner-gradle-plugin':  'SKIP',
-    'WakeTheCave':                    'RED-repo',
-    'WakeTheCave_clean':              'RED-repo',
-    'WakeTheCave_ref':                'RED-repo',
+    'private-android-app':                    'RED-repo',
+    'private-android-app-clean':              'RED-repo',
+    'private-android-app-ref':                'RED-repo',
     'FileKit-main':                   'RED-repo',
     'androidify-main':                'SKIP',
     'KaMPKit-main':                   'SKIP',

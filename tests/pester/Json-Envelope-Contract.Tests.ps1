@@ -5,11 +5,12 @@
 
 BeforeAll {
     $script:RepoRoot      = Resolve-Path (Join-Path $PSScriptRoot '..\..')
-    # benchmark + android banners now live in lib/<feature>-orchestrator.js
-    # (Node-side since v0.8 sub-entries 1+3). Asserting on the .ps1 wrappers
-    # would fail — they are thin node-launchers with no banner emission.
-    $script:BenchOrchestrator   = Join-Path $script:RepoRoot 'lib\benchmark-orchestrator.js'
-    $script:AndroidOrchestrator = Join-Path $script:RepoRoot 'lib\android-orchestrator.js'
+    # benchmark + android banners now live in lib/orchestrators/<feature>-orchestrator.js
+    # (Node-side since v0.8 sub-entries 1+3; reorged into lib/orchestrators/ in Phase 3.5).
+    # Asserting on the .ps1 wrappers would fail — they are thin node-launchers
+    # with no banner emission.
+    $script:BenchOrchestrator   = Join-Path $script:RepoRoot 'lib\orchestrators\benchmark-orchestrator.js'
+    $script:AndroidOrchestrator = Join-Path $script:RepoRoot 'lib\orchestrators\android-orchestrator.js'
     $script:BenchText   = Get-Content -Path $script:BenchOrchestrator -Raw
     $script:AndroidText = Get-Content -Path $script:AndroidOrchestrator -Raw
 }

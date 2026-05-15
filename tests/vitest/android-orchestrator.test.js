@@ -28,7 +28,7 @@ import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { runAndroid, parseArgs, parseTestCounts, parseTestFailures } from '../../lib/android-orchestrator.js';
+import { runAndroid, parseArgs, parseTestCounts, parseTestFailures } from '../../lib/orchestrators/android-orchestrator.js';
 import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 
 let workDir;
@@ -196,7 +196,7 @@ describe('runAndroid WS-10 (--list-only same source as count)', () => {
   // ---------------------------------------------------------------------------
   // parseTestCounts — both legacy and new KMP-Android plugin formats.
   // Surfaced 2026-05-06 by v0.9 step 7 wet validation against
-  // shared-kmp-libs `:benchmark-network` on a real S22: gradle emitted
+  // a private KMP project's benchmark module on a real S22: gradle emitted
   // `Finished 3 tests on SM-S908B - 16` + `BUILD SUCCESSFUL` but the
   // legacy-only parser reported testsPassed=0, hiding the actual run.
   // ---------------------------------------------------------------------------
@@ -209,7 +209,7 @@ BUILD SUCCESSFUL`;
   });
 
   it('parseTestCounts: new KMP-Android plugin "Finished N tests on <device>" → uses device-test reporter', () => {
-    const log = `> Task :benchmark-network:connectedAndroidDeviceTest
+    const log = `> Task :sample-benchmark:connectedAndroidDeviceTest
 Starting 3 tests on SM-S908B - 16
 SM-S908B - 16 Tests 0/3 completed. (0 skipped) (0 failed)
 SM-S908B - 16 Tests 2/3 completed. (0 skipped) (0 failed)
@@ -243,7 +243,7 @@ Finished 99 tests on Bogus-Device`;
   });
 
   // Surfaced 2026-05-06 by tools/macos-validation-gate.mjs --mode probe
-  // against shared-kmp-libs and KaMPKit. The android orchestrator was
+  // against a private KMP project and KaMPKit. The android orchestrator was
   // emitting an incomplete coverage block ({ tool, missed_lines }) that
   // didn't match the envelope contract used by every other subcommand
   // and the parity snapshot. Lock the full shape: tool + missed_lines +
@@ -679,55 +679,55 @@ describe('runAndroid --module-filter', () => {
   // dual-tests against bare + `:`-prefixed forms.
   it(':-prefix filter matches colon-stripped module name (Bug #3)', async () => {
     const dir = makeProject([
-      { name: 'benchmark' }, { name: 'benchmark-storage' }, { name: 'core' },
+      { name: 'bench' }, { name: 'bench-store' }, { name: 'core' },
     ]);
     const spawn = makeSpawnStub();
     const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
 
     const { envelope } = await runAndroid({
       projectRoot: dir,
-      args: ['--module-filter', ':benchmark'],
+      args: ['--module-filter', ':bench'],
       spawn,
       adbProbe,
     });
 
-    expect(envelope.android.instrumented_modules.sort()).toEqual(['benchmark', 'benchmark-storage']);
+    expect(envelope.android.instrumented_modules.sort()).toEqual(['bench', 'bench-store']);
     expect(envelope.android.instrumented_modules).not.toContain('core');
   });
 
   it('glob pattern matches anchored module names (Bug #3)', async () => {
     const dir = makeProject([
-      { name: 'core-result' }, { name: 'core-common' }, { name: 'feature-auth' },
+      { name: 'mod-alpha' }, { name: 'mod-beta' }, { name: 'feature-auth' },
     ]);
     const spawn = makeSpawnStub();
     const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
 
     const { envelope } = await runAndroid({
       projectRoot: dir,
-      args: ['--module-filter', 'core-*'],
+      args: ['--module-filter', 'mod-*'],
       spawn,
       adbProbe,
     });
 
-    expect(envelope.android.instrumented_modules.sort()).toEqual(['core-common', 'core-result']);
+    expect(envelope.android.instrumented_modules.sort()).toEqual(['mod-alpha', 'mod-beta']);
     expect(envelope.android.instrumented_modules).not.toContain('feature-auth');
   });
 
   it('comma-separated CSV with mix of substring + glob (Bug #3)', async () => {
     const dir = makeProject([
-      { name: 'core-result' }, { name: 'benchmark-storage' }, { name: 'feature-auth' },
+      { name: 'sample-result' }, { name: 'bench-store' }, { name: 'feature-auth' },
     ]);
     const spawn = makeSpawnStub();
     const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
 
     const { envelope } = await runAndroid({
       projectRoot: dir,
-      args: ['--module-filter', 'core-result,benchmark-*'],
+      args: ['--module-filter', 'sample-result,bench-*'],
       spawn,
       adbProbe,
     });
 
-    expect(envelope.android.instrumented_modules.sort()).toEqual(['benchmark-storage', 'core-result']);
+    expect(envelope.android.instrumented_modules.sort()).toEqual(['bench-store', 'sample-result']);
     expect(envelope.android.instrumented_modules).not.toContain('feature-auth');
   });
 });

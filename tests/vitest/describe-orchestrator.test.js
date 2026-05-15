@@ -25,7 +25,7 @@ import {
   aggregateCoverageTool,
   buildModuleEntry,
   parseArgs,
-} from '../../lib/describe-orchestrator.js';
+} from '../../lib/orchestrators/describe-orchestrator.js';
 
 let workDir;
 
@@ -143,13 +143,13 @@ describe('runDescribe missing project', () => {
 });
 
 describe('discoverCompositeBuilds', () => {
-  it('parses includeBuild("../shared-kmp-libs")', () => {
+  it('parses includeBuild("../private-lib")', () => {
     const dir = makeProject(
       [{ name: 'app' }],
-      { settingsExtra: 'includeBuild("../shared-kmp-libs")' },
+      { settingsExtra: 'includeBuild("../private-lib")' },
     );
     const composites = discoverCompositeBuilds(dir);
-    expect(composites).toEqual(['../shared-kmp-libs']);
+    expect(composites).toEqual(['../private-lib']);
   });
 
   it('parses multiple includeBuild calls', () => {
@@ -178,10 +178,10 @@ describe('discoverCompositeBuilds', () => {
   it('envelope reflects composite_builds in dependency_graph', () => {
     const dir = makeProject(
       [{ name: 'app' }],
-      { settingsExtra: 'includeBuild("../shared-kmp-libs")' },
+      { settingsExtra: 'includeBuild("../private-lib")' },
     );
     const { envelope } = runDescribe({ projectRoot: dir, args: ['--skip-probe'] });
-    expect(envelope.describe.dependency_graph.composite_builds).toEqual(['../shared-kmp-libs']);
+    expect(envelope.describe.dependency_graph.composite_builds).toEqual(['../private-lib']);
   });
 });
 
@@ -224,29 +224,29 @@ describe('platformsFromAnalysis', () => {
   // ---------------------------------------------------------------------
   // v0.9 step 9.4 (Bug #4) — gradleTasks augmentation. Static-only undercounts
   // platforms when convention plugins emit targets without leaving visible
-  // source-set dirs (shared-kmp-libs `:core-result` repro: only `androidMain`
+  // source-set dirs (private-lib `:sample-result` repro: only `androidMain`
   // on disk, but gradle exposes `desktopTest`/`iosSimulatorArm64Test`/...).
   // ---------------------------------------------------------------------
   it('gradleTasks augments platforms — desktopTest → jvm', () => {
     expect(platformsFromAnalysis(
       { sourceSets: { androidMain: true } },
-      [':core-result:desktopTest', ':core-result:testAndroidHostTest']
+      [':sample-result:desktopTest', ':sample-result:testAndroidHostTest']
     ).sort()).toEqual(['android', 'jvm']);
   });
 
   it('gradleTasks augments platforms — full KMP target set (Bug #4 repro)', () => {
-    // shared-kmp-libs :core-result: declares jvm("desktop") + androidLibrary +
+    // private-lib :sample-result: declares jvm("desktop") + androidLibrary +
     // iosX64/iosArm64/iosSimulatorArm64 + macosArm64 via convention plugin.
     // Static scan only finds androidMain; probe should add jvm/ios/macos.
     expect(platformsFromAnalysis(
       { type: 'kmp', sourceSets: { androidMain: true, commonMain: true }, androidDsl: 'androidLibrary' },
       [
-        ':core-result:desktopTest',
-        ':core-result:iosSimulatorArm64Test',
-        ':core-result:iosX64Test',
-        ':core-result:iosArm64Test',
-        ':core-result:macosArm64Test',
-        ':core-result:testAndroidHostTest',
+        ':sample-result:desktopTest',
+        ':sample-result:iosSimulatorArm64Test',
+        ':sample-result:iosX64Test',
+        ':sample-result:iosArm64Test',
+        ':sample-result:macosArm64Test',
+        ':sample-result:testAndroidHostTest',
       ]
     )).toEqual(['jvm', 'android', 'ios', 'macos']);
   });
@@ -335,11 +335,11 @@ describe('parseArgs', () => {
   });
 
   // v0.9 wet-audit drift #5: positional argument binds to --module-filter.
-  // Pre-fix: `kmp-test describe :core-result` silently dropped the positional
+  // Pre-fix: `kmp-test describe :sample-result` silently dropped the positional
   // and returned the unfiltered module set, hiding the usage mistake.
   describe('drift #5 — positional --module-filter shorthand', () => {
     it('binds a single positional to moduleFilter', () => {
-      expect(parseArgs([':core-result']).moduleFilter).toBe(':core-result');
+      expect(parseArgs([':sample-result']).moduleFilter).toBe(':sample-result');
     });
 
     it('explicit --module-filter wins over later positional', () => {
@@ -365,8 +365,8 @@ describe('parseArgs', () => {
     });
 
     it('skips global --project-root <value> so its value is not bound as positional', () => {
-      const r = parseArgs(['--project-root', '/some/path', ':core-result']);
-      expect(r.moduleFilter).toBe(':core-result');
+      const r = parseArgs(['--project-root', '/some/path', ':sample-result']);
+      expect(r.moduleFilter).toBe(':sample-result');
     });
 
     it('skips global --java-home <value>', () => {
@@ -386,10 +386,10 @@ describe('parseArgs', () => {
     });
 
     it('end-to-end: runDescribe applies positional filter', () => {
-      const dir = makeProject([{ name: 'app' }, { name: 'core-result' }, { name: 'core-common' }]);
-      const { envelope } = runDescribe({ projectRoot: dir, args: ['--skip-probe', 'core-result'] });
+      const dir = makeProject([{ name: 'app' }, { name: 'sample-result' }, { name: 'core-common' }]);
+      const { envelope } = runDescribe({ projectRoot: dir, args: ['--skip-probe', 'sample-result'] });
       const names = envelope.describe.modules.map(m => m.name);
-      expect(names).toEqual([':core-result']);
+      expect(names).toEqual([':sample-result']);
     });
   });
 });

@@ -12,13 +12,17 @@
 //   5. JDK present → jdk:{version, java_home, note}
 //   6. info never fails — exit 0 even when probes WARN
 //   7. envelope.info present alongside standard subcommand block
+//   8. info.jdk_catalogue parity with doctor (vendors with commas survive)
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { runInfo, formatInfoText } from '../../lib/info-orchestrator.js';
+const discoverInstalledJdksMock = vi.hoisted(() => vi.fn(() => []));
+vi.mock('../../lib/jdk-catalogue.js', () => ({ discoverInstalledJdks: discoverInstalledJdksMock }));
+
+import { runInfo, formatInfoText, resolveDarwinJavaHome } from '../../lib/orchestrators/info-orchestrator.js';
 
 let workDir;
 
@@ -156,6 +160,66 @@ describe('runInfo never fails (exit 0 always)', () => {
   });
 });
 
+describe('runInfo jdk_catalogue parity with doctor', () => {
+  // Wet-validation gate post-PR-10 (2026-05-10): doctor reported 4 JDK installs
+  // (incl. one with vendor "Azul Systems, Inc.") but info reported only 3 — the
+  // comma in the vendor name broke the message-string split parser. The fix
+  // skips the round-trip through doctor's human-readable check.message and
+  // reads installedJdks directly, so vendors with commas survive intact.
+  afterEach(() => {
+    discoverInstalledJdksMock.mockReturnValue([]);
+  });
+
+  it('jdk_catalogue includes all installs even when a vendor name contains a comma', () => {
+    discoverInstalledJdksMock.mockReturnValue([
+      { majorVersion: 11, vendor: 'Eclipse Adoptium' },
+      { majorVersion: 17, vendor: 'Eclipse Adoptium' },
+      { majorVersion: 21, vendor: 'Azul Systems, Inc.' }, // ← comma in vendor name
+      { majorVersion: 23, vendor: 'Eclipse Adoptium' },
+    ]);
+    const dir = makeTempProject();
+    process.env.KMP_TEST_SKIP_ADB = '1';
+    try {
+      const { envelope } = runInfo({ projectRoot: dir, args: [] });
+      expect(envelope.info.jdk_catalogue).toHaveLength(4);
+      expect(envelope.info.jdk_catalogue[2]).toEqual({ major: 21, vendor: 'Azul Systems, Inc.' });
+      expect(envelope.info.jdk_catalogue.map(e => e.major)).toEqual([11, 17, 21, 23]);
+    } finally {
+      delete process.env.KMP_TEST_SKIP_ADB;
+    }
+  });
+
+  it('jdk_catalogue empty array when no installs detected', () => {
+    discoverInstalledJdksMock.mockReturnValue([]);
+    const dir = makeTempProject();
+    process.env.KMP_TEST_SKIP_ADB = '1';
+    try {
+      const { envelope } = runInfo({ projectRoot: dir, args: [] });
+      expect(envelope.info.jdk_catalogue).toEqual([]);
+    } finally {
+      delete process.env.KMP_TEST_SKIP_ADB;
+    }
+  });
+
+  it('jdk_catalogue entries use {major, vendor} shape (not {majorVersion, ...})', () => {
+    discoverInstalledJdksMock.mockReturnValue([
+      { majorVersion: 17, vendor: 'Eclipse Adoptium' },
+    ]);
+    const dir = makeTempProject();
+    process.env.KMP_TEST_SKIP_ADB = '1';
+    try {
+      const { envelope } = runInfo({ projectRoot: dir, args: [] });
+      const entry = envelope.info.jdk_catalogue[0];
+      expect(entry).toHaveProperty('major');
+      expect(entry).toHaveProperty('vendor');
+      expect(entry).not.toHaveProperty('majorVersion');
+      expect(entry.major).toBe(17);
+    } finally {
+      delete process.env.KMP_TEST_SKIP_ADB;
+    }
+  });
+});
+
 describe('formatInfoText', () => {
   it('renders a multi-line human-readable table from the info block', () => {
     const dir = makeTempProject();
@@ -173,5 +237,68 @@ describe('formatInfoText', () => {
     } finally {
       delete process.env.KMP_TEST_SKIP_ADB;
     }
+  });
+});
+
+// PR-A from v0.9.1 macOS wet-validation (BACKLOG IDEA from PR #222):
+// `info.jdk.java_home` was null in mac shells without an exported
+// JAVA_HOME, breaking the parity snapshot (it expects "<string>" because
+// CI Linux's setup-java always sets the env var). `resolveDarwinJavaHome`
+// falls back to `/usr/libexec/java_home -v <major>` on darwin only;
+// linux/windows preserve the existing null behavior. The injectable
+// `spawner` arg keeps the unit tests hermetic without globally mocking
+// `node:child_process` (which would clobber other tests in this file
+// that exercise the real `runDoctorChecks` spawn chain).
+describe('resolveDarwinJavaHome (PR-A — darwin fallback)', () => {
+  let originalPlatform;
+
+  beforeEach(() => {
+    originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  });
+  afterEach(() => {
+    if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+  });
+
+  it('returns null on non-darwin without invoking the spawner', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    const spawner = vi.fn();
+    expect(resolveDarwinJavaHome('21.0.5', spawner)).toBeNull();
+    expect(spawner).not.toHaveBeenCalled();
+  });
+
+  it('returns trimmed stdout when darwin + /usr/libexec/java_home succeeds', () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    const spawner = vi.fn(() => ({
+      status: 0,
+      stdout: '/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home\n',
+      stderr: '',
+    }));
+    expect(resolveDarwinJavaHome('21.0.5', spawner))
+      .toBe('/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home');
+    expect(spawner).toHaveBeenCalledTimes(1);
+    const [cmd, args] = spawner.mock.calls[0];
+    expect(cmd).toBe('/usr/libexec/java_home');
+    expect(args).toEqual(['-v', '21']);
+  });
+
+  it('returns null on darwin when the spawner exits non-zero (no crash)', () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    const spawner = vi.fn(() => ({
+      status: 1,
+      stdout: '',
+      stderr: 'Unable to find any JVMs matching version "99".\n',
+    }));
+    expect(resolveDarwinJavaHome('99.0.0', spawner)).toBeNull();
+  });
+
+  it('parses legacy "1.8.0_392" version strings into major "1.8"', () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    const spawner = vi.fn(() => ({
+      status: 0,
+      stdout: '/Library/Java/JavaVirtualMachines/jdk-1.8.jdk/Contents/Home\n',
+      stderr: '',
+    }));
+    resolveDarwinJavaHome('1.8.0_392', spawner);
+    expect(spawner.mock.calls[0][1]).toEqual(['-v', '1.8']);
   });
 });

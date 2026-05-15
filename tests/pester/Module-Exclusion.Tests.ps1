@@ -23,23 +23,23 @@ exit /b 0
 
         $settings = @'
 rootProject.name = "test-project"
-include(":core-domain")
+include(":sample-domain")
 include(":feature-home")
 include(":api")
 include(":build-logic")
 '@
         Set-Content -Path (Join-Path $Path 'settings.gradle.kts') -Value $settings
 
-        foreach ($mod in @('core-domain', 'feature-home', 'api', 'build-logic')) {
+        foreach ($mod in @('sample-domain', 'feature-home', 'api', 'build-logic')) {
             $modPath = Join-Path $Path $mod
             New-Item -ItemType Directory -Path $modPath -Force | Out-Null
             Set-Content -Path (Join-Path $modPath 'build.gradle.kts') `
                 -Value 'kotlin { jvmToolchain(17) }'
         }
 
-        # Only core-domain + feature-home have test source sets.
+        # Only sample-domain + feature-home have test source sets.
         New-Item -ItemType Directory -Force `
-            -Path (Join-Path $Path 'core-domain\src\commonTest') | Out-Null
+            -Path (Join-Path $Path 'sample-domain\src\commonTest') | Out-Null
         New-Item -ItemType Directory -Force `
             -Path (Join-Path $Path 'feature-home\src\test') | Out-Null
     }
@@ -139,7 +139,7 @@ Describe 'parallel: filter that rejects everything → exits 2 (CONFIG_ERROR)' {
         $work = $script:WorkDir
         $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
             (& pwsh -NoLogo -NoProfile -File $script -ProjectRoot $work -ModuleFilter '*' `
-                -ExcludeModules 'core-*,feature-*' -IgnoreJdkMismatch 2>&1) -join "`n"
+                -ExcludeModules 'sample-*,feature-*' -IgnoreJdkMismatch 2>&1) -join "`n"
         }
         $LASTEXITCODE | Should -Be 2
         $output | Should -Match 'No modules (found|support)'
@@ -180,7 +180,7 @@ Describe 'kmp-test --json: skipped[] and no_test_modules envelope' {
         $work = $script:WorkDir
         $output = Invoke-WithFakeJava -ProjectRoot $work -Action {
             (& node $cli --json parallel --project-root $work --module-filter '*' `
-                --exclude-modules 'core-*,feature-*' 2>&1) -join "`n"
+                --exclude-modules 'sample-*,feature-*' 2>&1) -join "`n"
         }
         $LASTEXITCODE | Should -Be 2
         $firstLine = ($output -split "`n" | Where-Object { $_ -match '^\{' } | Select-Object -First 1)

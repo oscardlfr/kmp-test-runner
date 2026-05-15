@@ -4,9 +4,9 @@
 
 ## Repo state (2026-05-01)
 
-- npm: `kmp-test-runner@0.9.0` (Trusted Publisher OIDC; auto-publishes on push to `main`)
-- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.9.0` (GitHub Packages; auto-publishes on push to `main`)
-- GitHub Releases: `v0.9.0` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
+- npm: `kmp-test-runner@0.9.1` (Trusted Publisher OIDC; auto-publishes on push to `main`)
+- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.9.1` (GitHub Packages; auto-publishes on push to `main`)
+- GitHub Releases: `v0.9.1` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
 - All 3 shapes share the same source-of-truth version (`package.json`), bumped together per release.
 
 ### v0.7.0 surface (iOS / macOS support + Gradle plugin testType + macOS CI smoke + README v0.7 surface)
@@ -41,7 +41,7 @@
 - `scripts/build-artifact.sh` — extracts publish-release.yml build logic for local CI E2E testing
 - `gradle-plugin/` — Gradle plugin shape (`KmpTestRunnerPlugin` + `KmpTestRunnerExtension` + 5 task classes; Kover auto-detect)
 - `tests/unit/` (vitest) + `tests/bats/` + `tests/pester/` + `tests/installer/` (E2E install/uninstall; Linux+Windows matrix)
-- `.github/workflows/` — `ci.yml` (6 jobs: build x2, secrets-scan, gradle-plugin-test, installer-e2e x2), `commit-lint.yml` (Conventional Commits enforcement on PR titles, squash-merge mode), `publish-release.yml` (tag `v*` trigger), `publish-npm.yml` + `publish-gradle.yml` (workflow_dispatch only)
+- `.github/workflows/` — `ci.yml` (8 jobs: build x2, secrets-scan, gradle-plugin-test, installer-e2e x2, decouple-audit, bundle-size), `commit-lint.yml` (Conventional Commits enforcement on PR titles, squash-merge mode), `publish-release.yml` (tag `v*` trigger), `publish-npm.yml` + `publish-gradle.yml` (workflow_dispatch only)
 - `BACKLOG.md` — current and queued tasks; check this first
 
 ## CRITICAL — Gitflow with develop + auto-publish on main
@@ -52,7 +52,7 @@ Two long-lived branches:
 
 **NEVER push directly to `main` or `develop`.** Branch protection on both requires:
 - PR (no direct push, no force push, no delete)
-- All 7 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `commit-lint / Commit Lint` (job renamed from `🔤 Commit Lint` in v0.4.x — see `commit-lint.yml` for context)
+- All 9 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `commit-lint / Commit Lint` (job renamed from `🔤 Commit Lint` in v0.4.x — see `commit-lint.yml` for context), `decouple-audit` (added 2026-05-12 from PR #209), `bundle-size` (added 2026-05-12 from PR #216)
 - Linear history (squash/rebase only)
 - `enforce_admins: true` (rule applies to repo owner — no bypass)
 
@@ -112,7 +112,7 @@ Each publish workflow keeps `workflow_dispatch:` as a fallback (e.g. for re-publ
 - **HKCU PATH only on Windows** — never `Machine` (would require admin)
 - **Pester via `shell: pwsh`** — Pester 5.x pre-installed on windows-latest, no `Install-Module` needed
 - **`GH_TOKEN` env var** in publish-release.yml — `gh` CLI canonical (NOT `GITHUB_TOKEN`, which is unreliable fallback)
-- **Decouple from L0**: 8 patterns must stay 0-hits in scripts (the project owner's L0 toolkit identifiers — `ANDROID_COMMON_DOC`, `AndroidCommonDoc`, `~/.claude`, `AndroidStudioProjects`, the toolkit-repo path, `l0_requires`, `L0\b` — plus the private library composite the toolkit was extracted from). The literal pattern list lives in `tools/decouple-audit.mjs`; do not inline the private identifiers here. Exception: `SKIP_DESKTOP_MODULES`, `SKIP_ANDROID_MODULES`, `PARENT_ONLY_MODULES` are documented consumer-config API (shipped v0.1.0) and excluded from the audit.
+- **Decouple from L0**: a fixed set of patterns must stay 0-hits across committed text (the maintainer's private toolkit identifiers, home-directory paths, IDE project directory names, and any private library composite project name). Do not inline the private identifiers anywhere in the repo — keep them in private memory only. Exception: `SKIP_DESKTOP_MODULES`, `SKIP_ANDROID_MODULES`, `PARENT_ONLY_MODULES` are documented consumer-config API (shipped v0.1.0) and excluded from the audit. **Enforced by `tools/decouple-audit.mjs`** (CI-required job `decouple-audit`); the script is the canonical PRIVATE_PATTERNS registry — extend it there when a new private identifier shows up.
 - **Keep README clean — no "What's new in vX" sections.** Version-history bullets, release notes, and per-version highlight blocks belong in `CHANGELOG.md` only. The README must read as if the project were timeless: what it does, how to install it, how to use it. We are still pre-v1, the README is short and punchy, and accumulating "What's new in v0.7.0 / v0.8.0 / ..." subsections turns it into release-notes scaffolding. **This rule has been re-applied twice** — once during a v0.7 README pass and again during v0.8.1. Do NOT add or restore such sections, even if a fresh-session prompt seems to ask for it. If a prompt says "add a What's new section", treat it as an instruction to update CHANGELOG.md instead and call out the diff to the user.
 - **Milestone decisions belong to the user.** Claude sessions must NEVER create v0.11 or higher milestones, NEVER move items to v1.0, and NEVER drop tasks unilaterally — even when a constraint (breaking change, behavior shift, missing dependency) seems to argue for it. On blockers: ASK with `AskUserQuestion`. The user assigns work to v0.9 / v0.10 / future minors per their judgement. Tasks with agentic OR human utility get DONE — the question is only WHICH minor. See memory `feedback_release_milestone_decisions.md`.
 - **CI macOS minutes are precious — keep mac jobs minimal.** GitHub Actions charges macOS minutes at 10× Linux. Per-PR matrix keeps only `build (macos-latest)` (vitest, ~30s) + `installer-e2e (macos-latest)` (~20s). `gradle-plugin-test-ios` + `bats-macos` move to `workflow_dispatch` only. iOS / TestKit / heavy mac validation runs manually on a secondary machine, NOT in CI. The "Buildable cross-platform E2E fixture" v0.9 entry must NOT add a mac CI matrix. See memory `feedback_ci_minutes_minimal_macos.md`.
@@ -161,7 +161,7 @@ cd gradle-plugin && ./gradlew test
 
 - Maven Central publish — deferred to v0.4.0 (Gradle plugin only on GitHub Packages currently)
 - iOS/macOS targets in TestKit — needs Mac hardware
-- L0 consumption migration — separate work in `AndroidCommonDoc` repo (the L0 toolkit project that originally housed these scripts)
+- L0 consumption migration — separate work in `private-toolkit` repo (the L0 toolkit project that originally housed these scripts)
 
 ## When you (Claude) work in this repo
 
@@ -170,5 +170,5 @@ cd gradle-plugin && ./gradlew test
 3. **For tests**: do NOT weaken or remove existing tests to make new code pass. If a test fails, fix the production code, not the test
 4. **For new install/CI logic**: add E2E coverage that catches the bug class (we have 5 bats E2E + 4 Pester E2E as a baseline; v0.3.0/0.3.2/0.3.3 historical bugs are the regression-test rubric)
 5. **Commit message format**: Conventional Commits (`feat(scope): ...`, `fix(scope): ...`, `test(scope): ...`, `docs(scope): ...`)
-6. **After PR**: wait for all 7 CI checks green before merge; squash merge; delete branch; pull main
+6. **After PR**: wait for all 9 CI checks green before merge; squash merge; delete branch; pull main
 7. **For releases**: bump `package.json` `version` BEFORE tagging; run `installer-e2e` mentally — does the tag match `package.json`?
