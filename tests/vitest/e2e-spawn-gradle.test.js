@@ -11,7 +11,7 @@
 // `status:null` instantly, the orchestrator's classifyTaskResults regex
 // matched nothing on the empty stdout, and the fallback path silently
 // reported every task as `[PASS]`. A 23-project wide-smoke against
-// AndroidStudioProjects on 2026-05-03 produced 14/14 false-positive GREEN
+// a real-world workspace on 2026-05-03 produced 14/14 false-positive GREEN
 // envelopes — gradle was never invoked, but the JSON said all-passed.
 //
 // This file uses a REAL spawn against a fake gradlew script (gradlew /
@@ -33,10 +33,10 @@ import { mkdtempSync, cpSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { spawnGradle } from '../../lib/orchestrator-utils.js';
-import { runParallel } from '../../lib/parallel-orchestrator.js';
-import { runBenchmark } from '../../lib/benchmark-orchestrator.js';
-import { runAndroid } from '../../lib/android-orchestrator.js';
+import { spawnGradle } from '../../lib/orchestrators/orchestrator-utils.js';
+import { runParallel } from '../../lib/orchestrators/parallel-orchestrator.js';
+import { runBenchmark } from '../../lib/orchestrators/benchmark-orchestrator.js';
+import { runAndroid } from '../../lib/orchestrators/android-orchestrator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_SRC = path.join(__dirname, '..', 'fixtures', 'fake-gradlew');

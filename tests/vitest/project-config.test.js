@@ -45,15 +45,15 @@ describe('loadProjectConfig', () => {
   it('parses a valid config with all known fields', () => {
     const dir = makeProject();
     writeFileSync(path.join(dir, CONFIG_FILE_NAME), JSON.stringify({
-      sharedProject: { name: 'shared-kmp-libs', path: '../shared-kmp-libs' },
+      sharedProject: { name: 'private-lib', path: '../private-lib' },
       defaults: { testType: 'common', coverageTool: 'kover', excludeModules: '*:test-fakes' },
-      skip: { android: ['legacy-app'], ios: ['benchmark-android-test'] },
+      skip: { android: ['legacy-app'], ios: ['bench-android'] },
     }));
     const cfg = loadProjectConfig(dir);
     expect(cfg).toEqual({
-      sharedProject: { name: 'shared-kmp-libs', path: '../shared-kmp-libs' },
+      sharedProject: { name: 'private-lib', path: '../private-lib' },
       defaults: { testType: 'common', coverageTool: 'kover', excludeModules: '*:test-fakes' },
-      skip: { android: ['legacy-app'], ios: ['benchmark-android-test'] },
+      skip: { android: ['legacy-app'], ios: ['bench-android'] },
     });
   });
 

@@ -362,7 +362,7 @@ get_module_from_file() {
         fi
     fi
 
-    # Pattern 2: Flat modules with prefix (core-domain, feature-home)
+    # Pattern 2: Flat modules with prefix (e.g. core-foo, feature-bar)
     if echo "${parts[0]}" | grep -qE '^(core|feature|shared|data|ui)-'; then
         local module_path="$project_path/${parts[0]}"
         if [[ -f "$module_path/build.gradle.kts" ]]; then

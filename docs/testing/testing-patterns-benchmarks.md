@@ -181,14 +181,14 @@ class KmpBenchmarkConventionPlugin : Plugin<Project> {
 ### 5.2 Módulo Benchmark KMP (usa el convention plugin)
 
 ```kotlin
-// benchmark-sdk/build.gradle.kts
+// bench-sdk/build.gradle.kts
 plugins {
-    id("com.grinx.shared.kmp.benchmark")  // convention plugin
+    id("com.example.private.shared.kmp.benchmark")  // convention plugin
 }
 
 kotlin {
     androidLibrary {
-        namespace = "com.grinx.shared.benchmark.sdk"
+        namespace = "com.example.private.shared.benchmark.sdk"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
 
@@ -199,7 +199,7 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            implementation(project(":benchmark-infra"))
+            implementation(project(":bench-infra"))
             implementation(libs.kotlinx.benchmark.runtime)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.koin.core)
@@ -232,13 +232,13 @@ kotlin {
 Para benchmarks exclusivos de Android con instrumentación. No usa KMP ni `kotlinx-benchmark`:
 
 ```kotlin
-// benchmark-android-test/build.gradle.kts
+// bench-android/build.gradle.kts
 plugins {
     alias(libs.plugins.android.library)  // NO KMP, solo Android
 }
 
 android {
-    namespace = "com.grinx.shared.benchmark.android.test"
+    namespace = "com.example.private.shared.benchmark.android.test"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
     defaultConfig {
         minSdk = libs.versions.android.minSdk.get().toInt()
@@ -247,9 +247,9 @@ android {
 }
 
 dependencies {
-    implementation(project(":benchmark-infra"))
-    implementation(project(":core-storage-api"))
-    implementation(project(":core-storage-datastore"))
+    implementation(project(":bench-infra"))
+    implementation(project(":sample-storage-api"))
+    implementation(project(":sample-storage-data"))
     androidTestImplementation(libs.kotlin.test)
     androidTestImplementation(libs.androidx.test.runner)
 }
@@ -261,14 +261,14 @@ dependencies {
 
 ```bash
 # JMH microbenchmarks (desktop/JVM) — main | smoke | stress
-./gradlew :benchmark-sdk:desktopBenchmark
-./gradlew :benchmark-sdk:desktopSmokeBenchmark
-./gradlew :benchmark-sdk:desktopStressBenchmark
+./gradlew :bench-sdk:desktopBenchmark
+./gradlew :bench-sdk:desktopSmokeBenchmark
+./gradlew :bench-sdk:desktopStressBenchmark
 # Stress tests (commonTest, todas las plataformas)
-./gradlew :benchmark-sdk:desktopTest          # JVM
-./gradlew :benchmark-sdk:macosArm64Test       # macOS ARM
+./gradlew :bench-sdk:desktopTest          # JVM
+./gradlew :bench-sdk:macosArm64Test       # macOS ARM
 # Android instrumentación (requiere device/emulator)
-./gradlew :benchmark-android-test:connectedAndroidTest
+./gradlew :bench-android:connectedAndroidTest
 # Reports → build/reports/benchmarks/desktop/main/
 ```
 

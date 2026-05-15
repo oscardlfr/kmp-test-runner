@@ -44,7 +44,7 @@
 //   node tools/wet-audit-v0.9.mjs --mode wet-android --timeout 900
 //   node tools/wet-audit-v0.9.mjs --mode wet --timeout 900
 //   node tools/wet-audit-v0.9.mjs --mode reclassify
-//   node tools/wet-audit-v0.9.mjs --only shared-kmp-libs,DawSync --mode wet-non-android
+//   node tools/wet-audit-v0.9.mjs --only private-lib,PrivAndroidApp --mode wet-non-android
 
 import { spawnSync, spawn as spawnAsync } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
@@ -61,30 +61,31 @@ const ENVELOPE_BEGIN = '__KMP_TEST_ENVELOPE_V1_BEGIN__';
 const ENVELOPE_END   = '__KMP_TEST_ENVELOPE_V1_END__';
 const SCHEMA_VERSION_EXPECTED = 2;
 
-const WORKSPACE = 'C:/Users/34645/AndroidStudioProjects';
+const WORKSPACE = process.env.KMP_WORKSPACE || path.resolve(process.cwd(), '..');
+console.error(`[NOTICE] WORKSPACE = ${WORKSPACE}`);
 
 // 7 projects validated to have gradlew on disk. Nested wrappers point at
 // the inner gradle root (KaMPKit-main/KaMPKit-main, PeopleInSpace-main/
 // PeopleInSpace-main).
 const PROJECTS = [
-  { name: 'shared-kmp-libs', path: `${WORKSPACE}/shared-kmp-libs`,
+  { name: 'private-lib', path: `${WORKSPACE}/private-lib`,
     s22: true, hasInstrumented: true, hasFlavor: false,
-    coverageModule: 'core-result' /* :core-result has Kover */,
-    smallModuleFilter: 'core-result',
+    coverageModule: 'sample-result' /* :sample-result has Kover */,
+    smallModuleFilter: 'sample-result',
   },
-  { name: 'DawSync', path: `${WORKSPACE}/DawSync`,
+  { name: 'PrivAndroidApp', path: `${WORKSPACE}/PrivAndroidApp`,
     s22: true, hasInstrumented: true, hasFlavor: false,
     coverageModule: null, smallModuleFilter: null,
   },
-  { name: 'OmniSound', path: `${WORKSPACE}/OmniSound`,
+  { name: 'local-app-2', path: `${WORKSPACE}/local-app-2`,
     s22: false, hasInstrumented: false, hasFlavor: false,
     coverageModule: null, smallModuleFilter: null,
   },
-  { name: 'dipatternsdemo', path: `${WORKSPACE}/dipatternsdemo`,
+  { name: 'di-sample', path: `${WORKSPACE}/di-sample`,
     s22: true, hasInstrumented: true, hasFlavor: false,
     coverageModule: null, smallModuleFilter: 'di-contracts',
   },
-  { name: 'TaskFlow', path: `${WORKSPACE}/TaskFlow`,
+  { name: 'local-app-3', path: `${WORKSPACE}/local-app-3`,
     s22: false, hasInstrumented: false, hasFlavor: false,
     coverageModule: null, smallModuleFilter: null,
   },
@@ -259,7 +260,7 @@ function buildMatrix(opts, projects) {
 
   // 4) Wet — common (multiplatform JVM-side) — projects with KMP source sets.
   for (const p of projects) {
-    if (p.name === 'OmniSound' || p.name === 'TaskFlow') continue; // not-KMP / Android-only
+    if (p.name === 'local-app-2' || p.name === 'local-app-3') continue; // not-KMP / Android-only
     cells.push({
       id: safeId(`wet_common__${p.name}`),
       kind: 'wet-common',
@@ -274,7 +275,7 @@ function buildMatrix(opts, projects) {
 
   // 5) Wet — desktop — JVM/Desktop-targeted KMP projects.
   for (const p of projects) {
-    if (!['shared-kmp-libs', 'KaMPKit', 'PeopleInSpace'].includes(p.name)) continue;
+    if (!['private-lib', 'KaMPKit', 'PeopleInSpace'].includes(p.name)) continue;
     cells.push({
       id: safeId(`wet_desktop__${p.name}`),
       kind: 'wet-desktop',
@@ -289,11 +290,11 @@ function buildMatrix(opts, projects) {
 
   // 6) Negative — filter with no match (emits caused_by_filter:true + exit 2)
   cells.push({
-    id: 'neg_filter_nomatch__shared-kmp-libs',
+    id: 'neg_filter_nomatch__private-lib',
     kind: 'neg-filter',
-    project: 'shared-kmp-libs',
+    project: 'private-lib',
     args: [KMP_TEST, 'parallel', '--project-root',
-           PROJECTS.find(p => p.name === 'shared-kmp-libs').path,
+           PROJECTS.find(p => p.name === 'private-lib').path,
            '--module-filter', ':nonexistent', '--test-type', 'common', '--json',
            '--timeout', String(opts.timeout)],
     expected: {
@@ -309,11 +310,11 @@ function buildMatrix(opts, projects) {
   // 7) Negative isolated — ios + all (no S22 needed; rejection happens
   //    BEFORE gradle invocation per parallel-orchestrator.js:1400-1428).
   cells.push({
-    id: 'neg_iso_ios__shared-kmp-libs',
+    id: 'neg_iso_ios__private-lib',
     kind: 'neg-iso-ios',
-    project: 'shared-kmp-libs',
+    project: 'private-lib',
     args: [KMP_TEST, 'parallel', '--project-root',
-           PROJECTS.find(p => p.name === 'shared-kmp-libs').path,
+           PROJECTS.find(p => p.name === 'private-lib').path,
            '--isolated', '--test-type', 'ios', '--json',
            '--timeout', String(opts.timeout)],
     expected: {
@@ -325,11 +326,11 @@ function buildMatrix(opts, projects) {
     runOrder: order++,
   });
   cells.push({
-    id: 'neg_iso_all__shared-kmp-libs',
+    id: 'neg_iso_all__private-lib',
     kind: 'neg-iso-all',
-    project: 'shared-kmp-libs',
+    project: 'private-lib',
     args: [KMP_TEST, 'parallel', '--project-root',
-           PROJECTS.find(p => p.name === 'shared-kmp-libs').path,
+           PROJECTS.find(p => p.name === 'private-lib').path,
            '--isolated', '--test-type', 'all', '--json',
            '--timeout', String(opts.timeout)],
     expected: {
@@ -343,25 +344,25 @@ function buildMatrix(opts, projects) {
 
   // 8) Coverage — coverage-only + min-missed-lines (gate)
   cells.push({
-    id: 'coverage_only__shared-kmp-libs',
+    id: 'coverage_only__private-lib',
     kind: 'coverage-only',
-    project: 'shared-kmp-libs',
+    project: 'private-lib',
     args: [KMP_TEST, 'parallel', '--project-root',
-           PROJECTS.find(p => p.name === 'shared-kmp-libs').path,
+           PROJECTS.find(p => p.name === 'private-lib').path,
            '--test-type', 'common', '--coverage-only',
-           '--module-filter', 'core-result', '--json',
+           '--module-filter', 'sample-result', '--json',
            '--timeout', String(opts.timeout)],
     expected: { exitCodeAny: [0, 1, 3], bucketIfMatch: 'PASS' },
     needsDevice: false,
     runOrder: order++,
   });
   cells.push({
-    id: 'coverage_min_missed_zero__shared-kmp-libs',
+    id: 'coverage_min_missed_zero__private-lib',
     kind: 'coverage-min-missed',
-    project: 'shared-kmp-libs',
+    project: 'private-lib',
     args: [KMP_TEST, 'parallel', '--project-root',
-           PROJECTS.find(p => p.name === 'shared-kmp-libs').path,
-           '--test-type', 'common', '--module-filter', 'core-result',
+           PROJECTS.find(p => p.name === 'private-lib').path,
+           '--test-type', 'common', '--module-filter', 'sample-result',
            '--min-missed-lines', '0', '--json',
            '--timeout', String(opts.timeout)],
     // exit 1 acceptable (gate may fire on missed lines > 0)
@@ -381,11 +382,11 @@ function buildMatrix(opts, projects) {
   //      orchestrator bug. The classifier accepts exit {0,1,3} and
   //      relies on RED-repo / SKIP-legit downstream classification.
   cells.push({
-    id: 'wet_full_parallel__shared-kmp-libs',
+    id: 'wet_full_parallel__private-lib',
     kind: 'wet-full-parallel',
-    project: 'shared-kmp-libs',
+    project: 'private-lib',
     args: [KMP_TEST, 'parallel', '--project-root',
-           PROJECTS.find(p => p.name === 'shared-kmp-libs').path,
+           PROJECTS.find(p => p.name === 'private-lib').path,
            '--test-type', 'all', '--json',
            '--timeout', String(Math.max(opts.timeout, 1500))],
     expected: { exitCodeAny: [0, 1, 3], bucketIfMatch: 'PASS' /* RED-repo permitted on Win for ios/macos legs */ },
@@ -396,7 +397,7 @@ function buildMatrix(opts, projects) {
   // 9) Positive isolated — 2× concurrent --isolated --test-type common
   //    (cache_dir separation; both should exit 0 if tests pass).
   //    Concurrency group = 'pos-iso-1' so runner can spawn both at once.
-  for (const proj of ['shared-kmp-libs', 'KaMPKit']) {
+  for (const proj of ['private-lib', 'KaMPKit']) {
     const proot = PROJECTS.find(p => p.name === proj).path;
     cells.push({
       id: safeId(`pos_iso_common__${proj}`),
@@ -417,7 +418,7 @@ function buildMatrix(opts, projects) {
 
   // 10) Wet — androidUnit
   for (const p of projects) {
-    if (!['shared-kmp-libs', 'DawSync', 'dipatternsdemo'].includes(p.name)) continue;
+    if (!['private-lib', 'PrivAndroidApp', 'di-sample'].includes(p.name)) continue;
     cells.push({
       id: safeId(`wet_aunit__${p.name}`),
       kind: 'wet-aunit',
@@ -433,11 +434,11 @@ function buildMatrix(opts, projects) {
   // 11) Negative — androidInstrumented isolated WITHOUT --device
   //     (rejection before gradle; doesn't need S22 connected).
   cells.push({
-    id: 'neg_iso_aint_no_device__DawSync',
+    id: 'neg_iso_aint_no_device__PrivAndroidApp',
     kind: 'neg-iso-aint',
-    project: 'DawSync',
+    project: 'PrivAndroidApp',
     args: [KMP_TEST, 'parallel', '--project-root',
-           PROJECTS.find(p => p.name === 'DawSync').path,
+           PROJECTS.find(p => p.name === 'PrivAndroidApp').path,
            '--isolated', '--test-type', 'androidInstrumented', '--json',
            '--timeout', String(opts.timeout)],
     expected: {
@@ -451,12 +452,12 @@ function buildMatrix(opts, projects) {
 
   // 12) Wet — instrumented (S22).
   cells.push({
-    id: 'wet_aint_android_subcommand__shared-kmp-libs',
+    id: 'wet_aint_android_subcommand__private-lib',
     kind: 'wet-aint',
-    project: 'shared-kmp-libs',
+    project: 'private-lib',
     args: [KMP_TEST, 'android', '--project-root',
-           PROJECTS.find(p => p.name === 'shared-kmp-libs').path,
-           '--module-filter', 'benchmark-network', '--json',
+           PROJECTS.find(p => p.name === 'private-lib').path,
+           '--module-filter', 'bench-net', '--json',
            '--timeout', String(opts.timeout)],
     expected: { exitCodeAny: [0, 1, 3], bucketIfMatch: 'PASS' },
     needsDevice: true,
@@ -465,9 +466,9 @@ function buildMatrix(opts, projects) {
   cells.push({
     id: 'wet_aint_parallel_dipatternsdemo',
     kind: 'wet-aint-parallel',
-    project: 'dipatternsdemo',
+    project: 'di-sample',
     args: [KMP_TEST, 'parallel', '--project-root',
-           PROJECTS.find(p => p.name === 'dipatternsdemo').path,
+           PROJECTS.find(p => p.name === 'di-sample').path,
            '--test-type', 'androidInstrumented',
            '--module-filter', 'di-contracts', '--json',
            '--timeout', String(opts.timeout)],
@@ -476,7 +477,7 @@ function buildMatrix(opts, projects) {
     runOrder: order++,
   });
 
-  // 13) Negative — flavor unused (no productFlavors declared on DawSync).
+  // 13) Negative — flavor unused (no productFlavors declared on PrivAndroidApp).
   //     `flavor_unused` only emits via the parallel orchestrator's
   //     androidInstrumented/all leg (parallel-orchestrator.js:1605-1614).
   //     The `kmp-test android` subcommand doesn't have this validation —
@@ -485,11 +486,11 @@ function buildMatrix(opts, projects) {
   //     Doesn't need S22 connected: the check runs at module-discovery
   //     time, before any gradle dispatch or adb probe.
   cells.push({
-    id: 'neg_flavor_unused__DawSync',
+    id: 'neg_flavor_unused__PrivAndroidApp',
     kind: 'neg-flavor',
-    project: 'DawSync',
+    project: 'PrivAndroidApp',
     args: [KMP_TEST, 'parallel', '--project-root',
-           PROJECTS.find(p => p.name === 'DawSync').path,
+           PROJECTS.find(p => p.name === 'PrivAndroidApp').path,
            '--test-type', 'androidInstrumented',
            '--flavor', 'nonexistent', '--json',
            '--timeout', String(opts.timeout)],

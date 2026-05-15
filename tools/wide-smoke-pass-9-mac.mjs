@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 // tools/wide-smoke-pass-9-mac.mjs — macOS-side wide-smoke pass-9 sweep, the
 // counterpart to tools/wide-smoke-pass-9.mjs (Windows). Targets the 4 KMP
-// projects available in /Volumes/XcodeOscar/kmp-test-workspace/ (Confetti,
-// KaMPKit, PeopleInSpace, shared-kmp-libs) with overlap on the Windows
-// matrix names (Confetti-main / KaMPKit-main / PeopleInSpace-main).
+// projects available in $KMP_WORKSPACE/ (Confetti, KaMPKit, PeopleInSpace,
+// private-lib) with overlap on the Windows matrix names (Confetti-main /
+// KaMPKit-main / PeopleInSpace-main).
 //
 // Three modes via --test-type:
 //   all   — parity sweep vs Windows pass-8 baseline (covers JVM/desktop/common)
@@ -36,7 +36,8 @@ const KMP_TEST   = path.join(REPO_ROOT, 'bin', 'kmp-test.js');
 const ENVELOPE_BEGIN = '__KMP_TEST_ENVELOPE_V1_BEGIN__';
 const ENVELOPE_END   = '__KMP_TEST_ENVELOPE_V1_END__';
 
-const WORKSPACE = '/Volumes/XcodeOscar/kmp-test-workspace';
+const WORKSPACE = process.env.KMP_WORKSPACE || path.resolve(REPO_ROOT, '..');
+console.error(`[NOTICE] WORKSPACE = ${WORKSPACE}`);
 
 // 4 gradle roots — the subset of pass-9's 30-project matrix that is
 // reproducible on this Mac. Names mirror their Windows counterparts (without
@@ -46,7 +47,7 @@ const PROJECTS = [
   { name: 'Confetti',         path: `${WORKSPACE}/Confetti`,         category: 'INTERESTING', winName: 'Confetti-main' },
   { name: 'KaMPKit',          path: `${WORKSPACE}/KaMPKit`,          category: 'NEW',         winName: 'KaMPKit-main' },
   { name: 'PeopleInSpace',    path: `${WORKSPACE}/PeopleInSpace`,    category: 'NEW',         winName: 'PeopleInSpace-main' },
-  { name: 'shared-kmp-libs',  path: `${WORKSPACE}/shared-kmp-libs`,  category: 'PR3',         winName: 'shared-kmp-libs' },
+  { name: 'private-lib',  path: `${WORKSPACE}/private-lib`,  category: 'PR3',         winName: 'private-lib' },
 ];
 
 const VALID_TEST_TYPES = new Set(['all', 'macos', 'ios']);
@@ -332,7 +333,7 @@ const PASS8_WIN = {
   'Confetti-main':       'RED-repo',
   'KaMPKit-main':        'SKIP',
   'PeopleInSpace-main':  'RED-repo',
-  'shared-kmp-libs':     'RED-repo',
+  'private-lib':     'RED-repo',
 };
 
 function emitMarkdown(results, outputPath, opts) {

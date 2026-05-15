@@ -186,7 +186,7 @@ Describe 'Get-ModuleFirstExistingTask: candidate priority' {
 Describe 'Cache format regression — module:task without leading colon' {
 
     It 'Test-ModuleHasTask returns $true for androidConnectedCheck (KMP umbrella)' {
-        # Bug observed against shared-kmp-libs: probe rc=$false even though
+        # Bug observed against private-lib: probe rc=$false even though
         # `core-bar:androidConnectedCheck` was in the cache. Cause: needle
         # was `:core-bar:androidConnectedCheck` but cache emitted no leading
         # colon. Fixed by aligning the needle to real gradle output format.

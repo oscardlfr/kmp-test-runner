@@ -22,8 +22,12 @@
 //            Used by Phase B's envelope-shape drift check.
 //   scoped — spawn kmp-test per cell with --module-filter <scopedModule>
 //            so gradle only touches one module per cell. Daemons stopped
-//            between cells. Disk monitored against --abort-floor-mb. Used
-//            by Phase C with current 8.6 GiB disk.
+//            between cells. Disk monitored against --abort-floor-mb.
+//            Bucketing is OPERATIONAL (exit_code + errors[]) NOT
+//            structural — wet envelopes carry plan/legs/device fields
+//            the dry snapshot baseline lacks, so a shape diff would
+//            mark every cell DRIFT by design. Used by Phase C with
+//            current 8.6 GiB disk.
 //   full   — spawn kmp-test per cell with no module filter. Hard-errors
 //            unless --i-have-20gb-free is also passed (memory rule:
 //            feedback_disk_space_awareness.md).
@@ -56,8 +60,9 @@ const SNAPSHOT_FILE = path.join(
 const ENVELOPE_BEGIN = '__KMP_TEST_ENVELOPE_V1_BEGIN__';
 const ENVELOPE_END   = '__KMP_TEST_ENVELOPE_V1_END__';
 
-const WORKSPACE       = '/Volumes/XcodeOscar/kmp-test-workspace';
-const TMPDIR_OVERRIDE = '/Volumes/XcodeOscar/.tmp';
+const WORKSPACE       = process.env.KMP_WORKSPACE || path.resolve(REPO_ROOT, '..');
+const TMPDIR_OVERRIDE = process.env.KMP_TMPDIR    || path.join(WORKSPACE, '.tmp');
+console.error(`[NOTICE] WORKSPACE = ${WORKSPACE}`);
 
 // ─── matrix dimensions ─────────────────────────────────────────────────────
 
@@ -73,9 +78,9 @@ export const PROJECTS = [
     hasAndroidInstrumented: false, // androidLibrary { withHostTestBuilder } only
   },
   {
-    name: 'shared-kmp-libs',
-    path: path.join(WORKSPACE, 'shared-kmp-libs'),
-    scopedModule: ':core-result',
+    name: 'private-lib',
+    path: path.join(WORKSPACE, 'private-lib'),
+    scopedModule: ':sample-result',
     hasAndroidInstrumented: true,
   },
   {
@@ -220,7 +225,7 @@ function buildCell({ sub, testType, proj, opts, skipReason }) {
   }
   if (opts.mode === 'scoped' && proj.scopedModule) {
     // Strip leading `:` — the CLI's --module-filter is a name-glob,
-    // not a gradle path. `:core-result` → `core-result`.
+    // not a gradle path. `:sample-result` → `sample-result`.
     const pattern = proj.scopedModule.replace(/^:/, '');
     args.push('--module-filter', pattern);
   }
@@ -443,6 +448,22 @@ function runCell(cell, opts, smokeDir, expectedShape) {
   } else if (!envelope) {
     bucket = 'ERROR';
     reason = 'no envelope emitted (orchestrator died before --json write)';
+  } else if (opts.mode === 'scoped') {
+    // Scoped mode runs gradle for real; wet envelopes carry plan.modules[],
+    // parallel.legs[], android.device_serial (and other host-specific
+    // fields) that the dry snapshot baseline doesn't, so a structural diff
+    // against expectedShape marks every cell DRIFT by design. Bucket on
+    // the operational signal — exit_code + errors[] — for clean PASS/FAIL
+    // classification. See BACKLOG IDEA "macos-validation-gate scoped
+    // misalignment" (PR #222) for the divergence table.
+    const errs = Array.isArray(envelope.errors) ? envelope.errors : [];
+    if (envelope.exit_code === 0 && errs.length === 0) {
+      bucket = 'PASS';
+      reason = `wet run green (exit 0, no errors[])`;
+    } else {
+      bucket = 'ERROR';
+      reason = `wet run failed (exit ${envelope.exit_code}, ${errs.length} errors)`;
+    }
   } else if (expectedShape) {
     const observed = extractShape(normalizeForShapeDiff(structuredClone(envelope)));
     const diff = diffShapes(expectedShape, observed);

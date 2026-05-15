@@ -111,7 +111,7 @@ describe('macos-validation-gate / skip rules', () => {
   it('marks androidInstrumented + android cells [SKIP] device-required when adb returns no devices', () => {
     const cells = buildMatrix(baseDryOpts, noDeviceDeps());
     const skipped = cells.filter((c) => c.skipReason === 'device-required');
-    // android subcommand on shared-kmp-libs + KaMPKit (fixture has no instrumented target)
+    // android subcommand on private-lib + KaMPKit (fixture has no instrumented target)
     // PLUS parallel/changed × androidInstrumented × 3 projects
     expect(skipped.length).toBeGreaterThan(0);
     for (const c of skipped) {

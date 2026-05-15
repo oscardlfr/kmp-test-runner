@@ -23,7 +23,7 @@ import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { runChanged } from '../../lib/changed-orchestrator.js';
+import { runChanged } from '../../lib/orchestrators/changed-orchestrator.js';
 
 const SOURCE_SETS = [
   'test', 'commonTest', 'jvmTest', 'desktopTest',
