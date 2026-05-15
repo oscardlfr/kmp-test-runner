@@ -71,7 +71,7 @@
 
 ### v0.10 — minor (locked 2026-05-05)
 
-1. **ANSI color auto-detect** — TTY/piped detection in `lib/<feature>-orchestrator.js` print logic. ~1-2h.
+1. **Defensive `--console=plain` injection** (reframed 2026-05-15 — repo emits zero ANSI of its own; the real risk is gradle's `--console=auto` writing ANSI into pipes) — auto-inject `--console=plain` in `spawnGradle` when `process.stdout.isTTY === false` or `NO_COLOR` set, plus `--color={always,never,auto}` override and idempotency guard (skip when user already passes any `--console=*` via `--gradle-args`). ~2h.
 2. **CLI auto-respect `gradle.properties`** — Tier 3 of adapter. Drop `--parallel` injection when `org.gradle.parallel=false`, etc. Behavior change with migration note. ~2-3h.
 3. **Per-project config user-global** — `~/.kmp-test/config.json` keyed by git-remote / project name. Extends `lib/project-config.js`. ~6-10h.
 4. **Research direction A — Google `android` skills system viability** — investigate whether the skills system supports tools that spawn gradle. ~2-3h research. If positive → ship the manifest (~1h). If negative → drop with user authorization.
@@ -1941,7 +1941,6 @@ Out of scope for this item: cross-host coordination (use a real lock manager), G
 
 ### Other QUEUED ideas
 
-- **ANSI color** — auto-detect TTY, plain output when piped
 - **Maven Central publish** for Gradle plugin — currently GitHub Packages only; needs Sonatype account + signing keys
 - **iOS/macOS TestKit** matrix — needs Mac hardware in CI
 - **VitePress/MkDocs docs site** — separate consumer-facing docs beyond README
