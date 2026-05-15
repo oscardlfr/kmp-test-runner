@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Defensive `--console=plain` injection when stdout isn't a TTY (v0.10 #1)
+
+New global `--color={always,never,auto}` flag (default `auto`) and POSIX `NO_COLOR` env support. In `auto` mode `spawnGradle` injects `--console=plain` into the gradle subprocess argv whenever `process.stdout.isTTY === false` or `NO_COLOR` is non-empty, defending piped output (`kmp-test parallel | tee log`) and CI captures from gradle's own `--console=auto` writing ANSI into the captured stream. Idempotent: when the user already passes any `--console=*` via `--gradle-args`, that value wins and no second token is appended. The repo itself still emits zero ANSI from `lib/` and `scripts/` (verified) — this purely defends against gradle's own decision in environments where its TTY probe disagrees with ours.
+
 ## [0.9.1] — 2026-05-15
 
 ### Added — Multi-project size-bucketed token-cost methodology + chunked Anthropic counting (2026-05-12)

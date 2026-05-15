@@ -407,6 +407,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--isolated` | _(off)_ | Run gradle with `--project-cache-dir <tmp>` so concurrent `kmp-test` invocations don't share configuration cache. Tier-3 isolation. Applies to `parallel` / `changed` / `android` / `benchmark`. See [`docs/concurrency.md`](docs/concurrency.md) |
 | `--isolated-cache-dir <path>` | _(per-run tmpdir)_ | Override the temp project-cache-dir location. Implies `--isolated` |
 | `--isolated-no-lock` | _(off)_ | Skip the OS-level cache-dir lockfile. Implies `--isolated`. Use only when lockfile contention itself is the bottleneck (rare) |
+| `--color <mode>` | `auto` | `always` \| `never` \| `auto`. Controls defensive `--console=plain` injection into the gradle subprocess. `auto` injects when stdout isn't a TTY or `NO_COLOR` is set (POSIX). Skipped when the user already passes any `--console=*` via `--gradle-args` |
 
 **Env vars (skip-list):**
 
@@ -417,6 +418,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `SKIP_IOS_MODULES` | `--test-type ios` | Same shape, for iOS dispatch |
 | `SKIP_MACOS_MODULES` | `--test-type macos` | Same shape, for macOS dispatch |
 | `PARENT_ONLY_MODULES` | always | Comma-separated module names that are aggregator-only (skipped at discovery time) |
+| `NO_COLOR` | always (POSIX) | Any non-empty value disables gradle ANSI output (equivalent to `--color=never`) |
 
 ### Project config — `.kmp-test-runner.json`
 
