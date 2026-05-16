@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — `kmp-test parallel` auto-respects `org.gradle.parallel=false` (v0.10 #2)
+
+`parallel-orchestrator` now reads the project's `gradle.properties` (merged over `~/.gradle/gradle.properties` per gradle's own rules) and drops the unconditional `--parallel` flag from the per-leg gradle dispatch when the resolved value of `org.gradle.parallel` is `false`. Previously the CLI overrode this setting silently. The drop fires when: (a) the project has a `gradle.properties` file at all (`sources.project` true) AND (b) the resolved `parallel` value is `false`.
+
+**Migration notice.** This also affects projects that have a `gradle.properties` (e.g. for `org.gradle.jvmargs`) but don't explicitly set `org.gradle.parallel` — gradle's own default for that key is `false`, so the resolved value is `false` and the drop fires. To preserve the previous behavior, either:
+
+- Add `org.gradle.parallel=true` to your project's `gradle.properties`, or
+- Pass `--gradle-args "--parallel"` to your `kmp-test parallel` invocation (last-wins via the v0.9 gradle-args passthrough).
+
+New optional top-level envelope field: `gradle_config_applied: { parallel_dropped: true }`. Emitted only when the drop fires; absent (the key itself is not present, not `null`) otherwise. Schema_version stays at 2 (additive optional, non-breaking).
+
 ### Added — Defensive `--console=plain` injection when stdout isn't a TTY (v0.10 #1)
 
 New global `--color={always,never,auto}` flag (default `auto`) and POSIX `NO_COLOR` env support. In `auto` mode `spawnGradle` injects `--console=plain` into the gradle subprocess argv whenever `process.stdout.isTTY === false` or `NO_COLOR` is non-empty, defending piped output (`kmp-test parallel | tee log`) and CI captures from gradle's own `--console=auto` writing ANSI into the captured stream. Idempotent: when the user already passes any `--console=*` via `--gradle-args`, that value wins and no second token is appended. The repo itself still emits zero ANSI from `lib/` and `scripts/` (verified) — this purely defends against gradle's own decision in environments where its TTY probe disagrees with ours.
