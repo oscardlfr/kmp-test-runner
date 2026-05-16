@@ -770,6 +770,37 @@ Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidD
 
 ---
 
+### 🐛 BUG — `kmp-test benchmark` does NOT propagate `--no-configuration-cache` by default → kotlinx-benchmark stale TEMP path masks as silent 2.2s FAIL (surfaced 2026-05-17 user wet session — bug A11)
+
+**Status: BUG, no milestone assigned. HIGH severity — composes with A9 (no per-task logs) to produce silent failures with NO diagnostic surface.** User wet session confirmed live 2026-05-17. Stack trace from the underlying failure: `java.io.FileNotFoundException: C:\Users\<user>\AppData\Local\Temp\benchmarks<long-suffix>.txt` at `kotlinx.benchmark.UtilsKt.readFile (Utils.kt:12)` from `JvmBenchmarkRunnerKt.main`. The kotlinx-benchmark gradle plugin caches a path to `%TEMP%` (with a string suffix) in gradle's configuration cache; when Windows cleans `%TEMP%` (boot, idle cleanup), the next build re-uses the cached path but the file no longer exists → `FileNotFoundException`.
+
+**Two related issues stacked:**
+1. **Stale-path masking** — kmp-test runs gradle with config-cache enabled (default), so the kotlinx-benchmark stale TEMP path keeps re-firing. Symptom from user envelope: `[FAIL] benchmark-crypto (jvm) failed with exit code 1` in 2.2s, no further detail.
+2. **Diagnostic gap** — without per-task logs (bug A9 above), the `FileNotFoundException` never reaches the user; they see only the [FAIL] line.
+
+**User-confirmed workaround:** `kmp-test benchmark --config smoke --platform jvm --module-filter "benchmark-crypto" --gradle-args "--no-configuration-cache"` — runs ~5m47s and SUCCEEDS. The workaround works because the cache is bypassed; kotlinx-benchmark re-resolves a fresh TEMP path each invocation.
+
+**Underlying root cause is project-side (B5):** kotlinx-benchmark itself shouldn't cache a `%TEMP%` path that can be cleared between builds. Fix should land in kotlinx-benchmark (write to `build/benchmarks/` instead — stable, gitignored) OR mark the desktop benchmark tasks with `@DisableCachingByDefault` / `notCompatibleWithConfigurationCache`. But until kotlinx-benchmark fixes that, kmp-test-runner can mitigate at the CLI level.
+
+**Three independent fixes (any combination on CLI side):**
+- **(a) Default `--no-configuration-cache` for benchmark dispatch.** Simplest. Cost: ~5-10s per benchmark task (config-cache miss). Reasonable trade for reliability. ~5 LOC in `lib/orchestrators/benchmark-orchestrator.js` to inject the flag into the gradle args before they hit `spawnGradle`.
+- **(b) Detect FileNotFoundException in the gradle output stream → auto-retry with `--no-configuration-cache`.** More targeted (no per-run cost when the bug isn't hit). Cost: requires either (i) reading the spawn's stderr inline (current spawnGradle uses synchronous `spawnSync` — needs refactor) OR (ii) post-mortem the captured stderr after exit and dispatch a one-time retry. ~15-20 LOC.
+- **(c) Document the flag as obligatory in the benchmark workflow doc + add explicit `errors[].code: "benchmark_config_cache_stale"` discriminator that points the agent at the `--gradle-args` workaround.** ~10 LOC + doc updates.
+
+**Recommendation: (a) — default the flag.** kotlinx-benchmark's bug isn't going away soon; benchmark dispatch is naturally a "spend more time for reliability" workflow; the 5-10s config-cache cost is negligible against the 5+min benchmark runtime. Document the override flag for users who want the cache (`--gradle-args "--configuration-cache"` overrides per gradle last-wins).
+
+**Cross-link bugs A9 + A10:**
+- A9 (per-task logs) is a HARD dependency for A11 triage today. Users currently can't diagnose the FileNotFoundException because logs aren't captured. Ship A9 FIRST, then A11's behavior becomes self-documenting (logs show the actual stack trace).
+- A10 (smoke 300s watchdog) is upstream of A11 in the failure-mode chain: without A11's fix, all 3 benchmarks fail in 2.2s each (well within the 300s ceiling) so A10 doesn't fire; with A11's fix, the same benchmarks legitimately run 5m+ and A10's ceiling becomes the new bottleneck.
+
+**Effort:** (a) ~30 min + 1 vitest case. (b) ~3-4h + 2-3 vitest cases (stderr-pattern matching, retry-once-with-cache-disabled). (c) ~1h + doc updates.
+
+**Risk:** (a) LOW — kotlinx-benchmark users who relied on config-cache speed lose ~5-10s per benchmark task; documented in CHANGELOG; opt back in via `--gradle-args "--configuration-cache"`. (b) MEDIUM — adds an inline stderr-scan path. (c) ZERO — doc + discriminator only, no behavior change.
+
+**Why now:** caught live on user's wet session; confirmed workaround works. Together with A9 + A10 forms the "benchmark subcommand is unreliable on Windows for typical KMP library projects" issue cluster — closing all 3 makes benchmark a first-class subcommand again.
+
+---
+
 ### 💡 IDEA — `--isolated` does not bypass project lockfile + `lock_held` error message could be richer (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation)
 
 **Status: IDEA, no milestone assigned.** Surfaced 2026-05-17 during the PR 3 wet matrix when two concurrent `kmp-test android` sessions hit the same project root. Confirmed live: the second invocation (mine, `kmp-test android --device R3CT30KAMEH --module-filter ":benchmark-android-test" --isolated --list-only --json`) was rejected with `errors[0].code: "lock_held"` despite `--isolated`. Error message: `"another kmp-test (android) is already running with PID 15512 (started 4m25s ago). Pass --force to bypass."` — exit 3.
