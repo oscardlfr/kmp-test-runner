@@ -553,9 +553,11 @@ Drift count per cell is **18 missing + 27-36 unexpected paths** — uniform stru
 
 ---
 
-### 💡 IDEA — `kmp-test android --dry-run` envelope drops subcommand-specific `android:{}` block (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation)
+### ✅ SHIPPED 2026-05-17 (PR 3.1 / d9e414a on feature branch) — `kmp-test --dry-run` envelopes drop subcommand-specific block (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation)
 
-**Status: IDEA, no milestone assigned.** Surfaced 2026-05-17 during the PR 3 (instrumented dual-branch docs) wet matrix — Cell 1b probed `kmp-test android --device R3CT30KAMEH --dry-run --json` and confirmed: real-run + `--list-only` envelopes emit the `android:{device_serial, device_task, flavor, instrumented_modules[]}` block at top-level; `--dry-run` envelopes do NOT. `plan:{...}` + `isolated:{...}` are present, `android:{}` is absent.
+**Status: SHIPPED 2026-05-17.** Closed by `feature/v0.10-step-4-pr-3-1-fix-dry-run-envelope` commit `d9e414a`. Both call sites (script-dispatcher short-circuit + orchestrator-direct path) converge on pure builders in `lib/envelope/dry-run-blocks.js`. All 4 affected subcommands (android, benchmark, changed, parallel) now emit their subcommand-specific block on dry-run with empty-but-present default values and flag-echo where the user supplied input. Vitest 1442 → 1510 (+66 new builder tests + 2 new parity snapshots). `envelope-schema.md` "Dry-run envelope" section updated to reflect the post-fix shape (removed the temporary PR 3 callout that documented the drift).
+
+**Status (historical): IDEA, no milestone assigned.** Surfaced 2026-05-17 during the PR 3 (instrumented dual-branch docs) wet matrix — Cell 1b probed `kmp-test android --device R3CT30KAMEH --dry-run --json` and confirmed: real-run + `--list-only` envelopes emit the `android:{device_serial, device_task, flavor, instrumented_modules[]}` block at top-level; `--dry-run` envelopes do NOT. `plan:{...}` + `isolated:{...}` are present, `android:{}` is absent.
 
 **Contract reference:** `references/cli/envelope-schema.md` (PR 2-shipped, now in `.skills/kmp-test-runner/`) "Dry-run envelope" section says "produces the same envelope shape with a top-level `dry_run: true` flag and a `plan{}` block describing what *would* run". "Same envelope shape" includes the subcommand-specific block per the table at L28-36.
 
@@ -585,35 +587,186 @@ Drift count per cell is **18 missing + 27-36 unexpected paths** — uniform stru
 
 ---
 
-### 💡 IDEA — Device-task auto-resolution misses `connectedAndroidDeviceTest` (AGP Managed Devices / microbenchmark) (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation parallel session)
+### 🐛 BUG — `--device <serial>` not propagated to `connectedAndroidDeviceTest` (AGP Managed Devices) → AGP iterates ALL adb devices including offline ones (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation parallel session)
 
-**Status: IDEA, no milestone assigned.** Surfaced 2026-05-17 by a concurrent `kmp-test android --device <SERIAL> --auto-retry` session on a multi-module KMP library project (65 modules). Three microbenchmark modules failed even with `--auto-retry`. Failure shape per user report: "los tres usan el task `connectedAndroidDeviceTest` (AGP Managed Devices / microbenchmark) en vez de `androidConnectedCheck` normal — eso es esperable porque benchmarks Android requieren un perfil específico que el device task auto-detectado no satisface".
+**Status: BUG, no milestone assigned. HIGH severity — selects wrong device / silently fails on test farms with multiple devices.** Surfaced 2026-05-17 by a concurrent `kmp-test android --device R3CT30KAMEH --auto-retry` session on a multi-module KMP library project. Root cause confirmed via user log analysis (A1 in user's bug report 2026-05-17): the orchestrator passes `--device R3CT30KAMEH` to the gradle invocation but does NOT inject `ANDROID_SERIAL` env var or `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>` into the spawn. AGP's `connectedAndroidDeviceTest` then iterates EVERY device returned by `adb devices` and fails the entire build the moment any one of them is OFFLINE. Evidence from user: "benchmark-network/sdk/storage fallaron con `Skipping device 'emulator-5562' (emulator-5562): Device is OFFLINE`".
 
-**Hypothesis (not yet confirmed — needs log capture):** the orchestrator's device-task auto-resolution chain (`lib/project-model.js` + `lib/orchestrators/android-orchestrator.js`) probes for the first hit in roughly this order:
-1. `:<mod>:connectedAndroidTest` (classic AGP `library{}` / `application{}` DSL)
-2. `:<mod>:androidConnectedCheck` (KMP `androidLibrary{}` DSL, AGP 9+)
-3. Then falls through — does NOT probe for `connectedAndroidDeviceTest` (AGP Managed Devices), `<flavor>ConnectedAndroidDeviceTest`, or per-Managed-Devices-named tasks (`pixel6ApiXXConnectedAndroidDeviceTest`).
+**Root cause (confirmed 2026-05-17):** the new KMP `androidLibrary { withDeviceTestBuilder { sourceSetTreeName = "test" } }` DSL (AGP 9+) generates the `connectedAndroidDeviceTest` task instead of the classic `connectedAndroidTest`. The orchestrator's device-task auto-resolution chain (`lib/project-model.js` + `lib/orchestrators/android-orchestrator.js`) eventually resolves to `connectedAndroidDeviceTest` correctly (shape b in the original hypothesis below) — BUT the device-pinning mechanism only sets `ANDROID_SERIAL` for the classic `connectedAndroidTest` path. For `connectedAndroidDeviceTest`, AGP needs the serial via either `-P` property or proper env propagation; without it, the task scans the full adb-visible device set.
 
-When a module registers ONLY `connectedAndroidDeviceTest` (typical for `androidx.benchmark` microbenchmark modules using AGP Managed Devices), the orchestrator either:
-- (a) Picks the wrong task name (e.g. dispatches `connectedAndroidTest` which doesn't exist) → would surface as `task_not_found` error code.
-- (b) Picks `connectedAndroidDeviceTest` correctly but doesn't pass the AGP Managed Devices configuration (Pixel + API selection) the task needs to actually execute → runtime failure on the device.
-- (c) Skips the module entirely if no probed task matches → silent under-coverage.
+**Original hypothesis (now closed — shape b confirmed):**
+- (a) Picks the wrong task name (e.g. dispatches `connectedAndroidTest` which doesn't exist) → would surface as `task_not_found` error code. **NOT this — task IS resolved correctly.**
+- (b) Picks `connectedAndroidDeviceTest` correctly but doesn't pass the AGP Managed Devices configuration (device pin) the task needs to filter the device set. **CONFIRMED.**
+- (c) Skips the module entirely if no probed task matches → silent under-coverage. NOT this.
 
-Need log capture to discriminate. The user's other terminal is still running (~55 modules left, ~10-15 min); final summary will reveal which shape these failures take.
+**Proposed fix:** in `lib/orchestrators/android-orchestrator.js` (and the device-task resolution helper in `lib/project-model.js` if applicable), detect when the resolved task is `connectedAndroidDeviceTest` and:
+1. Inject `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<opts.device>` into the gradle args, OR
+2. Set `ANDROID_SERIAL=<opts.device>` in the spawn environment (AGP Managed Devices may also respect this) AND `-P<property>` for redundancy, OR
+3. Use AGP's managed-device filter via `-Pandroid.experimental.testOptions.managedDevices.allowOldApiLevelDevices=true` + a per-device-selector argv.
 
-**Cross-link to PR 3 docs:** `references/workflows/instrumented/with-android-cli.md` + `without-android-cli.md` "`--device-task` auto-resolution" section currently mentions only `connectedDebugAndroidTest` and `androidConnectedCheck`. Should be extended to mention `connectedAndroidDeviceTest` (Managed Devices variant) once the orchestrator behavior is confirmed, with `--device-task connectedAndroidDeviceTest` documented as the manual override for microbenchmark modules.
+Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidDeviceTest` task. Likely (1) per the `testInstrumentationRunnerArguments` standard contract.
 
-**Proposal (when prioritized):**
-1. Capture wet logs from the concurrent session to confirm root cause shape.
-2. Extend the `lib/project-model.js` task-name probe chain to include `connectedAndroidDeviceTest` and any `*ConnectedAndroidDeviceTest` variants. ~10-15 LOC.
-3. Audit AGP Managed Devices configuration propagation — when the auto-resolved task IS `connectedAndroidDeviceTest`, are user-supplied `--gradle-args "-Pandroid.testInstrumentationRunnerArguments.X"` forwarded correctly?
-4. Document the third variant in PR 3 workflow docs + add a troubleshooting entry under `task-not-found.md` if shape (a) is confirmed.
+**Related observations from same wet session (cross-link bugs A5 / A9 / A10 below):**
+- A5: `--auto-retry` JSON marks `retried: true` but logs show same duration as single fail → retry doesn't cleanup adb/daemon between attempts (the ghost-device issue persists on retry).
+- A9: `kmp-test benchmark` doesn't persist per-task logs (unlike `kmp-test android` which writes `.kmp-test-runner/logs/android/<runId>/<module>.log`) → root-cause investigation requires re-running with verbose flags rather than reading captures.
+- A10: `kmp-test benchmark --config smoke` 300s watchdog kills `a long-running benchmark module` (which legitimately takes 5m47s on this machine) → false negatives compound the A1 picture.
 
-**Effort:** ~30 min log triage + ~2-3h orchestrator fix + ~1h doc updates + ~1-2 vitest cases. Total ~4-6h end-to-end.
+**Effort:** ~1h to investigate which AGP mechanism works (build a synthetic Managed Devices fixture in `tests/fixtures/`) + ~1-2h fix + ~30 min vitest cases + ~1h doc update (PR 3 workflow docs gain mention of the third variant + recovery pattern).
 
-**Risk:** LOW-MEDIUM. The probe-chain extension is additive (existing modules keep working; previously-skipped modules now dispatch). Risk is over-eager matching — if some module declares BOTH `androidConnectedCheck` and `connectedAndroidDeviceTest`, the probe needs deterministic priority. Recommend: prefer KMP-native `androidConnectedCheck` first, fall back to `connectedAndroidDeviceTest` only when `androidConnectedCheck` is absent.
+**Risk:** LOW-MEDIUM. The fix is additive (current `connectedAndroidTest` path keeps current behavior; only `connectedAndroidDeviceTest` path gains the device-pin propagation). Risk surface: AGP Managed Devices semantics differ across AGP versions (8.x vs 9.x) — need to verify the fix doesn't regress on AGP 8.
 
-**Why now:** caught by a real-world 65-module project. Benchmark modules are an increasingly common pattern with `androidx.benchmark` 1.2+ adopting Managed Devices by default; under-coverage today silently drops benchmark validation from CI test runs.
+**Why now:** caught by a real-world 65-module KMP library project on user's wet-validation pass. The AGP 9+ KMP `withDeviceTestBuilder` DSL is the default for new microbenchmark modules per `androidx.benchmark` 1.2+; under-coverage today silently drops benchmark validation from CI test runs across that growing surface.
+
+**Cross-link to PR 3 docs:** `references/workflows/instrumented/with-android-cli.md` + `without-android-cli.md` "`--device-task` auto-resolution" section currently mentions only `connectedDebugAndroidTest` and `androidConnectedCheck`. After the fix lands, extend to mention `connectedAndroidDeviceTest` (Managed Devices variant) + document `--device-task connectedAndroidDeviceTest` as the manual override + add per-device-pin recovery commands. Plus a new troubleshooting entry under `module-failed.md` (or a dedicated `connected-android-device-test.md` deep-dive) for the "ghost offline device" recovery pattern.
+
+---
+
+### 🐛 BUG — `kmp-test parallel --output-file <name>` flag IGNORED — coverage report written to `.kmp-test-runner/reports/coverage/<timestamp>.md` instead (surfaced 2026-05-17 user wet session — bug A2)
+
+**Status: BUG, no milestone assigned. MEDIUM severity — flag silently no-ops; CI scripts depending on predictable filename break without surface signal.** User invoked `kmp-test parallel --output-file coverage-full-report.md`; the file at project root with that name (from a 2026-04-02 prior run) was NOT overwritten, and the real report landed at `.kmp-test-runner/reports/coverage/20260517-003209-036004.md` (timestamped path). The flag is documented in `references/cli/flags-reference.md` row "`--output-file <path>` | `coverage-full-report.md` | Markdown report filename inside `.kmp-test-runner/reports/coverage/`."
+
+**Read carefully:** the documented default is "filename INSIDE `.kmp-test-runner/reports/coverage/`" — so the flag is supposed to be a filename, not a path. The user reasonably interpreted it as "path relative to project root" since they explicitly passed a relative path. The fix is one of:
+- (a) Treat the value as a path (relative → project-root-relative, absolute → as-is) — matches user expectation. Doc clarifies. Bytes: ~10 LOC + doc + 1 vitest.
+- (b) Strictly enforce filename only (reject `/` in value as `invalid_flag_value`), keep the in-reports-dir behavior — strict but breaks the user's reasonable expectation.
+- (c) Hybrid: when value contains `/`, treat as full path; when value is a bare filename, place under reports dir. Most ergonomic but the "implicit path-vs-filename detection" is a footgun.
+
+**Recommendation: (a).** Path semantics are what users expect; the timestamped `.kmp-test-runner/reports/coverage/<ts>.md` is a separate concern (audit trail) and should remain regardless of the user-named output.
+
+**Effort:** ~1-2h fix + 2 vitest cases + doc clarification.
+
+**Risk:** LOW. Backwards-compat: pre-fix users who passed bare filenames get a slightly different write location post-fix (now relative to cwd / project root). Document in CHANGELOG when shipped.
+
+---
+
+### 🐛 BUG — Coverage report header mislabels execution mode as "Tests Run: No (--skip-tests)" when tests DID run via `parallel` (surfaced 2026-05-17 user wet session — bug A3)
+
+**Status: BUG, no milestone assigned. MEDIUM severity — broken audit trail.** User ran `kmp-test parallel` (which dispatched tests AND aggregated coverage afterward). The resulting `latest.md` coverage report says `> Tests Run: No (--skip-tests)` and `EXECUTION_MODE: skip-tests` — but tests DID run, the user did NOT pass `--skip-tests`, and the report came from a real `parallel` dispatch, not from `coverage --skip-tests`.
+
+**Root cause hypothesis:** the coverage-report writer at `lib/coverage-*` (likely the markdown emitter) hardcodes `EXECUTION_MODE: skip-tests` when called from any non-parallel-direct path, OR the `parallel`-driven coverage aggregation path mistakenly sets the `skipTests` flag on the report metadata even though tests just ran.
+
+**Impact:** agents and humans reading the report believe it's a re-aggregation snapshot rather than the canonical post-run output. Confusing for triage. Wouldn't surface in any automated test because the report header is human-facing markdown, not envelope JSON.
+
+**Proposed fix:** track the originating subcommand + the `--skip-tests` flag separately. Header line should distinguish:
+- "Tests Run: Yes (via parallel)" — when run from `parallel` (or `changed`, `benchmark` with coverage)
+- "Tests Run: No (--skip-tests)" — when run from `coverage --skip-tests` explicitly (canonical re-aggregation)
+- "Tests Run: No (--coverage-only)" — when run from `parallel --coverage-only`
+
+**Effort:** ~30 min fix + 1-2 vitest cases on the report-writer.
+
+**Risk:** ZERO. Header-text-only change; no functional impact.
+
+---
+
+### 💡 IDEA — Kover module-count discrepancy: 62 plugins, 58 reports, 2 explicit "No coverage data", 2 unaccounted (surfaced 2026-05-17 user wet session — bug A4)
+
+**Status: IDEA, no milestone assigned. LOW severity — accounting hole.** User report: "62 módulos tienen plugin Kover; 58 reportan coverage; 2 explícitamente 'No coverage data' (benchmark-infra, core-result). Faltan 2 módulos en el balance."
+
+**Math check:** 58 (reported) + 2 (explicit no-data) = 60. 62 (plugin applied) - 60 (accounted) = 2 missing.
+
+**Investigation needed:** where do the missing 2 modules go? Three plausible shapes:
+- (a) Silently dropped during aggregation (e.g., reading `build/reports/kover/report.xml` fails parse, exception caught → module simply omitted).
+- (b) Conditionally excluded by `--exclude-coverage` heuristic the user didn't pass.
+- (c) Coverage plugin applied but no test source set → no XML generated; the aggregator counts them under "no data" but the COUNT off-by-2 suggests a code bug in the bucketing.
+
+**Proposed fix:** add explicit per-module bucketing in the aggregator output: `{ with_data: [...], without_data: [...], skipped_by_user: [...], errored: [...] }`. Total must equal `modules_with_kover_plugin.length`. Vitest case ensures invariant holds. If error path exists, surface as a `warnings[].code` so agents can flag the accounting hole.
+
+**Effort:** ~2-3h fix + ~30 min for the bucketing + 1-2 vitest cases.
+
+**Risk:** LOW. Additive surface (no shape change). The error-path-aware bucketing is more honest than silent drops.
+
+---
+
+### 🐛 BUG — `--auto-retry` has no observable cleanup between attempts on instrumented retries → retries fail for the same ghost-device reason (surfaced 2026-05-17 user wet session — bug A5)
+
+**Status: BUG, no milestone assigned. LOW severity (HIGH if it composes with bug A1 above — currently the two compound to "neither flag helps").** User report: "En la primera corrida con `--auto-retry`, el JSON los marca `retried: true` pero los logs muestran que el retry duró el mismo tiempo que un fail single y volvió a fallar por la misma causa (ghost device). El retry no incorpora limpieza de adb/daemon entre intentos."
+
+**Root cause hypothesis:** `--auto-retry` re-dispatches the same gradle task with the same args, the same adb state, the same daemon. If the first failure was caused by adb's ghost device list (bug A1), the second dispatch sees the same list and fails identically. The retry is mechanically successful (dispatch happens; envelope marks `retried: true`) but semantically useless for the dominant failure class.
+
+**Proposed cleanup between retries:**
+1. `adb kill-server && adb start-server` to refresh the device list (drops ghost-offline entries).
+2. Optionally `gradle --stop` to refresh the daemon between attempts.
+3. With `--clear-data`: the existing `adb shell pm clear <pkg>` runs per-retry; extend to also call `adb -s <SERIAL> shell pm clear` rather than the global one (per-device cleanup).
+
+**Cross-link:** depends on A1 fix landing first. With A1's device-pin propagation, A5's retry-cleanup gap is much smaller (the dispatch already won't see ghost devices). A5 alone (without A1) is a workaround for A1's symptom. Probably worth treating as one combined fix.
+
+**Effort:** ~30 min after A1 lands; the cleanup steps are conditional on `--auto-retry` already being set.
+
+**Risk:** LOW. `adb kill-server` between dispatches adds ~1-2s; gated behind `--auto-retry` so no impact on the happy path.
+
+---
+
+### 💡 IDEA — `kmp-test doctor` reports "ADB WARN not found" despite local.properties → sdk.dir auto-detect succeeding (surfaced 2026-05-17 user wet session — bug A7)
+
+**Status: IDEA, no milestone assigned. LOW severity — UX inconsistency.** User report: doctor's "ADB" check line says WARN/not-found, but the "Android SDK" check immediately below says OK and auto-detects via `local.properties → sdk.dir`. The two checks disagree on whether ADB is reachable.
+
+**Root cause hypothesis:** the doctor's ADB check probes for `adb` on PATH (or via `$ANDROID_HOME/platform-tools/adb`); the SDK check resolves `sdk.dir` from `local.properties` which gives the SDK root, from which `platform-tools/adb` is reachable as a path but not necessarily on PATH. The two checks operate independently and don't share resolved state.
+
+**Proposed fix:** doctor's ADB check should ALSO probe `<resolved sdk.dir>/platform-tools/adb` (or `.exe` on Windows) and report OK + the absolute path when found. Falls back to the current PATH probe. Message becomes "ADB OK (via SDK at <path>)" or "ADB WARN not on PATH (try `<sdk>/platform-tools/adb`)".
+
+**Effort:** ~30 min in `lib/commands/doctor.js` (or wherever the ADB check lives) + 1 vitest case.
+
+**Risk:** ZERO. Additive probe; existing PATH-only probe remains as fallback.
+
+---
+
+### 🐛 BUG — `kmp-test update` fails with `release_resolve_failed` on Windows hosts with revoked CA cert in SChannel (surfaced 2026-05-17 user wet session — bug A8)
+
+**Status: BUG, no milestone assigned. HIGH severity — auto-update mechanism unreachable from affected hosts.** User report: `kmp-test update` returns `release_resolve_failed — "Could not resolve latest release for oscardlfr/kmp-test-runner (redirect + API both failed)"`. The user diagnosed it as a Windows SChannel cert revocation issue — `curl` (which the update path likely uses for the GitHub release redirect probe) fails to validate the cert chain, but `npm` and Node fetch (which use the bundled CA bundle, not SChannel) work fine.
+
+**Root cause hypothesis:** the update orchestrator (`lib/commands/update.js` or `lib/update-orchestrator.js`) uses an HTTP client that defers to the OS cert store. On Windows hosts where SChannel has a revoked or stale CA root cert for GitHub's chain (a common transient state), all redirect + API attempts fail with cert-validation errors.
+
+**Proposed fix:** switch the update path's HTTP client to Node's built-in `https` (or `node-fetch`-equivalent) which uses Node's bundled CA bundle, independent of the OS cert store. Specifically:
+1. Replace any `curl`/`spawn(curl, ...)` invocations in the update path with `https.get` / `https.request` calls.
+2. Ensure the User-Agent header is set (GitHub API requires it for `api.github.com` calls).
+3. Honor `KMP_TEST_REGISTRY_STUB` (the env var the parity tests use) so the fix doesn't break the existing test harness.
+
+**Workaround for affected users today:** `npm install -g kmp-test-runner@latest` (npm uses Node's CA bundle). User confirmed this works in their session.
+
+**Effort:** ~2-3h fix + 2-3 vitest cases (cert-failure simulation via stub, success path with redirect chain).
+
+**Risk:** LOW-MEDIUM. The current update path may have other dependencies on curl behavior (timeout semantics, redirect handling); the Node-https replacement needs careful audit. Risk surface: failing curl-style timeouts that the user's CI relied on.
+
+---
+
+### 🐛 BUG — `kmp-test benchmark` does NOT persist per-task gradle logs (unlike `kmp-test android`) → no post-mortem when benchmarks fail (surfaced 2026-05-17 user wet session — bug A9)
+
+**Status: BUG, no milestone assigned. HIGH severity — no diagnostic surface when benchmarks fail.** User report: "A diferencia de android (que crea `.kmp-test-runner/logs/android/<timestamp>/<module>.log`), el subcomando benchmark solo escribe el resumen `2 passed, 8 failed` sin gradle output ni stack traces. No hay forma de diagnosticar fallos post-mortem."
+
+**Reference pattern:** `lib/orchestrators/android-orchestrator.js` writes per-module logs at `<projectRoot>/.kmp-test-runner/logs/android/<runId>/<module>.log` (post-v0.8.0 location). Each log captures the gradle subprocess's full stdout + stderr for that module. Agents and humans can grep these post-run for failure diagnosis.
+
+**Proposed fix:** replicate the android-orchestrator pattern in `lib/orchestrators/benchmark-orchestrator.js`:
+1. Create `<projectRoot>/.kmp-test-runner/logs/benchmark/<runId>/` directory on first dispatch.
+2. For each (module, platform) gradle spawn, redirect stdout + stderr to `<module>-<platform>.log` (preserving the in-memory capture used for the envelope summary).
+3. Surface the log path in the per-module result entry (envelope field `benchmark.legs[].log_path` or per-module in `modules[]`).
+4. README updates: "Per-task logs are persisted under `.kmp-test-runner/logs/benchmark/<runId>/` — grep for failures."
+
+**Cross-link bug A10:** A10 (the 300s smoke timeout false-negative) would be vastly easier to diagnose with A9's per-task logs in place. Probably ship A9 BEFORE A10's policy fix (so users have evidence to drive A10's threshold conversation).
+
+**Effort:** ~2-3h fix (mostly mirroring the android-orchestrator code; the writeFileSync + mkdirSync calls + spawn opts plumbing) + ~1h vitest cases (log file creation, log content matches stdout+stderr).
+
+**Risk:** LOW. Pure additive — adds files on disk under the existing `.kmp-test-runner/` directory (already in user `.gitignore` recommendations). No envelope shape change unless we add the `log_path` field (additive — schema doesn't bump).
+
+---
+
+### 🐛 BUG — `kmp-test benchmark --config smoke` 300s watchdog kills legitimate long-running benchmarks → false negatives (surfaced 2026-05-17 user wet session — bug A10)
+
+**Status: BUG, no milestone assigned. HIGH severity — `smoke` config has been the friendly default since v0.7-era; producing false negatives erodes trust in the headline subcommand.** User report: "El benchmark real de a long-running benchmark module tarda 5m 47s (excede los 300s del watchdog). El runner mata/marca FAIL pese a que gradle eventualmente sucede." The user confirmed via direct gradle invocation that `:a long-running benchmark module:desktopSmokeBenchmark` SUCCEEDS in 5m47s when given the time. The other JVM benchmarks in the same batch also failed, possibly for the same reason (not yet verified — the user is waiting for A9's log-persistence fix to investigate).
+
+**Reference:** `lib/benchmark-orchestrator.js` defines `BENCHMARK_TIMEOUT_DEFAULTS_MS = { smoke: 300_000, main: 1_800_000, stress: 3_600_000 }` (L105-109). The 300s smoke ceiling targets "fast feedback for the dev inner loop"; it does not accommodate larger benchmark modules.
+
+**Three independent fixes (any combination):**
+- **(a) Bump the smoke default upward** — e.g., to 600s (10min) or 900s (15min). Trade-off: cleaner first-run experience for medium-sized projects vs slower "fast" feedback signal. Reasonable bump: 600s.
+- **(b) Implement the PARKED-bug graded exit code** — see existing entry "💡 IDEA — `benchmark` partial-success grading" above. When `total > 0 AND timed_out > 0 AND passed >= 1`, exit 0 with `warnings[].code: "partial_timeout"` instead of exit 3. This converts hard-failures-on-timeout into soft signals while preserving the "everything hung" hard-fail.
+- **(c) Per-module timeout override** — `--module-timeout :a long-running benchmark module=600s` flag, or auto-detect from a `.kmp-test-runner/benchmark-timeouts.json` config. Most ergonomic but most complex.
+
+**Recommendation:** ship (b) FIRST (the graded exit code already designed in the PARKED-bug IDEA above) — it changes the headline UX from "everything failed" to "1 of 5 timed out, 4 passed" without bumping the policy. Then evaluate (a) based on broader user reports. Defer (c) to a v0.11 or later milestone (sophisticated per-module config has lots of edge cases).
+
+**Cross-link bug A9:** without A9's per-task logs, A10's affected users can't reliably distinguish "smoke timeout, real benchmark would have passed" from "benchmark genuinely hung". A9 must ship first OR concurrently for A10's fix to be debuggable.
+
+**Cross-link to existing BACKLOG entry:** "💡 IDEA — `benchmark` partial-success grading: `gradle_timeout` should not hard-fail when N-1 modules passed" (above) IS option (b) — these are the same fix. Should merge or cross-link when both are scheduled.
+
+**Effort:** (a) ~15 LOC + 1 vitest. (b) ~30 LOC + 2-3 vitest cases (reuse the IDEA's existing design). (c) ~2-3h.
+
+**Risk:** (a) LOW — wider default doesn't break anyone, just makes some runs slower-to-fail. (b) MEDIUM — exit-code grading is observable from CI scripts; document prominently. (c) MEDIUM — new flag surface, edge cases (whitespace handling, glob support).
 
 ---
 
