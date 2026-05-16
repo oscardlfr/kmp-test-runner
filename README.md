@@ -466,6 +466,18 @@ The CLI writes its outputs (cache, coverage reports, Android log dumps) under a 
 .kmp-test-runner/
 ```
 
+## Use as an Agent Skill
+
+`kmp-test-runner` ships an [Agent Skill](https://agentskills.io) at `.skills/kmp-test-runner/` conforming to the open `agentskills.io` standard. The skill makes the CLI auto-discoverable by Claude Code, Gemini CLI, Cursor, GitHub Copilot, OpenAI Codex, and 30+ other agentskills.io-compatible tools — agents activate the skill automatically when the user asks to run tests in a KMP or Android Gradle project.
+
+**Installation paths** (pick one):
+
+- **Project-local**: clone the `.skills/kmp-test-runner/` directory into your project's `.skills/`, `.agent/skills/`, or `.github/skills/`. The agent finds it on next session.
+- **User-global (Claude Code)**: `cp -r .skills/kmp-test-runner ~/.claude/skills/`
+- **User-global (Gemini CLI / Antigravity)**: `android skills add kmp-test-runner` (when listed in `github.com/android/skills`, currently pending).
+
+The skill's `SKILL.md` documents the JSON envelope contract, exit codes, and per-workflow steps so the agent dispatches the right `kmp-test` subcommand (`parallel`, `coverage`, `android`, `benchmark`) and parses results correctly without trial-and-error.
+
 ## Agentic usage — token-cost rationale
 
 `kmp-test` is built to be cheap to call from AI coding agents. The `--json` flag is the lever: it replaces verbose, multi-step Gradle orchestration with a single command and a single structured response.

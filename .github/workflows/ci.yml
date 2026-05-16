@@ -140,6 +140,20 @@ jobs:
           node-version: 20
       - name: Bundle-size budget gate (tools/check-bundle-size.mjs)
         run: node tools/check-bundle-size.mjs
+  skills-validate:
+    # Always runs — content quality gate for the agentskills.io-conformant
+    # bundled skill at .skills/kmp-test-runner/. Catches frontmatter typos,
+    # naming-rule violations, and reference-chain breakage. Cheap (~5s)
+    # so no decide-gating.
+    # See `agentskills.io/specification` and `.skills/kmp-test-runner/SKILL.md`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate agent skill (npx skills-ref validate)
+        run: npx -y skills-ref validate .skills/kmp-test-runner/
   installer-e2e:
     needs: [decide, build]
     if: needs.decide.outputs.heavy == 'true'
