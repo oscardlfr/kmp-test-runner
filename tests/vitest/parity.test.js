@@ -186,6 +186,12 @@ describe('parity / envelope JSON schema snapshot', () => {
     { sub: 'parallel',  args: ['--dry-run', '--json'] },
     { sub: 'changed',   args: ['--dry-run', '--json', '--staged-only'] },
     { sub: 'android',   args: ['--list-only', '--json'] },
+    // PR 3.1 — add an explicit android --dry-run case. The previous matrix
+    // covered only --list-only for android; --dry-run goes through the
+    // dispatcher's short-circuit (lib/runners/script-dispatcher.js) which
+    // before PR 3.1 dropped the android:{} block entirely. This snapshot
+    // locks the post-fix shape so a future regression resurfaces immediately.
+    { sub: 'android',   args: ['--dry-run', '--json'] },
     { sub: 'benchmark', args: ['--dry-run', '--json'] },
     { sub: 'coverage',  args: ['--dry-run', '--json'] },
     { sub: 'doctor',    args: ['--json'], skipFixture: true },

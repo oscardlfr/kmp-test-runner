@@ -329,6 +329,12 @@ exports[`characterization / variation envelopes > parallel --isolated --dry-run 
     "locked": true,
   },
   "modules": [],
+  "parallel": {
+    "legs": [],
+    "max_workers": 0,
+    "test_type": "auto",
+    "timeout_s": 600,
+  },
   "plan": {
     "final_args": "<PLATFORM_SPECIFIC>",
     "modules": [
@@ -383,6 +389,12 @@ exports[`characterization / variation envelopes > parallel --test-filter SomeTes
     "locked": true,
   },
   "modules": [],
+  "parallel": {
+    "legs": [],
+    "max_workers": 0,
+    "test_type": "auto",
+    "timeout_s": 600,
+  },
   "plan": {
     "final_args": "<PLATFORM_SPECIFIC>",
     "modules": [
