@@ -4,15 +4,15 @@ Pick the workflow that matches the user's intent. Each linked file (when populat
 
 | User intent | Subcommand | Workflow doc | Status |
 |-------------|-----------|--------------|--------|
-| Unit tests | `kmp-test parallel` | `unit-tests.md` | follow-up release |
-| Coverage aggregation | `kmp-test coverage` | `coverage.md` | follow-up release |
-| Benchmarks | `kmp-test benchmark` | `benchmarks.md` | follow-up release |
-| Instrumented tests | `kmp-test android` | `instrumented/with-android-cli.md` *or* `instrumented/without-android-cli.md` | follow-up release (dual branch) |
-| Changed-only tests | `kmp-test changed` | `changed.md` | follow-up release |
+| Unit tests | `kmp-test parallel` | [`unit-tests.md`](unit-tests.md) | **shipped (v0.10 #4 PR 2)** |
+| Coverage aggregation | `kmp-test coverage` | [`coverage.md`](coverage.md) | **shipped (v0.10 #4 PR 2)** |
+| Benchmarks | `kmp-test benchmark` | [`benchmarks.md`](benchmarks.md) | **shipped (v0.10 #4 PR 2)** |
+| Instrumented tests | `kmp-test android` | `instrumented/with-android-cli.md` *or* `instrumented/without-android-cli.md` | follow-up release (dual branch — v0.10 #4 PR 3) |
+| Changed-only tests | `kmp-test changed` | [`changed.md`](changed.md) | **shipped (v0.10 #4 PR 2)** |
 
 Branch on environment for the **instrumented** workflow only — see [`SKILL.md`](../../SKILL.md#environment-detection) "Environment detection" section. The other workflows do not branch on Android CLI presence.
 
-> **Why this hub exists at the foundation release**: it lets `SKILL.md` cross-reference workflow docs that don't exist yet, so the navigation surface is in place when follow-up releases land the per-workflow deep-dives.
+Each shipped workflow doc covers: when to dispatch, full common flags (subset of [`../cli/flags-reference.md`](../cli/flags-reference.md)), behaviors únicos (cascade-retry, auto-detect chain, SKIP_* env vars, git diff strategy, etc.), edge cases, an envelope-shape excerpt, and links to the relevant troubleshooting deep-dives.
 
 ## See also
 
