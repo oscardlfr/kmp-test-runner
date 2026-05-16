@@ -1,5 +1,55 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`parity / envelope JSON schema snapshot > android --dry-run --json envelope shape is stable 1`] = `
+{
+  "android": {
+    "device_serial": "",
+    "device_task": "",
+    "flavor": "",
+    "instrumented_modules": [],
+  },
+  "coverage": {
+    "missed_lines": null,
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "dry_run": true,
+  "duration_ms": "<DURATION_MS>",
+  "errors": [],
+  "exit_code": 0,
+  "isolated": {
+    "cache_dir": null,
+    "enabled": false,
+    "kept": false,
+    "locked": true,
+  },
+  "modules": [],
+  "plan": {
+    "final_args": "<PLATFORM_SPECIFIC>",
+    "modules": [],
+    "script_path": "<PLATFORM_SPECIFIC>",
+    "skipped": [],
+    "spawn_args": "<PLATFORM_SPECIFIC>",
+    "spawn_cmd": "<PLATFORM_SPECIFIC>",
+    "test_filter": null,
+  },
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "android",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
 exports[`parity / envelope JSON schema snapshot > android --list-only --json envelope shape is stable 1`] = `
 {
   "android": {
@@ -47,6 +97,15 @@ exports[`parity / envelope JSON schema snapshot > android --list-only --json env
 
 exports[`parity / envelope JSON schema snapshot > benchmark --dry-run --json envelope shape is stable 1`] = `
 {
+  "benchmark": {
+    "config": "smoke",
+    "failed": 0,
+    "passed": 0,
+    "platforms": [],
+    "timed_out": 0,
+    "timeout_ms": 0,
+    "total": 0,
+  },
   "coverage": {
     "missed_lines": null,
     "modules_with_jacoco_plugin": [],
@@ -91,6 +150,11 @@ exports[`parity / envelope JSON schema snapshot > benchmark --dry-run --json env
 
 exports[`parity / envelope JSON schema snapshot > changed --dry-run --json --staged-only envelope shape is stable 1`] = `
 {
+  "changed": {
+    "base_ref": "HEAD",
+    "detected_modules": [],
+    "staged_only": true,
+  },
   "coverage": {
     "missed_lines": null,
     "modules_with_jacoco_plugin": [],
@@ -386,6 +450,12 @@ exports[`parity / envelope JSON schema snapshot > parallel --dry-run --json enve
     "locked": true,
   },
   "modules": [],
+  "parallel": {
+    "legs": [],
+    "max_workers": 0,
+    "test_type": "auto",
+    "timeout_s": 600,
+  },
   "plan": {
     "final_args": "<PLATFORM_SPECIFIC>",
     "modules": [
