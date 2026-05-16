@@ -19,7 +19,7 @@ No-devices variant:
     "device_serial": "",
     "device_task": "",
     "flavor": "",
-    "instrumented_modules": [":benchmark-network"]
+    "instrumented_modules": [":app"]
   }
 }
 ```
@@ -37,7 +37,7 @@ Device-mismatch variant:
     "device_serial": "BAD_SERIAL",
     "device_task": "",
     "flavor": "",
-    "instrumented_modules": [":benchmark-network"]
+    "instrumented_modules": [":app"]
   }
 }
 ```

@@ -158,7 +158,7 @@ The `android` subcommand emits the standard top-level envelope (see [`../../cli/
   "tests": { "total": 3, "passed": 3, "failed": 0, "skipped": 0 },
   "modules": [
     {
-      "name": ":benchmark-network",
+      "name": ":app",
       "type": "kmp",
       "android_dsl": true,
       "android_dsl_variant": "kmpAndroidLibrary",
@@ -175,7 +175,7 @@ The `android` subcommand emits the standard top-level envelope (see [`../../cli/
     "device_serial": "R3CT30KAMEH",
     "device_task": "",
     "flavor": "",
-    "instrumented_modules": [":benchmark-network"]
+    "instrumented_modules": [":app"]
   },
   "errors": [],
   "warnings": []
