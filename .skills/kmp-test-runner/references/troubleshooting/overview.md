@@ -7,7 +7,7 @@ Branch on `errors[].code` from the JSON envelope. Each linked file (when populat
 | `no_test_modules` | [`no-test-modules.md`](no-test-modules.md) | **shipped (v0.10 #4 PR 2)** |
 | `task_not_found` | [`task-not-found.md`](task-not-found.md) | **shipped (v0.10 #4 PR 2)** |
 | `module_failed` (incl. `setup_failed:true`) | [`module-failed.md`](module-failed.md) | **shipped (v0.10 #4 PR 2)** |
-| `instrumented_setup_failed` | `instrumented-setup-failed/with-android-cli.md` *or* `instrumented-setup-failed/without-android-cli.md` | follow-up release (dual branch — v0.10 #4 PR 3) |
+| `instrumented_setup_failed` | [`instrumented-setup-failed/with-android-cli.md`](instrumented-setup-failed/with-android-cli.md) *or* [`instrumented-setup-failed/without-android-cli.md`](instrumented-setup-failed/without-android-cli.md) | **shipped (v0.10 #4 PR 3)** |
 | `unsupported_class_version` | [`unsupported-class-version.md`](unsupported-class-version.md) | **shipped (v0.10 #4 PR 2)** |
 | `flavor_unused` | [`flavor-unused.md`](flavor-unused.md) | **shipped (v0.10 #4 PR 2)** |
 | `isolated_runtime_race` | [`isolated-runtime-race.md`](isolated-runtime-race.md) | **shipped (v0.10 #4 PR 2)** |
