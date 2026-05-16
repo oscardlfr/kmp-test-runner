@@ -422,7 +422,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 
 ### Project config — `.kmp-test-runner.json`
 
-Drop a `.kmp-test-runner.json` at your project root to pin stable defaults instead of repeating CLI flags or relying on env vars. Resolution precedence: **CLI flag > env var > config file > built-in default**. Schema:
+Drop a `.kmp-test-runner.json` at your project root to pin stable defaults instead of repeating CLI flags or relying on env vars. Resolution precedence: **CLI flag > env var > project-local > user-global > built-in default**. Schema:
 
 ```json
 {
@@ -433,6 +433,29 @@ Drop a `.kmp-test-runner.json` at your project root to pin stable defaults inste
 ```
 
 All fields are optional. Unknown fields are preserved silently for forward compat. Type-mismatched fields are dropped with a `[WARN]` line on stderr.
+
+### User-global config — `~/.kmp-test/config.json`
+
+Per-machine, per-project presets for things the project-local file can't carry — machine-specific JDK paths, personal overrides, configs against repos you don't own. File path: `~/.kmp-test/config.json` on Linux/macOS, `%USERPROFILE%\.kmp-test\config.json` on Windows. Keyed by **lookup key**: `git remote get-url origin` → `rootProject.name` in `settings.gradle(.kts)` → `basename(projectRoot)`, first hit wins.
+
+```json
+{
+  "projects": {
+    "https://github.com/me/my-kmp-app.git": {
+      "defaults":  { "testType": "common", "coverageTool": "kover" },
+      "skip":      { "android": ["legacy-app"] },
+      "java_home": "C:/Program Files/Zulu/zulu-21"
+    },
+    "another-project-name": {
+      "defaults": { "testType": "jvm" }
+    }
+  }
+}
+```
+
+Per-project preset accepts all fields the project-local file does (`sharedProject`, `defaults`, `skip`) plus `java_home` (only valid here — see below). Project-local values override user-global values when both layers carry the same key.
+
+**`java_home` security note.** The `java_home` field is permitted ONLY in the user-global file. A `java_home` entry in a checked-in `.kmp-test-runner.json` is dropped and warned, since a malicious PR could otherwise redirect a teammate's spawn env without their consent.
 
 ### Quick start: gitignore CLI artifacts
 
