@@ -73,7 +73,7 @@
 
 1. **Defensive `--console=plain` injection** (reframed 2026-05-15 — repo emits zero ANSI of its own; the real risk is gradle's `--console=auto` writing ANSI into pipes) — auto-inject `--console=plain` in `spawnGradle` when `process.stdout.isTTY === false` or `NO_COLOR` set, plus `--color={always,never,auto}` override and idempotency guard (skip when user already passes any `--console=*` via `--gradle-args`). ~2h.
 2. **CLI auto-respect `gradle.properties`** — ✅ DONE 2026-05-16 (v0.10 #2 — `parallel`-only scope). `kmp-test parallel` drops `--parallel` from the gradle dispatch when the project has a `gradle.properties` AND the resolved `org.gradle.parallel` is `false`. Optional envelope field `gradle_config_applied:{parallel_dropped:true}` (additive, schema_version unchanged). Migration note in `CHANGELOG.md` covers the "project file present + key absent → resolves to gradle default `false` → drop fires" case. Escape hatches: `org.gradle.parallel=true` in `gradle.properties` or `--gradle-args "--parallel"` (last-wins, v0.9 passthrough).
-3. **Per-project config user-global** — `~/.kmp-test/config.json` keyed by git-remote / project name. Extends `lib/project-config.js`. ~6-10h.
+3. **Per-project config user-global** — ✅ DONE 2026-05-16 (v0.10 #3). `~/.kmp-test/config.json` keyed by git-remote → rootProject.name → basename (first hit wins). New `lib/user-config.js` (loader + resolveProjectKey + mergeConfigs + validateUserPreset). `lib/project-config.js` exports `loadMergedConfig` for the dispatch path. Schema full parity with project-local (`sharedProject`/`defaults`/`skip`) + new `java_home` (user-global only). Precedence: CLI > env > project-local > user-global. Security: project-local `java_home` is dropped + warned (closes supply-chain vector). Doctor surfaces "User config" row with matched preset key.
 4. **Research direction A — Google `android` skills system viability** — investigate whether the skills system supports tools that spawn gradle. ~2-3h research. If positive → ship the manifest (~1h). If negative → drop with user authorization.
 5. **Research direction B — `android describe` JSON discovery** — verify it enumerates KMP-non-AGP modules against the reference KMP composite project. ~2h research. If positive → ship the opt-in fallback in `lib/project-model.js` (~3-4h). If negative → drop with user authorization.
 6. **macOS validation gate** — same shape as v0.9 step 7. ~2-3h.
@@ -1739,11 +1739,11 @@ Investigation questions:
 
 Estimated effort: ~3-4h for catalogue + match + doctor surfacing. Probably v0.6.x or v0.7.
 
-### Per-project config presets (post-v0.5.1 idea — PARTIALLY DONE 2026-05-04 via PR6; user-global aspect deferred)
+### Per-project config presets (post-v0.5.1 idea — DONE)
 
-**Status: PARTIALLY DONE 2026-05-04 (PR6 / `63a292b`)**:
-- ✅ **Project-local `.kmp-test-runner.json`** shipped in PR6. Schema covers `sharedProject`, `defaults`, `skip` per platform. Loader at `lib/project-config.js`. Precedence: CLI > env > config file > built-in default.
-- ⏭️ **User-global `~/.kmp-test/config.json`** (the original proposal's per-project preset map keyed by project name / git-remote) DEFERRED. Different scope — would need user-global config loader + per-project lookup mechanism + JDK-path pinning. Promote when wide-smoke surfaces a concrete need; deferred-with-shape per `feedback_dont_defer_to_post_release.md` because no current user is blocked.
+**Status: DONE in two parts**:
+- ✅ **Project-local `.kmp-test-runner.json`** shipped 2026-05-04 in PR6 (`63a292b`). Schema covers `sharedProject`, `defaults`, `skip` per platform. Loader at `lib/project-config.js`. Precedence: CLI > env > config file > built-in default.
+- ✅ **User-global `~/.kmp-test/config.json`** shipped 2026-05-16 in v0.10 #3. New `lib/user-config.js` (loader + `resolveProjectKey` via git-remote → rootProject.name → basename fallback + `mergeConfigs`). `lib/project-config.js` exports `loadMergedConfig` for the dispatch path; the CLI auto-injects `--java-home` from the user-global preset via `applyConfigDefaults`. Schema = full parity with project-local + user-global-only `java_home`. Precedence chain extended to `CLI > env > project-local > user-global > built-in default`. Security: project-local `java_home` is dropped + warned (closes supply-chain vector). Doctor surfaces a "User config" row.
 
 Original entry text preserved below.
 

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — User-global config `~/.kmp-test/config.json` keyed by project (v0.10 #3)
+
+A second config layer for per-machine, per-project presets that the project-local `.kmp-test-runner.json` can't carry (machine-specific JDK paths, personal overrides, configs against repos you don't own). File path: `~/.kmp-test/config.json` on Linux/macOS, `%USERPROFILE%\.kmp-test\config.json` on Windows.
+
+**Schema** — per-project preset (full parity with `.kmp-test-runner.json` plus `java_home`):
+
+```json
+{
+  "projects": {
+    "https://github.com/me/my-kmp-app.git": {
+      "sharedProject": { "name": "my-libs", "path": "../my-libs" },
+      "defaults":      { "testType": "common", "coverageTool": "kover" },
+      "skip":          { "android": ["legacy-app"] },
+      "java_home":     "C:/Program Files/Zulu/zulu-21"
+    }
+  }
+}
+```
+
+**Lookup key** — resolved in this order, first hit wins: `git remote get-url origin` → `rootProject.name` in `settings.gradle(.kts)` → `basename(projectRoot)`.
+
+**Precedence** — CLI flag > env var > project-local > user-global. User-global = weak defaults that the checked-in project file (and explicit invocation) override. Matches how `gradle.properties` resolves (user → project).
+
+**Security** — `java_home` is permitted ONLY in the user-global file. A `java_home` field in a checked-in `.kmp-test-runner.json` is dropped + warned, since a malicious PR could otherwise redirect a teammate's spawn env (`JAVA_HOME`) without their consent.
+
+**Doctor** — `kmp-test doctor` adds a "User config" row that reports whether the file exists, whether the current project's lookup key matched a preset, and which fields the preset carries.
+
+No migration required (additive). When the user-global file is absent, behavior is identical to v0.9/v0.10 prior. Schema_version unchanged.
+
 ### Changed — `kmp-test parallel` auto-respects `org.gradle.parallel=false` (v0.10 #2)
 
 `parallel-orchestrator` now reads the project's `gradle.properties` (merged over `~/.gradle/gradle.properties` per gradle's own rules) and drops the unconditional `--parallel` flag from the per-leg gradle dispatch when the resolved value of `org.gradle.parallel` is `false`. Previously the CLI overrode this setting silently. The drop fires when: (a) the project has a `gradle.properties` file at all (`sources.project` true) AND (b) the resolved `parallel` value is `false`.
