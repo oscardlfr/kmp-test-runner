@@ -801,6 +801,34 @@ Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidD
 
 ---
 
+### 💡 IDEA — UPSTREAM ISSUE — kotlinx-benchmark caches `%TEMP%` path in gradle configuration-cache → stale-file FileNotFoundException between runs (surfaced 2026-05-17 user wet session — bug B5, project-side)
+
+**Status: IDEA, no CLI milestone (upstream issue).** Captured here because it affects ALL kmp-test-runner users with kotlinx-benchmark JVM benchmark modules on Windows, not just one project. The actual fix lives in the kotlinx-benchmark gradle plugin (upstream), not in kmp-test-runner. kmp-test-runner mitigates at the CLI level via bug A11 (default `--no-configuration-cache` for benchmark dispatch).
+
+**Symptom (user-confirmed 2026-05-17):**
+```
+java.io.FileNotFoundException: C:\Users\<user>\AppData\Local\Temp\benchmarks<long-suffix>.txt
+  at kotlinx.benchmark.UtilsKt.readFile (Utils.kt:12)
+  at JvmBenchmarkRunnerKt.main (line 17)
+```
+
+**Root cause:** the kotlinx-benchmark gradle plugin writes a per-benchmark-task scratch file to `%TEMP%` and caches the path in gradle's configuration cache. When Windows cleans `%TEMP%` (boot, idle cleanup, manual cleanup), the cached path points to a file that no longer exists. The next gradle invocation (with config-cache enabled) re-uses the cached path → `FileNotFoundException` → silent 2.2s task failure.
+
+**Upstream fixes (in the kotlinx-benchmark project):**
+- (a) Write to `build/benchmarks/<task-id>/` instead of `%TEMP%/` — stable, gitignored, per-project, survives `%TEMP%` cleanup.
+- (b) Mark the `desktop*Benchmark` tasks with `@DisableCachingByDefault` or `notCompatibleWithConfigurationCache()` — disables config-cache for these specific tasks; everything else still benefits.
+- (c) Validate the cached path exists during task setup; if missing, re-resolve and cache fresh path.
+
+**Upstream tracking:** as of 2026-05-17, no kmp-test-runner-owned issue is filed against `Kotlin/kotlinx-benchmark`. Filing one with the user's stack trace would help upstream prioritization; cross-link to this entry when filed.
+
+**kmp-test-runner mitigation (independent):** see bug A11 above — default `--no-configuration-cache` for `kmp-test benchmark` dispatch. The mitigation lands first since upstream fix timeline is independent; remove the mitigation when kotlinx-benchmark ships any of (a)(b)(c).
+
+**Why captured here:** any kmp-test-runner user running JVM benchmarks via kotlinx-benchmark on Windows is affected. Without this contextual entry, future bug reports of the same shape ("kmp-test benchmark fails in 2.2s on Windows but works on macOS / Linux / with `--no-configuration-cache`") would land in our backlog with no clear root-cause. The entry exists as a navigation aid: "if you see this stack trace, it's B5, mitigated by A11, fix lives upstream."
+
+**Cross-link:** A11 (CLI mitigation), A9 (per-task log persistence — was the diagnostic gap that hid B5's stack trace from the user). All 3 are in the same "benchmark on Windows" recovery chain.
+
+---
+
 ### 💡 IDEA — `--isolated` does not bypass project lockfile + `lock_held` error message could be richer (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation)
 
 **Status: IDEA, no milestone assigned.** Surfaced 2026-05-17 during the PR 3 wet matrix when two concurrent `kmp-test android` sessions hit the same project root. Confirmed live: the second invocation (mine, `kmp-test android --device R3CT30KAMEH --module-filter ":benchmark-android-test" --isolated --list-only --json`) was rejected with `errors[0].code: "lock_held"` despite `--isolated`. Error message: `"another kmp-test (android) is already running with PID 15512 (started 4m25s ago). Pass --force to bypass."` — exit 3.
