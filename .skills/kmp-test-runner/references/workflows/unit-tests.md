@@ -17,7 +17,7 @@ The agent should dispatch `kmp-test parallel` when the user asks any of:
 
 Do **not** dispatch `parallel` for:
 
-- Android instrumented tests on a device or emulator — use the `android` workflow (PR 3).
+- Android instrumented tests on a device or emulator — use the `android` workflow ([`instrumented/with-android-cli.md`](instrumented/with-android-cli.md) *or* [`instrumented/without-android-cli.md`](instrumented/without-android-cli.md), branch on `which android`).
 - Coverage-only re-aggregation when tests already ran — use the `coverage` workflow ([`coverage.md`](coverage.md)).
 - Benchmarks — use the `benchmark` workflow ([`benchmarks.md`](benchmarks.md)).
 - "Tests for the files I just changed" — use the `changed` workflow ([`changed.md`](changed.md)).
@@ -69,7 +69,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP (the canonical source). Full p
 | `--color <mode>` | `auto` | `always` / `never` / `auto`. Controls `--console=plain` injection. Respects `NO_COLOR` on POSIX. |
 | `--force` | off | Bypass the project lockfile when another `kmp-test` process holds it (`errors[].code: lock_held`). |
 
-`--device`, `--device-task`, `--auto-retry`, `--clear-data`, `--flavor` are only relevant when `--test-type androidInstrumented` — see the `android` workflow (PR 3).
+`--device`, `--device-task`, `--auto-retry`, `--clear-data`, `--flavor` are only relevant when `--test-type androidInstrumented` — see the `android` workflow ([`instrumented/with-android-cli.md`](instrumented/with-android-cli.md) *or* [`instrumented/without-android-cli.md`](instrumented/without-android-cli.md)).
 
 ## Behaviors únicos
 

@@ -184,6 +184,8 @@ When the environment is missing prerequisites (no `gradlew`, no JDK, no project 
 
 `--dry-run` produces the same envelope shape with a top-level `dry_run: true` flag and a `plan{}` block describing what *would* run. `exit_code` is always `0` in dry-run mode unless validation pre-fails. When `--isolated` is combined with `--dry-run`, the top-level `isolated:{}` field is also emitted to match real-run shape.
 
+> **Subcommand-specific block drift on `--dry-run`.** Observed on v0.9.1 wet validation (2026-05-17): `kmp-test android --dry-run --json` omits the `android:{}` block from the envelope (real-run path emits it; dry-run path does not). The `plan{}` block carries the equivalent dispatch shape (`plan.spawn_args[]` includes the resolved `--device <SERIAL>` echo). Agents needing the resolved device serial on dry-run should parse `plan.spawn_args[]` instead. Use `--list-only` (NOT `--dry-run`) when the agent specifically needs the `android:{}` block populated without spawning gradle. Drift to be reconciled in a follow-up release.
+
 ## Versioning policy
 
 `schema_version` bumps on:

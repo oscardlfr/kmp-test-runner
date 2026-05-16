@@ -51,7 +51,9 @@ If `NO_ANDROID_CLI`, fall back to ADB directly (`adb devices`, `adb shell screen
 
 Both paths produce the same `kmp-test --json` envelope. The Android CLI verbs only enrich the agent's troubleshooting surface, not the test dispatch itself.
 
-> **Details for each branch arrive in a follow-up release.** For now the body documents the dispatch only; branching workflows will live in future `references/workflows/instrumented/` files.
+Per-branch deep-dives:
+- HAS_ANDROID_CLI → [`references/workflows/instrumented/with-android-cli.md`](references/workflows/instrumented/with-android-cli.md) + [`references/troubleshooting/instrumented-setup-failed/with-android-cli.md`](references/troubleshooting/instrumented-setup-failed/with-android-cli.md)
+- NO_ANDROID_CLI → [`references/workflows/instrumented/without-android-cli.md`](references/workflows/instrumented/without-android-cli.md) + [`references/troubleshooting/instrumented-setup-failed/without-android-cli.md`](references/troubleshooting/instrumented-setup-failed/without-android-cli.md)
 
 ## Steps
 

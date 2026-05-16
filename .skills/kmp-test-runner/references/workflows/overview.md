@@ -7,7 +7,7 @@ Pick the workflow that matches the user's intent. Each linked file (when populat
 | Unit tests | `kmp-test parallel` | [`unit-tests.md`](unit-tests.md) | **shipped (v0.10 #4 PR 2)** |
 | Coverage aggregation | `kmp-test coverage` | [`coverage.md`](coverage.md) | **shipped (v0.10 #4 PR 2)** |
 | Benchmarks | `kmp-test benchmark` | [`benchmarks.md`](benchmarks.md) | **shipped (v0.10 #4 PR 2)** |
-| Instrumented tests | `kmp-test android` | `instrumented/with-android-cli.md` *or* `instrumented/without-android-cli.md` | follow-up release (dual branch — v0.10 #4 PR 3) |
+| Instrumented tests | `kmp-test android` | [`instrumented/with-android-cli.md`](instrumented/with-android-cli.md) *or* [`instrumented/without-android-cli.md`](instrumented/without-android-cli.md) | **shipped (v0.10 #4 PR 3)** |
 | Changed-only tests | `kmp-test changed` | [`changed.md`](changed.md) | **shipped (v0.10 #4 PR 2)** |
 
 Branch on environment for the **instrumented** workflow only — see [`SKILL.md`](../../SKILL.md#environment-detection) "Environment detection" section. The other workflows do not branch on Android CLI presence.

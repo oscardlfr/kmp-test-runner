@@ -173,7 +173,7 @@ Branch on `errors[].code`:
 - `unsupported_class_version` → [`../troubleshooting/unsupported-class-version.md`](../troubleshooting/unsupported-class-version.md) (very common with kotlinx-benchmark JMH on JDK 17 projects)
 - `module_failed` → [`../troubleshooting/module-failed.md`](../troubleshooting/module-failed.md)
 - `isolated_runtime_race` → [`../troubleshooting/isolated-runtime-race.md`](../troubleshooting/isolated-runtime-race.md)
-- `instrumented_setup_failed` (when `--platform android` or `all`) — same shape as the unit-tests workflow; PR 3 will cover the dual-branch (with-android-cli vs without) deep-dive.
+- `instrumented_setup_failed` (when `--platform android` or `all`) — same shape as the unit-tests workflow. Branch deep-dives: [`../troubleshooting/instrumented-setup-failed/with-android-cli.md`](../troubleshooting/instrumented-setup-failed/with-android-cli.md) *or* [`../troubleshooting/instrumented-setup-failed/without-android-cli.md`](../troubleshooting/instrumented-setup-failed/without-android-cli.md).
 
 ## See also
 
