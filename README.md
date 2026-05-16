@@ -576,7 +576,7 @@ Exit `0` if every check is OK or WARN; exit `3` if any FAIL (Node <18, missing s
 {"tool":"kmp-test","subcommand":"doctor","exit_code":0,"checks":[{"name":"Node","status":"OK","value":"v22.5.0","message":">=18 required"},…,{"name":"JDK catalogue","status":"OK","value":"3 installs","message":"JDK 11 (Eclipse Adoptium), JDK 17 (Eclipse Adoptium), JDK 21 (Azul Systems, Inc.)"}],"gradle_config":{"parallel":true,"workers_max":4,"caching":true,"daemon":true,"jvmargs":"-Xmx4g","configureondemand":false,"sources":{"project":true,"user":false}}}
 ```
 
-The `gradle_config{}` block (v0.8.1+) is informational, not a check — it surfaces the resolved values from `<project>/gradle.properties` merged on top of `~/.gradle/gradle.properties`. Agents read these to decide whether to layer their own parallel scheduler on top of gradle's. The human banner renders it as a separate block below the CHECK table:
+The `gradle_config{}` block (v0.8.1+) is informational, not a check — it surfaces the resolved values from `<project>/gradle.properties` merged on top of `~/.gradle/gradle.properties`. Agents read these to decide whether to layer their own parallel scheduler on top of gradle's. As of v0.10, `kmp-test parallel` also *respects* `org.gradle.parallel=false` from the resolved config: when the project has a `gradle.properties` and the resolved value is `false`, the CLI drops the unconditional `--parallel` flag from the gradle dispatch (escape hatch: `--gradle-args "--parallel"` re-enables via gradle's last-wins). On drop, the `parallel` envelope carries a top-level `gradle_config_applied: { parallel_dropped: true }`. The human banner renders the `gradle_config{}` block below the CHECK table:
 
 ```
 Gradle config (project + user resolved):

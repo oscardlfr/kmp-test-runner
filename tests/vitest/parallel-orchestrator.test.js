@@ -3660,3 +3660,153 @@ describe('--isolated runtime-race guard (OBS-4)', () => {
     expect(exitCode).not.toBe(2);
   });
 });
+
+// ===========================================================================
+// v0.10 #2 — auto-respect org.gradle.parallel=false from gradle.properties
+// ===========================================================================
+// The CLI used to inject `--parallel` unconditionally at dispatch.js:589.
+// Post-v0.10 #2: when the project has a gradle.properties file AND the
+// resolved value of `org.gradle.parallel` is false, the orchestrator drops
+// the `--parallel` injection. The user's `--gradle-args` is still appended
+// LAST so `--gradle-args "--parallel"` overrides the drop via gradle's
+// last-wins flag semantics.
+//
+// Envelope: optional top-level `gradle_config_applied: { parallel_dropped: true }`
+// is emitted ONLY when the drop fires. Absent (no key, not null) otherwise.
+describe('v0.10 #2 — respect org.gradle.parallel=false', () => {
+  it('project parallel=false → dispatchLeg gradleArgs omits --parallel (keeps --continue)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    writeFileSync(path.join(dir, 'gradle.properties'), 'org.gradle.parallel=false\n');
+    const spawn = makeSpawnStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const gradleCall = spawn.calls.find(isGradleCall);
+    expect(gradleCall).toBeTruthy();
+    const args = effectiveGradleArgs(gradleCall);
+    expect(args).not.toContain('--parallel');
+    expect(args).toContain('--continue');
+  });
+
+  it('project parallel=true → dispatchLeg gradleArgs contains --parallel', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    writeFileSync(path.join(dir, 'gradle.properties'), 'org.gradle.parallel=true\n');
+    const spawn = makeSpawnStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const gradleCall = spawn.calls.find(isGradleCall);
+    expect(gradleCall).toBeTruthy();
+    const args = effectiveGradleArgs(gradleCall);
+    expect(args).toContain('--parallel');
+    expect(args).toContain('--continue');
+  });
+
+  it('no project gradle.properties → drop is gated off, --parallel kept', async () => {
+    // makeProject does NOT write a gradle.properties by default. Verify
+    // sources.project=false short-circuits the drop even when the user
+    // global merges to parallel=false.
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    expect(existsSync(path.join(dir, 'gradle.properties'))).toBe(false);
+    const spawn = makeSpawnStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const gradleCall = spawn.calls.find(isGradleCall);
+    expect(gradleCall).toBeTruthy();
+    const args = effectiveGradleArgs(gradleCall);
+    expect(args).toContain('--parallel');
+  });
+
+  it('parallel=false + --gradle-args "--parallel" → last-wins keeps --parallel in final args', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    writeFileSync(path.join(dir, 'gradle.properties'), 'org.gradle.parallel=false\n');
+    const spawn = makeSpawnStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--gradle-args', '--parallel'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const gradleCall = spawn.calls.find(isGradleCall);
+    expect(gradleCall).toBeTruthy();
+    const args = effectiveGradleArgs(gradleCall);
+    // Final args must contain --parallel (re-enabled by user) AND --continue.
+    expect(args).toContain('--parallel');
+    expect(args).toContain('--continue');
+    // The user's --parallel must be the LAST occurrence so gradle's last-wins
+    // resolves to parallel-on. Only one occurrence is expected after the drop.
+    const occurrences = args.filter(a => a === '--parallel').length;
+    expect(occurrences).toBe(1);
+  });
+
+  it('envelope: parallel=false → gradle_config_applied:{parallel_dropped:true} present', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    writeFileSync(path.join(dir, 'gradle.properties'), 'org.gradle.parallel=false\n');
+    const spawn = makeSpawnStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(envelope.gradle_config_applied).toEqual({ parallel_dropped: true });
+  });
+
+  it('envelope: parallel=true → gradle_config_applied key is ABSENT (not null)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    writeFileSync(path.join(dir, 'gradle.properties'), 'org.gradle.parallel=true\n');
+    const spawn = makeSpawnStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect('gradle_config_applied' in envelope).toBe(false);
+  });
+
+  it('envelope: --dry-run with parallel=false → gradle_config_applied present (covers dry-run branch)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    writeFileSync(path.join(dir, 'gradle.properties'), 'org.gradle.parallel=false\n');
+    const spawn = makeSpawnStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--dry-run'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(envelope.dry_run).toBe(true);
+    expect(envelope.gradle_config_applied).toEqual({ parallel_dropped: true });
+  });
+
+  it('envelope: --list-only with parallel=false → gradle_config_applied present (covers list-only branch)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    writeFileSync(path.join(dir, 'gradle.properties'), 'org.gradle.parallel=false\n');
+    const spawn = makeSpawnStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--list-only'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(envelope.gradle_config_applied).toEqual({ parallel_dropped: true });
+  });
+});
