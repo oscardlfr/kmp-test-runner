@@ -553,6 +553,106 @@ Drift count per cell is **18 missing + 27-36 unexpected paths** — uniform stru
 
 ---
 
+### 💡 IDEA — `kmp-test android --dry-run` envelope drops subcommand-specific `android:{}` block (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation)
+
+**Status: IDEA, no milestone assigned.** Surfaced 2026-05-17 during the PR 3 (instrumented dual-branch docs) wet matrix — Cell 1b probed `kmp-test android --device R3CT30KAMEH --dry-run --json` and confirmed: real-run + `--list-only` envelopes emit the `android:{device_serial, device_task, flavor, instrumented_modules[]}` block at top-level; `--dry-run` envelopes do NOT. `plan:{...}` + `isolated:{...}` are present, `android:{}` is absent.
+
+**Contract reference:** `references/cli/envelope-schema.md` (PR 2-shipped, now in `.skills/kmp-test-runner/`) "Dry-run envelope" section says "produces the same envelope shape with a top-level `dry_run: true` flag and a `plan{}` block describing what *would* run". "Same envelope shape" includes the subcommand-specific block per the table at L28-36.
+
+**Symptom (live envelope from 2026-05-17 wet probe, project `kmp-cross-platform-e2e` fixture):**
+```
+{"tool":"kmp-test","schema_version":2,"subcommand":"android","exit_code":0,"dry_run":true,
+ "tests":{...},"modules":[],"coverage":{...},"errors":[],"warnings":[],
+ "plan":{"spawn_cmd":"pwsh","spawn_args":[...,"--device","R3CT30KAMEH","--module-filter",":benchmark-android-test"],...},
+ "isolated":{"enabled":false,...}}
+                                              ↑ no "android":{...} field
+```
+
+**Impact:** agents reading `android.device_serial` on a dry-run get `undefined`. Workaround currently documented in PR 3's envelope-schema.md callout: parse `plan.spawn_args[]` for the `--device <SERIAL>` token, or use `--list-only` (not `--dry-run`) when the `android:{}` block specifically is needed.
+
+**Question:** is this android-specific or does the same drift affect `benchmark:{}` / `changed:{}` / `parallel:{}` blocks on their respective `--dry-run` envelopes? PR 2's wet audit caught `changed:{}` and `benchmark:{}` drifts inline but the `--dry-run` shape across all 5 subcommand-specific blocks hasn't been audited as a set. Worth a focused investigation pass before fixing.
+
+**Proposal (when prioritized):**
+1. Decide policy — dry-run envelope SHOULD or SHOULD NOT emit subcommand-specific blocks. The "same shape" wording in envelope-schema.md implies SHOULD; users may have downstream tooling that assumes the absence (less likely but worth checking).
+2. If SHOULD: emit empty-but-present blocks (`android:{device_serial:"",device_task:"",flavor:"",instrumented_modules:[]}`) on all dry-run paths across `lib/orchestrators/android-orchestrator.js` + `parallel-orchestrator.js` + `benchmark-orchestrator.js` + `changed-orchestrator.js` + `coverage-orchestrator.js`. ~5 lines per orchestrator + parity test per subcommand (5 new vitest cases).
+3. If SHOULD NOT: drop the "same shape" wording from envelope-schema.md and document the dry-run subset explicitly.
+
+**Effort:** ~2-3h for option 2 (5 orchestrators × ~5 LOC + 5 vitest + audit existing parity snapshots for shape consistency). ~30 min for option 3 (doc-only).
+
+**Risk:** LOW. Option 2 is additive (empty blocks where they're absent today). Agents reading `dry_run.plan.spawn_args` for the device echo continue to work; those who only read `android.device_serial` start working in dry-run mode (currently always undefined).
+
+**Why now:** caught during PR 3 wet matrix; documented conservatively in envelope-schema.md as the fix proxy. Closing the orchestrator drift removes the doc caveat and aligns dry-run with `--list-only` / real-run shape.
+
+---
+
+### 💡 IDEA — Device-task auto-resolution misses `connectedAndroidDeviceTest` (AGP Managed Devices / microbenchmark) (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation parallel session)
+
+**Status: IDEA, no milestone assigned.** Surfaced 2026-05-17 by a concurrent `kmp-test android --device <SERIAL> --auto-retry` session on a multi-module KMP library project (65 modules). Three microbenchmark modules failed even with `--auto-retry`. Failure shape per user report: "los tres usan el task `connectedAndroidDeviceTest` (AGP Managed Devices / microbenchmark) en vez de `androidConnectedCheck` normal — eso es esperable porque benchmarks Android requieren un perfil específico que el device task auto-detectado no satisface".
+
+**Hypothesis (not yet confirmed — needs log capture):** the orchestrator's device-task auto-resolution chain (`lib/project-model.js` + `lib/orchestrators/android-orchestrator.js`) probes for the first hit in roughly this order:
+1. `:<mod>:connectedAndroidTest` (classic AGP `library{}` / `application{}` DSL)
+2. `:<mod>:androidConnectedCheck` (KMP `androidLibrary{}` DSL, AGP 9+)
+3. Then falls through — does NOT probe for `connectedAndroidDeviceTest` (AGP Managed Devices), `<flavor>ConnectedAndroidDeviceTest`, or per-Managed-Devices-named tasks (`pixel6ApiXXConnectedAndroidDeviceTest`).
+
+When a module registers ONLY `connectedAndroidDeviceTest` (typical for `androidx.benchmark` microbenchmark modules using AGP Managed Devices), the orchestrator either:
+- (a) Picks the wrong task name (e.g. dispatches `connectedAndroidTest` which doesn't exist) → would surface as `task_not_found` error code.
+- (b) Picks `connectedAndroidDeviceTest` correctly but doesn't pass the AGP Managed Devices configuration (Pixel + API selection) the task needs to actually execute → runtime failure on the device.
+- (c) Skips the module entirely if no probed task matches → silent under-coverage.
+
+Need log capture to discriminate. The user's other terminal is still running (~55 modules left, ~10-15 min); final summary will reveal which shape these failures take.
+
+**Cross-link to PR 3 docs:** `references/workflows/instrumented/with-android-cli.md` + `without-android-cli.md` "`--device-task` auto-resolution" section currently mentions only `connectedDebugAndroidTest` and `androidConnectedCheck`. Should be extended to mention `connectedAndroidDeviceTest` (Managed Devices variant) once the orchestrator behavior is confirmed, with `--device-task connectedAndroidDeviceTest` documented as the manual override for microbenchmark modules.
+
+**Proposal (when prioritized):**
+1. Capture wet logs from the concurrent session to confirm root cause shape.
+2. Extend the `lib/project-model.js` task-name probe chain to include `connectedAndroidDeviceTest` and any `*ConnectedAndroidDeviceTest` variants. ~10-15 LOC.
+3. Audit AGP Managed Devices configuration propagation — when the auto-resolved task IS `connectedAndroidDeviceTest`, are user-supplied `--gradle-args "-Pandroid.testInstrumentationRunnerArguments.X"` forwarded correctly?
+4. Document the third variant in PR 3 workflow docs + add a troubleshooting entry under `task-not-found.md` if shape (a) is confirmed.
+
+**Effort:** ~30 min log triage + ~2-3h orchestrator fix + ~1h doc updates + ~1-2 vitest cases. Total ~4-6h end-to-end.
+
+**Risk:** LOW-MEDIUM. The probe-chain extension is additive (existing modules keep working; previously-skipped modules now dispatch). Risk is over-eager matching — if some module declares BOTH `androidConnectedCheck` and `connectedAndroidDeviceTest`, the probe needs deterministic priority. Recommend: prefer KMP-native `androidConnectedCheck` first, fall back to `connectedAndroidDeviceTest` only when `androidConnectedCheck` is absent.
+
+**Why now:** caught by a real-world 65-module project. Benchmark modules are an increasingly common pattern with `androidx.benchmark` 1.2+ adopting Managed Devices by default; under-coverage today silently drops benchmark validation from CI test runs.
+
+---
+
+### 💡 IDEA — `--isolated` does not bypass project lockfile + `lock_held` error message could be richer (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation)
+
+**Status: IDEA, no milestone assigned.** Surfaced 2026-05-17 during the PR 3 wet matrix when two concurrent `kmp-test android` sessions hit the same project root. Confirmed live: the second invocation (mine, `kmp-test android --device R3CT30KAMEH --module-filter ":benchmark-android-test" --isolated --list-only --json`) was rejected with `errors[0].code: "lock_held"` despite `--isolated`. Error message: `"another kmp-test (android) is already running with PID 15512 (started 4m25s ago). Pass --force to bypass."` — exit 3.
+
+**Behavior is by-design but the user mental-model trap is real.** `--isolated` documents (per `references/cli/flags-reference.md` "Concurrency isolation") as "Tier-3 — `--project-cache-dir <tmp>` for concurrent runs". Users reading "concurrent runs" reasonably infer it enables multi-instance on the same project root. In fact `--isolated` only isolates:
+- Gradle config-cache dir (each run gets a private `--project-cache-dir`).
+- ADB device-race (combined with `--device <SERIAL>`).
+
+It does NOT isolate the project lockfile (`.kmp-test-runner/.lock`), which is the orchestrator-side serializer that prevents two `kmp-test` processes from racing on the same project's `lib/orchestrators/<orch>.js` state. The lockfile is intentional safety to protect gradle config-cache from cross-process corruption when one process is mid-configure.
+
+**Two improvements (independent, can ship together or separately):**
+
+- **(a) Richer error message.** Current message tells the user `--force` is the only escape — that's incomplete. Add discoverable alternatives:
+  ```
+  another kmp-test (android) is already running with PID 15512 (started 4m25s ago).
+  Recovery options:
+    - Wait for the running process to finish (recommended).
+    - Pass --force to bypass (risky: cache-corruption window if prior process is still running).
+    - Run against a DIFFERENT --project-root (lockfile is per-project; --isolated does NOT bypass it).
+  ```
+  ~10 LOC change in the lockfile-error helper. Pure message-text rewrite; no behavior shift.
+
+- **(b) Make `--isolated` bypass the lockfile when combined with `--isolated-cache-dir`.** When a user explicitly hands the CLI a fresh cache-dir path, they're declaring isolation intent. The lockfile's job is to protect the SHARED cache-dir; with an explicit cache-dir override the shared cache-dir is no longer at risk. ~5-10 LOC: in the lock-acquisition path, skip lockfile if `opts.isolatedCacheDir` is truthy. New vitest case for the bypass path. Documentation: cross-link from `--isolated-cache-dir` row in flags-reference.md.
+
+  Recommended over option (a) only — gives users a real concurrent-execution path on the same project root, not just better error messaging.
+
+**Cross-link to PR 3 docs:** `references/workflows/instrumented/with-android-cli.md` + `without-android-cli.md` "Edge cases" section already received a clarifying patch in PR 3: "**`--isolated` does NOT bypass the project lockfile**: concurrent runs against the **same** `--project-root` still trigger `lock_held` (exit 3) — `--isolated` isolates cache state, not project ownership. Use `--force` to bypass the lockfile when the prior process is known-dead." That doc clarification stands regardless of which fix lands here.
+
+**Effort:** ~30 min for (a); ~1.5h for (b) including vitest + the `--isolated-cache-dir` interaction sweep.
+
+**Risk:** (a) ZERO — message-only. (b) LOW-MEDIUM — opens a concurrent-on-same-root path. Edge case: two processes both pass distinct `--isolated-cache-dir` paths and the lockfile bypasses correctly, but they may still race on `.kmp-test-runner/reports/` writes (per-module log files, coverage reports). Audit needed.
+
+**Why now:** caught during a perfectly natural multi-agent workflow (two Claude Code sessions, same project, concurrent android dispatch). Multi-instance scenarios are a first-class use-case for agent-driven workflows — every friction point we close compounds.
+
+---
+
 ### ✅ SHIPPED — Coverage threshold gate (DONE 2026-05-11 / PR #215)
 
 **Status: DONE.** Original premise (surfaced 2026-05-10 during pre-PR-10 polish triage) was stale: `vitest.config.js` already declared `coverage.thresholds: { lines: 80, functions: 80, branches: 80, statements: 80 }` and `.github/workflows/ci.yml:98` ran `npx vitest run --coverage`. Vitest 2.x auto-enforces `coverage.thresholds` when `--coverage` runs (no `--check-coverage` flag needed — that flag belongs to `c8`/`nyc`); when a threshold is breached, vitest sets `process.exitCode = 1` and the CI step fails. The gate was already live; coverage % could not silently regress below 80%. It just couldn't rise either.
