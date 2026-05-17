@@ -36,7 +36,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `--coverage-modules <list>` | all with plugin | ✓ | ✓ | — | Comma-separated module names to include in coverage aggregation. |
 | `--exclude-coverage <list>` | none | ✓ | ✓ | ✓ | Comma-separated modules to skip from coverage aggregation only (tests still run). |
 | `--min-missed-lines <N>` | `0` | ✓ | ✓ | ✓ | Fail (`coverage_threshold_exceeded`, exit 1) if aggregated missed lines exceed `N`. `0` = no gate. |
-| `--output-file <path>` | `coverage-full-report.md` | ✓ | ✓ | — | Markdown report filename inside `.kmp-test-runner/reports/coverage/`. |
+| `--output-file <path>` | (writes under `.kmp-test-runner/reports/coverage/`) | ✓ | ✓ | — | Path for the markdown report. Absolute → verbatim; relative → resolved against `--project-root`. When omitted (or set to the historic literal `coverage-full-report.md`), writes to `.kmp-test-runner/reports/coverage/<runId>.md` with a `latest.md` alias. With a custom path, only that file is written — no alias. |
 | `--skip-tests` | off (set internally by `coverage`) | ✓ | implicit | — | Skip test execution; aggregate coverage from existing reports. Coverage subcommand sets this internally. |
 | `--coverage-only` | off | ✓ | — | — | Generate only coverage report — implies `--skip-tests`, skips test discovery. |
 

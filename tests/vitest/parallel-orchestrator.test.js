@@ -1435,6 +1435,30 @@ describe('runParallel', () => {
     expect(passedArgs[idx + 1]).toBe('custom-report.md');
   });
 
+  // PR 3.4 A2 — stale guard pre-fix:
+  //   if (opts.outputFile && opts.outputFile !== 'coverage-full-report.md')
+  // dropped the flag whenever the user explicitly passed the historic default
+  // literal (or it was injected by parseArgs default). The orchestrator now
+  // forwards unconditionally; coverage-orchestrator treats the literal as
+  // its "use default tree" sentinel.
+  it('--output-file coverage-full-report.md (literal default) is forwarded too', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--output-file', 'coverage-full-report.md'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(stubCoverage.calls.length).toBe(1);
+    const passedArgs = stubCoverage.calls[0].args;
+    const idx = passedArgs.indexOf('--output-file');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(passedArgs[idx + 1]).toBe('coverage-full-report.md');
+  });
+
   // v0.9 session 2 Bug-E — `--coverage-only` implies `--skip-tests`, so the
   // dispatch routes to coverage-orchestrator BEFORE the parallel-orchestrator's
   // own `opts.coverageOnly && opts.coverageModules` module filter at line ~1331

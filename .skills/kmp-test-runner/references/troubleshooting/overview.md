@@ -12,7 +12,7 @@ Branch on `errors[].code` from the JSON envelope. Each linked file (when populat
 | `flavor_unused` | [`flavor-unused.md`](flavor-unused.md) | **shipped (v0.10 #4 PR 2)** |
 | `isolated_runtime_race` | [`isolated-runtime-race.md`](isolated-runtime-race.md) | **shipped (v0.10 #4 PR 2)** |
 | `coverage_threshold_exceeded` | [`coverage-threshold-exceeded.md`](coverage-threshold-exceeded.md) | **shipped (v0.10 #4 PR 2)** |
-| `lock_held` | `lock-held.md` | follow-up release |
+| `lock_held` | [`lock-held.md`](lock-held.md) | **shipped (v0.10 #4 PR 3.4)** |
 | `no_gradlew` / `missing_shell` | `prerequisites.md` | follow-up release |
 | `invalid_*` | `invalid-args.md` | follow-up release |
 | `no_summary` (soft) | [`no-summary.md`](no-summary.md) | **shipped (v0.10 #4 PR 2)** |
