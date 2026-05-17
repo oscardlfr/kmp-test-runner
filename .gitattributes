@@ -25,3 +25,12 @@ tests/fixtures/fake-gradlew/gradlew.bat text eol=crlf
 tests/fixtures/kmp-cross-platform-e2e/gradlew text eol=lf
 tests/fixtures/kmp-cross-platform-e2e/gradlew.bat text eol=crlf
 tests/fixtures/kmp-cross-platform-e2e/gradle/wrapper/gradle-wrapper.jar binary
+
+# Skill convenience scripts (.skills/**/*.sh) MUST be LF — on Windows
+# git-bash, CRLF corrupts `set -euo pipefail` (the trailing \r is parsed
+# as part of the option name, producing `set: pipefail : invalid option
+# name` at exit 2). POSIX bash on Linux/macOS works either way, so the
+# bug only fires for Windows local dev. Surfaced 2026-05-17 during the
+# post-PR-242/243 wet validation.
+.skills/**/*.sh text eol=lf
+tests/skill-scripts/*.bats text eol=lf
