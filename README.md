@@ -479,6 +479,17 @@ The CLI writes its outputs (cache, coverage reports, Android log dumps) under a 
 
 The skill's `SKILL.md` documents the JSON envelope contract, exit codes, and per-workflow steps so the agent dispatches the right `kmp-test` subcommand (`parallel`, `coverage`, `android`, `benchmark`) and parses results correctly without trial-and-error.
 
+### Install as a Claude Code Plugin
+
+The same skill is also packaged as a [Claude Code Plugin](https://code.claude.com/docs/en/plugins) (`.claude-plugin/plugin.json` at repo root). Filesystem install:
+
+```bash
+git clone https://github.com/oscardlfr/kmp-test-runner.git
+claude --plugin-dir ./kmp-test-runner    # session-only
+```
+
+The plugin re-uses the same `.skills/kmp-test-runner/` skill content — no duplication. Marketplace listing is planned for a follow-up.
+
 ## Agentic usage — token-cost rationale
 
 `kmp-test` is built to be cheap to call from AI coding agents. The `--json` flag is the lever: it replaces verbose, multi-step Gradle orchestration with a single command and a single structured response.
