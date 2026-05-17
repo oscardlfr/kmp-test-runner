@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `kmp-test android --device <serial>` now propagated to the gradle subprocess (PR 3.3 / A1)
+
+Two parallel propagation surfaces, both additive:
+
+- **`ANDROID_SERIAL` env var** is now set unconditionally on the gradle subprocess when `--device <serial>` resolves successfully (also fires for the auto-pick path when a single device is present). Covers the legacy AGP `connected{Variant}AndroidTest` family which honors this env var. Previously the env was passed through unchanged → AGP picked an arbitrary device from `adb devices` when multiple were attached, even with `--device` set.
+- **`-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>`** gradle property is now injected when the resolved task name ends in `connectedAndroidDeviceTest` (the newer KMP `androidLibrary { withDeviceTestBuilder { sourceSetTreeName = "test" } }` task). This task uses the device-test reporter which IGNORES `ANDROID_SERIAL` and reads the gradle property instead.
+
+Both injections are no-ops on the happy path (single-device hosts, no `--device` flag). Schema unchanged.
+
+### Fixed — `kmp-test android --auto-retry` refreshes the adb server between attempts (PR 3.3 / A5)
+
+When `--auto-retry` re-dispatches a failed instrumented task, the orchestrator now runs `adb kill-server && adb start-server` BEFORE the retry spawn. Refreshes the device list so the retry sees an up-to-date device state when the device went offline mid-run (USB transient, emulator process death). Gated behind `--auto-retry` → zero impact on the happy path. The retry still reuses the same `gradleArgs` (including PR 3.3 / A1's device-pin property and PR 3.2's `--isolated` cache-dir) so config stays consistent across attempts.
+
 ### Added — `kmp-test benchmark` persists per-task gradle logs (PR 3.2 / A9)
 
 The benchmark orchestrator now writes per-(module, platform) gradle stdout+stderr to `<projectRoot>/.kmp-test-runner/logs/benchmark/<runId>/<module>-<platform>.log` (mirrors the existing `kmp-test android` artifact layout — a single `.kmp-test-runner/` gitignore covers both). Triage signal: previously the orchestrator only summarised `N passed, M failed` with no gradle output, no stack traces, no actionable signal when benchmarks failed.

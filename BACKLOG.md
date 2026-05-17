@@ -589,7 +589,11 @@ Drift count per cell is **18 missing + 27-36 unexpected paths** — uniform stru
 
 ---
 
-### 🐛 BUG — `--device <serial>` not propagated to `connectedAndroidDeviceTest` (AGP Managed Devices) → AGP iterates ALL adb devices including offline ones (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation parallel session)
+### ✅ SHIPPED 2026-05-17 (PR 3.3) — `--device <serial>` not propagated to `connectedAndroidDeviceTest` (AGP Managed Devices) → AGP iterates ALL adb devices including offline ones (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation parallel session)
+
+**Status: SHIPPED 2026-05-17 (PR 3.3).** Closed via the android device-pin cluster fix (A1 + A5). Implementation in `lib/orchestrators/android-orchestrator.js`: (1) when the resolved task name ends in `connectedAndroidDeviceTest` (regex match), inject `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<deviceSerial>` into `gradleArgs` BEFORE spawn — the device-test reporter reads this property instead of `ANDROID_SERIAL`. (2) Set `ANDROID_SERIAL` in the spawn env unconditionally when `deviceSerial` resolved (auto-pick or explicit `--device`) — covers legacy AGP `connected{Variant}AndroidTest` paths that honor the env var, fixing the silent device-pin miss on multi-device hosts. Both injections apply to the first-attempt spawn AND the `--auto-retry` re-spawn. 4 vitest cases lock managed-device gradle-property injection / legacy no-property / ANDROID_SERIAL env on explicit pin / ANDROID_SERIAL env on auto-pick. Docs updated under `.skills/kmp-test-runner/references/workflows/instrumented/` + `references/troubleshooting/instrumented-setup-failed/` for both with-CLI and without-CLI branches. Bug #2 (the v0.10 #4 PR 3 wet-validation alias of A1) is also closed by this PR.
+
+**Original BUG below (preserved for context):**
 
 **Status: BUG, no milestone assigned. HIGH severity — selects wrong device / silently fails on test farms with multiple devices.** Surfaced 2026-05-17 by a concurrent `kmp-test android --device R3CT30KAMEH --auto-retry` session on a multi-module KMP library project. Root cause confirmed via user log analysis (A1 in user's bug report 2026-05-17): the orchestrator passes `--device R3CT30KAMEH` to the gradle invocation but does NOT inject `ANDROID_SERIAL` env var or `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>` into the spawn. AGP's `connectedAndroidDeviceTest` then iterates EVERY device returned by `adb devices` and fails the entire build the moment any one of them is OFFLINE. Evidence from user: "benchmark-network/sdk/storage fallaron con `Skipping device 'emulator-5562' (emulator-5562): Device is OFFLINE`".
 
@@ -677,9 +681,11 @@ Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidD
 
 ---
 
-### 🐛 BUG — `--auto-retry` has no observable cleanup between attempts on instrumented retries → retries fail for the same ghost-device reason (surfaced 2026-05-17 user wet session — bug A5)
+### ✅ SHIPPED 2026-05-17 (PR 3.3) — `--auto-retry` has no observable cleanup between attempts on instrumented retries → retries fail for the same ghost-device reason (surfaced 2026-05-17 user wet session — bug A5)
 
-**Status: BUG, no milestone assigned. LOW severity (HIGH if it composes with bug A1 above — currently the two compound to "neither flag helps").** User report: "En la primera corrida con `--auto-retry`, el JSON los marca `retried: true` pero los logs muestran que el retry duró el mismo tiempo que un fail single y volvió a fallar por la misma causa (ghost device). El retry no incorpora limpieza de adb/daemon entre intentos."
+**Status: SHIPPED 2026-05-17 (PR 3.3).** Closed via the android device-pin cluster fix (A1 + A5). Implementation in `lib/orchestrators/android-orchestrator.js` `--auto-retry` block: BEFORE the retry `spawnGradle`, run `adb kill-server` then `adb start-server` (gated behind `--auto-retry` → zero impact on happy path). Refreshes the device list so the retry sees an up-to-date device state when the device went offline mid-run. The retry reuses the same `gradleArgs` (with PR 3.3 / A1's device-pin property and PR 3.2's `--isolated` cache-dir) so config stays consistent across attempts. 2 vitest cases lock the kill+start sequence on `--auto-retry` and the NO-OP on the happy path. Pairs with A1 to fully resolve the user's wet-session repro — without A1's device-pin fix, A5's adb refresh alone would still pick the wrong device on the retry.
+
+**Original BUG below (preserved for context):** User report: "En la primera corrida con `--auto-retry`, el JSON los marca `retried: true` pero los logs muestran que el retry duró el mismo tiempo que un fail single y volvió a fallar por la misma causa (ghost device). El retry no incorpora limpieza de adb/daemon entre intentos."
 
 **Root cause hypothesis:** `--auto-retry` re-dispatches the same gradle task with the same args, the same adb state, the same daemon. If the first failure was caused by adb's ghost device list (bug A1), the second dispatch sees the same list and fails identically. The retry is mechanically successful (dispatch happens; envelope marks `retried: true`) but semantically useless for the dominant failure class.
 

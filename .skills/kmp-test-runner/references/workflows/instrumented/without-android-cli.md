@@ -53,8 +53,8 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP (the canonical source). Full p
 | Flag | Default | Notes |
 |------|---------|-------|
 | `--json` | off | Mandatory for agent consumption. |
-| `--device <serial>` | auto | Pin ADB device. Validated against `adb devices`; pins `ANDROID_SERIAL`. Mismatch → `instrumented_setup_failed` (exit 3). |
-| `--device-task <name>` | auto | Force gradle task name (e.g. `androidConnectedCheck` for KMP `androidLibrary{}` DSL). Preempts auto-resolution. |
+| `--device <serial>` | auto | Pin ADB device. Validated against `adb devices`; pins `ANDROID_SERIAL` in the gradle subprocess env. On `connectedAndroidDeviceTest` (KMP `withDeviceTestBuilder` task) the orchestrator ALSO injects `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>` (the device-test reporter ignores `ANDROID_SERIAL`). Mismatch → `instrumented_setup_failed` (exit 3). |
+| `--device-task <name>` | auto | Force gradle task name. Two modern KMP variants: `androidConnectedCheck` for `androidLibrary{}` without device-test opt-in, `connectedAndroidDeviceTest` for `androidLibrary { withDeviceTestBuilder { sourceSetTreeName = "test" } }`. Preempts auto-resolution. |
 | `--module-filter <glob>` | `*` | Glob, comma-separated. Narrow dispatch. |
 | `--test-filter <pattern>` | none | Single class or `Class#method`. Wildcards resolved to FQN by source scan. |
 | `--variant <auto\|debug\|release\|all>` | auto | Build variant. `auto` respects `testBuildType="release"` projects. |
@@ -128,7 +128,12 @@ There is no adb equivalent of `android describe`. Use `kmp-test describe --json`
 
 ### `--device-task` auto-resolution
 
-Modern KMP `androidLibrary{}` DSL (AGP 9+) registers `:<module>:androidConnectedCheck`, NOT `:<module>:connectedDebugAndroidTest`. The orchestrator probes per-module via the project model and picks the right task automatically. Force with `--device-task <name>` when the probe is wrong (or when the project uses a custom convention plugin that registers an unconventional name). Same recovery pattern as in [`../../troubleshooting/task-not-found.md`](../../troubleshooting/task-not-found.md).
+Modern KMP `androidLibrary{}` DSL (AGP 9+) registers one of two tasks depending on whether the module opts into device-test reporting:
+
+- `:<module>:androidConnectedCheck` — `androidLibrary {}` without `withDeviceTestBuilder {}`. Lightweight; reports via legacy AGP instrumented runner.
+- `:<module>:connectedAndroidDeviceTest` — `androidLibrary { withDeviceTestBuilder { sourceSetTreeName = "test" } }`. Uses the newer device-test reporter. Ignores `ANDROID_SERIAL`; reads `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>` instead — the orchestrator injects the property automatically when this task is in play.
+
+The orchestrator probes per-module via the project model and picks the right task automatically. Force with `--device-task <name>` when the probe is wrong (or when the project uses a custom convention plugin that registers an unconventional name). Same recovery pattern as in [`../../troubleshooting/task-not-found.md`](../../troubleshooting/task-not-found.md).
 
 ### Flavor + variant weaving
 
@@ -146,6 +151,8 @@ Modern KMP `androidLibrary{}` DSL (AGP 9+) registers `:<module>:androidConnected
 - **`--isolated` + `--device`**: safe combination *for parallel runs against different project roots* — each isolated run pins its own serial and gets its own config-cache dir. Without `--device` → `isolated_runtime_race` (exit 2) at parse time, because two concurrent isolated runs would race for ADB's auto-picked device. **`--isolated` does NOT bypass the project lockfile**: concurrent runs against the **same** `--project-root` still trigger `lock_held` (exit 3) — `--isolated` isolates cache state, not project ownership. Use `--force` to bypass the lockfile when the prior process is known-dead.
 - **`--auto-retry` on cascade failures**: the retry path only re-runs runtime-failed instrumented tasks. Configuration-phase failures (compile errors, plugin conflicts) surface as `module_failed` with `setup_failed:true` and do **not** retry — those need code edits, not re-dispatch.
 - **Multiple devices, no `--device`**: kmp-test auto-picks the first device from `adb devices`. If that's a stale offline emulator, the dispatch fails downstream rather than at the gate. Pin with `--device <SERIAL>` whenever multiple devices may be present.
+- **Multiple devices, `--device <SERIAL>` on `connectedAndroidDeviceTest` (managed-device task)**: the device-test reporter ignores `ANDROID_SERIAL` — without the gradle property injection AGP picks any device from the pool. The orchestrator injects `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>` automatically when it detects this task suffix. Diagnostic: gradle stdout shows `Starting N tests on <other-device>` instead of the pinned serial.
+- **`--auto-retry` on a device that went offline mid-run**: the orchestrator runs `adb kill-server && adb start-server` between attempts so the retry sees an up-to-date device list. If the device stays offline through the kill+start, the retry still fails — recovery is `adb -s <SERIAL> reboot` (or `adb emu kill && emulator -avd <AVD>` for emulators) and a fresh `kmp-test android` invocation.
 
 ## Envelope shape excerpt
 
