@@ -12,11 +12,13 @@ import path from 'node:path';
 
 import {
   isPidAlive,
+  isLockfileStaleByTime,
   readLockfile,
   writeLockfile,
   removeLockfile,
   acquireLock,
   lockAgeLabel,
+  STALE_THRESHOLD_MS,
 } from '../../lib/runners/lockfile.js';
 import { withFakeGradleProject, DEAD_PID } from './_test-helpers.js';
 
@@ -161,6 +163,95 @@ describe('acquireLock', () => {
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('write_error');
     expect(r.error).toBeTruthy();
+  });
+
+  // Stale-by-time / PID-recycle guard. Lockfile age that predates the host's
+  // last boot OR exceeds STALE_THRESHOLD_MS reclaims the lock even when
+  // isPidAlive reports the PID as live (almost certainly a recycled PID on
+  // Windows, where PIDs are aggressively reused after a process exits).
+  it('reclaims a lock whose start_time predates the host boot', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: '2020-01-01T00:00:00.000Z',
+          subcommand: 'parallel', project_root: dir, version: '0.3.8',
+        }),
+        'utf8',
+      );
+      const r = acquireLock(dir, 'changed', { force: false });
+      expect(r.ok).toBe(true);
+      expect(r.reclaimed).toBe(true);
+      expect(r.ourLock.subcommand).toBe('changed');
+    });
+  });
+
+  it('reclaims a lock whose start_time exceeds STALE_THRESHOLD_MS (PID recycle within boot)', () => {
+    withFakeGradleProject(dir => {
+      const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: fiveHoursAgo,
+          subcommand: 'parallel', project_root: dir, version: '0.3.8',
+        }),
+        'utf8',
+      );
+      const r = acquireLock(dir, 'changed', { force: false });
+      expect(r.ok).toBe(true);
+      expect(r.reclaimed).toBe(true);
+    });
+  });
+
+  it('does NOT reclaim a fresh lock with live PID (no false positive)', () => {
+    withFakeGradleProject(dir => {
+      const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString();
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: oneMinuteAgo,
+          subcommand: 'parallel', project_root: dir, version: '0.3.8',
+        }),
+        'utf8',
+      );
+      const r = acquireLock(dir, 'changed', { force: false });
+      expect(r.ok).toBe(false);
+      expect(r.reason).toBe('lock_held');
+    });
+  });
+});
+
+describe('isLockfileStaleByTime', () => {
+  it('returns false for null / undefined / missing start_time', () => {
+    expect(isLockfileStaleByTime(null)).toBe(false);
+    expect(isLockfileStaleByTime(undefined)).toBe(false);
+    expect(isLockfileStaleByTime({})).toBe(false);
+    expect(isLockfileStaleByTime({ start_time: null })).toBe(false);
+    expect(isLockfileStaleByTime({ start_time: 'not-a-date' })).toBe(false);
+  });
+
+  it('returns true when start_time predates simulated boot', () => {
+    const lock = { start_time: '2020-01-01T00:00:00.000Z' };
+    // Inject uptimeMs/now so the test is deterministic regardless of when
+    // the host actually booted.
+    expect(isLockfileStaleByTime(lock, {
+      now: new Date('2026-05-17T12:00:00.000Z').getTime(),
+      uptimeMs: 60_000,
+    })).toBe(true);
+  });
+
+  it('returns true when start_time exceeds STALE_THRESHOLD_MS', () => {
+    const now = Date.now();
+    const lock = { start_time: new Date(now - STALE_THRESHOLD_MS - 1000).toISOString() };
+    // uptimeMs >> threshold so the boot-time branch can't fire — we're
+    // exercising the age-threshold branch in isolation.
+    expect(isLockfileStaleByTime(lock, { now, uptimeMs: 24 * 60 * 60 * 1000 })).toBe(true);
+  });
+
+  it('returns false for a fresh lock within threshold', () => {
+    const now = Date.now();
+    const lock = { start_time: new Date(now - 60_000).toISOString() };
+    expect(isLockfileStaleByTime(lock, { now, uptimeMs: 24 * 60 * 60 * 1000 })).toBe(false);
   });
 });
 
