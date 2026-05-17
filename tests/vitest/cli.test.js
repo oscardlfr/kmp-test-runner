@@ -3367,6 +3367,11 @@ describe('main() — lockfile integration', () => {
     expect(obj.exit_code).toBe(EXIT.ENV_ERROR);
     expect(obj.errors[0].code).toBe('lock_held');
     expect(obj.errors[0].message).toMatch(/already running/);
+    // PR 3.4 Bug #3 sub-fix a — message must surface every documented
+    // escape hatch so agents reading the envelope can branch on intent.
+    expect(obj.errors[0].message).toContain('--isolated-cache-dir');
+    expect(obj.errors[0].message).toContain('--project-root');
+    expect(obj.errors[0].message).toContain('--force');
   });
 
   it('--force bypasses live lock and proceeds to spawn', () => {
@@ -3485,6 +3490,63 @@ describe('main() — lockfile integration', () => {
       const onDisk = readLockfile(dir);
       expect(onDisk.subcommand).toBe('parallel');
       expect(onDisk.pid).toBe(process.pid);
+    });
+  });
+
+  // PR 3.4 Bug #3 sub-fix b — `--isolated-cache-dir <path>` implies lockfile
+  // bypass. Rationale: the lockfile guards against shared-gradle-cache
+  // races, but with an explicit cache dir the cache isn't shared anymore.
+  // Race audit verified report writes are runId-suffixed, so concurrent
+  // runs with explicit cache dirs don't collide on output files either.
+  it('--isolated-cache-dir bypasses the lockfile probe even with a live lock', () => {
+    withFakeGradleProject(dir => {
+      // Pre-existing live lock from another concurrent run.
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+          subcommand: 'parallel', project_root: dir, version: '0.9.1',
+        }),
+        'utf8',
+      );
+      const cacheDir = mkdtempSync(path.join(tmpdir(), 'kmp-bypass-cache-'));
+      try {
+        process.argv = [
+          'node', 'kmp-test.js', 'parallel',
+          '--isolated-cache-dir', cacheDir,
+          '--project-root', dir,
+        ];
+        // Pre-fix: this would return ENV_ERROR with lock_held.
+        // Post-fix: bypass kicks in, spawn proceeds successfully.
+        expect(main()).toBe(EXIT.SUCCESS);
+        // Pre-existing lock must remain intact — we never touched it.
+        const onDisk = readLockfile(dir);
+        expect(onDisk.subcommand).toBe('parallel');
+        expect(onDisk.pid).toBe(process.pid);
+      } finally {
+        rmSync(cacheDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // Regression guard: bare `--isolated` (no explicit cache dir, no
+  // --no-lock) still hits the lockfile. Sub-fix b is gated on cacheDir
+  // specifically — `--isolated` alone gets gradle's per-run --project-
+  // cache-dir but the lock still guards `.kmp-test-runner/cache/` and
+  // other shared bookkeeping.
+  it('bare --isolated still acquires the lockfile (regression guard for sub-fix b gating)', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+          subcommand: 'parallel', project_root: dir, version: '0.9.1',
+        }),
+        'utf8',
+      );
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--isolated', '--project-root', dir];
+      // Still blocks — bare --isolated does NOT bypass the lock.
+      expect(main()).toBe(EXIT.ENV_ERROR);
     });
   });
 });
