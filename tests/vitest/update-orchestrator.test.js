@@ -234,6 +234,43 @@ describe('runUpdate failure modes', () => {
   });
 });
 
+describe('PR 3.5 A8 — release_resolve_failed probe diagnostics', () => {
+  it('both probes throw → probe_errors carries both tier diagnostics', async () => {
+    const spawn = makeSpawnStub();
+    const fetchImpl = makeFetchStub({ redirect: 'error', api: 'error' });
+    const { envelope } = await runUpdate({ args: [], spawn, fetchImpl });
+    expect(envelope.errors[0].code).toBe('release_resolve_failed');
+    expect(envelope.errors[0].probe_errors).toHaveLength(2);
+    expect(envelope.errors[0].probe_errors[0]).toMatchObject({ tier: 1, source: 'redirect' });
+    expect(envelope.errors[0].probe_errors[0].message).toContain('redirect probe error');
+    expect(envelope.errors[0].probe_errors[1]).toMatchObject({ tier: 2, source: 'api' });
+    expect(envelope.errors[0].probe_errors[1].message).toContain('api probe error');
+  });
+
+  it('tier 1 returns no-tag URL → probe_errors records the unmatched URL', async () => {
+    const spawn = makeSpawnStub();
+    const fetchImpl = makeFetchStub({ redirect: 'no-tag', api: 'error' });
+    const { envelope } = await runUpdate({ args: [], spawn, fetchImpl });
+    expect(envelope.errors[0].code).toBe('release_resolve_failed');
+    const tier1 = envelope.errors[0].probe_errors.find(e => e.tier === 1);
+    expect(tier1).toBeDefined();
+    expect(tier1.source).toBe('redirect');
+    expect(tier1.message).toContain('no-tag-in-url');
+    expect(tier1.message).toContain('https://github.com/foo/bar');
+  });
+
+  it('tier 2 returns !ok → probe_errors records the not-ok signal', async () => {
+    const spawn = makeSpawnStub();
+    const fetchImpl = makeFetchStub({ redirect: 'error', api: 'not-ok' });
+    const { envelope } = await runUpdate({ args: [], spawn, fetchImpl });
+    expect(envelope.errors[0].code).toBe('release_resolve_failed');
+    const tier2 = envelope.errors[0].probe_errors.find(e => e.tier === 2);
+    expect(tier2).toBeDefined();
+    expect(tier2.source).toBe('api');
+    expect(tier2.message).toContain('not-ok');
+  });
+});
+
 describe('parseArgs', () => {
   it('--check, --force, --prerelease are flags', () => {
     expect(parseArgs(['--check']).check).toBe(true);
