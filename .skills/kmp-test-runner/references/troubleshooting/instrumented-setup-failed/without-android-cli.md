@@ -54,6 +54,7 @@ Ranked by frequency:
 4. **Multiple devices, no `--device`, auto-pick wrong.** kmp-test auto-picks the FIRST device from the list. If that's a stale offline emulator, the dispatch fails downstream. Pin with `--device <SERIAL>`.
 5. **Emulator AVD doesn't exist.** `--device emulator-5554` but no AVD is running. `emulator -list-avds` (from `$ANDROID_HOME/emulator/`) shows available AVDs; `emulator -avd <AVD>` boots one.
 6. **adb server dead.** Rare but happens on Windows after sleep/wake. Recovery: `adb kill-server && adb start-server`.
+7. **Ghost offline device on Managed Devices task.** `--device <SERIAL>` is set, the serial appears in `adb devices`, but the gradle `connectedAndroidDeviceTest` task picks a DIFFERENT device — diagnostic in gradle stdout: `Starting N tests on <other-device>` instead of the pinned serial. Root cause: the device-test reporter ignores `ANDROID_SERIAL`. The orchestrator now injects `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>` automatically when the resolved task is `connectedAndroidDeviceTest`. If you still hit it, force the gradle property via `--gradle-args "-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>"` as a workaround.
 
 ## Recovery path
 
@@ -96,6 +97,7 @@ KMP_TEST_SKIP_ADB=1 kmp-test doctor --json
 - **Windows USB-debugging driver**: Samsung's KIES driver sometimes hijacks the USB device claim, causing `offline` or `unauthorized` status to stick. Uninstall the OEM driver; rely on Google's universal ADB driver from `$ANDROID_HOME/extras/google/usb_driver/`.
 - **`emulator` binary not on PATH**: `$ANDROID_HOME/emulator/emulator` must be invoked via absolute path on hosts where the SDK is installed but the emulator dir wasn't appended to PATH. Add the directory to PATH (POSIX: `export PATH="$ANDROID_HOME/emulator:$PATH"`; PowerShell: `$env:PATH = "$env:ANDROID_HOME\emulator;$env:PATH"`) or alias the verb.
 - **Macrobenchmark connected output**: `app/build/outputs/connected_android_test_additional_output/<variant>/` only exists after a SUCCESSFUL instrumented dispatch — irrelevant to the recovery path but useful confirmation that recovery worked when the agent re-checks the directory.
+- **KMP `withDeviceTestBuilder` device-test reporter**: the `:<module>:connectedAndroidDeviceTest` task (registered when a KMP module uses `androidLibrary { withDeviceTestBuilder { sourceSetTreeName = "test" } }`) ignores `ANDROID_SERIAL`. The orchestrator auto-injects `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>` on top whenever `--device <SERIAL>` is set and this task is in play. No user action required — but if you see a `Starting N tests on <other-device>` line in the captured per-task log under `.kmp-test-runner/logs/android/<runId>/<module>.log`, force the property via `--gradle-args "-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>"` as a workaround and report the regression.
 
 ## See also
 
