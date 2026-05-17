@@ -541,6 +541,62 @@ describe('runCoverage', () => {
     expect(latestContent).toContain('80%');  // RUN-B coverage pct
   });
 
+  // PR 3.4 A3 — the "Tests Run" header (+ EXECUTION_MODE marker, + generator
+  // footer) used to be hardcoded as "No (--skip-tests)" regardless of how the
+  // orchestrator was invoked. After PR 3.4 the label reflects the actual
+  // execution path: standalone `coverage` says "No (coverage subcommand)",
+  // `parallel --skip-tests` says "No (--skip-tests)", `parallel` (full) says
+  // "Yes (via parallel)" because tests ran before coverage aggregation.
+  describe('PR 3.4 A3 — Tests Run header reflects execution path', () => {
+    it('defaults (standalone coverage subcommand) → "No (coverage subcommand)"', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      await runCoverage({ projectRoot, args: [], spawn, runId: 'A3-DEFAULTS' });
+      const reportPath = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'A3-DEFAULTS.md');
+      const content = readFileSync(reportPath, 'utf8');
+      expect(content).toContain('> **Tests Run**: No (coverage subcommand)');
+      expect(content).toContain('EXECUTION_MODE: skip-tests');
+      expect(content).toContain('coverage aggregator');
+    });
+
+    it('originatingSubcommand=parallel + testsRan=false → "No (--skip-tests)"', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      await runCoverage({
+        projectRoot, args: [], spawn, runId: 'A3-PARALLEL-SKIP',
+        testsRan: false, originatingSubcommand: 'parallel',
+      });
+      const reportPath = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'A3-PARALLEL-SKIP.md');
+      const content = readFileSync(reportPath, 'utf8');
+      expect(content).toContain('> **Tests Run**: No (--skip-tests)');
+      expect(content).toContain('EXECUTION_MODE: skip-tests');
+    });
+
+    it('originatingSubcommand=parallel + testsRan=true → "Yes (via parallel)"', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      await runCoverage({
+        projectRoot, args: [], spawn, runId: 'A3-PARALLEL-FULL',
+        testsRan: true, originatingSubcommand: 'parallel',
+      });
+      const reportPath = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'A3-PARALLEL-FULL.md');
+      const content = readFileSync(reportPath, 'utf8');
+      expect(content).toContain('> **Tests Run**: Yes (via parallel)');
+      expect(content).toContain('EXECUTION_MODE: with-tests');
+      expect(content).toContain('Coverage aggregation (after test execution)');
+      expect(content).toContain('aggregator after parallel');
+    });
+  });
+
   it('--exclude-coverage drops module from dispatched but keeps plugin classification', async () => {
     const projectRoot = makeProject([
       { name: 'a', coverage: 'kover' },
