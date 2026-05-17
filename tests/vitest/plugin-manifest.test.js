@@ -72,17 +72,15 @@ describe("plugin manifest -- cross-file invariants", () => {
   });
 });
 
-describe("plugin manifest -- privacy + bug-id refs (project rules)", () => {
+describe("plugin manifest -- bug-id refs (project WHY-only rule)", () => {
   const raw = readFileSync(MANIFEST_PATH, "utf8");
   it("contains no '#NNN' or 'PR N' or 'bug N' refs in any field", () => {
     expect(raw).not.toMatch(/#\d{2,}/);
     expect(raw).not.toMatch(/\bPR\s+\d+\b/i);
     expect(raw).not.toMatch(/\bbug\s+\d+\b/i);
   });
-  it("contains no maintainer home-directory paths or private project names", () => {
-    expect(raw).not.toMatch(/AndroidStudioProjects/);
-    expect(raw).not.toMatch(/shared-kmp-libs/);
-    // C:\Users\34645 path -- written as a JSON string would be C:\\Users\\34645
-    expect(raw).not.toMatch(/C:\\\\Users\\\\34645/);
-  });
+  // Private-pattern enforcement (home-directory paths, private project names)
+  // is delegated to tools/decouple-audit.mjs, which scans every committed
+  // file repo-wide. A local assertion here would have to embed the literal
+  // patterns it asserts absence of, self-triggering the audit.
 });
