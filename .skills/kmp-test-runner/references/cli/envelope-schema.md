@@ -136,13 +136,20 @@ This lets agents safely read **either** `errors.length > 0` **or** `exit_code !=
   "tool": "auto",
   "missed_lines": null,
   "modules_with_kover_plugin": [":core:network", ":feature:auth"],
-  "modules_with_jacoco_plugin": []
+  "modules_with_jacoco_plugin": [],
+  "module_buckets": {
+    "with_data": [":core:network"],
+    "no_xml": [":feature:auth"],
+    "parse_errored": [],
+    "skipped_by_user": []
+  }
 }
 ```
 
 - `tool` — `"auto"` / `"kover"` / `"jacoco"` / `"none"`.
 - `missed_lines` — aggregated count or `null` when coverage couldn't be aggregated.
 - `modules_with_kover_plugin` / `modules_with_jacoco_plugin` — per-module surface so agents see which coverage flavor each module declares.
+- `module_buckets` — per-module accounting on a successful `coverage` / `parallel` run. Each module with a detected coverage plugin lands in exactly one bucket: `with_data` (XML parsed + rows added to aggregation), `no_xml` (XML missing on disk — the most common silent-drop case in CI), `parse_errored` (Python parser exited non-zero), or `skipped_by_user` (filtered out by `--exclude-coverage` / `--coverage-modules`). The sum of the four buckets should equal `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length`; when it doesn't, a `coverage_aggregation_drift` entry is pushed to `warnings[]` with `{detected, accounted, unaccounted}` counts. Buckets are empty on `--dry-run` and `--coverage-tool none` for shape parity.
 
 ## `parallel.legs[]` shape
 

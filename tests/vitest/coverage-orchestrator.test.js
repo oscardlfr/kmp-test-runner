@@ -760,3 +760,75 @@ describe('runCoverage', () => {
     expect(envelope.isolated).toBeUndefined();
   });
 });
+
+describe('PR 3.5 A4 — coverage.module_buckets accounting', () => {
+  it('three buckets populated (with_data + no_xml + skipped_by_user), invariant holds', async () => {
+    // a → kover plugin + XML present + parser returns rows → with_data
+    // b → kover plugin + XML missing on disk             → no_xml
+    // c → kover plugin + excluded via --exclude-coverage → skipped_by_user
+    const projectRoot = makeProject([
+      { name: 'a', coverage: 'kover' },
+      { name: 'b', coverage: 'kover' },
+      { name: 'c', coverage: 'kover' },
+    ]);
+    dropFakeXml(projectRoot, 'a', 'kover');
+    // intentionally NO dropFakeXml for b → noXml bucket
+    dropFakeXml(projectRoot, 'c', 'kover');
+    const spawn = makeSpawnStub({
+      rowsByModule: { 'a': ['a|p|F.kt|F|1|0|1|100|'] },
+    });
+    const { envelope } = await runCoverage({
+      projectRoot,
+      args: ['--exclude-coverage', 'c'],
+      spawn,
+    });
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: ['a'],
+      no_xml: ['b'],
+      parse_errored: [],
+      skipped_by_user: ['c'],
+    });
+    // 3 detected + 3 accounted → no drift warning.
+    const drift = (envelope.warnings || []).find(w => w.code === 'coverage_aggregation_drift');
+    expect(drift).toBeUndefined();
+    // c was excluded so the python parser never gets called for it.
+    const pythonCalls = spawn.calls.filter(c => c.cmd === 'python3');
+    expect(pythonCalls.map(c => c.args[2]).sort()).toEqual(['a']);
+  });
+
+  it('parse_errored bucket fires when python3 returns non-zero status', async () => {
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'a', 'kover');
+    // Parser exits non-zero → orchestrator must distinguish empty rows from
+    // a parser failure and land the module in parse_errored, not with_data.
+    const spawn = makeSpawnStub({ rowsByModule: { 'a': [] }, status: 1 });
+    const { envelope } = await runCoverage({ projectRoot, args: [], spawn });
+    expect(envelope.coverage.module_buckets.parse_errored).toEqual(['a']);
+    expect(envelope.coverage.module_buckets.with_data).toEqual([]);
+    expect(envelope.coverage.module_buckets.no_xml).toEqual([]);
+    expect(envelope.coverage.module_buckets.skipped_by_user).toEqual([]);
+    // 1 detected + 1 accounted → no drift warning.
+    const drift = (envelope.warnings || []).find(w => w.code === 'coverage_aggregation_drift');
+    expect(drift).toBeUndefined();
+  });
+
+  it('--dry-run envelope carries empty module_buckets shape (parity)', async () => {
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--dry-run'],
+      spawn,
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.dry_run).toBe(true);
+    // Empty shape on dry-run so downstream consumers can read the key without
+    // optional-chaining; mirrors the existing modules_with_*_plugin treatment.
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: [],
+      no_xml: [],
+      parse_errored: [],
+      skipped_by_user: [],
+    });
+  });
+});
