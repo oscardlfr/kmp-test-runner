@@ -41,7 +41,13 @@ Every subcommand emits the same canonical envelope on `--json`. Subcommand-speci
     "tool": "auto",                // | "jacoco" | "kover" | "none"
     "missed_lines": null,
     "modules_with_kover_plugin": [],
-    "modules_with_jacoco_plugin": []
+    "modules_with_jacoco_plugin": [],
+    "module_buckets": {            // per-module accounting; sum must equal detected-plugin count
+      "with_data": [],             // XML parsed, rows added to aggregation
+      "no_xml": [],                // XML missing on disk (the common silent-drop case)
+      "parse_errored": [],         // Python parser exited non-zero
+      "skipped_by_user": []        // filtered by --exclude-coverage / --coverage-modules
+    }
   },
   "errors": [],                    // see Error codes below
   "warnings": [],
