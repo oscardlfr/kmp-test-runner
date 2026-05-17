@@ -229,6 +229,56 @@ Additive changes do NOT bump:
 - **`isolated_runtime_race`** — new error code. `CONFIG_ERROR (2)` when `--isolated` is combined with a test-type that hits a shared runtime resource (iOS sim, ADB without `--device`, or `--test-type all`).
 - **`module_failed`** — gains `setup_failed:bool`. `true` when the task failed AND no JUnit XML evidence exists (compile-time / setup-time failure). Discriminates from "tests ran and one failed".
 
+## Cross-tool comparison: `android` CLI analogues
+
+An agent that loads this skill may also have Google's [`android` CLI](https://developer.android.com/tools/agents/android-cli) available. Two command pairs superficially overlap:
+
+| kmp-test                                | `android` CLI       | Both answer                              |
+|-----------------------------------------|---------------------|------------------------------------------|
+| `kmp-test parallel --dry-run --json`    | `android describe`  | "What modules / build targets does this project have?" |
+| `kmp-test doctor --json`                | `android info`      | "Where is my SDK / JDK / environment?"   |
+
+The shapes are **deliberately independent** — the tools target different consumers and platforms. Default to `kmp-test` for these flows; use `android` CLI for SDK probing or emulator / screen / UI workflows that `kmp-test` does not cover.
+
+### Pair 1: `kmp-test parallel --dry-run --json` ↔ `android describe`
+
+| Aspect | kmp-test | `android describe` |
+|---|---|---|
+| Output channel | JSON document on stdout | Plain-text status lines on stdout + JSON files written to disk; stdout prints their paths |
+| Consumption model | inline (parse one JSON, get everything) | pointer (parse path lines, open each per-target file) |
+| Tool identifier | `tool: "kmp-test"` | (none) |
+| Schema version | `schema_version: 2` (versioned breaking-change policy) | (none in output) |
+| Project root | `project_root` (string) | `Target project directory: <abs path>` (text) |
+| Modules / targets (dry-run preview) | `plan.modules[]` with `{name, type, coverage_plugin, test_build_type, has_flavor, android_dsl, android_dsl_variant}` per entry | per-target JSON files documenting build outputs (e.g. APK paths) |
+| Errors | `errors[]` with discriminated `code` (17+ codes) + WS-5 invariant | Plain-text `Error: …` lines + non-zero exit |
+| Warnings | `warnings[]` with discriminated `code` (5 codes) | (none) |
+| Side effects | None (pure read-only probe) | Copies `init.gradle.kts` into target's `.gradle/`; invokes `gradlew dumpModels` |
+
+Different abstractions: `kmp-test` answers "what modules can I run tests on?"; `android describe` answers "where are the build artifacts?". The two are complementary, not interchangeable.
+
+### Pair 2: `kmp-test doctor --json` ↔ `android info`
+
+| Aspect | kmp-test | `android info` |
+|---|---|---|
+| Output format | JSON document, stable schema | Plain text `key: value` lines (3 fields: `sdk`, `version`, `launcher_version`) |
+| SDK location | `checks[]` row `{name:"Android SDK", value:"<path or null>", status:"OK"\|"WARN"\|"FAIL"}` | Top-level `sdk: <path>` |
+| JDK location + version | `checks[]` rows for `JAVA_HOME`, `JAVA_VERSION`, `JDK Catalogue` | (not surfaced) |
+| Gradle wrapper presence | `checks[]` row `gradlew` | (not surfaced) |
+| ADB availability | `checks[]` row `ADB` | (not surfaced) |
+| Gradle config | `gradle_config{parallel, workers_max, caching, daemon, configureondemand, jvmargs}` | (not surfaced) |
+| User-global / project config | `checks[]` rows for User Config / Project Config (matched preset key) | (not surfaced) |
+
+`android info` is a quick SDK-location probe; `kmp-test doctor` is a full test-orchestration readiness check with discriminated diagnostics. Do **not** `JSON.parse(android info)` — it's plain text. For programmatic SDK lookup on the same machine, prefer `kmp-test doctor --json | jq '.checks[] | select(.name=="Android SDK") | .value'`.
+
+### When to pick which tool
+
+- **`kmp-test` (default for this skill)** — cross-platform, stable schema, discriminated error/warning codes, no side effects on `--dry-run`.
+- **`android` CLI** — quick SDK probe (`android info | grep sdk`), emulator/screen/UI workflows (`android emulator`, `android screen capture`, `android layout`), or build-artifact enumeration on POSIX hosts (`android describe` writes per-target JSON files).
+
+### Platform caveat (`android describe` 0.7.15)
+
+At `android` CLI version `0.7.15222914`, `android describe` invokes the POSIX `gradlew` shell script on Windows instead of `gradlew.bat`, crashing with `CreateProcess error=193, %1 no es una aplicación Win32 válida`. **Avoid `android describe` on Windows hosts** until upstream fixes; use `kmp-test parallel --dry-run --json` for cross-platform module enumeration. No `--gradlew` override flag exists in `android describe` at this version.
+
 ## See also
 
 - [`exit-codes.md`](exit-codes.md) — exit-code semantics + WS-5 invariant in detail

@@ -66,6 +66,10 @@ Per-branch deep-dives:
 - HAS_ANDROID_CLI → [`references/workflows/instrumented/with-android-cli.md`](references/workflows/instrumented/with-android-cli.md) + [`references/troubleshooting/instrumented-setup-failed/with-android-cli.md`](references/troubleshooting/instrumented-setup-failed/with-android-cli.md)
 - NO_ANDROID_CLI → [`references/workflows/instrumented/without-android-cli.md`](references/workflows/instrumented/without-android-cli.md) + [`references/troubleshooting/instrumented-setup-failed/without-android-cli.md`](references/troubleshooting/instrumented-setup-failed/without-android-cli.md)
 
+## Tool selection — `kmp-test` vs `android` CLI overlap
+
+Two `android` CLI subcommands superficially overlap with `kmp-test`: `android describe` (with `kmp-test parallel --dry-run --json`) and `android info` (with `kmp-test doctor --json`). **Default to `kmp-test`** for these flows — its `--json` envelope is versioned (`schema_version: 2`), cross-platform, side-effect-free on `--dry-run`, and carries discriminated `errors[].code` + `warnings[].code`. `android info` is plain text (not JSON), and `android describe` is a paths-to-JSON-files pointer tool with a separate consumption model and a known Windows portability bug at 0.7.15. Use `android` CLI when probing SDK quickly (`android info | grep sdk`) or for emulator / screen / UI workflows `kmp-test` does not cover. Field-by-field mapping: [`references/cli/envelope-schema.md` § Cross-tool comparison](references/cli/envelope-schema.md#cross-tool-comparison-android-cli-analogues).
+
 ## Steps
 
 ### 1. Diagnose the environment
