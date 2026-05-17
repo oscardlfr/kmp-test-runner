@@ -89,11 +89,11 @@ jobs:
         run: shellcheck --severity=warning --external-sources --exclude=SC2034,SC2053,SC2069 scripts/sh/*.sh scripts/sh/lib/*.sh scripts/install.sh scripts/uninstall.sh
       - name: bats
         if: matrix.os == 'ubuntu-latest'
-        run: npx bats tests/bats/ tests/installer/
+        run: npx bats tests/bats/ tests/installer/ tests/skill-scripts/
       - name: Pester
         if: matrix.os == 'windows-latest'
         shell: pwsh
-        run: Invoke-Pester -Path tests/pester/,tests/installer/ -CI
+        run: Invoke-Pester -Path tests/pester/,tests/installer/,tests/skill-scripts/ -CI
       - name: vitest
         run: npx vitest run --coverage
   secrets-scan:
@@ -250,7 +250,7 @@ jobs:
           node-version: 20
       - run: npm ci
       - name: bats (macOS — Bash 3.2 regression coverage)
-        run: npx bats --timing tests/bats/ tests/installer/
+        run: npx bats --timing tests/bats/ tests/installer/ tests/skill-scripts/
 
   # 2026-05-05 — CI cost discipline + branch protection bridge.
   # PR4 introduced the `decide` job to skip heavy jobs on docs-only PRs
