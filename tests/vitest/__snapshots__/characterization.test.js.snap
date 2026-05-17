@@ -4,6 +4,12 @@ exports[`characterization / invalid-args envelopes > benchmark --platform bogus 
 {
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -44,6 +50,12 @@ exports[`characterization / invalid-args envelopes > benchmark --timeout abc →
 {
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -79,6 +91,12 @@ exports[`characterization / invalid-args envelopes > coverage --coverage-tool bo
 {
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -120,6 +138,12 @@ exports[`characterization / invalid-args envelopes > parallel --coverage-tool bo
 {
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -161,6 +185,12 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures 1.5
 {
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -196,6 +226,12 @@ exports[`characterization / invalid-args envelopes > parallel --max-workers -1 (
 {
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -231,6 +267,12 @@ exports[`characterization / invalid-args envelopes > parallel --max-workers abc 
 {
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -266,6 +308,12 @@ exports[`characterization / invalid-args envelopes > parallel --test-type bogus 
 {
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -314,6 +362,12 @@ exports[`characterization / variation envelopes > parallel --isolated --dry-run 
 {
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -374,6 +428,12 @@ exports[`characterization / variation envelopes > parallel --test-filter SomeTes
 {
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
