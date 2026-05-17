@@ -541,6 +541,109 @@ describe('runCoverage', () => {
     expect(latestContent).toContain('80%');  // RUN-B coverage pct
   });
 
+  // PR 3.4 A2 — pre-fix the orchestrator hardcoded the report path to
+  // .kmp-test-runner/reports/coverage/<runId>.md and dropped --output-file
+  // entirely (literal `void outputFile;`). After PR 3.4 a custom path is
+  // honoured: absolute used verbatim, relative resolved against projectRoot.
+  // The historic default literal (`coverage-full-report.md`) stays as the
+  // sentinel for "use the default tree" so the v0.8.0 clean-break shape
+  // (no project-root markdown) is preserved.
+  describe('PR 3.4 A2 — --output-file path semantics', () => {
+    it('relative path → written under projectRoot, no default-tree alias', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      await runCoverage({
+        projectRoot,
+        args: ['--output-file', 'my-report.md'],
+        spawn,
+        runId: 'A2-REL',
+      });
+      // User's chosen path written at projectRoot.
+      expect(existsSync(path.join(projectRoot, 'my-report.md'))).toBe(true);
+      // Default-tree write did NOT happen — the user picked a destination.
+      const defaultTreeFile = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'A2-REL.md');
+      expect(existsSync(defaultTreeFile)).toBe(false);
+      // And no latest.md alias either.
+      const defaultLatest = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'latest.md');
+      expect(existsSync(defaultLatest)).toBe(false);
+    });
+
+    it('absolute path → written verbatim, no default-tree write', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      // Use a tmp file path OUTSIDE the projectRoot to prove absolute is honoured.
+      const absDir = mkdtempSync(path.join(tmpdir(), 'kmp-a2-abs-'));
+      const absPath = path.join(absDir, 'absolute-report.md');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      try {
+        await runCoverage({
+          projectRoot,
+          args: ['--output-file', absPath],
+          spawn,
+          runId: 'A2-ABS',
+        });
+        expect(existsSync(absPath)).toBe(true);
+        expect(existsSync(path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'A2-ABS.md'))).toBe(false);
+      } finally {
+        rmSync(absDir, { recursive: true, force: true });
+      }
+    });
+
+    it('relative path with nested dirs → parent dir auto-created', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      await runCoverage({
+        projectRoot,
+        args: ['--output-file', 'nested/dir/report.md'],
+        spawn,
+        runId: 'A2-NEST',
+      });
+      expect(existsSync(path.join(projectRoot, 'nested', 'dir', 'report.md'))).toBe(true);
+    });
+
+    it('default (no flag) → falls back to default tree + latest.md (regression guard)', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      const { envelope } = await runCoverage({
+        projectRoot, args: [], spawn, runId: 'A2-DEFAULT',
+      });
+      const reportsDir = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage');
+      expect(existsSync(path.join(reportsDir, 'A2-DEFAULT.md'))).toBe(true);
+      expect(existsSync(path.join(reportsDir, 'latest.md'))).toBe(true);
+      expect(envelope.coverage.missed_lines).toBe(1);
+    });
+
+    it('explicit default literal coverage-full-report.md → treated as default (back-compat sentinel)', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      await runCoverage({
+        projectRoot,
+        args: ['--output-file', 'coverage-full-report.md'],
+        spawn,
+        runId: 'A2-LITERAL',
+      });
+      // Default tree write fires (sentinel preserved).
+      const reportsDir = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage');
+      expect(existsSync(path.join(reportsDir, 'A2-LITERAL.md'))).toBe(true);
+      // No literal file at projectRoot — would defeat the v0.8.0 clean break.
+      expect(existsSync(path.join(projectRoot, 'coverage-full-report.md'))).toBe(false);
+    });
+  });
+
   // PR 3.4 A3 — the "Tests Run" header (+ EXECUTION_MODE marker, + generator
   // footer) used to be hardcoded as "No (--skip-tests)" regardless of how the
   // orchestrator was invoked. After PR 3.4 the label reflects the actual
