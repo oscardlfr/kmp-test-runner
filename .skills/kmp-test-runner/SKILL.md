@@ -40,7 +40,18 @@ Parse the JSON envelope (see [`references/cli/envelope-schema.md`](references/cl
 
 ## Environment detection
 
-Before running INSTRUMENTED tests, branch on Android CLI presence:
+Before running INSTRUMENTED tests, branch on Android CLI presence. The skill ships a dedicated detector (also useful as a stable executable for agent invocation):
+
+```bash
+bash .skills/kmp-test-runner/scripts/detect-env.sh
+# → prints HAS_ANDROID_CLI or NO_ANDROID_CLI; exits 0 either way
+```
+
+```powershell
+pwsh .skills/kmp-test-runner/scripts/detect-env.ps1
+```
+
+Inline equivalent (fallback for agents that can't execute scripts):
 
 ```bash
 which android && android info >/dev/null 2>&1 && echo "HAS_ANDROID_CLI" || echo "NO_ANDROID_CLI"
@@ -101,6 +112,23 @@ For each `errors[]` entry, surface:
 - The full `message`
 
 For test failures (not setup errors), drill into per-module `modules[].test_failures[]` to find failing test names. Each `test_failures[]` entry carries `{ test, cause, type }` — `test` is the fully-qualified `ClassName.methodName`, `cause` is the failure/error message, `type` is the optional exception class.
+
+## Convenience scripts
+
+The skill ships executable helpers under `.skills/kmp-test-runner/scripts/` for the two common patterns. They return the same JSON envelope as direct `kmp-test` invocation — use whichever surface fits the host shell.
+
+| Script | Purpose |
+|---|---|
+| `detect-env.sh` / `detect-env.ps1` | Prints `HAS_ANDROID_CLI` or `NO_ANDROID_CLI` to stdout. Exits 0 either way. Used as the env preamble in `run-tests.sh`, also callable standalone. |
+| `run-tests.sh` / `run-tests.ps1` | Smart dispatcher. First positional (`-Type` on PowerShell) picks the subcommand: `unit` (default) / `android` / `coverage` / `benchmark` / `changed` / `info` / `doctor` / `describe`. Remaining args forward verbatim; `--json` + `--project-root .` inject automatically. For `android`, emits `[INFO] env: HAS_ANDROID_CLI\|NO_ANDROID_CLI` to stderr. |
+
+Example:
+
+```bash
+bash .skills/kmp-test-runner/scripts/run-tests.sh android --device R3CT30KAMEH
+# [INFO] env: HAS_ANDROID_CLI                          (stderr)
+# {"tool":"kmp-test","subcommand":"android",...}      (stdout)
+```
 
 ## Verification
 
