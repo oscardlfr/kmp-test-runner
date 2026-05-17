@@ -626,9 +626,11 @@ Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidD
 
 ---
 
-### 🐛 BUG — `kmp-test parallel --output-file <name>` flag IGNORED — coverage report written to `.kmp-test-runner/reports/coverage/<timestamp>.md` instead (surfaced 2026-05-17 user wet session — bug A2)
+### ✅ SHIPPED 2026-05-17 (PR 3.4) — `kmp-test parallel --output-file <name>` flag IGNORED — coverage report written to `.kmp-test-runner/reports/coverage/<timestamp>.md` instead (surfaced 2026-05-17 user wet session — bug A2)
 
-**Status: BUG, no milestone assigned. MEDIUM severity — flag silently no-ops; CI scripts depending on predictable filename break without surface signal.** User invoked `kmp-test parallel --output-file coverage-full-report.md`; the file at project root with that name (from a 2026-04-02 prior run) was NOT overwritten, and the real report landed at `.kmp-test-runner/reports/coverage/20260517-003209-036004.md` (timestamped path). The flag is documented in `references/cli/flags-reference.md` row "`--output-file <path>` | `coverage-full-report.md` | Markdown report filename inside `.kmp-test-runner/reports/coverage/`."
+**Status: SHIPPED 2026-05-17 (PR 3.4).** Closed as part of the UX-polish bundle (A3 + A7 + A2 + Bug #3). Recommendation option (a) — path semantics — implemented in `lib/orchestrators/coverage-orchestrator.js` (dropped the `void outputFile` no-op) and `lib/orchestrators/parallel-orchestrator.js` (dropped the stale literal-default guard). `--output-file` is now a PATH: absolute → verbatim; relative → resolved against `--project-root`; omitted or set to the historic sentinel `coverage-full-report.md` → falls back to `.kmp-test-runner/reports/coverage/<runId>.md` with a `latest.md` alias. Custom paths write ONLY the user file (no `latest.md` alias). 6 new vitest cases (5 in `coverage-orchestrator.test.js`, 1 in `parallel-orchestrator.test.js`) plus help text + `.skills/.../cli/flags-reference.md` updates.
+
+**Original BUG below (preserved for context):** User invoked `kmp-test parallel --output-file coverage-full-report.md`; the file at project root with that name (from a 2026-04-02 prior run) was NOT overwritten, and the real report landed at `.kmp-test-runner/reports/coverage/20260517-003209-036004.md` (timestamped path). The flag is documented in `references/cli/flags-reference.md` row "`--output-file <path>` | `coverage-full-report.md` | Markdown report filename inside `.kmp-test-runner/reports/coverage/`."
 
 **Read carefully:** the documented default is "filename INSIDE `.kmp-test-runner/reports/coverage/`" — so the flag is supposed to be a filename, not a path. The user reasonably interpreted it as "path relative to project root" since they explicitly passed a relative path. The fix is one of:
 - (a) Treat the value as a path (relative → project-root-relative, absolute → as-is) — matches user expectation. Doc clarifies. Bytes: ~10 LOC + doc + 1 vitest.
@@ -643,9 +645,11 @@ Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidD
 
 ---
 
-### 🐛 BUG — Coverage report header mislabels execution mode as "Tests Run: No (--skip-tests)" when tests DID run via `parallel` (surfaced 2026-05-17 user wet session — bug A3)
+### ✅ SHIPPED 2026-05-17 (PR 3.4) — Coverage report header mislabels execution mode as "Tests Run: No (--skip-tests)" when tests DID run via `parallel` (surfaced 2026-05-17 user wet session — bug A3)
 
-**Status: BUG, no milestone assigned. MEDIUM severity — broken audit trail.** User ran `kmp-test parallel` (which dispatched tests AND aggregated coverage afterward). The resulting `latest.md` coverage report says `> Tests Run: No (--skip-tests)` and `EXECUTION_MODE: skip-tests` — but tests DID run, the user did NOT pass `--skip-tests`, and the report came from a real `parallel` dispatch, not from `coverage --skip-tests`.
+**Status: SHIPPED 2026-05-17 (PR 3.4).** Closed as part of the UX-polish bundle (A3 + A7 + A2 + Bug #3). Fix threads two new opts (`testsRan: boolean`, `originatingSubcommand: string`) through `runCoverage` → `writeMarkdownReport` in `lib/orchestrators/coverage-orchestrator.js`. `parallel-orchestrator.js` passes `testsRan: true, originatingSubcommand: 'parallel'` on the full-run aggregation path and `testsRan: false, originatingSubcommand: 'parallel'` on the `--skip-tests` early-delegate path. Header now reads `Yes (via parallel)`, `No (--skip-tests)`, or `No (coverage subcommand)` depending on origin; `EXECUTION_MODE` and generator footer mirror the same distinction. 3 new vitest cases assert all three branches end-to-end against the generated markdown.
+
+**Original BUG below (preserved for context):** User ran `kmp-test parallel` (which dispatched tests AND aggregated coverage afterward). The resulting `latest.md` coverage report says `> Tests Run: No (--skip-tests)` and `EXECUTION_MODE: skip-tests` — but tests DID run, the user did NOT pass `--skip-tests`, and the report came from a real `parallel` dispatch, not from `coverage --skip-tests`.
 
 **Root cause hypothesis:** the coverage-report writer at `lib/coverage-*` (likely the markdown emitter) hardcodes `EXECUTION_MODE: skip-tests` when called from any non-parallel-direct path, OR the `parallel`-driven coverage aggregation path mistakenly sets the `skipTests` flag on the report metadata even though tests just ran.
 
@@ -702,9 +706,11 @@ Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidD
 
 ---
 
-### 💡 IDEA — `kmp-test doctor` reports "ADB WARN not found" despite local.properties → sdk.dir auto-detect succeeding (surfaced 2026-05-17 user wet session — bug A7)
+### ✅ SHIPPED 2026-05-17 (PR 3.4) — `kmp-test doctor` reports "ADB WARN not found" despite local.properties → sdk.dir auto-detect succeeding (surfaced 2026-05-17 user wet session — bug A7)
 
-**Status: IDEA, no milestone assigned. LOW severity — UX inconsistency.** User report: doctor's "ADB" check line says WARN/not-found, but the "Android SDK" check immediately below says OK and auto-detects via `local.properties → sdk.dir`. The two checks disagree on whether ADB is reachable.
+**Status: SHIPPED 2026-05-17 (PR 3.4).** Closed as part of the UX-polish bundle (A3 + A7 + A2 + Bug #3). Fix in `lib/commands/doctor.js`: when the PATH probe for `adb` fails, re-call the already-imported `inspectLocalProperties(projectRoot)` to resolve `sdk.dir` and try `<sdk.dir>/platform-tools/adb(.exe)`. On hit, emit `OK` with message `via SDK at <path>`; on miss with `sdk.dir` resolved, WARN with explicit `not on PATH and not at <expected-path>` instead of the generic install message. 3 new vitest cases cover PATH-fail+SDK-hit, PATH-fail+SDK-miss, and PATH-OK regression-guard.
+
+**Original IDEA below (preserved for context):** User report: doctor's "ADB" check line says WARN/not-found, but the "Android SDK" check immediately below says OK and auto-detects via `local.properties → sdk.dir`. The two checks disagree on whether ADB is reachable.
 
 **Root cause hypothesis:** the doctor's ADB check probes for `adb` on PATH (or via `$ANDROID_HOME/platform-tools/adb`); the SDK check resolves `sdk.dir` from `local.properties` which gives the SDK root, from which `platform-tools/adb` is reachable as a path but not necessarily on PATH. The two checks operate independently and don't share resolved state.
 
@@ -843,9 +849,11 @@ java.io.FileNotFoundException: C:\Users\<user>\AppData\Local\Temp\benchmarks<lon
 
 ---
 
-### 💡 IDEA — `--isolated` does not bypass project lockfile + `lock_held` error message could be richer (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation)
+### ✅ SHIPPED 2026-05-17 (PR 3.4) — `--isolated` does not bypass project lockfile + `lock_held` error message could be richer (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation)
 
-**Status: IDEA, no milestone assigned.** Surfaced 2026-05-17 during the PR 3 wet matrix when two concurrent `kmp-test android` sessions hit the same project root. Confirmed live: the second invocation (mine, `kmp-test android --device R3CT30KAMEH --module-filter ":benchmark-android-test" --isolated --list-only --json`) was rejected with `errors[0].code: "lock_held"` despite `--isolated`. Error message: `"another kmp-test (android) is already running with PID 15512 (started 4m25s ago). Pass --force to bypass."` — exit 3.
+**Status: SHIPPED 2026-05-17 (PR 3.4).** Closed as part of the UX-polish bundle (A3 + A7 + A2 + Bug #3). Both improvements shipped together. Sub-fix (a) — enriched message: `lib/runners/script-dispatcher.js` now lists four recovery options (wait / `--isolated-cache-dir <path>` / different `--project-root` / `--force` with risk callout). Single source of truth — both JSON envelope and stderr block consume the same string. Sub-fix (b) — `--isolated-cache-dir` bypasses the lockfile: `bypassLock = isolatedFlags.noLock || !!isolatedFlags.cacheDir` (mirrors the existing `--isolated-no-lock` implication chain). Pre-flight race audit confirmed SAFE (every report write is `${runId}`-suffixed; cache writes are per-PID atomic via `${cacheFile}.tmp.${process.pid}` + `renameSync`). 3 vitest cases (1 extended `lock_held` envelope assertion requiring all 4 keywords + 2 new for the bypass path and the bare-`--isolated` regression guard). New troubleshooting deep-dive at `.skills/kmp-test-runner/references/troubleshooting/lock-held.md`.
+
+**Original IDEA below (preserved for context):** Surfaced 2026-05-17 during the PR 3 wet matrix when two concurrent `kmp-test android` sessions hit the same project root. Confirmed live: the second invocation (mine, `kmp-test android --device R3CT30KAMEH --module-filter ":benchmark-android-test" --isolated --list-only --json`) was rejected with `errors[0].code: "lock_held"` despite `--isolated`. Error message: `"another kmp-test (android) is already running with PID 15512 (started 4m25s ago). Pass --force to bypass."` — exit 3.
 
 **Behavior is by-design but the user mental-model trap is real.** `--isolated` documents (per `references/cli/flags-reference.md` "Concurrency isolation") as "Tier-3 — `--project-cache-dir <tmp>` for concurrent runs". Users reading "concurrent runs" reasonably infer it enables multi-instance on the same project root. In fact `--isolated` only isolates:
 - Gradle config-cache dir (each run gets a private `--project-cache-dir`).
