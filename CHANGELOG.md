@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `kmp-test benchmark` persists per-task gradle logs (PR 3.2 / A9)
+
+The benchmark orchestrator now writes per-(module, platform) gradle stdout+stderr to `<projectRoot>/.kmp-test-runner/logs/benchmark/<runId>/<module>-<platform>.log` (mirrors the existing `kmp-test android` artifact layout — a single `.kmp-test-runner/` gitignore covers both). Triage signal: previously the orchestrator only summarised `N passed, M failed` with no gradle output, no stack traces, no actionable signal when benchmarks failed.
+
+New envelope surface (both additive — `schema_version` stays at 2):
+
+- `benchmark.log_paths: { '<module>:<platform>': '<absolute path>' }` — covers success, failure, and gradle-timeout modules.
+- `errors[i].log_path` inline on `module_failed` + `gradle_timeout` entries — mirrors android-orchestrator's `log_file` field for read-time ergonomics.
+
+### Added — `kmp-test benchmark` defaults `--no-configuration-cache` (PR 3.2 / A11)
+
+`kotlinx-benchmark` caches `%TEMP%` inside gradle's configuration cache; a stale TEMP path produces a silent ~2.2s `FileNotFoundException` FAIL on Windows. The benchmark orchestrator now injects `--no-configuration-cache` into every per-(module, platform) gradle invocation by default. Cost: ~5–10s config-cache miss per benchmark task — reasonable trade for reliability.
+
+User override: `--gradle-args "--configuration-cache"` is appended LAST in the gradle args, so gradle's last-wins semantics give the user back the configuration cache when they explicitly opt in. No behavior change for projects that already used the workaround.
+
+### Changed — `kmp-test benchmark` partial timeouts grade as exit 0 + warning (PR 3.2 / A10)
+
+**Behavior change.** When `kmp-test benchmark` finishes with at least one timed-out module AND at least one passing module, the exit code is now `0` (was `3`) and the envelope carries a new `warnings[].code: "partial_timeout"` aggregate entry. Per-module `errors[].code: "gradle_timeout"` entries are preserved — the warning layers on top to explain why the run still exits 0. When all modules timed out (zero passes), the run keeps exiting `3` (everything-hung guard).
+
+Rationale: the 300s smoke watchdog produces false negatives on legitimate slow benchmarks (5m+ runs) when other modules pass cleanly. CI matrix users that want the pre-graded hard-fail behavior pass the new opt-out flag:
+
+- `--strict-timeouts` (off by default): restores exit 3 on any timeout regardless of how many modules passed.
+
+The `partial_timeout` warning carries `{ timed_out: N, passed: M }` counts so agents can quote the precise split without re-parsing per-module errors. Schema_version unchanged.
+
 ### Added — User-global config `~/.kmp-test/config.json` keyed by project (v0.10 #3)
 
 A second config layer for per-machine, per-project presets that the project-local `.kmp-test-runner.json` can't carry (machine-specific JDK paths, personal overrides, configs against repos you don't own). File path: `~/.kmp-test/config.json` on Linux/macOS, `%USERPROFILE%\.kmp-test\config.json` on Windows.

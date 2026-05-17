@@ -444,9 +444,11 @@ errors[]: [{ code: "gradle_timeout" }]
 
 ---
 
-### 💡 IDEA — `benchmark` partial-success grading: `gradle_timeout` should not hard-fail when N-1 modules passed (surfaced 2026-05-10 during PARKED-bug triage)
+### ✅ SHIPPED 2026-05-17 (PR 3.2) — `benchmark` partial-success grading: `gradle_timeout` should not hard-fail when N-1 modules passed (surfaced 2026-05-10 during PARKED-bug triage)
 
-**Status: IDEA, no milestone assigned.** Surfaced 2026-05-10 during the PARKED-bug triage above (single benchmark module 5min timeout against a multi-module consumer project). User ask: the CLI shouldn't hard-fail when partial success exists.
+**Status: SHIPPED 2026-05-17 (PR 3.2).** Closed as part of the benchmark-cluster fix (A9 + A11 + A10). Recommendation option (b) from this IDEA — graded exit code — implemented as A10's fix in `lib/orchestrators/benchmark-orchestrator.js`. When `totalTimedOut > 0 AND totalPass >= 1 AND !opts.strictTimeouts`, exit code is `EXIT.SUCCESS` (0) and `state.warnings` carries `{ code: 'partial_timeout', timed_out, passed, message }`. New `--strict-timeouts` opt-out flag restores pre-graded hard-fail behavior. 3 vitest cases lock the graded path, strict path, and everything-hung guard.
+
+**Original IDEA below (preserved for context):** Surfaced 2026-05-10 during the PARKED-bug triage above (single benchmark module 5min timeout against a multi-module consumer project). User ask: the CLI shouldn't hard-fail when partial success exists.
 
 **Current behavior** (`lib/benchmark-orchestrator.js:555-559`): any single `totalTimedOut > 0` flips the run to `EXIT.ENV_ERROR` (ec=3), regardless of how many other modules passed cleanly. Repro envelope from the PARKED bug: `passed: 4, failed: 0, timed_out: 1` → ec=3. The user-facing UX is "everything failed" when 80% actually succeeded.
 
@@ -727,9 +729,11 @@ Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidD
 
 ---
 
-### 🐛 BUG — `kmp-test benchmark` does NOT persist per-task gradle logs (unlike `kmp-test android`) → no post-mortem when benchmarks fail (surfaced 2026-05-17 user wet session — bug A9)
+### ✅ SHIPPED 2026-05-17 (PR 3.2) — `kmp-test benchmark` does NOT persist per-task gradle logs (unlike `kmp-test android`) → no post-mortem when benchmarks fail (surfaced 2026-05-17 user wet session — bug A9)
 
-**Status: BUG, no milestone assigned. HIGH severity — no diagnostic surface when benchmarks fail.** User report: "A diferencia de android (que crea `.kmp-test-runner/logs/android/<timestamp>/<module>.log`), el subcomando benchmark solo escribe el resumen `2 passed, 8 failed` sin gradle output ni stack traces. No hay forma de diagnosticar fallos post-mortem."
+**Status: SHIPPED 2026-05-17 (PR 3.2).** Closed as part of the benchmark-cluster fix (A9 + A11 + A10). Implementation in `lib/orchestrators/benchmark-orchestrator.js`: `safeModuleName` + `defaultRunId` helpers mirror android-orchestrator. Per-(module, platform) gradle stdout+stderr is persisted to `<projectRoot>/.kmp-test-runner/logs/benchmark/<runId>/<module>-<platform>.log` (best-effort). Envelope surface (additive, schema_version unchanged at 2): `benchmark.log_paths: { '<module>:<platform>': '<absolute path>' }` covers all dispatched modules; `errors[i].log_path` inline on `module_failed` + `gradle_timeout` entries for read-time ergonomics. 3 vitest cases lock success/fail/timeout paths.
+
+**Original BUG below (preserved for context):** User report: "A diferencia de android (que crea `.kmp-test-runner/logs/android/<timestamp>/<module>.log`), el subcomando benchmark solo escribe el resumen `2 passed, 8 failed` sin gradle output ni stack traces. No hay forma de diagnosticar fallos post-mortem."
 
 **Reference pattern:** `lib/orchestrators/android-orchestrator.js` writes per-module logs at `<projectRoot>/.kmp-test-runner/logs/android/<runId>/<module>.log` (post-v0.8.0 location). Each log captures the gradle subprocess's full stdout + stderr for that module. Agents and humans can grep these post-run for failure diagnosis.
 
@@ -747,9 +751,11 @@ Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidD
 
 ---
 
-### 🐛 BUG — `kmp-test benchmark --config smoke` 300s watchdog kills legitimate long-running benchmarks → false negatives (surfaced 2026-05-17 user wet session — bug A10)
+### ✅ SHIPPED 2026-05-17 (PR 3.2) — `kmp-test benchmark --config smoke` 300s watchdog kills legitimate long-running benchmarks → false negatives (surfaced 2026-05-17 user wet session — bug A10)
 
-**Status: BUG, no milestone assigned. HIGH severity — `smoke` config has been the friendly default since v0.7-era; producing false negatives erodes trust in the headline subcommand.** User report: "El benchmark real de a long-running benchmark module tarda 5m 47s (excede los 300s del watchdog). El runner mata/marca FAIL pese a que gradle eventualmente sucede." The user confirmed via direct gradle invocation that `:a long-running benchmark module:desktopSmokeBenchmark` SUCCEEDS in 5m47s when given the time. The other JVM benchmarks in the same batch also failed, possibly for the same reason (not yet verified — the user is waiting for A9's log-persistence fix to investigate).
+**Status: SHIPPED 2026-05-17 (PR 3.2).** Closed as part of the benchmark-cluster fix (A9 + A11 + A10). Recommendation option (b) — graded exit code — shipped: when `totalTimedOut > 0 AND totalPass >= 1`, exit `EXIT.SUCCESS` (0) + `warnings[].code='partial_timeout'` aggregate entry (carries `{ timed_out, passed }` counts). When all modules timed out (zero passes), preserved hard fail at exit 3. New `--strict-timeouts` opt-out flag for CI matrix users that need the pre-graded behavior. Per-module `errors[].code='gradle_timeout'` entries stay; the warning layers on top. Same fix as the PARKED-bug IDEA above (now closed as superseded). Options (a) and (c) deferred (not scheduled).
+
+**Original BUG below (preserved for context):** `smoke` config has been the friendly default since v0.7-era; producing false negatives erodes trust in the headline subcommand.** User report: "El benchmark real de a long-running benchmark module tarda 5m 47s (excede los 300s del watchdog). El runner mata/marca FAIL pese a que gradle eventualmente sucede." The user confirmed via direct gradle invocation that `:a long-running benchmark module:desktopSmokeBenchmark` SUCCEEDS in 5m47s when given the time. The other JVM benchmarks in the same batch also failed, possibly for the same reason (not yet verified — the user is waiting for A9's log-persistence fix to investigate).
 
 **Reference:** `lib/benchmark-orchestrator.js` defines `BENCHMARK_TIMEOUT_DEFAULTS_MS = { smoke: 300_000, main: 1_800_000, stress: 3_600_000 }` (L105-109). The 300s smoke ceiling targets "fast feedback for the dev inner loop"; it does not accommodate larger benchmark modules.
 
@@ -770,9 +776,11 @@ Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidD
 
 ---
 
-### 🐛 BUG — `kmp-test benchmark` does NOT propagate `--no-configuration-cache` by default → kotlinx-benchmark stale TEMP path masks as silent 2.2s FAIL (surfaced 2026-05-17 user wet session — bug A11)
+### ✅ SHIPPED 2026-05-17 (PR 3.2) — `kmp-test benchmark` does NOT propagate `--no-configuration-cache` by default → kotlinx-benchmark stale TEMP path masks as silent 2.2s FAIL (surfaced 2026-05-17 user wet session — bug A11)
 
-**Status: BUG, no milestone assigned. HIGH severity — composes with A9 (no per-task logs) to produce silent failures with NO diagnostic surface.** User wet session confirmed live 2026-05-17. Stack trace from the underlying failure: `java.io.FileNotFoundException: C:\Users\<user>\AppData\Local\Temp\benchmarks<long-suffix>.txt` at `kotlinx.benchmark.UtilsKt.readFile (Utils.kt:12)` from `JvmBenchmarkRunnerKt.main`. The kotlinx-benchmark gradle plugin caches a path to `%TEMP%` (with a string suffix) in gradle's configuration cache; when Windows cleans `%TEMP%` (boot, idle cleanup), the next build re-uses the cached path but the file no longer exists → `FileNotFoundException`.
+**Status: SHIPPED 2026-05-17 (PR 3.2).** Closed as part of the benchmark-cluster fix (A9 + A11 + A10). Recommendation option (a) — default the flag — shipped: `--no-configuration-cache` is now injected into every per-(module, platform) gradle invocation before user `--gradle-args` (so user override `--gradle-args "--configuration-cache"` wins via gradle last-wins). Cost: ~5–10s config-cache miss per benchmark task; trade for reliability. 2 vitest cases lock default-injection and user-override paths. Underlying B5 upstream issue (kotlinx-benchmark caches `%TEMP%`) remains tracked as the IDEA below.
+
+**Original BUG below (preserved for context):** composes with A9 (no per-task logs) to produce silent failures with NO diagnostic surface. User wet session confirmed live 2026-05-17. Stack trace from the underlying failure: `java.io.FileNotFoundException: C:\Users\<user>\AppData\Local\Temp\benchmarks<long-suffix>.txt` at `kotlinx.benchmark.UtilsKt.readFile (Utils.kt:12)` from `JvmBenchmarkRunnerKt.main`. The kotlinx-benchmark gradle plugin caches a path to `%TEMP%` (with a string suffix) in gradle's configuration cache; when Windows cleans `%TEMP%` (boot, idle cleanup), the next build re-uses the cached path but the file no longer exists → `FileNotFoundException`.
 
 **Two related issues stacked:**
 1. **Stale-path masking** — kmp-test runs gradle with config-cache enabled (default), so the kotlinx-benchmark stale TEMP path keeps re-firing. Symptom from user envelope: `[FAIL] benchmark-crypto (jvm) failed with exit code 1` in 2.2s, no further detail.
