@@ -1313,6 +1313,98 @@ describe('runDoctorChecks', () => {
       }
     });
   });
+
+  // PR 3.4 A7 — when adb isn't on PATH but the project's local.properties
+  // resolves sdk.dir, doctor must try <sdk.dir>/platform-tools/adb(.exe)
+  // before warning. Pre-fix doctor reported "WARN not found" regardless,
+  // which misled users with a valid Android SDK install (just no adb on
+  // PATH — the canonical Android Studio shape).
+  describe('PR 3.4 A7 — ADB fallback via local.properties sdk.dir', () => {
+    function dropSdkLocalProperties(dir, sdkPath) {
+      writeFileSync(path.join(dir, 'local.properties'),
+        `sdk.dir=${sdkPath.replace(/\\/g, '\\\\')}\n`);
+    }
+
+    it('PATH probe fails + sdk.dir resolves + SDK-local adb works → OK via SDK', () => {
+      const isWin = process.platform === 'win32';
+      const sdkRoot = mkdtempSync(path.join(tmpdir(), 'kmp-fake-sdk-'));
+      const platformTools = path.join(sdkRoot, 'platform-tools');
+      mkdirSync(platformTools, { recursive: true });
+      const adbExe = isWin ? 'adb.exe' : 'adb';
+      const sdkAdbPath = path.join(platformTools, adbExe);
+      writeFileSync(sdkAdbPath, ''); // exists; spawnSync mock decides exit status
+      spawnMock.mockImplementation((cmd) => {
+        if (cmd === 'java') return { status: 0, stderr: 'openjdk version "21"\n' };
+        if (cmd === 'adb')  return { status: 127, error: new Error('ENOENT'), stdout: '', stderr: '' };
+        if (cmd === sdkAdbPath) {
+          return { status: 0, stdout: 'Android Debug Bridge version 1.0.41\nVersion 35.0.0', stderr: '' };
+        }
+        return { status: 0, stdout: '', stderr: '' };
+      });
+      const projectDir = mkdtempSync(path.join(tmpdir(), 'kmp-doctor-a7-ok-'));
+      try {
+        dropSdkLocalProperties(projectDir, sdkRoot);
+        const { checks } = runDoctorChecks(projectDir);
+        const adb = checks.find(c => c.name === 'ADB');
+        expect(adb.status).toBe('OK');
+        expect(adb.value).toBe('35.0.0');
+        expect(adb.message).toContain('via SDK at');
+        expect(adb.message).toContain(sdkAdbPath);
+        // Both probes ran (PATH first, then SDK fallback).
+        const adbCalls = spawnMock.mock.calls.filter(args => args[0] === 'adb' || args[0] === sdkAdbPath);
+        expect(adbCalls.length).toBe(2);
+      } finally {
+        rmSync(projectDir, { recursive: true, force: true });
+        rmSync(sdkRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('PATH probe fails + sdk.dir resolves + SDK-local adb also missing → WARN with SDK path hint', () => {
+      const isWin = process.platform === 'win32';
+      const sdkRoot = mkdtempSync(path.join(tmpdir(), 'kmp-fake-sdk-'));
+      // Don't create platform-tools/adb — both probes should fail.
+      const adbExe = isWin ? 'adb.exe' : 'adb';
+      const expectedSdkAdb = path.join(sdkRoot, 'platform-tools', adbExe);
+      spawnMock.mockImplementation((cmd) => {
+        if (cmd === 'java') return { status: 0, stderr: 'openjdk version "21"\n' };
+        return { status: 127, error: new Error('ENOENT'), stdout: '', stderr: '' };
+      });
+      const projectDir = mkdtempSync(path.join(tmpdir(), 'kmp-doctor-a7-warn-'));
+      try {
+        dropSdkLocalProperties(projectDir, sdkRoot);
+        const { checks } = runDoctorChecks(projectDir);
+        const adb = checks.find(c => c.name === 'ADB');
+        expect(adb.status).toBe('WARN');
+        expect(adb.value).toBe('not found');
+        expect(adb.message).toContain('not on PATH');
+        expect(adb.message).toContain(expectedSdkAdb);
+      } finally {
+        rmSync(projectDir, { recursive: true, force: true });
+        rmSync(sdkRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('PATH probe succeeds → unchanged "instrumented tests supported" (regression guard)', () => {
+      spawnMock.mockImplementation((cmd) => {
+        if (cmd === 'java') return { status: 0, stderr: 'openjdk version "21"\n' };
+        if (cmd === 'adb')  return { status: 0, stdout: 'Android Debug Bridge version 1.0.41\nVersion 35.0.0', stderr: '' };
+        return { status: 0, stdout: '', stderr: '' };
+      });
+      const dir = mkdtempSync(path.join(tmpdir(), 'kmp-doctor-a7-regression-'));
+      try {
+        const { checks } = runDoctorChecks(dir);
+        const adb = checks.find(c => c.name === 'ADB');
+        expect(adb.status).toBe('OK');
+        expect(adb.message).toBe('instrumented tests supported');
+        // No SDK-fallback spawn — PATH already succeeded.
+        const nonPathAdbCalls = spawnMock.mock.calls.filter(args =>
+          typeof args[0] === 'string' && args[0] !== 'adb' && /platform-tools[\\/]adb/.test(args[0]));
+        expect(nonPathAdbCalls.length).toBe(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
 });
 
 describe('parseGradleTimeoutMs (Bug H — gradle watchdog)', () => {
