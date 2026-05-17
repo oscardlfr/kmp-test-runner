@@ -666,9 +666,11 @@ Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidD
 
 ---
 
-### 💡 IDEA — Kover module-count discrepancy: 62 plugins, 58 reports, 2 explicit "No coverage data", 2 unaccounted (surfaced 2026-05-17 user wet session — bug A4)
+### ✅ SHIPPED 2026-05-17 (PR #239) — Kover module-count discrepancy: 62 plugins, 58 reports, 2 explicit "No coverage data", 2 unaccounted (surfaced 2026-05-17 user wet session — bug A4)
 
-**Status: IDEA, no milestone assigned. LOW severity — accounting hole.** User report: "62 módulos tienen plugin Kover; 58 reportan coverage; 2 explícitamente 'No coverage data' (benchmark-infra, core-result). Faltan 2 módulos en el balance."
+**Status: SHIPPED 2026-05-17 (PR #239).** Closed as part of the infrastructure bundle (A8 + A4) in `lib/orchestrators/coverage-orchestrator.js`. Implementation adds `coverage.module_buckets: {with_data, no_xml, parse_errored, skipped_by_user}` to the envelope. Bucket-sum invariant fires `warnings[].code: 'coverage_aggregation_drift'` with `{detected, accounted, unaccounted}` counts when accounting drifts. `parseCoverageXml` return shape becomes `{rows, errored}` so the iteration loop distinguishes empty rows from parser failure. `discoverCoverageModules` also returns `skippedByUser`. Dry-run + `--coverage-tool none` envelopes carry empty buckets for shape parity. 3 new vitest cases lock mixed-buckets / parse_errored / dry-run shapes. Wet-validated against a 63-plugin sibling KMP composite: `63 detected = 63 with_data`, invariant holds. Schema unchanged at v2 (additive). Follow-up PR #240 (`fix(envelope): module_buckets in dry-run + error builders`) extended `module_buckets` into `buildDryRunReport` / `envErrorJson` / `buildInvalidArgsEnvelope` to close the dispatcher-level dry-run gap surfaced during wet validation.
+
+**Original IDEA below (preserved for context):** User report: "62 módulos tienen plugin Kover; 58 reportan coverage; 2 explícitamente 'No coverage data' (benchmark-infra, core-result). Faltan 2 módulos en el balance."
 
 **Math check:** 58 (reported) + 2 (explicit no-data) = 60. 62 (plugin applied) - 60 (accounted) = 2 missing.
 
@@ -722,9 +724,11 @@ Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidD
 
 ---
 
-### 🐛 BUG — `kmp-test update` fails with `release_resolve_failed` on Windows hosts with revoked CA cert in SChannel (surfaced 2026-05-17 user wet session — bug A8)
+### ✅ SHIPPED 2026-05-17 (PR #239) — `kmp-test update` fails with `release_resolve_failed` on Windows hosts with revoked CA cert in SChannel (surfaced 2026-05-17 user wet session — bug A8)
 
-**Status: BUG, no milestone assigned. HIGH severity — auto-update mechanism unreachable from affected hosts.** User report: `kmp-test update` returns `release_resolve_failed — "Could not resolve latest release for oscardlfr/kmp-test-runner (redirect + API both failed)"`. The user diagnosed it as a Windows SChannel cert revocation issue — `curl` (which the update path likely uses for the GitHub release redirect probe) fails to validate the cert chain, but `npm` and Node fetch (which use the bundled CA bundle, not SChannel) work fine.
+**Status: SHIPPED 2026-05-17 (PR #239) — diagnostic-only fix.** Closed as part of the infrastructure bundle (A8 + A4) in `lib/orchestrators/update-orchestrator.js`. **Important nuance:** the original BUG hypothesis assumed Windows SChannel cert revocation; investigation showed the orchestrator already uses Node's built-in `fetch()` (undici), NOT curl + SChannel, so the cert path isn't the literal mechanism. The actual fix is the **silent-error-swallowing** that made `release_resolve_failed` opaque: both probe-tier catch blocks now push `{tier, source, message}` entries into a side-channel `probeErrors[]` array; non-throw fallthroughs (no-tag-in-url, !res.ok, prerelease-tag-rejected, tag-rejected) push structured entries too. `runUpdate` threads the array into `envErrorJson`'s existing `extra` parameter, producing `errors[0].probe_errors[]` on the failed envelope. Wet-validated on the originally-affected Windows host: envelope now surfaces `probe_errors: [{tier:1, source:"redirect", message:"fetch failed"}, {tier:2, source:"api", message:"fetch failed"}]` instead of a bare error. 3 vitest cases lock both-tiers-throw, tier-1-no-tag, and tier-2-not-ok paths. A speculative tier-3 `https.get` fallback is **deferred** pending wet evidence that cert validation is the actual root cause — the diagnostic itself may surface a different cause (proxy / DNS / rate-limit / corporate firewall) that the user resolves directly. If a future wet report confirms cert validation as the cause, a tier-3 fallback can ship as a separate follow-up.
+
+**Original BUG below (preserved for context):** User report: `kmp-test update` returns `release_resolve_failed — "Could not resolve latest release for oscardlfr/kmp-test-runner (redirect + API both failed)"`. The user diagnosed it as a Windows SChannel cert revocation issue — `curl` (which the update path likely uses for the GitHub release redirect probe) fails to validate the cert chain, but `npm` and Node fetch (which use the bundled CA bundle, not SChannel) work fine.
 
 **Root cause hypothesis:** the update orchestrator (`lib/commands/update.js` or `lib/update-orchestrator.js`) uses an HTTP client that defers to the OS cert store. On Windows hosts where SChannel has a revoked or stale CA root cert for GitHub's chain (a common transient state), all redirect + API attempts fail with cert-validation errors.
 
@@ -738,6 +742,33 @@ Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidD
 **Effort:** ~2-3h fix + 2-3 vitest cases (cert-failure simulation via stub, success path with redirect chain).
 
 **Risk:** LOW-MEDIUM. The current update path may have other dependencies on curl behavior (timeout semantics, redirect handling); the Node-https replacement needs careful audit. Risk surface: failing curl-style timeouts that the user's CI relied on.
+
+---
+
+### 💡 IDEA — `kmp-test parallel --skip-tests` markdown header says "No (coverage subcommand)" instead of "No (--skip-tests)" (surfaced 2026-05-17 during PR 3.5-train wet validation — Finding #1)
+
+**Status: IDEA, no milestone assigned. LOW severity — markdown-header cosmetic mismatch; doesn't break any envelope contract.** Wet finding from the PR 3.5-train wet validation matrix. PR 3.4 (A3) added `originatingSubcommand` threading from `parallel-orchestrator.js#runParallel` into `runCoverage` so the markdown header could distinguish "Yes (via parallel)" vs "No (--skip-tests)" vs "No (coverage subcommand)". The fix works at the orchestrator function level (3 vitest cases pass) but the live CLI route `kmp-test parallel --skip-tests` produces header "No (coverage subcommand)" instead of the documented "No (--skip-tests)".
+
+**Root cause:** `kmp-test parallel --skip-tests` dispatches via `lib/commands/parallel.js → dispatchScriptCommand({sub:'parallel'})` → wrapper script (`run-parallel-coverage-suite.ps1 --skip-tests`) → wrapper translates parallel+skip-tests into a `coverage` invocation at the script level → `runner.js sub='coverage'` calls `runCoverage` with default `originatingSubcommand='coverage'`. PR 3.4's threading inside `runParallel` never runs because the script-level translation bypasses it.
+
+**Fix options:**
+- (a) Wrapper preserves the original sub: pass `--originating-subcommand parallel` when translating. `runner.js sub='coverage'` consumes it and threads to `runCoverage`. ~15 LOC across runner.js + ps1/sh wrappers + 1 vitest case.
+- (b) `kmp-test parallel --skip-tests` routes through `runParallel`'s early-delegate (`parallel-orchestrator.js:263`) instead of through the wrapper-script translation. Cleaner architecturally but larger surface.
+- (c) Accept the behavior, update the PR 3.4 closure docs to reflect that "No (--skip-tests)" is the standalone-coverage path, not the parallel+skip-tests path.
+
+**Effort:** (a) ~30 min. (b) ~1-2h plus careful audit of the early-delegate path. (c) doc-only, ~5 min.
+
+**Risk:** ZERO for (c); LOW for (a); LOW-MEDIUM for (b).
+
+**Why now:** caught during the PR 3.5-train wet validation that confirmed all 11 fixes ship behaviorally. This is the only cosmetic gap; ship at user's discretion.
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR #240) — `kmp-test coverage --dry-run --json` envelope lacks `module_buckets` (surfaced 2026-05-17 during PR 3.5-train wet validation — Finding #2)
+
+**Status: SHIPPED 2026-05-17 (PR #240).** Wet finding from the PR 3.5-train wet validation, fixed in a same-session follow-up. PR 3.5 added `coverage.module_buckets` to `runCoverage`'s success and dry-run code paths, but `kmp-test coverage --dry-run --json` short-circuits in the script-dispatcher BEFORE invoking `runCoverage`. The dispatcher's dry-run uses `buildDryRunReport` from `lib/envelope/builder.js`, which didn't carry `module_buckets`. Fix adds the empty `module_buckets` shape (`{with_data: [], no_xml: [], parse_errored: [], skipped_by_user: []}`) to all 3 envelope builders (`buildDryRunReport`, `envErrorJson`, `buildInvalidArgsEnvelope`) so the contract "`coverage.module_buckets` is always present" holds across success / dry-run / env-error / invalid-args envelopes. 16 snapshot tests updated (additive — no other diffs). Schema unchanged at v2.
+
+**Original FINDING below (preserved for context):** wet validation re-run of `kmp-test coverage --dry-run --json` on the PR 3.5-train wet sweep showed the envelope's `coverage` block missing the `module_buckets` field that the live coverage path emits. The asymmetry would force downstream consumers to optional-chain on dry-run envelopes (`envelope.coverage.module_buckets ?? defaults`) — friction the additive contract was designed to avoid.
 
 ---
 

@@ -111,6 +111,9 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `unsupported_class_version` | any | 3 | JDK toolchain mismatch — gradle daemon ran on an older JVM than the test classes target. | — |
 | `invalid_*` | any | 2 | CLI validation failure (e.g. `invalid_flag_value`, `invalid_regex`). | `flag?`, `value?` |
 | `no_project` | any | 3 | No gradle project found at `--project-root`. | — |
+| `release_resolve_failed` | update | 3 | `kmp-test update` could not resolve the latest release tag (HEAD redirect + REST API both failed). | `probe_errors: [{tier, source, message}]` — per-tier diagnostic (cert / proxy / DNS / rate-limit error message) |
+| `current_version_unresolvable` | update | 3 | `kmp-test update` could not read its own `package.json` to compare versions. | — |
+| `install_failed` | update | 3 | `kmp-test update` resolved the release but the install script exited non-zero. | `install_command: string` |
 
 **Soft codes** (do **not** affect `exit_code` and do **not** trigger WS-5 promotion):
 
@@ -120,6 +123,20 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `no_changed_modules` | changed | Working tree clean — no changed modules to test. Legitimate exit-0 outcome with structured signal. |
 
 > Other discriminated codes may be reserved for orchestrator-internal use; agents should treat unrecognized codes as **opaque** and forward `message` to the user verbatim.
+
+## `warnings[]` discriminated codes
+
+`warnings[]` carries non-fatal signals that don't affect `exit_code`. Agents can switch on `warnings[].code` to surface advisory information.
+
+| Code | Subcommand | Description | Extra fields |
+|------|-----------|-------------|--------------|
+| `no_coverage_data` | coverage, parallel | No XML coverage data collected from any module — either no plugin is applied or no test run has produced reports yet. | — |
+| `coverage_aggregation_skipped` | coverage | `--coverage-tool none` (or the `--no-coverage` alias) disabled the aggregation step. | — |
+| `coverage_aggregation_drift` | coverage, parallel | The four `module_buckets` (`with_data` + `no_xml` + `parse_errored` + `skipped_by_user`) didn't sum to `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length`. Defensive guard against silent model drops. | `detected:int`, `accounted:int`, `unaccounted:int` |
+| `partial_timeout` | benchmark | At least one benchmark module timed out but at least one other passed. Exit code stays at `0` (graded). Pass `--strict-timeouts` to restore pre-graded hard-fail behavior. | `timed_out:int`, `passed:int` |
+| `gradle_config_applied` | parallel (envelope payload, not `warnings[]` entry) | Project's `gradle.properties` had `org.gradle.parallel=false` so the CLI dropped its own `--parallel` injection to respect user intent. | `parallel_dropped:bool` (on the top-level `gradle_config_applied:{}` field) |
+
+> Like errors, future warning codes can land additively without bumping `schema_version`. Treat unrecognized codes as opaque.
 
 ## WS-5 invariant
 

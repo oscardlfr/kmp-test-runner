@@ -45,4 +45,4 @@ See [`envelope-schema.md`](envelope-schema.md#errors-discriminated-codes) for th
 ## See also
 
 - [`envelope-schema.md`](envelope-schema.md) — full JSON envelope contract
-- [`flags-reference.md`](flags-reference.md) — CLI flag reference (placeholder; full table in a follow-up release)
+- [`flags-reference.md`](flags-reference.md) — CLI flag reference (all subcommands + global options)
