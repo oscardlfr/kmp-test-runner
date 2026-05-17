@@ -16,6 +16,18 @@ tests/vitest/sync-versions.test.js text eol=lf
 tools/macos-validation-gate.mjs text eol=lf
 tests/vitest/macos-validation-gate.test.js text eol=lf
 
+# v0.10 #4 PR 5 Claude Code plugin packaging — vitest 2.1.x parser is
+# also sensitive to CRLF on multi-line `import { ... } from "...mjs"`
+# blocks even WITHOUT non-ASCII (no em-dashes in these files). Windows
+# CI surfaced this in PR #245 build (windows-latest) as
+# "SyntaxError: Invalid or unexpected token" at the import position.
+# Pinning LF on the test + validator stops the bug from recurring after
+# a fresh Windows clone with core.autocrlf=true.
+tools/validate-plugin.mjs text eol=lf
+tests/vitest/validate-plugin.test.js text eol=lf
+tests/vitest/plugin-manifest.test.js text eol=lf
+.claude-plugin/plugin.json text eol=lf
+
 # Fixture wrapper scripts: gradlew (POSIX) needs LF; gradlew.bat needs CRLF
 # so cmd.exe parses it correctly across hosts.
 tests/fixtures/fake-gradlew/gradlew text eol=lf

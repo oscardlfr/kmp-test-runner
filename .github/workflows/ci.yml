@@ -146,6 +146,11 @@ jobs:
     # naming-rule violations, and reference-chain breakage. Cheap (~5s)
     # so no decide-gating.
     # See `agentskills.io/specification` and `.skills/kmp-test-runner/SKILL.md`.
+    #
+    # Job also validates the Claude Code plugin manifest at
+    # .claude-plugin/plugin.json that wraps the skill (PR 5 of v0.10 #4
+    # sub-train). Same job, same required check — no new branch-protection
+    # update needed. See `tools/validate-plugin.mjs` for the rule list.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -154,6 +159,8 @@ jobs:
           node-version: 20
       - name: Validate agent skill (npx skills-ref validate)
         run: npx -y skills-ref validate .skills/kmp-test-runner/
+      - name: Validate Claude Code plugin manifest (tools/validate-plugin.mjs)
+        run: node tools/validate-plugin.mjs
   installer-e2e:
     needs: [decide, build]
     if: needs.decide.outputs.heavy == 'true'

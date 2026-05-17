@@ -79,10 +79,16 @@ node tools/measure-token-cost.js --project <path> --feature parallel
 Honours `ANTHROPIC_API_KEY` + `ANTHROPIC_API_KEY_FALLBACK` + `--anthropic-api-key`.
 
 ### `sync-versions.js`
-Verifies `package.json#version` matches `gradle-plugin/build.gradle.kts#version`. Wired into CI's `secrets-scan` job as a pre-flight.
+Keeps `package.json#version` in lockstep with the hardcoded version pins across `gradle-plugin/build.gradle.kts`, `README.md`, `CLAUDE.md`, and `.claude-plugin/plugin.json` (Claude Code plugin manifest). Wired into CI's `secrets-scan` job as a pre-flight.
 ```
 node tools/sync-versions.js --check    # exit non-zero on mismatch
 node tools/sync-versions.js            # write fix
+```
+
+### `validate-plugin.mjs`
+Claude Code plugin manifest gate. Asserts `.claude-plugin/plugin.json` has the required shape (kebab-case name, semver version matching `package.json`, license matching `package.json`, no PR/bug refs in description, `skills[]` paths resolve to a `<name>/SKILL.md` on disk). Wired into CI's `skills-validate` job (shares the required-check name with `npx skills-ref validate`).
+```
+node tools/validate-plugin.mjs         # exit 0 on pass, 1 on validation failure
 ```
 
 ## Output directory
