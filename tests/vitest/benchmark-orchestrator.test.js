@@ -13,7 +13,7 @@
 //   5. --test-filter resolution: jvm pass-through; android FQN + # split
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, cpSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -850,5 +850,237 @@ describe('--isolated cache-dir injection (v0.9 step 4)', () => {
     expect(envelope.isolated.cache_dir).toBe(userCache);
     expect(envelope.isolated.kept).toBe(true);
     expect(existsSync(userCache)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR 3.2 / A9 — per-task gradle logs persisted to disk + surfaced on envelope.
+// ---------------------------------------------------------------------------
+// Mirrors android-orchestrator's `.kmp-test-runner/logs/<orch>/<runId>/` layout.
+// Surface contract (locked 2026-05-17):
+//   - `benchmark.log_paths`: map of '<module>:<platform>' → absolute path
+//     (success + failure + timeout entries).
+//   - `errors[i].log_path`: inline duplicate on `module_failed` + `gradle_timeout`
+//     entries for read-time ergonomics.
+describe('runBenchmark per-task log persistence (PR 3.2 / A9)', () => {
+  it('successful benchmark writes log file under .kmp-test-runner/logs/benchmark/<runId>/ + surfaces path in log_paths map', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+    const runId = 'fixed-run-id-success';
+
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke'],
+      spawn,
+      adbProbe: () => [],
+      runId,
+    });
+
+    expect(exitCode).toBe(0);
+
+    const expectedPath = path.join(
+      dir, '.kmp-test-runner', 'logs', 'benchmark', runId, 'bench-jvm-jvm.log'
+    );
+    expect(existsSync(expectedPath)).toBe(true);
+    const content = readFileSync(expectedPath, 'utf8');
+    expect(content).toContain('BUILD SUCCESSFUL');
+    expect(content).toContain('--- STDERR ---');
+
+    // log_paths map covers success modules.
+    expect(envelope.benchmark.log_paths).toBeDefined();
+    expect(envelope.benchmark.log_paths['bench-jvm:jvm']).toBe(expectedPath);
+  });
+
+  it('failing benchmark surfaces log_path BOTH on log_paths map AND inline on errors[].log_path', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub({ defaultStatus: 1 });
+    const runId = 'fixed-run-id-fail';
+
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke'],
+      spawn,
+      adbProbe: () => [],
+      runId,
+    });
+
+    expect(exitCode).toBe(1);
+    const expectedPath = path.join(
+      dir, '.kmp-test-runner', 'logs', 'benchmark', runId, 'bench-jvm-jvm.log'
+    );
+    expect(existsSync(expectedPath)).toBe(true);
+    expect(readFileSync(expectedPath, 'utf8')).toContain('BUILD FAILED');
+
+    // Inline on the errors[] entry (mirrors android-orch precedent).
+    const moduleFailed = envelope.errors.find(e => e.code === 'module_failed');
+    expect(moduleFailed).toBeDefined();
+    expect(moduleFailed.log_path).toBe(expectedPath);
+
+    // Also in the aggregate map.
+    expect(envelope.benchmark.log_paths['bench-jvm:jvm']).toBe(expectedPath);
+  });
+
+  it('gradle-timeout module surfaces log_path on gradle_timeout errors[] entry + log_paths map', async () => {
+    const dir = copyFixture();
+    // POSIX timeout shape: signal SIGTERM, status null.
+    const spawn = (cmd, args, opts) => ({
+      status: null, signal: 'SIGTERM', stdout: 'partial output', stderr: 'stderr partial',
+      error: null,
+    });
+    const runId = 'fixed-run-id-timeout';
+
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'stress'],
+      spawn,
+      adbProbe: () => [],
+      runId,
+    });
+
+    expect(exitCode).toBe(3); // single module timed out, no passes → unchanged hard fail
+    const expectedPath = path.join(
+      dir, '.kmp-test-runner', 'logs', 'benchmark', runId, 'bench-jvm-jvm.log'
+    );
+    expect(existsSync(expectedPath)).toBe(true);
+    const content = readFileSync(expectedPath, 'utf8');
+    expect(content).toContain('partial output');
+    expect(content).toContain('stderr partial');
+
+    const timeoutErr = envelope.errors.find(e => e.code === 'gradle_timeout');
+    expect(timeoutErr).toBeDefined();
+    expect(timeoutErr.log_path).toBe(expectedPath);
+    expect(envelope.benchmark.log_paths['bench-jvm:jvm']).toBe(expectedPath);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR 3.2 / A11 — default --no-configuration-cache for benchmark dispatch.
+// ---------------------------------------------------------------------------
+// Root cause: kotlinx-benchmark caches %TEMP% inside its gradle config cache;
+// stale TEMP → silent 2.2s FNFE FAIL on Windows. Default-disabling the cache
+// makes the workaround unnecessary. User override via
+// --gradle-args "--configuration-cache" wins via gradle last-wins.
+describe('runBenchmark default --no-configuration-cache (PR 3.2 / A11)', () => {
+  it('default invocation includes --no-configuration-cache in gradle args', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+
+    await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    const args = effectiveGradleArgs(spawn.calls[0]);
+    expect(args).toContain('--no-configuration-cache');
+  });
+
+  it('user --gradle-args "--configuration-cache" results in BOTH flags present (orchestrator does NOT dedup; gradle last-wins handles override)', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+
+    await runBenchmark({
+      projectRoot: dir,
+      args: [
+        '--platform', 'jvm',
+        '--gradle-args', '--configuration-cache',
+      ],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    const args = effectiveGradleArgs(spawn.calls[0]);
+    expect(args).toContain('--no-configuration-cache');
+    expect(args).toContain('--configuration-cache');
+    // Order matters: orchestrator-injected first, user override last (gradle wins).
+    const idxOrch = args.indexOf('--no-configuration-cache');
+    const idxUser = args.indexOf('--configuration-cache');
+    expect(idxUser).toBeGreaterThan(idxOrch);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR 3.2 / A10 — graded partial-timeout exit code + --strict-timeouts opt-out.
+// ---------------------------------------------------------------------------
+// Behavior change: with >=1 passing module + >=1 timed-out module, exit
+// code becomes 0 (was 3) and a `partial_timeout` warning is surfaced. CI
+// matrix users opt in to pre-graded behavior via --strict-timeouts.
+describe('runBenchmark graded partial-timeout exit (PR 3.2 / A10)', () => {
+  it('1 timeout + 1 pass (no --strict-timeouts) → exit 0 + warnings[].code=partial_timeout', async () => {
+    const dir = copyFixture();
+    // Two spawns: bench-jvm first (SIGTERM = timeout), bench-android second (pass).
+    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+    let callIdx = 0;
+    const spawn = (cmd, args, opts) => {
+      const idx = callIdx++;
+      if (idx === 0) {
+        return { status: null, signal: 'SIGTERM', stdout: 'timed out', stderr: '', error: null };
+      }
+      return { status: 0, signal: null, stdout: 'BUILD SUCCESSFUL\n', stderr: '', error: null };
+    };
+
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'all', '--config', 'smoke'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(exitCode).toBe(0); // graded — was 3 pre-PR 3.2
+    expect(envelope.benchmark.timed_out).toBe(1);
+    expect(envelope.benchmark.passed).toBe(1);
+
+    const warn = envelope.warnings.find(w => w.code === 'partial_timeout');
+    expect(warn).toBeDefined();
+    expect(warn.timed_out).toBe(1);
+    expect(warn.passed).toBe(1);
+
+    // Per-module gradle_timeout errors[] entry is preserved.
+    const timeoutErr = envelope.errors.find(e => e.code === 'gradle_timeout');
+    expect(timeoutErr).toBeDefined();
+  });
+
+  it('1 timeout + 1 pass + --strict-timeouts → exit 3 + NO partial_timeout warning', async () => {
+    const dir = copyFixture();
+    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+    let callIdx = 0;
+    const spawn = (cmd, args, opts) => {
+      const idx = callIdx++;
+      if (idx === 0) {
+        return { status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: null };
+      }
+      return { status: 0, signal: null, stdout: 'BUILD SUCCESSFUL\n', stderr: '', error: null };
+    };
+
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'all', '--config', 'smoke', '--strict-timeouts'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(exitCode).toBe(3); // strict opt-out restores pre-graded hard fail
+    expect(envelope.warnings.find(w => w.code === 'partial_timeout')).toBeUndefined();
+  });
+
+  it('all modules timed out (zero passes) → exit 3 regardless of --strict-timeouts (everything-hung guard)', async () => {
+    const dir = copyFixture();
+    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+    const spawn = (cmd, args, opts) => ({
+      status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: null,
+    });
+
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'all', '--config', 'smoke'], // no --strict-timeouts
+      spawn,
+      adbProbe,
+    });
+
+    expect(exitCode).toBe(3); // graded path requires totalPass >= 1; zero passes → hard fail
+    expect(envelope.benchmark.passed).toBe(0);
+    expect(envelope.benchmark.timed_out).toBeGreaterThanOrEqual(2);
+    expect(envelope.warnings.find(w => w.code === 'partial_timeout')).toBeUndefined();
   });
 });
