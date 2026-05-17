@@ -90,7 +90,7 @@ The envelope shape is documented at [`references/cli/envelope-schema.md`](refere
 - `modules: [{ name, type, coverage_plugin, test_build_type, has_flavor, android_dsl, android_dsl_variant, test_failures }]`
 - `errors: [{ message, code?, ...extra }]` — discriminated codes include `no_test_modules` (with `caused_by_filter:bool`), `module_failed` (with `setup_failed:bool`), `task_not_found`, `unsupported_class_version`, `instrumented_setup_failed`, `flavor_unused`, `isolated_runtime_race`, `coverage_threshold_exceeded`, `lock_held`, `no_gradlew`, `missing_shell`. Soft codes (do NOT promote exit_code): `no_summary`, `no_changed_modules`
 - `skipped: [{ module, reason }]`
-- `coverage: { tool, missed_lines, modules_with_kover_plugin, modules_with_jacoco_plugin }`
+- `coverage: { tool, missed_lines, modules_with_kover_plugin, modules_with_jacoco_plugin, module_buckets: { with_data, no_xml, parse_errored, skipped_by_user } }`
 - Optional subcommand-specific block: `parallel`, `android`, `benchmark`, `changed`, `doctor`, `info`, `describe`, `isolated`
 
 ### 4. Report failures with module attribution
@@ -135,13 +135,13 @@ See [`references/troubleshooting/overview.md`](references/troubleshooting/overvi
 - `isolated_runtime_race` — `--isolated` combined with a test-type that hits a shared runtime resource (iOS simulator, ADB without `--device`, or `--test-type all`).
 - `lock_held` — another `kmp-test` process holds the project lock. Pass `--force` to bypass when safe.
 
-> Per-code troubleshooting deep-dives (root cause analysis, recovery steps, AGP-specific quirks) arrive in follow-up releases of this skill.
+> Per-code troubleshooting deep-dives (root cause analysis, recovery steps, AGP-specific quirks) live under [`references/troubleshooting/`](references/troubleshooting/overview.md) — see the overview's status table for coverage.
 
 ## References
 
 - [`references/cli/envelope-schema.md`](references/cli/envelope-schema.md) — full JSON envelope shape (schema:2)
 - [`references/cli/exit-codes.md`](references/cli/exit-codes.md) — exit-code semantics + WS-5 invariant
-- [`references/cli/flags-reference.md`](references/cli/flags-reference.md) — CLI flags table (placeholder; full table in a follow-up release)
+- [`references/cli/flags-reference.md`](references/cli/flags-reference.md) — CLI flags table (all subcommands + global options)
 - [`references/workflows/overview.md`](references/workflows/overview.md) — workflow navigation hub
 - [`references/troubleshooting/overview.md`](references/troubleshooting/overview.md) — troubleshooting navigation hub
 
