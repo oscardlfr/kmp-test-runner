@@ -10,6 +10,12 @@ exports[`parity / envelope JSON schema snapshot > android --dry-run --json envel
   },
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -60,6 +66,12 @@ exports[`parity / envelope JSON schema snapshot > android --list-only --json env
   },
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -108,6 +120,12 @@ exports[`parity / envelope JSON schema snapshot > benchmark --dry-run --json env
   },
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -157,6 +175,12 @@ exports[`parity / envelope JSON schema snapshot > changed --dry-run --json --sta
   },
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -211,6 +235,12 @@ exports[`parity / envelope JSON schema snapshot > coverage --dry-run --json enve
 {
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
@@ -435,6 +465,12 @@ exports[`parity / envelope JSON schema snapshot > parallel --dry-run --json enve
 {
   "coverage": {
     "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
