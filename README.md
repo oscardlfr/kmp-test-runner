@@ -369,7 +369,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `0` | Success — all tests passed |
 | `1` | Test failure — script ran, tests failed |
 | `2` | Config error — bad CLI usage (unknown subcommand, missing arg) |
-| `3` | Environment error — `gradlew` not found in `--project-root`, `bash`/`pwsh` missing on `PATH`, JDK absent, **JDK toolchain mismatch** (`errors[].code: jdk_mismatch` — bypass with `--ignore-jdk-mismatch`), or another `kmp-test` already running on the same project root (`errors[].code: lock_held` — bypass with `--force`) |
+| `3` | Environment error — `gradlew` not found in `--project-root`, `bash`/`pwsh` missing on `PATH`, JDK absent, **JDK toolchain mismatch** (`errors[].code: jdk_mismatch` — bypass with `--ignore-jdk-mismatch`), or another `kmp-test` already running on the same project root (`errors[].code: lock_held` — bypass with `--force`; stale locks from crashed runs auto-reclaim when the PID is dead, predates the host boot, or exceeds a 4 h age threshold) |
 
 ### Flag reference
 
@@ -650,7 +650,7 @@ kmp-test info --json
 #  "gradle_config":{"parallel":true,"workers_max":4,"caching":true,"daemon":true,"jvmargs":"-Xmx4g","configureondemand":false}}}
 ```
 
-Pass `--no-adb` (or set `KMP_TEST_SKIP_ADB=1`) to skip the ADB probe when it's slow or hangs.
+Pass `--no-adb` (or set `KMP_TEST_SKIP_ADB=1`) to skip the ADB probe when it's slow or hangs. On `kmp-test android`, `--no-adb` implies `--list-only` (instrumented tests fundamentally require adb, so the orchestrator emits the module set without dispatching gradle and surfaces `warnings[].code: "no_adb_implies_list_only"` for the implication).
 
 ### `kmp-test describe` — project metadata as JSON
 
