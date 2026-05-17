@@ -782,6 +782,16 @@ Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidD
 
 ---
 
+### ✅ SHIPPED 2026-05-17 — `kmp-test android --no-adb` hangs indefinitely without `--list-only` / `--dry-run` (surfaced 2026-05-17 during full-CLI wet validation — Finding #4)
+
+**Status: SHIPPED 2026-05-17.** Wet repro: `kmp-test android --no-adb --json --project-root <root>` ran for 4+ minutes without producing output. Root cause: the android orchestrator's `parseArgs` switch statement dropped `--no-adb` via the `default:` arm; the orchestrator proceeded to build the project model + attempt `connectedAndroidTest` dispatch through gradle, which has no fail-fast path for "no device". `--no-adb` is documented as an `info`-subcommand flag ("Skip the ADB probe"), but the script-dispatcher's `KNOWN_BOOLEAN_FLAGS` set permits it through to all subcommands, where android silently inherited it.
+
+**Fix:** `lib/orchestrators/android-orchestrator.js#parseArgs` now recognises `--no-adb` and sets both `noAdb: true` AND `listOnly: true` (instrumented tests fundamentally require adb, so the only sensible behavior on `--no-adb` is list-only — emit the discovered module set without dispatching gradle). The `--list-only` short-circuit (L484) emits a `warnings[].code: "no_adb_implies_list_only"` entry when the path was reached via `--no-adb` (vs explicit `--list-only`), so agents can branch on the implication. Help text in `lib/cli.js` updated to document the implicit-list-only behavior. 2 vitest cases lock the warning + the no-false-positive guard (`--list-only` alone doesn't emit the warning).
+
+**Original FINDING below (preserved for context):** Wet repro in the full-CLI sweep — `kmp-test android --no-adb --json --project-root <kmp project>` was started at 14:58 UTC; PID 42092 still alive 4+ minutes later, lockfile held, zero output. Killed manually via `Stop-Process`. Retake with `--list-only` added returned exit 0 in <1 second. `--no-adb` on android is a footgun for agents probing for metadata without a device — the orchestrator's failure to short-circuit converts a fast envelope-shape query into an indefinite hang.
+
+---
+
 ### ✅ SHIPPED 2026-05-17 (PR 3.2) — `kmp-test benchmark` does NOT persist per-task gradle logs (unlike `kmp-test android`) → no post-mortem when benchmarks fail (surfaced 2026-05-17 user wet session — bug A9)
 
 **Status: SHIPPED 2026-05-17 (PR 3.2).** Closed as part of the benchmark-cluster fix (A9 + A11 + A10). Implementation in `lib/orchestrators/benchmark-orchestrator.js`: `safeModuleName` + `defaultRunId` helpers mirror android-orchestrator. Per-(module, platform) gradle stdout+stderr is persisted to `<projectRoot>/.kmp-test-runner/logs/benchmark/<runId>/<module>-<platform>.log` (best-effort). Envelope surface (additive, schema_version unchanged at 2): `benchmark.log_paths: { '<module>:<platform>': '<absolute path>' }` covers all dispatched modules; `errors[i].log_path` inline on `module_failed` + `gradle_timeout` entries for read-time ergonomics. 3 vitest cases lock success/fail/timeout paths.

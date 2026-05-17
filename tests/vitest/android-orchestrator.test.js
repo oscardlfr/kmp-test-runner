@@ -309,6 +309,43 @@ Finished 99 tests on Bogus-Device`;
     });
     expect(envelope.android.device_serial).toBe('');
   });
+
+  // Finding #4 — `--no-adb` on the android subcommand fundamentally can't
+  // dispatch instrumented tests (they require adb), so we treat it as an
+  // implicit `--list-only` and surface a warning to make the implication
+  // explicit. Pre-fix the flag was dropped silently by parseArgs and the
+  // orchestrator hung trying to dispatch gradle without a connected device.
+  it('--no-adb on android implies --list-only + emits no_adb_implies_list_only warning', async () => {
+    const dir = makeProject([{ name: 'foo' }, { name: 'bar' }]);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runAndroid({
+      projectRoot: dir,
+      args: ['--no-adb'],
+      spawn,
+      // adbProbe must NOT fire — list-only path short-circuits before it.
+      adbProbe: () => { throw new Error('adb probe must not be called on --no-adb'); },
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.modules).toEqual(['bar', 'foo']);
+    expect(envelope.warnings.length).toBe(1);
+    expect(envelope.warnings[0].code).toBe('no_adb_implies_list_only');
+    expect(envelope.warnings[0].message).toMatch(/instrumented tests require adb/);
+    // gradle dispatch must not have happened.
+    const ranGradle = spawn.calls.some(c => /gradlew/.test(c.cmd) || c.args?.some(a => /gradlew/.test(String(a))));
+    expect(ranGradle).toBe(false);
+  });
+
+  it('--list-only without --no-adb does NOT emit no_adb_implies_list_only warning (no false positive)', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.warnings).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
