@@ -71,7 +71,7 @@
 
 ### v0.10 — minor (locked 2026-05-05)
 
-1. **Defensive `--console=plain` injection** (reframed 2026-05-15 — repo emits zero ANSI of its own; the real risk is gradle's `--console=auto` writing ANSI into pipes) — auto-inject `--console=plain` in `spawnGradle` when `process.stdout.isTTY === false` or `NO_COLOR` set, plus `--color={always,never,auto}` override and idempotency guard (skip when user already passes any `--console=*` via `--gradle-args`). ~2h.
+1. **Defensive `--console=plain` injection** — ✅ DONE 2026-05-15 (PR #227 / 22fd8c8 on develop, v0.10 #1). Auto-injects `--console=plain` in `spawnGradle` when `process.stdout.isTTY === false` or `NO_COLOR` set, plus `--color={always,never,auto}` override and idempotency guard (skip when user already passes any `--console=*` via `--gradle-args`). New `lib/runners/console-mode.js` + injection callsite in `lib/orchestrators/orchestrator-utils.js`; `KMP_COLOR_MODE` env survives the cli.js → wrapper → runner.js re-exec chain.
 2. **CLI auto-respect `gradle.properties`** — ✅ DONE 2026-05-16 (v0.10 #2 — `parallel`-only scope). `kmp-test parallel` drops `--parallel` from the gradle dispatch when the project has a `gradle.properties` AND the resolved `org.gradle.parallel` is `false`. Optional envelope field `gradle_config_applied:{parallel_dropped:true}` (additive, schema_version unchanged). Migration note in `CHANGELOG.md` covers the "project file present + key absent → resolves to gradle default `false` → drop fires" case. Escape hatches: `org.gradle.parallel=true` in `gradle.properties` or `--gradle-args "--parallel"` (last-wins, v0.9 passthrough).
 3. **Per-project config user-global** — ✅ DONE 2026-05-16 (v0.10 #3). `~/.kmp-test/config.json` keyed by git-remote → rootProject.name → basename (first hit wins). New `lib/user-config.js` (loader + resolveProjectKey + mergeConfigs + validateUserPreset). `lib/project-config.js` exports `loadMergedConfig` for the dispatch path. Schema full parity with project-local (`sharedProject`/`defaults`/`skip`) + new `java_home` (user-global only). Precedence: CLI > env > project-local > user-global. Security: project-local `java_home` is dropped + warned (closes supply-chain vector). Doctor surfaces "User config" row with matched preset key.
 4. **Google `android` skills system viability** — ✅ DONE 2026-05-17 (all 5 sub-PRs SHIPPED). `INVESTIGATE-ANDROID-SKILLS.md` at repo root (gitignored). Decision matrix 7/7 → SHIP authorized. Skill is published as part of the `agentskills.io` open standard (multi-vendor — 35+ adopters: Claude Code, Gemini CLI, Cursor, GitHub Copilot, OpenAI Codex, etc.). **Multi-PR ship complete**: ✅ PR 1 (foundation) → ✅ PR 2 (workflows) → ✅ PR 3 (instrumented dual branch) + bug-fix sub-train (PRs 3.1-3.6) → ✅ PR 4 (convenience scripts `detect-env.{sh,ps1}` + `run-tests.{sh,ps1}` under `.skills/kmp-test-runner/scripts/`; 4 test files under `tests/skill-scripts/` wired into the build job's bats + Pester steps; SKILL.md detect-env one-liner replaced with the script reference plus a new "Convenience scripts" section) → ✅ PR 5 (Claude Code Plugin packaging — `.claude-plugin/plugin.json` at repo root re-uses `.skills/kmp-test-runner/` via `skills:[./.skills/]`; `tools/validate-plugin.mjs` zero-deps validator + 39 vitest cases; CI `skills-validate` job extended with manifest check; `tools/sync-versions.js` grows 6th target so future package.json bumps stay in lockstep; README adds "Install as a Claude Code Plugin" subsection).
@@ -461,9 +461,11 @@ errors[]: [{ code: "gradle_timeout" }]
 
 ---
 
-### 💡 IDEA — `tools/decouple-audit.mjs` real CI gate enforcing the privacy rule (surfaced 2026-05-10 during privacy-sweep PR #207)
+### ✅ SHIPPED 2026-05-10 (PR #209 / 3824efc on develop) — `tools/decouple-audit.mjs` real CI gate enforcing the privacy rule (surfaced 2026-05-10 during privacy-sweep PR #207)
 
-**Status: IDEA, no milestone assigned.** The "Decouple from L0" rule in CLAUDE.md + CONTRIBUTING.md tells contributors private toolkit identifiers / private project names must stay 0-hits across committed text. The rule was historically enforced by a `tools/decouple-audit.mjs` script — but the script never actually existed in the repo (the doc reference was stale; PR #207 dropped it). Without an automated check, the next leak gets caught only by a reviewer's eye.
+**Status: DONE.** `tools/decouple-audit.mjs` ships as a CI-required job (`decouple-audit`, branch protection enforced on `develop` + `main` since 2026-05-12). The in-script `PRIVATE_PATTERNS` registry is the canonical pattern list — extended in-place as new private identifiers appear. Original IDEA body preserved below for traceability.
+
+The "Decouple from L0" rule in CLAUDE.md + CONTRIBUTING.md tells contributors private toolkit identifiers / private project names must stay 0-hits across committed text. The rule was historically enforced by a `tools/decouple-audit.mjs` script — but the script never actually existed in the repo (the doc reference was stale; PR #207 dropped it). Without an automated check, the next leak gets caught only by a reviewer's eye.
 
 **Proposal:** create the script as a real CI gate. ~50 LOC ESM module:
 - Reads a pattern list (private project / module names, the maintainer's home-dir paths, private package namespaces, etc.). Pattern list lives in the script — sentinel patterns the maintainer can extend without doc changes.
@@ -479,9 +481,11 @@ errors[]: [{ code: "gradle_timeout" }]
 
 ---
 
-### 💡 IDEA — `KMP_WORKSPACE` env var documentation for tooling scripts (surfaced 2026-05-10 during privacy-sweep PR #207)
+### ✅ SHIPPED 2026-05-10 (PR #209 / 3824efc on develop) — `KMP_WORKSPACE` env var documentation for tooling scripts (surfaced 2026-05-10 during privacy-sweep PR #207)
 
-**Status: IDEA, no milestone assigned.** PR #207 parameterised `tools/wide-smoke-pass-*.mjs`, `tools/wet-audit-v0.9.mjs`, `tools/macos-validation-gate.mjs` so they read `WORKSPACE` from `process.env.KMP_WORKSPACE` (with a `path.resolve(process.cwd(), '..')` fallback). The fallback works only if the user invokes the scripts from `tools/`'s parent dir; otherwise the user MUST set the env var. Currently undocumented — a contributor running `node tools/wide-smoke-pass-9.mjs` from any other cwd silently sweeps the wrong directory.
+**Status: DONE.** `tools/README.md` documents the `KMP_WORKSPACE` env var contract (override + fallback semantics); the sweep scripts now emit `[NOTICE] WORKSPACE = <resolved-path>` to stderr at startup so the resolved root is unambiguous from the first log line. Original IDEA body preserved below for traceability.
+
+PR #207 parameterised `tools/wide-smoke-pass-*.mjs`, `tools/wet-audit-v0.9.mjs`, `tools/macos-validation-gate.mjs` so they read `WORKSPACE` from `process.env.KMP_WORKSPACE` (with a `path.resolve(process.cwd(), '..')` fallback). The fallback works only if the user invokes the scripts from `tools/`'s parent dir; otherwise the user MUST set the env var. Currently undocumented — a contributor running `node tools/wide-smoke-pass-9.mjs` from any other cwd silently sweeps the wrong directory.
 
 **Proposal:** document the env var contract in one of:
 - A new short `tools/README.md` (preferred — keeps tooling docs co-located).
@@ -496,9 +500,11 @@ Also: make the scripts emit a `[NOTICE]` log line on startup naming the resolved
 
 ---
 
-### 💡 IDEA — `info.jdk.java_home` returns `null` on macOS shells without exported `JAVA_HOME` (surfaced 2026-05-13 during v0.9.1 wet-validation gate)
+### ✅ SHIPPED 2026-05-15 (PR #223 / 04c5809 on develop) — `info.jdk.java_home` returns `null` on macOS shells without exported `JAVA_HOME` (surfaced 2026-05-13 during v0.9.1 wet-validation gate)
 
-**Status: IDEA, no milestone assigned.** During the v0.9.1 pre-tag wet validation on macOS, `npm test` failed 1/1371 with a snapshot mismatch on `tests/vitest/parity.test.js > info --json --no-adb envelope shape is stable`: snapshot expected `jdk.java_home: "<string>"`, observed `"<null>"`. Root cause: `lib/info-orchestrator.js` reads `process.env.JAVA_HOME` literally and emits `null` when unset; on macOS, users routinely don't export `JAVA_HOME` and rely on `/usr/libexec/java_home` instead. CI always sets `JAVA_HOME` (`setup-java` action), masking the gap. With `JAVA_HOME=$(/usr/libexec/java_home -v 21) npm test` → 1371/1371 green. Not a regression of the v0.9.1 delta — the snapshot predates the 27-commit cycle. But it means anyone running the test suite locally on macOS without explicit `JAVA_HOME` sees a red test, eroding the suite's signal.
+**Status: DONE.** Shipped Option (b) — product fallback. `lib/info-orchestrator.js` exports `resolveDarwinJavaHome(versionString, spawner)` which spawns `/usr/libexec/java_home -v <major>` on darwin when `process.env.JAVA_HOME` is empty; `reshapeJdk` wires the fallback into the `jdk.java_home` field. Guarded by `platform === 'darwin'`, returns `null` on any spawn error (no regression on Linux/Windows). Original IDEA body preserved below for traceability.
+
+During the v0.9.1 pre-tag wet validation on macOS, `npm test` failed 1/1371 with a snapshot mismatch on `tests/vitest/parity.test.js > info --json --no-adb envelope shape is stable`: snapshot expected `jdk.java_home: "<string>"`, observed `"<null>"`. Root cause: `lib/info-orchestrator.js` reads `process.env.JAVA_HOME` literally and emits `null` when unset; on macOS, users routinely don't export `JAVA_HOME` and rely on `/usr/libexec/java_home` instead. CI always sets `JAVA_HOME` (`setup-java` action), masking the gap. With `JAVA_HOME=$(/usr/libexec/java_home -v 21) npm test` → 1371/1371 green. Not a regression of the v0.9.1 delta — the snapshot predates the 27-commit cycle. But it means anyone running the test suite locally on macOS without explicit `JAVA_HOME` sees a red test, eroding the suite's signal.
 
 **Two independent fixes (either resolves):**
 
@@ -515,9 +521,11 @@ Also: make the scripts emit a `[NOTICE]` log line on startup naming the resolved
 
 ---
 
-### 💡 IDEA — `tools/macos-validation-gate.mjs --mode scoped` classifies every wet cell as DRIFT (surfaced 2026-05-13 during v0.9.1 wet-validation gate)
+### ✅ SHIPPED 2026-05-15 (PR #224 / c6aac3e on develop) — `tools/macos-validation-gate.mjs --mode scoped` classifies every wet cell as DRIFT (surfaced 2026-05-13 during v0.9.1 wet-validation gate)
 
-**Status: IDEA, no milestone assigned.** During the v0.9.1 pre-tag wet validation, the gate's `--mode scoped` run reported **1 PASS / 28 DRIFT / 1 SKIP** across `--project fixture` + `--project KaMPKit`. Manual inspection of every DRIFT envelope showed `exit_code:0`, `errors:[]`, tests passing — product side fully green. Root cause: scoped mode invokes `kmp-test <sub> --module-filter <m>` (wet — gradle runs) but compares the resulting envelope against `tests/vitest/__snapshots__/parity.test.js.snap`, which was captured invoking with `--dry-run` (parallel/changed) / `--list-only` (android). Structural divergence between wet and dry shapes:
+**Status: DONE.** Shipped Option (a) — scoped mode buckets cells on `exit_code === 0 && errors.length === 0` (PASS) vs anything else (ERROR), dropping snapshot comparison entirely for the wet path. `bucketCell` in `tools/macos-validation-gate.mjs` branches on `opts.mode === 'scoped'`. Probe mode still uses the canonical (dry) snapshot baseline. Original IDEA body preserved below for traceability.
+
+During the v0.9.1 pre-tag wet validation, the gate's `--mode scoped` run reported **1 PASS / 28 DRIFT / 1 SKIP** across `--project fixture` + `--project KaMPKit`. Manual inspection of every DRIFT envelope showed `exit_code:0`, `errors:[]`, tests passing — product side fully green. Root cause: scoped mode invokes `kmp-test <sub> --module-filter <m>` (wet — gradle runs) but compares the resulting envelope against `tests/vitest/__snapshots__/parity.test.js.snap`, which was captured invoking with `--dry-run` (parallel/changed) / `--list-only` (android). Structural divergence between wet and dry shapes:
 
 | Path | dry shape (snapshot) | wet shape (scoped run) |
 |---|---|---|
@@ -966,9 +974,11 @@ Branches stays at 80 because `floor(81.82 − 2) = 79` would lower the existing 
 
 ---
 
-### 💡 IDEA — Explicit `'utf8'` encoding on `writeFileSync` calls in `android-orchestrator.js` (surfaced 2026-05-10 during pre-PR-10 code-quality audit)
+### ✅ SHIPPED (sweep prior to 2026-05-17) — Explicit `'utf8'` encoding on `writeFileSync` calls in `android-orchestrator.js` (surfaced 2026-05-10 during pre-PR-10 code-quality audit)
 
-**Status: IDEA, no milestone assigned.** `lib/android-orchestrator.js:671` + `lib/android-orchestrator.js:675` write log files via `writeFileSync(logFile, stdout)` without an explicit encoding argument. Node defaults to `'utf8'` for string content so functionally fine, but explicit is better than implicit — every other `writeFileSync` in the codebase passes the encoding string.
+**Status: DONE.** All `writeFileSync` callsites in `lib/orchestrators/android-orchestrator.js` (currently lines 731 / 735 / 768 post-refactor train) carry explicit `'utf8'` as the third argument. The fix landed organically during a subsequent code-quality sweep before 2026-05-17. Original IDEA body preserved below for traceability (line numbers in the body reflect pre-refactor state).
+
+`lib/android-orchestrator.js:671` + `lib/android-orchestrator.js:675` write log files via `writeFileSync(logFile, stdout)` without an explicit encoding argument. Node defaults to `'utf8'` for string content so functionally fine, but explicit is better than implicit — every other `writeFileSync` in the codebase passes the encoding string.
 
 **Proposal:** add `'utf8'` as the third arg on both calls. Trivial diff; no behavior change.
 
