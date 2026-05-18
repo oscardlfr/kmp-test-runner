@@ -269,23 +269,47 @@ function fmt(n) {
 // Module resolution — shared by features
 // ---------------------------------------------------------------------------
 
+const MODULE_WALK_SKIP_DIRS = new Set([
+  'build', 'node_modules', '.gradle', '.git', '.idea', 'src', 'gradle', 'buildSrc',
+]);
+const MODULE_WALK_MAX_DEPTH = 6;
+
 export function filterModulesByGlob(projectRoot, moduleFilter) {
-  // Walks the project root one level deep and keeps directories that look
-  // like Gradle modules (own build.gradle.kts) and match the glob filter.
-  // Returns module simple names (no leading colon).
+  // Walks the project root recursively and keeps directories that look like
+  // Gradle modules (own build.gradle.kts), returning gradle-style colon-joined
+  // names ('app', 'core:analytics'). A directory with build.gradle.kts is a
+  // leaf module — recursion stops there (a module's subdirs are not modules).
+  // Glob semantics: `*` matches within one path component; `**` matches across
+  // components.
   const filterRe = moduleFilter
-    ? new RegExp('^' + moduleFilter.replace(/\*/g, '.*') + '$')
+    ? new RegExp(
+        '^' +
+          moduleFilter
+            .replace(/\*\*/g, '__DSTAR__')
+            .replace(/\*/g, '[^:]*')
+            .replace(/__DSTAR__/g, '.*') +
+          '$',
+      )
     : /.*/;
   const out = [];
-  let entries;
-  try { entries = readdirSync(projectRoot, { withFileTypes: true }); } catch { return out; }
-  for (const e of entries) {
-    if (!e.isDirectory()) continue;
-    if (!filterRe.test(e.name)) continue;
-    if (existsSync(path.join(projectRoot, e.name, 'build.gradle.kts'))) {
-      out.push(e.name);
+  function walk(dir, prefix, depth) {
+    if (depth > MODULE_WALK_MAX_DEPTH) return;
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (e.name.startsWith('.')) continue;
+      if (MODULE_WALK_SKIP_DIRS.has(e.name)) continue;
+      const moduleName = prefix ? `${prefix}:${e.name}` : e.name;
+      const childPath = path.join(dir, e.name);
+      if (existsSync(path.join(childPath, 'build.gradle.kts'))) {
+        if (filterRe.test(moduleName)) out.push(moduleName);
+        continue;
+      }
+      walk(childPath, moduleName, depth + 1);
     }
   }
+  walk(projectRoot, '', 0);
   return out;
 }
 
@@ -313,22 +337,20 @@ export function modulesFromGitDiff(projectRoot, range) {
 }
 
 function readReportFiles(projectRoot, modules, isReport) {
-  // Slurps every file under <projectRoot>/<module>/build/... that matches the
-  // feature's `isReport` predicate. Limited to the resolved modules so the A
-  // capture is faithful to what an agent would read after a real run.
+  // Slurps every file under <projectRoot>/<module-dir>/build/... that matches
+  // the feature's `isReport` predicate. Module names use gradle's colon
+  // notation (`app`, `core:analytics`) and are mapped to filesystem paths via
+  // split-on-colon (so `core:analytics` → `<projectRoot>/core/analytics`).
   let collected = '';
-  const moduleSet = new Set(modules);
-  function walk(dir, depth = 0, topModule = null) {
-    if (depth > 8) return;
+  function walk(dir, depth) {
+    if (depth > 10) return;
     let entries;
     try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const full = path.join(dir, e.name);
       if (e.isDirectory()) {
         if (['node_modules', '.gradle', '.git'].includes(e.name)) continue;
-        const nextTop = depth === 0 ? e.name : topModule;
-        if (depth === 0 && !moduleSet.has(e.name)) continue;
-        walk(full, depth + 1, nextTop);
+        walk(full, depth + 1);
       } else if (e.isFile()) {
         if (isReport(full)) {
           try { collected += '\n=== ' + full + ' ===\n' + readFileSync(full, 'utf8'); } catch { /* unreadable */ }
@@ -336,7 +358,9 @@ function readReportFiles(projectRoot, modules, isReport) {
       }
     }
   }
-  walk(projectRoot);
+  for (const moduleName of modules) {
+    walk(path.join(projectRoot, ...moduleName.split(':')), 0);
+  }
   return collected;
 }
 
@@ -864,6 +888,16 @@ function measureFeatureForProject(opts, runsDir) {
   return results;
 }
 
+// Per-project opts resolver. When a project entry in .measurement-projects.json
+// declares `moduleFilter`, it shadows the global --module-filter for that
+// iteration only. Recovery path for NowInAndroid (deeply-nested module layout
+// where the v0.9 PR #13 top-level walker undersampled 5 of 35 modules).
+export function resolveProjectOpts(opts, project) {
+  return project && project.moduleFilter
+    ? { ...opts, moduleFilter: project.moduleFilter }
+    : opts;
+}
+
 // Multi-project orchestrator. Iterates over `projects` × features, captures
 // per-(project, feature) per-approach token counts, and writes the bucketed
 // aggregate markdown. Heavy I/O — invoked live during wet measurement
@@ -886,7 +920,7 @@ export async function runMultiProjectMode(opts, projects, sink = console) {
       const featureRunsDirOut = path.join(outRoot, 'per-project', project.label, feature);
       try {
         const approachResults = measureFeatureForProject(
-          { ...opts, projectRoot: project.path, feature },
+          { ...resolveProjectOpts(opts, project), projectRoot: project.path, feature },
           featureRunsDirOut,
         );
         projectResult.perFeature[feature] = {
