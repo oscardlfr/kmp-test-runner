@@ -113,6 +113,7 @@ export function parseArgs(argv) {
     project: 'all',
     timeout: 900,
     output: 'MACOS-GATE-V0.9-SUMMARY.md',
+    label: 'v0.9',
     reclassify: false,
     iHaveTwentyGb: false,
     abortFloorMb: 2048,
@@ -126,6 +127,7 @@ export function parseArgs(argv) {
     if (a === '--project')           { out.project = argv[++i]; continue; }
     if (a === '--timeout')           { out.timeout = parseInt(argv[++i], 10); continue; }
     if (a === '--output')            { out.output = argv[++i]; continue; }
+    if (a === '--label')             { out.label = argv[++i]; continue; }
     if (a === '--reclassify')        { out.reclassify = true; continue; }
     if (a === '--i-have-20gb-free')  { out.iHaveTwentyGb = true; continue; }
     if (a === '--abort-floor-mb')    { out.abortFloorMb = parseInt(argv[++i], 10); continue; }
@@ -456,13 +458,29 @@ function runCell(cell, opts, smokeDir, expectedShape) {
     // the operational signal — exit_code + errors[] — for clean PASS/FAIL
     // classification. See BACKLOG IDEA "macos-validation-gate scoped
     // misalignment" (PR #222) for the divergence table.
+    //
+    // Benign no-op error codes (CLI worked correctly, but had nothing to
+    // do on this host) are filtered before failure attribution and bucket
+    // to SKIP instead of ERROR. Currently:
+    //   - `no_changed_modules` — `kmp-test changed` against a clean
+    //     working tree (no git diff). Identified during v0.10 #6 wet
+    //     scoped run (all 14 changed cells against a freshly committed
+    //     branch reported this code).
+    const BENIGN_NO_OP_CODES = new Set(['no_changed_modules']);
     const errs = Array.isArray(envelope.errors) ? envelope.errors : [];
-    if (envelope.exit_code === 0 && errs.length === 0) {
-      bucket = 'PASS';
-      reason = `wet run green (exit 0, no errors[])`;
+    const benignErrs = errs.filter((e) => BENIGN_NO_OP_CODES.has(e?.code));
+    const realErrs = errs.filter((e) => !BENIGN_NO_OP_CODES.has(e?.code));
+    if (envelope.exit_code === 0 && realErrs.length === 0) {
+      if (benignErrs.length === 0) {
+        bucket = 'PASS';
+        reason = `wet run green (exit 0, no errors[])`;
+      } else {
+        bucket = 'SKIP';
+        reason = `benign no-op: ${benignErrs.map((e) => e.code).join(',')}`;
+      }
     } else {
       bucket = 'ERROR';
-      reason = `wet run failed (exit ${envelope.exit_code}, ${errs.length} errors)`;
+      reason = `wet run failed (exit ${envelope.exit_code}, ${realErrs.length} errors)`;
     }
   } else if (expectedShape) {
     const observed = extractShape(normalizeForShapeDiff(structuredClone(envelope)));
@@ -550,7 +568,27 @@ function reclassifyCell(cell, smokeDir, expectedShape) {
   }
   let bucket = prior.bucket || 'ERROR';
   let reason = prior.reason || '';
-  if (envelope && expectedShape) {
+  if (envelope && prior.mode === 'scoped') {
+    // Mirror the scoped bucketing in runCell so that --reclassify picks
+    // up logic changes (e.g. new benign-no-op codes) without forcing a
+    // full gradle re-run.
+    const BENIGN_NO_OP_CODES = new Set(['no_changed_modules']);
+    const errs = Array.isArray(envelope.errors) ? envelope.errors : [];
+    const benignErrs = errs.filter((e) => BENIGN_NO_OP_CODES.has(e?.code));
+    const realErrs = errs.filter((e) => !BENIGN_NO_OP_CODES.has(e?.code));
+    if (envelope.exit_code === 0 && realErrs.length === 0) {
+      if (benignErrs.length === 0) {
+        bucket = 'PASS';
+        reason = '(reclassified) wet run green (exit 0, no errors[])';
+      } else {
+        bucket = 'SKIP';
+        reason = `(reclassified) benign no-op: ${benignErrs.map((e) => e.code).join(',')}`;
+      }
+    } else {
+      bucket = 'ERROR';
+      reason = `(reclassified) wet run failed (exit ${envelope.exit_code}, ${realErrs.length} errors)`;
+    }
+  } else if (envelope && expectedShape) {
     const diff = diffShapes(expectedShape, extractShape(normalizeForShapeDiff(structuredClone(envelope))));
     if (diff.agree) {
       bucket = 'PASS';
@@ -590,7 +628,7 @@ function emitSummary(results, opts, outputPath) {
   for (const r of results) counts[r.bucket] = (counts[r.bucket] || 0) + 1;
 
   const lines = [];
-  lines.push('# v0.9 macOS validation gate — summary');
+  lines.push(`# ${opts.label} macOS validation gate — summary`);
   lines.push('');
   lines.push(`Generated: ${new Date().toISOString()}`);
   lines.push(`Mode: \`${opts.mode}\``);
@@ -639,7 +677,7 @@ function emitSummary(results, opts, outputPath) {
   }
   lines.push('## Forensic artifacts');
   lines.push('');
-  lines.push('Per-cell stdout / stderr / envelope / meta live under `.smoke/macos-gate-v0.9/`.');
+  lines.push(`Per-cell stdout / stderr / envelope / meta live under \`.smoke/macos-gate-${opts.label}/\`.`);
   lines.push('Filename pattern: `<subcommand>_<testType|none>_<project>.{out,err,json,meta.json}`.');
   lines.push('');
 
@@ -673,6 +711,7 @@ Options:
   --project <name>              ${PROJECTS.map((p) => p.name).join('|')}|all (default: all)
   --timeout <s>                 per-cell timeout in seconds (default: 900)
   --output <path>               summary markdown path (default: MACOS-GATE-V0.9-SUMMARY.md)
+  --label <vX.Y>                version label used in title + smoke subdir (default: v0.9)
   --reclassify                  re-read .smoke artifacts, no spawn
   --abort-floor-mb <N>          stop the run if /System/Volumes/Data falls below N MiB (default: 2048)
   --no-stop-daemons             skip ./gradlew --stop between cells (debug only)
@@ -694,7 +733,7 @@ function main() {
     return;
   }
 
-  const smokeDir = path.join(REPO_ROOT, '.smoke', 'macos-gate-v0.9');
+  const smokeDir = path.join(REPO_ROOT, '.smoke', `macos-gate-${opts.label}`);
   mkdirSync(smokeDir, { recursive: true });
 
   // Load snapshots once. Drift detection depends on this; an unparseable

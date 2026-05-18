@@ -1,12 +1,12 @@
 # kmp-test-runner
 
-> Standalone parallel test runner for Kotlin Multiplatform and Android Gradle projects. npm CLI + Gradle plugin + shell installers. MIT.
+> Parallel test runner for Kotlin Multiplatform and Android Gradle projects with an agent-friendly JSON envelope. npm CLI + Gradle plugin + shell installers. MIT.
 
 ## Repo state (2026-05-01)
 
-- npm: `kmp-test-runner@0.9.1` (Trusted Publisher OIDC; auto-publishes on push to `main`)
-- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.9.1` (GitHub Packages; auto-publishes on push to `main`)
-- GitHub Releases: `v0.9.1` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
+- npm: `kmp-test-runner@0.10.0` (Trusted Publisher OIDC; auto-publishes on push to `main`)
+- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.10.0` (GitHub Packages; auto-publishes on push to `main`)
+- GitHub Releases: `v0.10.0` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
 - All 3 shapes share the same source-of-truth version (`package.json`), bumped together per release.
 
 ### v0.7.0 surface (iOS / macOS support + Gradle plugin testType + macOS CI smoke + README v0.7 surface)
@@ -52,7 +52,7 @@ Two long-lived branches:
 
 **NEVER push directly to `main` or `develop`.** Branch protection on both requires:
 - PR (no direct push, no force push, no delete)
-- All 9 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `commit-lint / Commit Lint` (job renamed from `🔤 Commit Lint` in v0.4.x — see `commit-lint.yml` for context), `decouple-audit` (added 2026-05-12 from PR #209), `bundle-size` (added 2026-05-12 from PR #216)
+- All 10 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `commit-lint / Commit Lint` (job renamed from `🔤 Commit Lint` in v0.4.x — see `commit-lint.yml` for context), `decouple-audit` (added 2026-05-12 from PR #209), `bundle-size` (added 2026-05-12 from PR #216), `skills-validate` (added 2026-05-16 from PR #230)
 - Linear history (squash/rebase only)
 - `enforce_admins: true` (rule applies to repo owner — no bypass)
 

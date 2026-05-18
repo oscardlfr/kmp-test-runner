@@ -32,12 +32,7 @@ import {
   preflightJdkCheck,
   jdkMismatchHint,
   lockfilePath,
-  isPidAlive,
   readLockfile,
-  writeLockfile,
-  removeLockfile,
-  acquireLock,
-  lockAgeLabel,
   stripAnsi,
   parseScriptOutput,
   buildJsonReport,
@@ -57,22 +52,12 @@ import {
   parseGradleTimeoutMs,
   DEFAULT_GRADLE_TIMEOUT_MS,
 } from '../../lib/cli.js';
+import { withFakeGradleProject, DEAD_PID } from './_test-helpers.js';
 
 beforeEach(() => {
   spawnMock.mockReset().mockReturnValue({ status: 0 });
   discoverInstalledJdksMock.mockReset().mockReturnValue([]);
 });
-
-// Build a temp dir with a stub gradlew so the pre-flight check passes.
-function withFakeGradleProject(fn) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'kmp-test-fixture-'));
-  const wrapperName = process.platform === 'win32' ? 'gradlew.bat' : 'gradlew';
-  writeFileSync(path.join(dir, wrapperName), '#!/usr/bin/env bash\nexit 0\n');
-  // Always create both so platform-agnostic tests pass
-  writeFileSync(path.join(dir, 'gradlew'), '#!/usr/bin/env bash\nexit 0\n');
-  writeFileSync(path.join(dir, 'gradlew.bat'), '@echo off\r\nexit /b 0\r\n');
-  try { fn(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
-}
 
 describe('resolveScript', () => {
   it('parallel/linux → run-parallel-coverage-suite.sh', () => {
@@ -1308,6 +1293,98 @@ describe('runDoctorChecks', () => {
         expect(adb.value).not.toBe('skipped');
         const adbSpawnCalls = spawnMock.mock.calls.filter(args => args[0] === 'adb');
         expect(adbSpawnCalls.length).toBeGreaterThanOrEqual(1);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // PR 3.4 A7 — when adb isn't on PATH but the project's local.properties
+  // resolves sdk.dir, doctor must try <sdk.dir>/platform-tools/adb(.exe)
+  // before warning. Pre-fix doctor reported "WARN not found" regardless,
+  // which misled users with a valid Android SDK install (just no adb on
+  // PATH — the canonical Android Studio shape).
+  describe('PR 3.4 A7 — ADB fallback via local.properties sdk.dir', () => {
+    function dropSdkLocalProperties(dir, sdkPath) {
+      writeFileSync(path.join(dir, 'local.properties'),
+        `sdk.dir=${sdkPath.replace(/\\/g, '\\\\')}\n`);
+    }
+
+    it('PATH probe fails + sdk.dir resolves + SDK-local adb works → OK via SDK', () => {
+      const isWin = process.platform === 'win32';
+      const sdkRoot = mkdtempSync(path.join(tmpdir(), 'kmp-fake-sdk-'));
+      const platformTools = path.join(sdkRoot, 'platform-tools');
+      mkdirSync(platformTools, { recursive: true });
+      const adbExe = isWin ? 'adb.exe' : 'adb';
+      const sdkAdbPath = path.join(platformTools, adbExe);
+      writeFileSync(sdkAdbPath, ''); // exists; spawnSync mock decides exit status
+      spawnMock.mockImplementation((cmd) => {
+        if (cmd === 'java') return { status: 0, stderr: 'openjdk version "21"\n' };
+        if (cmd === 'adb')  return { status: 127, error: new Error('ENOENT'), stdout: '', stderr: '' };
+        if (cmd === sdkAdbPath) {
+          return { status: 0, stdout: 'Android Debug Bridge version 1.0.41\nVersion 35.0.0', stderr: '' };
+        }
+        return { status: 0, stdout: '', stderr: '' };
+      });
+      const projectDir = mkdtempSync(path.join(tmpdir(), 'kmp-doctor-a7-ok-'));
+      try {
+        dropSdkLocalProperties(projectDir, sdkRoot);
+        const { checks } = runDoctorChecks(projectDir);
+        const adb = checks.find(c => c.name === 'ADB');
+        expect(adb.status).toBe('OK');
+        expect(adb.value).toBe('35.0.0');
+        expect(adb.message).toContain('via SDK at');
+        expect(adb.message).toContain(sdkAdbPath);
+        // Both probes ran (PATH first, then SDK fallback).
+        const adbCalls = spawnMock.mock.calls.filter(args => args[0] === 'adb' || args[0] === sdkAdbPath);
+        expect(adbCalls.length).toBe(2);
+      } finally {
+        rmSync(projectDir, { recursive: true, force: true });
+        rmSync(sdkRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('PATH probe fails + sdk.dir resolves + SDK-local adb also missing → WARN with SDK path hint', () => {
+      const isWin = process.platform === 'win32';
+      const sdkRoot = mkdtempSync(path.join(tmpdir(), 'kmp-fake-sdk-'));
+      // Don't create platform-tools/adb — both probes should fail.
+      const adbExe = isWin ? 'adb.exe' : 'adb';
+      const expectedSdkAdb = path.join(sdkRoot, 'platform-tools', adbExe);
+      spawnMock.mockImplementation((cmd) => {
+        if (cmd === 'java') return { status: 0, stderr: 'openjdk version "21"\n' };
+        return { status: 127, error: new Error('ENOENT'), stdout: '', stderr: '' };
+      });
+      const projectDir = mkdtempSync(path.join(tmpdir(), 'kmp-doctor-a7-warn-'));
+      try {
+        dropSdkLocalProperties(projectDir, sdkRoot);
+        const { checks } = runDoctorChecks(projectDir);
+        const adb = checks.find(c => c.name === 'ADB');
+        expect(adb.status).toBe('WARN');
+        expect(adb.value).toBe('not found');
+        expect(adb.message).toContain('not on PATH');
+        expect(adb.message).toContain(expectedSdkAdb);
+      } finally {
+        rmSync(projectDir, { recursive: true, force: true });
+        rmSync(sdkRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('PATH probe succeeds → unchanged "instrumented tests supported" (regression guard)', () => {
+      spawnMock.mockImplementation((cmd) => {
+        if (cmd === 'java') return { status: 0, stderr: 'openjdk version "21"\n' };
+        if (cmd === 'adb')  return { status: 0, stdout: 'Android Debug Bridge version 1.0.41\nVersion 35.0.0', stderr: '' };
+        return { status: 0, stdout: '', stderr: '' };
+      });
+      const dir = mkdtempSync(path.join(tmpdir(), 'kmp-doctor-a7-regression-'));
+      try {
+        const { checks } = runDoctorChecks(dir);
+        const adb = checks.find(c => c.name === 'ADB');
+        expect(adb.status).toBe('OK');
+        expect(adb.message).toBe('instrumented tests supported');
+        // No SDK-fallback spawn — PATH already succeeded.
+        const nonPathAdbCalls = spawnMock.mock.calls.filter(args =>
+          typeof args[0] === 'string' && args[0] !== 'adb' && /platform-tools[\\/]adb/.test(args[0]));
+        expect(nonPathAdbCalls.length).toBe(0);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
@@ -3024,10 +3101,6 @@ describe('main() — JDK gate integration', () => {
 // Concurrency Tier 1 (v0.3.8+): lockfile + --force + run-id
 // ============================================================================
 
-// PID 999999999 is well outside any OS PID range — process.kill(pid, 0)
-// reliably throws ESRCH, giving a deterministic "dead PID" for tests.
-const DEAD_PID = 999999999;
-
 describe('consumeForceFlag', () => {
   it('strips --force and reports true', () => {
     const { args, force } = consumeForceFlag(['--force', '--project-root', '/x']);
@@ -3051,170 +3124,6 @@ describe('lockfilePath', () => {
     const got = lockfilePath('/abs/proj');
     expect(got.endsWith('.kmp-test-runner.lock')).toBe(true);
     expect(got.includes('proj')).toBe(true);
-  });
-});
-
-describe('isPidAlive', () => {
-  it('returns true for current process PID', () => {
-    expect(isPidAlive(process.pid)).toBe(true);
-  });
-  it('returns false for clearly-dead PID', () => {
-    expect(isPidAlive(DEAD_PID)).toBe(false);
-  });
-  it('returns false for non-numeric / invalid input', () => {
-    expect(isPidAlive(null)).toBe(false);
-    expect(isPidAlive(undefined)).toBe(false);
-    expect(isPidAlive('123')).toBe(false);
-    expect(isPidAlive(0)).toBe(false);
-    expect(isPidAlive(-1)).toBe(false);
-    expect(isPidAlive(NaN)).toBe(false);
-  });
-});
-
-describe('readLockfile / writeLockfile / removeLockfile round-trip', () => {
-  it('returns null when no lockfile exists', () => {
-    withFakeGradleProject(dir => {
-      expect(readLockfile(dir)).toBeNull();
-    });
-  });
-
-  it('write → read produces the same shape with required keys', () => {
-    withFakeGradleProject(dir => {
-      const written = writeLockfile(dir, 'parallel');
-      const read = readLockfile(dir);
-      expect(read).toEqual(written);
-      expect(read.schema).toBe(1);
-      expect(read.pid).toBe(process.pid);
-      expect(read.subcommand).toBe('parallel');
-      expect(read.project_root).toBe(dir);
-      expect(typeof read.start_time).toBe('string');
-      expect(new Date(read.start_time).toString()).not.toBe('Invalid Date');
-      expect(typeof read.version).toBe('string');
-    });
-  });
-
-  it('returns {invalid:true} on unparseable JSON', () => {
-    withFakeGradleProject(dir => {
-      writeFileSync(path.join(dir, '.kmp-test-runner.lock'), 'not-json{', 'utf8');
-      expect(readLockfile(dir)).toEqual({ invalid: true });
-    });
-  });
-
-  it('removeLockfile deletes the file and is idempotent', () => {
-    withFakeGradleProject(dir => {
-      writeLockfile(dir, 'parallel');
-      expect(existsSync(path.join(dir, '.kmp-test-runner.lock'))).toBe(true);
-      removeLockfile(dir);
-      expect(existsSync(path.join(dir, '.kmp-test-runner.lock'))).toBe(false);
-      // Calling again on missing lock must not throw.
-      expect(() => removeLockfile(dir)).not.toThrow();
-    });
-  });
-});
-
-describe('acquireLock', () => {
-  it('fresh acquire when no prior lock', () => {
-    withFakeGradleProject(dir => {
-      const r = acquireLock(dir, 'parallel', { force: false });
-      expect(r.ok).toBe(true);
-      expect(r.reclaimed).toBeUndefined();
-      expect(r.forced).toBeUndefined();
-      expect(r.ourLock.pid).toBe(process.pid);
-    });
-  });
-
-  it('refuses with lock_held when existing lock has live PID and no --force', () => {
-    withFakeGradleProject(dir => {
-      // Pre-write a lock with our own PID (definitely alive).
-      writeFileSync(
-        path.join(dir, '.kmp-test-runner.lock'),
-        JSON.stringify({
-          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
-          subcommand: 'parallel', project_root: dir, version: '0.3.8',
-        }),
-        'utf8',
-      );
-      const r = acquireLock(dir, 'changed', { force: false });
-      expect(r.ok).toBe(false);
-      expect(r.reason).toBe('lock_held');
-      expect(r.existing.pid).toBe(process.pid);
-      expect(r.existing.subcommand).toBe('parallel');
-    });
-  });
-
-  it('reclaims when existing lock has dead PID', () => {
-    withFakeGradleProject(dir => {
-      writeFileSync(
-        path.join(dir, '.kmp-test-runner.lock'),
-        JSON.stringify({
-          schema: 1, pid: DEAD_PID, start_time: '2026-04-26T00:00:00.000Z',
-          subcommand: 'parallel', project_root: dir, version: '0.3.8',
-        }),
-        'utf8',
-      );
-      const r = acquireLock(dir, 'changed', { force: false });
-      expect(r.ok).toBe(true);
-      expect(r.reclaimed).toBe(true);
-      expect(r.ourLock.pid).toBe(process.pid);
-      expect(r.ourLock.subcommand).toBe('changed');
-    });
-  });
-
-  it('--force bypasses a live lock and writes our own', () => {
-    withFakeGradleProject(dir => {
-      writeFileSync(
-        path.join(dir, '.kmp-test-runner.lock'),
-        JSON.stringify({
-          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
-          subcommand: 'parallel', project_root: dir, version: '0.3.8',
-        }),
-        'utf8',
-      );
-      const r = acquireLock(dir, 'changed', { force: true });
-      expect(r.ok).toBe(true);
-      expect(r.forced).toBe(true);
-      expect(r.existing).toBeTruthy();
-      expect(r.ourLock.subcommand).toBe('changed');
-      // On disk, the new lock should reflect 'changed', not the original 'parallel'.
-      const onDisk = readLockfile(dir);
-      expect(onDisk.subcommand).toBe('changed');
-    });
-  });
-
-  it('reclaims unparseable lockfile', () => {
-    withFakeGradleProject(dir => {
-      writeFileSync(path.join(dir, '.kmp-test-runner.lock'), 'garbage{', 'utf8');
-      const r = acquireLock(dir, 'parallel', { force: false });
-      expect(r.ok).toBe(true);
-      expect(r.ourLock.pid).toBe(process.pid);
-    });
-  });
-
-  it('returns write_error when target dir does not exist', () => {
-    const ghost = path.join(tmpdir(), 'kmp-no-such-dir-' + Date.now());
-    const r = acquireLock(ghost, 'parallel', { force: false });
-    expect(r.ok).toBe(false);
-    expect(r.reason).toBe('write_error');
-    expect(r.error).toBeTruthy();
-  });
-});
-
-describe('lockAgeLabel', () => {
-  it('formats sub-minute as "Ns"', () => {
-    const t = new Date(Date.now() - 5_000).toISOString();
-    expect(lockAgeLabel(t)).toMatch(/^\ds$/);
-  });
-  it('formats sub-hour as "NmMs"', () => {
-    const t = new Date(Date.now() - (3 * 60 + 12) * 1000).toISOString();
-    expect(lockAgeLabel(t)).toBe('3m12s');
-  });
-  it('formats over-hour as "NhMm"', () => {
-    const t = new Date(Date.now() - (2 * 3600 + 17 * 60) * 1000).toISOString();
-    expect(lockAgeLabel(t)).toBe('2h17m');
-  });
-  it('returns "?" for unparseable input', () => {
-    expect(lockAgeLabel('not-a-date')).toBe('?');
-    expect(lockAgeLabel(null)).toBe('?');
   });
 });
 
@@ -3275,6 +3184,11 @@ describe('main() — lockfile integration', () => {
     expect(obj.exit_code).toBe(EXIT.ENV_ERROR);
     expect(obj.errors[0].code).toBe('lock_held');
     expect(obj.errors[0].message).toMatch(/already running/);
+    // PR 3.4 Bug #3 sub-fix a — message must surface every documented
+    // escape hatch so agents reading the envelope can branch on intent.
+    expect(obj.errors[0].message).toContain('--isolated-cache-dir');
+    expect(obj.errors[0].message).toContain('--project-root');
+    expect(obj.errors[0].message).toContain('--force');
   });
 
   it('--force bypasses live lock and proceeds to spawn', () => {
@@ -3393,6 +3307,63 @@ describe('main() — lockfile integration', () => {
       const onDisk = readLockfile(dir);
       expect(onDisk.subcommand).toBe('parallel');
       expect(onDisk.pid).toBe(process.pid);
+    });
+  });
+
+  // PR 3.4 Bug #3 sub-fix b — `--isolated-cache-dir <path>` implies lockfile
+  // bypass. Rationale: the lockfile guards against shared-gradle-cache
+  // races, but with an explicit cache dir the cache isn't shared anymore.
+  // Race audit verified report writes are runId-suffixed, so concurrent
+  // runs with explicit cache dirs don't collide on output files either.
+  it('--isolated-cache-dir bypasses the lockfile probe even with a live lock', () => {
+    withFakeGradleProject(dir => {
+      // Pre-existing live lock from another concurrent run.
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+          subcommand: 'parallel', project_root: dir, version: '0.9.1',
+        }),
+        'utf8',
+      );
+      const cacheDir = mkdtempSync(path.join(tmpdir(), 'kmp-bypass-cache-'));
+      try {
+        process.argv = [
+          'node', 'kmp-test.js', 'parallel',
+          '--isolated-cache-dir', cacheDir,
+          '--project-root', dir,
+        ];
+        // Pre-fix: this would return ENV_ERROR with lock_held.
+        // Post-fix: bypass kicks in, spawn proceeds successfully.
+        expect(main()).toBe(EXIT.SUCCESS);
+        // Pre-existing lock must remain intact — we never touched it.
+        const onDisk = readLockfile(dir);
+        expect(onDisk.subcommand).toBe('parallel');
+        expect(onDisk.pid).toBe(process.pid);
+      } finally {
+        rmSync(cacheDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // Regression guard: bare `--isolated` (no explicit cache dir, no
+  // --no-lock) still hits the lockfile. Sub-fix b is gated on cacheDir
+  // specifically — `--isolated` alone gets gradle's per-run --project-
+  // cache-dir but the lock still guards `.kmp-test-runner/cache/` and
+  // other shared bookkeeping.
+  it('bare --isolated still acquires the lockfile (regression guard for sub-fix b gating)', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({
+          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+          subcommand: 'parallel', project_root: dir, version: '0.9.1',
+        }),
+        'utf8',
+      );
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--isolated', '--project-root', dir];
+      // Still blocks — bare --isolated does NOT bypass the lock.
+      expect(main()).toBe(EXIT.ENV_ERROR);
     });
   });
 });

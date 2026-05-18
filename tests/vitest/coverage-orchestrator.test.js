@@ -541,6 +541,165 @@ describe('runCoverage', () => {
     expect(latestContent).toContain('80%');  // RUN-B coverage pct
   });
 
+  // PR 3.4 A2 — pre-fix the orchestrator hardcoded the report path to
+  // .kmp-test-runner/reports/coverage/<runId>.md and dropped --output-file
+  // entirely (literal `void outputFile;`). After PR 3.4 a custom path is
+  // honoured: absolute used verbatim, relative resolved against projectRoot.
+  // The historic default literal (`coverage-full-report.md`) stays as the
+  // sentinel for "use the default tree" so the v0.8.0 clean-break shape
+  // (no project-root markdown) is preserved.
+  describe('PR 3.4 A2 — --output-file path semantics', () => {
+    it('relative path → written under projectRoot, no default-tree alias', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      await runCoverage({
+        projectRoot,
+        args: ['--output-file', 'my-report.md'],
+        spawn,
+        runId: 'A2-REL',
+      });
+      // User's chosen path written at projectRoot.
+      expect(existsSync(path.join(projectRoot, 'my-report.md'))).toBe(true);
+      // Default-tree write did NOT happen — the user picked a destination.
+      const defaultTreeFile = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'A2-REL.md');
+      expect(existsSync(defaultTreeFile)).toBe(false);
+      // And no latest.md alias either.
+      const defaultLatest = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'latest.md');
+      expect(existsSync(defaultLatest)).toBe(false);
+    });
+
+    it('absolute path → written verbatim, no default-tree write', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      // Use a tmp file path OUTSIDE the projectRoot to prove absolute is honoured.
+      const absDir = mkdtempSync(path.join(tmpdir(), 'kmp-a2-abs-'));
+      const absPath = path.join(absDir, 'absolute-report.md');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      try {
+        await runCoverage({
+          projectRoot,
+          args: ['--output-file', absPath],
+          spawn,
+          runId: 'A2-ABS',
+        });
+        expect(existsSync(absPath)).toBe(true);
+        expect(existsSync(path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'A2-ABS.md'))).toBe(false);
+      } finally {
+        rmSync(absDir, { recursive: true, force: true });
+      }
+    });
+
+    it('relative path with nested dirs → parent dir auto-created', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      await runCoverage({
+        projectRoot,
+        args: ['--output-file', 'nested/dir/report.md'],
+        spawn,
+        runId: 'A2-NEST',
+      });
+      expect(existsSync(path.join(projectRoot, 'nested', 'dir', 'report.md'))).toBe(true);
+    });
+
+    it('default (no flag) → falls back to default tree + latest.md (regression guard)', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      const { envelope } = await runCoverage({
+        projectRoot, args: [], spawn, runId: 'A2-DEFAULT',
+      });
+      const reportsDir = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage');
+      expect(existsSync(path.join(reportsDir, 'A2-DEFAULT.md'))).toBe(true);
+      expect(existsSync(path.join(reportsDir, 'latest.md'))).toBe(true);
+      expect(envelope.coverage.missed_lines).toBe(1);
+    });
+
+    it('explicit default literal coverage-full-report.md → treated as default (back-compat sentinel)', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      await runCoverage({
+        projectRoot,
+        args: ['--output-file', 'coverage-full-report.md'],
+        spawn,
+        runId: 'A2-LITERAL',
+      });
+      // Default tree write fires (sentinel preserved).
+      const reportsDir = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage');
+      expect(existsSync(path.join(reportsDir, 'A2-LITERAL.md'))).toBe(true);
+      // No literal file at projectRoot — would defeat the v0.8.0 clean break.
+      expect(existsSync(path.join(projectRoot, 'coverage-full-report.md'))).toBe(false);
+    });
+  });
+
+  // PR 3.4 A3 — the "Tests Run" header (+ EXECUTION_MODE marker, + generator
+  // footer) used to be hardcoded as "No (--skip-tests)" regardless of how the
+  // orchestrator was invoked. After PR 3.4 the label reflects the actual
+  // execution path: standalone `coverage` says "No (coverage subcommand)",
+  // `parallel --skip-tests` says "No (--skip-tests)", `parallel` (full) says
+  // "Yes (via parallel)" because tests ran before coverage aggregation.
+  describe('PR 3.4 A3 — Tests Run header reflects execution path', () => {
+    it('defaults (standalone coverage subcommand) → "No (coverage subcommand)"', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      await runCoverage({ projectRoot, args: [], spawn, runId: 'A3-DEFAULTS' });
+      const reportPath = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'A3-DEFAULTS.md');
+      const content = readFileSync(reportPath, 'utf8');
+      expect(content).toContain('> **Tests Run**: No (coverage subcommand)');
+      expect(content).toContain('EXECUTION_MODE: skip-tests');
+      expect(content).toContain('coverage aggregator');
+    });
+
+    it('originatingSubcommand=parallel + testsRan=false → "No (--skip-tests)"', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      await runCoverage({
+        projectRoot, args: [], spawn, runId: 'A3-PARALLEL-SKIP',
+        testsRan: false, originatingSubcommand: 'parallel',
+      });
+      const reportPath = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'A3-PARALLEL-SKIP.md');
+      const content = readFileSync(reportPath, 'utf8');
+      expect(content).toContain('> **Tests Run**: No (--skip-tests)');
+      expect(content).toContain('EXECUTION_MODE: skip-tests');
+    });
+
+    it('originatingSubcommand=parallel + testsRan=true → "Yes (via parallel)"', async () => {
+      const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+      dropFakeXml(projectRoot, 'a', 'kover');
+      const spawn = makeSpawnStub({
+        rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      });
+      await runCoverage({
+        projectRoot, args: [], spawn, runId: 'A3-PARALLEL-FULL',
+        testsRan: true, originatingSubcommand: 'parallel',
+      });
+      const reportPath = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'A3-PARALLEL-FULL.md');
+      const content = readFileSync(reportPath, 'utf8');
+      expect(content).toContain('> **Tests Run**: Yes (via parallel)');
+      expect(content).toContain('EXECUTION_MODE: with-tests');
+      expect(content).toContain('Coverage aggregation (after test execution)');
+      expect(content).toContain('aggregator after parallel');
+    });
+  });
+
   it('--exclude-coverage drops module from dispatched but keeps plugin classification', async () => {
     const projectRoot = makeProject([
       { name: 'a', coverage: 'kover' },
@@ -599,5 +758,77 @@ describe('runCoverage', () => {
     expect(exitCode).toBe(0);
     expect(envelope.errors).toEqual([]);
     expect(envelope.isolated).toBeUndefined();
+  });
+});
+
+describe('PR 3.5 A4 — coverage.module_buckets accounting', () => {
+  it('three buckets populated (with_data + no_xml + skipped_by_user), invariant holds', async () => {
+    // a → kover plugin + XML present + parser returns rows → with_data
+    // b → kover plugin + XML missing on disk             → no_xml
+    // c → kover plugin + excluded via --exclude-coverage → skipped_by_user
+    const projectRoot = makeProject([
+      { name: 'a', coverage: 'kover' },
+      { name: 'b', coverage: 'kover' },
+      { name: 'c', coverage: 'kover' },
+    ]);
+    dropFakeXml(projectRoot, 'a', 'kover');
+    // intentionally NO dropFakeXml for b → noXml bucket
+    dropFakeXml(projectRoot, 'c', 'kover');
+    const spawn = makeSpawnStub({
+      rowsByModule: { 'a': ['a|p|F.kt|F|1|0|1|100|'] },
+    });
+    const { envelope } = await runCoverage({
+      projectRoot,
+      args: ['--exclude-coverage', 'c'],
+      spawn,
+    });
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: ['a'],
+      no_xml: ['b'],
+      parse_errored: [],
+      skipped_by_user: ['c'],
+    });
+    // 3 detected + 3 accounted → no drift warning.
+    const drift = (envelope.warnings || []).find(w => w.code === 'coverage_aggregation_drift');
+    expect(drift).toBeUndefined();
+    // c was excluded so the python parser never gets called for it.
+    const pythonCalls = spawn.calls.filter(c => c.cmd === 'python3');
+    expect(pythonCalls.map(c => c.args[2]).sort()).toEqual(['a']);
+  });
+
+  it('parse_errored bucket fires when python3 returns non-zero status', async () => {
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'a', 'kover');
+    // Parser exits non-zero → orchestrator must distinguish empty rows from
+    // a parser failure and land the module in parse_errored, not with_data.
+    const spawn = makeSpawnStub({ rowsByModule: { 'a': [] }, status: 1 });
+    const { envelope } = await runCoverage({ projectRoot, args: [], spawn });
+    expect(envelope.coverage.module_buckets.parse_errored).toEqual(['a']);
+    expect(envelope.coverage.module_buckets.with_data).toEqual([]);
+    expect(envelope.coverage.module_buckets.no_xml).toEqual([]);
+    expect(envelope.coverage.module_buckets.skipped_by_user).toEqual([]);
+    // 1 detected + 1 accounted → no drift warning.
+    const drift = (envelope.warnings || []).find(w => w.code === 'coverage_aggregation_drift');
+    expect(drift).toBeUndefined();
+  });
+
+  it('--dry-run envelope carries empty module_buckets shape (parity)', async () => {
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--dry-run'],
+      spawn,
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.dry_run).toBe(true);
+    // Empty shape on dry-run so downstream consumers can read the key without
+    // optional-chaining; mirrors the existing modules_with_*_plugin treatment.
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: [],
+      no_xml: [],
+      parse_errored: [],
+      skipped_by_user: [],
+    });
   });
 });

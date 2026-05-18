@@ -2,11 +2,12 @@
 // Tests for lib/project-config.js — v0.8.0 .kmp-test-runner.json loader.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { loadProjectConfig, applyConfigDefaults, CONFIG_FILE_NAME } from '../../lib/project-config.js';
+import { loadProjectConfig, applyConfigDefaults, loadMergedConfig, CONFIG_FILE_NAME } from '../../lib/project-config.js';
+import { USER_CONFIG_DIR_NAME, USER_CONFIG_FILE_NAME } from '../../lib/user-config.js';
 
 let workDir;
 
@@ -148,5 +149,107 @@ describe('applyConfigDefaults', () => {
     expect(out).toContain('kover');
     expect(out).toContain('--exclude-modules');
     expect(out).toContain('*:fakes');
+  });
+
+  // v0.10 #3 — user-global java_home injection.
+  it('injects --java-home from config.java_home when flag is absent', () => {
+    const args = ['parallel', '--json'];
+    const cfg = { java_home: 'C:/opt/jdk21' };
+    expect(applyConfigDefaults(args, cfg)).toEqual(['parallel', '--json', '--java-home', 'C:/opt/jdk21']);
+  });
+
+  it('CLI --java-home wins over config.java_home', () => {
+    const args = ['--java-home', '/cli/path'];
+    const cfg = { java_home: '/config/path' };
+    expect(applyConfigDefaults(args, cfg)).toEqual(['--java-home', '/cli/path']);
+  });
+
+  it('does not inject when config.java_home is empty / non-string', () => {
+    expect(applyConfigDefaults(['parallel'], { java_home: '' })).toEqual(['parallel']);
+    expect(applyConfigDefaults(['parallel'], { java_home: 42 })).toEqual(['parallel']);
+  });
+
+  it('java_home injection works alongside defaults injection', () => {
+    const args = [];
+    const cfg = { defaults: { testType: 'common' }, java_home: '/jdk' };
+    const out = applyConfigDefaults(args, cfg);
+    expect(out).toContain('--test-type');
+    expect(out).toContain('common');
+    expect(out).toContain('--java-home');
+    expect(out).toContain('/jdk');
+  });
+});
+
+// v0.10 #3 — loadMergedConfig integration.
+describe('loadMergedConfig', () => {
+  let workDir;
+  let homeDir;
+
+  function makeProject() {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-merged-proj-'));
+    return workDir;
+  }
+
+  function makeHome() {
+    homeDir = mkdtempSync(path.join(tmpdir(), 'kmp-merged-home-'));
+    mkdirSync(path.join(homeDir, USER_CONFIG_DIR_NAME), { recursive: true });
+    return homeDir;
+  }
+
+  afterEach(() => {
+    if (workDir && existsSync(workDir)) rmSync(workDir, { recursive: true, force: true });
+    if (homeDir && existsSync(homeDir)) rmSync(homeDir, { recursive: true, force: true });
+    workDir = null;
+    homeDir = null;
+  });
+
+  it('returns null when neither layer exists', () => {
+    const proj = makeProject();
+    const home = makeHome();
+    expect(loadMergedConfig(proj, { homeOverride: home, projectKey: 'k' })).toBeNull();
+  });
+
+  it('returns user-global preset when project-local is absent', () => {
+    const proj = makeProject();
+    const home = makeHome();
+    writeFileSync(
+      path.join(home, USER_CONFIG_DIR_NAME, USER_CONFIG_FILE_NAME),
+      JSON.stringify({ projects: { 'demo': { defaults: { testType: 'common' }, java_home: '/jdk21' } } }),
+    );
+    const merged = loadMergedConfig(proj, { homeOverride: home, projectKey: 'demo' });
+    expect(merged).toEqual({ defaults: { testType: 'common' }, java_home: '/jdk21' });
+  });
+
+  it('project-local wins for shared keys (defaults.testType)', () => {
+    const proj = makeProject();
+    const home = makeHome();
+    writeFileSync(
+      path.join(home, USER_CONFIG_DIR_NAME, USER_CONFIG_FILE_NAME),
+      JSON.stringify({ projects: { 'demo': { defaults: { testType: 'common', coverageTool: 'kover' } } } }),
+    );
+    writeFileSync(path.join(proj, CONFIG_FILE_NAME), JSON.stringify({ defaults: { testType: 'jvm' } }));
+    const merged = loadMergedConfig(proj, { homeOverride: home, projectKey: 'demo' });
+    expect(merged.defaults).toEqual({ testType: 'jvm', coverageTool: 'kover' });
+  });
+
+  it('user-global java_home survives merge, project-local java_home is dropped + warned', () => {
+    const proj = makeProject();
+    const home = makeHome();
+    writeFileSync(
+      path.join(home, USER_CONFIG_DIR_NAME, USER_CONFIG_FILE_NAME),
+      JSON.stringify({ projects: { 'demo': { java_home: '/user-jdk' } } }),
+    );
+    writeFileSync(path.join(proj, CONFIG_FILE_NAME), JSON.stringify({ java_home: '/project-jdk', defaults: { testType: 'jvm' } }));
+    const orig = process.stderr.write.bind(process.stderr);
+    const captured = [];
+    process.stderr.write = (chunk) => { captured.push(String(chunk)); return true; };
+    let merged;
+    try {
+      merged = loadMergedConfig(proj, { homeOverride: home, projectKey: 'demo' });
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(merged.java_home).toBe('/user-jdk');
+    expect(captured.join('')).toContain('java_home is not allowed in project-local config');
   });
 });
