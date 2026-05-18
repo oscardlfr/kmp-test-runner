@@ -138,7 +138,7 @@ bash .skills/kmp-test-runner/scripts/run-tests.sh android --device R3CT30KAMEH
 
 After the run, confirm:
 
-1. `kmp-test --version` prints the installed version (current: 0.9.1+).
+1. `kmp-test --version` prints the installed version (current: 0.10.0+).
 2. For a successful run, the envelope has `exit_code: 0` and `errors[]` is empty (or contains only soft codes like `no_summary` / `no_changed_modules`).
 3. If `exit_code` is `1`, tests ran but at least one failed — drill into `modules[].test_failures[]`.
 4. If `exit_code` is `2`, it's a CLI usage error — check `errors[].code` (typically `invalid_*`, `flavor_unused`, `isolated_runtime_race`, or `no_test_modules` with `caused_by_filter:true`).
