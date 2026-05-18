@@ -458,13 +458,29 @@ function runCell(cell, opts, smokeDir, expectedShape) {
     // the operational signal — exit_code + errors[] — for clean PASS/FAIL
     // classification. See BACKLOG IDEA "macos-validation-gate scoped
     // misalignment" (PR #222) for the divergence table.
+    //
+    // Benign no-op error codes (CLI worked correctly, but had nothing to
+    // do on this host) are filtered before failure attribution and bucket
+    // to SKIP instead of ERROR. Currently:
+    //   - `no_changed_modules` — `kmp-test changed` against a clean
+    //     working tree (no git diff). Identified during v0.10 #6 wet
+    //     scoped run (all 14 changed cells against a freshly committed
+    //     branch reported this code).
+    const BENIGN_NO_OP_CODES = new Set(['no_changed_modules']);
     const errs = Array.isArray(envelope.errors) ? envelope.errors : [];
-    if (envelope.exit_code === 0 && errs.length === 0) {
-      bucket = 'PASS';
-      reason = `wet run green (exit 0, no errors[])`;
+    const benignErrs = errs.filter((e) => BENIGN_NO_OP_CODES.has(e?.code));
+    const realErrs = errs.filter((e) => !BENIGN_NO_OP_CODES.has(e?.code));
+    if (envelope.exit_code === 0 && realErrs.length === 0) {
+      if (benignErrs.length === 0) {
+        bucket = 'PASS';
+        reason = `wet run green (exit 0, no errors[])`;
+      } else {
+        bucket = 'SKIP';
+        reason = `benign no-op: ${benignErrs.map((e) => e.code).join(',')}`;
+      }
     } else {
       bucket = 'ERROR';
-      reason = `wet run failed (exit ${envelope.exit_code}, ${errs.length} errors)`;
+      reason = `wet run failed (exit ${envelope.exit_code}, ${realErrs.length} errors)`;
     }
   } else if (expectedShape) {
     const observed = extractShape(normalizeForShapeDiff(structuredClone(envelope)));
@@ -552,7 +568,27 @@ function reclassifyCell(cell, smokeDir, expectedShape) {
   }
   let bucket = prior.bucket || 'ERROR';
   let reason = prior.reason || '';
-  if (envelope && expectedShape) {
+  if (envelope && prior.mode === 'scoped') {
+    // Mirror the scoped bucketing in runCell so that --reclassify picks
+    // up logic changes (e.g. new benign-no-op codes) without forcing a
+    // full gradle re-run.
+    const BENIGN_NO_OP_CODES = new Set(['no_changed_modules']);
+    const errs = Array.isArray(envelope.errors) ? envelope.errors : [];
+    const benignErrs = errs.filter((e) => BENIGN_NO_OP_CODES.has(e?.code));
+    const realErrs = errs.filter((e) => !BENIGN_NO_OP_CODES.has(e?.code));
+    if (envelope.exit_code === 0 && realErrs.length === 0) {
+      if (benignErrs.length === 0) {
+        bucket = 'PASS';
+        reason = '(reclassified) wet run green (exit 0, no errors[])';
+      } else {
+        bucket = 'SKIP';
+        reason = `(reclassified) benign no-op: ${benignErrs.map((e) => e.code).join(',')}`;
+      }
+    } else {
+      bucket = 'ERROR';
+      reason = `(reclassified) wet run failed (exit ${envelope.exit_code}, ${realErrs.length} errors)`;
+    }
+  } else if (envelope && expectedShape) {
     const diff = diffShapes(expectedShape, extractShape(normalizeForShapeDiff(structuredClone(envelope))));
     if (diff.agree) {
       bucket = 'PASS';
