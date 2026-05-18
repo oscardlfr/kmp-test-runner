@@ -160,7 +160,7 @@ export function parseArgs(argv) {
     // projectsConfig: optional path to a JSON list of {path, label, bucket}.
     // When set (or the KMP_MEASUREMENT_PROJECTS env var or the conventional
     // gitignored path tools/.measurement-projects.json), the tool runs in
-    // multi-project orchestration mode (PR #13).
+    // multi-project orchestration mode.
     projectsConfig: null,
     // anthropicChunkBytes: override for CHUNK_THRESHOLD_BYTES. Lets ops dial
     // the chunked-counting threshold up or down depending on Anthropic's
@@ -232,7 +232,7 @@ export function parseArgs(argv) {
   if (out.anthropicModels.length === 0 && !out.projectRoot && !wantsMultiProject) {
     console.error('Usage: node tools/measure-token-cost.js --project-root <path> [--feature parallel|coverage|changed|benchmark|info|describe] [--module-filter <pat>] [--test-task <name>] [--benchmark-task <name>] [--changed-range <rev>] [--runs N]');
     console.error('       node tools/measure-token-cost.js [--feature <name>] --anthropic-models <csv> [--anthropic-api-key <key>]   # re-tokenise existing captures');
-    console.error('       node tools/measure-token-cost.js --projects-config <path>   # multi-project size-bucketed orchestration (PR #13)');
+    console.error('       node tools/measure-token-cost.js --projects-config <path>   # multi-project size-bucketed orchestration');
     console.error('       Reads ANTHROPIC_API_KEY (primary) and ANTHROPIC_API_KEY_FALLBACK (auto-fallback on 401) from env.');
     console.error('       Reads KMP_MEASUREMENT_PROJECTS (newline-separated path|label|bucket) as a multi-project config alternative.');
     process.exit(2);
@@ -608,7 +608,7 @@ export async function countTokensAnthropic(client, model, text, fallbackClient =
   // returned with `chunked: true` and `chunks: <n>`. On any chunk failure the
   // call short-circuits with `failedChunkIndex: i` so partial counts don't
   // silently pollute aggregates. This recovers Anthropic-side measurements on
-  // payloads that would otherwise return 413 too_large (PR #13, 2026-05-12).
+  // payloads that would otherwise return 413 too_large.
   const threshold = opts.chunkBytes ?? CHUNK_THRESHOLD_BYTES;
   const safeText = text || '';
   if (Buffer.byteLength(safeText, 'utf8') <= threshold) {
@@ -639,7 +639,7 @@ export async function countTokensAnthropic(client, model, text, fallbackClient =
 }
 
 // ---------------------------------------------------------------------------
-// Multi-project orchestration (PR #13 — size-bucketed token-cost re-measurement)
+// Multi-project orchestration — size-bucketed token-cost re-measurement
 // ---------------------------------------------------------------------------
 
 const VALID_BUCKETS = ['small', 'medium', 'large'];
@@ -891,7 +891,7 @@ function measureFeatureForProject(opts, runsDir) {
 // Per-project opts resolver. When a project entry in .measurement-projects.json
 // declares `moduleFilter`, it shadows the global --module-filter for that
 // iteration only. Recovery path for NowInAndroid (deeply-nested module layout
-// where the v0.9 PR #13 top-level walker undersampled 5 of 35 modules).
+// where the earlier top-level walker undersampled 5 of 35 modules).
 export function resolveProjectOpts(opts, project) {
   return project && project.moduleFilter
     ? { ...opts, moduleFilter: project.moduleFilter }
@@ -900,9 +900,9 @@ export function resolveProjectOpts(opts, project) {
 
 // Multi-project orchestrator. Iterates over `projects` × features, captures
 // per-(project, feature) per-approach token counts, and writes the bucketed
-// aggregate markdown. Heavy I/O — invoked live during wet measurement
-// (Sub-step 3 of PR #13). The caller is responsible for resolving project
-// paths (resolveProjectsConfig) before invocation.
+// aggregate markdown. Heavy I/O — invoked live during wet measurement. The
+// caller is responsible for resolving project paths (resolveProjectsConfig)
+// before invocation.
 //
 // Returns: { exitCode, aggregateFile, byBucket, perProjectResults, outRoot }
 export async function runMultiProjectMode(opts, projects, sink = console) {
@@ -1126,8 +1126,8 @@ function runGradleMode(opts) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  // Multi-project orchestration mode (PR #13). Wins over single-project gradle
-  // mode when any of the 3 projects-config sources resolve to a non-empty list.
+  // Multi-project orchestration mode. Wins over single-project gradle mode
+  // when any of the 3 projects-config sources resolve to a non-empty list.
   // Cross-model mode still wins over multi-project when --anthropic-models is
   // also set — that combination would re-tokenise existing single-project
   // captures, not multi-project. Multi-project + cross-model is a v0.10+ idea.
