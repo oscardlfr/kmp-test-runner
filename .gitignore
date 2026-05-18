@@ -55,7 +55,7 @@ testResults.xml
 # Evidence files reference the host's filesystem layout, project names, and
 # device serials — keep them out of public commits.
 WIDE-SMOKE-PASS-*.md
-WET-AUDIT-*.md
+WET-*.md
 MACOS-GATE-*.md
 MEASUREMENT-*.md
 BUGS-*.md
