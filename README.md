@@ -1,6 +1,6 @@
 # kmp-test-runner
 
-Standalone parallel test runner for Kotlin Multiplatform and Android Gradle projects.
+Parallel test runner for Kotlin Multiplatform and Android Gradle projects. CLI and Gradle plugin that fan out unit, instrumented, coverage, and benchmark tasks across modules in parallel and emit a single-line JSON envelope optimized for AI coding agents.
 
 ## Why this exists — token cost per agent test-run iteration
 
@@ -538,7 +538,7 @@ BUILD SUCCESSFUL
 **Agentic (`--json`) output** — the entire response, on one line:
 
 ```json
-{"tool":"kmp-test","subcommand":"parallel","version":"0.9.1","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16,"modules_with_kover_plugin":["core-foo","core-bar"],"modules_with_jacoco_plugin":[]},"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true},"skipped":[],"errors":[],"warnings":[]}
+{"tool":"kmp-test","subcommand":"parallel","version":"0.10.0","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16,"modules_with_kover_plugin":["core-foo","core-bar"],"modules_with_jacoco_plugin":[]},"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true},"skipped":[],"errors":[],"warnings":[]}
 ```
 
 That's ~300 bytes — roughly **80–200 tokens** vs. tens of thousands for the 🔻 baseline (A). For an agent running tests on every iteration of a coding loop, the difference compounds quickly. The full per-tokenizer table is at the [top of this README](#why-this-exists--token-cost-per-agent-test-run-iteration); methodology and the captured run output are in [`docs/token-cost-measurement.md`](docs/token-cost-measurement.md).
@@ -574,7 +574,7 @@ kmp-test parallel --dry-run --project-root /abs/path
 Pair with `--json` for a structured plan:
 
 ```json
-{"tool":"kmp-test","subcommand":"parallel","version":"0.9.1","dry_run":true,"exit_code":0,"plan":{"spawn_cmd":"bash","spawn_args":["…/run-parallel-coverage-suite.sh","--project-root","/abs"],"script_path":"…/run-parallel-coverage-suite.sh","final_args":["--project-root","/abs"],"test_filter":null},…}
+{"tool":"kmp-test","subcommand":"parallel","version":"0.10.0","dry_run":true,"exit_code":0,"plan":{"spawn_cmd":"bash","spawn_args":["…/run-parallel-coverage-suite.sh","--project-root","/abs"],"script_path":"…/run-parallel-coverage-suite.sh","final_args":["--project-root","/abs"],"test_filter":null},…}
 ```
 
 `--dry-run` still validates `gradlew` (so a missing wrapper still exits `3`). It just stops before spawning the script.
@@ -725,7 +725,7 @@ pluginManagement {
 In `build.gradle.kts`:
 ```kotlin
 plugins {
-    id("io.github.oscardlfr.kmp-test-runner") version "0.9.1"
+    id("io.github.oscardlfr.kmp-test-runner") version "0.10.0"
 }
 
 kmpTestRunner {
