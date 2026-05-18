@@ -51,7 +51,7 @@ A second config layer for per-machine, per-project presets that the project-loca
 
 **Doctor** — `kmp-test doctor` adds a "User config" row that reports whether the file exists, whether the current project's lookup key matched a preset, and which fields the preset carries.
 
-New CLI flag `--user-config-dir <path>` overrides the default `~/.kmp-test/` directory (useful for CI matrices that pin per-job config). No migration required (additive). When the user-global file is absent, behavior is identical to v0.9. Schema_version unchanged.
+No migration required (additive). When the user-global file is absent, behavior is identical to v0.9. Schema_version unchanged.
 
 ### Added — Agent skill (`.skills/kmp-test-runner/`) + Claude Code Plugin packaging (v0.10 #4)
 
