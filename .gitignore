@@ -48,6 +48,7 @@ testResults.xml
 
 # Local diagnostic / smoke captures (not for commit)
 .smoke/
+.wet-evidence/
 
 # Wide-smoke + wet-audit evidence files (per-pass markdown reports — local
 # artefacts only, never commit; the matching tools live under tools/*.mjs).
