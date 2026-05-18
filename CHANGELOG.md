@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed — v0.10 ramp #5 dropped after research (`android describe` as module-discovery source)
+
+Item #5 ("Research direction B — `android describe` JSON discovery") is dropped under its pre-authorized "if negative → drop with user authorization" clause. The v0.10 ramp item #4.5 (SHIPPED 2026-05-17) already established that schema convergence between `kmp-test` and the Google `android` CLI is not viable (Windows blocker + plain-text `info` shape + different abstraction layer between "what tests can I run?" and "where are the build artifacts?"). Those findings apply directly to #5's hypothesis: on Windows (the motivating use case) `android describe` cannot run, and on macOS/Linux it does not carry the module-task graph data `lib/project-model.js` consumes. Verdict file: `WET-V0.10-STEP-5-RESEARCH.md` at repo root. No code change.
+
 ### Fixed — `kmp-test android --device <serial>` now propagated to the gradle subprocess (PR 3.3 / A1)
 
 Two parallel propagation surfaces, both additive:
