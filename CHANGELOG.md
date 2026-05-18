@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Item #5 ("Research direction B — `android describe` JSON discovery") is dropped under its pre-authorized "if negative → drop with user authorization" clause. The v0.10 ramp item #4.5 (SHIPPED 2026-05-17) already established that schema convergence between `kmp-test` and the Google `android` CLI is not viable (Windows blocker + plain-text `info` shape + different abstraction layer between "what tests can I run?" and "where are the build artifacts?"). Those findings apply directly to #5's hypothesis: on Windows (the motivating use case) `android describe` cannot run, and on macOS/Linux it does not carry the module-task graph data `lib/project-model.js` consumes. Verdict file: `WET-V0.10-STEP-5-RESEARCH.md` at repo root. No code change.
 
+### Added — v0.10 macOS validation gate evidence (v0.10 ramp #6)
+
+Pre-tag wet validation of the full CLI matrix on macOS hardware. `MACOS-GATE-V0.10-SUMMARY.md` at repo root captures three phases of evidence:
+
+- **probe** — 45 cells, envelope-shape parity against `tests/vitest/__snapshots__/parity.test.js.snap` (28 PASS, 1 benign DRIFT, 16 SKIP).
+- **scoped** — 45 cells with real gradle invocations per cell (15 PASS, 30 SKIP, 0 ERROR, 0 DRIFT, 0 TIMEOUT). Required env-var redirects (`KMP_TMPDIR`, `GRADLE_USER_HOME`, `KONAN_DATA_DIR` → `<EXT_VOL>/...`) to fit on a 6.3 GB system-disk-free Mac.
+- **targeted wet** — 4 representative commands outside the gate's matrix (`doctor`, `info`, `describe --json`, `parallel --test-type ios --module-filter :shared`) against KaMPKit. All exit 0; the `ios` cell ran real `iosSimulatorArm64Test` (BUILD SUCCESSFUL, 106 s).
+
+Two `tools/macos-validation-gate.mjs` fixes landed in the same PR (vitest 1592/1592 PASS unchanged):
+
+1. `--label <vX.Y>` flag (default `v0.9` backward-compat) parameterizes the summary title and `.smoke/macos-gate-<label>/` subdir per cycle.
+2. `BENIGN_NO_OP_CODES` filter on scoped bucketing — `kmp-test changed` against a clean working tree emits `errors[].code: "no_changed_modules"` as a structured no-op signal; the gate now treats this (and future benign codes) as SKIP-with-reason instead of false ERROR. Mirrored in `--reclassify` so the fix applied to existing artifacts without re-spawning gradle.
+
 ### Fixed — `kmp-test android --device <serial>` now propagated to the gradle subprocess (PR 3.3 / A1)
 
 Two parallel propagation surfaces, both additive:
