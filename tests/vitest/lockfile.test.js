@@ -205,11 +205,14 @@ describe('acquireLock', () => {
 
   it('does NOT reclaim a fresh lock with live PID (no false positive)', () => {
     withFakeGradleProject(dir => {
-      const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString();
+      // start_time = now (not "60s ago") so the boot-time guard cannot
+      // false-positive on fresh CI runners whose uptime is shorter than the
+      // chosen back-offset. The intent is "fresh lock from a live process";
+      // "now" satisfies that more robustly than any past timestamp.
       writeFileSync(
         path.join(dir, '.kmp-test-runner.lock'),
         JSON.stringify({
-          schema: 1, pid: process.pid, start_time: oneMinuteAgo,
+          schema: 1, pid: process.pid, start_time: new Date().toISOString(),
           subcommand: 'parallel', project_root: dir, version: '0.3.8',
         }),
         'utf8',
