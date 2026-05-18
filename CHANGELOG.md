@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.10 macOS validation gate evidence (v0.10 ramp #6)
+
+Pre-tag wet validation of the full CLI matrix on macOS hardware. `MACOS-GATE-V0.10-SUMMARY.md` at repo root captures the 45-cell probe-mode run (28 PASS, 1 benign DRIFT, 16 SKIP) on this Mac (system disk at 6.3 GB free, below the 8 GB floor for the optional scoped phase). Bundled tooling change: `tools/macos-validation-gate.mjs` gained a `--label <vX.Y>` flag (default `v0.9`) so the summary title and `.smoke/macos-gate-<label>/` artifact subdirectory parameterize per cycle.
+
 ### Fixed — `kmp-test android --device <serial>` now propagated to the gradle subprocess (PR 3.3 / A1)
 
 Two parallel propagation surfaces, both additive:

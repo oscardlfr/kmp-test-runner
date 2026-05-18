@@ -113,6 +113,7 @@ export function parseArgs(argv) {
     project: 'all',
     timeout: 900,
     output: 'MACOS-GATE-V0.9-SUMMARY.md',
+    label: 'v0.9',
     reclassify: false,
     iHaveTwentyGb: false,
     abortFloorMb: 2048,
@@ -126,6 +127,7 @@ export function parseArgs(argv) {
     if (a === '--project')           { out.project = argv[++i]; continue; }
     if (a === '--timeout')           { out.timeout = parseInt(argv[++i], 10); continue; }
     if (a === '--output')            { out.output = argv[++i]; continue; }
+    if (a === '--label')             { out.label = argv[++i]; continue; }
     if (a === '--reclassify')        { out.reclassify = true; continue; }
     if (a === '--i-have-20gb-free')  { out.iHaveTwentyGb = true; continue; }
     if (a === '--abort-floor-mb')    { out.abortFloorMb = parseInt(argv[++i], 10); continue; }
@@ -590,7 +592,7 @@ function emitSummary(results, opts, outputPath) {
   for (const r of results) counts[r.bucket] = (counts[r.bucket] || 0) + 1;
 
   const lines = [];
-  lines.push('# v0.9 macOS validation gate — summary');
+  lines.push(`# ${opts.label} macOS validation gate — summary`);
   lines.push('');
   lines.push(`Generated: ${new Date().toISOString()}`);
   lines.push(`Mode: \`${opts.mode}\``);
@@ -639,7 +641,7 @@ function emitSummary(results, opts, outputPath) {
   }
   lines.push('## Forensic artifacts');
   lines.push('');
-  lines.push('Per-cell stdout / stderr / envelope / meta live under `.smoke/macos-gate-v0.9/`.');
+  lines.push(`Per-cell stdout / stderr / envelope / meta live under \`.smoke/macos-gate-${opts.label}/\`.`);
   lines.push('Filename pattern: `<subcommand>_<testType|none>_<project>.{out,err,json,meta.json}`.');
   lines.push('');
 
@@ -673,6 +675,7 @@ Options:
   --project <name>              ${PROJECTS.map((p) => p.name).join('|')}|all (default: all)
   --timeout <s>                 per-cell timeout in seconds (default: 900)
   --output <path>               summary markdown path (default: MACOS-GATE-V0.9-SUMMARY.md)
+  --label <vX.Y>                version label used in title + smoke subdir (default: v0.9)
   --reclassify                  re-read .smoke artifacts, no spawn
   --abort-floor-mb <N>          stop the run if /System/Volumes/Data falls below N MiB (default: 2048)
   --no-stop-daemons             skip ./gradlew --stop between cells (debug only)
@@ -694,7 +697,7 @@ function main() {
     return;
   }
 
-  const smokeDir = path.join(REPO_ROOT, '.smoke', 'macos-gate-v0.9');
+  const smokeDir = path.join(REPO_ROOT, '.smoke', `macos-gate-${opts.label}`);
   mkdirSync(smokeDir, { recursive: true });
 
   // Load snapshots once. Drift detection depends on this; an unparseable
