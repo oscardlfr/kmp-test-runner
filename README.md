@@ -1,6 +1,6 @@
 # kmp-test-runner
 
-Standalone parallel test runner for Kotlin Multiplatform and Android Gradle projects.
+Parallel test runner for Kotlin Multiplatform and Android Gradle projects. CLI and Gradle plugin that fan out unit, instrumented, coverage, and benchmark tasks across modules in parallel and emit a single-line JSON envelope optimized for AI coding agents.
 
 ## Why this exists — token cost per agent test-run iteration
 

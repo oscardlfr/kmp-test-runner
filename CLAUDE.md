@@ -1,6 +1,6 @@
 # kmp-test-runner
 
-> Standalone parallel test runner for Kotlin Multiplatform and Android Gradle projects. npm CLI + Gradle plugin + shell installers. MIT.
+> Parallel test runner for Kotlin Multiplatform and Android Gradle projects with an agent-friendly JSON envelope. npm CLI + Gradle plugin + shell installers. MIT.
 
 ## Repo state (2026-05-01)
 
