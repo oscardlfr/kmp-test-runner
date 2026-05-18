@@ -1,8 +1,8 @@
 {
   "name": "kmp-test-runner",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "type": "module",
-  "description": "Parallel test runner for KMP and Android Gradle projects",
+  "description": "Parallel test runner for Kotlin Multiplatform and Android Gradle projects with an agent-friendly single-line JSON envelope. CLI + Gradle plugin.",
   "homepage": "https://github.com/oscardlfr/kmp-test-runner#readme",
   "repository": {
     "type": "git",
@@ -42,7 +42,7 @@
     "shellcheck": "shellcheck scripts/sh/*.sh scripts/sh/lib/*.sh",
     "size-check": "node tools/check-bundle-size.mjs",
     "sync-versions": "node tools/sync-versions.js",
-    "version": "node tools/sync-versions.js && git add gradle-plugin/build.gradle.kts README.md CLAUDE.md"
+    "version": "node tools/sync-versions.js && git add gradle-plugin/build.gradle.kts README.md CLAUDE.md .claude-plugin/plugin.json"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.91.1",

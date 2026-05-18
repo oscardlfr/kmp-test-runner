@@ -309,6 +309,43 @@ Finished 99 tests on Bogus-Device`;
     });
     expect(envelope.android.device_serial).toBe('');
   });
+
+  // Finding #4 — `--no-adb` on the android subcommand fundamentally can't
+  // dispatch instrumented tests (they require adb), so we treat it as an
+  // implicit `--list-only` and surface a warning to make the implication
+  // explicit. Pre-fix the flag was dropped silently by parseArgs and the
+  // orchestrator hung trying to dispatch gradle without a connected device.
+  it('--no-adb on android implies --list-only + emits no_adb_implies_list_only warning', async () => {
+    const dir = makeProject([{ name: 'foo' }, { name: 'bar' }]);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runAndroid({
+      projectRoot: dir,
+      args: ['--no-adb'],
+      spawn,
+      // adbProbe must NOT fire — list-only path short-circuits before it.
+      adbProbe: () => { throw new Error('adb probe must not be called on --no-adb'); },
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.modules).toEqual(['bar', 'foo']);
+    expect(envelope.warnings.length).toBe(1);
+    expect(envelope.warnings[0].code).toBe('no_adb_implies_list_only');
+    expect(envelope.warnings[0].message).toMatch(/instrumented tests require adb/);
+    // gradle dispatch must not have happened.
+    const ranGradle = spawn.calls.some(c => /gradlew/.test(c.cmd) || c.args?.some(a => /gradlew/.test(String(a))));
+    expect(ranGradle).toBe(false);
+  });
+
+  it('--list-only without --no-adb does NOT emit no_adb_implies_list_only warning (no false positive)', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--list-only'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.warnings).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1231,5 +1268,183 @@ com.x.T > t[Pixel] FAILED
     const f = parseTestFailures(log);
     expect(f).toHaveLength(1);
     expect(f[0].cause).toMatch(/first/);  // first wins
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR 3.3 / A1 — propagate --device <serial> to the gradle subprocess so AGP
+// respects the user's device pin on both legacy `connected{Variant}AndroidTest`
+// tasks (honor ANDROID_SERIAL env) and the newer KMP
+// `androidLibrary { withDeviceTestBuilder {} }` `connectedAndroidDeviceTest`
+// task (ignores ANDROID_SERIAL; reads
+// `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>` instead).
+// ---------------------------------------------------------------------------
+function makeEnvCapturingSpawn({ gradle = {}, perModuleStatus = {}, adb = {} } = {}) {
+  const calls = [];
+  const fn = (cmd, args, opts) => {
+    calls.push({
+      cmd,
+      args: [...args],
+      cwd: opts?.cwd ?? null,
+      env: opts?.env ? { ...opts.env } : null,
+    });
+    if (cmd === 'adb') {
+      const sub = args[args.length - 1] === '-c' ? 'logcat-clear'
+                : args.includes('clear') ? 'pm-clear'
+                : args.includes('-d') ? 'logcat-dump'
+                : 'unknown-adb';
+      return { status: 0, stdout: adb[sub] ?? '', stderr: '', signal: null, error: null };
+    }
+    const eArgs = effectiveGradleArgs({ cmd, args });
+    const taskArg = eArgs.find(a => typeof a === 'string' && a.startsWith(':'));
+    let status = gradle.status ?? 0;
+    if (taskArg) {
+      const mod = taskArg.split(':')[1];
+      if (perModuleStatus[mod] !== undefined) status = perModuleStatus[mod];
+    }
+    return {
+      status,
+      stdout: gradle.stdout ?? (status === 0 ? 'BUILD SUCCESSFUL\n' : 'BUILD FAILED\n'),
+      stderr: gradle.stderr ?? '', signal: null, error: null,
+    };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+describe('runAndroid --device propagation to gradle (PR 3.3 / A1)', () => {
+  it('--device <serial> + --device-task connectedAndroidDeviceTest injects the runner-args gradle property', async () => {
+    const dir = makeProject([{ name: 'managed-lib' }]);
+    const spawn = makeEnvCapturingSpawn();
+    const adbProbe = () => [
+      { serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' },
+      { serial: 'emulator-5554', type: 'emulator', model: 'sdk' },
+    ];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: ['--device', 'R3CT30KAMEH', '--device-task', 'connectedAndroidDeviceTest'],
+      spawn,
+      adbProbe,
+    });
+
+    const gradleCalls = findGradleCalls(spawn.calls);
+    expect(gradleCalls.length).toBe(1);
+    const eArgs = effectiveGradleArgs(gradleCalls[0]);
+    expect(eArgs).toContain(':managed-lib:connectedAndroidDeviceTest');
+    expect(eArgs).toContain('-Pandroid.testInstrumentationRunnerArguments.deviceSerial=R3CT30KAMEH');
+  });
+
+  it('--device <serial> on legacy connectedDebugAndroidTest does NOT inject the runner-args property (ANDROID_SERIAL env covers legacy tasks)', async () => {
+    const dir = makeProject([{ name: 'legacy' }]);
+    const spawn = makeEnvCapturingSpawn();
+    const adbProbe = () => [
+      { serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' },
+    ];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: ['--device', 'R3CT30KAMEH'], // no --device-task → falls back to connectedDebugAndroidTest
+      spawn,
+      adbProbe,
+    });
+
+    const gradleCalls = findGradleCalls(spawn.calls);
+    expect(gradleCalls.length).toBe(1);
+    const eArgs = effectiveGradleArgs(gradleCalls[0]);
+    expect(eArgs).toContain(':legacy:connectedDebugAndroidTest');
+    expect(eArgs.some(a => typeof a === 'string' && a.startsWith('-Pandroid.testInstrumentationRunnerArguments.deviceSerial='))).toBe(false);
+  });
+
+  it('--device <serial> sets ANDROID_SERIAL in the gradle subprocess env (covers legacy AGP tasks + multi-device hosts)', async () => {
+    const dir = makeProject([{ name: 'legacy' }]);
+    const spawn = makeEnvCapturingSpawn();
+    const adbProbe = () => [
+      { serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' },
+      { serial: 'emulator-5554', type: 'emulator', model: 'sdk' },
+    ];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: ['--device', 'R3CT30KAMEH'],
+      spawn,
+      adbProbe,
+    });
+
+    const gradleCalls = findGradleCalls(spawn.calls);
+    expect(gradleCalls.length).toBe(1);
+    expect(gradleCalls[0].env).toBeTruthy();
+    expect(gradleCalls[0].env.ANDROID_SERIAL).toBe('R3CT30KAMEH');
+  });
+
+  it('no --device + single device probed → ANDROID_SERIAL is set to the single device serial (existing implicit behavior, locked here)', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeEnvCapturingSpawn();
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: [],
+      spawn,
+      adbProbe,
+    });
+
+    const gradleCalls = findGradleCalls(spawn.calls);
+    expect(gradleCalls.length).toBe(1);
+    expect(gradleCalls[0].env.ANDROID_SERIAL).toBe('emulator-5554');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR 3.3 / A5 — refresh adb server between --auto-retry attempts so the retry
+// sees an up-to-date device list when the device went offline mid-run. Gated
+// behind --auto-retry → zero impact on the happy path.
+// ---------------------------------------------------------------------------
+describe('runAndroid --auto-retry refreshes adb server (PR 3.3 / A5)', () => {
+  it('runs adb kill-server + adb start-server BEFORE the retry gradle spawn', async () => {
+    const dir = makeProject([{ name: 'flaky' }]);
+    let gradleIdx = 0;
+    const spawn = (cmd, args, opts) => {
+      spawn.calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null });
+      if (cmd === 'adb') {
+        return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+      }
+      const status = gradleIdx === 0 ? 1 : 0;
+      gradleIdx++;
+      return { status, stdout: '', stderr: '', signal: null, error: null };
+    };
+    spawn.calls = [];
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({
+      projectRoot: dir,
+      args: ['--auto-retry'],
+      spawn,
+      adbProbe,
+    });
+
+    // Sequence assertion: first gradle (fail) → adb kill-server → adb start-server → second gradle (pass).
+    const idxFirstGradle = spawn.calls.findIndex(isGradleCall);
+    const idxKill = spawn.calls.findIndex(c => c.cmd === 'adb' && c.args[0] === 'kill-server');
+    const idxStart = spawn.calls.findIndex(c => c.cmd === 'adb' && c.args[0] === 'start-server');
+    const gradleCalls = findGradleCalls(spawn.calls);
+    expect(gradleCalls.length).toBe(2); // initial + retry
+    expect(idxKill).toBeGreaterThan(idxFirstGradle);
+    expect(idxStart).toBeGreaterThan(idxKill);
+    const idxRetryGradle = spawn.calls.findIndex((c, i) => i > idxFirstGradle && isGradleCall(c));
+    expect(idxRetryGradle).toBeGreaterThan(idxStart);
+  });
+
+  it('without --auto-retry, adb kill-server / start-server are NOT called even on failure', async () => {
+    const dir = makeProject([{ name: 'flaky' }]);
+    const spawn = makeSpawnStub({ gradle: { status: 1 } });
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe });
+
+    const killCall = spawn.calls.find(c => c.cmd === 'adb' && c.args[0] === 'kill-server');
+    const startCall = spawn.calls.find(c => c.cmd === 'adb' && c.args[0] === 'start-server');
+    expect(killCall).toBeUndefined();
+    expect(startCall).toBeUndefined();
   });
 });

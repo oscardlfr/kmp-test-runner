@@ -55,6 +55,7 @@ export const CLI_GLOBAL_FLAGS = Object.freeze(new Set([
   '--java-home',
   '--no-jdk-autoselect',
   '--force',
+  '--color',          // v0.10 #1 — global flag, parsed in cli.js#main, sets console-mode state
 ]));
 
 // Flags that appear as quoted string literals in orchestrator source but are

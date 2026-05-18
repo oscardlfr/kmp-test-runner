@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 //
 // tools/sync-versions.js — keep release version pins in lockstep with
-// package.json across the four files that ship a hardcoded version:
+// package.json across the files that ship a hardcoded version:
 //
 //   • package.json                            "version": "X.Y.Z"
 //   • gradle-plugin/build.gradle.kts          version = "X.Y.Z"
 //   • README.md                               plugin DSL sample
 //   • CLAUDE.md                               npm + Gradle plugin + GH release lines
+//   • .claude-plugin/plugin.json              "version": "X.Y.Z"  (Claude Code plugin manifest)
 //
 // Designed to be invoked via:
 //   1. `npm run sync-versions`           — manual sync after editing package.json
@@ -62,6 +63,12 @@ export function buildTargets(version, repoRoot = REPO_ROOT) {
       path: join(repoRoot, "CLAUDE.md"),
       pattern: /GitHub Releases: `v([0-9]+\.[0-9]+\.[0-9]+)`/,
       template: `GitHub Releases: \`v${version}\``,
+    },
+    {
+      label: ".claude-plugin/plugin.json (Claude Code plugin manifest)",
+      path: join(repoRoot, ".claude-plugin", "plugin.json"),
+      pattern: /"version":\s*"([0-9]+\.[0-9]+\.[0-9]+)"/,
+      template: `"version": "${version}"`,
     },
   ];
 }
@@ -162,6 +169,7 @@ Targets:
   gradle-plugin/build.gradle.kts
   README.md (plugin DSL sample)
   CLAUDE.md (npm + Gradle plugin + GitHub Releases lines)
+  .claude-plugin/plugin.json (Claude Code plugin manifest)
 
 Source of truth: package.json "version".
 `;

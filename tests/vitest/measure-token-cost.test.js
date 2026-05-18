@@ -23,6 +23,7 @@ import {
   parseProjectsConfigJson,
   parseProjectsConfigEnv,
   resolveProjectsConfig,
+  resolveProjectOpts,
   classifyBucket,
   summarizeBucket,
   splitForAnthropic,
@@ -540,6 +541,74 @@ describe('filterModulesByGlob', () => {
     makeProject({ 'core-a': true, 'core-empty': false });
     expect(filterModulesByGlob(dir, 'core-*')).toEqual(['core-a']);
   });
+
+  it('walks recursively into grouping dirs without build.gradle.kts (NIA layout)', () => {
+    // core/ is a "grouping" parent (no build.gradle.kts); core/analytics is the
+    // actual module. NowInAndroid is the canonical example.
+    makeProject({
+      app: true,
+      'core/analytics': true,
+      'core/common': true,
+      'feature/foryou': true,
+    });
+    expect(filterModulesByGlob(dir).sort()).toEqual([
+      'app',
+      'core:analytics',
+      'core:common',
+      'feature:foryou',
+    ]);
+  });
+
+  it('does not recurse past a directory that is itself a module', () => {
+    // If app/ has build.gradle.kts, app/sub-thing/ is NOT enumerated even if
+    // it also has build.gradle.kts (modules-within-modules are unsupported in
+    // standard gradle layouts).
+    makeProject({
+      app: true,
+      'app/sub-thing': true,
+    });
+    expect(filterModulesByGlob(dir)).toEqual(['app']);
+  });
+
+  it('`**` glob matches across colon path components', () => {
+    makeProject({
+      app: true,
+      'core/analytics': true,
+      'feature/foryou': true,
+    });
+    expect(filterModulesByGlob(dir, '**').sort()).toEqual([
+      'app',
+      'core:analytics',
+      'feature:foryou',
+    ]);
+    expect(filterModulesByGlob(dir, 'core:**')).toEqual(['core:analytics']);
+  });
+
+  it('`*` glob matches within a single colon component only', () => {
+    makeProject({
+      'core/analytics': true,
+      'core/common': true,
+      'feature/foryou': true,
+    });
+    // `core:*` matches `core:analytics` and `core:common` but NOT
+    // `feature:foryou` (different first component).
+    expect(filterModulesByGlob(dir, 'core:*').sort()).toEqual([
+      'core:analytics',
+      'core:common',
+    ]);
+  });
+
+  it('skips conventional non-module dirs (build, .gradle, src, gradle, buildSrc)', () => {
+    makeProject({
+      app: true,
+      build: false,
+      '.gradle': false,
+      src: false,
+      gradle: false,
+      buildSrc: false,
+    });
+    expect(filterModulesByGlob(dir)).toEqual(['app']);
+  });
 });
 
 describe('modulesFromGitDiff', () => {
@@ -862,6 +931,35 @@ describe('resolveProjectsConfig', () => {
   it('returns null when no source resolves', () => {
     expect(resolveProjectsConfig({})).toBeNull();
     expect(resolveProjectsConfig({ conventionalPath: '/nonexistent.json' })).toBeNull();
+  });
+});
+
+describe('resolveProjectOpts', () => {
+  it('returns opts unchanged when project has no moduleFilter', () => {
+    const opts = { moduleFilter: 'shared*', runs: 1 };
+    const project = { path: '/p', label: 'no-filter', bucket: 'small' };
+    expect(resolveProjectOpts(opts, project)).toBe(opts);
+  });
+
+  it('shadows opts.moduleFilter with project.moduleFilter when set', () => {
+    const opts = { moduleFilter: 'shared*', runs: 1 };
+    const project = { path: '/p', label: 'NowInAndroid', bucket: 'large', moduleFilter: '**' };
+    const merged = resolveProjectOpts(opts, project);
+    expect(merged).not.toBe(opts);
+    expect(merged.moduleFilter).toBe('**');
+    expect(merged.runs).toBe(1);
+  });
+
+  it('handles project without an existing global moduleFilter', () => {
+    const opts = { runs: 1 };
+    const project = { path: '/p', label: 'p1', bucket: 'small', moduleFilter: ':shared' };
+    expect(resolveProjectOpts(opts, project).moduleFilter).toBe(':shared');
+  });
+
+  it('tolerates a nullish project', () => {
+    const opts = { moduleFilter: 'x' };
+    expect(resolveProjectOpts(opts, null)).toBe(opts);
+    expect(resolveProjectOpts(opts, undefined)).toBe(opts);
   });
 });
 

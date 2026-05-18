@@ -160,7 +160,7 @@ export function parseArgs(argv) {
     // projectsConfig: optional path to a JSON list of {path, label, bucket}.
     // When set (or the KMP_MEASUREMENT_PROJECTS env var or the conventional
     // gitignored path tools/.measurement-projects.json), the tool runs in
-    // multi-project orchestration mode (PR #13).
+    // multi-project orchestration mode.
     projectsConfig: null,
     // anthropicChunkBytes: override for CHUNK_THRESHOLD_BYTES. Lets ops dial
     // the chunked-counting threshold up or down depending on Anthropic's
@@ -232,7 +232,7 @@ export function parseArgs(argv) {
   if (out.anthropicModels.length === 0 && !out.projectRoot && !wantsMultiProject) {
     console.error('Usage: node tools/measure-token-cost.js --project-root <path> [--feature parallel|coverage|changed|benchmark|info|describe] [--module-filter <pat>] [--test-task <name>] [--benchmark-task <name>] [--changed-range <rev>] [--runs N]');
     console.error('       node tools/measure-token-cost.js [--feature <name>] --anthropic-models <csv> [--anthropic-api-key <key>]   # re-tokenise existing captures');
-    console.error('       node tools/measure-token-cost.js --projects-config <path>   # multi-project size-bucketed orchestration (PR #13)');
+    console.error('       node tools/measure-token-cost.js --projects-config <path>   # multi-project size-bucketed orchestration');
     console.error('       Reads ANTHROPIC_API_KEY (primary) and ANTHROPIC_API_KEY_FALLBACK (auto-fallback on 401) from env.');
     console.error('       Reads KMP_MEASUREMENT_PROJECTS (newline-separated path|label|bucket) as a multi-project config alternative.');
     process.exit(2);
@@ -269,23 +269,47 @@ function fmt(n) {
 // Module resolution — shared by features
 // ---------------------------------------------------------------------------
 
+const MODULE_WALK_SKIP_DIRS = new Set([
+  'build', 'node_modules', '.gradle', '.git', '.idea', 'src', 'gradle', 'buildSrc',
+]);
+const MODULE_WALK_MAX_DEPTH = 6;
+
 export function filterModulesByGlob(projectRoot, moduleFilter) {
-  // Walks the project root one level deep and keeps directories that look
-  // like Gradle modules (own build.gradle.kts) and match the glob filter.
-  // Returns module simple names (no leading colon).
+  // Walks the project root recursively and keeps directories that look like
+  // Gradle modules (own build.gradle.kts), returning gradle-style colon-joined
+  // names ('app', 'core:analytics'). A directory with build.gradle.kts is a
+  // leaf module — recursion stops there (a module's subdirs are not modules).
+  // Glob semantics: `*` matches within one path component; `**` matches across
+  // components.
   const filterRe = moduleFilter
-    ? new RegExp('^' + moduleFilter.replace(/\*/g, '.*') + '$')
+    ? new RegExp(
+        '^' +
+          moduleFilter
+            .replace(/\*\*/g, '__DSTAR__')
+            .replace(/\*/g, '[^:]*')
+            .replace(/__DSTAR__/g, '.*') +
+          '$',
+      )
     : /.*/;
   const out = [];
-  let entries;
-  try { entries = readdirSync(projectRoot, { withFileTypes: true }); } catch { return out; }
-  for (const e of entries) {
-    if (!e.isDirectory()) continue;
-    if (!filterRe.test(e.name)) continue;
-    if (existsSync(path.join(projectRoot, e.name, 'build.gradle.kts'))) {
-      out.push(e.name);
+  function walk(dir, prefix, depth) {
+    if (depth > MODULE_WALK_MAX_DEPTH) return;
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (e.name.startsWith('.')) continue;
+      if (MODULE_WALK_SKIP_DIRS.has(e.name)) continue;
+      const moduleName = prefix ? `${prefix}:${e.name}` : e.name;
+      const childPath = path.join(dir, e.name);
+      if (existsSync(path.join(childPath, 'build.gradle.kts'))) {
+        if (filterRe.test(moduleName)) out.push(moduleName);
+        continue;
+      }
+      walk(childPath, moduleName, depth + 1);
     }
   }
+  walk(projectRoot, '', 0);
   return out;
 }
 
@@ -313,22 +337,20 @@ export function modulesFromGitDiff(projectRoot, range) {
 }
 
 function readReportFiles(projectRoot, modules, isReport) {
-  // Slurps every file under <projectRoot>/<module>/build/... that matches the
-  // feature's `isReport` predicate. Limited to the resolved modules so the A
-  // capture is faithful to what an agent would read after a real run.
+  // Slurps every file under <projectRoot>/<module-dir>/build/... that matches
+  // the feature's `isReport` predicate. Module names use gradle's colon
+  // notation (`app`, `core:analytics`) and are mapped to filesystem paths via
+  // split-on-colon (so `core:analytics` → `<projectRoot>/core/analytics`).
   let collected = '';
-  const moduleSet = new Set(modules);
-  function walk(dir, depth = 0, topModule = null) {
-    if (depth > 8) return;
+  function walk(dir, depth) {
+    if (depth > 10) return;
     let entries;
     try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const full = path.join(dir, e.name);
       if (e.isDirectory()) {
         if (['node_modules', '.gradle', '.git'].includes(e.name)) continue;
-        const nextTop = depth === 0 ? e.name : topModule;
-        if (depth === 0 && !moduleSet.has(e.name)) continue;
-        walk(full, depth + 1, nextTop);
+        walk(full, depth + 1);
       } else if (e.isFile()) {
         if (isReport(full)) {
           try { collected += '\n=== ' + full + ' ===\n' + readFileSync(full, 'utf8'); } catch { /* unreadable */ }
@@ -336,7 +358,9 @@ function readReportFiles(projectRoot, modules, isReport) {
       }
     }
   }
-  walk(projectRoot);
+  for (const moduleName of modules) {
+    walk(path.join(projectRoot, ...moduleName.split(':')), 0);
+  }
   return collected;
 }
 
@@ -584,7 +608,7 @@ export async function countTokensAnthropic(client, model, text, fallbackClient =
   // returned with `chunked: true` and `chunks: <n>`. On any chunk failure the
   // call short-circuits with `failedChunkIndex: i` so partial counts don't
   // silently pollute aggregates. This recovers Anthropic-side measurements on
-  // payloads that would otherwise return 413 too_large (PR #13, 2026-05-12).
+  // payloads that would otherwise return 413 too_large.
   const threshold = opts.chunkBytes ?? CHUNK_THRESHOLD_BYTES;
   const safeText = text || '';
   if (Buffer.byteLength(safeText, 'utf8') <= threshold) {
@@ -615,7 +639,7 @@ export async function countTokensAnthropic(client, model, text, fallbackClient =
 }
 
 // ---------------------------------------------------------------------------
-// Multi-project orchestration (PR #13 — size-bucketed token-cost re-measurement)
+// Multi-project orchestration — size-bucketed token-cost re-measurement
 // ---------------------------------------------------------------------------
 
 const VALID_BUCKETS = ['small', 'medium', 'large'];
@@ -864,11 +888,21 @@ function measureFeatureForProject(opts, runsDir) {
   return results;
 }
 
+// Per-project opts resolver. When a project entry in .measurement-projects.json
+// declares `moduleFilter`, it shadows the global --module-filter for that
+// iteration only. Recovery path for NowInAndroid (deeply-nested module layout
+// where the earlier top-level walker undersampled 5 of 35 modules).
+export function resolveProjectOpts(opts, project) {
+  return project && project.moduleFilter
+    ? { ...opts, moduleFilter: project.moduleFilter }
+    : opts;
+}
+
 // Multi-project orchestrator. Iterates over `projects` × features, captures
 // per-(project, feature) per-approach token counts, and writes the bucketed
-// aggregate markdown. Heavy I/O — invoked live during wet measurement
-// (Sub-step 3 of PR #13). The caller is responsible for resolving project
-// paths (resolveProjectsConfig) before invocation.
+// aggregate markdown. Heavy I/O — invoked live during wet measurement. The
+// caller is responsible for resolving project paths (resolveProjectsConfig)
+// before invocation.
 //
 // Returns: { exitCode, aggregateFile, byBucket, perProjectResults, outRoot }
 export async function runMultiProjectMode(opts, projects, sink = console) {
@@ -886,7 +920,7 @@ export async function runMultiProjectMode(opts, projects, sink = console) {
       const featureRunsDirOut = path.join(outRoot, 'per-project', project.label, feature);
       try {
         const approachResults = measureFeatureForProject(
-          { ...opts, projectRoot: project.path, feature },
+          { ...resolveProjectOpts(opts, project), projectRoot: project.path, feature },
           featureRunsDirOut,
         );
         projectResult.perFeature[feature] = {
@@ -1092,8 +1126,8 @@ function runGradleMode(opts) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  // Multi-project orchestration mode (PR #13). Wins over single-project gradle
-  // mode when any of the 3 projects-config sources resolve to a non-empty list.
+  // Multi-project orchestration mode. Wins over single-project gradle mode
+  // when any of the 3 projects-config sources resolve to a non-empty list.
   // Cross-model mode still wins over multi-project when --anthropic-models is
   // also set — that combination would re-tokenise existing single-project
   // captures, not multi-project. Multi-project + cross-model is a v0.10+ idea.

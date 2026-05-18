@@ -1,10 +1,10 @@
 # kmp-test-runner
 
-Standalone parallel test runner for Kotlin Multiplatform and Android Gradle projects.
+Parallel test runner for Kotlin Multiplatform and Android Gradle projects. CLI and Gradle plugin that fan out unit, instrumented, coverage, and benchmark tasks across modules in parallel and emit a single-line JSON envelope optimized for AI coding agents.
 
 ## Why this exists — token cost per agent test-run iteration
 
-For an AI coding agent re-running a workflow on every change, the cheapest path matters. **Token-cost reduction scales with project size** — small KMP libraries see ~60–120× reductions on `parallel`, medium projects ~90×, and **large projects with coverage cross 10,000× and routinely overflow Anthropic's `count_tokens` payload limit on the raw `./gradlew` capture** (PR #13 added chunked counting to recover the number even there). Three observation strategies, every cell measured ([methodology](docs/token-cost-measurement.md)):
+For an AI coding agent re-running a workflow on every change, the cheapest path matters. **Token-cost reduction scales with project size** — small KMP libraries see ~1–100× reductions on `parallel`, medium projects ~90×, large projects ~123× (NowInAndroid sample), and **coverage on the largest projects crosses 10,000× and routinely overflows Anthropic's `count_tokens` payload limit on the raw `./gradlew` capture** (chunked counting recovers the number even there). Three observation strategies, every cell measured ([methodology](docs/token-cost-measurement.md)):
 
 - 🔻 **A. Baseline.** Raw `./gradlew` + reading every generated report file — what an agent does **without** `kmp-test`. The cost we're competing against.
 - 🟢 **B. Ours — `kmp-test <feature>`.** Markdown-summarised stdout. Drop-in replacement.
@@ -12,23 +12,23 @@ For an AI coding agent re-running a workflow on every change, the cheapest path 
 
 Sampled across a 6-project bucketed matrix (named OSS) plus one reused anonymized private composite for the large bucket. Buckets: **small** (1–5 modules), **medium** (6–20 modules), **large** (21+ modules). Every cell is a real `messages.countTokens` API count (Claude columns) or `cl100k_base` offline count via `js-tiktoken`; per-bucket aggregates: median + min/max range + spread.
 
-> **Provenance.** Multi-project re-measurement landed 2026-05-12 (PR #13). Sample: KaMPKit, kotlinconf-app, kmp-production-sample (small) · PeopleInSpace, Confetti (medium) · NowInAndroid + `private-large-A` (large, the v0.9 reference composite, ~70 modules, anonymized). Per-project per-feature captures are gitignored under [`tools/runs/multi-project-token-cost-<date>/per-project/<label>/<feature>/`](tools/runs/); the committed aggregate lives at [`tools/runs/multi-project-token-cost-<date>/aggregate-<date>.md`](tools/runs/). Reproducible floor in [`tests/fixtures/kmp-cross-platform-e2e/`](tests/fixtures/kmp-cross-platform-e2e/) — a single-module synthetic KMP fixture covering all 8 targets (jvm + js + wasmJs + 3 iOS archs + macosArm64 + androidLibrary).
+> **Provenance.** Multi-project re-measurement landed 2026-05-12; re-run 2026-05-18 with a recursive module walker that picks up deeply-nested layouts (NowInAndroid grew from 5 → 36 captured modules, Confetti from 13 → 16). Sample: KaMPKit, kotlinconf-app, kmp-production-sample (small) · PeopleInSpace, Confetti (medium) · NowInAndroid + `private-large-A` (large, reused as the `coverage` baseline ceiling, anonymized). Per-project per-feature captures are gitignored under [`tools/runs/multi-project-token-cost-<date>/per-project/<label>/<feature>/`](tools/runs/); the committed aggregate lives at [`tools/runs/multi-project-token-cost-<date>/aggregate-<date>.md`](tools/runs/). Reproducible floor in [`tests/fixtures/kmp-cross-platform-e2e/`](tests/fixtures/kmp-cross-platform-e2e/) — a single-module synthetic KMP fixture covering all 8 targets (jvm + js + wasmJs + 3 iOS archs + macosArm64 + androidLibrary).
 
 ### A→C reduction by project size — `parallel` median across the OSS sample
 
-cl100k_base only (the bucket scaling is most visible against a single tokenizer). Per-project numbers in [`tools/runs/multi-project-token-cost-2026-05-12/aggregate-2026-05-12.md`](tools/runs/). Anthropic-side counts within ±20% of cl100k per the v0.9 cross-model evidence ([`tools/runs/cross-model-results-parallel.txt`](tools/runs/cross-model-results-parallel.txt)).
+cl100k_base only (the bucket scaling is most visible against a single tokenizer). Per-project numbers in [`tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md`](tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md). Anthropic-side counts within ±20% of cl100k per the cross-model evidence ([`tools/runs/cross-model-results-parallel.txt`](tools/runs/cross-model-results-parallel.txt)).
 
-| Bucket             | Sample (n) | Projects                                            | 🔻 A median | 🟢 C median | A→C median | A→C range  |
-|--------------------|-----------:|-----------------------------------------------------|------------:|------------:|-----------:|------------|
-| 🟦 **small** (1–5) |          3 | KaMPKit (2), kotlinconf-app (5), kmp-production-sample (2) |      29,426 |         314 |        60× |  13× – 119× |
-| 🟨 **medium** (6–20) |        2 | PeopleInSpace (7), Confetti (13)                  |     426,338 |       4,475 |     **93×** | 89× – 96× |
-| 🟥 **large** (21+) |          2 | NowInAndroid (35) + `private-large-A` (~70, reused) |     690,660 |       1,300 |     **804×** | 29× – 1,579× |
+| Bucket             | Sample (n) | Projects                                            | 🔻 A median | 🟢 C median | A→C median | A→C range       |
+|--------------------|-----------:|-----------------------------------------------------|------------:|------------:|-----------:|-----------------|
+| 🟦 **small** (1–5) |          3 | KaMPKit (2), kotlinconf-app (5), kmp-production-sample (2) |     24,454 |         338 |     **56.6×** |  1.3× – 102.2× |
+| 🟨 **medium** (6–20) |        2 | PeopleInSpace (7), Confetti (16)                  |    427,586 |       4,499 |      **90.0×** | 84.4× – 95.6× |
+| 🟥 **large** (21+) |          1 | NowInAndroid (36)                                   |    226,291 |       1,839 |     **123.1×** | (single sample) |
 
-> **Methodology caveat for NowInAndroid.** The multi-project orchestrator's default module walker discovers top-level Gradle modules (those with `build.gradle.kts` at depth 1). NIA's deeply-nested structure (`feature/<name>/<api|impl>/`, `core/<name>/`) puts most modules below depth 1, so the orchestrator captured `:test` reports for the 5 top-level modules only (`:app`, `:app-nia-catalog`, `:benchmarks`, `:lint`, `:ui-test-hilt-manifest`). NIA's A=50,284 reflects that subset — not the full 35-module project. `private-large-A`'s A=1,331,036 used an explicit module-filter to sample representative modules, so the 1,579× ratio there is apples-to-oranges relative to NIA. PR #13 ships the orchestrator with this default heuristic; per-project filter customization is queued for a follow-up.
+> **Note on NowInAndroid.** The 2026-05-12 measurement undercounted NIA's deeply-nested layout (`feature/<name>/<api|impl>/`, `core/<name>/`) — the walker was one-level-deep and captured only the 5 top-level modules. The recursive walker shipped in v0.10 #7 (`tools/measure-token-cost.js#filterModulesByGlob`) now honours nested grouping dirs, surfacing all 36 modules. The 123× ratio above reflects that fix. `private-large-A` (~70 modules, the v0.9 large-bucket reference) is reused only as the `coverage` ceiling baseline below — it is anonymised and not re-measured here.
 
 > **Reproducible floor.** [`tests/fixtures/kmp-cross-platform-e2e/`](tests/fixtures/kmp-cross-platform-e2e/) is a 1-module synthetic KMP project covering all 8 supported targets (jvm + js(IR) + wasmJs + 3 iOS archs + macosArm64 + androidLibrary). Re-run `node tools/measure-token-cost.js --project-root tests/fixtures/kmp-cross-platform-e2e --feature parallel` to see the floor case yourself — no SDKs required beyond JDK 21.
 
-> **Large-project ceiling — `coverage` outlier.** On the `private-large-A` composite (~70 KMP modules + Kover, v0.9 reference, anonymized), `coverage` Approach A produces **74 MB of kover HTML/XML — 28.7 M cl100k tokens — and overflows Anthropic's `count_tokens` endpoint (`413 too_large`)** in a single HTTP request. PR #13 added chunked counting (~3.5 MiB UTF-8 windows, sum per-chunk `input_tokens`) so the Anthropic-side number can be recovered by splitting the payload at file-record boundaries. The cl100k-baseline ratio is **77,114×**. The same signal renders in 372 cl100k tokens through `kmp-test coverage --json` — the agent's working memory stays focused on the code instead of log noise.
+> **Large-project ceiling — `coverage` outlier.** On the `private-large-A` composite (~70 KMP modules + Kover, anonymised), `coverage` Approach A produces **74 MB of kover HTML/XML — 28.7 M cl100k tokens — and overflows Anthropic's `count_tokens` endpoint (`413 too_large`)** in a single HTTP request. Chunked counting (~3.5 MiB UTF-8 windows, sum per-chunk `input_tokens`) recovers the Anthropic-side number by splitting the payload at file-record boundaries. The `private-large-A` → C-large cl100k ratio is **85,376×** ([`aggregate-2026-05-18.md`](tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md)). The same signal renders in 336 cl100k tokens through `kmp-test coverage --json` on NowInAndroid — the agent's working memory stays focused on the code instead of log noise.
 
 Two observations carry across every bucket:
 - **Tokenizer transition.** `claude-sonnet-4-6` and `claude-haiku-4-5` share a tokenizer (identical counts to the unit on every cell). `claude-opus-4-7` ships a new tokenizer that produces 30–100% more tokens for the same input — most visibly on heavy XML/HTML payloads (🔻 baseline A).
@@ -36,7 +36,7 @@ Two observations carry across every bucket:
 
 ### Per-feature drill-down — `private-large-A` reference composite (cross-tokenizer detail)
 
-The bucketed table above shows per-bucket medians for `parallel`. The four drill-down tables below show per-tokenizer detail (cl100k + 3 Claude families) on the **`private-large-A` reference composite** (~70 KMP modules + Kover, the v0.9 measurement project, anonymized). They are kept for the cross-tokenizer comparison and as the source of the 77,114× coverage outlier headline. Each table is scaled to its own max for the 🔻 A column (the baseline an agent runs **without** `kmp-test`). 🟢 columns are **our approaches** (B = `kmp-test` markdown, C = `kmp-test --json`); shown as numbers only because the bars would be sub-1-char anyway — **that visual asymmetry between the heavy 🔻 baseline and the tiny 🟢 ours IS the savings story**. Multi-project bucketed re-measurement for `coverage` / `changed` / `benchmark` is queued for v0.10 step 7.
+The bucketed table above shows per-bucket medians for `parallel`. The four drill-down tables below show per-tokenizer detail (cl100k + 3 Claude families) on the **`private-large-A` reference composite** (~70 KMP modules + Kover, anonymised). They are kept for the cross-tokenizer comparison and as the source of the 85,376× coverage outlier headline. Each table is scaled to its own max for the 🔻 A column (the baseline an agent runs **without** `kmp-test`). 🟢 columns are **our approaches** (B = `kmp-test` markdown, C = `kmp-test --json`); shown as numbers only because the bars would be sub-1-char anyway — **that visual asymmetry between the heavy 🔻 baseline and the tiny 🟢 ours IS the savings story**. Multi-project bucketed B + C measurement for `coverage` shipped in v0.10 #7; full A-baseline re-measurement for `changed` / `benchmark` across the OSS sample is queued for a follow-up.
 
 #### `parallel` — full test suite (private-large-A reference)
 
@@ -216,7 +216,7 @@ Pass `--project-root <path>` explicitly when scripting from a different director
 | **Android (instrumented)** | `androidInstrumented` (or `kmp-test android`) | `:module:connectedDebugAndroidTest` | connected device or emulator |
 | **iOS** | `ios` | `:module:iosSimulatorArm64Test` (Apple-silicon), `iosX64Test` (Intel/CI), `iosArm64Test` (device) — picked per-module from the project model | macOS host with Xcode + simulator (Gradle handles simulator boot since AGP/KMP 1.9+) |
 | **macOS** | `macos` | `:module:macosArm64Test` / `macosX64Test` / `macosTest` — picked per-module | macOS host (host-native; no simulator) |
-| **JS / Wasm** | _model-only_ (`webTestTask` field) | `:module:jsTest` / `:module:wasmJsTest` | host Node — wrapper-side dispatch deferred to v0.7.x |
+| **JS / Wasm** | _model-only_ (`webTestTask` field) | `:module:jsTest` / `:module:wasmJsTest` | host Node — wrapper-side `--test-type js`/`wasm` dispatch deferred (project model surfaces the task; pass it via `--gradle-args` when needed) |
 
 `kmp-test` auto-detects the project type (`kmp-desktop` → `common`, otherwise `androidUnit`) when `--test-type` is omitted. iOS / macOS / `androidInstrumented` are opt-in — the wrapper does not switch to them implicitly because they require platform-specific runners (simulator / connected device).
 
@@ -369,7 +369,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `0` | Success — all tests passed |
 | `1` | Test failure — script ran, tests failed |
 | `2` | Config error — bad CLI usage (unknown subcommand, missing arg) |
-| `3` | Environment error — `gradlew` not found in `--project-root`, `bash`/`pwsh` missing on `PATH`, JDK absent, **JDK toolchain mismatch** (`errors[].code: jdk_mismatch` — bypass with `--ignore-jdk-mismatch`), or another `kmp-test` already running on the same project root (`errors[].code: lock_held` — bypass with `--force`) |
+| `3` | Environment error — `gradlew` not found in `--project-root`, `bash`/`pwsh` missing on `PATH`, JDK absent, **JDK toolchain mismatch** (`errors[].code: jdk_mismatch` — bypass with `--ignore-jdk-mismatch`), or another `kmp-test` already running on the same project root (`errors[].code: lock_held` — bypass with `--force`; stale locks from crashed runs auto-reclaim when the PID is dead, predates the host boot, or exceeds a 4 h age threshold) |
 
 ### Flag reference
 
@@ -378,7 +378,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--project-root` | `$PWD` | Path to the Gradle project root |
 | `--max-workers` | `4` | Maximum parallel Gradle workers |
 | `--test-type <type>` | _(auto-detect)_ | `common` \| `desktop` \| `androidUnit` \| `androidInstrumented` \| `ios` \| `macos` \| `all`. iOS / macOS pick the per-module task from the project model. See [Multi-platform test dispatch](#multi-platform-test-dispatch) |
-| `--coverage-tool` | `kover` | Coverage tool: `kover`, `jacoco`, `auto`, or `none` |
+| `--coverage-tool` | `auto` (on `parallel`/`coverage`/`info`) · `jacoco` (on `changed`) | `auto` \| `kover` \| `jacoco` \| `none`. Defaults differ per subcommand — `auto` probes the project's build-logic + plugins; `changed` defaults to `jacoco` for historical compatibility |
 | `--coverage-modules` | _(all)_ | Comma-separated module list for coverage aggregation |
 | `--min-missed-lines` | `0` | Fail if missed lines exceed this threshold |
 | `--exclude-modules` | _(none)_ | Comma-separated module globs to skip entirely (e.g. `"*:api,build-logic"`). See "Heterogeneous projects" above |
@@ -395,7 +395,10 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--output-file <path>` | `coverage-full-report.md` | Filename for the aggregated coverage / parallel report. The per-run-id-suffixed copy uses this as the base name; the stable mirror (last writer wins) takes the literal value. See [`docs/concurrency.md`](docs/concurrency.md) |
 | `--coverage-only` | _(off)_ | Generate only the coverage report — implies `--skip-tests` and skips test discovery. Faster than `coverage` subcommand when the gradle reports are already on disk |
 | `--benchmark` | _(off)_ | Run benchmark suites instead of tests. The `benchmark` subcommand sets this internally; pass directly to `parallel` only if you're composing the orchestrator |
-| `--benchmark-config <smoke\|full>` | `smoke` | Benchmark profile. `smoke` = single warmup + 3 measurement iters (~30 s/module). `full` = 5 warmup + 10 iters (~5 min/module). Applies to the `benchmark` subcommand |
+| `--benchmark-config <smoke\|main\|stress>` | `smoke` | Benchmark profile. `smoke` = ~5 min/module outer timeout (single warmup + 3 measurement iters). `main` = ~30 min/module (full warmup + 10 iters). `stress` = ~60 min/module (max warmup + 20 iters). Applies to the `benchmark` subcommand |
+| `--no-configuration-cache` | _(off — implicit on `benchmark`)_ | Pass `--no-configuration-cache` to the gradle subprocess. `kmp-test benchmark` injects this by default (kotlinx-benchmark caches `%TEMP%` inside the config cache, producing silent FAIL on stale paths). Override via `--gradle-args "--configuration-cache"` (gradle's last-wins). Applies to all script-backed subs |
+| `--ignore-gradle-timeout` | _(off)_ | (`benchmark` only) Disable the per-task gradle watchdog entirely. Risky on suites that hang — kmp-test will wait until gradle exits on its own |
+| `--no-adb` | _(off)_ | Skip the ADB probe (equivalent to `KMP_TEST_SKIP_ADB=1`). On `kmp-test android`, implies `--list-only` and emits `warnings[].code: "no_adb_implies_list_only"`. Applies to `info` / `android` |
 | `--variant` / `--android-variant <auto\|debug\|release\|all>` | `auto` | Android build-variant selector — global, accepted on `parallel` / `changed` / `android` / `benchmark` (and `coverage` reads it per-module). `auto` picks Debug if its task exists, falls back to Release (handles `testBuildType = "release"` projects). `all` dispatches both variants in the same gradle invocation |
 | `--module-filter <regex>` | _(all)_ | Glob, comma-separated. Selects which modules to dispatch. Applies to `parallel` / `changed` / `android` / `benchmark` / `describe` |
 | `--device <serial>` | _(none)_ | (`androidInstrumented` only) Pin the ADB device serial. Validated against `adb devices`; pins `ANDROID_SERIAL` for AGP. Mismatched serial → `errors[].code: instrumented_setup_failed` (exit 3). Applies to `parallel --test-type androidInstrumented` / `android` |
@@ -404,9 +407,11 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--clear-data` | _(off)_ | (`androidInstrumented` only) `adb shell pm clear <package>` between failed dispatch + retry. Implies `--auto-retry` to fire. Reads package from AndroidManifest.xml. Applies to `parallel --test-type androidInstrumented` / `android` |
 | `--flavor <name>` | _(none)_ | (`androidInstrumented` only) Android `productFlavors` weave: `connected${Cap}${Variant}AndroidTest`. Modules without flavor declarations ignore the flag. Applies to `parallel --test-type androidInstrumented` / `android` |
 | `--gradle-args <string>` | _(none)_ | Escape hatch — append tokens to every gradlew invocation. Repeatable; whitespace-split. Tokens go LAST so they OVERRIDE CLI defaults via gradle's last-wins (`--gradle-args "--no-parallel"` wins over `--parallel`). Applies to `parallel` / `changed` / `android` / `benchmark` |
+| `--strict-timeouts` | _(off)_ | (`benchmark` only) Restore pre-graded exit-code behavior: any gradle timeout exits 3 even when other modules passed. Default (off) grades partial timeouts as exit 0 + `warnings[].code: "partial_timeout"` when at least one module passed. Use this in CI matrix cells that require hard fail on any timeout |
 | `--isolated` | _(off)_ | Run gradle with `--project-cache-dir <tmp>` so concurrent `kmp-test` invocations don't share configuration cache. Tier-3 isolation. Applies to `parallel` / `changed` / `android` / `benchmark`. See [`docs/concurrency.md`](docs/concurrency.md) |
 | `--isolated-cache-dir <path>` | _(per-run tmpdir)_ | Override the temp project-cache-dir location. Implies `--isolated` |
 | `--isolated-no-lock` | _(off)_ | Skip the OS-level cache-dir lockfile. Implies `--isolated`. Use only when lockfile contention itself is the bottleneck (rare) |
+| `--color <mode>` | `auto` | `always` \| `never` \| `auto`. Controls defensive `--console=plain` injection into the gradle subprocess. `auto` injects when stdout isn't a TTY or `NO_COLOR` is set (POSIX). Skipped when the user already passes any `--console=*` via `--gradle-args` |
 
 **Env vars (skip-list):**
 
@@ -417,10 +422,12 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `SKIP_IOS_MODULES` | `--test-type ios` | Same shape, for iOS dispatch |
 | `SKIP_MACOS_MODULES` | `--test-type macos` | Same shape, for macOS dispatch |
 | `PARENT_ONLY_MODULES` | always | Comma-separated module names that are aggregator-only (skipped at discovery time) |
+| `NO_COLOR` | always (POSIX) | Any non-empty value disables gradle ANSI output (equivalent to `--color=never`) |
+| `KMP_TEST_SKIP_ADB` | `info` / `android` | Equivalent to `--no-adb`. On `android` it implies `--list-only` (instrumented tests require adb) |
 
 ### Project config — `.kmp-test-runner.json`
 
-Drop a `.kmp-test-runner.json` at your project root to pin stable defaults instead of repeating CLI flags or relying on env vars. Resolution precedence: **CLI flag > env var > config file > built-in default**. Schema:
+Drop a `.kmp-test-runner.json` at your project root to pin stable defaults instead of repeating CLI flags or relying on env vars. Resolution precedence: **CLI flag > env var > project-local > user-global > built-in default**. Schema:
 
 ```json
 {
@@ -432,6 +439,29 @@ Drop a `.kmp-test-runner.json` at your project root to pin stable defaults inste
 
 All fields are optional. Unknown fields are preserved silently for forward compat. Type-mismatched fields are dropped with a `[WARN]` line on stderr.
 
+### User-global config — `~/.kmp-test/config.json`
+
+Per-machine, per-project presets for things the project-local file can't carry — machine-specific JDK paths, personal overrides, configs against repos you don't own. File path: `~/.kmp-test/config.json` on Linux/macOS, `%USERPROFILE%\.kmp-test\config.json` on Windows. Keyed by **lookup key**: `git remote get-url origin` → `rootProject.name` in `settings.gradle(.kts)` → `basename(projectRoot)`, first hit wins.
+
+```json
+{
+  "projects": {
+    "https://github.com/me/my-kmp-app.git": {
+      "defaults":  { "testType": "common", "coverageTool": "kover" },
+      "skip":      { "android": ["legacy-app"] },
+      "java_home": "C:/Program Files/Zulu/zulu-21"
+    },
+    "another-project-name": {
+      "defaults": { "testType": "jvm" }
+    }
+  }
+}
+```
+
+Per-project preset accepts all fields the project-local file does (`sharedProject`, `defaults`, `skip`) plus `java_home` (only valid here — see below). Project-local values override user-global values when both layers carry the same key.
+
+**`java_home` security note.** The `java_home` field is permitted ONLY in the user-global file. A `java_home` entry in a checked-in `.kmp-test-runner.json` is dropped and warned, since a malicious PR could otherwise redirect a teammate's spawn env without their consent.
+
 ### Quick start: gitignore CLI artifacts
 
 The CLI writes its outputs (cache, coverage reports, Android log dumps) under a single `.kmp-test-runner/` subdir at your project root. Add this one line to your project `.gitignore`:
@@ -440,6 +470,29 @@ The CLI writes its outputs (cache, coverage reports, Android log dumps) under a 
 # kmp-test-runner local artifacts (CLI output — never commit)
 .kmp-test-runner/
 ```
+
+## Use as an Agent Skill
+
+`kmp-test-runner` ships an [Agent Skill](https://agentskills.io) at `.skills/kmp-test-runner/` conforming to the open `agentskills.io` standard. The skill makes the CLI auto-discoverable by Claude Code, Gemini CLI, Cursor, GitHub Copilot, OpenAI Codex, and 30+ other agentskills.io-compatible tools — agents activate the skill automatically when the user asks to run tests in a KMP or Android Gradle project.
+
+**Installation paths** (pick one):
+
+- **Project-local**: clone the `.skills/kmp-test-runner/` directory into your project's `.skills/`, `.agent/skills/`, or `.github/skills/`. The agent finds it on next session.
+- **User-global (Claude Code)**: `cp -r .skills/kmp-test-runner ~/.claude/skills/`
+- **User-global (Gemini CLI / Antigravity)**: `android skills add kmp-test-runner` (when listed in `github.com/android/skills`, currently pending).
+
+The skill's `SKILL.md` documents the JSON envelope contract, exit codes, and per-workflow steps so the agent dispatches the right `kmp-test` subcommand (`parallel`, `coverage`, `android`, `benchmark`) and parses results correctly without trial-and-error.
+
+### Install as a Claude Code Plugin
+
+The same skill is also packaged as a [Claude Code Plugin](https://code.claude.com/docs/en/plugins) (`.claude-plugin/plugin.json` at repo root). Filesystem install:
+
+```bash
+git clone https://github.com/oscardlfr/kmp-test-runner.git
+claude --plugin-dir ./kmp-test-runner    # session-only
+```
+
+The plugin re-uses the same `.skills/kmp-test-runner/` skill content — no duplication. Marketplace listing is planned for a follow-up.
 
 ## Agentic usage — token-cost rationale
 
@@ -485,7 +538,7 @@ BUILD SUCCESSFUL
 **Agentic (`--json`) output** — the entire response, on one line:
 
 ```json
-{"tool":"kmp-test","subcommand":"parallel","version":"0.9.1","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16,"modules_with_kover_plugin":["core-foo","core-bar"],"modules_with_jacoco_plugin":[]},"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true},"skipped":[],"errors":[],"warnings":[]}
+{"tool":"kmp-test","subcommand":"parallel","version":"0.10.0","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16,"modules_with_kover_plugin":["core-foo","core-bar"],"modules_with_jacoco_plugin":[]},"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true},"skipped":[],"errors":[],"warnings":[]}
 ```
 
 That's ~300 bytes — roughly **80–200 tokens** vs. tens of thousands for the 🔻 baseline (A). For an agent running tests on every iteration of a coding loop, the difference compounds quickly. The full per-tokenizer table is at the [top of this README](#why-this-exists--token-cost-per-agent-test-run-iteration); methodology and the captured run output are in [`docs/token-cost-measurement.md`](docs/token-cost-measurement.md).
@@ -521,7 +574,7 @@ kmp-test parallel --dry-run --project-root /abs/path
 Pair with `--json` for a structured plan:
 
 ```json
-{"tool":"kmp-test","subcommand":"parallel","version":"0.9.1","dry_run":true,"exit_code":0,"plan":{"spawn_cmd":"bash","spawn_args":["…/run-parallel-coverage-suite.sh","--project-root","/abs"],"script_path":"…/run-parallel-coverage-suite.sh","final_args":["--project-root","/abs"],"test_filter":null},…}
+{"tool":"kmp-test","subcommand":"parallel","version":"0.10.0","dry_run":true,"exit_code":0,"plan":{"spawn_cmd":"bash","spawn_args":["…/run-parallel-coverage-suite.sh","--project-root","/abs"],"script_path":"…/run-parallel-coverage-suite.sh","final_args":["--project-root","/abs"],"test_filter":null},…}
 ```
 
 `--dry-run` still validates `gradlew` (so a missing wrapper still exits `3`). It just stops before spawning the script.
@@ -574,7 +627,7 @@ Exit `0` if every check is OK or WARN; exit `3` if any FAIL (Node <18, missing s
 {"tool":"kmp-test","subcommand":"doctor","exit_code":0,"checks":[{"name":"Node","status":"OK","value":"v22.5.0","message":">=18 required"},…,{"name":"JDK catalogue","status":"OK","value":"3 installs","message":"JDK 11 (Eclipse Adoptium), JDK 17 (Eclipse Adoptium), JDK 21 (Azul Systems, Inc.)"}],"gradle_config":{"parallel":true,"workers_max":4,"caching":true,"daemon":true,"jvmargs":"-Xmx4g","configureondemand":false,"sources":{"project":true,"user":false}}}
 ```
 
-The `gradle_config{}` block (v0.8.1+) is informational, not a check — it surfaces the resolved values from `<project>/gradle.properties` merged on top of `~/.gradle/gradle.properties`. Agents read these to decide whether to layer their own parallel scheduler on top of gradle's. The human banner renders it as a separate block below the CHECK table:
+The `gradle_config{}` block (v0.8.1+) is informational, not a check — it surfaces the resolved values from `<project>/gradle.properties` merged on top of `~/.gradle/gradle.properties`. Agents read these to decide whether to layer their own parallel scheduler on top of gradle's. As of v0.10, `kmp-test parallel` also *respects* `org.gradle.parallel=false` from the resolved config: when the project has a `gradle.properties` and the resolved value is `false`, the CLI drops the unconditional `--parallel` flag from the gradle dispatch (escape hatch: `--gradle-args "--parallel"` re-enables via gradle's last-wins). On drop, the `parallel` envelope carries a top-level `gradle_config_applied: { parallel_dropped: true }`. The human banner renders the `gradle_config{}` block below the CHECK table:
 
 ```
 Gradle config (project + user resolved):
@@ -612,7 +665,7 @@ kmp-test info --json
 #  "gradle_config":{"parallel":true,"workers_max":4,"caching":true,"daemon":true,"jvmargs":"-Xmx4g","configureondemand":false}}}
 ```
 
-Pass `--no-adb` (or set `KMP_TEST_SKIP_ADB=1`) to skip the ADB probe when it's slow or hangs.
+Pass `--no-adb` (or set `KMP_TEST_SKIP_ADB=1`) to skip the ADB probe when it's slow or hangs. On `kmp-test android`, `--no-adb` implies `--list-only` (instrumented tests fundamentally require adb, so the orchestrator emits the module set without dispatching gradle and surfaces `warnings[].code: "no_adb_implies_list_only"` for the implication).
 
 ### `kmp-test describe` — project metadata as JSON
 
@@ -672,7 +725,7 @@ pluginManagement {
 In `build.gradle.kts`:
 ```kotlin
 plugins {
-    id("io.github.oscardlfr.kmp-test-runner") version "0.9.1"
+    id("io.github.oscardlfr.kmp-test-runner") version "0.10.0"
 }
 
 kmpTestRunner {
@@ -706,7 +759,7 @@ gpr.user=<your-github-username>
 gpr.key=<github-personal-access-token-with-read:packages-scope>
 ```
 
-A token with `read:packages` scope is sufficient for consumers. Maven Central will be the recommended channel from v0.4.0 onward (no auth needed).
+A token with `read:packages` scope is sufficient for consumers. Maven Central publication is planned for a future release (no auth needed when it ships) — track [BACKLOG.md](BACKLOG.md) for status.
 
 ## Configuration
 
@@ -715,8 +768,8 @@ A token with `read:packages` scope is sufficient for consumers. Maven Central wi
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--project-root` | `$PWD` | Path to the Gradle project root |
-| `--max-workers` | `4` | Maximum parallel Gradle workers |
-| `--coverage-tool` | `kover` | `kover` \| `jacoco` \| `none` |
+| `--max-workers` | `4` | Maximum parallel Gradle workers (`0` = gradle auto-detect) |
+| `--coverage-tool` | `auto` (most subs) · `jacoco` (`changed`) | `auto` \| `kover` \| `jacoco` \| `none` — `auto` probes the project's plugins; explicit value overrides |
 | `--coverage-modules` | _(all)_ | Comma-separated module names for coverage |
 | `--min-missed-lines` | `0` | Fail threshold for missed lines |
 
@@ -736,7 +789,7 @@ A token with `read:packages` scope is sufficient for consumers. Maven Central wi
 
 ## Architecture
 
-kmp-test-runner uses a three-shape model — an npm CLI, a Gradle plugin, and shell installers — all backed by the same set of Node orchestrators in `lib/` (`parallel-orchestrator.js`, `coverage-orchestrator.js`, `changed-orchestrator.js`, `android-orchestrator.js`, `benchmark-orchestrator.js`). The shell scripts in `scripts/sh/` and `scripts/ps1/` are thin wrappers (~6–80 LOC each) that `exec` the corresponding Node module — moving 6,196 lines of duplicated bash + PowerShell logic into ~470 lines of platform-glue, with the orchestration logic deduplicated into `lib/` (~2,200 LOC). The npm CLI and Gradle plugin both invoke the same orchestrators with identical argument shapes, ensuring cross-shape parity; `CrossShapeParityTest` enforces this structurally in CI by asserting that every npm subcommand flag has a matching Gradle task name without spawning a subprocess. This design lets the runner be consumed as a global tool (installer), a project devDependency (npm), or a Gradle task (plugin) with no behavioral difference.
+kmp-test-runner uses a three-shape model — an npm CLI, a Gradle plugin, and shell installers — all backed by the same set of Node orchestrators in `lib/` (`parallel-orchestrator.js`, `coverage-orchestrator.js`, `changed-orchestrator.js`, `android-orchestrator.js`, `benchmark-orchestrator.js`). The shell scripts in `scripts/sh/` and `scripts/ps1/` are thin wrappers that `exec` the corresponding Node module — what used to be thousands of lines of duplicated bash + PowerShell now lives as Node orchestration logic with platform-specific glue at the edges. The npm CLI and Gradle plugin both invoke the same orchestrators with identical argument shapes, ensuring cross-shape parity; `CrossShapeParityTest` (in `gradle-plugin/src/test/`) enforces this structurally in CI by asserting that every npm subcommand flag has a matching Gradle task name without spawning a subprocess. This design lets the runner be consumed as a global tool (installer), a project devDependency (npm), or a Gradle task (plugin) with no behavioral difference.
 
 ## Contributing
 
@@ -745,8 +798,8 @@ Open issues and pull requests are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.
 Quick check before a PR:
 
 ```bash
-npm test                                       # vitest (~810 tests at v0.8.1)
-npx bats tests/bats/ tests/installer/          # bats (~197 tests, Linux/macOS)
+npm test                                       # vitest (~1,600 tests)
+npx bats tests/bats/ tests/installer/ tests/skill-scripts/   # bats (~200 tests, Linux/macOS)
 cd gradle-plugin && ./gradlew test && cd ..    # Gradle TestKit (~12 tests)
 npm run shellcheck                             # POSIX script lint (0 warnings required)
 npm run size-check                             # bundle size budget (tarball ~210 KB)

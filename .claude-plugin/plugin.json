@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "kmp-test-runner",
+  "version": "0.10.0",
+  "description": "Parallel test runner for Kotlin Multiplatform (KMP) and Android Gradle projects via the kmp-test CLI. Packages the agentskills.io-conformant skill at .skills/kmp-test-runner/ as a Claude Code plugin for auto-loading.",
+  "author": {
+    "name": "oscardlfr",
+    "url": "https://github.com/oscardlfr"
+  },
+  "homepage": "https://github.com/oscardlfr/kmp-test-runner#readme",
+  "repository": "https://github.com/oscardlfr/kmp-test-runner",
+  "license": "MIT",
+  "keywords": [
+    "kotlin",
+    "kotlin-multiplatform",
+    "kmp",
+    "android",
+    "gradle",
+    "test-runner",
+    "parallel-tests",
+    "coverage",
+    "agentskills",
+    "claude-code-plugin"
+  ],
+  "skills": ["./.skills/"]
+}

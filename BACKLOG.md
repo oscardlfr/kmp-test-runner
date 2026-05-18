@@ -71,15 +71,16 @@
 
 ### v0.10 — minor (locked 2026-05-05)
 
-1. **ANSI color auto-detect** — TTY/piped detection in `lib/<feature>-orchestrator.js` print logic. ~1-2h.
-2. **CLI auto-respect `gradle.properties`** — Tier 3 of adapter. Drop `--parallel` injection when `org.gradle.parallel=false`, etc. Behavior change with migration note. ~2-3h.
-3. **Per-project config user-global** — `~/.kmp-test/config.json` keyed by git-remote / project name. Extends `lib/project-config.js`. ~6-10h.
-4. **Research direction A — Google `android` skills system viability** — investigate whether the skills system supports tools that spawn gradle. ~2-3h research. If positive → ship the manifest (~1h). If negative → drop with user authorization.
-5. **Research direction B — `android describe` JSON discovery** — verify it enumerates KMP-non-AGP modules against the reference KMP composite project. ~2h research. If positive → ship the opt-in fallback in `lib/project-model.js` (~3-4h). If negative → drop with user authorization.
-6. **macOS validation gate** — same shape as v0.9 step 7. ~2-3h.
-7. **Token-cost re-measurement** — captures any v0.10 envelope changes. Adopts the multi-project bucketed methodology shipped in PR #13 (small / medium / large × all 6 features). Also: re-measure NowInAndroid with `--module-filter "**"` to recover the full-large-bucket data point that PR #13's default top-level walker undersampled. ~2-3h.
-8. **README v0.10 refresh + CHANGELOG** — last step before tagging. ~2-3h.
-9. **Tag v0.10.0** — release ceremony.
+1. **Defensive `--console=plain` injection** — ✅ DONE 2026-05-15 (PR #227 / 22fd8c8 on develop, v0.10 #1). Auto-injects `--console=plain` in `spawnGradle` when `process.stdout.isTTY === false` or `NO_COLOR` set, plus `--color={always,never,auto}` override and idempotency guard (skip when user already passes any `--console=*` via `--gradle-args`). New `lib/runners/console-mode.js` + injection callsite in `lib/orchestrators/orchestrator-utils.js`; `KMP_COLOR_MODE` env survives the cli.js → wrapper → runner.js re-exec chain.
+2. **CLI auto-respect `gradle.properties`** — ✅ DONE 2026-05-16 (v0.10 #2 — `parallel`-only scope). `kmp-test parallel` drops `--parallel` from the gradle dispatch when the project has a `gradle.properties` AND the resolved `org.gradle.parallel` is `false`. Optional envelope field `gradle_config_applied:{parallel_dropped:true}` (additive, schema_version unchanged). Migration note in `CHANGELOG.md` covers the "project file present + key absent → resolves to gradle default `false` → drop fires" case. Escape hatches: `org.gradle.parallel=true` in `gradle.properties` or `--gradle-args "--parallel"` (last-wins, v0.9 passthrough).
+3. **Per-project config user-global** — ✅ DONE 2026-05-16 (v0.10 #3). `~/.kmp-test/config.json` keyed by git-remote → rootProject.name → basename (first hit wins). New `lib/user-config.js` (loader + resolveProjectKey + mergeConfigs + validateUserPreset). `lib/project-config.js` exports `loadMergedConfig` for the dispatch path. Schema full parity with project-local (`sharedProject`/`defaults`/`skip`) + new `java_home` (user-global only). Precedence: CLI > env > project-local > user-global. Security: project-local `java_home` is dropped + warned (closes supply-chain vector). Doctor surfaces "User config" row with matched preset key.
+4. **Google `android` skills system viability** — ✅ DONE 2026-05-17 (all 5 sub-PRs SHIPPED). `INVESTIGATE-ANDROID-SKILLS.md` at repo root (gitignored). Decision matrix 7/7 → SHIP authorized. Skill is published as part of the `agentskills.io` open standard (multi-vendor — 35+ adopters: Claude Code, Gemini CLI, Cursor, GitHub Copilot, OpenAI Codex, etc.). **Multi-PR ship complete**: ✅ PR 1 (foundation) → ✅ PR 2 (workflows) → ✅ PR 3 (instrumented dual branch) + bug-fix sub-train (PRs 3.1-3.6) → ✅ PR 4 (convenience scripts `detect-env.{sh,ps1}` + `run-tests.{sh,ps1}` under `.skills/kmp-test-runner/scripts/`; 4 test files under `tests/skill-scripts/` wired into the build job's bats + Pester steps; SKILL.md detect-env one-liner replaced with the script reference plus a new "Convenience scripts" section) → ✅ PR 5 (Claude Code Plugin packaging — `.claude-plugin/plugin.json` at repo root re-uses `.skills/kmp-test-runner/` via `skills:[./.skills/]`; `tools/validate-plugin.mjs` zero-deps validator + 39 vitest cases; CI `skills-validate` job extended with manifest check; `tools/sync-versions.js` grows 6th target so future package.json bumps stay in lockstep; README adds "Install as a Claude Code Plugin" subsection).
+4.5. **Cross-tool output alignment audit — `kmp-test` vs `android` CLI** — ✅ DONE 2026-05-17 (v0.10 #4.5, Path A doc-only). Captured side-by-side outputs of both tools against three projects (CLI repo self, pure-Android app, KMP composite) + env-level `doctor` vs `info`. Findings: (a) `android describe` is non-functional on Windows at `android` CLI 0.7.15222914 — invokes POSIX `gradlew` shell script instead of `gradlew.bat`, crashes with `CreateProcess error=193`; (b) `android info` is plain text key:value (3 lines: `sdk`, `version`, `launcher_version`), not JSON; (c) different design philosophy — `android describe` is a paths-to-JSON-files pointer tool, `kmp-test parallel --dry-run` inlines all module data; (d) different abstraction layer — `kmp-test` answers "what modules can I run tests on?", `android` CLI answers "where are the build artifacts / SDK?". Schema convergence is **not viable** (Windows blocker + plain-text shape + different abstractions). Skill update: new "Cross-tool comparison: `android` CLI analogues" section in `.skills/kmp-test-runner/references/cli/envelope-schema.md` (parallel↔describe + doctor↔info field-by-field tables + platform caveat) + "Tool selection" subsection in SKILL.md with link. Paths B (partial converge) and C (full converge + `schema_version: 2→3`) deferred — would ship code matching docs without wet validation on Windows + bump a breaking schema for no consumer benefit.
+5. **Research direction B — `android describe` JSON discovery** — ❌ DROPPED 2026-05-18 (v0.10 #5) under the standing pre-authorization clause ("If negative → drop with user authorization"). Verdict file: `WET-V0.10-STEP-5-RESEARCH.md` at repo root. Findings inherit directly from item #4.5 (SHIPPED 2026-05-17): schema convergence is not viable (Windows blocker — `android describe` invokes POSIX `gradlew` not `gradlew.bat`, `CreateProcess 193`; `describe` is a paths-to-build-artifacts pointer, not a module-task graph; different abstraction layer from `kmp-test`). The original Windows-performance motivation cannot be served by a tool that does not run on Windows; the macOS/Linux paths do not carry the data `lib/project-model.js` consumes. No `lib/` change. Long-tail BACKLOG cross-link (line 2307–2313 "Use `android describe` JSON as module-discovery source") is moved to the dropped-with-rationale list rather than pending-review.
+6. **macOS validation gate** — ✅ DONE 2026-05-18 (v0.10 #6). `MACOS-GATE-V0.10-SUMMARY.md` at repo root captures three phases of wet evidence. **probe** (45 cells, no gradle): 28 PASS / 1 benign DRIFT / 16 SKIP. **scoped** (45 cells, real gradle per cell): 15 PASS / 30 SKIP / 0 ERROR / 0 DRIFT / 0 TIMEOUT (14 of the 30 SKIPs are `benign no-op: no_changed_modules` for `changed` cells against a clean worktree — see gate-fix #2 below). **targeted wet** (4 commands outside the gate's matrix): `doctor`, `info`, `describe --json`, `parallel --test-type ios --module-filter :shared` against KaMPKit all exit 0; the ios cell ran real `iosSimulatorArm64Test` BUILD SUCCESSFUL in 106 s. Required disk-redirect env vars (`KMP_TMPDIR` / `GRADLE_USER_HOME` / `KONAN_DATA_DIR` → `<EXT_VOL>/...`) to fit scoped on a 6.3 GB-system-free Mac. Bundled tooling fixes in `tools/macos-validation-gate.mjs` (vitest 1592/1592 unchanged): (1) `--label <vX.Y>` flag parameterizes the summary title + `.smoke/macos-gate-<label>/` subdir; (2) `BENIGN_NO_OP_CODES` filter on scoped bucketing so structured no-op signals like `no_changed_modules` bucket to SKIP-with-reason instead of false ERROR, with mirroring in `--reclassify` so the fix applied to existing envelopes without re-spawning gradle. Follow-up: parity snapshot refresh against live `android --list-only` envelope to clear the probe-mode benign DRIFT; allow `--reclassify` standalone (without requiring `--mode <non-dry>`).
+7. **Token-cost re-measurement** — ✅ DONE 2026-05-18 (v0.10 #7). Hybrid scope: `parallel` + `coverage` + `info` + `describe` across the 6 OSS projects (skipped `changed` and `benchmark` — envelopes unchanged in v0.10). Tooling fixes shipped en route: (a) recursive walker in `tools/measure-token-cost.js#filterModulesByGlob` so projects with nested grouping dirs (NowInAndroid's `core/`, `feature/`) are honestly enumerated — closes the PR #13 caveat that NowInAndroid was undersampled at 5 of 35 modules (this run captures 36); (b) per-project `moduleFilter` override in `.measurement-projects.json` (general-purpose, no longer required after the walker fix). Coverage A baseline reused from v0.9 PR #13's `private-large-A` reference because all six OSS projects ship without the Kover plugin (Approach A on the OSS sample captures only `task 'koverXmlReport' not found` errors, 200-1,000 cl100k). Skill loading cost included in the aggregate (v0.10 #4 deliverable): `SKILL.md` eager-load = 3,232 cl100k; total `.skills/kmp-test-runner/` worst-case full load = 53,595 cl100k (28 files); `.claude-plugin/plugin.json` = 255 cl100k. Vitest 1592 → 1601 (+9: 5 walker + 4 `resolveProjectOpts`). Evidence: `tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md`.
+8. ✅ **README v0.10 refresh + CHANGELOG** — DONE 2026-05-18 (PR #251).
+9. ✅ **Tag v0.10.0** — DONE 2026-05-19 (prep + release PRs). Atomic version bump across the 6 sync-versions targets; bundled non-canonical 0.9.x sweep (README JSON examples, validate-plugin fixtures) + About polish across 7 surfaces (GitHub repo description via `gh repo edit`, README L3, package.json, .claude-plugin/plugin.json, gradle-plugin POM, CLAUDE.md L3); SKILL.md description left verbatim (load-bearing trigger keywords). Cascade fires `auto-tag.yml` → `publish-{npm,gradle,release}.yml`.
 
 ### ❌ DROPPED 2026-05-05 (decided OUT — not deleted, kept for traceability)
 
@@ -432,9 +433,11 @@ errors[]: [{ code: "gradle_timeout" }]
 
 ---
 
-### 💡 IDEA — `benchmark` partial-success grading: `gradle_timeout` should not hard-fail when N-1 modules passed (surfaced 2026-05-10 during PARKED-bug triage)
+### ✅ SHIPPED 2026-05-17 (PR 3.2) — `benchmark` partial-success grading: `gradle_timeout` should not hard-fail when N-1 modules passed (surfaced 2026-05-10 during PARKED-bug triage)
 
-**Status: IDEA, no milestone assigned.** Surfaced 2026-05-10 during the PARKED-bug triage above (single benchmark module 5min timeout against a multi-module consumer project). User ask: the CLI shouldn't hard-fail when partial success exists.
+**Status: SHIPPED 2026-05-17 (PR 3.2).** Closed as part of the benchmark-cluster fix (A9 + A11 + A10). Recommendation option (b) from this IDEA — graded exit code — implemented as A10's fix in `lib/orchestrators/benchmark-orchestrator.js`. When `totalTimedOut > 0 AND totalPass >= 1 AND !opts.strictTimeouts`, exit code is `EXIT.SUCCESS` (0) and `state.warnings` carries `{ code: 'partial_timeout', timed_out, passed, message }`. New `--strict-timeouts` opt-out flag restores pre-graded hard-fail behavior. 3 vitest cases lock the graded path, strict path, and everything-hung guard.
+
+**Original IDEA below (preserved for context):** Surfaced 2026-05-10 during the PARKED-bug triage above (single benchmark module 5min timeout against a multi-module consumer project). User ask: the CLI shouldn't hard-fail when partial success exists.
 
 **Current behavior** (`lib/benchmark-orchestrator.js:555-559`): any single `totalTimedOut > 0` flips the run to `EXIT.ENV_ERROR` (ec=3), regardless of how many other modules passed cleanly. Repro envelope from the PARKED bug: `passed: 4, failed: 0, timed_out: 1` → ec=3. The user-facing UX is "everything failed" when 80% actually succeeded.
 
@@ -458,9 +461,11 @@ errors[]: [{ code: "gradle_timeout" }]
 
 ---
 
-### 💡 IDEA — `tools/decouple-audit.mjs` real CI gate enforcing the privacy rule (surfaced 2026-05-10 during privacy-sweep PR #207)
+### ✅ SHIPPED 2026-05-10 (PR #209 / 3824efc on develop) — `tools/decouple-audit.mjs` real CI gate enforcing the privacy rule (surfaced 2026-05-10 during privacy-sweep PR #207)
 
-**Status: IDEA, no milestone assigned.** The "Decouple from L0" rule in CLAUDE.md + CONTRIBUTING.md tells contributors private toolkit identifiers / private project names must stay 0-hits across committed text. The rule was historically enforced by a `tools/decouple-audit.mjs` script — but the script never actually existed in the repo (the doc reference was stale; PR #207 dropped it). Without an automated check, the next leak gets caught only by a reviewer's eye.
+**Status: DONE.** `tools/decouple-audit.mjs` ships as a CI-required job (`decouple-audit`, branch protection enforced on `develop` + `main` since 2026-05-12). The in-script `PRIVATE_PATTERNS` registry is the canonical pattern list — extended in-place as new private identifiers appear. Original IDEA body preserved below for traceability.
+
+The "Decouple from L0" rule in CLAUDE.md + CONTRIBUTING.md tells contributors private toolkit identifiers / private project names must stay 0-hits across committed text. The rule was historically enforced by a `tools/decouple-audit.mjs` script — but the script never actually existed in the repo (the doc reference was stale; PR #207 dropped it). Without an automated check, the next leak gets caught only by a reviewer's eye.
 
 **Proposal:** create the script as a real CI gate. ~50 LOC ESM module:
 - Reads a pattern list (private project / module names, the maintainer's home-dir paths, private package namespaces, etc.). Pattern list lives in the script — sentinel patterns the maintainer can extend without doc changes.
@@ -476,9 +481,11 @@ errors[]: [{ code: "gradle_timeout" }]
 
 ---
 
-### 💡 IDEA — `KMP_WORKSPACE` env var documentation for tooling scripts (surfaced 2026-05-10 during privacy-sweep PR #207)
+### ✅ SHIPPED 2026-05-10 (PR #209 / 3824efc on develop) — `KMP_WORKSPACE` env var documentation for tooling scripts (surfaced 2026-05-10 during privacy-sweep PR #207)
 
-**Status: IDEA, no milestone assigned.** PR #207 parameterised `tools/wide-smoke-pass-*.mjs`, `tools/wet-audit-v0.9.mjs`, `tools/macos-validation-gate.mjs` so they read `WORKSPACE` from `process.env.KMP_WORKSPACE` (with a `path.resolve(process.cwd(), '..')` fallback). The fallback works only if the user invokes the scripts from `tools/`'s parent dir; otherwise the user MUST set the env var. Currently undocumented — a contributor running `node tools/wide-smoke-pass-9.mjs` from any other cwd silently sweeps the wrong directory.
+**Status: DONE.** `tools/README.md` documents the `KMP_WORKSPACE` env var contract (override + fallback semantics); the sweep scripts now emit `[NOTICE] WORKSPACE = <resolved-path>` to stderr at startup so the resolved root is unambiguous from the first log line. Original IDEA body preserved below for traceability.
+
+PR #207 parameterised `tools/wide-smoke-pass-*.mjs`, `tools/wet-audit-v0.9.mjs`, `tools/macos-validation-gate.mjs` so they read `WORKSPACE` from `process.env.KMP_WORKSPACE` (with a `path.resolve(process.cwd(), '..')` fallback). The fallback works only if the user invokes the scripts from `tools/`'s parent dir; otherwise the user MUST set the env var. Currently undocumented — a contributor running `node tools/wide-smoke-pass-9.mjs` from any other cwd silently sweeps the wrong directory.
 
 **Proposal:** document the env var contract in one of:
 - A new short `tools/README.md` (preferred — keeps tooling docs co-located).
@@ -493,9 +500,11 @@ Also: make the scripts emit a `[NOTICE]` log line on startup naming the resolved
 
 ---
 
-### 💡 IDEA — `info.jdk.java_home` returns `null` on macOS shells without exported `JAVA_HOME` (surfaced 2026-05-13 during v0.9.1 wet-validation gate)
+### ✅ SHIPPED 2026-05-15 (PR #223 / 04c5809 on develop) — `info.jdk.java_home` returns `null` on macOS shells without exported `JAVA_HOME` (surfaced 2026-05-13 during v0.9.1 wet-validation gate)
 
-**Status: IDEA, no milestone assigned.** During the v0.9.1 pre-tag wet validation on macOS, `npm test` failed 1/1371 with a snapshot mismatch on `tests/vitest/parity.test.js > info --json --no-adb envelope shape is stable`: snapshot expected `jdk.java_home: "<string>"`, observed `"<null>"`. Root cause: `lib/info-orchestrator.js` reads `process.env.JAVA_HOME` literally and emits `null` when unset; on macOS, users routinely don't export `JAVA_HOME` and rely on `/usr/libexec/java_home` instead. CI always sets `JAVA_HOME` (`setup-java` action), masking the gap. With `JAVA_HOME=$(/usr/libexec/java_home -v 21) npm test` → 1371/1371 green. Not a regression of the v0.9.1 delta — the snapshot predates the 27-commit cycle. But it means anyone running the test suite locally on macOS without explicit `JAVA_HOME` sees a red test, eroding the suite's signal.
+**Status: DONE.** Shipped Option (b) — product fallback. `lib/info-orchestrator.js` exports `resolveDarwinJavaHome(versionString, spawner)` which spawns `/usr/libexec/java_home -v <major>` on darwin when `process.env.JAVA_HOME` is empty; `reshapeJdk` wires the fallback into the `jdk.java_home` field. Guarded by `platform === 'darwin'`, returns `null` on any spawn error (no regression on Linux/Windows). Original IDEA body preserved below for traceability.
+
+During the v0.9.1 pre-tag wet validation on macOS, `npm test` failed 1/1371 with a snapshot mismatch on `tests/vitest/parity.test.js > info --json --no-adb envelope shape is stable`: snapshot expected `jdk.java_home: "<string>"`, observed `"<null>"`. Root cause: `lib/info-orchestrator.js` reads `process.env.JAVA_HOME` literally and emits `null` when unset; on macOS, users routinely don't export `JAVA_HOME` and rely on `/usr/libexec/java_home` instead. CI always sets `JAVA_HOME` (`setup-java` action), masking the gap. With `JAVA_HOME=$(/usr/libexec/java_home -v 21) npm test` → 1371/1371 green. Not a regression of the v0.9.1 delta — the snapshot predates the 27-commit cycle. But it means anyone running the test suite locally on macOS without explicit `JAVA_HOME` sees a red test, eroding the suite's signal.
 
 **Two independent fixes (either resolves):**
 
@@ -512,9 +521,11 @@ Also: make the scripts emit a `[NOTICE]` log line on startup naming the resolved
 
 ---
 
-### 💡 IDEA — `tools/macos-validation-gate.mjs --mode scoped` classifies every wet cell as DRIFT (surfaced 2026-05-13 during v0.9.1 wet-validation gate)
+### ✅ SHIPPED 2026-05-15 (PR #224 / c6aac3e on develop) — `tools/macos-validation-gate.mjs --mode scoped` classifies every wet cell as DRIFT (surfaced 2026-05-13 during v0.9.1 wet-validation gate)
 
-**Status: IDEA, no milestone assigned.** During the v0.9.1 pre-tag wet validation, the gate's `--mode scoped` run reported **1 PASS / 28 DRIFT / 1 SKIP** across `--project fixture` + `--project KaMPKit`. Manual inspection of every DRIFT envelope showed `exit_code:0`, `errors:[]`, tests passing — product side fully green. Root cause: scoped mode invokes `kmp-test <sub> --module-filter <m>` (wet — gradle runs) but compares the resulting envelope against `tests/vitest/__snapshots__/parity.test.js.snap`, which was captured invoking with `--dry-run` (parallel/changed) / `--list-only` (android). Structural divergence between wet and dry shapes:
+**Status: DONE.** Shipped Option (a) — scoped mode buckets cells on `exit_code === 0 && errors.length === 0` (PASS) vs anything else (ERROR), dropping snapshot comparison entirely for the wet path. `bucketCell` in `tools/macos-validation-gate.mjs` branches on `opts.mode === 'scoped'`. Probe mode still uses the canonical (dry) snapshot baseline. Original IDEA body preserved below for traceability.
+
+During the v0.9.1 pre-tag wet validation, the gate's `--mode scoped` run reported **1 PASS / 28 DRIFT / 1 SKIP** across `--project fixture` + `--project KaMPKit`. Manual inspection of every DRIFT envelope showed `exit_code:0`, `errors:[]`, tests passing — product side fully green. Root cause: scoped mode invokes `kmp-test <sub> --module-filter <m>` (wet — gradle runs) but compares the resulting envelope against `tests/vitest/__snapshots__/parity.test.js.snap`, which was captured invoking with `--dry-run` (parallel/changed) / `--list-only` (android). Structural divergence between wet and dry shapes:
 
 | Path | dry shape (snapshot) | wet shape (scoped run) |
 |---|---|---|
@@ -538,6 +549,389 @@ Drift count per cell is **18 missing + 27-36 unexpected paths** — uniform stru
 **Risk:** (a) LOW — narrows what the gate detects but doesn't introduce false positives. (b) MEDIUM — wet snapshots are inherently noisier; risk of flake-driven snapshot churn.
 
 **Why now:** v0.9.1 will tag soon; the next macOS validation gate (v0.10 step 6) will hit the same all-DRIFT result on scoped mode unless this is closed. Without it, every release's wet pass requires manual envelope inspection — defeating the gate's purpose.
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR 3.1 / d9e414a on feature branch) — `kmp-test --dry-run` envelopes drop subcommand-specific block (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation)
+
+**Status: SHIPPED 2026-05-17.** Closed by `feature/v0.10-step-4-pr-3-1-fix-dry-run-envelope` commit `d9e414a`. Both call sites (script-dispatcher short-circuit + orchestrator-direct path) converge on pure builders in `lib/envelope/dry-run-blocks.js`. All 4 affected subcommands (android, benchmark, changed, parallel) now emit their subcommand-specific block on dry-run with empty-but-present default values and flag-echo where the user supplied input. Vitest 1442 → 1510 (+66 new builder tests + 2 new parity snapshots). `envelope-schema.md` "Dry-run envelope" section updated to reflect the post-fix shape (removed the temporary PR 3 callout that documented the drift).
+
+**Status (historical): IDEA, no milestone assigned.** Surfaced 2026-05-17 during the PR 3 (instrumented dual-branch docs) wet matrix — Cell 1b probed `kmp-test android --device R3CT30KAMEH --dry-run --json` and confirmed: real-run + `--list-only` envelopes emit the `android:{device_serial, device_task, flavor, instrumented_modules[]}` block at top-level; `--dry-run` envelopes do NOT. `plan:{...}` + `isolated:{...}` are present, `android:{}` is absent.
+
+**Contract reference:** `references/cli/envelope-schema.md` (PR 2-shipped, now in `.skills/kmp-test-runner/`) "Dry-run envelope" section says "produces the same envelope shape with a top-level `dry_run: true` flag and a `plan{}` block describing what *would* run". "Same envelope shape" includes the subcommand-specific block per the table at L28-36.
+
+**Symptom (live envelope from 2026-05-17 wet probe, project `kmp-cross-platform-e2e` fixture):**
+```
+{"tool":"kmp-test","schema_version":2,"subcommand":"android","exit_code":0,"dry_run":true,
+ "tests":{...},"modules":[],"coverage":{...},"errors":[],"warnings":[],
+ "plan":{"spawn_cmd":"pwsh","spawn_args":[...,"--device","R3CT30KAMEH","--module-filter",":benchmark-android-test"],...},
+ "isolated":{"enabled":false,...}}
+                                              ↑ no "android":{...} field
+```
+
+**Impact:** agents reading `android.device_serial` on a dry-run get `undefined`. Workaround currently documented in PR 3's envelope-schema.md callout: parse `plan.spawn_args[]` for the `--device <SERIAL>` token, or use `--list-only` (not `--dry-run`) when the `android:{}` block specifically is needed.
+
+**Question:** is this android-specific or does the same drift affect `benchmark:{}` / `changed:{}` / `parallel:{}` blocks on their respective `--dry-run` envelopes? PR 2's wet audit caught `changed:{}` and `benchmark:{}` drifts inline but the `--dry-run` shape across all 5 subcommand-specific blocks hasn't been audited as a set. Worth a focused investigation pass before fixing.
+
+**Proposal (when prioritized):**
+1. Decide policy — dry-run envelope SHOULD or SHOULD NOT emit subcommand-specific blocks. The "same shape" wording in envelope-schema.md implies SHOULD; users may have downstream tooling that assumes the absence (less likely but worth checking).
+2. If SHOULD: emit empty-but-present blocks (`android:{device_serial:"",device_task:"",flavor:"",instrumented_modules:[]}`) on all dry-run paths across `lib/orchestrators/android-orchestrator.js` + `parallel-orchestrator.js` + `benchmark-orchestrator.js` + `changed-orchestrator.js` + `coverage-orchestrator.js`. ~5 lines per orchestrator + parity test per subcommand (5 new vitest cases).
+3. If SHOULD NOT: drop the "same shape" wording from envelope-schema.md and document the dry-run subset explicitly.
+
+**Effort:** ~2-3h for option 2 (5 orchestrators × ~5 LOC + 5 vitest + audit existing parity snapshots for shape consistency). ~30 min for option 3 (doc-only).
+
+**Risk:** LOW. Option 2 is additive (empty blocks where they're absent today). Agents reading `dry_run.plan.spawn_args` for the device echo continue to work; those who only read `android.device_serial` start working in dry-run mode (currently always undefined).
+
+**Why now:** caught during PR 3 wet matrix; documented conservatively in envelope-schema.md as the fix proxy. Closing the orchestrator drift removes the doc caveat and aligns dry-run with `--list-only` / real-run shape.
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR 3.3) — `--device <serial>` not propagated to `connectedAndroidDeviceTest` (AGP Managed Devices) → AGP iterates ALL adb devices including offline ones (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation parallel session)
+
+**Status: SHIPPED 2026-05-17 (PR 3.3).** Closed via the android device-pin cluster fix (A1 + A5). Implementation in `lib/orchestrators/android-orchestrator.js`: (1) when the resolved task name ends in `connectedAndroidDeviceTest` (regex match), inject `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<deviceSerial>` into `gradleArgs` BEFORE spawn — the device-test reporter reads this property instead of `ANDROID_SERIAL`. (2) Set `ANDROID_SERIAL` in the spawn env unconditionally when `deviceSerial` resolved (auto-pick or explicit `--device`) — covers legacy AGP `connected{Variant}AndroidTest` paths that honor the env var, fixing the silent device-pin miss on multi-device hosts. Both injections apply to the first-attempt spawn AND the `--auto-retry` re-spawn. 4 vitest cases lock managed-device gradle-property injection / legacy no-property / ANDROID_SERIAL env on explicit pin / ANDROID_SERIAL env on auto-pick. Docs updated under `.skills/kmp-test-runner/references/workflows/instrumented/` + `references/troubleshooting/instrumented-setup-failed/` for both with-CLI and without-CLI branches. Bug #2 (the v0.10 #4 PR 3 wet-validation alias of A1) is also closed by this PR.
+
+**Original BUG below (preserved for context):**
+
+**Status: BUG, no milestone assigned. HIGH severity — selects wrong device / silently fails on test farms with multiple devices.** Surfaced 2026-05-17 by a concurrent `kmp-test android --device R3CT30KAMEH --auto-retry` session on a multi-module KMP library project. Root cause confirmed via user log analysis (A1 in user's bug report 2026-05-17): the orchestrator passes `--device R3CT30KAMEH` to the gradle invocation but does NOT inject `ANDROID_SERIAL` env var or `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>` into the spawn. AGP's `connectedAndroidDeviceTest` then iterates EVERY device returned by `adb devices` and fails the entire build the moment any one of them is OFFLINE. Evidence from user: "benchmark-network/sdk/storage fallaron con `Skipping device 'emulator-5562' (emulator-5562): Device is OFFLINE`".
+
+**Root cause (confirmed 2026-05-17):** the new KMP `androidLibrary { withDeviceTestBuilder { sourceSetTreeName = "test" } }` DSL (AGP 9+) generates the `connectedAndroidDeviceTest` task instead of the classic `connectedAndroidTest`. The orchestrator's device-task auto-resolution chain (`lib/project-model.js` + `lib/orchestrators/android-orchestrator.js`) eventually resolves to `connectedAndroidDeviceTest` correctly (shape b in the original hypothesis below) — BUT the device-pinning mechanism only sets `ANDROID_SERIAL` for the classic `connectedAndroidTest` path. For `connectedAndroidDeviceTest`, AGP needs the serial via either `-P` property or proper env propagation; without it, the task scans the full adb-visible device set.
+
+**Original hypothesis (now closed — shape b confirmed):**
+- (a) Picks the wrong task name (e.g. dispatches `connectedAndroidTest` which doesn't exist) → would surface as `task_not_found` error code. **NOT this — task IS resolved correctly.**
+- (b) Picks `connectedAndroidDeviceTest` correctly but doesn't pass the AGP Managed Devices configuration (device pin) the task needs to filter the device set. **CONFIRMED.**
+- (c) Skips the module entirely if no probed task matches → silent under-coverage. NOT this.
+
+**Proposed fix:** in `lib/orchestrators/android-orchestrator.js` (and the device-task resolution helper in `lib/project-model.js` if applicable), detect when the resolved task is `connectedAndroidDeviceTest` and:
+1. Inject `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<opts.device>` into the gradle args, OR
+2. Set `ANDROID_SERIAL=<opts.device>` in the spawn environment (AGP Managed Devices may also respect this) AND `-P<property>` for redundancy, OR
+3. Use AGP's managed-device filter via `-Pandroid.experimental.testOptions.managedDevices.allowOldApiLevelDevices=true` + a per-device-selector argv.
+
+Need to verify which mechanism AGP 9+ actually honors for the `connectedAndroidDeviceTest` task. Likely (1) per the `testInstrumentationRunnerArguments` standard contract.
+
+**Related observations from same wet session (cross-link bugs A5 / A9 / A10 below):**
+- A5: `--auto-retry` JSON marks `retried: true` but logs show same duration as single fail → retry doesn't cleanup adb/daemon between attempts (the ghost-device issue persists on retry).
+- A9: `kmp-test benchmark` doesn't persist per-task logs (unlike `kmp-test android` which writes `.kmp-test-runner/logs/android/<runId>/<module>.log`) → root-cause investigation requires re-running with verbose flags rather than reading captures.
+- A10: `kmp-test benchmark --config smoke` 300s watchdog kills `a long-running benchmark module` (which legitimately takes 5m47s on this machine) → false negatives compound the A1 picture.
+
+**Effort:** ~1h to investigate which AGP mechanism works (build a synthetic Managed Devices fixture in `tests/fixtures/`) + ~1-2h fix + ~30 min vitest cases + ~1h doc update (PR 3 workflow docs gain mention of the third variant + recovery pattern).
+
+**Risk:** LOW-MEDIUM. The fix is additive (current `connectedAndroidTest` path keeps current behavior; only `connectedAndroidDeviceTest` path gains the device-pin propagation). Risk surface: AGP Managed Devices semantics differ across AGP versions (8.x vs 9.x) — need to verify the fix doesn't regress on AGP 8.
+
+**Why now:** caught by a real-world 65-module KMP library project on user's wet-validation pass. The AGP 9+ KMP `withDeviceTestBuilder` DSL is the default for new microbenchmark modules per `androidx.benchmark` 1.2+; under-coverage today silently drops benchmark validation from CI test runs across that growing surface.
+
+**Cross-link to PR 3 docs:** `references/workflows/instrumented/with-android-cli.md` + `without-android-cli.md` "`--device-task` auto-resolution" section currently mentions only `connectedDebugAndroidTest` and `androidConnectedCheck`. After the fix lands, extend to mention `connectedAndroidDeviceTest` (Managed Devices variant) + document `--device-task connectedAndroidDeviceTest` as the manual override + add per-device-pin recovery commands. Plus a new troubleshooting entry under `module-failed.md` (or a dedicated `connected-android-device-test.md` deep-dive) for the "ghost offline device" recovery pattern.
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR 3.4) — `kmp-test parallel --output-file <name>` flag IGNORED — coverage report written to `.kmp-test-runner/reports/coverage/<timestamp>.md` instead (surfaced 2026-05-17 user wet session — bug A2)
+
+**Status: SHIPPED 2026-05-17 (PR 3.4).** Closed as part of the UX-polish bundle (A3 + A7 + A2 + Bug #3). Recommendation option (a) — path semantics — implemented in `lib/orchestrators/coverage-orchestrator.js` (dropped the `void outputFile` no-op) and `lib/orchestrators/parallel-orchestrator.js` (dropped the stale literal-default guard). `--output-file` is now a PATH: absolute → verbatim; relative → resolved against `--project-root`; omitted or set to the historic sentinel `coverage-full-report.md` → falls back to `.kmp-test-runner/reports/coverage/<runId>.md` with a `latest.md` alias. Custom paths write ONLY the user file (no `latest.md` alias). 6 new vitest cases (5 in `coverage-orchestrator.test.js`, 1 in `parallel-orchestrator.test.js`) plus help text + `.skills/.../cli/flags-reference.md` updates.
+
+**Original BUG below (preserved for context):** User invoked `kmp-test parallel --output-file coverage-full-report.md`; the file at project root with that name (from a 2026-04-02 prior run) was NOT overwritten, and the real report landed at `.kmp-test-runner/reports/coverage/20260517-003209-036004.md` (timestamped path). The flag is documented in `references/cli/flags-reference.md` row "`--output-file <path>` | `coverage-full-report.md` | Markdown report filename inside `.kmp-test-runner/reports/coverage/`."
+
+**Read carefully:** the documented default is "filename INSIDE `.kmp-test-runner/reports/coverage/`" — so the flag is supposed to be a filename, not a path. The user reasonably interpreted it as "path relative to project root" since they explicitly passed a relative path. The fix is one of:
+- (a) Treat the value as a path (relative → project-root-relative, absolute → as-is) — matches user expectation. Doc clarifies. Bytes: ~10 LOC + doc + 1 vitest.
+- (b) Strictly enforce filename only (reject `/` in value as `invalid_flag_value`), keep the in-reports-dir behavior — strict but breaks the user's reasonable expectation.
+- (c) Hybrid: when value contains `/`, treat as full path; when value is a bare filename, place under reports dir. Most ergonomic but the "implicit path-vs-filename detection" is a footgun.
+
+**Recommendation: (a).** Path semantics are what users expect; the timestamped `.kmp-test-runner/reports/coverage/<ts>.md` is a separate concern (audit trail) and should remain regardless of the user-named output.
+
+**Effort:** ~1-2h fix + 2 vitest cases + doc clarification.
+
+**Risk:** LOW. Backwards-compat: pre-fix users who passed bare filenames get a slightly different write location post-fix (now relative to cwd / project root). Document in CHANGELOG when shipped.
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR 3.4) — Coverage report header mislabels execution mode as "Tests Run: No (--skip-tests)" when tests DID run via `parallel` (surfaced 2026-05-17 user wet session — bug A3)
+
+**Status: SHIPPED 2026-05-17 (PR 3.4).** Closed as part of the UX-polish bundle (A3 + A7 + A2 + Bug #3). Fix threads two new opts (`testsRan: boolean`, `originatingSubcommand: string`) through `runCoverage` → `writeMarkdownReport` in `lib/orchestrators/coverage-orchestrator.js`. `parallel-orchestrator.js` passes `testsRan: true, originatingSubcommand: 'parallel'` on the full-run aggregation path and `testsRan: false, originatingSubcommand: 'parallel'` on the `--skip-tests` early-delegate path. Header now reads `Yes (via parallel)`, `No (--skip-tests)`, or `No (coverage subcommand)` depending on origin; `EXECUTION_MODE` and generator footer mirror the same distinction. 3 new vitest cases assert all three branches end-to-end against the generated markdown.
+
+**Original BUG below (preserved for context):** User ran `kmp-test parallel` (which dispatched tests AND aggregated coverage afterward). The resulting `latest.md` coverage report says `> Tests Run: No (--skip-tests)` and `EXECUTION_MODE: skip-tests` — but tests DID run, the user did NOT pass `--skip-tests`, and the report came from a real `parallel` dispatch, not from `coverage --skip-tests`.
+
+**Root cause hypothesis:** the coverage-report writer at `lib/coverage-*` (likely the markdown emitter) hardcodes `EXECUTION_MODE: skip-tests` when called from any non-parallel-direct path, OR the `parallel`-driven coverage aggregation path mistakenly sets the `skipTests` flag on the report metadata even though tests just ran.
+
+**Impact:** agents and humans reading the report believe it's a re-aggregation snapshot rather than the canonical post-run output. Confusing for triage. Wouldn't surface in any automated test because the report header is human-facing markdown, not envelope JSON.
+
+**Proposed fix:** track the originating subcommand + the `--skip-tests` flag separately. Header line should distinguish:
+- "Tests Run: Yes (via parallel)" — when run from `parallel` (or `changed`, `benchmark` with coverage)
+- "Tests Run: No (--skip-tests)" — when run from `coverage --skip-tests` explicitly (canonical re-aggregation)
+- "Tests Run: No (--coverage-only)" — when run from `parallel --coverage-only`
+
+**Effort:** ~30 min fix + 1-2 vitest cases on the report-writer.
+
+**Risk:** ZERO. Header-text-only change; no functional impact.
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR #239) — Kover module-count discrepancy: 62 plugins, 58 reports, 2 explicit "No coverage data", 2 unaccounted (surfaced 2026-05-17 user wet session — bug A4)
+
+**Status: SHIPPED 2026-05-17 (PR #239).** Closed as part of the infrastructure bundle (A8 + A4) in `lib/orchestrators/coverage-orchestrator.js`. Implementation adds `coverage.module_buckets: {with_data, no_xml, parse_errored, skipped_by_user}` to the envelope. Bucket-sum invariant fires `warnings[].code: 'coverage_aggregation_drift'` with `{detected, accounted, unaccounted}` counts when accounting drifts. `parseCoverageXml` return shape becomes `{rows, errored}` so the iteration loop distinguishes empty rows from parser failure. `discoverCoverageModules` also returns `skippedByUser`. Dry-run + `--coverage-tool none` envelopes carry empty buckets for shape parity. 3 new vitest cases lock mixed-buckets / parse_errored / dry-run shapes. Wet-validated against a 63-plugin sibling KMP composite: `63 detected = 63 with_data`, invariant holds. Schema unchanged at v2 (additive). Follow-up PR #240 (`fix(envelope): module_buckets in dry-run + error builders`) extended `module_buckets` into `buildDryRunReport` / `envErrorJson` / `buildInvalidArgsEnvelope` to close the dispatcher-level dry-run gap surfaced during wet validation.
+
+**Original IDEA below (preserved for context):** User report: "62 módulos tienen plugin Kover; 58 reportan coverage; 2 explícitamente 'No coverage data' (benchmark-infra, core-result). Faltan 2 módulos en el balance."
+
+**Math check:** 58 (reported) + 2 (explicit no-data) = 60. 62 (plugin applied) - 60 (accounted) = 2 missing.
+
+**Investigation needed:** where do the missing 2 modules go? Three plausible shapes:
+- (a) Silently dropped during aggregation (e.g., reading `build/reports/kover/report.xml` fails parse, exception caught → module simply omitted).
+- (b) Conditionally excluded by `--exclude-coverage` heuristic the user didn't pass.
+- (c) Coverage plugin applied but no test source set → no XML generated; the aggregator counts them under "no data" but the COUNT off-by-2 suggests a code bug in the bucketing.
+
+**Proposed fix:** add explicit per-module bucketing in the aggregator output: `{ with_data: [...], without_data: [...], skipped_by_user: [...], errored: [...] }`. Total must equal `modules_with_kover_plugin.length`. Vitest case ensures invariant holds. If error path exists, surface as a `warnings[].code` so agents can flag the accounting hole.
+
+**Effort:** ~2-3h fix + ~30 min for the bucketing + 1-2 vitest cases.
+
+**Risk:** LOW. Additive surface (no shape change). The error-path-aware bucketing is more honest than silent drops.
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR 3.3) — `--auto-retry` has no observable cleanup between attempts on instrumented retries → retries fail for the same ghost-device reason (surfaced 2026-05-17 user wet session — bug A5)
+
+**Status: SHIPPED 2026-05-17 (PR 3.3).** Closed via the android device-pin cluster fix (A1 + A5). Implementation in `lib/orchestrators/android-orchestrator.js` `--auto-retry` block: BEFORE the retry `spawnGradle`, run `adb kill-server` then `adb start-server` (gated behind `--auto-retry` → zero impact on happy path). Refreshes the device list so the retry sees an up-to-date device state when the device went offline mid-run. The retry reuses the same `gradleArgs` (with PR 3.3 / A1's device-pin property and PR 3.2's `--isolated` cache-dir) so config stays consistent across attempts. 2 vitest cases lock the kill+start sequence on `--auto-retry` and the NO-OP on the happy path. Pairs with A1 to fully resolve the user's wet-session repro — without A1's device-pin fix, A5's adb refresh alone would still pick the wrong device on the retry.
+
+**Original BUG below (preserved for context):** User report: "En la primera corrida con `--auto-retry`, el JSON los marca `retried: true` pero los logs muestran que el retry duró el mismo tiempo que un fail single y volvió a fallar por la misma causa (ghost device). El retry no incorpora limpieza de adb/daemon entre intentos."
+
+**Root cause hypothesis:** `--auto-retry` re-dispatches the same gradle task with the same args, the same adb state, the same daemon. If the first failure was caused by adb's ghost device list (bug A1), the second dispatch sees the same list and fails identically. The retry is mechanically successful (dispatch happens; envelope marks `retried: true`) but semantically useless for the dominant failure class.
+
+**Proposed cleanup between retries:**
+1. `adb kill-server && adb start-server` to refresh the device list (drops ghost-offline entries).
+2. Optionally `gradle --stop` to refresh the daemon between attempts.
+3. With `--clear-data`: the existing `adb shell pm clear <pkg>` runs per-retry; extend to also call `adb -s <SERIAL> shell pm clear` rather than the global one (per-device cleanup).
+
+**Cross-link:** depends on A1 fix landing first. With A1's device-pin propagation, A5's retry-cleanup gap is much smaller (the dispatch already won't see ghost devices). A5 alone (without A1) is a workaround for A1's symptom. Probably worth treating as one combined fix.
+
+**Effort:** ~30 min after A1 lands; the cleanup steps are conditional on `--auto-retry` already being set.
+
+**Risk:** LOW. `adb kill-server` between dispatches adds ~1-2s; gated behind `--auto-retry` so no impact on the happy path.
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR 3.4) — `kmp-test doctor` reports "ADB WARN not found" despite local.properties → sdk.dir auto-detect succeeding (surfaced 2026-05-17 user wet session — bug A7)
+
+**Status: SHIPPED 2026-05-17 (PR 3.4).** Closed as part of the UX-polish bundle (A3 + A7 + A2 + Bug #3). Fix in `lib/commands/doctor.js`: when the PATH probe for `adb` fails, re-call the already-imported `inspectLocalProperties(projectRoot)` to resolve `sdk.dir` and try `<sdk.dir>/platform-tools/adb(.exe)`. On hit, emit `OK` with message `via SDK at <path>`; on miss with `sdk.dir` resolved, WARN with explicit `not on PATH and not at <expected-path>` instead of the generic install message. 3 new vitest cases cover PATH-fail+SDK-hit, PATH-fail+SDK-miss, and PATH-OK regression-guard.
+
+**Original IDEA below (preserved for context):** User report: doctor's "ADB" check line says WARN/not-found, but the "Android SDK" check immediately below says OK and auto-detects via `local.properties → sdk.dir`. The two checks disagree on whether ADB is reachable.
+
+**Root cause hypothesis:** the doctor's ADB check probes for `adb` on PATH (or via `$ANDROID_HOME/platform-tools/adb`); the SDK check resolves `sdk.dir` from `local.properties` which gives the SDK root, from which `platform-tools/adb` is reachable as a path but not necessarily on PATH. The two checks operate independently and don't share resolved state.
+
+**Proposed fix:** doctor's ADB check should ALSO probe `<resolved sdk.dir>/platform-tools/adb` (or `.exe` on Windows) and report OK + the absolute path when found. Falls back to the current PATH probe. Message becomes "ADB OK (via SDK at <path>)" or "ADB WARN not on PATH (try `<sdk>/platform-tools/adb`)".
+
+**Effort:** ~30 min in `lib/commands/doctor.js` (or wherever the ADB check lives) + 1 vitest case.
+
+**Risk:** ZERO. Additive probe; existing PATH-only probe remains as fallback.
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR #239) — `kmp-test update` fails with `release_resolve_failed` on Windows hosts with revoked CA cert in SChannel (surfaced 2026-05-17 user wet session — bug A8)
+
+**Status: SHIPPED 2026-05-17 (PR #239) — diagnostic-only fix.** Closed as part of the infrastructure bundle (A8 + A4) in `lib/orchestrators/update-orchestrator.js`. **Important nuance:** the original BUG hypothesis assumed Windows SChannel cert revocation; investigation showed the orchestrator already uses Node's built-in `fetch()` (undici), NOT curl + SChannel, so the cert path isn't the literal mechanism. The actual fix is the **silent-error-swallowing** that made `release_resolve_failed` opaque: both probe-tier catch blocks now push `{tier, source, message}` entries into a side-channel `probeErrors[]` array; non-throw fallthroughs (no-tag-in-url, !res.ok, prerelease-tag-rejected, tag-rejected) push structured entries too. `runUpdate` threads the array into `envErrorJson`'s existing `extra` parameter, producing `errors[0].probe_errors[]` on the failed envelope. Wet-validated on the originally-affected Windows host: envelope now surfaces `probe_errors: [{tier:1, source:"redirect", message:"fetch failed"}, {tier:2, source:"api", message:"fetch failed"}]` instead of a bare error. 3 vitest cases lock both-tiers-throw, tier-1-no-tag, and tier-2-not-ok paths. A speculative tier-3 `https.get` fallback is **deferred** pending wet evidence that cert validation is the actual root cause — the diagnostic itself may surface a different cause (proxy / DNS / rate-limit / corporate firewall) that the user resolves directly. If a future wet report confirms cert validation as the cause, a tier-3 fallback can ship as a separate follow-up.
+
+**Original BUG below (preserved for context):** User report: `kmp-test update` returns `release_resolve_failed — "Could not resolve latest release for oscardlfr/kmp-test-runner (redirect + API both failed)"`. The user diagnosed it as a Windows SChannel cert revocation issue — `curl` (which the update path likely uses for the GitHub release redirect probe) fails to validate the cert chain, but `npm` and Node fetch (which use the bundled CA bundle, not SChannel) work fine.
+
+**Root cause hypothesis:** the update orchestrator (`lib/commands/update.js` or `lib/update-orchestrator.js`) uses an HTTP client that defers to the OS cert store. On Windows hosts where SChannel has a revoked or stale CA root cert for GitHub's chain (a common transient state), all redirect + API attempts fail with cert-validation errors.
+
+**Proposed fix:** switch the update path's HTTP client to Node's built-in `https` (or `node-fetch`-equivalent) which uses Node's bundled CA bundle, independent of the OS cert store. Specifically:
+1. Replace any `curl`/`spawn(curl, ...)` invocations in the update path with `https.get` / `https.request` calls.
+2. Ensure the User-Agent header is set (GitHub API requires it for `api.github.com` calls).
+3. Honor `KMP_TEST_REGISTRY_STUB` (the env var the parity tests use) so the fix doesn't break the existing test harness.
+
+**Workaround for affected users today:** `npm install -g kmp-test-runner@latest` (npm uses Node's CA bundle). User confirmed this works in their session.
+
+**Effort:** ~2-3h fix + 2-3 vitest cases (cert-failure simulation via stub, success path with redirect chain).
+
+**Risk:** LOW-MEDIUM. The current update path may have other dependencies on curl behavior (timeout semantics, redirect handling); the Node-https replacement needs careful audit. Risk surface: failing curl-style timeouts that the user's CI relied on.
+
+---
+
+### 💡 IDEA — `kmp-test parallel --skip-tests` markdown header says "No (coverage subcommand)" instead of "No (--skip-tests)" (surfaced 2026-05-17 during PR 3.5-train wet validation — Finding #1)
+
+**Status: IDEA, no milestone assigned. LOW severity — markdown-header cosmetic mismatch; doesn't break any envelope contract.** Wet finding from the PR 3.5-train wet validation matrix. PR 3.4 (A3) added `originatingSubcommand` threading from `parallel-orchestrator.js#runParallel` into `runCoverage` so the markdown header could distinguish "Yes (via parallel)" vs "No (--skip-tests)" vs "No (coverage subcommand)". The fix works at the orchestrator function level (3 vitest cases pass) but the live CLI route `kmp-test parallel --skip-tests` produces header "No (coverage subcommand)" instead of the documented "No (--skip-tests)".
+
+**Root cause:** `kmp-test parallel --skip-tests` dispatches via `lib/commands/parallel.js → dispatchScriptCommand({sub:'parallel'})` → wrapper script (`run-parallel-coverage-suite.ps1 --skip-tests`) → wrapper translates parallel+skip-tests into a `coverage` invocation at the script level → `runner.js sub='coverage'` calls `runCoverage` with default `originatingSubcommand='coverage'`. PR 3.4's threading inside `runParallel` never runs because the script-level translation bypasses it.
+
+**Fix options:**
+- (a) Wrapper preserves the original sub: pass `--originating-subcommand parallel` when translating. `runner.js sub='coverage'` consumes it and threads to `runCoverage`. ~15 LOC across runner.js + ps1/sh wrappers + 1 vitest case.
+- (b) `kmp-test parallel --skip-tests` routes through `runParallel`'s early-delegate (`parallel-orchestrator.js:263`) instead of through the wrapper-script translation. Cleaner architecturally but larger surface.
+- (c) Accept the behavior, update the PR 3.4 closure docs to reflect that "No (--skip-tests)" is the standalone-coverage path, not the parallel+skip-tests path.
+
+**Effort:** (a) ~30 min. (b) ~1-2h plus careful audit of the early-delegate path. (c) doc-only, ~5 min.
+
+**Risk:** ZERO for (c); LOW for (a); LOW-MEDIUM for (b).
+
+**Why now:** caught during the PR 3.5-train wet validation that confirmed all 11 fixes ship behaviorally. This is the only cosmetic gap; ship at user's discretion.
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR #240) — `kmp-test coverage --dry-run --json` envelope lacks `module_buckets` (surfaced 2026-05-17 during PR 3.5-train wet validation — Finding #2)
+
+**Status: SHIPPED 2026-05-17 (PR #240).** Wet finding from the PR 3.5-train wet validation, fixed in a same-session follow-up. PR 3.5 added `coverage.module_buckets` to `runCoverage`'s success and dry-run code paths, but `kmp-test coverage --dry-run --json` short-circuits in the script-dispatcher BEFORE invoking `runCoverage`. The dispatcher's dry-run uses `buildDryRunReport` from `lib/envelope/builder.js`, which didn't carry `module_buckets`. Fix adds the empty `module_buckets` shape (`{with_data: [], no_xml: [], parse_errored: [], skipped_by_user: []}`) to all 3 envelope builders (`buildDryRunReport`, `envErrorJson`, `buildInvalidArgsEnvelope`) so the contract "`coverage.module_buckets` is always present" holds across success / dry-run / env-error / invalid-args envelopes. 16 snapshot tests updated (additive — no other diffs). Schema unchanged at v2.
+
+**Original FINDING below (preserved for context):** wet validation re-run of `kmp-test coverage --dry-run --json` on the PR 3.5-train wet sweep showed the envelope's `coverage` block missing the `module_buckets` field that the live coverage path emits. The asymmetry would force downstream consumers to optional-chain on dry-run envelopes (`envelope.coverage.module_buckets ?? defaults`) — friction the additive contract was designed to avoid.
+
+---
+
+### ✅ SHIPPED 2026-05-17 — Stale lockfile cleanup + PID-recycle guard (surfaced 2026-05-17 during full-CLI wet validation — Finding #3)
+
+**Status: SHIPPED 2026-05-17.** Wet finding from the full-CLI wet validation (2-occurrence repro in a single session). When `kmp-test benchmark` failed with `module_failed` (exit 1), the lockfile at `<project>/.kmp-test-runner.lock` remained on disk; subsequent runs hit `lock_held` referencing the original PID. Confirmed live: PID 39700 was alive as a `node` process started at exactly the lockfile's `start_time` — either the original benchmark never exited cleanly, OR Windows recycled PID 39700 to a new node process. The pre-fix schema only validates the PID via `process.kill(pid, 0)`, which can't distinguish a still-running original from a recycled-PID impostor.
+
+**Fix:** add stale-by-time / boot-time heuristic to `lib/runners/lockfile.js#acquireLock`. New helper `isLockfileStaleByTime(existing, {now, uptimeMs})` returns true when (a) `existing.start_time` predates the host's last boot (computed from `os.uptime()`), or (b) the lock is older than `STALE_THRESHOLD_MS` (4 hours — well above the upper bound for any legitimate kmp-test run). When either branch fires, `acquireLock` reclaims the lock as `reclaimed: true` instead of returning `lock_held`. The `forced` path now only fires when the PID is genuinely alive AND `--force` was passed (no longer fires for stale-but-recycled PIDs, since those reclaim cleanly without bypass risk). Test surface relocated to `tests/vitest/lockfile.test.js` (extracted from cli.test.js in a separate refactor commit); 7 new vitest cases lock the boot-predate path, the >4h reclaim, the no-false-positive guard, and the four invariants of `isLockfileStaleByTime` itself (null input, predate-boot, age-exceeds, fresh-within-threshold).
+
+**Original FINDING below (preserved for context):** Wet repro in the full-CLI sweep — `coverage --json` ran 3+ hours after a failed benchmark, hit `lock_held` against PID 39700 (started exactly at the original benchmark's lockfile `start_time`, 2026-05-17T14:41:45.821Z). Windows `Get-Process -Id 39700` confirmed a live `node` process at that start time — but the original benchmark had exited 1 ~3 hours earlier. Either the orchestrator's `finally`-block cleanup didn't fire on the failure path, OR the PID got recycled to a coincidentally-matching node process. Either way, the lockfile's PID-only validation is insufficient.
+
+---
+
+### ✅ SHIPPED 2026-05-17 — `kmp-test android --no-adb` hangs indefinitely without `--list-only` / `--dry-run` (surfaced 2026-05-17 during full-CLI wet validation — Finding #4)
+
+**Status: SHIPPED 2026-05-17.** Wet repro: `kmp-test android --no-adb --json --project-root <root>` ran for 4+ minutes without producing output. Root cause: the android orchestrator's `parseArgs` switch statement dropped `--no-adb` via the `default:` arm; the orchestrator proceeded to build the project model + attempt `connectedAndroidTest` dispatch through gradle, which has no fail-fast path for "no device". `--no-adb` is documented as an `info`-subcommand flag ("Skip the ADB probe"), but the script-dispatcher's `KNOWN_BOOLEAN_FLAGS` set permits it through to all subcommands, where android silently inherited it.
+
+**Fix:** `lib/orchestrators/android-orchestrator.js#parseArgs` now recognises `--no-adb` and sets both `noAdb: true` AND `listOnly: true` (instrumented tests fundamentally require adb, so the only sensible behavior on `--no-adb` is list-only — emit the discovered module set without dispatching gradle). The `--list-only` short-circuit (L484) emits a `warnings[].code: "no_adb_implies_list_only"` entry when the path was reached via `--no-adb` (vs explicit `--list-only`), so agents can branch on the implication. Help text in `lib/cli.js` updated to document the implicit-list-only behavior. 2 vitest cases lock the warning + the no-false-positive guard (`--list-only` alone doesn't emit the warning).
+
+**Original FINDING below (preserved for context):** Wet repro in the full-CLI sweep — `kmp-test android --no-adb --json --project-root <kmp project>` was started at 14:58 UTC; PID 42092 still alive 4+ minutes later, lockfile held, zero output. Killed manually via `Stop-Process`. Retake with `--list-only` added returned exit 0 in <1 second. `--no-adb` on android is a footgun for agents probing for metadata without a device — the orchestrator's failure to short-circuit converts a fast envelope-shape query into an indefinite hang.
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR 3.2) — `kmp-test benchmark` does NOT persist per-task gradle logs (unlike `kmp-test android`) → no post-mortem when benchmarks fail (surfaced 2026-05-17 user wet session — bug A9)
+
+**Status: SHIPPED 2026-05-17 (PR 3.2).** Closed as part of the benchmark-cluster fix (A9 + A11 + A10). Implementation in `lib/orchestrators/benchmark-orchestrator.js`: `safeModuleName` + `defaultRunId` helpers mirror android-orchestrator. Per-(module, platform) gradle stdout+stderr is persisted to `<projectRoot>/.kmp-test-runner/logs/benchmark/<runId>/<module>-<platform>.log` (best-effort). Envelope surface (additive, schema_version unchanged at 2): `benchmark.log_paths: { '<module>:<platform>': '<absolute path>' }` covers all dispatched modules; `errors[i].log_path` inline on `module_failed` + `gradle_timeout` entries for read-time ergonomics. 3 vitest cases lock success/fail/timeout paths.
+
+**Original BUG below (preserved for context):** User report: "A diferencia de android (que crea `.kmp-test-runner/logs/android/<timestamp>/<module>.log`), el subcomando benchmark solo escribe el resumen `2 passed, 8 failed` sin gradle output ni stack traces. No hay forma de diagnosticar fallos post-mortem."
+
+**Reference pattern:** `lib/orchestrators/android-orchestrator.js` writes per-module logs at `<projectRoot>/.kmp-test-runner/logs/android/<runId>/<module>.log` (post-v0.8.0 location). Each log captures the gradle subprocess's full stdout + stderr for that module. Agents and humans can grep these post-run for failure diagnosis.
+
+**Proposed fix:** replicate the android-orchestrator pattern in `lib/orchestrators/benchmark-orchestrator.js`:
+1. Create `<projectRoot>/.kmp-test-runner/logs/benchmark/<runId>/` directory on first dispatch.
+2. For each (module, platform) gradle spawn, redirect stdout + stderr to `<module>-<platform>.log` (preserving the in-memory capture used for the envelope summary).
+3. Surface the log path in the per-module result entry (envelope field `benchmark.legs[].log_path` or per-module in `modules[]`).
+4. README updates: "Per-task logs are persisted under `.kmp-test-runner/logs/benchmark/<runId>/` — grep for failures."
+
+**Cross-link bug A10:** A10 (the 300s smoke timeout false-negative) would be vastly easier to diagnose with A9's per-task logs in place. Probably ship A9 BEFORE A10's policy fix (so users have evidence to drive A10's threshold conversation).
+
+**Effort:** ~2-3h fix (mostly mirroring the android-orchestrator code; the writeFileSync + mkdirSync calls + spawn opts plumbing) + ~1h vitest cases (log file creation, log content matches stdout+stderr).
+
+**Risk:** LOW. Pure additive — adds files on disk under the existing `.kmp-test-runner/` directory (already in user `.gitignore` recommendations). No envelope shape change unless we add the `log_path` field (additive — schema doesn't bump).
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR 3.2) — `kmp-test benchmark --config smoke` 300s watchdog kills legitimate long-running benchmarks → false negatives (surfaced 2026-05-17 user wet session — bug A10)
+
+**Status: SHIPPED 2026-05-17 (PR 3.2).** Closed as part of the benchmark-cluster fix (A9 + A11 + A10). Recommendation option (b) — graded exit code — shipped: when `totalTimedOut > 0 AND totalPass >= 1`, exit `EXIT.SUCCESS` (0) + `warnings[].code='partial_timeout'` aggregate entry (carries `{ timed_out, passed }` counts). When all modules timed out (zero passes), preserved hard fail at exit 3. New `--strict-timeouts` opt-out flag for CI matrix users that need the pre-graded behavior. Per-module `errors[].code='gradle_timeout'` entries stay; the warning layers on top. Same fix as the PARKED-bug IDEA above (now closed as superseded). Options (a) and (c) deferred (not scheduled).
+
+**Original BUG below (preserved for context):** `smoke` config has been the friendly default since v0.7-era; producing false negatives erodes trust in the headline subcommand.** User report: "El benchmark real de a long-running benchmark module tarda 5m 47s (excede los 300s del watchdog). El runner mata/marca FAIL pese a que gradle eventualmente sucede." The user confirmed via direct gradle invocation that `:a long-running benchmark module:desktopSmokeBenchmark` SUCCEEDS in 5m47s when given the time. The other JVM benchmarks in the same batch also failed, possibly for the same reason (not yet verified — the user is waiting for A9's log-persistence fix to investigate).
+
+**Reference:** `lib/benchmark-orchestrator.js` defines `BENCHMARK_TIMEOUT_DEFAULTS_MS = { smoke: 300_000, main: 1_800_000, stress: 3_600_000 }` (L105-109). The 300s smoke ceiling targets "fast feedback for the dev inner loop"; it does not accommodate larger benchmark modules.
+
+**Three independent fixes (any combination):**
+- **(a) Bump the smoke default upward** — e.g., to 600s (10min) or 900s (15min). Trade-off: cleaner first-run experience for medium-sized projects vs slower "fast" feedback signal. Reasonable bump: 600s.
+- **(b) Implement the PARKED-bug graded exit code** — see existing entry "💡 IDEA — `benchmark` partial-success grading" above. When `total > 0 AND timed_out > 0 AND passed >= 1`, exit 0 with `warnings[].code: "partial_timeout"` instead of exit 3. This converts hard-failures-on-timeout into soft signals while preserving the "everything hung" hard-fail.
+- **(c) Per-module timeout override** — `--module-timeout :a long-running benchmark module=600s` flag, or auto-detect from a `.kmp-test-runner/benchmark-timeouts.json` config. Most ergonomic but most complex.
+
+**Recommendation:** ship (b) FIRST (the graded exit code already designed in the PARKED-bug IDEA above) — it changes the headline UX from "everything failed" to "1 of 5 timed out, 4 passed" without bumping the policy. Then evaluate (a) based on broader user reports. Defer (c) to a v0.11 or later milestone (sophisticated per-module config has lots of edge cases).
+
+**Cross-link bug A9:** without A9's per-task logs, A10's affected users can't reliably distinguish "smoke timeout, real benchmark would have passed" from "benchmark genuinely hung". A9 must ship first OR concurrently for A10's fix to be debuggable.
+
+**Cross-link to existing BACKLOG entry:** "💡 IDEA — `benchmark` partial-success grading: `gradle_timeout` should not hard-fail when N-1 modules passed" (above) IS option (b) — these are the same fix. Should merge or cross-link when both are scheduled.
+
+**Effort:** (a) ~15 LOC + 1 vitest. (b) ~30 LOC + 2-3 vitest cases (reuse the IDEA's existing design). (c) ~2-3h.
+
+**Risk:** (a) LOW — wider default doesn't break anyone, just makes some runs slower-to-fail. (b) MEDIUM — exit-code grading is observable from CI scripts; document prominently. (c) MEDIUM — new flag surface, edge cases (whitespace handling, glob support).
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR 3.2) — `kmp-test benchmark` does NOT propagate `--no-configuration-cache` by default → kotlinx-benchmark stale TEMP path masks as silent 2.2s FAIL (surfaced 2026-05-17 user wet session — bug A11)
+
+**Status: SHIPPED 2026-05-17 (PR 3.2).** Closed as part of the benchmark-cluster fix (A9 + A11 + A10). Recommendation option (a) — default the flag — shipped: `--no-configuration-cache` is now injected into every per-(module, platform) gradle invocation before user `--gradle-args` (so user override `--gradle-args "--configuration-cache"` wins via gradle last-wins). Cost: ~5–10s config-cache miss per benchmark task; trade for reliability. 2 vitest cases lock default-injection and user-override paths. Underlying B5 upstream issue (kotlinx-benchmark caches `%TEMP%`) remains tracked as the IDEA below.
+
+**Original BUG below (preserved for context):** composes with A9 (no per-task logs) to produce silent failures with NO diagnostic surface. User wet session confirmed live 2026-05-17. Stack trace from the underlying failure: `java.io.FileNotFoundException: C:\Users\<user>\AppData\Local\Temp\benchmarks<long-suffix>.txt` at `kotlinx.benchmark.UtilsKt.readFile (Utils.kt:12)` from `JvmBenchmarkRunnerKt.main`. The kotlinx-benchmark gradle plugin caches a path to `%TEMP%` (with a string suffix) in gradle's configuration cache; when Windows cleans `%TEMP%` (boot, idle cleanup), the next build re-uses the cached path but the file no longer exists → `FileNotFoundException`.
+
+**Two related issues stacked:**
+1. **Stale-path masking** — kmp-test runs gradle with config-cache enabled (default), so the kotlinx-benchmark stale TEMP path keeps re-firing. Symptom from user envelope: `[FAIL] benchmark-crypto (jvm) failed with exit code 1` in 2.2s, no further detail.
+2. **Diagnostic gap** — without per-task logs (bug A9 above), the `FileNotFoundException` never reaches the user; they see only the [FAIL] line.
+
+**User-confirmed workaround:** `kmp-test benchmark --config smoke --platform jvm --module-filter "benchmark-crypto" --gradle-args "--no-configuration-cache"` — runs ~5m47s and SUCCEEDS. The workaround works because the cache is bypassed; kotlinx-benchmark re-resolves a fresh TEMP path each invocation.
+
+**Underlying root cause is project-side (B5):** kotlinx-benchmark itself shouldn't cache a `%TEMP%` path that can be cleared between builds. Fix should land in kotlinx-benchmark (write to `build/benchmarks/` instead — stable, gitignored) OR mark the desktop benchmark tasks with `@DisableCachingByDefault` / `notCompatibleWithConfigurationCache`. But until kotlinx-benchmark fixes that, kmp-test-runner can mitigate at the CLI level.
+
+**Three independent fixes (any combination on CLI side):**
+- **(a) Default `--no-configuration-cache` for benchmark dispatch.** Simplest. Cost: ~5-10s per benchmark task (config-cache miss). Reasonable trade for reliability. ~5 LOC in `lib/orchestrators/benchmark-orchestrator.js` to inject the flag into the gradle args before they hit `spawnGradle`.
+- **(b) Detect FileNotFoundException in the gradle output stream → auto-retry with `--no-configuration-cache`.** More targeted (no per-run cost when the bug isn't hit). Cost: requires either (i) reading the spawn's stderr inline (current spawnGradle uses synchronous `spawnSync` — needs refactor) OR (ii) post-mortem the captured stderr after exit and dispatch a one-time retry. ~15-20 LOC.
+- **(c) Document the flag as obligatory in the benchmark workflow doc + add explicit `errors[].code: "benchmark_config_cache_stale"` discriminator that points the agent at the `--gradle-args` workaround.** ~10 LOC + doc updates.
+
+**Recommendation: (a) — default the flag.** kotlinx-benchmark's bug isn't going away soon; benchmark dispatch is naturally a "spend more time for reliability" workflow; the 5-10s config-cache cost is negligible against the 5+min benchmark runtime. Document the override flag for users who want the cache (`--gradle-args "--configuration-cache"` overrides per gradle last-wins).
+
+**Cross-link bugs A9 + A10:**
+- A9 (per-task logs) is a HARD dependency for A11 triage today. Users currently can't diagnose the FileNotFoundException because logs aren't captured. Ship A9 FIRST, then A11's behavior becomes self-documenting (logs show the actual stack trace).
+- A10 (smoke 300s watchdog) is upstream of A11 in the failure-mode chain: without A11's fix, all 3 benchmarks fail in 2.2s each (well within the 300s ceiling) so A10 doesn't fire; with A11's fix, the same benchmarks legitimately run 5m+ and A10's ceiling becomes the new bottleneck.
+
+**Effort:** (a) ~30 min + 1 vitest case. (b) ~3-4h + 2-3 vitest cases (stderr-pattern matching, retry-once-with-cache-disabled). (c) ~1h + doc updates.
+
+**Risk:** (a) LOW — kotlinx-benchmark users who relied on config-cache speed lose ~5-10s per benchmark task; documented in CHANGELOG; opt back in via `--gradle-args "--configuration-cache"`. (b) MEDIUM — adds an inline stderr-scan path. (c) ZERO — doc + discriminator only, no behavior change.
+
+**Why now:** caught live on user's wet session; confirmed workaround works. Together with A9 + A10 forms the "benchmark subcommand is unreliable on Windows for typical KMP library projects" issue cluster — closing all 3 makes benchmark a first-class subcommand again.
+
+---
+
+### 💡 IDEA — UPSTREAM ISSUE — kotlinx-benchmark caches `%TEMP%` path in gradle configuration-cache → stale-file FileNotFoundException between runs (surfaced 2026-05-17 user wet session — bug B5, project-side)
+
+**Status: IDEA, no CLI milestone (upstream issue).** Captured here because it affects ALL kmp-test-runner users with kotlinx-benchmark JVM benchmark modules on Windows, not just one project. The actual fix lives in the kotlinx-benchmark gradle plugin (upstream), not in kmp-test-runner. kmp-test-runner mitigates at the CLI level via bug A11 (default `--no-configuration-cache` for benchmark dispatch).
+
+**Symptom (user-confirmed 2026-05-17):**
+```
+java.io.FileNotFoundException: C:\Users\<user>\AppData\Local\Temp\benchmarks<long-suffix>.txt
+  at kotlinx.benchmark.UtilsKt.readFile (Utils.kt:12)
+  at JvmBenchmarkRunnerKt.main (line 17)
+```
+
+**Root cause:** the kotlinx-benchmark gradle plugin writes a per-benchmark-task scratch file to `%TEMP%` and caches the path in gradle's configuration cache. When Windows cleans `%TEMP%` (boot, idle cleanup, manual cleanup), the cached path points to a file that no longer exists. The next gradle invocation (with config-cache enabled) re-uses the cached path → `FileNotFoundException` → silent 2.2s task failure.
+
+**Upstream fixes (in the kotlinx-benchmark project):**
+- (a) Write to `build/benchmarks/<task-id>/` instead of `%TEMP%/` — stable, gitignored, per-project, survives `%TEMP%` cleanup.
+- (b) Mark the `desktop*Benchmark` tasks with `@DisableCachingByDefault` or `notCompatibleWithConfigurationCache()` — disables config-cache for these specific tasks; everything else still benefits.
+- (c) Validate the cached path exists during task setup; if missing, re-resolve and cache fresh path.
+
+**Upstream tracking:** as of 2026-05-17, no kmp-test-runner-owned issue is filed against `Kotlin/kotlinx-benchmark`. Filing one with the user's stack trace would help upstream prioritization; cross-link to this entry when filed.
+
+**kmp-test-runner mitigation (independent):** see bug A11 above — default `--no-configuration-cache` for `kmp-test benchmark` dispatch. The mitigation lands first since upstream fix timeline is independent; remove the mitigation when kotlinx-benchmark ships any of (a)(b)(c).
+
+**Why captured here:** any kmp-test-runner user running JVM benchmarks via kotlinx-benchmark on Windows is affected. Without this contextual entry, future bug reports of the same shape ("kmp-test benchmark fails in 2.2s on Windows but works on macOS / Linux / with `--no-configuration-cache`") would land in our backlog with no clear root-cause. The entry exists as a navigation aid: "if you see this stack trace, it's B5, mitigated by A11, fix lives upstream."
+
+**Cross-link:** A11 (CLI mitigation), A9 (per-task log persistence — was the diagnostic gap that hid B5's stack trace from the user). All 3 are in the same "benchmark on Windows" recovery chain.
+
+---
+
+### ✅ SHIPPED 2026-05-17 (PR 3.4) — `--isolated` does not bypass project lockfile + `lock_held` error message could be richer (surfaced 2026-05-17 during v0.10 #4 PR 3 wet-validation)
+
+**Status: SHIPPED 2026-05-17 (PR 3.4).** Closed as part of the UX-polish bundle (A3 + A7 + A2 + Bug #3). Both improvements shipped together. Sub-fix (a) — enriched message: `lib/runners/script-dispatcher.js` now lists four recovery options (wait / `--isolated-cache-dir <path>` / different `--project-root` / `--force` with risk callout). Single source of truth — both JSON envelope and stderr block consume the same string. Sub-fix (b) — `--isolated-cache-dir` bypasses the lockfile: `bypassLock = isolatedFlags.noLock || !!isolatedFlags.cacheDir` (mirrors the existing `--isolated-no-lock` implication chain). Pre-flight race audit confirmed SAFE (every report write is `${runId}`-suffixed; cache writes are per-PID atomic via `${cacheFile}.tmp.${process.pid}` + `renameSync`). 3 vitest cases (1 extended `lock_held` envelope assertion requiring all 4 keywords + 2 new for the bypass path and the bare-`--isolated` regression guard). New troubleshooting deep-dive at `.skills/kmp-test-runner/references/troubleshooting/lock-held.md`.
+
+**Original IDEA below (preserved for context):** Surfaced 2026-05-17 during the PR 3 wet matrix when two concurrent `kmp-test android` sessions hit the same project root. Confirmed live: the second invocation (mine, `kmp-test android --device R3CT30KAMEH --module-filter ":benchmark-android-test" --isolated --list-only --json`) was rejected with `errors[0].code: "lock_held"` despite `--isolated`. Error message: `"another kmp-test (android) is already running with PID 15512 (started 4m25s ago). Pass --force to bypass."` — exit 3.
+
+**Behavior is by-design but the user mental-model trap is real.** `--isolated` documents (per `references/cli/flags-reference.md` "Concurrency isolation") as "Tier-3 — `--project-cache-dir <tmp>` for concurrent runs". Users reading "concurrent runs" reasonably infer it enables multi-instance on the same project root. In fact `--isolated` only isolates:
+- Gradle config-cache dir (each run gets a private `--project-cache-dir`).
+- ADB device-race (combined with `--device <SERIAL>`).
+
+It does NOT isolate the project lockfile (`.kmp-test-runner/.lock`), which is the orchestrator-side serializer that prevents two `kmp-test` processes from racing on the same project's `lib/orchestrators/<orch>.js` state. The lockfile is intentional safety to protect gradle config-cache from cross-process corruption when one process is mid-configure.
+
+**Two improvements (independent, can ship together or separately):**
+
+- **(a) Richer error message.** Current message tells the user `--force` is the only escape — that's incomplete. Add discoverable alternatives:
+  ```
+  another kmp-test (android) is already running with PID 15512 (started 4m25s ago).
+  Recovery options:
+    - Wait for the running process to finish (recommended).
+    - Pass --force to bypass (risky: cache-corruption window if prior process is still running).
+    - Run against a DIFFERENT --project-root (lockfile is per-project; --isolated does NOT bypass it).
+  ```
+  ~10 LOC change in the lockfile-error helper. Pure message-text rewrite; no behavior shift.
+
+- **(b) Make `--isolated` bypass the lockfile when combined with `--isolated-cache-dir`.** When a user explicitly hands the CLI a fresh cache-dir path, they're declaring isolation intent. The lockfile's job is to protect the SHARED cache-dir; with an explicit cache-dir override the shared cache-dir is no longer at risk. ~5-10 LOC: in the lock-acquisition path, skip lockfile if `opts.isolatedCacheDir` is truthy. New vitest case for the bypass path. Documentation: cross-link from `--isolated-cache-dir` row in flags-reference.md.
+
+  Recommended over option (a) only — gives users a real concurrent-execution path on the same project root, not just better error messaging.
+
+**Cross-link to PR 3 docs:** `references/workflows/instrumented/with-android-cli.md` + `without-android-cli.md` "Edge cases" section already received a clarifying patch in PR 3: "**`--isolated` does NOT bypass the project lockfile**: concurrent runs against the **same** `--project-root` still trigger `lock_held` (exit 3) — `--isolated` isolates cache state, not project ownership. Use `--force` to bypass the lockfile when the prior process is known-dead." That doc clarification stands regardless of which fix lands here.
+
+**Effort:** ~30 min for (a); ~1.5h for (b) including vitest + the `--isolated-cache-dir` interaction sweep.
+
+**Risk:** (a) ZERO — message-only. (b) LOW-MEDIUM — opens a concurrent-on-same-root path. Edge case: two processes both pass distinct `--isolated-cache-dir` paths and the lockfile bypasses correctly, but they may still race on `.kmp-test-runner/reports/` writes (per-module log files, coverage reports). Audit needed.
+
+**Why now:** caught during a perfectly natural multi-agent workflow (two Claude Code sessions, same project, concurrent android dispatch). Multi-instance scenarios are a first-class use-case for agent-driven workflows — every friction point we close compounds.
 
 ---
 
@@ -580,9 +974,11 @@ Branches stays at 80 because `floor(81.82 − 2) = 79` would lower the existing 
 
 ---
 
-### 💡 IDEA — Explicit `'utf8'` encoding on `writeFileSync` calls in `android-orchestrator.js` (surfaced 2026-05-10 during pre-PR-10 code-quality audit)
+### ✅ SHIPPED (sweep prior to 2026-05-17) — Explicit `'utf8'` encoding on `writeFileSync` calls in `android-orchestrator.js` (surfaced 2026-05-10 during pre-PR-10 code-quality audit)
 
-**Status: IDEA, no milestone assigned.** `lib/android-orchestrator.js:671` + `lib/android-orchestrator.js:675` write log files via `writeFileSync(logFile, stdout)` without an explicit encoding argument. Node defaults to `'utf8'` for string content so functionally fine, but explicit is better than implicit — every other `writeFileSync` in the codebase passes the encoding string.
+**Status: DONE.** All `writeFileSync` callsites in `lib/orchestrators/android-orchestrator.js` (currently lines 731 / 735 / 768 post-refactor train) carry explicit `'utf8'` as the third argument. The fix landed organically during a subsequent code-quality sweep before 2026-05-17. Original IDEA body preserved below for traceability (line numbers in the body reflect pre-refactor state).
+
+`lib/android-orchestrator.js:671` + `lib/android-orchestrator.js:675` write log files via `writeFileSync(logFile, stdout)` without an explicit encoding argument. Node defaults to `'utf8'` for string content so functionally fine, but explicit is better than implicit — every other `writeFileSync` in the codebase passes the encoding string.
 
 **Proposal:** add `'utf8'` as the third arg on both calls. Trivial diff; no behavior change.
 
@@ -1739,11 +2135,11 @@ Investigation questions:
 
 Estimated effort: ~3-4h for catalogue + match + doctor surfacing. Probably v0.6.x or v0.7.
 
-### Per-project config presets (post-v0.5.1 idea — PARTIALLY DONE 2026-05-04 via PR6; user-global aspect deferred)
+### Per-project config presets (post-v0.5.1 idea — DONE)
 
-**Status: PARTIALLY DONE 2026-05-04 (PR6 / `63a292b`)**:
-- ✅ **Project-local `.kmp-test-runner.json`** shipped in PR6. Schema covers `sharedProject`, `defaults`, `skip` per platform. Loader at `lib/project-config.js`. Precedence: CLI > env > config file > built-in default.
-- ⏭️ **User-global `~/.kmp-test/config.json`** (the original proposal's per-project preset map keyed by project name / git-remote) DEFERRED. Different scope — would need user-global config loader + per-project lookup mechanism + JDK-path pinning. Promote when wide-smoke surfaces a concrete need; deferred-with-shape per `feedback_dont_defer_to_post_release.md` because no current user is blocked.
+**Status: DONE in two parts**:
+- ✅ **Project-local `.kmp-test-runner.json`** shipped 2026-05-04 in PR6 (`63a292b`). Schema covers `sharedProject`, `defaults`, `skip` per platform. Loader at `lib/project-config.js`. Precedence: CLI > env > config file > built-in default.
+- ✅ **User-global `~/.kmp-test/config.json`** shipped 2026-05-16 in v0.10 #3. New `lib/user-config.js` (loader + `resolveProjectKey` via git-remote → rootProject.name → basename fallback + `mergeConfigs`). `lib/project-config.js` exports `loadMergedConfig` for the dispatch path; the CLI auto-injects `--java-home` from the user-global preset via `applyConfigDefaults`. Schema = full parity with project-local + user-global-only `java_home`. Precedence chain extended to `CLI > env > project-local > user-global > built-in default`. Security: project-local `java_home` is dropped + warned (closes supply-chain vector). Doctor surfaces a "User config" row.
 
 Original entry text preserved below.
 
@@ -1867,7 +2263,7 @@ Today's escape hatches:
 
 1. **✅ Doctor surfacing — DONE in v0.8.1 (PR #142).** `kmp-test doctor --json` carries a top-level `gradle_config{}` object with the resolved values for `org.gradle.parallel`, `workers.max`, `caching`, `daemon`, `jvmargs`, `configureondemand` from `<project>/gradle.properties` merged on top of `~/.gradle/gradle.properties`. Pure diagnostic — no behavior change. (Tier 2 below scheduled as **v0.9 step 2**; Tier 3 as **v0.10 step 2**.)
 2. **Generic pass-through (~1h)** — `--gradle-args "..."` global flag that appends arbitrary tokens to the gradlew invocation. Lets any agent or user inject `--no-parallel`, `--no-build-cache`, `--max-workers 1`, `-Pflag=value`, etc. Documented as an escape hatch — the CLI still has its opinionated defaults. Lower precedence than dedicated flags.
-3. **Auto-detect + respect (~2-3h)** — read `gradle.properties` at startup; if `org.gradle.parallel=false`, drop the `--parallel` injection; if `workers.max` is set, do not pass `--max-workers` unless explicitly overridden on the CLI; if `caching=false`, don't fight it. Most invasive — changes default behavior. Needs migration note ("`kmp-test parallel` no longer always parallelizes — set `org.gradle.parallel=true` if you want the previous behavior, or pass `--max-workers >1`").
+3. **Auto-detect + respect — ✅ DONE 2026-05-16 (v0.10 #2, `--parallel` only).** `parallel-orchestrator.js` reads `gradle.properties` (via existing `parseGradleConfig`) and drops the unconditional `--parallel` injection when `sources.project && parallel === false`. Other levers (`workers.max`, `caching`, `configureondemand`) were left out of scope because the CLI never injects them today — gradle reads them natively. Envelope surfaces `gradle_config_applied:{parallel_dropped:true}` on drop. Escape hatches: `org.gradle.parallel=true` or `--gradle-args "--parallel"` (last-wins, v0.9 passthrough). Migration note in `CHANGELOG.md` explicitly covers the "project file with only `jvmargs` but no `parallel` key → drop fires (resolves to gradle default false)" surprise case.
 
 **Why this matters for agents.** An agent calling `kmp-test parallel` against a repo it didn't build doesn't know whether the project supports parallel execution. Today the CLI happily parallelizes a project where Gradle would normally have refused — sometimes that's a fast pass, sometimes it's a flaky failure pinned on the agent. Surfacing the mismatch (level 1) buys most of the value at minimal risk; auto-respect (level 3) eliminates the foot-gun entirely but is a behavior change.
 
@@ -1908,13 +2304,17 @@ Audit items (priority-ranked):
 
 Estimated effort per item: 1-3h each except the subcommand-grouping refactor (full day if done with backwards compat). Recommend shipping the high-value 4 (`--debug`/`--release`, `describe`, `info`, `update`) as a single v0.4.0 "DX-parity" PR and leaving the rest as separate backlog candidates.
 
-### Use `android describe` JSON as module-discovery source (pending review)
+### Use `android describe` JSON as module-discovery source — ❌ DROPPED 2026-05-18
 
-The official `android` CLI's `describe` subcommand emits a JSON document of build targets + APK paths for an Android project. Currently kmp-test does its own module discovery via bash filesystem walks (`scripts/sh/lib/script-utils.sh` etc.), which on Windows MinGW is the slow path that motivated the [concurrent-invocation safety entry](#concurrent-invocation-safety-multi-agent-scenarios) above and is the suspect for the 10+ min hang against a 43-module personal project. Consider replacing or augmenting the bash discovery with an `android describe` invocation when the CLI is on PATH — gets the official Google schema, faster on Windows.
+DROPPED as part of v0.10 ramp #5 (research-first item, pre-authorized drop clause). Verdict file: `WET-V0.10-STEP-5-RESEARCH.md` at repo root. Inherits findings from v0.10 #4.5 (SHIPPED 2026-05-17): schema convergence not viable on three independent grounds.
 
-Open questions: (1) does `describe` cover KMP-only (non-Android) modules, or only AGP-rooted ones? (2) what's the schema stability guarantee, esp. for multi-module multi-target KMP? (3) fallback path when `android` CLI isn't installed — keep bash discovery as default, opt-in via `--use-android-describe` flag.
+Original entry preserved for traceability:
 
-Estimated effort: ~2h research first to confirm `android describe` enumerates KMP-non-AGP modules (test against the reference KMP composite project), then ~3-4h refactor in `lib/project-model.js` if research is positive. Scheduled as **v0.10 step 5 (research-first)** — if research is negative, the entry gets dropped per user direction (`feedback_release_milestone_decisions.md` allows the user to authorize drops on case-by-case basis after research). Note: the legacy reference to `scripts/sh/lib/` above predates the v0.8 Node-pivot — discovery now lives in `lib/project-model.js`.
+> The official `android` CLI's `describe` subcommand emits a JSON document of build targets + APK paths for an Android project. Currently kmp-test does its own module discovery via bash filesystem walks (`scripts/sh/lib/script-utils.sh` etc.), which on Windows MinGW is the slow path that motivated the [concurrent-invocation safety entry](#concurrent-invocation-safety-multi-agent-scenarios) above and is the suspect for the 10+ min hang against a 43-module personal project. Consider replacing or augmenting the bash discovery with an `android describe` invocation when the CLI is on PATH — gets the official Google schema, faster on Windows.
+>
+> Open questions: (1) does `describe` cover KMP-only (non-Android) modules, or only AGP-rooted ones? (2) what's the schema stability guarantee, esp. for multi-module multi-target KMP? (3) fallback path when `android` CLI isn't installed — keep bash discovery as default, opt-in via `--use-android-describe` flag.
+>
+> Estimated effort: ~2h research first to confirm `android describe` enumerates KMP-non-AGP modules (test against the reference KMP composite project), then ~3-4h refactor in `lib/project-model.js` if research is positive. Scheduled as **v0.10 step 5 (research-first)** — if research is negative, the entry gets dropped per user direction (`feedback_release_milestone_decisions.md` allows the user to authorize drops on case-by-case basis after research). Note: the legacy reference to `scripts/sh/lib/` above predates the v0.8 Node-pivot — discovery now lives in `lib/project-model.js`.
 
 ### Concurrent-invocation safety (multi-agent scenarios)
 
@@ -1941,7 +2341,6 @@ Out of scope for this item: cross-host coordination (use a real lock manager), G
 
 ### Other QUEUED ideas
 
-- **ANSI color** — auto-detect TTY, plain output when piped
 - **Maven Central publish** for Gradle plugin — currently GitHub Packages only; needs Sonatype account + signing keys
 - **iOS/macOS TestKit** matrix — needs Mac hardware in CI
 - **VitePress/MkDocs docs site** — separate consumer-facing docs beyond README
