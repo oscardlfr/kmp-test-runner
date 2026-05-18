@@ -7,60 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Removed — v0.10 ramp #5 dropped after research (`android describe` as module-discovery source)
+## [0.10.0] — 2026-05-18
 
-Item #5 ("Research direction B — `android describe` JSON discovery") is dropped under its pre-authorized "if negative → drop with user authorization" clause. The v0.10 ramp item #4.5 (SHIPPED 2026-05-17) already established that schema convergence between `kmp-test` and the Google `android` CLI is not viable (Windows blocker + plain-text `info` shape + different abstraction layer between "what tests can I run?" and "where are the build artifacts?"). Those findings apply directly to #5's hypothesis: on Windows (the motivating use case) `android describe` cannot run, and on macOS/Linux it does not carry the module-task graph data `lib/project-model.js` consumes. Verdict file: `WET-V0.10-STEP-5-RESEARCH.md` at repo root. No code change.
+### Added — Defensive `--console=plain` injection when stdout isn't a TTY (v0.10 #1)
 
-### Added — v0.10 macOS validation gate evidence (v0.10 ramp #6)
+New global `--color={always,never,auto}` flag (default `auto`) and POSIX `NO_COLOR` env support. In `auto` mode `spawnGradle` injects `--console=plain` into the gradle subprocess argv whenever `process.stdout.isTTY === false` or `NO_COLOR` is non-empty, defending piped output (`kmp-test parallel | tee log`) and CI captures from gradle's own `--console=auto` writing ANSI into the captured stream. Idempotent: when the user already passes any `--console=*` via `--gradle-args`, that value wins and no second token is appended. The repo itself still emits zero ANSI from `lib/` and `scripts/` (verified) — this purely defends against gradle's own decision in environments where its TTY probe disagrees with ours.
 
-Pre-tag wet validation of the full CLI matrix on macOS hardware. `MACOS-GATE-V0.10-SUMMARY.md` at repo root captures three phases of evidence:
+### Changed — `kmp-test parallel` auto-respects `org.gradle.parallel=false` (v0.10 #2)
 
-- **probe** — 45 cells, envelope-shape parity against `tests/vitest/__snapshots__/parity.test.js.snap` (28 PASS, 1 benign DRIFT, 16 SKIP).
-- **scoped** — 45 cells with real gradle invocations per cell (15 PASS, 30 SKIP, 0 ERROR, 0 DRIFT, 0 TIMEOUT). Required env-var redirects (`KMP_TMPDIR`, `GRADLE_USER_HOME`, `KONAN_DATA_DIR` → `<EXT_VOL>/...`) to fit on a 6.3 GB system-disk-free Mac.
-- **targeted wet** — 4 representative commands outside the gate's matrix (`doctor`, `info`, `describe --json`, `parallel --test-type ios --module-filter :shared`) against KaMPKit. All exit 0; the `ios` cell ran real `iosSimulatorArm64Test` (BUILD SUCCESSFUL, 106 s).
+`parallel-orchestrator` now reads the project's `gradle.properties` (merged over `~/.gradle/gradle.properties` per gradle's own rules) and drops the unconditional `--parallel` flag from the per-leg gradle dispatch when the resolved value of `org.gradle.parallel` is `false`. Previously the CLI overrode this setting silently. The drop fires when: (a) the project has a `gradle.properties` file at all (`sources.project` true) AND (b) the resolved `parallel` value is `false`.
 
-Two `tools/macos-validation-gate.mjs` fixes landed in the same PR (vitest 1592/1592 PASS unchanged):
+**Migration notice.** This also affects projects that have a `gradle.properties` (e.g. for `org.gradle.jvmargs`) but don't explicitly set `org.gradle.parallel` — gradle's own default for that key is `false`, so the resolved value is `false` and the drop fires. To preserve the previous behavior, either:
 
-1. `--label <vX.Y>` flag (default `v0.9` backward-compat) parameterizes the summary title and `.smoke/macos-gate-<label>/` subdir per cycle.
-2. `BENIGN_NO_OP_CODES` filter on scoped bucketing — `kmp-test changed` against a clean working tree emits `errors[].code: "no_changed_modules"` as a structured no-op signal; the gate now treats this (and future benign codes) as SKIP-with-reason instead of false ERROR. Mirrored in `--reclassify` so the fix applied to existing artifacts without re-spawning gradle.
+- Add `org.gradle.parallel=true` to your project's `gradle.properties`, or
+- Pass `--gradle-args "--parallel"` to your `kmp-test parallel` invocation (last-wins via the v0.9 gradle-args passthrough).
 
-### Fixed — `kmp-test android --device <serial>` now propagated to the gradle subprocess (PR 3.3 / A1)
-
-Two parallel propagation surfaces, both additive:
-
-- **`ANDROID_SERIAL` env var** is now set unconditionally on the gradle subprocess when `--device <serial>` resolves successfully (also fires for the auto-pick path when a single device is present). Covers the legacy AGP `connected{Variant}AndroidTest` family which honors this env var. Previously the env was passed through unchanged → AGP picked an arbitrary device from `adb devices` when multiple were attached, even with `--device` set.
-- **`-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>`** gradle property is now injected when the resolved task name ends in `connectedAndroidDeviceTest` (the newer KMP `androidLibrary { withDeviceTestBuilder { sourceSetTreeName = "test" } }` task). This task uses the device-test reporter which IGNORES `ANDROID_SERIAL` and reads the gradle property instead.
-
-Both injections are no-ops on the happy path (single-device hosts, no `--device` flag). Schema unchanged.
-
-### Fixed — `kmp-test android --auto-retry` refreshes the adb server between attempts (PR 3.3 / A5)
-
-When `--auto-retry` re-dispatches a failed instrumented task, the orchestrator now runs `adb kill-server && adb start-server` BEFORE the retry spawn. Refreshes the device list so the retry sees an up-to-date device state when the device went offline mid-run (USB transient, emulator process death). Gated behind `--auto-retry` → zero impact on the happy path. The retry still reuses the same `gradleArgs` (including PR 3.3 / A1's device-pin property and PR 3.2's `--isolated` cache-dir) so config stays consistent across attempts.
-
-### Added — `kmp-test benchmark` persists per-task gradle logs (PR 3.2 / A9)
-
-The benchmark orchestrator now writes per-(module, platform) gradle stdout+stderr to `<projectRoot>/.kmp-test-runner/logs/benchmark/<runId>/<module>-<platform>.log` (mirrors the existing `kmp-test android` artifact layout — a single `.kmp-test-runner/` gitignore covers both). Triage signal: previously the orchestrator only summarised `N passed, M failed` with no gradle output, no stack traces, no actionable signal when benchmarks failed.
-
-New envelope surface (both additive — `schema_version` stays at 2):
-
-- `benchmark.log_paths: { '<module>:<platform>': '<absolute path>' }` — covers success, failure, and gradle-timeout modules.
-- `errors[i].log_path` inline on `module_failed` + `gradle_timeout` entries — mirrors android-orchestrator's `log_file` field for read-time ergonomics.
-
-### Added — `kmp-test benchmark` defaults `--no-configuration-cache` (PR 3.2 / A11)
-
-`kotlinx-benchmark` caches `%TEMP%` inside gradle's configuration cache; a stale TEMP path produces a silent ~2.2s `FileNotFoundException` FAIL on Windows. The benchmark orchestrator now injects `--no-configuration-cache` into every per-(module, platform) gradle invocation by default. Cost: ~5–10s config-cache miss per benchmark task — reasonable trade for reliability.
-
-User override: `--gradle-args "--configuration-cache"` is appended LAST in the gradle args, so gradle's last-wins semantics give the user back the configuration cache when they explicitly opt in. No behavior change for projects that already used the workaround.
-
-### Changed — `kmp-test benchmark` partial timeouts grade as exit 0 + warning (PR 3.2 / A10)
-
-**Behavior change.** When `kmp-test benchmark` finishes with at least one timed-out module AND at least one passing module, the exit code is now `0` (was `3`) and the envelope carries a new `warnings[].code: "partial_timeout"` aggregate entry. Per-module `errors[].code: "gradle_timeout"` entries are preserved — the warning layers on top to explain why the run still exits 0. When all modules timed out (zero passes), the run keeps exiting `3` (everything-hung guard).
-
-Rationale: the 300s smoke watchdog produces false negatives on legitimate slow benchmarks (5m+ runs) when other modules pass cleanly. CI matrix users that want the pre-graded hard-fail behavior pass the new opt-out flag:
-
-- `--strict-timeouts` (off by default): restores exit 3 on any timeout regardless of how many modules passed.
-
-The `partial_timeout` warning carries `{ timed_out: N, passed: M }` counts so agents can quote the precise split without re-parsing per-module errors. Schema_version unchanged.
+New optional top-level envelope field: `gradle_config_applied: { parallel_dropped: true }`. Emitted only when the drop fires; absent (the key itself is not present, not `null`) otherwise. Schema_version stays at 2 (additive optional, non-breaking).
 
 ### Added — User-global config `~/.kmp-test/config.json` keyed by project (v0.10 #3)
 
@@ -89,22 +51,120 @@ A second config layer for per-machine, per-project presets that the project-loca
 
 **Doctor** — `kmp-test doctor` adds a "User config" row that reports whether the file exists, whether the current project's lookup key matched a preset, and which fields the preset carries.
 
-No migration required (additive). When the user-global file is absent, behavior is identical to v0.9/v0.10 prior. Schema_version unchanged.
+New CLI flag `--user-config-dir <path>` overrides the default `~/.kmp-test/` directory (useful for CI matrices that pin per-job config). No migration required (additive). When the user-global file is absent, behavior is identical to v0.9. Schema_version unchanged.
 
-### Changed — `kmp-test parallel` auto-respects `org.gradle.parallel=false` (v0.10 #2)
+### Added — Agent skill (`.skills/kmp-test-runner/`) + Claude Code Plugin packaging (v0.10 #4)
 
-`parallel-orchestrator` now reads the project's `gradle.properties` (merged over `~/.gradle/gradle.properties` per gradle's own rules) and drops the unconditional `--parallel` flag from the per-leg gradle dispatch when the resolved value of `org.gradle.parallel` is `false`. Previously the CLI overrode this setting silently. The drop fires when: (a) the project has a `gradle.properties` file at all (`sources.project` true) AND (b) the resolved `parallel` value is `false`.
+`kmp-test-runner` now ships as an [agentskills.io](https://agentskills.io)-conformant agent skill so LLM coding assistants can discover it without trial-and-error. The skill is also packaged as a [Claude Code Plugin](https://code.claude.com/docs/en/plugins) (`.claude-plugin/plugin.json` at repo root) re-using the same skill directory — no duplication.
 
-**Migration notice.** This also affects projects that have a `gradle.properties` (e.g. for `org.gradle.jvmargs`) but don't explicitly set `org.gradle.parallel` — gradle's own default for that key is `false`, so the resolved value is `false` and the drop fires. To preserve the previous behavior, either:
+**Skill contents** (`.skills/kmp-test-runner/`):
 
-- Add `org.gradle.parallel=true` to your project's `gradle.properties`, or
-- Pass `--gradle-args "--parallel"` to your `kmp-test parallel` invocation (last-wins via the v0.9 gradle-args passthrough).
+- `SKILL.md` — entrypoint with description, workflow routing, and tool-selection guidance.
+- `references/cli/` — `envelope-schema.md`, `exit-codes.md`, `flags-reference.md` (~280 LOC matrix grounded in `lib/cli.js#SUBCOMMAND_HELP`).
+- `references/workflows/` — 4 deep-dives (`unit-tests.md`, `coverage.md`, `benchmarks.md`, `changed.md`) + `instrumented/{with,without}-android-cli.md` dual-branch coverage.
+- `references/troubleshooting/` — 9 deep-dives + `instrumented-setup-failed/{with,without}-android-cli.md` recovery paths.
+- `scripts/{detect-env,run-tests}.{sh,ps1}` — convenience env probe + smart dispatcher (no functional dependency; SKILL.md works without them).
 
-New optional top-level envelope field: `gradle_config_applied: { parallel_dropped: true }`. Emitted only when the drop fires; absent (the key itself is not present, not `null`) otherwise. Schema_version stays at 2 (additive optional, non-breaking).
+**Discoverability:**
 
-### Added — Defensive `--console=plain` injection when stdout isn't a TTY (v0.10 #1)
+- **Project-local** (Claude Code, Cursor, etc.): `.skills/kmp-test-runner/SKILL.md` is auto-loaded when the skill directory is present in a project.
+- **Claude Code Plugin**: `claude --plugin-dir ./kmp-test-runner` (filesystem install). Marketplace listing planned.
+- **User-global**: `android skills add kmp-test-runner` (when listed in `github.com/android/skills`).
 
-New global `--color={always,never,auto}` flag (default `auto`) and POSIX `NO_COLOR` env support. In `auto` mode `spawnGradle` injects `--console=plain` into the gradle subprocess argv whenever `process.stdout.isTTY === false` or `NO_COLOR` is non-empty, defending piped output (`kmp-test parallel | tee log`) and CI captures from gradle's own `--console=auto` writing ANSI into the captured stream. Idempotent: when the user already passes any `--console=*` via `--gradle-args`, that value wins and no second token is appended. The repo itself still emits zero ANSI from `lib/` and `scripts/` (verified) — this purely defends against gradle's own decision in environments where its TTY probe disagrees with ours.
+New CI gate `skills-validate` (10th required check) enforces the skill manifest contract and plugin manifest format via `tools/validate-plugin.mjs` (zero-deps).
+
+### Added — Cross-tool alignment audit vs Google `android` CLI (v0.10 #4.5)
+
+Determined schema convergence between `kmp-test` and the Google `android` CLI is not viable. Three audit-blocking findings: (1) `android describe` is Windows-broken at 0.7.15 (POSIX `gradlew` invocation bug); (2) `android info` emits plain text, not JSON; (3) the two tools occupy different abstraction layers (test orchestration vs SDK/APK enumeration). Doc-only Path A chosen: `.skills/kmp-test-runner/SKILL.md` gains a "Cross-tool comparison: android CLI analogues" section + "Tool selection" subsection guiding agents to pick the right tool per question. Zero code, test, snapshot, or schema changes.
+
+### Removed — v0.10 ramp #5 dropped after research (`android describe` as module-discovery source)
+
+Item #5 ("Research direction B — `android describe` JSON discovery") is dropped under its pre-authorized "if negative → drop with user authorization" clause. The #4.5 audit findings apply directly to #5's hypothesis: on Windows (the motivating use case) `android describe` cannot run, and on macOS/Linux it does not carry the module-task graph data `lib/project-model.js` consumes. No code change. Resume path: re-evaluate if Google fixes the Windows blocker AND extends the describe output with module-task graph data.
+
+### Added — macOS validation gate evidence (v0.10 #6)
+
+Pre-tag wet validation of the full CLI matrix on macOS hardware. Three phases of evidence captured locally (not committed to develop):
+
+- **probe** — 45 cells, envelope-shape parity against `tests/vitest/__snapshots__/parity.test.js.snap` (28 PASS, 1 benign DRIFT, 16 SKIP).
+- **scoped** — 45 cells with real gradle invocations per cell (15 PASS, 30 SKIP, 0 ERROR, 0 DRIFT, 0 TIMEOUT). Required env-var redirects (`KMP_TMPDIR`, `GRADLE_USER_HOME`, `KONAN_DATA_DIR` → `<EXT_VOL>/...`) to fit on a 6.3 GB system-disk-free Mac.
+- **targeted wet** — 4 representative commands outside the gate's matrix (`doctor`, `info`, `describe --json`, `parallel --test-type ios --module-filter :shared`) against KaMPKit. All exit 0; the `ios` cell ran real `iosSimulatorArm64Test` (BUILD SUCCESSFUL, 106 s).
+
+Two `tools/macos-validation-gate.mjs` fixes landed in the same PR (vitest 1592/1592 PASS unchanged):
+
+1. `--label <vX.Y>` flag (default `v0.9` backward-compat) parameterizes the summary title and `.smoke/macos-gate-<label>/` subdir per cycle.
+2. `BENIGN_NO_OP_CODES` filter on scoped bucketing — `kmp-test changed` against a clean working tree emits `errors[].code: "no_changed_modules"` as a structured no-op signal; the gate now treats this (and future benign codes) as SKIP-with-reason instead of false ERROR. Mirrored in `--reclassify` so the fix applied to existing artifacts without re-spawning gradle.
+
+### Changed — Token-cost methodology + headline numbers re-measured (v0.10 #7)
+
+`tools/measure-token-cost.js` re-measured across 6 OSS KMP projects (small / medium / large buckets) using the v0.9 multi-project orchestrator. Findings update the README's token-cost framing:
+
+- **Parallel large-bucket A:C ratio jumped to 123×** (was reported as 28× in v0.9 due to NowInAndroid's nested module layout undersampling 5 of 36 modules in the v0.9 PR #13 walker). The recursive `filterModulesByGlob` walker now honors deeply-nested `core/` and `feature/` directories.
+- **Skill loading cost: 3,232 cl100k tokens** (`SKILL.md` eager-loaded by Claude Code on session start). Measured live; documented in the agent-skill section.
+- **NowInAndroid 5 → 36 modules**, **Confetti 13 → 16 modules** post recursive-walker fix.
+
+Token methodology + numbers visible in `tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md`.
+
+### Fixed — `kmp-test --dry-run --json` emits the subcommand block from dispatch shims (PR 3.1)
+
+The `lib/commands/*.js` dispatch shims (parallel/changed/android/benchmark/coverage) lost their `parallel:{}` / `changed:{}` / `android:{}` / `benchmark:{}` / `coverage:{}` subcommand block under `--dry-run --json` after the PR-09 dispatch-table refactor. New `lib/envelope/dry-run-blocks.js` (pure builders) centralizes the per-subcommand block construction; the three orchestrator-hosting subs (info/describe/update use direct emit) plus the script-dispatcher all converge here. 66 new vitest cases lock the contract.
+
+### Fixed — `kmp-test android --device <serial>` propagated to the gradle subprocess (PR 3.3 / A1)
+
+Two parallel propagation surfaces, both additive:
+
+- **`ANDROID_SERIAL` env var** is now set unconditionally on the gradle subprocess when `--device <serial>` resolves successfully (also fires for the auto-pick path when a single device is present). Covers the legacy AGP `connected{Variant}AndroidTest` family which honors this env var. Previously the env was passed through unchanged → AGP picked an arbitrary device from `adb devices` when multiple were attached, even with `--device` set.
+- **`-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>`** gradle property is now injected when the resolved task name ends in `connectedAndroidDeviceTest` (the newer KMP `androidLibrary { withDeviceTestBuilder { sourceSetTreeName = "test" } }` task). This task uses the device-test reporter which IGNORES `ANDROID_SERIAL` and reads the gradle property instead.
+
+Both injections are no-ops on the happy path (single-device hosts, no `--device` flag). Schema unchanged.
+
+### Fixed — `kmp-test android --auto-retry` refreshes the adb server between attempts (PR 3.3 / A5)
+
+When `--auto-retry` re-dispatches a failed instrumented task, the orchestrator now runs `adb kill-server && adb start-server` BEFORE the retry spawn. Refreshes the device list so the retry sees an up-to-date device state when the device went offline mid-run (USB transient, emulator process death). Gated behind `--auto-retry` → zero impact on the happy path. The retry still reuses the same `gradleArgs` (including the device-pin property and `--isolated` cache-dir) so config stays consistent across attempts.
+
+### Added — `kmp-test benchmark` persists per-task gradle logs (PR 3.2 / A9)
+
+The benchmark orchestrator now writes per-(module, platform) gradle stdout+stderr to `<projectRoot>/.kmp-test-runner/logs/benchmark/<runId>/<module>-<platform>.log` (mirrors the existing `kmp-test android` artifact layout — a single `.kmp-test-runner/` gitignore covers both). Triage signal: previously the orchestrator only summarised `N passed, M failed` with no gradle output, no stack traces, no actionable signal when benchmarks failed.
+
+New envelope surface (both additive — `schema_version` stays at 2):
+
+- `benchmark.log_paths: { '<module>:<platform>': '<absolute path>' }` — covers success, failure, and gradle-timeout modules.
+- `errors[i].log_path` inline on `module_failed` + `gradle_timeout` entries — mirrors android-orchestrator's `log_file` field for read-time ergonomics.
+
+### Added — `kmp-test benchmark` defaults `--no-configuration-cache` (PR 3.2 / A11)
+
+`kotlinx-benchmark` caches `%TEMP%` inside gradle's configuration cache; a stale TEMP path produces a silent ~2.2s `FileNotFoundException` FAIL on Windows. The benchmark orchestrator now injects `--no-configuration-cache` into every per-(module, platform) gradle invocation by default. Cost: ~5–10s config-cache miss per benchmark task — reasonable trade for reliability.
+
+User override: `--gradle-args "--configuration-cache"` is appended LAST in the gradle args, so gradle's last-wins semantics give the user back the configuration cache when they explicitly opt in. No behavior change for projects that already used the workaround.
+
+### Changed — `kmp-test benchmark` partial timeouts grade as exit 0 + warning (PR 3.2 / A10)
+
+**Behavior change.** When `kmp-test benchmark` finishes with at least one timed-out module AND at least one passing module, the exit code is now `0` (was `3`) and the envelope carries a new `warnings[].code: "partial_timeout"` aggregate entry. Per-module `errors[].code: "gradle_timeout"` entries are preserved — the warning layers on top to explain why the run still exits 0. When all modules timed out (zero passes), the run keeps exiting `3` (everything-hung guard).
+
+Rationale: the 300s smoke watchdog produces false negatives on legitimate slow benchmarks (5m+ runs) when other modules pass cleanly. CI matrix users that want the pre-graded hard-fail behavior pass the new opt-out flag:
+
+- `--strict-timeouts` (off by default): restores exit 3 on any timeout regardless of how many modules passed.
+
+The `partial_timeout` warning carries `{ timed_out: N, passed: M }` counts so agents can quote the precise split without re-parsing per-module errors. Schema_version unchanged.
+
+### Added — UX polish bundle (PR 3.4)
+
+- **`kmp-test android` text output**: "Tests Run" label aligned with the rest of the summary table.
+- **`kmp-test doctor` ADB fallback**: when `adb` is not on `PATH`, doctor now probes `$ANDROID_HOME/platform-tools/adb` (Android SDK install) before reporting MISSING.
+- **`kmp-test parallel --output-file <path>`**: path semantics clarified — relative paths resolve against `--project-root`, not `process.cwd()`. Documented in flags-reference + matches the gradle-side `--report-dir` convention.
+- **Lockfile UX**: `errors[].code: "lock_held"` now surfaces `held_by_pid` + `held_for_seconds` so agents can decide whether to wait or take over. New `--isolated-cache-dir <path>` flag bypasses the lockfile entirely (separate per-invocation cache dir; advisory only, suited for parallel CI matrices).
+
+### Added — Diagnostic infrastructure (PR 3.5)
+
+- **`errors[].code: "release_resolve_failed"`** with a side-channel `probe_errors[]` array surfacing the gradle-side `:resolveBuildToolsRelease` failure when AGP cannot resolve its own dependency graph. Lets agents distinguish "transient network" from "broken pom".
+- **`coverage.module_buckets`** envelope field — `{ with_data, no_xml, parse_errored, skipped_by_user }` — exposes per-module coverage participation so agents can quote precise sub-totals instead of re-deriving from log scraping. Defensive `coverage_aggregation_drift` warning surfaces when the bucket counts disagree with the aggregate.
+
+### Fixed — Lockfile stale-by-time + boot-time recovery (wet finding #3)
+
+`isLockfileStaleByTime` in `lib/runners/lockfile.js` now reclaims locks predating system boot or older than 4 hours. Handles the Windows PID-recycle case where a stale `.kmp-test-runner.lock` from a crashed process matches an unrelated process at the same PID, falsely reporting `lock_held` and blocking a fresh run.
+
+### Fixed — `kmp-test android --no-adb` implies `--list-only` (wet finding #4)
+
+`kmp-test android --no-adb` now short-circuits to `--list-only` semantics + emits `warnings[].code: "no_adb_implies_list_only"`. Previously the command hung for ~4 minutes probing devices that could never be reached, then failed with a generic timeout.
 
 ## [0.9.1] — 2026-05-15
 
