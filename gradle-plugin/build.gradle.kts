@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.github.oscardlfr"
-version = "0.9.1"
+version = "0.10.0"
 
 kotlin {
     jvmToolchain(17)
@@ -21,6 +21,25 @@ gradlePlugin {
 }
 
 publishing {
+    publications {
+        withType<MavenPublication>().configureEach {
+            pom {
+                name.set("kmp-test-runner")
+                description.set(
+                    "Parallel test runner for Kotlin Multiplatform and Android Gradle " +
+                    "projects. Fans out test tasks across modules and emits a stable " +
+                    "JSON envelope for AI coding agents."
+                )
+                url.set("https://github.com/oscardlfr/kmp-test-runner")
+                licenses {
+                    license {
+                        name.set("MIT")
+                        url.set("https://opensource.org/licenses/MIT")
+                    }
+                }
+            }
+        }
+    }
     repositories {
         maven {
             name = "GitHubPackages"
