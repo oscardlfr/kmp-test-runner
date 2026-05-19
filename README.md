@@ -4,15 +4,15 @@ Parallel test runner for Kotlin Multiplatform and Android Gradle projects. CLI a
 
 ## Why this exists — token cost per agent test-run iteration
 
-For an AI coding agent re-running a workflow on every change, the cheapest path matters. **Token-cost reduction scales with project size** — small KMP libraries see ~1–100× reductions on `parallel`, medium projects ~90×, large projects ~123× (NowInAndroid sample), and **coverage on the largest projects crosses 10,000× and routinely overflows Anthropic's `count_tokens` payload limit on the raw `./gradlew` capture** (chunked counting recovers the number even there). Three observation strategies, every cell measured ([methodology](docs/token-cost-measurement.md)):
+For an AI coding agent re-running a workflow on every change, the cheapest path matters. **Token-cost reduction scales with project size** — small KMP libraries see ~1–100× reductions on `parallel`, medium projects ~90×, large projects ~123× (NowInAndroid sample), and **`coverage` on a ~70-module composite crosses 30,000× across every measured Claude tokenizer and overflows Anthropic's `count_tokens` payload limit on the raw `./gradlew` capture** (chunked counting recovers the number even there). Three observation strategies, every cell measured ([methodology](docs/token-cost-measurement.md)):
 
 - 🔻 **A. Baseline.** Raw `./gradlew` + reading every generated report file — what an agent does **without** `kmp-test`. The cost we're competing against.
 - 🟢 **B. Ours — `kmp-test <feature>`.** Markdown-summarised stdout. Drop-in replacement.
 - 🟢 **C. Ours — `kmp-test <feature> --json`.** Single-line JSON envelope. **Recommended for agents.**
 
-Sampled across a 6-project bucketed matrix (named OSS) plus one reused anonymized private composite for the large bucket. Buckets: **small** (1–5 modules), **medium** (6–20 modules), **large** (21+ modules). Every cell is a real `messages.countTokens` API count (Claude columns) or `cl100k_base` offline count via `js-tiktoken`; per-bucket aggregates: median + min/max range + spread.
+Sampled two ways: (a) a 6-project OSS matrix for the per-bucket comparison, and (b) a single anonymized private composite (`private-large-A`, ~70 KMP modules + Kover + kotlinx-benchmark) for the per-tokenizer drill-down where Kover and `@Benchmark` functions are actually configured. Buckets: **small** (1–5 modules), **medium** (6–20 modules), **large** (21+ modules). Every cell is a real `messages.countTokens` API count (Claude columns) or `cl100k_base` offline count via `js-tiktoken`; per-bucket aggregates: median + min/max range + spread.
 
-> **Provenance.** Multi-project re-measurement landed 2026-05-12; re-run 2026-05-18 with a recursive module walker that picks up deeply-nested layouts (NowInAndroid grew from 5 → 36 captured modules, Confetti from 13 → 16). Sample: KaMPKit, kotlinconf-app, kmp-production-sample (small) · PeopleInSpace, Confetti (medium) · NowInAndroid + `private-large-A` (large, reused as the `coverage` baseline ceiling, anonymized). Per-project per-feature captures are gitignored under [`tools/runs/multi-project-token-cost-<date>/per-project/<label>/<feature>/`](tools/runs/); the committed aggregate lives at [`tools/runs/multi-project-token-cost-<date>/aggregate-<date>.md`](tools/runs/). Reproducible floor in [`tests/fixtures/kmp-cross-platform-e2e/`](tests/fixtures/kmp-cross-platform-e2e/) — a single-module synthetic KMP fixture covering all 8 targets (jvm + js + wasmJs + 3 iOS archs + macosArm64 + androidLibrary).
+> **Provenance.** OSS multi-project re-measurement landed 2026-05-12; re-run 2026-05-18 with a recursive module walker that picks up deeply-nested layouts (NowInAndroid grew from 5 → 36 captured modules, Confetti from 13 → 16). `private-large-A` per-feature drill-down re-measured 2026-05-19 (v0.10.1) — closes a cross-project mixing in the v0.10.0 headline ratio that combined `private-large-A`'s A baseline with NowInAndroid's C envelope. OSS sample: KaMPKit, kotlinconf-app, kmp-production-sample (small) · PeopleInSpace, Confetti (medium) · NowInAndroid (large). Drill-down reference: `private-large-A` (~70 KMP modules + Kover, anonymized). Per-project OSS captures are gitignored under [`tools/runs/multi-project-token-cost-<date>/per-project/<label>/<feature>/`](tools/runs/); the committed aggregate lives at [`tools/runs/multi-project-token-cost-<date>/aggregate-<date>.md`](tools/runs/). `private-large-A` captures are gitignored under [`tools/runs/<feature>/`](tools/runs/); committed cross-model evidence at [`tools/runs/cross-model-results-<feature>.txt`](tools/runs/). Reproducible floor in [`tests/fixtures/kmp-cross-platform-e2e/`](tests/fixtures/kmp-cross-platform-e2e/) — a single-module synthetic KMP fixture covering all 8 targets (jvm + js + wasmJs + 3 iOS archs + macosArm64 + androidLibrary).
 
 ### A→C reduction by project size — `parallel` median across the OSS sample
 
@@ -24,11 +24,11 @@ cl100k_base only (the bucket scaling is most visible against a single tokenizer)
 | 🟨 **medium** (6–20) |        2 | PeopleInSpace (7), Confetti (16)                  |    427,586 |       4,499 |      **90.0×** | 84.4× – 95.6× |
 | 🟥 **large** (21+) |          1 | NowInAndroid (36)                                   |    226,291 |       1,839 |     **123.1×** | (single sample) |
 
-> **Note on NowInAndroid.** The 2026-05-12 measurement undercounted NIA's deeply-nested layout (`feature/<name>/<api|impl>/`, `core/<name>/`) — the walker was one-level-deep and captured only the 5 top-level modules. The recursive walker shipped in v0.10 #7 (`tools/measure-token-cost.js#filterModulesByGlob`) now honours nested grouping dirs, surfacing all 36 modules. The 123× ratio above reflects that fix. `private-large-A` (~70 modules, the v0.9 large-bucket reference) is reused only as the `coverage` ceiling baseline below — it is anonymised and not re-measured here.
+> **Note on NowInAndroid.** The 2026-05-12 measurement undercounted NIA's deeply-nested layout (`feature/<name>/<api|impl>/`, `core/<name>/`) — the walker was one-level-deep and captured only the 5 top-level modules. The recursive walker shipped in v0.10 #7 (`tools/measure-token-cost.js#filterModulesByGlob`) now honours nested grouping dirs, surfacing all 36 modules. The 123× ratio above reflects that fix. `private-large-A` (~70 KMP modules, the v0.10.1 per-feature drill-down reference) is anonymised and tracked separately in the [per-feature drill-down section](#per-feature-drill-down--private-large-a-reference-composite-cross-tokenizer-detail) below — it is **not** part of the OSS bucket sample above.
 
 > **Reproducible floor.** [`tests/fixtures/kmp-cross-platform-e2e/`](tests/fixtures/kmp-cross-platform-e2e/) is a 1-module synthetic KMP project covering all 8 supported targets (jvm + js(IR) + wasmJs + 3 iOS archs + macosArm64 + androidLibrary). Re-run `node tools/measure-token-cost.js --project-root tests/fixtures/kmp-cross-platform-e2e --feature parallel` to see the floor case yourself — no SDKs required beyond JDK 21.
 
-> **Large-project ceiling — `coverage` outlier.** On the `private-large-A` composite (~70 KMP modules + Kover, anonymised), `coverage` Approach A produces **74 MB of kover HTML/XML — 28.7 M cl100k tokens — and overflows Anthropic's `count_tokens` endpoint (`413 too_large`)** in a single HTTP request. Chunked counting (~3.5 MiB UTF-8 windows, sum per-chunk `input_tokens`) recovers the Anthropic-side number by splitting the payload at file-record boundaries. The `private-large-A` → C-large cl100k ratio is **85,376×** ([`aggregate-2026-05-18.md`](tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md)). The same signal renders in 336 cl100k tokens through `kmp-test coverage --json` on NowInAndroid — the agent's working memory stays focused on the code instead of log noise.
+> **Large-project ceiling — `coverage` outlier.** On the `private-large-A` composite (~70 KMP modules + Kover, anonymised), `coverage` Approach A produces **74 MB of kover HTML/XML — 28.7 M cl100k / 36.6 M opus / 28.5 M sonnet & haiku tokens — and overflows Anthropic's `count_tokens` endpoint (`413 too_large`)** in a single HTTP request. Chunked counting at file-record boundaries (27 chunks @ ~2.6 MiB UTF-8 each; sum per-chunk `input_tokens`) recovers the Anthropic-side count. Approach C (`kmp-test coverage --json`) renders the same signal in 734 cl100k tokens — within-project A:C reduction is **39,175× cl100k / 29,952× opus / 30,350× sonnet & haiku**. The agent's working memory stays focused on the code instead of log noise.
 
 Two observations carry across every bucket:
 - **Tokenizer transition.** `claude-sonnet-4-6` and `claude-haiku-4-5` share a tokenizer (identical counts to the unit on every cell). `claude-opus-4-7` ships a new tokenizer that produces 30–100% more tokens for the same input — most visibly on heavy XML/HTML payloads (🔻 baseline A).
@@ -36,59 +36,59 @@ Two observations carry across every bucket:
 
 ### Per-feature drill-down — `private-large-A` reference composite (cross-tokenizer detail)
 
-The bucketed table above shows per-bucket medians for `parallel`. The four drill-down tables below show per-tokenizer detail (cl100k + 3 Claude families) on the **`private-large-A` reference composite** (~70 KMP modules + Kover, anonymised). They are kept for the cross-tokenizer comparison and as the source of the 85,376× coverage outlier headline. Each table is scaled to its own max for the 🔻 A column (the baseline an agent runs **without** `kmp-test`). 🟢 columns are **our approaches** (B = `kmp-test` markdown, C = `kmp-test --json`); shown as numbers only because the bars would be sub-1-char anyway — **that visual asymmetry between the heavy 🔻 baseline and the tiny 🟢 ours IS the savings story**. Multi-project bucketed B + C measurement for `coverage` shipped in v0.10 #7; full A-baseline re-measurement for `changed` / `benchmark` across the OSS sample is queued for a follow-up.
+The bucketed table above shows per-bucket medians for `parallel` across the OSS sample. The four drill-down tables below show per-tokenizer detail (cl100k + 3 Claude families) on the **`private-large-A` reference composite** (~70 KMP modules + Kover + kotlinx-benchmark, anonymised). Every cell is a fresh v0.10.1 measurement against today's `kmp-test --json` envelope shape — every ratio is honest within-project (A and C both come from `private-large-A`). Each table is scaled to its own max for the 🔻 A column (the baseline an agent runs **without** `kmp-test`). 🟢 columns are **our approaches** (B = `kmp-test` markdown, C = `kmp-test --json`); shown as numbers only because the bars would be sub-1-char anyway — **that visual asymmetry between the heavy 🔻 baseline and the tiny 🟢 ours IS the savings story**.
 
 #### `parallel` — full test suite (private-large-A reference)
 
-A bars scaled to `2,183,843` (opus).
+A bars scaled to `2,384,542` (opus).
 
-| Model            | 🔻 A. baseline (raw `./gradlew`)    | 🟢 B. ours · `kmp-test` | 🟢 C. ours · `--json` |    A:C |
-|------------------|-------------------------------------|------------------------:|----------------------:|-------:|
-| 🟦 `cl100k_base` | `1,331,036 ████████████`            |                  16,556 |               **843** | 1,579× |
-| 🟥 `opus-4-7`    | `2,183,843 ████████████████████`    |                  30,134 |             **1,396** | 1,564× |
-| 🟩 `sonnet-4-6`  | `1,777,893 ████████████████`        |                  21,372 |             **1,063** | 1,673× |
-| 🟧 `haiku-4-5`   | `1,777,893 ████████████████`        |                  21,372 |             **1,063** | 1,673× |
+| Model            | 🔻 A. baseline (raw `./gradlew`)    | 🟢 B. ours · `kmp-test` | 🟢 C. ours · `--json` |  A:C |
+|------------------|-------------------------------------|------------------------:|----------------------:|-----:|
+| 🟦 `cl100k_base` | `1,456,399 ████████████`            |                  19,604 |             **4,039** | 361× |
+| 🟥 `opus-4-7`    | `2,384,542 ████████████████████`    |                  35,958 |             **7,104** | 336× |
+| 🟩 `sonnet-4-6`  | `1,941,373 ████████████████`        |                  25,284 |             **4,980** | 390× |
+| 🟧 `haiku-4-5`   | `1,941,373 ████████████████`        |                  25,284 |             **4,980** | 390× |
 
 Captures: [`tools/runs/parallel/`](tools/runs/parallel/) · evidence: [`tools/runs/cross-model-results-parallel.txt`](tools/runs/cross-model-results-parallel.txt).
 
 #### `coverage` — Kover XML + HTML reports (private-large-A reference)
 
-The single largest data point in the whole measurement — and the cell that motivated PR #13's chunked-counting recovery. A `koverXmlReport` + `koverHtmlReport` invocation against `private-large-A` generates **74 MB of kover HTML/XML** under `build/reports/kover/**`. cl100k_base scores it at 28.7 M tokens; Anthropic's `count_tokens` returns `413 request_too_large` on every Claude family **in a single HTTP request**. PR #13's chunking path splits the capture into ~3.5 MiB UTF-8 windows and sums per-chunk `input_tokens` — see the [methodology section](#how-the-numbers-are-produced) for the activation rules. The same signal renders in 372 cl100k tokens through `kmp-test coverage --json`.
+The single largest data point in the whole measurement — and the cell that motivated PR #13's chunked-counting recovery. A `koverXmlReport` + `koverHtmlReport` invocation against `private-large-A` generates **74 MB of kover HTML/XML** under `build/reports/kover/**`. cl100k_base scores it at 28.7 M tokens; Anthropic's `count_tokens` returns `413 request_too_large` on every Claude family **in a single HTTP request**. PR #13's chunking path splits the capture at `\n=== <file> ===\n` file-record boundaries (27 chunks @ ~2.6 MiB UTF-8 each in v0.10.1) and sums per-chunk `input_tokens` — see the [methodology section](#how-the-numbers-are-produced) for the activation rules. The same signal renders in 734 cl100k tokens through `kmp-test coverage --json`.
 
 | Model            | 🔻 A. baseline (raw `./gradlew`)                    | 🟢 B. ours · `kmp-test` | 🟢 C. ours · `--json` |         A:C |
 |------------------|-----------------------------------------------------|------------------------:|----------------------:|------------:|
-| 🟦 `cl100k_base` | `28,686,309 ████████████████████`                   |                     682 |               **372** | **77,114×** |
-| 🟥 `opus-4-7`    | _413 in single-request; chunked recovery via PR #13_ |                  1,176 |               **623** |  _chunked_  |
-| 🟩 `sonnet-4-6`  | _413 in single-request; chunked recovery via PR #13_ |                    895 |               **470** |  _chunked_  |
-| 🟧 `haiku-4-5`   | _413 in single-request; chunked recovery via PR #13_ |                    895 |               **470** |  _chunked_  |
+| 🟦 `cl100k_base` | `28,754,177 ████████████████`                       |                     803 |               **734** | **39,175×** |
+| 🟥 `opus-4-7`    | `36,571,927 ████████████████████` _(chunked)_       |                   1,399 |             **1,221** | **29,952×** |
+| 🟩 `sonnet-4-6`  | `28,468,274 ████████████████` _(chunked)_           |                   1,055 |               **938** | **30,350×** |
+| 🟧 `haiku-4-5`   | `28,468,274 ████████████████` _(chunked)_           |                   1,055 |               **938** | **30,350×** |
 
-What this means in practice: an agent that follows the canonical "run gradle and read the reports" pattern produces a payload it cannot even fit into a single `count_tokens` API call to measure its own size, let alone fit into a 200 K context window. Coverage on `private-large-A` is ~144× a single context window per iteration. Captures: [`tools/runs/coverage/`](tools/runs/coverage/) · evidence: [`tools/runs/cross-model-results-coverage.txt`](tools/runs/cross-model-results-coverage.txt).
+What this means in practice: an agent that follows the canonical "run gradle and read the reports" pattern produces a payload it cannot even fit into a single `count_tokens` API call to measure its own size, let alone fit into a 200 K context window. Coverage on `private-large-A` is ~144× a single context window per iteration in cl100k tokens (~183× in opus tokens). Captures: [`tools/runs/coverage/`](tools/runs/coverage/) · evidence: [`tools/runs/cross-model-results-coverage.txt`](tools/runs/cross-model-results-coverage.txt).
 
 #### `changed` — tests for modules touched since `HEAD~1` (private-large-A reference)
 
-A bars scaled to `1,835,175` (opus).
-
-| Model            | 🔻 A. baseline (raw `./gradlew`)    | 🟢 B. ours · `kmp-test` | 🟢 C. ours · `--json` |    A:C |
-|------------------|-------------------------------------|------------------------:|----------------------:|-------:|
-| 🟦 `cl100k_base` | `1,118,241 ████████████`            |                      91 |               **144** | 7,766× |
-| 🟥 `opus-4-7`    | `1,835,175 ████████████████████`    |                     171 |               **274** | 6,698× |
-| 🟩 `sonnet-4-6`  | `1,494,157 ████████████████`        |                     115 |               **182** | 8,210× |
-| 🟧 `haiku-4-5`   | `1,494,157 ████████████████`        |                     115 |               **182** | 8,210× |
-
-B/C dispatch through the full parallel coverage suite (broader scope than A's single `:module:desktopTest`), so wall-clock time isn't apples-to-apples — token count is. Captures: [`tools/runs/changed/`](tools/runs/changed/) · evidence: [`tools/runs/cross-model-results-changed.txt`](tools/runs/cross-model-results-changed.txt).
-
-#### `benchmark` — kotlinx-benchmark suites (private-large-A reference)
-
-A bars scaled to `323,638` (opus).
+A bars scaled to `69,683` (opus).
 
 | Model            | 🔻 A. baseline (raw `./gradlew`)    | 🟢 B. ours · `kmp-test` | 🟢 C. ours · `--json` |  A:C |
 |------------------|-------------------------------------|------------------------:|----------------------:|-----:|
-| 🟦 `cl100k_base` | `245,140 ███████████████`           |                     305 |               **309** | 793× |
-| 🟥 `opus-4-7`    | `323,638 ████████████████████`      |                     572 |               **573** | 565× |
-| 🟩 `sonnet-4-6`  | `283,750 ██████████████████`        |                     374 |               **363** | 782× |
-| 🟧 `haiku-4-5`   | `283,750 ██████████████████`        |                     374 |               **363** | 782× |
+| 🟦 `cl100k_base` | `41,626 ████████████`               |                     125 |               **173** | 241× |
+| 🟥 `opus-4-7`    | `69,683 ████████████████████`       |                     241 |               **326** | 214× |
+| 🟩 `sonnet-4-6`  | `55,181 ████████████████`           |                     159 |               **222** | 249× |
+| 🟧 `haiku-4-5`   | `55,181 ████████████████`           |                     159 |               **222** | 249× |
 
-A is the only heavy column on this slice — the reference project's benchmark modules carry the kotlinx-benchmark plugin but no `@Benchmark` functions, so B and C both reduce to compact summary envelopes. On a project with active benchmarks B grows because the markdown report inlines per-run scores by design; C stays small (the JSON envelope keeps the exit-status / counts shape regardless of how many benchmarks ran). Captures: [`tools/runs/benchmark/`](tools/runs/benchmark/) · evidence: [`tools/runs/cross-model-results-benchmark.txt`](tools/runs/cross-model-results-benchmark.txt).
+Ratios scale with the size of the diff: this v0.10.1 measurement was taken against a `HEAD~1` that touched a single test file on a single KMP module, so A captures that one module's test report. A bigger diff (multi-module refactor, dependency bump) would scale A linearly while C stays compact — the v0.9 measurement of the same project against a wider commit reported A=1.1 M cl100k / C=144 → 7,766× cl100k (committed history: see [`tools/runs/cross-model-results-changed.txt`](tools/runs/cross-model-results-changed.txt) git log). B/C dispatch through the full parallel coverage suite (broader scope than A's per-module `:module:test`), so wall-clock time isn't apples-to-apples — token count is. Captures: [`tools/runs/changed/`](tools/runs/changed/).
+
+#### `benchmark` — kotlinx-benchmark suites (private-large-A reference, single module)
+
+A bars scaled to `72,464` (opus). v0.10.1 measurement: one benchmark module with three `@Benchmark` classes actively running (encryption / password-encryption / stream-encryption microbenchmarks). The v0.9 measurement on the same project covered a state with the plugin applied but no `@Benchmark` functions, so its A was almost entirely the gradle config banner; today's number reflects real benchmark JSON output written to `build/reports/benchmarks/`.
+
+| Model            | 🔻 A. baseline (raw `./gradlew`)    | 🟢 B. ours · `kmp-test` | 🟢 C. ours · `--json` |  A:C |
+|------------------|-------------------------------------|------------------------:|----------------------:|-----:|
+| 🟦 `cl100k_base` | `52,638 ███████████████`            |                     171 |               **273** | 193× |
+| 🟥 `opus-4-7`    | `72,464 ████████████████████`       |                     319 |               **499** | 145× |
+| 🟩 `sonnet-4-6`  | `61,856 █████████████████`          |                     205 |               **322** | 192× |
+| 🟧 `haiku-4-5`   | `61,856 █████████████████`          |                     205 |               **322** | 192× |
+
+Single-module scope. The composite ships seven benchmark modules; running the full suite would scale A roughly linearly with benchmark count × iterations, while C stays compact (the JSON envelope keeps the exit-status / counts shape regardless of how many benchmarks ran). B grows because the markdown report inlines per-run scores by design. Captures: [`tools/runs/benchmark/`](tools/runs/benchmark/) · evidence: [`tools/runs/cross-model-results-benchmark.txt`](tools/runs/cross-model-results-benchmark.txt).
 
 ### How the numbers are produced
 
@@ -119,7 +119,7 @@ node tools/measure-token-cost.js --feature <name> \
   --anthropic-models claude-opus-4-7
 ```
 
-> **Practical impact across buckets.** A 5-iteration agent loop reading raw gradle output burns roughly **150K tokens on small projects**, **2M tokens on medium projects**, and **6M+ tokens on large composites** for `parallel` alone — and **~143M tokens for `coverage` on a large composite** (the headline outlier — 144× a single 200K context window per iteration on `private-large-A`). The same loops on `--json` burn 1.5K–9K tokens regardless of bucket. Without PR #13's chunked counting, Anthropic's `count_tokens` endpoint cannot even tokenise a single raw `coverage` capture in one HTTP request on the large composite (28.7M cl100k tokens / 74MB of kover HTML/XML). The agent's working memory stays focused on the code instead of log noise.
+> **Practical impact across buckets.** A 5-iteration agent loop reading raw gradle output burns roughly **150K tokens on small projects**, **2M tokens on medium projects**, and **7M+ tokens on the `private-large-A` composite** for `parallel` alone — and **~144M cl100k / ~183M opus tokens for `coverage` on the same composite** (the headline outlier — 144× a single 200K context window per iteration in cl100k, 183× in opus). The same loops on `--json` burn 1.5K–9K tokens regardless of bucket. Without PR #13's chunked counting, Anthropic's `count_tokens` endpoint cannot even tokenise a single raw `coverage` capture in one HTTP request on the large composite (28.7M cl100k / 36.6M opus tokens / 74MB of kover HTML/XML). The agent's working memory stays focused on the code instead of log noise.
 
 Per-version detail and migration notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -538,7 +538,7 @@ BUILD SUCCESSFUL
 **Agentic (`--json`) output** — the entire response, on one line:
 
 ```json
-{"tool":"kmp-test","subcommand":"parallel","version":"0.10.0","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16,"modules_with_kover_plugin":["core-foo","core-bar"],"modules_with_jacoco_plugin":[]},"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true},"skipped":[],"errors":[],"warnings":[]}
+{"tool":"kmp-test","subcommand":"parallel","version":"0.10.1","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16,"modules_with_kover_plugin":["core-foo","core-bar"],"modules_with_jacoco_plugin":[]},"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true},"skipped":[],"errors":[],"warnings":[]}
 ```
 
 That's ~300 bytes — roughly **80–200 tokens** vs. tens of thousands for the 🔻 baseline (A). For an agent running tests on every iteration of a coding loop, the difference compounds quickly. The full per-tokenizer table is at the [top of this README](#why-this-exists--token-cost-per-agent-test-run-iteration); methodology and the captured run output are in [`docs/token-cost-measurement.md`](docs/token-cost-measurement.md).
@@ -574,7 +574,7 @@ kmp-test parallel --dry-run --project-root /abs/path
 Pair with `--json` for a structured plan:
 
 ```json
-{"tool":"kmp-test","subcommand":"parallel","version":"0.10.0","dry_run":true,"exit_code":0,"plan":{"spawn_cmd":"bash","spawn_args":["…/run-parallel-coverage-suite.sh","--project-root","/abs"],"script_path":"…/run-parallel-coverage-suite.sh","final_args":["--project-root","/abs"],"test_filter":null},…}
+{"tool":"kmp-test","subcommand":"parallel","version":"0.10.1","dry_run":true,"exit_code":0,"plan":{"spawn_cmd":"bash","spawn_args":["…/run-parallel-coverage-suite.sh","--project-root","/abs"],"script_path":"…/run-parallel-coverage-suite.sh","final_args":["--project-root","/abs"],"test_filter":null},…}
 ```
 
 `--dry-run` still validates `gradlew` (so a missing wrapper still exits `3`). It just stops before spawning the script.
@@ -725,7 +725,7 @@ pluginManagement {
 In `build.gradle.kts`:
 ```kotlin
 plugins {
-    id("io.github.oscardlfr.kmp-test-runner") version "0.10.0"
+    id("io.github.oscardlfr.kmp-test-runner") version "0.10.1"
 }
 
 kmpTestRunner {
