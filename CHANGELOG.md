@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-05-19
+
+### Changed — Token-cost README sourced 100% from honest within-project measurements (no cross-project mixing)
+
+The v0.10.0 README's "Large-project ceiling — coverage outlier" headline combined `private-large-A`'s 28.7 M cl100k A baseline with NowInAndroid's 336 cl100k C envelope to claim an **85,376× cross-project ratio**. Side-by-side the per-feature drill-down table reported the honest within-private-large-A coverage A:C as **77,114×** (28,686,309 / 372). Two different numbers, two different denominators — confusing to readers and not 100% honest.
+
+This release re-measures `private-large-A` end-to-end against today's v0.10 envelope shape and rewrites the entire drill-down section so every cell comes from the same project:
+
+- **parallel**: A=1,456,399 / B=19,604 / C=4,039 cl100k → **361× cl100k** / 336× opus / 390× sonnet & haiku. Previously: A=1,331,036 / C=843 → 1,579× cl100k (v0.9 envelope, smaller C surface).
+- **coverage**: A=28,754,177 / B=803 / C=734 cl100k → **39,175× cl100k**. Anthropic-side: 36,571,927 opus / 28,468,274 sonnet & haiku tokens (chunked counting, 27 chunks @ ~2.6 MiB UTF-8 at file-record boundaries). The 85,376× cross-project headline is removed.
+- **changed**: A=41,626 / B=125 / C=173 cl100k → **241× cl100k** (single-module diff in this measurement vs v0.9's wider commit which produced 7,766×; the README now caveats this explicitly).
+- **benchmark**: A=52,638 / B=171 / C=273 cl100k → **193× cl100k** (single benchmark module with three live `@Benchmark` classes; the v0.9 measurement covered a state with the plugin applied but no `@Benchmark` functions, so its A was almost entirely gradle config banner).
+
+The README's "Practical impact" footnote updates the headline outlier from `~143M tokens for coverage on a large composite (144× a single context window)` to the more honest `~144M cl100k / ~183M opus tokens for coverage on the same composite (144× a single context window in cl100k, 183× in opus)`. The `~70 KMP modules + Kover, anonymised` framing is preserved; the private composite stays anonymous.
+
+`tools/runs/cross-model-results-{parallel,coverage,changed,benchmark}.txt` are regenerated with the v0.10.1 measurements. The coverage `cross-model-results` evidence documents the chunked-counting workaround that bypassed a js-tiktoken segfault on the 74 MB capture in Node v24 (encountered during this re-measurement; tracked separately as a tooling issue — does not block the published cross-tokenizer numbers, which are taken from per-chunk Anthropic counts that succeeded).
+
+### Notes
+
+No CLI / envelope / Gradle plugin / installer / config behavior changed in this release. The change is README-only (documentation veracity), evidence-file updates, and the version bump itself. Vitest count and all CI gates unchanged.
+
 ## [0.10.0] — 2026-05-19
 
 ### Added — Defensive `--console=plain` injection when stdout isn't a TTY (v0.10 #1)

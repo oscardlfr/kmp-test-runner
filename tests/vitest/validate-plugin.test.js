@@ -42,7 +42,7 @@ afterEach(() => {
 const GOOD_MANIFEST = {
   $schema: "https://json.schemastore.org/claude-code-plugin-manifest.json",
   name: "kmp-test-runner",
-  version: "0.10.0",
+  version: "0.10.1",
   description: "Parallel test runner for KMP and Android Gradle projects via the kmp-test CLI. Long enough to clear the 20-char floor.",
   author: { name: "oscardlfr", url: "https://github.com/oscardlfr" },
   homepage: "https://github.com/oscardlfr/kmp-test-runner#readme",
@@ -51,7 +51,7 @@ const GOOD_MANIFEST = {
   keywords: ["kmp", "android"],
   skills: ["./.skills/"],
 };
-const GOOD_PKG = { version: "0.10.0", license: "MIT" };
+const GOOD_PKG = { version: "0.10.1", license: "MIT" };
 
 describe("buildExpectedFields", () => {
   it("derives name + version + license from package.json", () => {
