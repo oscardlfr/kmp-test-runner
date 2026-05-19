@@ -7,24 +7,24 @@ Tokenizer: cl100k_base baseline + Anthropic `messages.countTokens` per model
 
 | Approach | Capture | cl100k_base | claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 |
 |---|---|---:|---:|---:|---:|
-| A | `A-run1.txt` | 245140 | 323638 | 283750 | 283750 |
-| B | `B-run1.txt` | 305 | 572 | 374 | 374 |
-| C | `C-run1.txt` | 309 | 573 | 363 | 363 |
+| A | `A-run1.txt` | 52638 | 72464 | 61856 | 61856 |
+| B | `B-run1.txt` | 171 | 319 | 205 | 205 |
+| C | `C-run1.txt` | 273 | 499 | 322 | 322 |
 
 ## Cross-family variation
 
 | Approach | Capture | spread (max/min - 1) |
 |----------|---------|---------------------:|
-| A | `A-run1.txt` | 32% |
-| B | `B-run1.txt` | 87.5% |
-| C | `C-run1.txt` | 85.4% |
+| A | `A-run1.txt` | 37.7% |
+| B | `B-run1.txt` | 86.5% |
+| C | `C-run1.txt` | 82.8% |
 
 ## Approach ratio vs C (per tokenizer)
 
 | Approach | cl100k_base | claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 |
 |---|---|---|---|---|
-| A | 793.3× | 564.8× | 781.7× | 781.7× |
-| B | 1.0× | 1.0× | 1.0× | 1.0× |
+| A | 192.8× | 145.2× | 192.1× | 192.1× |
+| B | 0.6× | 0.6× | 0.6× | 0.6× |
 | C | 1.0× | 1.0× | 1.0× | 1.0× |
 
 Raw captures in `tools/runs/benchmark/`. Re-run with the same flag to refresh.
