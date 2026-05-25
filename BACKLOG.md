@@ -2257,6 +2257,113 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
 
+### 💡 IDEA — `.gitattributes` LF-pin gap on `scripts/*.sh` + `scripts/sh/**/*.sh` (surfaced 2026-05-25 during cross-platform parity audit)
+
+**Status: IDEA, no milestone assigned. HIGH — local Windows dev usage broken; published GH releases safe.** PR #244 Finding #5 pinned LF on `.skills/**/*.sh` + `tests/skill-scripts/*.bats` after a CRLF corruption of `set -euo pipefail` was discovered on Windows git-bash. The same logic was never extended to the canonical install / uninstall / build-artifact / wrapper scripts. With `core.autocrlf=true` (default on Windows git installs), `scripts/install.sh` + `scripts/uninstall.sh` + `scripts/build-artifact.sh` + every `scripts/sh/**/*.sh` lands on disk with CRLF. Confirmed live in this checkout: `file scripts/install.sh` reports `with CRLF line terminators` and `git check-attr text eol -- scripts/install.sh` returns `unspecified` on both fields.
+
+**Impact matrix:**
+- **GH release builds (ubuntu-latest)** — SAFE. CI clones fresh with `core.autocrlf=false` so the published `kmp-test-runner-<ver>-linux.tar.gz` carries LF scripts.
+- **Windows dev running `bash scripts/install.sh --archive <local>`** for E2E install tests — BROKEN. The `set -euo pipefail` line interprets `\r` as part of the option name and exits 2 with `set: pipefail<CR> : invalid option name`.
+- **Windows dev running `bash scripts/build-artifact.sh <ver> dist/`** to produce a local tarball — BROKEN-WORSE. The `cp -r scripts/` step preserves the CRLF endings, so the resulting tarball carries CRLF on every `scripts/sh/run-*.sh` wrapper. When that tarball is extracted on a mac or Linux host, every wrapper invocation hard-fails on the same `set -euo pipefail` line. This is the silent multi-host corruption vector the `.skills` fix already closed.
+
+**Fix:** add to `.gitattributes` (mirroring the existing `.skills/**/*.sh` pattern):
+```
+scripts/*.sh text eol=lf
+scripts/sh/**/*.sh text eol=lf
+```
+Then `git add --renormalize .` on a Windows checkout to force-rewrite the working tree to LF. The renormalize commit should be its own PR so the diff is purely line-ending churn and reviewable as such. Index versions in any existing dev clone will still be LF (git stores normalized form internally), so the renormalize is a one-shot worktree fix.
+
+**Effort estimate.** <30 min total — 2-line `.gitattributes` delta + renormalize sweep + 1 sanity-check unit test (verify `file scripts/install.sh` reports LF on a fresh Linux clone, optional — the .gitattributes mechanism is already validated by the existing `.skills/**/*.sh` precedent).
+
+**Cross-link:** PR #244 Finding #5 (`project_v0_10_step_4_pr_4_shipped`) is the precedent that closed the same bug class for skill scripts.
+
+---
+
+### 💡 IDEA — `unknown subcommand` error gives no actionable signal for users on a stale install (surfaced 2026-05-25 during user-reported `kmp-test update` failure on a pre-v0.5 mac)
+
+**Status: IDEA, no milestone assigned. MEDIUM — UX gap, recurring failure mode for any user whose install predates a now-canonical subcommand.** `lib/cli.js:838` emits `kmp-test: unknown subcommand '<sub>'` followed by `printHelp()`. When the local binary is obsolete (e.g. a mac install from before PR #148 which introduced `update` in v0.5.x), the help text printed comes from the obsolete binary too — and naturally lists only the subcommands that existed at the time of that install. The user has no signal that their installed `kmp-test` is the problem, not the requested subcommand. Concrete repro from a user session 2026-05-25: ran `kmp-test update` on a pre-v0.5 mac, got "unknown subcommand 'update'", concluded the bug was in current `develop` rather than in their stale install. The actual fix was a one-liner `curl ... | bash` re-run of `install.sh`, which the error gave zero pointers toward.
+
+**Recommendation:** when `sub ∈ {update, info, describe, doctor}` AND `sub ∉ COMMAND_MODULES`, append a "your install may be outdated" hint with the re-install one-liner BEFORE `printHelp()`. Something like:
+
+```
+kmp-test: unknown subcommand 'update'
+
+Looks like your install predates this subcommand. Re-run the installer
+to upgrade to the latest release:
+
+  curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/main/scripts/install.sh | bash
+
+Then retry: kmp-test update
+```
+
+Note the asymmetry — this fix only helps users running **>= v0.10.2 onward** when a future v0.11+ subcommand goes missing on their stale install. It does NOT retroactively help anyone on the current pre-v0.5 era (their binary doesn't have this code). But it closes the loop for every subsequent generation. The reverse direction — making `install.sh` advertise the existence of `kmp-test update` in its post-install message — could also help, but feels heavier.
+
+**Edge cases to handle:**
+- The hint must be `process.platform`-aware: emit the curl one-liner on darwin/linux, emit the equivalent PowerShell `iwr ... | iex` form on win32.
+- The set `{update, info, describe, doctor}` is the "post-v0.5 surface". Anything older (parallel, changed, android, benchmark, coverage) should NOT trigger the hint, because typo-on-old-subcommand is more likely the actual cause than a stale install.
+
+**Effort estimate.** ~30 min code + 2-3 vitest cases (each subcommand fires the hint, others do not, platform-aware curl vs PowerShell shape). Single PR, ~15 LOC + tests.
+
+**Why this matters.** Removes a sharp edge that wastes user time when a stale install is the real issue. Surfaced organically — the user almost concluded a real CLI bug existed and asked Claude to "audit all the CLI" before the root cause (stale install) was identified.
+
+---
+
+### KotlinConf'26 — MCP server shape for `kmp-test` (Junie / Air / any MCP-compatible agent)
+
+KCon'26 day 1 confirmed Junie CLI exposes MCP for tool integration (`/mcp` slash command + MCP Installation Assistant) and JetBrains Air supports Claude/Gemini/Codex/Junie agents — all MCP-compatible. Today `kmp-test` ships an `agentskills.io` skill (`.skills/kmp-test-runner/`) + Claude Code Plugin (`.claude-plugin/plugin.json`). MCP is the third leg that unlocks Junie CLI + Gemini CLI + any MCP host without per-agent packaging.
+
+**Scope.** A stdio-transport MCP server (`mcp-server-kmp-test`) exposing existing subcommands as MCP tools (`kmp_test.parallel`, `kmp_test.coverage`, `kmp_test.changed`, `kmp_test.benchmark`, `kmp_test.android`, `kmp_test.doctor`, `kmp_test.info`, `kmp_test.describe`). Tool schemas mirror existing CLI flags (already documented in `.skills/kmp-test-runner/references/cli/`). Reuses the existing JSON envelope as the tool response — no new shape to maintain.
+
+**Reuse.** `tools/sync-versions.js` grows a 7th target. Zero-deps validator pattern from PR #245 (`tools/validate-plugin.mjs`) ports to `tools/validate-mcp-server.mjs`. `skills-validate` CI job extended; no new CI job.
+
+**Effort estimate.** ~12-16h across 4 PRs (manifest + scaffolding / tool defs + envelope mapping / vitest + smoke against Claude Code MCP host / docs + README subsection). Same shape as the v0.10 #4 PR 5 train.
+
+### KotlinConf'26 — ACP (Agent Client Protocol) adapter smoke
+
+KCon'26 day 1 announced ACP as the open standard for IDE↔agent communication, paired with JetBrains Air's multi-agent environment. Standard is <1.0 and evolving.
+
+**Scope (doc-only first).** Verify the existing `.claude-plugin/plugin.json` mounts cleanly inside JetBrains Air (Air supports Claude Agent natively). If yes → no code change, file the evidence. If no → draft a delta-adapter (single PR, similar size to PR #245).
+
+**Why doc-only first.** ACP is pre-1.0; shipping a full adapter against a moving target is wasted code. 30-min smoke verifies forward-compat. Upgrade trigger to code-shipping: ACP publishes its first conformance test suite AND our current shape fails it, OR a user files an issue.
+
+**Effort estimate.** Smoke ~30 min. Adapter delta if triggered ~4-6h.
+
+### KotlinConf'26 — Amper `module.yaml` detection probe (research-only)
+
+KCon'26 day 1 promoted Amper to "core of the Kotlin Toolchain" with `amper test`. Amper standalone is still <1.0 (v0.10 as of March 2026); `layout: gradle-kmp` compatibility mode is being deprecated. >95% of KMP projects remain Gradle-native today.
+
+**Scope.** Read-only research probe. When a project root contains `module.yaml` (Amper standalone marker) AND no `build.gradle.kts`/`settings.gradle.kts`, does `kmp-test parallel` fail gracefully with a discriminated error code (`amper_project_detected`) instead of an opaque crash? If not → single-file delta in `lib/envelope/error-codes.js` + matching `lib/envelope/builder.js` vitest.
+
+**Out of scope.** Building an Amper-aware `analyze-amper-module.js` parser. Adoption too low + spec too volatile to invest today. Re-evaluate trigger: Amper hits 1.0 OR a real user files an issue.
+
+**Why not wait silently.** A clear error message ("Amper standalone project detected — `kmp-test` is Gradle-only today") beats an opaque crash on `settings.gradle.kts not found`.
+
+**Effort estimate.** Probe ~1h. Error-code delta if needed ~1h. Total ~2h, single PR.
+
+### KotlinConf'26 — Smoke fixture for the new KMP default project structure
+
+KCon'26 day 1 announced a new default KMP project structure ("each module has a single clear responsibility"). JetBrains will publish official fixtures alongside Kotlin 2.4 GA. `lib/project/analyze-module.js` resolves modules from `settings.gradle.kts` includes + per-target task probing, which should be structure-agnostic — but worth blinding it with a fixture once one exists.
+
+**Scope.** When the official fixture lands, copy it to `tests/fixtures/kmp-default-structure-2026/` (analogous to existing `tests/fixtures/kmp-with-ios/` and `tests/fixtures/kmp-cross-platform-e2e/`). Wire into the existing fixture vitest matrix. Expected delta: 0 production code changes, 1 new smoke vitest ensuring `--list-only --dry-run --json` produces a well-shaped envelope.
+
+**Watch trigger.** Official Kotlin 2.4 fixture repository (likely `github.com/Kotlin/` or similar) OR user issue reporting the new layout.
+
+**Effort estimate.** ~1-2h once a fixture exists. Lower if existing `tests/fixtures/kmp-cross-platform-e2e/` can be retrofitted.
+
+### KotlinConf'26 — Cross-tool integration patterns (Koog / Junie / Amper hybrid) in `.skills/`
+
+Same shape as v0.10 #4.5's "Cross-tool comparison: `android` CLI analogues" section (`.skills/kmp-test-runner/references/cli/envelope-schema.md` + SKILL.md "Tool selection" subsection). Doc-only, no CLI code change.
+
+**Scope.** Add a "Cross-tool integration patterns" section to `.skills/kmp-test-runner/SKILL.md` covering:
+
+1. **Calling `kmp-test` from a Koog agent** — ~10-15 line snippet showing a Koog workflow DSL invoking `kmp-test parallel --json` and consuming the envelope. Highlights layering: Koog (agent framework) sits one layer above; `kmp-test` (test executor) sits one layer below.
+2. **Exposing `kmp-test` to Junie via MCP** — canonical wiring once the MCP server shape ships (see sibling BACKLOG entry). Stub until then: "use the `.skills/` shape today; MCP shape tracked at [link]".
+3. **Co-existing with Amper in hybrid projects** — until `layout: gradle-kmp` is removed, projects can have both. `kmp-test` ignores `module.yaml` and reads `settings.gradle.kts` directly; document this so users know it's safe to keep both side-by-side.
+
+**Why now.** Sections 1 + 3 don't depend on MCP shipping. Section 2 stubs in. Doc-only PR, low risk.
+
+**Effort estimate.** ~2-3h research + drafting, single PR.
+
 ### ✅ Multi-feature token-cost measurement (v0.4 milestone) (DONE in v0.4 — PRs #34–#37)
 
 **Status: DONE in v0.4** (PRs #34–#37). All 4 in-scope features (`parallel` / `coverage` / `changed` / `benchmark`) shipped with cross-tokenizer measurement (`cl100k_base` + `opus-4-7` + `sonnet-4-6` + `haiku-4-5`) in the README's "Why this exists — token cost per agent test-run iteration" section (line ~5). Chart redesign landed as one markdown bar table per feature (no Mermaid). `android` (instrumented) deferred per the entry's explicit out-of-scope clause; `doctor` skipped per the entry's "too small" note. Original entry text preserved below.
