@@ -356,6 +356,35 @@ describe('discoverCoverageModules', () => {
     // But effective dispatch uses forced kover.
     expect(r.dispatched.map(m => m.tool)).toEqual(['kover']);
   });
+
+  it('classifies root-convention jacoco via probe-derived resolved.coverageTask (Bug 1)', () => {
+    // Static coveragePlugin is null (jacoco applied via root subprojects {}),
+    // but the gradle probe resolved jacocoTestReport. effectiveCoveragePlugin
+    // upgrades it → classified + dispatched in auto mode.
+    const projectModel = {
+      modules: {
+        ':core-foo': { coveragePlugin: null, type: 'jvm', resolved: { coverageTask: 'jacocoTestReport' } },
+        ':core-bar': { coveragePlugin: null, type: 'jvm', resolved: { coverageTask: 'jacocoTestReport' } },
+      },
+    };
+    const opts = parseArgs([]); // auto
+    const r = discoverCoverageModules(projectModel, opts);
+    expect(r.jacocoModules).toEqual(['core-bar', 'core-foo']);
+    expect(r.koverModules).toEqual([]);
+    expect(r.dispatched.map(m => m.name)).toEqual(['core-bar', 'core-foo']);
+    expect(r.dispatched.every(m => m.tool === 'jacoco')).toBe(true);
+  });
+
+  it('static coveragePlugin still wins over a divergent probe task', () => {
+    const projectModel = {
+      modules: {
+        ':a': { coveragePlugin: 'kover', type: 'jvm', resolved: { coverageTask: 'jacocoTestReport' } },
+      },
+    };
+    const r = discoverCoverageModules(projectModel, parseArgs([]));
+    expect(r.koverModules).toEqual(['a']);
+    expect(r.jacocoModules).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

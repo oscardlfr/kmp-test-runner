@@ -322,6 +322,32 @@ describe('aggregateCoverageTool', () => {
   });
 });
 
+describe('buildModuleEntry — probe-backed coverage_plugin (Bug 1)', () => {
+  it('upgrades a null static coveragePlugin from the probed resolved.coverageTask', () => {
+    // Root-convention jacoco: static scan saw nothing, probe found jacocoTestReport.
+    const entry = {
+      type: 'jvm', coveragePlugin: null, sourceSets: {},
+      resolved: { coverageTask: 'jacocoTestReport' },
+    };
+    const m = buildModuleEntry(':core-foo', entry);
+    expect(m.coverage_task).toBe('jacocoTestReport');
+    expect(m.coverage_plugin).toBe('jacoco');
+    // And the project-wide aggregate flips none → jacoco.
+    expect(aggregateCoverageTool([m])).toBe('jacoco');
+  });
+  it('static coveragePlugin still wins when present', () => {
+    const entry = {
+      type: 'jvm', coveragePlugin: 'kover', sourceSets: {},
+      resolved: { coverageTask: 'jacocoTestReport' },
+    };
+    expect(buildModuleEntry(':a', entry).coverage_plugin).toBe('kover');
+  });
+  it('null when neither static nor probe has a coverage signal', () => {
+    const entry = { type: 'jvm', coveragePlugin: null, sourceSets: {}, resolved: {} };
+    expect(buildModuleEntry(':a', entry).coverage_plugin).toBeNull();
+  });
+});
+
 describe('parseArgs', () => {
   it('--skip-probe and --no-cache flags', () => {
     expect(parseArgs(['--skip-probe']).skipProbe).toBe(true);

@@ -64,6 +64,8 @@ import {
   hasAnyTestSourceSet,
   discoverParallelModules,
   buildFilterArgs,
+  canonicalModuleEntry,
+  buildCoverageReportTasks,
 } from '../../lib/orchestrators/parallel-orchestrator.js';
 
 let workDir;
@@ -3832,5 +3834,137 @@ describe('v0.10 #2 — respect org.gradle.parallel=false', () => {
       runCoverageInjection: makeRunCoverageStub(),
     });
     expect(envelope.gradle_config_applied).toEqual({ parallel_dropped: true });
+  });
+});
+
+// ===========================================================================
+// Bug 1 — probe-backed coverage classification in the parallel envelope
+// ===========================================================================
+describe('canonicalModuleEntry — probe-backed coverage_plugin (Bug 1)', () => {
+  it('uses precomputed effectiveCoveragePlugin when present', () => {
+    const mod = { name: 'core-foo', type: 'jvm', coveragePlugin: null, effectiveCoveragePlugin: 'jacoco' };
+    expect(canonicalModuleEntry(mod).coverage_plugin).toBe('jacoco');
+  });
+  it('falls back to raw coveragePlugin for bare stubs (no precompute)', () => {
+    expect(canonicalModuleEntry({ name: 'a', type: 'jvm', coveragePlugin: 'kover' }).coverage_plugin).toBe('kover');
+    expect(canonicalModuleEntry({ name: 'a', type: 'jvm' }).coverage_plugin).toBeNull();
+  });
+});
+
+// ===========================================================================
+// Fix 2 — coverage report task dispatch
+// ===========================================================================
+describe('buildCoverageReportTasks (Fix 2)', () => {
+  const mods = [
+    { name: 'core-foo', resolved: { coverageTask: 'jacocoTestReport' } },
+    { name: 'core-bar', resolved: { coverageTask: 'koverXmlReportDebug' } },
+    { name: 'app',      resolved: { coverageTask: null } },
+    { name: 'util',     resolved: null },
+  ];
+  it('auto: one :module:reportTask per module that resolved a coverage task', () => {
+    expect(buildCoverageReportTasks(mods, parseArgs([]))).toEqual([
+      ':core-foo:jacocoTestReport', ':core-bar:koverXmlReportDebug',
+    ]);
+  });
+  it('explicit --coverage-tool jacoco: only jacoco report tasks', () => {
+    expect(buildCoverageReportTasks(mods, parseArgs(['--coverage-tool', 'jacoco'])))
+      .toEqual([':core-foo:jacocoTestReport']);
+  });
+  it('explicit --coverage-tool kover: only kover report tasks', () => {
+    expect(buildCoverageReportTasks(mods, parseArgs(['--coverage-tool', 'kover'])))
+      .toEqual([':core-bar:koverXmlReportDebug']);
+  });
+  it('--coverage-tool none: empty (caller also gates, but be defensive)', () => {
+    expect(buildCoverageReportTasks(mods, parseArgs(['--no-coverage']))).toEqual([]);
+  });
+  it('--exclude-coverage drops a module from the dispatch list', () => {
+    expect(buildCoverageReportTasks(mods, parseArgs(['--exclude-coverage', 'core-foo'])))
+      .toEqual([':core-bar:koverXmlReportDebug']);
+  });
+  it('--coverage-modules limits the dispatch list', () => {
+    expect(buildCoverageReportTasks(mods, parseArgs(['--coverage-modules', 'core-foo'])))
+      .toEqual([':core-foo:jacocoTestReport']);
+  });
+});
+
+describe('runParallel — coverage report dispatch (Fix 2)', () => {
+  // A jvm module that applies jacoco in its OWN build file → analyzeModule sets
+  // coveragePlugin:'jacoco' → predictCoverageTask fills resolved.coverageTask
+  // even though the exit-0 fake gradlew makes the probe return null.
+  const jacocoModule = {
+    name: 'core',
+    build: 'plugins { kotlin("jvm") }\njacoco {}\n',
+    sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+  };
+
+  it('dispatches :module:jacocoTestReport in a SEPARATE leg after the test task', async () => {
+    const dir = makeProject([jacocoModule]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--coverage-tool', 'jacoco'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const gradleArgLists = spawn.calls.filter(isGradleCall).map(effectiveGradleArgs);
+    const testLeg = gradleArgLists.find(a => a.includes(':core:jvmTest'));
+    const reportLeg = gradleArgLists.find(a => a.includes(':core:jacocoTestReport'));
+    expect(testLeg).toBeTruthy();
+    expect(reportLeg).toBeTruthy();
+    // Report task must NOT be bundled into the classified test leg.
+    expect(testLeg).not.toContain(':core:jacocoTestReport');
+  });
+
+  it('--coverage-tool none dispatches NO coverage report task', async () => {
+    const dir = makeProject([jacocoModule]);
+    const spawn = makeSpawnStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--no-coverage'],
+      spawn,
+      log: () => {},
+    });
+    const gradleArgLists = spawn.calls.filter(isGradleCall).map(effectiveGradleArgs);
+    expect(gradleArgLists.some(a => a.includes(':core:jacocoTestReport'))).toBe(false);
+  });
+
+  it('report-task failure → non-fatal coverage_report_dispatch_failed warning, exit unchanged', async () => {
+    const dir = makeProject([jacocoModule]);
+    // Custom spawn: fail ONLY the report task; the test task passes.
+    const spawn = (cmd, args, opts) => {
+      spawn.calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null, env: opts?.env ?? null });
+      const flat = args.join(' ');
+      if (/jacocoTestReport/.test(flat)) {
+        return { status: 1, stdout: '> Task :core:jacocoTestReport FAILED\nBUILD FAILED in 1s\n', stderr: '', signal: null, error: null };
+      }
+      return { status: 0, stdout: 'BUILD SUCCESSFUL in 1s\n', stderr: '', signal: null, error: null };
+    };
+    spawn.calls = [];
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--coverage-tool', 'jacoco'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(envelope.warnings.some(w => w.code === 'coverage_report_dispatch_failed')).toBe(true);
+    expect(exitCode).toBe(0);
+  });
+
+  it('a non-unit leg (js) does NOT dispatch unit-side coverage reports', async () => {
+    // jacocoTestReport / koverXmlReport* aggregate the UNIT test task; a js-only
+    // run never produced that data, so the report dispatch must be gated off.
+    const dir = makeProject([jacocoModule]); // jvm module, no js target
+    const spawn = makeSpawnStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'js', '--coverage-tool', 'jacoco'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const gradleArgLists = spawn.calls.filter(isGradleCall).map(effectiveGradleArgs);
+    expect(gradleArgLists.some(a => a.includes(':core:jacocoTestReport'))).toBe(false);
   });
 });

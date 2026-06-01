@@ -2390,6 +2390,17 @@ describe('resolveTasksFor coverage prediction (Gap A)', () => {
     expect(r.deviceTestTask).toBeNull();
     expect(r.coverageTask).toBe('koverXmlReportDesktop');
   });
+
+  it('probed jacocoTestReport with null coveragePlugin (root-convention) → coverageTask jacocoTestReport (Bug 1)', () => {
+    // The Bug-1 root cause at the model layer: jacoco applied via a root
+    // subprojects {} block → static coveragePlugin is null, but the
+    // `gradlew tasks --all` probe lists jacocoTestReport. The probed task must
+    // win even with no static signal, so resolved.coverageTask is populated and
+    // effectiveCoveragePlugin can later upgrade the classification.
+    const r = resolveTasksFor(':core-foo', ['compileKotlin', 'test', 'jacocoTestReport'],
+      { coveragePlugin: null, type: 'jvm' });
+    expect(r.coverageTask).toBe('jacocoTestReport');
+  });
 });
 
 // v0.8 sub-entry 2 — predictTaskFromSourceSets fallback (BACKLOG line 215-244).
