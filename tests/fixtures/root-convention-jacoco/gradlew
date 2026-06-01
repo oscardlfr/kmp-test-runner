@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Fake gradlew for the root-convention-jacoco fixture. When the project-model
+# probe runs `tasks --all --quiet`, emit the report + test tasks for both
+# modules. JaCoCo is applied via the ROOT build.gradle.kts `subprojects {}`
+# block, so `jacocoTestReport` exists on both modules even though neither
+# module's own build file references jacoco. parseGradleTasksOutput keys off
+# the `module:task` shape (no leading colon at column 0).
+for arg in "$@"; do
+  case "$arg" in
+    tasks)
+      cat <<'EOF'
+core-foo:compileKotlin - Compiles main Kotlin source.
+core-foo:test - Runs the unit test suite.
+core-foo:jacocoTestReport - Generates a JaCoCo coverage report.
+core-bar:compileKotlin - Compiles main Kotlin source.
+core-bar:test - Runs the unit test suite.
+core-bar:jacocoTestReport - Generates a JaCoCo coverage report.
+EOF
+      exit 0
+      ;;
+  esac
+done
+echo "BUILD SUCCESSFUL in 1s"
+exit 0

@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Coverage detection + dispatch for root-convention JaCoCo/Kover
+
+Two bugs stopped coverage from working when JaCoCo/Kover is applied via a root
+`build.gradle.kts` convention (`subprojects { apply(plugin = "jacoco") }` /
+`allprojects {}`) instead of per-module — a valid, common pattern in large
+multi-module builds. Both traced to the coverage pipeline ignoring the gradle
+task-graph probe that the project model already runs.
+
+- **Classification (Bug 1).** `kmp-test describe` reported `coverage_plugin: null` /
+  `coverage_tool: none`, and `parallel --coverage-tool auto` collected 0 coverage,
+  even though `jacocoTestReport` tasks existed and ran fine. Static detection only
+  scanned each module's own `build.gradle.kts` + `build-logic/`, never a root
+  `subprojects {}` / `allprojects {}` application. Classification now falls back to
+  the probe-derived `resolved.coverageTask` (already computed from `gradlew tasks
+  --all`) via a new `effectiveCoveragePlugin` helper — robust to *how* coverage was
+  applied. Wired into `describe`, `coverage`, and the `parallel` envelope's
+  classification + `modules_with_{kover,jacoco}_plugin` counts.
+- **Dispatch (Bug 2).** `kmp-test parallel` dispatched only the per-module test task
+  and never the coverage report task (`jacocoTestReport` / `koverXmlReport*`), so the
+  aggregation step found no XML unless a prior gradle run had generated it. `parallel`
+  now runs the probe-resolved report tasks in a separate gradle leg after the test
+  legs — the test tasks are already UP-TO-DATE, so this only writes the XML the
+  aggregator reads. The standalone `kmp-test coverage` subcommand stays
+  pure-aggregation (its documented `--skip-tests` contract is unchanged).
+
+### Added
+
+- `coverage_report_dispatch_failed` warning (non-fatal) — emitted when the post-test
+  coverage report dispatch exits non-zero; surfaced in `warnings[]` but never flips a
+  green test run red.
+
+### Notes
+
+- Known limitation (pre-existing, not introduced here): a `testBuildType = "release"`
+  project runs `testReleaseUnitTest`, while a Debug-wired `jacocoTestReport` /
+  `koverXmlReportDebug` reads no Release data. The model carries a single
+  coverage-task name; the Debug/Desktop common case aligns.
+
 ## [0.10.1] — 2026-05-19
 
 ### Changed — Token-cost README sourced 100% from honest within-project measurements (no cross-project mixing)
