@@ -135,6 +135,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `no_coverage_data` | coverage, parallel | No XML coverage data collected from any module — either no plugin is applied or no test run has produced reports yet. | — |
 | `coverage_aggregation_skipped` | coverage | `--coverage-tool none` (or the `--no-coverage` alias) disabled the aggregation step. | — |
 | `coverage_aggregation_drift` | coverage, parallel | The four `module_buckets` (`with_data` + `no_xml` + `parse_errored` + `skipped_by_user`) didn't sum to `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length`. Defensive guard against silent model drops. | `detected:int`, `accounted:int`, `unaccounted:int` |
+| `coverage_xml_disabled` | coverage, parallel | A jacoco module ran its report but emitted HTML/`.exec` only — no XML (Gradle's default `xml.required=false`). `kmp-test parallel` enables jacoco XML automatically; this fires when `--no-coverage-xml-autofix` was passed (or XML is otherwise absent). The module is also in `module_buckets.no_xml`. | `modules:string[]` |
 | `partial_timeout` | benchmark | At least one benchmark module timed out but at least one other passed. Exit code stays at `0` (graded). Pass `--strict-timeouts` to restore pre-graded hard-fail behavior. | `timed_out:int`, `passed:int` |
 | `flavor_defaulted_umbrella` | parallel (`androidUnit`/`androidInstrumented`/`all`) | Project is flavored and no `--flavor` was supplied, so the leg dispatched the flavor-agnostic umbrella task (`:module:test` / `:module:connectedAndroidTest`, which run every flavor — slower). Pass `--flavor <name>` to target one. | `candidates:string[]`, `test_type:string` |
 | `gradle_config_applied` | parallel (envelope payload, not `warnings[]` entry) | Project's `gradle.properties` had `org.gradle.parallel=false` so the CLI dropped its own `--parallel` injection to respect user intent. | `parallel_dropped:bool` (on the top-level `gradle_config_applied:{}` field) |
@@ -254,7 +255,7 @@ The shapes are **deliberately independent** — the tools target different consu
 | Project root | `project_root` (string) | `Target project directory: <abs path>` (text) |
 | Modules / targets (dry-run preview) | `plan.modules[]` with `{name, type, coverage_plugin, test_build_type, has_flavor, flavors, android_dsl, android_dsl_variant}` per entry | per-target JSON files documenting build outputs (e.g. APK paths) |
 | Errors | `errors[]` with discriminated `code` (17+ codes) + WS-5 invariant | Plain-text `Error: …` lines + non-zero exit |
-| Warnings | `warnings[]` with discriminated `code` (5 codes) | (none) |
+| Warnings | `warnings[]` with discriminated `code` (6 codes) | (none) |
 | Side effects | None (pure read-only probe) | Copies `init.gradle.kts` into target's `.gradle/`; invokes `gradlew dumpModels` |
 
 Different abstractions: `kmp-test` answers "what modules can I run tests on?"; `android describe` answers "where are the build artifacts?". The two are complementary, not interchangeable.
