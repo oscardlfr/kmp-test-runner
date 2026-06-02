@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Automatic JaCoCo XML output for coverage extraction
+
+`kmp-test parallel --coverage-tool` now injects a Gradle init-script on the
+coverage-report leg that forces `reports { xml.required = true }` on every
+`JacocoReport` task. Gradle's built-in `jacocoTestReport` leaves `xml.required`
+**false** by default, so modules using the standard `jacoco` plugin emit an HTML
+report only and previously bucketed as `no_xml` even though their tests ran. The
+autofix makes coverage work out of the box with no build change — a genuine
+no-op for Kover (its report tasks aren't `JacocoReport` subtypes) and for
+projects that already enable XML, and it stays inside the coverage-report leg
+(written before the gradle spawn, removed after). Opt out with
+`--no-coverage-xml-autofix`. When opted out — or when XML is otherwise absent —
+a module that ran but produced HTML/`.exec` only now surfaces a
+`coverage_xml_disabled` warning instead of a bare `no_xml`.
+
 ### Fixed — Coverage report listed line numbers for fully-covered classes
 
 The Markdown coverage report's **Lines** column listed line numbers for classes at
