@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-06-02
+
 ### Fixed — Flavored `androidUnit` dispatch + jacoco coverage (convention-applied flavors)
 
 `parallel --test-type androidUnit` (and `--coverage-tool auto`) dispatched the hard-coded
@@ -35,6 +37,15 @@ dimension.
 - **`flavor_unused` is probe-aware.** Supplying `--flavor` to a genuinely flavored project
   whose flavors are convention-applied no longer false-fails with `flavor_unused` (exit 2).
 - The `coverage` subcommand accepts `--flavor <name>` to aggregate a specific flavor's report.
+
+### Fixed — `kmp-test describe --skip-probe` no longer poisons the model cache
+
+A `describe --skip-probe` as the first command on a fresh-cache project wrote a
+probe-blind model that a later probe-wanting `describe` reused (returning
+`coverage_tool: none`). The cached model now carries a `probed` flag, and a
+probe-wanting caller rejects a probe-blind cache entry — re-probing instead. The
+`parallel` / `coverage` orchestrators were never affected (they bypass the model
+cache via `useCache: false`).
 
 ### Fixed — Coverage detection + dispatch for root-convention JaCoCo/Kover
 
