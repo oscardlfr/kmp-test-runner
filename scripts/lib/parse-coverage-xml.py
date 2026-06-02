@@ -80,10 +80,18 @@ def parse_report_mode(root, module_name):
                 continue
             pct = round((covered / total) * 100, 1)
 
-            # Missed lines: lines where mi>0 in the sourcefile's <line> elements
+            # Missed lines: fully-uncovered lines only (ci==0). A line with some
+            # missed instructions but at least one covered (mi>0 AND ci>0) is a
+            # PARTIALLY covered line, which JaCoCo counts as covered at the LINE
+            # level — listing it contradicts the LINE counter (a 100%-covered
+            # sourcefile would otherwise still show line numbers). Mirror
+            # parse_gaps_mode's criterion so len(missed_lines) == the LINE
+            # counter's `missed`.
             missed_lines = []
             for line in sf.findall('line'):
-                if int(line.get('mi', '0')) > 0:
+                mi = int(line.get('mi', '0'))
+                ci = int(line.get('ci', '0'))
+                if mi > 0 and ci == 0:
                     missed_lines.append(int(line.get('nr', '0')))
             missed_lines.sort()
             missed_lines_str = ','.join(str(x) for x in missed_lines)
