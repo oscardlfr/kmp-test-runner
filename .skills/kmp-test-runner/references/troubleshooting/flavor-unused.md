@@ -1,6 +1,6 @@
 # `flavor_unused` — `--flavor` passed but no module declares matching `productFlavors {}`
 
-The user supplied `--flavor <name>` but the orchestrator couldn't find any module that declares a `productFlavors {}` block including that flavor. Promoted from warning to error in v0.9 OBS-7 (pre-v0.9 was a soft warning + exit 0, which CI gates routinely missed).
+The user supplied `--flavor <name>` but the orchestrator found **no flavored module** on the leg — neither a static `productFlavors {}` declaration nor flavor names recovered from the `gradlew tasks --all` probe. Flavors applied by a build-logic convention plugin ARE now detected (via the probe), so a valid `--flavor` on a convention-flavor project no longer false-fails. Promoted from warning to error in v0.9 OBS-7 (pre-v0.9 was a soft warning + exit 0, which CI gates routinely missed).
 
 ## Symptom
 
@@ -14,7 +14,9 @@ The user supplied `--flavor <name>` but the orchestrator couldn't find any modul
 }
 ```
 
-Applies to `parallel --test-type androidInstrumented` / `--test-type all` and `android`. Not applicable to `coverage`, `benchmark`, or `changed` (those don't accept `--flavor`).
+Applies to `parallel --test-type androidUnit` / `androidInstrumented` / `--test-type all` and `android`. The `coverage` subcommand accepts `--flavor` but does not raise this error (it only re-aggregates leftover reports). Not applicable to `benchmark` / `changed`.
+
+> **Related — no `--flavor` on a flavored project is NOT an error.** When a project IS flavored and you omit `--flavor`, the unit / instrumented leg dispatches the flavor-agnostic umbrella task (`:module:test` / `:module:connectedAndroidTest`, which run *every* flavor) and emits a non-fatal `flavor_defaulted_umbrella` warning (exit 0) listing the candidate flavors. Pass `--flavor <name>` to target one flavor (faster, single-variant coverage).
 
 ## Root causes
 

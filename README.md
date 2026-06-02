@@ -212,7 +212,7 @@ Pass `--project-root <path>` explicitly when scripting from a different director
 | Target | Default `--test-type` | Underlying gradle task | Where it runs |
 |--------|---------------------|------------------------|---------------|
 | **JVM / Desktop** | `common` / `desktop` (auto-detect) | `:module:desktopTest` | host (Linux / macOS / Windows) |
-| **Android (unit)** | `androidUnit` (auto-detect) | `:module:testDebugUnitTest` | host JVM |
+| **Android (unit)** | `androidUnit` (auto-detect) | `:module:testDebugUnitTest` — or `test${Flavor}DebugUnitTest` with `--flavor`; the umbrella `:module:test` for flavored projects without `--flavor` | host JVM |
 | **Android (instrumented)** | `androidInstrumented` (or `kmp-test android`) | `:module:connectedDebugAndroidTest` | connected device or emulator |
 | **iOS** | `ios` | `:module:iosSimulatorArm64Test` (Apple-silicon), `iosX64Test` (Intel/CI), `iosArm64Test` (device) — picked per-module from the project model | macOS host with Xcode + simulator (Gradle handles simulator boot since AGP/KMP 1.9+) |
 | **macOS** | `macos` | `:module:macosArm64Test` / `macosX64Test` / `macosTest` — picked per-module | macOS host (host-native; no simulator) |
@@ -312,14 +312,16 @@ The `unitTestTask` field stays separate — KMP modules with both `jvmTest` and 
 
 | Value | Behavior |
 |-------|----------|
-| `auto` _(default since v0.5.1 for parallel/coverage paths via the gradle-tasks probe)_ | Per-module detection — picks `koverXmlReport` / `jacocoTestReport` based on which plugin the module actually applies. Modules with no plugin emit `[SKIP coverage]` and tests still run. |
+| `auto` _(default for parallel/coverage paths, via the gradle-tasks probe)_ | Per-module detection — picks `koverXmlReport` / `jacocoTestReport` from the module's actual Gradle task graph. Modules with no coverage task emit `[SKIP coverage]` and tests still run. |
 | `kover` | Force Kover; assumes `org.jetbrains.kotlinx.kover` is applied per-module (or via convention plugin). Generates `koverXmlReportDesktop` / `koverXmlReportDebug`. |
 | `jacoco` | Force JaCoCo; assumes the `jacoco` plugin is applied. Generates `jacocoTestReport`. |
 | `none` | Skip coverage entirely — run tests only. Useful on heterogeneous projects where coverage isn't configured everywhere. |
 
 Heterogeneous projects (some modules with kover, some with jacoco, some with neither) are first-class — the `auto` mode + per-module probe will pick the right task per module and skip cleanly when none is applied. The aggregated report still works across mixed tools.
 
-> **Convention-plugin coverage detection (v0.6.1+).** Projects that distribute coverage via a convention plugin (`build-logic/<X>/` registers `Plugin<Project>` classes or precompiled-script plugins) get per-module inheritance: only modules that explicitly apply a coverage-adding convention plugin id are reported as having `coveragePlugin: 'kover' | 'jacoco'`. Detection is heuristic-first via the convention class / filename (`/Jacoco|Kover/i`); pre-v0.6.1 broad inheritance is preserved as a fallback for `Plugin<Project>` setups without a `gradlePlugin{}` block (kover composites without a `gradlePlugin{}` registration block continue to work unchanged). Concretely: nowinandroid drops from "all 35 modules report jacoco" to the 13 that actually apply it.
+`kmp-test parallel` runs the resolved coverage report task (`jacocoTestReport` / `koverXmlReport*`) automatically after the test legs — the XML is generated and aggregated in one command, with no separate `./gradlew jacocoTestReport` step. The standalone `coverage` subcommand only re-aggregates the reports a prior `parallel` run already wrote (it does not run gradle itself).
+
+> **Coverage detection is task-graph-backed.** A module is classified `coveragePlugin: 'kover' | 'jacoco'` from the project's actual Gradle task graph (the `gradlew tasks` probe), so detection works regardless of *how* the plugin is applied — a per-module `plugins {}` block, a `build-logic/` convention plugin, or a root `subprojects {}` / `allprojects {}` block. Only modules that actually expose a `koverXmlReport*` / `jacocoTestReport` task are reported (e.g. nowinandroid reports the 13 modules that apply jacoco, not all 35). When the probe can't run (offline / `--skip-probe`), a static fallback scans each module's own build file and `build-logic/` convention plugins (heuristic on the convention class / filename, `/Jacoco|Kover/i`); a root `subprojects {}` / `allprojects {}` convention is only detected when the probe runs.
 
 ### Heterogeneous projects (modules without tests)
 
@@ -378,7 +380,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--project-root` | `$PWD` | Path to the Gradle project root |
 | `--max-workers` | `4` | Maximum parallel Gradle workers |
 | `--test-type <type>` | _(auto-detect)_ | `common` \| `desktop` \| `androidUnit` \| `androidInstrumented` \| `ios` \| `macos` \| `all`. iOS / macOS pick the per-module task from the project model. See [Multi-platform test dispatch](#multi-platform-test-dispatch) |
-| `--coverage-tool` | `auto` (on `parallel`/`coverage`/`info`) · `jacoco` (on `changed`) | `auto` \| `kover` \| `jacoco` \| `none`. Defaults differ per subcommand — `auto` probes the project's build-logic + plugins; `changed` defaults to `jacoco` for historical compatibility |
+| `--coverage-tool` | `auto` (on `parallel`/`coverage`/`info`) · `jacoco` (on `changed`) | `auto` \| `kover` \| `jacoco` \| `none`. Defaults differ per subcommand — `auto` reads the project's Gradle task graph (catches per-module, convention, and root `subprojects {}` application); `changed` defaults to `jacoco` for historical compatibility |
 | `--coverage-modules` | _(all)_ | Comma-separated module list for coverage aggregation |
 | `--min-missed-lines` | `0` | Fail if missed lines exceed this threshold |
 | `--exclude-modules` | _(none)_ | Comma-separated module globs to skip entirely (e.g. `"*:api,build-logic"`). See "Heterogeneous projects" above |
@@ -405,7 +407,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--device-task <name>` | _(none)_ | (`androidInstrumented` only) Force an explicit gradle task on the instrumented leg. Preempts every other resolution (project-model probe, `kmpAndroidLibrary` `androidConnectedCheck`, AGP `connected{Variant}AndroidTest`). Applies to `parallel --test-type androidInstrumented` / `android` |
 | `--auto-retry` | _(off)_ | (`androidInstrumented` only) Re-dispatch instrumented tasks that ran but failed at runtime. One retry per task; mutually exclusive with cascade-isolation. Surfaces `parallel.legs[i].retries[]`. Applies to `parallel --test-type androidInstrumented` / `android` |
 | `--clear-data` | _(off)_ | (`androidInstrumented` only) `adb shell pm clear <package>` between failed dispatch + retry. Implies `--auto-retry` to fire. Reads package from AndroidManifest.xml. Applies to `parallel --test-type androidInstrumented` / `android` |
-| `--flavor <name>` | _(none)_ | (`androidInstrumented` only) Android `productFlavors` weave: `connected${Cap}${Variant}AndroidTest`. Modules without flavor declarations ignore the flag. Applies to `parallel --test-type androidInstrumented` / `android` |
+| `--flavor <name>` | _(none)_ | Android `productFlavors` weave for the unit (`test${Cap}${Variant}UnitTest`), instrumented (`connected${Cap}${Variant}AndroidTest`), and coverage report tasks. Flavors applied by a build-logic convention plugin are recovered from the gradle task-graph probe (not just per-module `productFlavors {}`). Without `--flavor` on a flavored project, the unit / instrumented leg falls back to the flavor-agnostic umbrella (`test` / `connectedAndroidTest`, runs every flavor) and warns `flavor_defaulted_umbrella`. Applies to `parallel` (`androidUnit` / `androidInstrumented` / coverage) / `android` |
 | `--gradle-args <string>` | _(none)_ | Escape hatch — append tokens to every gradlew invocation. Repeatable; whitespace-split. Tokens go LAST so they OVERRIDE CLI defaults via gradle's last-wins (`--gradle-args "--no-parallel"` wins over `--parallel`). Applies to `parallel` / `changed` / `android` / `benchmark` |
 | `--strict-timeouts` | _(off)_ | (`benchmark` only) Restore pre-graded exit-code behavior: any gradle timeout exits 3 even when other modules passed. Default (off) grades partial timeouts as exit 0 + `warnings[].code: "partial_timeout"` when at least one module passed. Use this in CI matrix cells that require hard fail on any timeout |
 | `--isolated` | _(off)_ | Run gradle with `--project-cache-dir <tmp>` so concurrent `kmp-test` invocations don't share configuration cache. Tier-3 isolation. Applies to `parallel` / `changed` / `android` / `benchmark`. See [`docs/concurrency.md`](docs/concurrency.md) |
@@ -725,7 +727,7 @@ pluginManagement {
 In `build.gradle.kts`:
 ```kotlin
 plugins {
-    id("io.github.oscardlfr.kmp-test-runner") version "0.10.1"
+    id("io.github.oscardlfr.kmp-test-runner") version "0.10.2"
 }
 
 kmpTestRunner {
