@@ -1,0 +1,2 @@
+# Presence of src/test/ makes analyzeModule report ss.test=true so the
+# androidUnit dispatch gate (ss.test || ss.androidUnitTest) passes for :app.

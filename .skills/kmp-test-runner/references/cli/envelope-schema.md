@@ -56,6 +56,7 @@ Plus the orthogonal `dry_run: true` flag (with a `plan{}` block) on any subcomma
     "coverage_plugin": "kover",
     "test_build_type": null,
     "has_flavor": false,
+    "flavors": [],
     "android_dsl": true,
     "android_dsl_variant": "kmpAndroidLibrary",
     "test_failures": []
@@ -69,7 +70,8 @@ Fields:
 - `type` — `"kmp"` / `"android"` / `"jvm"` / `"unknown"`.
 - `coverage_plugin` — `"kover"` / `"jacoco"` / `null`.
 - `test_build_type` — `null` unless overridden by the project.
-- `has_flavor` — `true` when the module declares `productFlavors {}`.
+- `has_flavor` — `true` when the module is flavored: declared via `productFlavors {}` **or** recovered from the `gradlew tasks --all` probe (catches flavors applied by a build-logic convention plugin).
+- `flavors` — array of recovered flavor names (e.g. `["demo","prod"]`); empty when not flavored or the probe didn't run.
 - `android_dsl` — `true` when AGP plugin applied.
 - `android_dsl_variant` — variant identifier when `android_dsl` is true (e.g. `kmpAndroidLibrary`, `application`, `library`).
 - `test_failures` — populated when the module's task failed AND JUnit XML evidence exists.
@@ -104,7 +106,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `no_test_modules` | parallel, changed | **2 \| 3** | No modules match the leg's test-type or `--module-filter`. | `caused_by_filter:bool` (`true` → 2, `false` → 3) |
 | `module_failed` | parallel, android | 1 | A gradle task failed. | `setup_failed:bool`, `module:string` |
 | `instrumented_setup_failed` | android, parallel (`androidInstrumented`), benchmark | 3 | adb has no devices when one was required (or `--device <serial>` mismatch). | — |
-| `flavor_unused` | parallel (`androidInstrumented`/`all`) | 2 | `--flavor <name>` passed but no module declares matching `productFlavors {}`. | — |
+| `flavor_unused` | parallel (`androidUnit`/`androidInstrumented`/`all`) | 2 | `--flavor <name>` passed but no module on the leg is flavored (static `productFlavors {}` or probe-recovered). | — |
 | `isolated_runtime_race` | parallel | 2 | `--isolated` combined with a test-type that hits a shared runtime resource (iOS sim, ADB without `--device`, `--test-type all`). | — |
 | `coverage_threshold_exceeded` | parallel (`--min-missed-lines`), coverage | 1 | Aggregated `coverage.missed_lines` exceeds the threshold. | — |
 | `task_not_found` | any | 3 | Gradle task class missing — typically a plugin not applied to the requested module. | — |
@@ -134,6 +136,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `coverage_aggregation_skipped` | coverage | `--coverage-tool none` (or the `--no-coverage` alias) disabled the aggregation step. | — |
 | `coverage_aggregation_drift` | coverage, parallel | The four `module_buckets` (`with_data` + `no_xml` + `parse_errored` + `skipped_by_user`) didn't sum to `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length`. Defensive guard against silent model drops. | `detected:int`, `accounted:int`, `unaccounted:int` |
 | `partial_timeout` | benchmark | At least one benchmark module timed out but at least one other passed. Exit code stays at `0` (graded). Pass `--strict-timeouts` to restore pre-graded hard-fail behavior. | `timed_out:int`, `passed:int` |
+| `flavor_defaulted_umbrella` | parallel (`androidUnit`/`androidInstrumented`/`all`) | Project is flavored and no `--flavor` was supplied, so the leg dispatched the flavor-agnostic umbrella task (`:module:test` / `:module:connectedAndroidTest`, which run every flavor — slower). Pass `--flavor <name>` to target one. | `candidates:string[]`, `test_type:string` |
 | `gradle_config_applied` | parallel (envelope payload, not `warnings[]` entry) | Project's `gradle.properties` had `org.gradle.parallel=false` so the CLI dropped its own `--parallel` injection to respect user intent. | `parallel_dropped:bool` (on the top-level `gradle_config_applied:{}` field) |
 
 > Like errors, future warning codes can land additively without bumping `schema_version`. Treat unrecognized codes as opaque.
@@ -249,7 +252,7 @@ The shapes are **deliberately independent** — the tools target different consu
 | Tool identifier | `tool: "kmp-test"` | (none) |
 | Schema version | `schema_version: 2` (versioned breaking-change policy) | (none in output) |
 | Project root | `project_root` (string) | `Target project directory: <abs path>` (text) |
-| Modules / targets (dry-run preview) | `plan.modules[]` with `{name, type, coverage_plugin, test_build_type, has_flavor, android_dsl, android_dsl_variant}` per entry | per-target JSON files documenting build outputs (e.g. APK paths) |
+| Modules / targets (dry-run preview) | `plan.modules[]` with `{name, type, coverage_plugin, test_build_type, has_flavor, flavors, android_dsl, android_dsl_variant}` per entry | per-target JSON files documenting build outputs (e.g. APK paths) |
 | Errors | `errors[]` with discriminated `code` (17+ codes) + WS-5 invariant | Plain-text `Error: …` lines + non-zero exit |
 | Warnings | `warnings[]` with discriminated `code` (5 codes) | (none) |
 | Side effects | None (pure read-only probe) | Copies `init.gradle.kts` into target's `.gradle/`; invokes `gradlew dumpModels` |
