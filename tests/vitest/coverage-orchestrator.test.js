@@ -491,6 +491,46 @@ describe('runCoverage', () => {
     expect(envelope.coverage.modules_contributing).toBe(2);
   });
 
+  it('jacoco module with HTML report but no XML → coverage_xml_disabled warning + no_xml bucket', async () => {
+    const projectRoot = makeProject([{ name: 'j-html', coverage: 'jacoco' }]);
+    // jacocoTestReport ran but emitted HTML only (Gradle default xml.required=false).
+    mkdirSync(path.join(projectRoot, 'j-html', 'build', 'reports', 'jacoco', 'test', 'html'), { recursive: true });
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runCoverage({ projectRoot, args: [], spawn });
+    expect(exitCode).toBe(0);
+    expect(envelope.coverage.module_buckets.no_xml).toContain('j-html');
+    const w = envelope.warnings.find((x) => x.code === 'coverage_xml_disabled');
+    expect(w).toBeTruthy();
+    expect(w.modules).toContain('j-html');
+  });
+
+  it('jacoco module with a .exec data file but no XML → coverage_xml_disabled warning', async () => {
+    const projectRoot = makeProject([{ name: 'j-exec', coverage: 'jacoco' }]);
+    const execDir = path.join(projectRoot, 'j-exec', 'build', 'jacoco');
+    mkdirSync(execDir, { recursive: true });
+    writeFileSync(path.join(execDir, 'test.exec'), 'x');
+    const spawn = makeSpawnStub();
+    const { envelope } = await runCoverage({ projectRoot, args: [], spawn });
+    expect(envelope.warnings.find((x) => x.code === 'coverage_xml_disabled')?.modules).toContain('j-exec');
+  });
+
+  it('jacoco module with no report artifacts at all → no_xml without coverage_xml_disabled', async () => {
+    const projectRoot = makeProject([{ name: 'j-bare', coverage: 'jacoco' }]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runCoverage({ projectRoot, args: [], spawn });
+    expect(envelope.coverage.module_buckets.no_xml).toContain('j-bare');
+    expect(envelope.warnings.find((x) => x.code === 'coverage_xml_disabled')).toBeFalsy();
+  });
+
+  it('kover module never triggers coverage_xml_disabled (jacoco-only diagnostic)', async () => {
+    const projectRoot = makeProject([{ name: 'k-html', coverage: 'kover' }]);
+    // Even with a jacoco-style HTML dir present, a kover-classified module is exempt.
+    mkdirSync(path.join(projectRoot, 'k-html', 'build', 'reports', 'jacoco', 'test', 'html'), { recursive: true });
+    const spawn = makeSpawnStub();
+    const { envelope } = await runCoverage({ projectRoot, args: [], spawn });
+    expect(envelope.warnings.find((x) => x.code === 'coverage_xml_disabled')).toBeFalsy();
+  });
+
   it('--coverage-tool none → coverage_aggregation_skipped warning, exit 0, no spawn', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
     const spawn = makeSpawnStub();
