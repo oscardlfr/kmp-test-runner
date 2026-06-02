@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-06-02
+
 ### Added — Automatic JaCoCo XML output for coverage extraction
 
 `kmp-test parallel --coverage-tool` now injects a Gradle init-script on the
