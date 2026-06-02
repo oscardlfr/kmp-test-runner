@@ -2256,6 +2256,87 @@ describe('hasAnyTestSourceSet', () => {
     expect(hasAnyTestSourceSet({})).toBe(false);
     expect(hasAnyTestSourceSet({ sourceSets: {} })).toBe(false);
   });
+  it('true when probe recovered flavored unit tests even with no tracked *Test* source set', () => {
+    // A convention-flavored app (src/test<Flavor>/ only) has all-false sourceSets
+    // on disk but resolved.flavors is non-empty → must NOT be auto-skipped.
+    expect(hasAnyTestSourceSet({ sourceSets: {}, flavors: ['demo', 'prod'] })).toBe(true);
+    expect(hasAnyTestSourceSet({ sourceSets: { androidTest: true }, flavors: ['demo'] })).toBe(true);
+  });
+  it('false when no *Test* source set and no probe flavors (true negative preserved)', () => {
+    expect(hasAnyTestSourceSet({ sourceSets: { main: true }, flavors: [] })).toBe(false);
+  });
+});
+
+// ===========================================================================
+// Flavored unit-test source-set gap (probe-recovered flavors)
+// ===========================================================================
+// A convention-flavored app keeps its unit tests in src/test<Flavor>/ with no
+// bare test/androidUnitTest source set. The static walker is blind to it, but
+// the probe surfaces test<Flavor><BuildType>UnitTest → resolved.flavors. The
+// pickGradleTaskFor gates accept that as unit-test evidence so the module
+// dispatches the flavor-agnostic umbrella :m:test (or test<Flavor>...UnitTest
+// with --flavor).
+describe('pickGradleTaskFor — flavored unit source-set gate (probe flavors)', () => {
+  const flavoredApp = {
+    name: 'app', type: 'android',
+    sourceSets: { test: false, androidUnitTest: false },
+    flavors: ['demo', 'prod'], effectiveHasFlavor: true,
+    resolved: { unitTestTask: 'test', flavors: ['demo', 'prod'] },
+  };
+  it('androidUnit: flavored app (probe flavors, no test src) → umbrella :app:test', () => {
+    expect(pickGradleTaskFor(flavoredApp, 'androidUnit').task).toBe(':app:test');
+  });
+  it('androidUnit --flavor demo: flavored app → :app:testDemoDebugUnitTest', () => {
+    expect(pickGradleTaskFor(flavoredApp, 'androidUnit', { flavor: 'demo' }).task)
+      .toBe(':app:testDemoDebugUnitTest');
+  });
+  it('default leg: flavored app (probe flavors, no test src) → umbrella :app:test', () => {
+    expect(pickGradleTaskFor(flavoredApp, '').task).toBe(':app:test');
+  });
+  it('androidUnit: instrumented-only module without probe flavors → null (true negative)', () => {
+    const instr = {
+      name: 'instrumented-only', type: 'android',
+      sourceSets: { test: false, androidUnitTest: false, androidTest: true },
+      flavors: [], resolved: { unitTestTask: null },
+    };
+    const r = pickGradleTaskFor(instr, 'androidUnit');
+    expect(r.task).toBeNull();
+    expect(r.reason).toMatch(/no androidUnitTest source set/);
+  });
+});
+
+describe('runParallel — flavored-unit-only fixture (end-to-end probe + dispatch)', () => {
+  const fixture = path.resolve('tests/fixtures/flavored-unit-only');
+  it('--test-type androidUnit --module-filter :app → dispatches umbrella :app:test + flavor_defaulted_umbrella', async () => {
+    const spawn = makeSpawnStub();
+    const { envelope } = await runParallel({
+      projectRoot: fixture,
+      args: ['--test-type', 'androidUnit', '--module-filter', ':app'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const taskArgs = spawn.calls.filter(isGradleCall).flatMap(effectiveGradleArgs);
+    expect(taskArgs).toContain(':app:test');
+    expect(taskArgs).not.toContain(':app:testDebugUnitTest');
+    expect((envelope.skipped || []).map(s => s.module)).not.toContain(':app');
+    const warn = (envelope.warnings || []).find(w => w.code === 'flavor_defaulted_umbrella');
+    expect(warn).toBeTruthy();
+    expect(warn.candidates).toEqual(['demo', 'prod']);
+  });
+  it('--test-type androidUnit --module-filter :app --flavor demo → :app:testDemoDebugUnitTest, no flavor_unused', async () => {
+    const spawn = makeSpawnStub();
+    const { envelope } = await runParallel({
+      projectRoot: fixture,
+      args: ['--test-type', 'androidUnit', '--module-filter', ':app', '--flavor', 'demo'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const taskArgs = spawn.calls.filter(isGradleCall).flatMap(effectiveGradleArgs);
+    expect(taskArgs).toContain(':app:testDemoDebugUnitTest');
+    expect((envelope.errors || []).map(e => e.code)).not.toContain('flavor_unused');
+  });
 });
 
 // ===========================================================================
