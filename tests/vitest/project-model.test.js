@@ -2065,6 +2065,35 @@ describe('buildProjectModel', () => {
     expect(model.modules[':m'].resolved.coverageTask).toBe('jacocoTestReport');
   });
 
+  it('does not serve a probe-blind cached model to a probe-wanting caller (skip-probe poison guard)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), 'plugins { kotlin("jvm") }');
+    clearProjectModelCache(dir);
+
+    // 1. A skip-probe build with no tasks-<sha> cache yields a probe-blind model
+    //    (probed:false, every resolved.* null), persisted to model-<sha>.json.
+    const blind = buildProjectModel(dir, { skipProbe: true });
+    expect(blind.probed).toBe(false);
+    expect(blind.modules[':m'].resolved.coverageTask).toBeNull();
+
+    // 2. A tasks-<sha> probe cache now appears (a real probe could resolve tasks).
+    const cacheKey = computeCacheKey(dir);
+    const cacheDir = path.join(dir, '.kmp-test-runner-cache');
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      path.join(cacheDir, `tasks-${cacheKey}.txt`),
+      'm:test - Runs tests.\nm:jacocoTestReport - Generates report.\n'
+    );
+
+    // 3. A probe-wanting caller must NOT receive the stale blind cache — it
+    //    rebuilds and picks up the now-available probe data.
+    const fresh = buildProjectModel(dir, { skipProbe: false, useCache: true });
+    expect(fresh.probed).toBe(true);
+    expect(fresh.modules[':m'].resolved.coverageTask).toBe('jacocoTestReport');
+  });
+
   it('throws when projectRoot does not exist', () => {
     expect(() => buildProjectModel('/no/such/dir', { skipProbe: true })).toThrow();
   });
