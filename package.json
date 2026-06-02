@@ -1,6 +1,6 @@
 {
   "name": "kmp-test-runner",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "type": "module",
   "description": "Parallel test runner for Kotlin Multiplatform and Android Gradle projects with an agent-friendly single-line JSON envelope. CLI + Gradle plugin.",
   "homepage": "https://github.com/oscardlfr/kmp-test-runner#readme",
