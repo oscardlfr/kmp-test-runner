@@ -60,7 +60,7 @@
 
 **Phase 5 — behavior IDEA (separate user-driven decision, NOT a polish item)**
 
-14. **`benchmark` partial-success grading** — `gradle_timeout` ec=0+warning when N-1 modules passed; opt-out flag `--strict-timeouts`. NEEDS user decision on threshold + scope before scheduling. Detail: "💡 IDEA — `benchmark` partial-success grading".
+14. ✅ **`benchmark` partial-success grading** — DONE 2026-05-17 (PR 3.2). Shipped as part of the benchmark-cluster fix (A9 + A11 + A10). When `totalTimedOut > 0 AND totalPass >= 1 AND !opts.strictTimeouts`, exit code is `EXIT.SUCCESS` (0) and `state.warnings` carries `{ code: 'partial_timeout', timed_out, passed, message }`. New `--strict-timeouts` opt-out flag restores pre-graded hard-fail behavior. 3 vitest cases. Detail: "✅ SHIPPED — `benchmark` partial-success grading".
 
 **Estimated end-to-end time:** Phase 1+2 ~12-15h (assuming PR-10 train takes 8-10h across 4 sub-PRs); Phase 3 read-only 3h interleaved; Phase 3.5 ~3-4h; Phase 4 ~22-27h after train (incl. measurement). Phase 5 deferred until user prioritizes. Total queue depth: ~43-50h before v0.10 #1 (ANSI auto-detect) starts.
 
@@ -894,6 +894,67 @@ java.io.FileNotFoundException: C:\Users\<user>\AppData\Local\Temp\benchmarks<lon
 **Why captured here:** any kmp-test-runner user running JVM benchmarks via kotlinx-benchmark on Windows is affected. Without this contextual entry, future bug reports of the same shape ("kmp-test benchmark fails in 2.2s on Windows but works on macOS / Linux / with `--no-configuration-cache`") would land in our backlog with no clear root-cause. The entry exists as a navigation aid: "if you see this stack trace, it's B5, mitigated by A11, fix lives upstream."
 
 **Cross-link:** A11 (CLI mitigation), A9 (per-task log persistence — was the diagnostic gap that hid B5's stack trace from the user). All 3 are in the same "benchmark on Windows" recovery chain.
+
+---
+
+### 💡 IDEA — `tools/measure-token-cost.js` `--project-root` silently overridden when `.measurement-projects.json` exists (surfaced 2026-05-19 during v0.10.1 re-measurement)
+
+**Status: IDEA, no milestone assigned. LOW severity — tooling sharp edge, not user-facing.** Captured during the v0.10.1 token-cost re-measurement: invoking `node tools/measure-token-cost.js --project-root <single-project-path> --feature parallel --runs 1` against the `private-large-A` reference composite silently entered multi-project mode instead and overwrote the v0.10 #7 OSS aggregate file. Root cause at `tools/measure-token-cost.js#main` (line 1135): when the conventional gitignored `tools/.measurement-projects.json` exists, multi-project mode auto-resolves and wins unconditionally over single-project mode — even when `--project-root` is explicitly passed.
+
+**Recommendation:**
+- **(a) Single-project wins** when `--project-root` is explicit. Multi-project mode only fires if `--projects-config <path>` / `--features <list>` / `$KMP_MEASUREMENT_PROJECTS` is explicit OR no `--project-root` is passed.
+- **(b) Warn-then-proceed**: keep current behavior but emit `[WARNING] --project-root ignored — .measurement-projects.json auto-trigger active, use --no-projects-config to suppress` to stderr so the override isn't silent.
+- **(c) Opt-in auto-detect**: rename the conventional path resolution behind `--use-projects-config-default` flag; default mode does NOT auto-resolve. Most surgical.
+
+Option (a) is the least disruptive — `--project-root` is the strongest user signal and should win. (c) is the cleanest long-term contract but breaks any consumer that relied on the auto-detect (none in-tree today).
+
+**Workaround used during v0.10.1:** `mv tools/.measurement-projects.json tools/.measurement-projects.json.hidden` before the single-project run; `mv` back after. Documented in [[project_v0_10_1_shipped]].
+
+---
+
+### 💡 IDEA — `tools/measure-token-cost.js` `runCrossModelMode` segfaults on 74 MB capture (surfaced 2026-05-19 during v0.10.1 re-measurement)
+
+**Status: IDEA, no milestone assigned. MEDIUM severity — blocks `coverage` A-row Anthropic counts on large composites in Node v24.** When `runCrossModelMode` re-reads the coverage A capture (74 MB, 28.7 M cl100k tokens) and re-encodes via `countTokensCl100k(cap.text)` at line 1013, Node v24.12.0 segfaults inside `js-tiktoken/lite.cjs#bytePairMerge` (`TypeError: Derived TypedArray constructor created an array which was too small` at smaller chunks; SIGSEGV at larger). The original measurement (`runApproachA`) computes cl100k successfully because it streams the slurp; the cross-model re-read of the full string crashes.
+
+**Workaround used during v0.10.1:** dropped a one-off `tools/runs/chunked-count.mjs` helper that splits the capture at `\n=== <file> ===\n` file-record boundaries (27 chunks @ ~2.6 MiB UTF-8 each), spawns Anthropic `count_tokens` per chunk per model, sums `input_tokens`. cl100k baseline taken from the prior `runApproachA` value (`28,754,177`). Helper deleted post-use; chunked Anthropic counts succeeded for opus / sonnet / haiku.
+
+**Recommendation:**
+- **(a) Mirror the chunked path for cl100k too**: when `cap.text.length > CL100K_CHUNK_THRESHOLD` (e.g. 4 MB), split at the same file-record boundaries and `enc.encode(chunk)` each, sum lengths. Same `<0.001% boundary error` argument as the Anthropic chunked path.
+- **(b) Bail out early**: when `cap.text.length > THRESHOLD`, skip cl100k re-encode and use the cached value from the previous single-project measurement (re-read from `tools/runs/<feature>/cl100k-baseline.json` if persisted).
+- **(c) Upstream patch on js-tiktoken**: file an issue against `Tiktoken/lite.cjs#bytePairMerge` for the TypedArray bounds bug. Likely a 32-bit signed int overflow on the bytePairMerge internal index when input exceeds some threshold.
+
+Option (a) is the safest in-tree fix and matches the existing chunked-Anthropic pattern in the same file. The helper script proved the approach works; promoting it from one-off to `lib/` is ~50 LOC.
+
+**Why this matters:** the `coverage` outlier is the README's headline finding. Future re-measurements with even larger composites (or larger reports) would hit the same crash without the workaround documented somewhere durable.
+
+---
+
+### 💡 IDEA — Document `NODE_OPTIONS=--use-system-ca` Windows TLS escape hatch in CLAUDE.md / docs
+
+**Status: IDEA, no milestone assigned. LOW severity — documentation gap, no code change.** Hosts running Windows with corporate TLS interception (corporate AV / proxy SSL inspection) reject Node's bundled CA bundle when validating the Anthropic API certificate. Node's fetch / Anthropic SDK fails with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`. Fix: set `NODE_OPTIONS=--use-system-ca` (Node 22+) to use the Windows trust store, which the corp AV typically populates.
+
+Affects any Node-tool in this repo that hits external HTTPS — `tools/measure-token-cost.js` (Anthropic count_tokens), `lib/orchestrators/update-orchestrator.js` (GitHub Releases probe), `lib/commands/doctor.js` (none currently — but a future doctor probe of `https://api.anthropic.com/health` would inherit the same issue).
+
+**Recommendation:** add a "Windows TLS interception" troubleshooting subsection to `CLAUDE.md` or `docs/concurrency.md` or a fresh `docs/troubleshooting-windows.md`. Cover:
+- Symptom: `UNABLE_TO_VERIFY_LEAF_SIGNATURE` or `fetch failed` on first HTTPS call.
+- Diagnosis: `node -e "fetch('https://api.anthropic.com/').then(r => console.log('OK')).catch(e => console.log('ERR:', e.cause?.code))"` returns the `UNABLE_TO_VERIFY_LEAF_SIGNATURE` code.
+- Fix: `set NODE_OPTIONS=--use-system-ca` (CMD) / `$env:NODE_OPTIONS = '--use-system-ca'` (PowerShell) / persist via `[Environment]::SetEnvironmentVariable('NODE_OPTIONS', '--use-system-ca', 'User')`.
+- Why: Node bundles its own CA list, doesn't see the corp AV root cert. System trust store does.
+
+**Why this matters:** caught live during v0.10.1 measurement — without this knowledge the Anthropic API path would have stayed dark for ~30 min of confused debugging.
+
+---
+
+### 💡 IDEA — Add "cross-project metric labelling" rule to publication checklist (surfaced 2026-05-19 from v0.10.0 → v0.10.1 patch)
+
+**Status: IDEA, no milestone assigned. PROCESS — README publication checklist enhancement, no code change.** v0.10.0's "Large-project ceiling — coverage outlier" headline claimed `85,376× cross-project ratio` by combining `private-large-A`'s 28.7M cl100k A baseline with NowInAndroid's 336 cl100k C envelope. Side-by-side the per-feature drill-down table reported the honest within-private-large-A coverage A:C as `77,114×` (`28,686,309 / 372`). Two different numbers, two different denominators — the cross-project mix was technically labelled in the aggregate doc as `A:C (private-large-A → C-large)` but the README prose presented it as if it were a within-project ratio. The user spotted the inconsistency post-ship; v0.10.1 re-measured and replaced the cross-project number with an honest within-project `39,175× / 29,952× / 30,350×`.
+
+**Recommendation:** add to the README-update checklist (currently encoded in `CLAUDE.md` v0.10 #8/#9 closure pattern + v0.10.1 closure memory):
+- **Rule**: any published ratio in the README MUST have numerator and denominator from the same project. No exceptions.
+- **Sanity check**: for every `A:C = N×` cell in the README, verify the corresponding `A` and `C` cells come from the same `tools/runs/<feature>/` capture or the same per-project aggregate row. Reject the publish if any cell hybridises projects.
+- **Audit pattern**: `grep -nE "(cross-project|→ C-large|cross-bucket)" README.md` — if any hit, the ratio MUST be clearly labelled with explicit "(cross-project — numerator from X, denominator from Y)" prose right next to it.
+
+**Why this matters:** README headlines compound trust. A cross-project mix that looks like within-project erodes credibility once spotted. This is encoded in [[feedback_release_clean_cut_pattern]] follow-up notes; promoting it to BACKLOG makes the checklist surface during every release cycle.
 
 ---
 
@@ -2195,6 +2256,113 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 ---
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
+
+### 💡 IDEA — `.gitattributes` LF-pin gap on `scripts/*.sh` + `scripts/sh/**/*.sh` (surfaced 2026-05-25 during cross-platform parity audit)
+
+**Status: IDEA, no milestone assigned. HIGH — local Windows dev usage broken; published GH releases safe.** PR #244 Finding #5 pinned LF on `.skills/**/*.sh` + `tests/skill-scripts/*.bats` after a CRLF corruption of `set -euo pipefail` was discovered on Windows git-bash. The same logic was never extended to the canonical install / uninstall / build-artifact / wrapper scripts. With `core.autocrlf=true` (default on Windows git installs), `scripts/install.sh` + `scripts/uninstall.sh` + `scripts/build-artifact.sh` + every `scripts/sh/**/*.sh` lands on disk with CRLF. Confirmed live in this checkout: `file scripts/install.sh` reports `with CRLF line terminators` and `git check-attr text eol -- scripts/install.sh` returns `unspecified` on both fields.
+
+**Impact matrix:**
+- **GH release builds (ubuntu-latest)** — SAFE. CI clones fresh with `core.autocrlf=false` so the published `kmp-test-runner-<ver>-linux.tar.gz` carries LF scripts.
+- **Windows dev running `bash scripts/install.sh --archive <local>`** for E2E install tests — BROKEN. The `set -euo pipefail` line interprets `\r` as part of the option name and exits 2 with `set: pipefail<CR> : invalid option name`.
+- **Windows dev running `bash scripts/build-artifact.sh <ver> dist/`** to produce a local tarball — BROKEN-WORSE. The `cp -r scripts/` step preserves the CRLF endings, so the resulting tarball carries CRLF on every `scripts/sh/run-*.sh` wrapper. When that tarball is extracted on a mac or Linux host, every wrapper invocation hard-fails on the same `set -euo pipefail` line. This is the silent multi-host corruption vector the `.skills` fix already closed.
+
+**Fix:** add to `.gitattributes` (mirroring the existing `.skills/**/*.sh` pattern):
+```
+scripts/*.sh text eol=lf
+scripts/sh/**/*.sh text eol=lf
+```
+Then `git add --renormalize .` on a Windows checkout to force-rewrite the working tree to LF. The renormalize commit should be its own PR so the diff is purely line-ending churn and reviewable as such. Index versions in any existing dev clone will still be LF (git stores normalized form internally), so the renormalize is a one-shot worktree fix.
+
+**Effort estimate.** <30 min total — 2-line `.gitattributes` delta + renormalize sweep + 1 sanity-check unit test (verify `file scripts/install.sh` reports LF on a fresh Linux clone, optional — the .gitattributes mechanism is already validated by the existing `.skills/**/*.sh` precedent).
+
+**Cross-link:** PR #244 Finding #5 (`project_v0_10_step_4_pr_4_shipped`) is the precedent that closed the same bug class for skill scripts.
+
+---
+
+### 💡 IDEA — `unknown subcommand` error gives no actionable signal for users on a stale install (surfaced 2026-05-25 during user-reported `kmp-test update` failure on a pre-v0.5 mac)
+
+**Status: IDEA, no milestone assigned. MEDIUM — UX gap, recurring failure mode for any user whose install predates a now-canonical subcommand.** `lib/cli.js:838` emits `kmp-test: unknown subcommand '<sub>'` followed by `printHelp()`. When the local binary is obsolete (e.g. a mac install from before PR #148 which introduced `update` in v0.5.x), the help text printed comes from the obsolete binary too — and naturally lists only the subcommands that existed at the time of that install. The user has no signal that their installed `kmp-test` is the problem, not the requested subcommand. Concrete repro from a user session 2026-05-25: ran `kmp-test update` on a pre-v0.5 mac, got "unknown subcommand 'update'", concluded the bug was in current `develop` rather than in their stale install. The actual fix was a one-liner `curl ... | bash` re-run of `install.sh`, which the error gave zero pointers toward.
+
+**Recommendation:** when `sub ∈ {update, info, describe, doctor}` AND `sub ∉ COMMAND_MODULES`, append a "your install may be outdated" hint with the re-install one-liner BEFORE `printHelp()`. Something like:
+
+```
+kmp-test: unknown subcommand 'update'
+
+Looks like your install predates this subcommand. Re-run the installer
+to upgrade to the latest release:
+
+  curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/main/scripts/install.sh | bash
+
+Then retry: kmp-test update
+```
+
+Note the asymmetry — this fix only helps users running **>= v0.10.2 onward** when a future v0.11+ subcommand goes missing on their stale install. It does NOT retroactively help anyone on the current pre-v0.5 era (their binary doesn't have this code). But it closes the loop for every subsequent generation. The reverse direction — making `install.sh` advertise the existence of `kmp-test update` in its post-install message — could also help, but feels heavier.
+
+**Edge cases to handle:**
+- The hint must be `process.platform`-aware: emit the curl one-liner on darwin/linux, emit the equivalent PowerShell `iwr ... | iex` form on win32.
+- The set `{update, info, describe, doctor}` is the "post-v0.5 surface". Anything older (parallel, changed, android, benchmark, coverage) should NOT trigger the hint, because typo-on-old-subcommand is more likely the actual cause than a stale install.
+
+**Effort estimate.** ~30 min code + 2-3 vitest cases (each subcommand fires the hint, others do not, platform-aware curl vs PowerShell shape). Single PR, ~15 LOC + tests.
+
+**Why this matters.** Removes a sharp edge that wastes user time when a stale install is the real issue. Surfaced organically — the user almost concluded a real CLI bug existed and asked Claude to "audit all the CLI" before the root cause (stale install) was identified.
+
+---
+
+### KotlinConf'26 — MCP server shape for `kmp-test` (Junie / Air / any MCP-compatible agent)
+
+KCon'26 day 1 confirmed Junie CLI exposes MCP for tool integration (`/mcp` slash command + MCP Installation Assistant) and JetBrains Air supports Claude/Gemini/Codex/Junie agents — all MCP-compatible. Today `kmp-test` ships an `agentskills.io` skill (`.skills/kmp-test-runner/`) + Claude Code Plugin (`.claude-plugin/plugin.json`). MCP is the third leg that unlocks Junie CLI + Gemini CLI + any MCP host without per-agent packaging.
+
+**Scope.** A stdio-transport MCP server (`mcp-server-kmp-test`) exposing existing subcommands as MCP tools (`kmp_test.parallel`, `kmp_test.coverage`, `kmp_test.changed`, `kmp_test.benchmark`, `kmp_test.android`, `kmp_test.doctor`, `kmp_test.info`, `kmp_test.describe`). Tool schemas mirror existing CLI flags (already documented in `.skills/kmp-test-runner/references/cli/`). Reuses the existing JSON envelope as the tool response — no new shape to maintain.
+
+**Reuse.** `tools/sync-versions.js` grows a 7th target. Zero-deps validator pattern from PR #245 (`tools/validate-plugin.mjs`) ports to `tools/validate-mcp-server.mjs`. `skills-validate` CI job extended; no new CI job.
+
+**Effort estimate.** ~12-16h across 4 PRs (manifest + scaffolding / tool defs + envelope mapping / vitest + smoke against Claude Code MCP host / docs + README subsection). Same shape as the v0.10 #4 PR 5 train.
+
+### KotlinConf'26 — ACP (Agent Client Protocol) adapter smoke
+
+KCon'26 day 1 announced ACP as the open standard for IDE↔agent communication, paired with JetBrains Air's multi-agent environment. Standard is <1.0 and evolving.
+
+**Scope (doc-only first).** Verify the existing `.claude-plugin/plugin.json` mounts cleanly inside JetBrains Air (Air supports Claude Agent natively). If yes → no code change, file the evidence. If no → draft a delta-adapter (single PR, similar size to PR #245).
+
+**Why doc-only first.** ACP is pre-1.0; shipping a full adapter against a moving target is wasted code. 30-min smoke verifies forward-compat. Upgrade trigger to code-shipping: ACP publishes its first conformance test suite AND our current shape fails it, OR a user files an issue.
+
+**Effort estimate.** Smoke ~30 min. Adapter delta if triggered ~4-6h.
+
+### KotlinConf'26 — Amper `module.yaml` detection probe (research-only)
+
+KCon'26 day 1 promoted Amper to "core of the Kotlin Toolchain" with `amper test`. Amper standalone is still <1.0 (v0.10 as of March 2026); `layout: gradle-kmp` compatibility mode is being deprecated. >95% of KMP projects remain Gradle-native today.
+
+**Scope.** Read-only research probe. When a project root contains `module.yaml` (Amper standalone marker) AND no `build.gradle.kts`/`settings.gradle.kts`, does `kmp-test parallel` fail gracefully with a discriminated error code (`amper_project_detected`) instead of an opaque crash? If not → single-file delta in `lib/envelope/error-codes.js` + matching `lib/envelope/builder.js` vitest.
+
+**Out of scope.** Building an Amper-aware `analyze-amper-module.js` parser. Adoption too low + spec too volatile to invest today. Re-evaluate trigger: Amper hits 1.0 OR a real user files an issue.
+
+**Why not wait silently.** A clear error message ("Amper standalone project detected — `kmp-test` is Gradle-only today") beats an opaque crash on `settings.gradle.kts not found`.
+
+**Effort estimate.** Probe ~1h. Error-code delta if needed ~1h. Total ~2h, single PR.
+
+### KotlinConf'26 — Smoke fixture for the new KMP default project structure
+
+KCon'26 day 1 announced a new default KMP project structure ("each module has a single clear responsibility"). JetBrains will publish official fixtures alongside Kotlin 2.4 GA. `lib/project/analyze-module.js` resolves modules from `settings.gradle.kts` includes + per-target task probing, which should be structure-agnostic — but worth blinding it with a fixture once one exists.
+
+**Scope.** When the official fixture lands, copy it to `tests/fixtures/kmp-default-structure-2026/` (analogous to existing `tests/fixtures/kmp-with-ios/` and `tests/fixtures/kmp-cross-platform-e2e/`). Wire into the existing fixture vitest matrix. Expected delta: 0 production code changes, 1 new smoke vitest ensuring `--list-only --dry-run --json` produces a well-shaped envelope.
+
+**Watch trigger.** Official Kotlin 2.4 fixture repository (likely `github.com/Kotlin/` or similar) OR user issue reporting the new layout.
+
+**Effort estimate.** ~1-2h once a fixture exists. Lower if existing `tests/fixtures/kmp-cross-platform-e2e/` can be retrofitted.
+
+### KotlinConf'26 — Cross-tool integration patterns (Koog / Junie / Amper hybrid) in `.skills/`
+
+Same shape as v0.10 #4.5's "Cross-tool comparison: `android` CLI analogues" section (`.skills/kmp-test-runner/references/cli/envelope-schema.md` + SKILL.md "Tool selection" subsection). Doc-only, no CLI code change.
+
+**Scope.** Add a "Cross-tool integration patterns" section to `.skills/kmp-test-runner/SKILL.md` covering:
+
+1. **Calling `kmp-test` from a Koog agent** — ~10-15 line snippet showing a Koog workflow DSL invoking `kmp-test parallel --json` and consuming the envelope. Highlights layering: Koog (agent framework) sits one layer above; `kmp-test` (test executor) sits one layer below.
+2. **Exposing `kmp-test` to Junie via MCP** — canonical wiring once the MCP server shape ships (see sibling BACKLOG entry). Stub until then: "use the `.skills/` shape today; MCP shape tracked at [link]".
+3. **Co-existing with Amper in hybrid projects** — until `layout: gradle-kmp` is removed, projects can have both. `kmp-test` ignores `module.yaml` and reads `settings.gradle.kts` directly; document this so users know it's safe to keep both side-by-side.
+
+**Why now.** Sections 1 + 3 don't depend on MCP shipping. Section 2 stubs in. Doc-only PR, low risk.
+
+**Effort estimate.** ~2-3h research + drafting, single PR.
 
 ### ✅ Multi-feature token-cost measurement (v0.4 milestone) (DONE in v0.4 — PRs #34–#37)
 

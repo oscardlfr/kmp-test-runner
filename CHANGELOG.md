@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-06-02
+
+### Fixed — Flavored `androidUnit` dispatch + jacoco coverage (convention-applied flavors)
+
+`parallel --test-type androidUnit` (and `--coverage-tool auto`) dispatched the hard-coded
+`testDebugUnitTest`, which is **ambiguous** under Android product flavors → `task_not_found`,
+every module failed, 0 tests ran. This bit any project whose flavors are applied by a
+build-logic convention plugin (e.g. Now-in-Android's demo/prod) — the static scan only saw a
+module's own `productFlavors {}`, so `has_flavor` was reported `false` even though gradle had
+the flavors. Same static-vs-probe gap class as the root-convention coverage fix, in the flavor
+dimension.
+
+- **Flavor recovery from the probe.** Product-flavor names are now recovered from the
+  `gradlew tasks --all` task graph (`test${Flavor}${BuildType}UnitTest`), so convention-applied
+  flavors are detected. `describe` / the `parallel` envelope now report `has_flavor: true` +
+  a `flavors: [...]` list for these modules.
+- **Flavored unit + instrumented dispatch.** `--flavor <name>` now weaves the flavor into the
+  unit task (`test${Cap}${Variant}UnitTest`) as well as the instrumented task. Without
+  `--flavor` on a flavored project, the leg falls back to the flavor-agnostic umbrella
+  (`:module:test` / `:module:connectedAndroidTest`, which run every flavor) and emits a
+  non-fatal `flavor_defaulted_umbrella` warning. The umbrella's per-variant unit-test results
+  are now counted correctly. Non-flavored projects are byte-identical.
+- **Flavored jacoco coverage.** The per-variant AGP coverage report task
+  (`create${Variant}UnitTestCoverageReport`) is resolved from the probe, dispatched for the
+  chosen flavor (or the first-flavor default under the umbrella), and its XML — written under
+  `build/reports/coverage/test/<flavor>/<buildType>/` — is discovered + aggregated. So
+  `androidUnit --coverage-tool auto` now produces real jacoco numbers on flavored projects.
+- **`flavor_unused` is probe-aware.** Supplying `--flavor` to a genuinely flavored project
+  whose flavors are convention-applied no longer false-fails with `flavor_unused` (exit 2).
+- The `coverage` subcommand accepts `--flavor <name>` to aggregate a specific flavor's report.
+
+### Fixed — `kmp-test describe --skip-probe` no longer poisons the model cache
+
+A `describe --skip-probe` as the first command on a fresh-cache project wrote a
+probe-blind model that a later probe-wanting `describe` reused (returning
+`coverage_tool: none`). The cached model now carries a `probed` flag, and a
+probe-wanting caller rejects a probe-blind cache entry — re-probing instead. The
+`parallel` / `coverage` orchestrators were never affected (they bypass the model
+cache via `useCache: false`).
+
+### Fixed — Coverage detection + dispatch for root-convention JaCoCo/Kover
+
+Two bugs stopped coverage from working when JaCoCo/Kover is applied via a root
+`build.gradle.kts` convention (`subprojects { apply(plugin = "jacoco") }` /
+`allprojects {}`) instead of per-module — a valid, common pattern in large
+multi-module builds. Both traced to the coverage pipeline ignoring the gradle
+task-graph probe that the project model already runs.
+
+- **Classification (Bug 1).** `kmp-test describe` reported `coverage_plugin: null` /
+  `coverage_tool: none`, and `parallel --coverage-tool auto` collected 0 coverage,
+  even though `jacocoTestReport` tasks existed and ran fine. Static detection only
+  scanned each module's own `build.gradle.kts` + `build-logic/`, never a root
+  `subprojects {}` / `allprojects {}` application. Classification now falls back to
+  the probe-derived `resolved.coverageTask` (already computed from `gradlew tasks
+  --all`) via a new `effectiveCoveragePlugin` helper — robust to *how* coverage was
+  applied. Wired into `describe`, `coverage`, and the `parallel` envelope's
+  classification + `modules_with_{kover,jacoco}_plugin` counts.
+- **Dispatch (Bug 2).** `kmp-test parallel` dispatched only the per-module test task
+  and never the coverage report task (`jacocoTestReport` / `koverXmlReport*`), so the
+  aggregation step found no XML unless a prior gradle run had generated it. `parallel`
+  now runs the probe-resolved report tasks in a separate gradle leg after the test
+  legs — the test tasks are already UP-TO-DATE, so this only writes the XML the
+  aggregator reads. The standalone `kmp-test coverage` subcommand stays
+  pure-aggregation (its documented `--skip-tests` contract is unchanged).
+
+### Added
+
+- `coverage_report_dispatch_failed` warning (non-fatal) — emitted when the post-test
+  coverage report dispatch exits non-zero; surfaced in `warnings[]` but never flips a
+  green test run red.
+
+### Notes
+
+- Known limitation (pre-existing, not introduced here): a `testBuildType = "release"`
+  project runs `testReleaseUnitTest`, while a Debug-wired `jacocoTestReport` /
+  `koverXmlReportDebug` reads no Release data. The model carries a single
+  coverage-task name; the Debug/Desktop common case aligns.
+
 ## [0.10.1] — 2026-05-19
 
 ### Changed — Token-cost README sourced 100% from honest within-project measurements (no cross-project mixing)

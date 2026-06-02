@@ -298,6 +298,41 @@ describe('findCoverageXmlPath', () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
     expect(findCoverageXmlPath(projectRoot, 'a', 'kover', false)).toBe(null);
   });
+
+  // Finding #2 — AGP per-variant coverage report XML lives under
+  // build/reports/coverage/test/<flavor>/<buildType>/report.xml, not jacoco/.
+  it('finds the AGP per-variant coverage report XML (build/reports/coverage/test/...)', () => {
+    const projectRoot = makeProject([{ name: 'app', coverage: 'jacoco' }]);
+    const dir = path.join(projectRoot, 'app', 'build', 'reports', 'coverage', 'test', 'demo', 'debug');
+    mkdirSync(dir, { recursive: true });
+    const xml = path.join(dir, 'report.xml');
+    writeFileSync(xml, '<report></report>');
+    expect(findCoverageXmlPath(projectRoot, 'app', 'jacoco', false)).toBe(xml);
+  });
+
+  it('prefers the variant-hint flavor when multiple variant reports coexist on disk', () => {
+    const projectRoot = makeProject([{ name: 'app', coverage: 'jacoco' }]);
+    const mk = (flavor) => {
+      const d = path.join(projectRoot, 'app', 'build', 'reports', 'coverage', 'test', flavor, 'debug');
+      mkdirSync(d, { recursive: true });
+      const f = path.join(d, 'report.xml');
+      writeFileSync(f, '<report></report>');
+      return f;
+    };
+    const demoXml = mk('demo');
+    const prodXml = mk('prod');
+    expect(findCoverageXmlPath(projectRoot, 'app', 'jacoco', false, { flavor: 'prod', buildType: 'debug' })).toBe(prodXml);
+    expect(findCoverageXmlPath(projectRoot, 'app', 'jacoco', false, { flavor: 'demo', buildType: 'debug' })).toBe(demoXml);
+  });
+
+  it('classic jacocoTestReport.xml still wins over an AGP variant report (non-flavored byte-identical)', () => {
+    const projectRoot = makeProject([{ name: 'app', coverage: 'jacoco' }]);
+    const classic = dropFakeXml(projectRoot, 'app', 'jacoco');
+    const agpDir = path.join(projectRoot, 'app', 'build', 'reports', 'coverage', 'test', 'demo', 'debug');
+    mkdirSync(agpDir, { recursive: true });
+    writeFileSync(path.join(agpDir, 'report.xml'), '<report></report>');
+    expect(findCoverageXmlPath(projectRoot, 'app', 'jacoco', false)).toBe(classic);
+  });
 });
 
 describe('discoverCoverageModules', () => {
@@ -355,6 +390,35 @@ describe('discoverCoverageModules', () => {
     expect(r.jacocoModules).toEqual(['a']);
     // But effective dispatch uses forced kover.
     expect(r.dispatched.map(m => m.tool)).toEqual(['kover']);
+  });
+
+  it('classifies root-convention jacoco via probe-derived resolved.coverageTask (Bug 1)', () => {
+    // Static coveragePlugin is null (jacoco applied via root subprojects {}),
+    // but the gradle probe resolved jacocoTestReport. effectiveCoveragePlugin
+    // upgrades it → classified + dispatched in auto mode.
+    const projectModel = {
+      modules: {
+        ':core-foo': { coveragePlugin: null, type: 'jvm', resolved: { coverageTask: 'jacocoTestReport' } },
+        ':core-bar': { coveragePlugin: null, type: 'jvm', resolved: { coverageTask: 'jacocoTestReport' } },
+      },
+    };
+    const opts = parseArgs([]); // auto
+    const r = discoverCoverageModules(projectModel, opts);
+    expect(r.jacocoModules).toEqual(['core-bar', 'core-foo']);
+    expect(r.koverModules).toEqual([]);
+    expect(r.dispatched.map(m => m.name)).toEqual(['core-bar', 'core-foo']);
+    expect(r.dispatched.every(m => m.tool === 'jacoco')).toBe(true);
+  });
+
+  it('static coveragePlugin still wins over a divergent probe task', () => {
+    const projectModel = {
+      modules: {
+        ':a': { coveragePlugin: 'kover', type: 'jvm', resolved: { coverageTask: 'jacocoTestReport' } },
+      },
+    };
+    const r = discoverCoverageModules(projectModel, parseArgs([]));
+    expect(r.koverModules).toEqual(['a']);
+    expect(r.jacocoModules).toEqual([]);
   });
 });
 

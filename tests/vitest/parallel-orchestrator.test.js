@@ -64,6 +64,8 @@ import {
   hasAnyTestSourceSet,
   discoverParallelModules,
   buildFilterArgs,
+  canonicalModuleEntry,
+  buildCoverageReportTasks,
 } from '../../lib/orchestrators/parallel-orchestrator.js';
 
 let workDir;
@@ -593,6 +595,88 @@ describe('pickGradleTaskFor', () => {
     });
   });
 
+  // Finding #2 — flavored androidUnit dispatch. Convention-applied flavors
+  // (effectiveHasFlavor, recovered from the probe even when static
+  // hasFlavor=false) weave the flavor into the unit task; no --flavor falls back
+  // to the flavor-agnostic umbrella `test` (a bare testDebugUnitTest is ambiguous
+  // under flavors and fails task_not_found).
+  describe('--flavor weave + umbrella on androidUnitTask (Finding #2)', () => {
+    const flavored = {
+      name: 'app',
+      type: 'android',
+      androidDsl: true,
+      hasFlavor: false,            // static is blind (convention-applied)...
+      effectiveHasFlavor: true,    // ...probe-recovered
+      flavors: ['demo', 'prod'],
+      sourceSets: { test: true },
+      resolved: { unitTestTask: 'test', flavors: ['demo', 'prod'] },
+    };
+
+    it('--flavor demo --variant debug → testDemoDebugUnitTest', () => {
+      expect(pickGradleTaskFor(flavored, 'androidUnit', { androidVariant: 'debug', flavor: 'demo' }).task)
+        .toBe(':app:testDemoDebugUnitTest');
+    });
+
+    it('--flavor demo --variant release → testDemoReleaseUnitTest', () => {
+      expect(pickGradleTaskFor(flavored, 'androidUnit', { androidVariant: 'release', flavor: 'demo' }).task)
+        .toBe(':app:testDemoReleaseUnitTest');
+    });
+
+    it('--flavor prod --variant auto → testProdDebugUnitTest', () => {
+      expect(pickGradleTaskFor(flavored, 'androidUnit', { androidVariant: 'auto', flavor: 'prod' }).task)
+        .toBe(':app:testProdDebugUnitTest');
+    });
+
+    it('no --flavor → umbrella :app:test (the always-correct default), even with --variant debug', () => {
+      expect(pickGradleTaskFor(flavored, 'androidUnit', { androidVariant: 'auto' }).task)
+        .toBe(':app:test');
+      expect(pickGradleTaskFor(flavored, 'androidUnit', { androidVariant: 'debug' }).task)
+        .toBe(':app:test');
+    });
+
+    it('--variant all → umbrella :app:test', () => {
+      expect(pickGradleTaskFor(flavored, 'androidUnit', { androidVariant: 'all', flavor: 'demo' }).task)
+        .toBe(':app:test');
+    });
+
+    it('capitalization: --flavor Demo (already capitalized) → testDemoDebugUnitTest', () => {
+      expect(pickGradleTaskFor(flavored, 'androidUnit', { androidVariant: 'debug', flavor: 'Demo' }).task)
+        .toBe(':app:testDemoDebugUnitTest');
+    });
+
+    it('static hasFlavor=true (per-module declaration) also weaves', () => {
+      const staticFlavor = {
+        name: 'app', type: 'android', androidDsl: true, hasFlavor: true,
+        sourceSets: { test: true }, resolved: { unitTestTask: 'test' },
+      };
+      expect(pickGradleTaskFor(staticFlavor, 'androidUnit', { androidVariant: 'debug', flavor: 'demo' }).task)
+        .toBe(':app:testDemoDebugUnitTest');
+    });
+
+    it('instrumented parity: --flavor demo → connectedDemoDebugAndroidTest; no flavor → umbrella connectedAndroidTest', () => {
+      const flavoredInstr = {
+        name: 'app', type: 'android', androidDsl: true, effectiveHasFlavor: true,
+        flavors: ['demo', 'prod'], sourceSets: { androidInstrumentedTest: true },
+        resolved: { deviceTestTask: null, flavors: ['demo', 'prod'] },
+      };
+      expect(pickGradleTaskFor(flavoredInstr, 'androidInstrumented', { androidVariant: 'debug', flavor: 'demo' }).task)
+        .toBe(':app:connectedDemoDebugAndroidTest');
+      expect(pickGradleTaskFor(flavoredInstr, 'androidInstrumented', { androidVariant: 'debug' }).task)
+        .toBe(':app:connectedAndroidTest');
+    });
+
+    it('REGRESSION: non-flavored module is byte-identical (--flavor is a no-op)', () => {
+      const flat = {
+        name: 'app', type: 'android', androidDsl: true,
+        sourceSets: { test: true }, resolved: { unitTestTask: null },
+      };
+      expect(pickGradleTaskFor(flat, 'androidUnit', { androidVariant: 'debug', flavor: 'demo' }).task)
+        .toBe(':app:testDebugUnitTest');
+      expect(pickGradleTaskFor(flat, 'androidUnit', { androidVariant: 'auto' }).task)
+        .toBe(':app:testDebugUnitTest');
+    });
+  });
+
   // 2026-05-05 v0.9 step 1 (flag #5) — `--device-task <name>` preempts every
   // other resolution path on the androidInstrumented branch. Mirrors the
   // dedicated `kmp-test android` subcommand's escape hatch (BACKLOG L195-198).
@@ -1047,6 +1131,32 @@ describe('junitTestCountFor', () => {
     writeFileSync(path.join(agpDir, 'TEST-Foo.xml'),
       '<testsuite><testcase/><testcase/></testsuite>');
     expect(junitTestCountFor(dir, ':mod:androidConnectedCheck')).toBe(2);
+  });
+
+  // Finding #2 — the umbrella `test` task (dispatched for flavored androidUnit
+  // with no --flavor) has no JUnit output of its own; it aggregates the
+  // per-variant test${Flavor}${BuildType}UnitTest tasks whose XML lands in
+  // sibling test-results/<variant>UnitTest/ dirs.
+  it('umbrella `test` aggregates per-variant test*UnitTest result dirs', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-test-'));
+    workDir = dir;
+    const trRoot = path.join(dir, 'core', 'build', 'test-results');
+    for (const [variant, n] of [['testDemoDebugUnitTest', 3], ['testProdDebugUnitTest', 2]]) {
+      const vd = path.join(trRoot, variant);
+      mkdirSync(vd, { recursive: true });
+      writeFileSync(path.join(vd, 'TEST-Foo.xml'),
+        '<testsuite>' + '<testcase/>'.repeat(n) + '</testsuite>');
+    }
+    expect(junitTestCountFor(dir, ':core:test')).toBe(5);
+  });
+
+  it('non-umbrella JVM `test` counts only test-results/test/ (no *UnitTest aggregation)', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-test-'));
+    workDir = dir;
+    const testDir = path.join(dir, 'core', 'build', 'test-results', 'test');
+    mkdirSync(testDir, { recursive: true });
+    writeFileSync(path.join(testDir, 'TEST-Bar.xml'), '<testsuite><testcase/><testcase/></testsuite>');
+    expect(junitTestCountFor(dir, ':core:test')).toBe(2);
   });
 });
 
@@ -3038,6 +3148,55 @@ describe('runParallel --auto-retry + --clear-data (v0.9 step 1, flags #1 + #2)',
     expect((envelope.parallel?.legs || []).length).toBe(0);
   });
 
+  // Finding #2 — flavored project, androidUnit leg, NO --flavor → the umbrella
+  // `test` task is dispatched (always-correct default) and a non-fatal
+  // flavor_defaulted_umbrella warning announces it (exit 0). The ambiguous
+  // testDebugUnitTest is NEVER dispatched.
+  it('flavored project + androidUnit + no --flavor → umbrella :app:test + flavor_defaulted_umbrella warning (exit 0)', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['test'],
+        build: 'plugins { id("com.android.application") }\nandroid { productFlavors { create("demo") {}\ncreate("prod") {} } }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidUnit'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.warnings.find(w => w.code === 'flavor_defaulted_umbrella')).toBeDefined();
+    const flat = spawn.calls.filter(isGradleCall).map(effectiveGradleArgs).flat();
+    expect(flat).toContain(':app:test');                                // umbrella
+    expect(flat.some(a => /testDebugUnitTest/.test(a))).toBe(false);    // not the ambiguous task
+  });
+
+  // Finding #2 — flavored project + explicit --flavor → the per-variant unit
+  // task is woven; no flavor_unused (the project IS flavored) and no umbrella
+  // default warning (a flavor was chosen).
+  it('flavored project + androidUnit + --flavor demo → testDemoDebugUnitTest, no flavor_unused / umbrella warning', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['test'],
+        build: 'plugins { id("com.android.application") }\nandroid { productFlavors { create("demo") {}\ncreate("prod") {} } }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidUnit', '--flavor', 'demo'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.errors.find(e => e.code === 'flavor_unused')).toBeUndefined();
+    expect(envelope.warnings.find(w => w.code === 'flavor_defaulted_umbrella')).toBeUndefined();
+    const flat = spawn.calls.filter(isGradleCall).map(effectiveGradleArgs).flat();
+    expect(flat).toContain(':app:testDemoDebugUnitTest');
+  });
+
   it('--auto-retry skipped when cascade-isolation already retried (mutual exclusion)', async () => {
     const dir = makeProject([
       { name: 'app',
@@ -3472,7 +3631,7 @@ describe('runParallel modules[] shape parity (drift #2)', () => {
     // Required keys present.
     expect(wetKeys).toEqual([
       'android_dsl', 'android_dsl_variant', 'coverage_plugin',
-      'has_flavor', 'name', 'test_build_type', 'type',
+      'flavors', 'has_flavor', 'name', 'test_build_type', 'type',
     ]);
   });
 });
@@ -3832,5 +3991,172 @@ describe('v0.10 #2 — respect org.gradle.parallel=false', () => {
       runCoverageInjection: makeRunCoverageStub(),
     });
     expect(envelope.gradle_config_applied).toEqual({ parallel_dropped: true });
+  });
+});
+
+// ===========================================================================
+// Bug 1 — probe-backed coverage classification in the parallel envelope
+// ===========================================================================
+describe('canonicalModuleEntry — probe-backed coverage_plugin (Bug 1)', () => {
+  it('uses precomputed effectiveCoveragePlugin when present', () => {
+    const mod = { name: 'core-foo', type: 'jvm', coveragePlugin: null, effectiveCoveragePlugin: 'jacoco' };
+    expect(canonicalModuleEntry(mod).coverage_plugin).toBe('jacoco');
+  });
+  it('falls back to raw coveragePlugin for bare stubs (no precompute)', () => {
+    expect(canonicalModuleEntry({ name: 'a', type: 'jvm', coveragePlugin: 'kover' }).coverage_plugin).toBe('kover');
+    expect(canonicalModuleEntry({ name: 'a', type: 'jvm' }).coverage_plugin).toBeNull();
+  });
+});
+
+// ===========================================================================
+// Fix 2 — coverage report task dispatch
+// ===========================================================================
+describe('buildCoverageReportTasks (Fix 2)', () => {
+  const mods = [
+    { name: 'core-foo', resolved: { coverageTask: 'jacocoTestReport' } },
+    { name: 'core-bar', resolved: { coverageTask: 'koverXmlReportDebug' } },
+    { name: 'app',      resolved: { coverageTask: null } },
+    { name: 'util',     resolved: null },
+  ];
+  it('auto: one :module:reportTask per module that resolved a coverage task', () => {
+    expect(buildCoverageReportTasks(mods, parseArgs([]))).toEqual([
+      ':core-foo:jacocoTestReport', ':core-bar:koverXmlReportDebug',
+    ]);
+  });
+  it('explicit --coverage-tool jacoco: only jacoco report tasks', () => {
+    expect(buildCoverageReportTasks(mods, parseArgs(['--coverage-tool', 'jacoco'])))
+      .toEqual([':core-foo:jacocoTestReport']);
+  });
+  it('explicit --coverage-tool kover: only kover report tasks', () => {
+    expect(buildCoverageReportTasks(mods, parseArgs(['--coverage-tool', 'kover'])))
+      .toEqual([':core-bar:koverXmlReportDebug']);
+  });
+  it('--coverage-tool none: empty (caller also gates, but be defensive)', () => {
+    expect(buildCoverageReportTasks(mods, parseArgs(['--no-coverage']))).toEqual([]);
+  });
+  it('--exclude-coverage drops a module from the dispatch list', () => {
+    expect(buildCoverageReportTasks(mods, parseArgs(['--exclude-coverage', 'core-foo'])))
+      .toEqual([':core-bar:koverXmlReportDebug']);
+  });
+  it('--coverage-modules limits the dispatch list', () => {
+    expect(buildCoverageReportTasks(mods, parseArgs(['--coverage-modules', 'core-foo'])))
+      .toEqual([':core-foo:jacocoTestReport']);
+  });
+
+  // Finding #2 — flavored coverage: a convention-flavor jacoco module exposes
+  // per-variant AGP report tasks (create${Variant}UnitTestCoverageReport), not a
+  // plain jacocoTestReport. The chosen flavor (or the first-flavor default)
+  // selects the Debug report; coverage is debug-only under enableUnitTestCoverage.
+  describe('flavored coverage report tasks (Finding #2)', () => {
+    const flavoredCov = {
+      name: 'app',
+      effectiveHasFlavor: true,
+      flavors: ['demo', 'prod'],
+      resolved: {
+        coverageTask: null,
+        flavors: ['demo', 'prod'],
+        coverageReportTasks: ['createDemoDebugUnitTestCoverageReport', 'createProdDebugUnitTestCoverageReport'],
+      },
+    };
+    it('--flavor demo → the demoDebug coverage report', () => {
+      expect(buildCoverageReportTasks([flavoredCov], parseArgs(['--flavor', 'demo'])))
+        .toEqual([':app:createDemoDebugUnitTestCoverageReport']);
+    });
+    it('--flavor prod → the prodDebug coverage report', () => {
+      expect(buildCoverageReportTasks([flavoredCov], parseArgs(['--flavor', 'prod'])))
+        .toEqual([':app:createProdDebugUnitTestCoverageReport']);
+    });
+    it('no --flavor → alphabetically-first flavor (demo) Debug report (deterministic representative)', () => {
+      expect(buildCoverageReportTasks([flavoredCov], parseArgs([])))
+        .toEqual([':app:createDemoDebugUnitTestCoverageReport']);
+    });
+    it('classified as jacoco → kept under --coverage-tool jacoco, dropped under kover', () => {
+      expect(buildCoverageReportTasks([flavoredCov], parseArgs(['--coverage-tool', 'jacoco'])))
+        .toEqual([':app:createDemoDebugUnitTestCoverageReport']);
+      expect(buildCoverageReportTasks([flavoredCov], parseArgs(['--coverage-tool', 'kover'])))
+        .toEqual([]);
+    });
+  });
+});
+
+describe('runParallel — coverage report dispatch (Fix 2)', () => {
+  // A jvm module that applies jacoco in its OWN build file → analyzeModule sets
+  // coveragePlugin:'jacoco' → predictCoverageTask fills resolved.coverageTask
+  // even though the exit-0 fake gradlew makes the probe return null.
+  const jacocoModule = {
+    name: 'core',
+    build: 'plugins { kotlin("jvm") }\njacoco {}\n',
+    sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+  };
+
+  it('dispatches :module:jacocoTestReport in a SEPARATE leg after the test task', async () => {
+    const dir = makeProject([jacocoModule]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--coverage-tool', 'jacoco'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const gradleArgLists = spawn.calls.filter(isGradleCall).map(effectiveGradleArgs);
+    const testLeg = gradleArgLists.find(a => a.includes(':core:jvmTest'));
+    const reportLeg = gradleArgLists.find(a => a.includes(':core:jacocoTestReport'));
+    expect(testLeg).toBeTruthy();
+    expect(reportLeg).toBeTruthy();
+    // Report task must NOT be bundled into the classified test leg.
+    expect(testLeg).not.toContain(':core:jacocoTestReport');
+  });
+
+  it('--coverage-tool none dispatches NO coverage report task', async () => {
+    const dir = makeProject([jacocoModule]);
+    const spawn = makeSpawnStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--no-coverage'],
+      spawn,
+      log: () => {},
+    });
+    const gradleArgLists = spawn.calls.filter(isGradleCall).map(effectiveGradleArgs);
+    expect(gradleArgLists.some(a => a.includes(':core:jacocoTestReport'))).toBe(false);
+  });
+
+  it('report-task failure → non-fatal coverage_report_dispatch_failed warning, exit unchanged', async () => {
+    const dir = makeProject([jacocoModule]);
+    // Custom spawn: fail ONLY the report task; the test task passes.
+    const spawn = (cmd, args, opts) => {
+      spawn.calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null, env: opts?.env ?? null });
+      const flat = args.join(' ');
+      if (/jacocoTestReport/.test(flat)) {
+        return { status: 1, stdout: '> Task :core:jacocoTestReport FAILED\nBUILD FAILED in 1s\n', stderr: '', signal: null, error: null };
+      }
+      return { status: 0, stdout: 'BUILD SUCCESSFUL in 1s\n', stderr: '', signal: null, error: null };
+    };
+    spawn.calls = [];
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--coverage-tool', 'jacoco'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(envelope.warnings.some(w => w.code === 'coverage_report_dispatch_failed')).toBe(true);
+    expect(exitCode).toBe(0);
+  });
+
+  it('a non-unit leg (js) does NOT dispatch unit-side coverage reports', async () => {
+    // jacocoTestReport / koverXmlReport* aggregate the UNIT test task; a js-only
+    // run never produced that data, so the report dispatch must be gated off.
+    const dir = makeProject([jacocoModule]); // jvm module, no js target
+    const spawn = makeSpawnStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'js', '--coverage-tool', 'jacoco'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const gradleArgLists = spawn.calls.filter(isGradleCall).map(effectiveGradleArgs);
+    expect(gradleArgLists.some(a => a.includes(':core:jacocoTestReport'))).toBe(false);
   });
 });

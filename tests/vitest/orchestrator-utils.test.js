@@ -28,6 +28,10 @@ import {
   readPackageName,
   splitGradleArgs,
   expandNoCoverageAlias,
+  coverageToolFromTask,
+  effectiveCoveragePlugin,
+  effectiveFlavors,
+  effectiveHasFlavor,
 } from '../../lib/orchestrators/orchestrator-utils.js';
 
 let workDir;
@@ -489,5 +493,100 @@ describe('readPackageName', () => {
       '<manifest package="com.example.feature.auth"/>',
     );
     expect(readPackageName(workDir, 'feature:auth')).toBe('com.example.feature.auth');
+  });
+});
+
+describe('coverageToolFromTask', () => {
+  it('maps jacocoTestReport → jacoco', () => {
+    expect(coverageToolFromTask('jacocoTestReport')).toBe('jacoco');
+  });
+  it('maps any koverXmlReport* variant → kover', () => {
+    expect(coverageToolFromTask('koverXmlReport')).toBe('kover');
+    expect(coverageToolFromTask('koverXmlReportDebug')).toBe('kover');
+    expect(coverageToolFromTask('koverXmlReportDesktop')).toBe('kover');
+  });
+  it('maps an AGP per-variant unit-test coverage report → jacoco (Finding #2)', () => {
+    expect(coverageToolFromTask('createDemoDebugUnitTestCoverageReport')).toBe('jacoco');
+    expect(coverageToolFromTask('createProdDebugUnitTestCoverageReport')).toBe('jacoco');
+    expect(coverageToolFromTask('createDebugUnitTestCoverageReport')).toBe('jacoco');
+  });
+  it('returns null for non-coverage task names', () => {
+    expect(coverageToolFromTask('jvmTest')).toBeNull();
+    expect(coverageToolFromTask('connectedDebugAndroidTest')).toBeNull();
+  });
+  it('returns null for null / undefined / non-string input', () => {
+    expect(coverageToolFromTask(null)).toBeNull();
+    expect(coverageToolFromTask(undefined)).toBeNull();
+    expect(coverageToolFromTask(42)).toBeNull();
+    expect(coverageToolFromTask('')).toBeNull();
+  });
+});
+
+describe('effectiveCoveragePlugin', () => {
+  it('returns the static coveragePlugin when present (static wins)', () => {
+    // Even if the probe resolved a different task, static detection is the
+    // higher-specificity signal and wins.
+    const entry = { coveragePlugin: 'kover', resolved: { coverageTask: 'jacocoTestReport' } };
+    expect(effectiveCoveragePlugin(entry)).toBe('kover');
+  });
+  it('falls back to resolved.coverageTask when static is null (root-convention case)', () => {
+    // The Bug-1 scenario: jacoco applied via root subprojects {} → static null,
+    // but the gradle probe found jacocoTestReport.
+    const entry = { coveragePlugin: null, resolved: { coverageTask: 'jacocoTestReport' } };
+    expect(effectiveCoveragePlugin(entry)).toBe('jacoco');
+  });
+  it('maps a probed kover task to kover', () => {
+    const entry = { coveragePlugin: null, resolved: { coverageTask: 'koverXmlReportDebug' } };
+    expect(effectiveCoveragePlugin(entry)).toBe('kover');
+  });
+  it('returns null when neither static nor probe has a signal', () => {
+    expect(effectiveCoveragePlugin({ coveragePlugin: null, resolved: { coverageTask: null } })).toBeNull();
+    expect(effectiveCoveragePlugin({ coveragePlugin: null, resolved: {} })).toBeNull();
+  });
+  it('tolerates a missing resolved key (bare unit-test stubs)', () => {
+    // discoverCoverageModules tests pass {coveragePlugin, type} with no resolved.
+    expect(effectiveCoveragePlugin({ coveragePlugin: 'jacoco' })).toBe('jacoco');
+    expect(effectiveCoveragePlugin({ coveragePlugin: null })).toBeNull();
+  });
+  it('returns null for null / undefined entry', () => {
+    expect(effectiveCoveragePlugin(null)).toBeNull();
+    expect(effectiveCoveragePlugin(undefined)).toBeNull();
+  });
+  it('falls back to flavored coverageReportTasks when coverageTask misses them (Finding #2)', () => {
+    // Convention-jacoco + flavors: static null, no jacocoTestReport task, only
+    // per-variant AGP report tasks in the probe → still classified jacoco.
+    const entry = { coveragePlugin: null, resolved: {
+      coverageTask: null,
+      coverageReportTasks: ['createDemoDebugUnitTestCoverageReport', 'createProdDebugUnitTestCoverageReport'],
+    } };
+    expect(effectiveCoveragePlugin(entry)).toBe('jacoco');
+  });
+});
+
+describe('effectiveFlavors', () => {
+  it('returns probe-recovered flavor names', () => {
+    expect(effectiveFlavors({ resolved: { flavors: ['demo', 'prod'] } })).toEqual(['demo', 'prod']);
+  });
+  it('returns [] when no resolved.flavors (missing / empty / bare stub / null)', () => {
+    expect(effectiveFlavors({ resolved: { flavors: [] } })).toEqual([]);
+    expect(effectiveFlavors({ resolved: {} })).toEqual([]);
+    expect(effectiveFlavors({})).toEqual([]);
+    expect(effectiveFlavors(null)).toEqual([]);
+    expect(effectiveFlavors(undefined)).toEqual([]);
+  });
+});
+
+describe('effectiveHasFlavor', () => {
+  it('true when static hasFlavor is set (per-module productFlavors)', () => {
+    expect(effectiveHasFlavor({ hasFlavor: true })).toBe(true);
+  });
+  it('true when the probe recovered flavors but static is blind (convention case)', () => {
+    expect(effectiveHasFlavor({ hasFlavor: false, resolved: { flavors: ['demo'] } })).toBe(true);
+  });
+  it('false when neither signal is present', () => {
+    expect(effectiveHasFlavor({ hasFlavor: false, resolved: { flavors: [] } })).toBe(false);
+    expect(effectiveHasFlavor({})).toBe(false);
+    expect(effectiveHasFlavor(null)).toBe(false);
+    expect(effectiveHasFlavor(undefined)).toBe(false);
   });
 });

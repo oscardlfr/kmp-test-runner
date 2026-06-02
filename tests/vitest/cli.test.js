@@ -3417,7 +3417,7 @@ describe('parseScriptOutput — v0.5.1 coverage layer (Bugs E + C\')', () => {
   it('Bug E: emits warnings[].code = "no_coverage_data" when banner present', () => {
     const out = [
       'Tests: 5 total | 5 passed | 0 failed | 0 skipped',
-      '[!] No coverage data collected from any module — verify your project has kover/jacoco configured (see https://github.com/oscardlfr/kmp-test-runner#coverage-setup)',
+      '[!] No coverage data collected from any module — verify your project has kover/jacoco configured (see https://github.com/oscardlfr/kmp-test-runner#coverage-tools)',
       'COVERAGE_MODULES_CONTRIBUTING: 0',
       'BUILD SUCCESSFUL',
     ].join('\n');
