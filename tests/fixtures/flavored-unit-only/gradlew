@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Fake gradlew for the flavored-unit-only fixture. When the project-model probe
+# runs `tasks --all --quiet`, emit :app's flavored unit-test tasks + the umbrella
+# `test` (its only test surface — no bare src/test, no androidTest) and the
+# true-negative :instrumented-only's connected tasks. Product flavors (demo/prod)
+# are applied by the ROOT convention, so :app's OWN build file declares none —
+# static has_flavor sees nothing, but the probe reveals
+# test${Flavor}${BuildType}UnitTest. parseGradleTasksOutput keys off the
+# `module:task` shape (no leading colon).
+for arg in "$@"; do
+  case "$arg" in
+    tasks)
+      cat <<'EOF'
+app:testDemoDebugUnitTest - Runs the demoDebug unit tests.
+app:testProdDebugUnitTest - Runs the prodDebug unit tests.
+app:testDemoReleaseUnitTest - Runs the demoRelease unit tests.
+app:testProdReleaseUnitTest - Runs the prodRelease unit tests.
+app:test - Runs all unit tests.
+instrumented-only:connectedDebugAndroidTest - Runs the debug instrumented tests.
+instrumented-only:connectedAndroidTest - Runs all instrumented tests.
+EOF
+      exit 0
+      ;;
+  esac
+done
+echo "BUILD SUCCESSFUL in 1s"
+exit 0

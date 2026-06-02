@@ -43,6 +43,10 @@ tests/fixtures/kmp-cross-platform-e2e/gradle/wrapper/gradle-wrapper.jar binary
 tests/fixtures/convention-flavors/gradlew text eol=lf
 tests/fixtures/convention-flavors/gradlew.bat text eol=crlf
 
+# flavored-unit-only fixture — same LF/CRLF wrapper split.
+tests/fixtures/flavored-unit-only/gradlew text eol=lf
+tests/fixtures/flavored-unit-only/gradlew.bat text eol=crlf
+
 # Skill convenience scripts (.skills/**/*.sh) MUST be LF — on Windows
 # git-bash, CRLF corrupts `set -euo pipefail` (the trailing \r is parsed
 # as part of the option name, producing `set: pipefail : invalid option
