@@ -1539,6 +1539,62 @@ kotlin {
   });
 });
 
+// resolveTasksFor probe path — gate the bare AGP `test` task on a unit-test
+// source set, so `describe` stops reporting `unit=test` for app modules that
+// dispatch would skip at runtime.
+// ------------------------------------------------------------------
+describe('resolveTasksFor gates bare `test` on source-set presence (probe path)', () => {
+  function makeModule(buildScript, sourceSetDirs = []) {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":m")');
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), buildScript);
+    for (const ss of sourceSetDirs) {
+      mkdirSync(path.join(dir, 'm', 'src', ss, 'kotlin'), { recursive: true });
+    }
+    return dir;
+  }
+
+  it('com.android.application with no unit-test source set → unit task null (was over-reported as `test`)', () => {
+    const dir = makeModule(`
+plugins { id("com.android.application") }
+android { namespace = "x" }
+`);
+    const a = analyzeModule(dir, ':m');
+    // Probe exposes the bare AGP `test` lifecycle task even though no
+    // src/test or src/androidUnitTest exists → must NOT resolve to `test`.
+    const r = resolveTasksFor(':m', ['test', 'testDebugUnitTest', 'assembleDebug'], a);
+    expect(r.unitTestTask).toBeNull();
+  });
+
+  it('pure JVM module with src/test → keeps `test` (regression guard)', () => {
+    const dir = makeModule('plugins { kotlin("jvm") }\n', ['test']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', ['test', 'compileTestKotlin'], a);
+    expect(r.unitTestTask).toBe('test');
+  });
+
+  it('KMP module with jvmTest → resolves jvmTest before reaching `test` (regression guard)', () => {
+    const dir = makeModule(`
+plugins { kotlin("multiplatform") }
+kotlin { jvm() }
+`, ['jvmTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', ['jvmTest', 'test'], a);
+    expect(r.unitTestTask).toBe('jvmTest');
+  });
+
+  it('module with an androidUnitTest source set → keeps `test` (gate mirrors dispatch)', () => {
+    const dir = makeModule(`
+plugins { id("com.android.application") }
+android { namespace = "x" }
+`, ['androidUnitTest']);
+    const a = analyzeModule(dir, ':m');
+    const r = resolveTasksFor(':m', ['test', 'testDebugUnitTest'], a);
+    expect(r.unitTestTask).toBe('test');
+  });
+});
+
 // analyzeModule testBuildType detection (2026-05-03 di-sample repro)
 // ------------------------------------------------------------------
 describe('analyzeModule testBuildType', () => {
