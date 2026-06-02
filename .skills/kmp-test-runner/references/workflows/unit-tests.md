@@ -69,7 +69,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP (the canonical source). Full p
 | `--color <mode>` | `auto` | `always` / `never` / `auto`. Controls `--console=plain` injection. Respects `NO_COLOR` on POSIX. |
 | `--force` | off | Bypass the project lockfile when another `kmp-test` process holds it (`errors[].code: lock_held`). |
 
-`--device`, `--device-task`, `--auto-retry`, `--clear-data`, `--flavor` are only relevant when `--test-type androidInstrumented` — see the `android` workflow ([`instrumented/with-android-cli.md`](instrumented/with-android-cli.md) *or* [`instrumented/without-android-cli.md`](instrumented/without-android-cli.md)).
+`--device`, `--device-task`, `--auto-retry`, `--clear-data` are only relevant when `--test-type androidInstrumented` — see the `android` workflow ([`instrumented/with-android-cli.md`](instrumented/with-android-cli.md) *or* [`instrumented/without-android-cli.md`](instrumented/without-android-cli.md)). `--flavor` applies to **both** `androidUnit` and `androidInstrumented` (plus coverage) — see "Product flavors" below.
 
 ## Behaviors únicos
 
@@ -95,11 +95,19 @@ The wrapper auto-skips modules whose filesystem path has no `src/test/`, `src/co
 
 The `SKIP_*_MODULES` env vars layer on top: `SKIP_DESKTOP_MODULES="legacy-app"`, `SKIP_ANDROID_MODULES`, `SKIP_IOS_MODULES`, `SKIP_MACOS_MODULES`. Comma-separated short module names. `PARENT_ONLY_MODULES` skips aggregator-only modules entirely from discovery.
 
+### Product flavors (`androidUnit`)
+
+Android product flavors (e.g. `demo`/`prod`) make the plain `testDebugUnitTest` task **ambiguous** — AGP only creates `test${Flavor}DebugUnitTest`. The CLI detects flavors from the gradle task-graph probe, so flavors applied by a build-logic convention plugin (not the module's own `productFlavors {}`) are recovered too (`describe`/the envelope report `has_flavor: true` + a `flavors: [...]` list).
+
+- **`--flavor demo`** → dispatches `:module:testDemoDebugUnitTest` (and, under `--coverage-tool auto`, the matching `createDemoDebugUnitTestCoverageReport` → real jacoco numbers).
+- **No `--flavor`** on a flavored project → the flavor-agnostic umbrella `:module:test` (runs **every** flavor — correct but slower) + a non-fatal `flavor_defaulted_umbrella` warning listing the candidate flavors. Pass `--flavor <name>` to target one (faster, single-variant coverage).
+- Non-flavored projects are unaffected (`:module:testDebugUnitTest` as before).
+
 ## Edge cases
 
 - **`--dry-run` vs `--list-only`**: dry-run shows the resolved spawn command (`plan.spawn_args[]`); list-only shows the resolved module set (`modules[]`) the spawn would iterate. Both exit 0 without gradle dispatch. Both can combine with `--isolated` to inspect the isolation shape.
 - **`--test-type all`** dispatches every applicable leg (`common` + `androidUnit` + `desktop` + `ios` + `macos`) sequentially-per-leg / parallel-within-leg. Combine with `--isolated` only when ADB / iOS simulator races aren't a concern — otherwise emits `isolated_runtime_race` (`exit 2`) at parse time.
-- **`--flavor` on `parallel` without `--test-type androidInstrumented`**: ignored cleanly when no module declares matching `productFlavors {}`; otherwise emits `flavor_unused` (`exit 2`) at parse time.
+- **`--flavor` on a non-flavored project**: emits `flavor_unused` (`exit 2`) at parse time. On a flavored project, omitting `--flavor` is **not** an error — it dispatches the umbrella task + `flavor_defaulted_umbrella` warning (see "Product flavors" above).
 - **Filter narrows to zero modules**: `--module-filter "nonexistent-*"` produces `errors[].code: no_test_modules` with `caused_by_filter: true` and `exit 2`. Compare with the same code at project-wide scope (no filter, project genuinely has no test modules) which sets `caused_by_filter: false` and `exit 3`.
 - **JDK toolchain mismatch with `--ignore-jdk-mismatch`**: the gate downgrades to a `WARN` stderr line; tests then run under the host default and likely fail with `unsupported_class_version` on the actual task. Prefer fixing the JDK (catalogue auto-select, `--java-home`, `~/.kmp-test/config.json java_home`) over bypassing.
 - **Concurrent `kmp-test` on the same project root**: the second process exits 3 with `errors[].code: lock_held`. Bypass with `--force` only when you know the prior run is dead (stale lockfile from a crashed process). `--isolated` is the safer answer for parallel agents — gives each its own cache dir.

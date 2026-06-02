@@ -30,6 +30,8 @@ import {
   expandNoCoverageAlias,
   coverageToolFromTask,
   effectiveCoveragePlugin,
+  effectiveFlavors,
+  effectiveHasFlavor,
 } from '../../lib/orchestrators/orchestrator-utils.js';
 
 let workDir;
@@ -503,6 +505,11 @@ describe('coverageToolFromTask', () => {
     expect(coverageToolFromTask('koverXmlReportDebug')).toBe('kover');
     expect(coverageToolFromTask('koverXmlReportDesktop')).toBe('kover');
   });
+  it('maps an AGP per-variant unit-test coverage report → jacoco (Finding #2)', () => {
+    expect(coverageToolFromTask('createDemoDebugUnitTestCoverageReport')).toBe('jacoco');
+    expect(coverageToolFromTask('createProdDebugUnitTestCoverageReport')).toBe('jacoco');
+    expect(coverageToolFromTask('createDebugUnitTestCoverageReport')).toBe('jacoco');
+  });
   it('returns null for non-coverage task names', () => {
     expect(coverageToolFromTask('jvmTest')).toBeNull();
     expect(coverageToolFromTask('connectedDebugAndroidTest')).toBeNull();
@@ -544,5 +551,42 @@ describe('effectiveCoveragePlugin', () => {
   it('returns null for null / undefined entry', () => {
     expect(effectiveCoveragePlugin(null)).toBeNull();
     expect(effectiveCoveragePlugin(undefined)).toBeNull();
+  });
+  it('falls back to flavored coverageReportTasks when coverageTask misses them (Finding #2)', () => {
+    // Convention-jacoco + flavors: static null, no jacocoTestReport task, only
+    // per-variant AGP report tasks in the probe → still classified jacoco.
+    const entry = { coveragePlugin: null, resolved: {
+      coverageTask: null,
+      coverageReportTasks: ['createDemoDebugUnitTestCoverageReport', 'createProdDebugUnitTestCoverageReport'],
+    } };
+    expect(effectiveCoveragePlugin(entry)).toBe('jacoco');
+  });
+});
+
+describe('effectiveFlavors', () => {
+  it('returns probe-recovered flavor names', () => {
+    expect(effectiveFlavors({ resolved: { flavors: ['demo', 'prod'] } })).toEqual(['demo', 'prod']);
+  });
+  it('returns [] when no resolved.flavors (missing / empty / bare stub / null)', () => {
+    expect(effectiveFlavors({ resolved: { flavors: [] } })).toEqual([]);
+    expect(effectiveFlavors({ resolved: {} })).toEqual([]);
+    expect(effectiveFlavors({})).toEqual([]);
+    expect(effectiveFlavors(null)).toEqual([]);
+    expect(effectiveFlavors(undefined)).toEqual([]);
+  });
+});
+
+describe('effectiveHasFlavor', () => {
+  it('true when static hasFlavor is set (per-module productFlavors)', () => {
+    expect(effectiveHasFlavor({ hasFlavor: true })).toBe(true);
+  });
+  it('true when the probe recovered flavors but static is blind (convention case)', () => {
+    expect(effectiveHasFlavor({ hasFlavor: false, resolved: { flavors: ['demo'] } })).toBe(true);
+  });
+  it('false when neither signal is present', () => {
+    expect(effectiveHasFlavor({ hasFlavor: false, resolved: { flavors: [] } })).toBe(false);
+    expect(effectiveHasFlavor({})).toBe(false);
+    expect(effectiveHasFlavor(null)).toBe(false);
+    expect(effectiveHasFlavor(undefined)).toBe(false);
   });
 });

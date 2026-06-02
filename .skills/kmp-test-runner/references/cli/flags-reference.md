@@ -60,7 +60,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `--device-task <name>` | auto | ✓ (`androidInstrumented`) | — | — | ✓ | Force gradle task name (e.g. `androidConnectedCheck` for `androidLibrary { }` DSL). Preempts auto-resolution. |
 | `--auto-retry` | off | ✓ (`androidInstrumented`) | — | — | ✓ | Re-dispatch instrumented tasks that ran but failed. One retry per task. Surfaces `parallel.legs[i].retries[]`. |
 | `--clear-data` | off | ✓ (`androidInstrumented`) | — | — | ✓ | `adb shell pm clear <pkg>` before retry. Implies `--auto-retry`. |
-| `--flavor <name>` | none | ✓ (`androidInstrumented`/`all`) | — | — | ✓ | Android `productFlavors` weave. Unused flavor → `flavor_unused` (exit 2). |
+| `--flavor <name>` | none | ✓ (`androidUnit`/`androidInstrumented`/`all` + coverage) | — | — | ✓ | Android `productFlavors` weave for the unit (`test${Cap}${Variant}UnitTest`), instrumented (`connected${Cap}${Variant}AndroidTest`), and coverage report tasks. Convention-applied flavors are recovered from the gradle probe. No `--flavor` on a flavored project → flavor-agnostic umbrella (`test`/`connectedAndroidTest`) + `flavor_defaulted_umbrella` warning. `--flavor` on a non-flavored project → `flavor_unused` (exit 2). |
 | `--skip-app` | off | — | — | — | ✓ | Skip `app/androidApp` modules. android-only. |
 | `--verbose` | off | — | — | — | ✓ | Show last 30 lines of log on failure. android-only. |
 

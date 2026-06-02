@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Fake gradlew for the convention-flavors fixture. When the project-model probe
+# runs `tasks --all --quiet`, emit the flavored unit-test + per-variant AGP
+# coverage report tasks for both modules. Product flavors (demo/prod) AND jacoco
+# unit-test coverage are applied via the ROOT build.gradle.kts `subprojects {}`
+# convention, so neither module's OWN build file declares productFlavors or
+# jacoco — static has_flavor/coveragePlugin see nothing, but the probe reveals
+# test${Flavor}${BuildType}UnitTest + create${Variant}UnitTestCoverageReport.
+# parseGradleTasksOutput keys off the `module:task` shape (no leading colon).
+for arg in "$@"; do
+  case "$arg" in
+    tasks)
+      cat <<'EOF'
+app:testDemoDebugUnitTest - Runs the demoDebug unit tests.
+app:testProdDebugUnitTest - Runs the prodDebug unit tests.
+app:testDemoReleaseUnitTest - Runs the demoRelease unit tests.
+app:testProdReleaseUnitTest - Runs the prodRelease unit tests.
+app:test - Runs all unit tests.
+app:createDemoDebugUnitTestCoverageReport - Creates the demoDebug unit-test coverage report.
+app:createProdDebugUnitTestCoverageReport - Creates the prodDebug unit-test coverage report.
+app:connectedDemoDebugAndroidTest - Runs the demoDebug instrumented tests.
+app:connectedProdDebugAndroidTest - Runs the prodDebug instrumented tests.
+app:connectedAndroidTest - Runs all instrumented tests.
+core-foo:testDemoDebugUnitTest - Runs the demoDebug unit tests.
+core-foo:testProdDebugUnitTest - Runs the prodDebug unit tests.
+core-foo:testDemoReleaseUnitTest - Runs the demoRelease unit tests.
+core-foo:testProdReleaseUnitTest - Runs the prodRelease unit tests.
+core-foo:test - Runs all unit tests.
+core-foo:createDemoDebugUnitTestCoverageReport - Creates the demoDebug unit-test coverage report.
+core-foo:createProdDebugUnitTestCoverageReport - Creates the prodDebug unit-test coverage report.
+EOF
+      exit 0
+      ;;
+  esac
+done
+echo "BUILD SUCCESSFUL in 1s"
+exit 0

@@ -18,6 +18,7 @@ import {
   parseSettingsIncludes,
   analyzeModule,
   resolveTasksFor,
+  flavorsFromTasks,
   parseGradleTasksOutput,
   buildProjectModel,
   clearProjectModelCache,
@@ -1771,6 +1772,70 @@ myproj-android-noop = { id = "myproj.android.noop", version = "1.0" }
     writeFileSync(path.join(dir, 'app', 'build.gradle.kts'),
       'plugins { id("kover") }');
     expect(analyzeModule(dir, ':app').coveragePlugin).toBe('kover');
+  });
+});
+
+// ------------------------------------------------------------------
+// flavorsFromTasks + flavored resolveTasksFor / fixture (Finding #2)
+// ------------------------------------------------------------------
+describe('flavorsFromTasks (Finding #2)', () => {
+  it('recovers flavor names from test${Flavor}${BuildType}UnitTest tasks', () => {
+    expect(flavorsFromTasks([
+      'testDemoDebugUnitTest', 'testProdDebugUnitTest',
+      'testDemoReleaseUnitTest', 'testProdReleaseUnitTest',
+    ])).toEqual(['demo', 'prod']);
+  });
+  it('returns [] for non-flavored unit tasks (no phantom flavor)', () => {
+    expect(flavorsFromTasks(['testDebugUnitTest', 'testReleaseUnitTest', 'test'])).toEqual([]);
+  });
+  it('handles multi-dimension flavor segments (demoFree)', () => {
+    expect(flavorsFromTasks(['testDemoFreeDebugUnitTest'])).toEqual(['demoFree']);
+  });
+  it('dedupes + sorts, ignores unrelated tasks', () => {
+    expect(flavorsFromTasks([
+      'testProdDebugUnitTest', 'assemble', 'testDemoDebugUnitTest',
+      'testDemoReleaseUnitTest', 'connectedProdDebugAndroidTest',
+    ])).toEqual(['demo', 'prod']);
+  });
+  it('returns [] for null / non-array / empty', () => {
+    expect(flavorsFromTasks(null)).toEqual([]);
+    expect(flavorsFromTasks(undefined)).toEqual([]);
+    expect(flavorsFromTasks([])).toEqual([]);
+  });
+});
+
+describe('resolveTasksFor — flavors + flavored coverage (Finding #2)', () => {
+  it('surfaces resolved.flavors + coverageReportTasks from the probe', () => {
+    const r = resolveTasksFor(':app', [
+      'testDemoDebugUnitTest', 'testProdDebugUnitTest', 'test',
+      'createDemoDebugUnitTestCoverageReport', 'createProdDebugUnitTestCoverageReport',
+      'connectedAndroidTest',
+    ]);
+    expect(r.flavors).toEqual(['demo', 'prod']);
+    expect(r.coverageReportTasks).toEqual([
+      'createDemoDebugUnitTestCoverageReport', 'createProdDebugUnitTestCoverageReport',
+    ]);
+    expect(r.unitTestTask).toBe('test'); // umbrella (no jvm/desktop target present)
+  });
+  it('non-probe branch returns flavors:[] + coverageReportTasks:[] for shape parity', () => {
+    const r = resolveTasksFor(':app', null);
+    expect(r.flavors).toEqual([]);
+    expect(r.coverageReportTasks).toEqual([]);
+  });
+});
+
+describe('buildProjectModel — convention-flavors fixture (Finding #2)', () => {
+  const fixture = path.resolve('tests/fixtures/convention-flavors');
+  it('static scan is blind to convention-applied flavors (skipProbe → hasFlavor false)', () => {
+    const m = buildProjectModel(fixture, { skipProbe: true });
+    expect(m.modules[':app'].hasFlavor).toBe(false);
+    expect(m.modules[':core-foo'].hasFlavor).toBe(false);
+  });
+  it('probe recovers flavors + flavored coverage tasks from the task graph', () => {
+    const m = buildProjectModel(fixture, { skipProbe: false, useCache: false });
+    expect(m.modules[':app'].resolved.flavors).toEqual(['demo', 'prod']);
+    expect(m.modules[':app'].resolved.coverageReportTasks)
+      .toContain('createDemoDebugUnitTestCoverageReport');
   });
 });
 

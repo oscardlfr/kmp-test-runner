@@ -298,6 +298,41 @@ describe('findCoverageXmlPath', () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
     expect(findCoverageXmlPath(projectRoot, 'a', 'kover', false)).toBe(null);
   });
+
+  // Finding #2 — AGP per-variant coverage report XML lives under
+  // build/reports/coverage/test/<flavor>/<buildType>/report.xml, not jacoco/.
+  it('finds the AGP per-variant coverage report XML (build/reports/coverage/test/...)', () => {
+    const projectRoot = makeProject([{ name: 'app', coverage: 'jacoco' }]);
+    const dir = path.join(projectRoot, 'app', 'build', 'reports', 'coverage', 'test', 'demo', 'debug');
+    mkdirSync(dir, { recursive: true });
+    const xml = path.join(dir, 'report.xml');
+    writeFileSync(xml, '<report></report>');
+    expect(findCoverageXmlPath(projectRoot, 'app', 'jacoco', false)).toBe(xml);
+  });
+
+  it('prefers the variant-hint flavor when multiple variant reports coexist on disk', () => {
+    const projectRoot = makeProject([{ name: 'app', coverage: 'jacoco' }]);
+    const mk = (flavor) => {
+      const d = path.join(projectRoot, 'app', 'build', 'reports', 'coverage', 'test', flavor, 'debug');
+      mkdirSync(d, { recursive: true });
+      const f = path.join(d, 'report.xml');
+      writeFileSync(f, '<report></report>');
+      return f;
+    };
+    const demoXml = mk('demo');
+    const prodXml = mk('prod');
+    expect(findCoverageXmlPath(projectRoot, 'app', 'jacoco', false, { flavor: 'prod', buildType: 'debug' })).toBe(prodXml);
+    expect(findCoverageXmlPath(projectRoot, 'app', 'jacoco', false, { flavor: 'demo', buildType: 'debug' })).toBe(demoXml);
+  });
+
+  it('classic jacocoTestReport.xml still wins over an AGP variant report (non-flavored byte-identical)', () => {
+    const projectRoot = makeProject([{ name: 'app', coverage: 'jacoco' }]);
+    const classic = dropFakeXml(projectRoot, 'app', 'jacoco');
+    const agpDir = path.join(projectRoot, 'app', 'build', 'reports', 'coverage', 'test', 'demo', 'debug');
+    mkdirSync(agpDir, { recursive: true });
+    writeFileSync(path.join(agpDir, 'report.xml'), '<report></report>');
+    expect(findCoverageXmlPath(projectRoot, 'app', 'jacoco', false)).toBe(classic);
+  });
 });
 
 describe('discoverCoverageModules', () => {

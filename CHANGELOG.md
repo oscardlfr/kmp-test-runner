@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Flavored `androidUnit` dispatch + jacoco coverage (convention-applied flavors)
+
+`parallel --test-type androidUnit` (and `--coverage-tool auto`) dispatched the hard-coded
+`testDebugUnitTest`, which is **ambiguous** under Android product flavors → `task_not_found`,
+every module failed, 0 tests ran. This bit any project whose flavors are applied by a
+build-logic convention plugin (e.g. Now-in-Android's demo/prod) — the static scan only saw a
+module's own `productFlavors {}`, so `has_flavor` was reported `false` even though gradle had
+the flavors. Same static-vs-probe gap class as the root-convention coverage fix, in the flavor
+dimension.
+
+- **Flavor recovery from the probe.** Product-flavor names are now recovered from the
+  `gradlew tasks --all` task graph (`test${Flavor}${BuildType}UnitTest`), so convention-applied
+  flavors are detected. `describe` / the `parallel` envelope now report `has_flavor: true` +
+  a `flavors: [...]` list for these modules.
+- **Flavored unit + instrumented dispatch.** `--flavor <name>` now weaves the flavor into the
+  unit task (`test${Cap}${Variant}UnitTest`) as well as the instrumented task. Without
+  `--flavor` on a flavored project, the leg falls back to the flavor-agnostic umbrella
+  (`:module:test` / `:module:connectedAndroidTest`, which run every flavor) and emits a
+  non-fatal `flavor_defaulted_umbrella` warning. The umbrella's per-variant unit-test results
+  are now counted correctly. Non-flavored projects are byte-identical.
+- **Flavored jacoco coverage.** The per-variant AGP coverage report task
+  (`create${Variant}UnitTestCoverageReport`) is resolved from the probe, dispatched for the
+  chosen flavor (or the first-flavor default under the umbrella), and its XML — written under
+  `build/reports/coverage/test/<flavor>/<buildType>/` — is discovered + aggregated. So
+  `androidUnit --coverage-tool auto` now produces real jacoco numbers on flavored projects.
+- **`flavor_unused` is probe-aware.** Supplying `--flavor` to a genuinely flavored project
+  whose flavors are convention-applied no longer false-fails with `flavor_unused` (exit 2).
+- The `coverage` subcommand accepts `--flavor <name>` to aggregate a specific flavor's report.
+
 ### Fixed — Coverage detection + dispatch for root-convention JaCoCo/Kover
 
 Two bugs stopped coverage from working when JaCoCo/Kover is applied via a root
