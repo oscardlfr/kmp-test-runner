@@ -53,6 +53,27 @@ function makeProject(modules, opts = {}) {
   return dir;
 }
 
+// End-to-end describe lock for the flavored-unit-test gap: a convention-flavored
+// app (src/test<Flavor>/ only, no bare src/test) must report unit=test so
+// describe agrees with the dispatch umbrella — no describe/dispatch divergence.
+describe('runDescribe — flavored-unit-only fixture (probe)', () => {
+  const fixture = path.resolve('tests/fixtures/flavored-unit-only');
+  it(':app reports unit=test + has_flavor + flavors recovered from the probe', () => {
+    const { envelope } = runDescribe({ projectRoot: fixture, args: [] });
+    const app = envelope.describe.modules.find(m => m.name === ':app');
+    expect(app).toBeTruthy();
+    expect(app.test_tasks.unit).toBe('test');
+    expect(app.has_flavor).toBe(true);
+    expect(app.flavors).toEqual(['demo', 'prod']);
+  });
+  it(':instrumented-only reports unit=null (true negative)', () => {
+    const { envelope } = runDescribe({ projectRoot: fixture, args: [] });
+    const instr = envelope.describe.modules.find(m => m.name === ':instrumented-only');
+    expect(instr).toBeTruthy();
+    expect(instr.test_tasks.unit).toBeNull();
+  });
+});
+
 describe('runDescribe envelope shape', () => {
   it('emits canonical envelope with describe:{} block, no tests/modules execution', () => {
     const dir = makeProject([{ name: 'app' }]);

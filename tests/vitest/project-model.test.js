@@ -1593,6 +1593,20 @@ android { namespace = "x" }
     const r = resolveTasksFor(':m', ['test', 'testDebugUnitTest'], a);
     expect(r.unitTestTask).toBe('test');
   });
+
+  it('flavored module (probe lists test<Flavor>UnitTest, no bare unit-test source set) → keeps umbrella `test`', () => {
+    const dir = makeModule(`
+plugins { id("com.android.application") }
+android { namespace = "x" }
+`);
+    const a = analyzeModule(dir, ':m');
+    // Convention-applied flavors: the static scan sees no productFlavors and no
+    // src/test, but the probe lists the flavored unit-test tasks. The umbrella
+    // `test` runs them all, so it must resolve (dispatch picks the same umbrella).
+    const r = resolveTasksFor(':m', ['testDemoDebugUnitTest', 'testProdDebugUnitTest', 'test', 'assembleDebug'], a);
+    expect(r.unitTestTask).toBe('test');
+    expect(r.flavors).toEqual(['demo', 'prod']);
+  });
 });
 
 // analyzeModule testBuildType detection (2026-05-03 di-sample repro)
@@ -1892,6 +1906,30 @@ describe('buildProjectModel — convention-flavors fixture (Finding #2)', () => 
     expect(m.modules[':app'].resolved.flavors).toEqual(['demo', 'prod']);
     expect(m.modules[':app'].resolved.coverageReportTasks)
       .toContain('createDemoDebugUnitTestCoverageReport');
+  });
+});
+
+// A convention-flavored app whose unit tests live only in src/test<Flavor>/
+// (no bare src/test/, no androidTest/) — the static walker tracks only fixed
+// source-set names, so it sees no unit-test source at all; the probe is the
+// sole evidence that the module is testable.
+describe('buildProjectModel — flavored-unit-only fixture (src/test<Flavor>, no bare src/test)', () => {
+  const fixture = path.resolve('tests/fixtures/flavored-unit-only');
+  it('static scan is blind: :app reports no flavors and no tracked unit-test source set', () => {
+    const m = buildProjectModel(fixture, { skipProbe: true });
+    expect(m.modules[':app'].hasFlavor).toBe(false);
+    expect(m.modules[':app'].sourceSets.test).toBe(false);
+    expect(m.modules[':app'].sourceSets.androidUnitTest).toBe(false);
+  });
+  it('probe recovers flavors + resolves the umbrella unit task on :app', () => {
+    const m = buildProjectModel(fixture, { skipProbe: false, useCache: false });
+    expect(m.modules[':app'].resolved.flavors).toEqual(['demo', 'prod']);
+    expect(m.modules[':app'].resolved.unitTestTask).toBe('test');
+  });
+  it('true-negative :instrumented-only has no flavored unit tasks → unit task null', () => {
+    const m = buildProjectModel(fixture, { skipProbe: false, useCache: false });
+    expect(m.modules[':instrumented-only'].resolved.flavors).toEqual([]);
+    expect(m.modules[':instrumented-only'].resolved.unitTestTask).toBeNull();
   });
 });
 

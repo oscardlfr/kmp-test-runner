@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-06-02
+
+### Fixed — Flavored unit tests in `src/test<Flavor>/` were silently skipped
+
+A convention-flavored Android module — one whose product flavors come from a
+build-logic plugin rather than its own `build.gradle.kts` — keeps its unit tests
+in `src/testDemo/`, `src/testProd/`, etc., with no bare `src/test/`. The static
+source-set walker tracks only fixed directory names, so it saw no unit-test
+source set at all: `describe` reported `unit=None` and `parallel` skipped the
+module even though the tests exist. The `gradlew tasks --all` probe already
+recovers the flavor names from the `test<Flavor><BuildType>UnitTest` tasks, so
+that signal (`resolved.flavors`) is now treated as unit-test evidence in both
+`describe`'s task resolution and `parallel`'s dispatch gates (kept in lockstep so
+`describe` can never report a task dispatch would skip). A flavored module with
+no statically-visible unit-test source set now runs the flavor-agnostic umbrella
+`:module:test` (all flavors, with a `flavor_defaulted_umbrella` warning) — or
+`:module:test<Flavor>DebugUnitTest` with `--flavor` — and `describe` reports
+`unit=test`, matching what dispatch runs. Modules with genuinely no unit tests
+(instrumented-only, or no test sources at all) are unaffected.
+
 ## [0.11.0] — 2026-06-02
 
 ### Added — Automatic JaCoCo XML output for coverage extraction
