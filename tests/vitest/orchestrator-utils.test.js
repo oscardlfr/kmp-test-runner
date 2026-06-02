@@ -8,7 +8,9 @@
 // the orchestrator tests and don't need duplicate coverage here.
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -32,6 +34,10 @@ import {
   effectiveCoveragePlugin,
   effectiveFlavors,
   effectiveHasFlavor,
+  shouldAutofixCoverageXml,
+  writeCoverageXmlInitScript,
+  injectInitScript,
+  cleanupInitScript,
 } from '../../lib/orchestrators/orchestrator-utils.js';
 
 let workDir;
@@ -588,5 +594,80 @@ describe('effectiveHasFlavor', () => {
     expect(effectiveHasFlavor({})).toBe(false);
     expect(effectiveHasFlavor(null)).toBe(false);
     expect(effectiveHasFlavor(undefined)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// JaCoCo XML auto-fix init-script helpers (Finding A)
+// ---------------------------------------------------------------------------
+describe('coverage XML autofix init-script helpers', () => {
+  describe('shouldAutofixCoverageXml', () => {
+    it('true when a jacoco report task is present and not opted out', () => {
+      expect(shouldAutofixCoverageXml([':app:jacocoTestReport'], {})).toBe(true);
+      expect(shouldAutofixCoverageXml([':a:createDebugUnitTestCoverageReport'], {})).toBe(true);
+    });
+    it('false when opted out via --no-coverage-xml-autofix', () => {
+      expect(shouldAutofixCoverageXml([':app:jacocoTestReport'], { noCoverageXmlAutofix: true })).toBe(false);
+    });
+    it('false for a pure-Kover task list (no-op)', () => {
+      expect(shouldAutofixCoverageXml([':a:koverXmlReportDebug', ':b:koverXmlReport'], {})).toBe(false);
+    });
+    it('false when the user already passed their own --init-script via --gradle-args', () => {
+      expect(shouldAutofixCoverageXml([':app:jacocoTestReport'], { gradleArgs: ['--init-script', 'my.gradle'] })).toBe(false);
+      expect(shouldAutofixCoverageXml([':app:jacocoTestReport'], { gradleArgs: ['-I', 'my.gradle'] })).toBe(false);
+      expect(shouldAutofixCoverageXml([':app:jacocoTestReport'], { gradleArgs: ['--init-script=my.gradle'] })).toBe(false);
+    });
+    it('false for an empty or non-array task list', () => {
+      expect(shouldAutofixCoverageXml([], {})).toBe(false);
+      expect(shouldAutofixCoverageXml(null, {})).toBe(false);
+    });
+  });
+
+  describe('writeCoverageXmlInitScript', () => {
+    it('writes a .init.gradle under .kmp-test-runner/init-scripts that forces jacoco XML on', () => {
+      workDir = mkdtempSync(path.join(tmpdir(), 'kmp-initscript-'));
+      const p = writeCoverageXmlInitScript(workDir);
+      expect(p).toBeTruthy();
+      expect(p.endsWith('.init.gradle')).toBe(true);
+      expect(p.replace(/\\/g, '/')).toContain('.kmp-test-runner/init-scripts/');
+      expect(existsSync(p)).toBe(true);
+      const body = readFileSync(p, 'utf8');
+      expect(body).toContain('org.gradle.testing.jacoco.tasks.JacocoReport');
+      expect(body).toContain('xml.required = true');
+      expect(body).toContain('configureEach');
+    });
+  });
+
+  describe('injectInitScript', () => {
+    it('appends --init-script <path> as a new array (no mutation)', () => {
+      const base = ['build', '--parallel'];
+      expect(injectInitScript(base, '/tmp/x.init.gradle'))
+        .toEqual(['build', '--parallel', '--init-script', '/tmp/x.init.gradle']);
+      expect(base).toEqual(['build', '--parallel']);
+    });
+    it('no-op on null/empty path', () => {
+      const base = ['build'];
+      expect(injectInitScript(base, null)).toBe(base);
+      expect(injectInitScript(base, '')).toBe(base);
+    });
+  });
+
+  describe('cleanupInitScript', () => {
+    it('removes the file by default', () => {
+      workDir = mkdtempSync(path.join(tmpdir(), 'kmp-initscript-'));
+      const p = writeCoverageXmlInitScript(workDir);
+      expect(existsSync(p)).toBe(true);
+      expect(cleanupInitScript(p)).toBe(true);
+      expect(existsSync(p)).toBe(false);
+    });
+    it('keeps the file when KMP_TEST_KEEP_INIT_SCRIPT=1', () => {
+      workDir = mkdtempSync(path.join(tmpdir(), 'kmp-initscript-'));
+      const p = writeCoverageXmlInitScript(workDir);
+      expect(cleanupInitScript(p, { env: { KMP_TEST_KEEP_INIT_SCRIPT: '1' } })).toBe(false);
+      expect(existsSync(p)).toBe(true);
+    });
+    it('no-op (false) on null path', () => {
+      expect(cleanupInitScript(null)).toBe(false);
+    });
   });
 });

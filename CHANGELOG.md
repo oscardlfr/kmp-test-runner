@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-06-02
+
+### Added — Automatic JaCoCo XML output for coverage extraction
+
+`kmp-test parallel --coverage-tool` now injects a Gradle init-script on the
+coverage-report leg that forces `reports { xml.required = true }` on every
+`JacocoReport` task. Gradle's built-in `jacocoTestReport` leaves `xml.required`
+**false** by default, so modules using the standard `jacoco` plugin emit an HTML
+report only and previously bucketed as `no_xml` even though their tests ran. The
+autofix makes coverage work out of the box with no build change — a genuine
+no-op for Kover (its report tasks aren't `JacocoReport` subtypes) and for
+projects that already enable XML, and it stays inside the coverage-report leg
+(written before the gradle spawn, removed after). Opt out with
+`--no-coverage-xml-autofix`. When opted out — or when XML is otherwise absent —
+a module that ran but produced HTML/`.exec` only now surfaces a
+`coverage_xml_disabled` warning instead of a bare `no_xml`.
+
+### Fixed — Coverage report listed line numbers for fully-covered classes
+
+The Markdown coverage report's **Lines** column listed line numbers for classes at
+**100%** line coverage (Missed = 0). The shared XML parser flagged a line as missed
+on `mi > 0` (missed *instructions*), which also catches **partially-covered** lines
+(`mi > 0` *and* `ci > 0`) — lines JaCoCo counts as covered at the line level. The
+report-mode criterion now matches the (already-correct) gaps-mode one: a line is
+listed only when fully uncovered (`mi > 0` *and* `ci == 0`), so a 100%-covered file
+shows no line numbers and `len(missed_lines)` equals the LINE counter's `missed`.
+Applies to both Kover and JaCoCo XML. Display-only — the numeric `coverage.missed_lines`
+envelope field was already correct. Adds the parser's first direct test coverage.
+
+### Fixed — `describe` over-reported `unit=test` for app modules without test sources
+
+`kmp-test describe` reported `test_tasks.unit: "test"` for `com.android.application`
+modules that have **no unit-test source set** — the bare AGP `test` lifecycle task is
+registered unconditionally, so the gradle-probe task resolver picked it up even though
+dispatch correctly **skips** such modules at runtime. The resolver now gates the bare
+`test` candidate on the presence of a `test`/`androidUnitTest` source set (mirroring
+dispatch), so `describe` no longer advertises a unit task that won't run. KMP
+source-set-parity tasks (`jvmTest`/`desktopTest`/`jsTest`/…) are unaffected.
+
 ## [0.10.2] — 2026-06-02
 
 ### Fixed — Flavored `androidUnit` dispatch + jacoco coverage (convention-applied flavors)
