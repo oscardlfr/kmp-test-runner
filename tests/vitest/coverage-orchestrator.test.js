@@ -491,6 +491,38 @@ describe('runCoverage', () => {
     expect(envelope.coverage.modules_contributing).toBe(2);
   });
 
+  it('report Duration reflects the parent runStartTime (full parallel run), not just the aggregation step', async () => {
+    const projectRoot = makeProject([{ name: 'mod-a', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'mod-a', 'kover');
+    const spawn = makeSpawnStub({ rowsByModule: { 'mod-a': ['mod-a|pkg|Foo.kt|Foo|10|2|12|83.3|3,5'] } });
+    const outputFile = path.join(projectRoot, 'report.md');
+    await runCoverage({
+      projectRoot,
+      args: ['--output-file', outputFile],
+      spawn,
+      // Simulate a ~95s parent run: tests already executed before this
+      // aggregation. Without threading runStartTime the report would show the
+      // (sub-second) aggregation time → "0m 0s".
+      runStartTime: Date.now() - 95_000,
+      testsRan: true,
+      originatingSubcommand: 'parallel',
+    });
+    const report = readFileSync(outputFile, 'utf8');
+    expect(report).toMatch(/\*\*Duration\*\*: 1m \d+s/);
+    expect(report).not.toContain('**Duration**: 0m 0s');
+  });
+
+  it('report Duration uses the aggregation clock when no parent runStartTime (standalone coverage)', async () => {
+    const projectRoot = makeProject([{ name: 'mod-a', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'mod-a', 'kover');
+    const spawn = makeSpawnStub({ rowsByModule: { 'mod-a': ['mod-a|pkg|Foo.kt|Foo|10|2|12|83.3|3,5'] } });
+    const outputFile = path.join(projectRoot, 'report.md');
+    await runCoverage({ projectRoot, args: ['--output-file', outputFile], spawn });
+    const report = readFileSync(outputFile, 'utf8');
+    // Standalone aggregation measures only its own (sub-minute) work — correct.
+    expect(report).toMatch(/\*\*Duration\*\*: 0m \d+s/);
+  });
+
   it('jacoco module with HTML report but no XML → coverage_xml_disabled warning + no_xml bucket', async () => {
     const projectRoot = makeProject([{ name: 'j-html', coverage: 'jacoco' }]);
     // jacocoTestReport ran but emitted HTML only (Gradle default xml.required=false).
