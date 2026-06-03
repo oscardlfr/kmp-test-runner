@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Coverage report `Duration` showed `0m 0s` after a full parallel run
+
+The Markdown coverage report's **Duration** header measured only the
+coverage-aggregation step, not the whole run. On a full `kmp-test parallel` run
+(tests + in-process aggregation), the aggregation clock starts *after* the tests
+finish — so when it is near-instant (reports already on disk, or the coverage
+tool resolves to none) the report showed `Duration: 0m 0s` even though the run
+took minutes. The parallel run's own start time is now threaded into the
+aggregation, so the report `Duration` reflects test execution + aggregation.
+Standalone `coverage` and `parallel --skip-tests` are unchanged — they correctly
+measure only their own work.
+
 ## [0.11.1] — 2026-06-02
 
 ### Fixed — Flavored unit tests in `src/test<Flavor>/` were silently skipped
