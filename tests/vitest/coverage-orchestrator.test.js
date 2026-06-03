@@ -36,7 +36,7 @@ import {
   findCoverageXmlPath,
   aggregateClassRows,
   formatLineRanges,
-  coverageDisplayName,
+  coverageToolLabel,
 } from '../../lib/orchestrators/coverage-orchestrator.js';
 
 let workDir;
@@ -275,11 +275,19 @@ describe('formatLineRanges', () => {
   });
 });
 
-describe('coverageDisplayName', () => {
-  it('maps tool keys to human names', () => {
-    expect(coverageDisplayName('kover')).toBe('Kover');
-    expect(coverageDisplayName('jacoco')).toBe('JaCoCo');
-    expect(coverageDisplayName('none')).toBe('(none)');
+describe('coverageToolLabel', () => {
+  it('maps explicit tool keys to human names', () => {
+    expect(coverageToolLabel('kover')).toBe('Kover');
+    expect(coverageToolLabel('jacoco')).toBe('JaCoCo');
+    expect(coverageToolLabel('none')).toBe('(none)');
+  });
+  it('auto reflects the tool(s) that produced data (never bare "(none)" with data)', () => {
+    expect(coverageToolLabel('auto', ['kover'])).toBe('auto (Kover)');
+    expect(coverageToolLabel('auto', ['jacoco'])).toBe('auto (JaCoCo)');
+    expect(coverageToolLabel('auto', ['jacoco', 'kover'])).toBe('auto (JaCoCo + Kover)');
+  });
+  it('auto with no resolved tools degrades gracefully (defensive)', () => {
+    expect(coverageToolLabel('auto', [])).toBe('auto (none detected)');
   });
 });
 
@@ -521,6 +529,17 @@ describe('runCoverage', () => {
     const report = readFileSync(outputFile, 'utf8');
     // Standalone aggregation measures only its own (sub-minute) work — correct.
     expect(report).toMatch(/\*\*Duration\*\*: 0m \d+s/);
+  });
+
+  it('report Coverage Tool header shows the resolved tool for --coverage-tool auto (not "(none)")', async () => {
+    const projectRoot = makeProject([{ name: 'mod-a', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'mod-a', 'kover');
+    const spawn = makeSpawnStub({ rowsByModule: { 'mod-a': ['mod-a|pkg|Foo.kt|Foo|10|2|12|83.3|3,5'] } });
+    const outputFile = path.join(projectRoot, 'report.md');
+    await runCoverage({ projectRoot, args: ['--output-file', outputFile, '--coverage-tool', 'auto'], spawn });
+    const report = readFileSync(outputFile, 'utf8');
+    expect(report).toContain('**Coverage Tool**: auto (Kover)');
+    expect(report).not.toContain('**Coverage Tool**: (none)');
   });
 
   it('jacoco module with HTML report but no XML → coverage_xml_disabled warning + no_xml bucket', async () => {

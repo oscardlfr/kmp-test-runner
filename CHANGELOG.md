@@ -19,6 +19,16 @@ aggregation, so the report `Duration` reflects test execution + aggregation.
 Standalone `coverage` and `parallel --skip-tests` are unchanged — they correctly
 measure only their own work.
 
+### Fixed — Coverage report showed `Coverage Tool: (none)` under `--coverage-tool auto`
+
+With the default `--coverage-tool auto`, the report header rendered
+`Coverage Tool: (none)` even when coverage was aggregated and real percentages
+were listed below — the label mapped only the literal `kover`/`jacoco` values and
+fell through to `(none)` for `auto`. The header now reflects the tool(s) that
+actually produced the aggregated data, e.g. `auto (Kover)`, `auto (JaCoCo)`, or
+`auto (JaCoCo + Kover)` for a mixed project. Explicit `--coverage-tool kover` /
+`jacoco` / `none` are unchanged.
+
 ## [0.11.1] — 2026-06-02
 
 ### Fixed — Flavored unit tests in `src/test<Flavor>/` were silently skipped
