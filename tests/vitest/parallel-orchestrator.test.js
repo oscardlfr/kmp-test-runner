@@ -1447,6 +1447,29 @@ describe('runParallel', () => {
     expect(envelope.modules[0]).toHaveProperty('test_build_type');
   });
 
+  it('threads the run startTime into in-process coverage aggregation (report Duration covers the full run)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 5s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const before = Date.now();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(stubCoverage.calls.length).toBe(1);
+    // The parallel run's own startTime is threaded so the coverage report's
+    // Duration reflects test execution + aggregation, not aggregation alone
+    // (which is ~0 when the coverage tool resolves to none → "0m 0s").
+    const passed = stubCoverage.calls[0].runStartTime;
+    expect(typeof passed).toBe('number');
+    expect(passed).toBeGreaterThanOrEqual(before);
+    expect(passed).toBeLessThanOrEqual(Date.now());
+    expect(stubCoverage.calls[0].testsRan).toBe(true);
+  });
+
   // wet-audit-v0.9-part2 BUG-2 — coverage gate breach (errors[].code:
   // 'coverage_threshold_exceeded') propagates from in-process runCoverage
   // through state.errors and promotes the parallel envelope to exit 1.
