@@ -1,0 +1,5 @@
+// Groovy plugins {} block with a full plugin id — already matched by the
+// paren-optional id() patterns once the .gradle file is read. Classifies jvm.
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+}

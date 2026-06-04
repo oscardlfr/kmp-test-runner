@@ -671,3 +671,41 @@ describe('coverage XML autofix init-script helpers', () => {
     });
   });
 });
+
+describe('discoverIncludedModules — Groovy DSL', () => {
+  it('parses Groovy single + multi include into bare names', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-groovy-'));
+    writeFileSync(path.join(workDir, 'settings.gradle'),
+      "include ':app'\ninclude ':core-lib', ':data'\n");
+    expect(discoverIncludedModules(workDir)).toEqual(['app', 'core-lib', 'data']);
+  });
+
+  it('still parses Kotlin include(":x") + multi-arg (no regression)', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-kts-'));
+    writeFileSync(path.join(workDir, 'settings.gradle.kts'),
+      'include(":foo")\ninclude(":a", ":b")\n');
+    expect(discoverIncludedModules(workDir)).toEqual(['foo', 'a', 'b']);
+  });
+
+  it('prefers settings.gradle.kts when both DSL files are present', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-both-'));
+    writeFileSync(path.join(workDir, 'settings.gradle.kts'), 'include(":kts")');
+    writeFileSync(path.join(workDir, 'settings.gradle'), "include ':groovy'");
+    expect(discoverIncludedModules(workDir)).toEqual(['kts']);
+  });
+
+  it('ignores commented-out Groovy includes', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-cmt-'));
+    writeFileSync(path.join(workDir, 'settings.gradle'),
+      "include ':real'\n// include ':phantom'\n");
+    expect(discoverIncludedModules(workDir)).toEqual(['real']);
+  });
+
+  it('reads a Groovy module build.gradle via readBuildFile fallback', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-rbf-'));
+    mkdirSync(path.join(workDir, 'app'), { recursive: true });
+    writeFileSync(path.join(workDir, 'app', 'build.gradle'),
+      "apply plugin: 'com.android.library'\n");
+    expect(readBuildFile(workDir, 'app')).toContain('com.android.library');
+  });
+});

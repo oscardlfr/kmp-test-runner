@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Fake gradlew for the groovy-dsl fixture. On the project-model probe
+# (`tasks --all --quiet`), emit per-module unit-test tasks so resolveTasksFor
+# can pick a unitTestTask. parseGradleTasksOutput keys off the `module:task`
+# shape (no leading colon). Illustrative only; never executes a real build.
+for arg in "$@"; do
+  case "$arg" in
+    tasks)
+      cat <<'EOF'
+app:testDebugUnitTest - Runs the debug unit tests.
+app:test - Runs all unit tests.
+core-lib:test - Runs all unit tests.
+data:testDebugUnitTest - Runs the debug unit tests.
+data:test - Runs all unit tests.
+EOF
+      exit 0
+      ;;
+  esac
+done
+echo "BUILD SUCCESSFUL in 1s"
+exit 0
