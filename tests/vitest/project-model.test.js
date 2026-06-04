@@ -26,6 +26,7 @@ import {
   parseVersionCatalog,
   parseBuildLogicPluginDescriptors,
 } from '../../lib/project-model.js';
+import { extractAppliedPluginsFromConventionSource } from '../../lib/project/kotlin-dsl.js';
 
 let workDir;
 
@@ -2722,5 +2723,149 @@ describe('probeGradleTasksCached spawn wrapper (regression for v0.9 EINVAL bug)'
     expect(probeBlock).toBeTruthy();
     expect(probeBlock[0]).toMatch(/spawnGradle\s*\(\s*spawnSync\s*,\s*wrapperPath\s*,/);
     expect(probeBlock[0]).not.toMatch(/spawnSync\s*\(\s*wrapperPath\s*,/);
+  });
+});
+
+// ------------------------------------------------------------------
+// Groovy Gradle DSL support
+// ------------------------------------------------------------------
+describe('parseSettingsIncludes — Groovy DSL', () => {
+  it('parses a single-quote, no-paren Groovy include', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle'), "include ':app'\n");
+    expect(parseSettingsIncludes(dir)).toEqual([':app']);
+  });
+
+  it('parses a multi-arg Groovy include', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle'), "include ':a', ':b'\n");
+    expect(parseSettingsIncludes(dir)).toEqual([':a', ':b']);
+  });
+
+  it('prefers settings.gradle.kts when both DSL files are present', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":kts")');
+    writeFileSync(path.join(dir, 'settings.gradle'), "include ':groovy'");
+    expect(parseSettingsIncludes(dir)).toEqual([':kts']);
+  });
+});
+
+describe('analyzeModule — Groovy plugin forms', () => {
+  function groovyModule(buildGradle) {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle'), buildGradle);
+    return analyzeModule(dir, ':m');
+  }
+
+  it('classifies legacy `apply plugin: com.android.library` as android', () => {
+    expect(groovyModule("apply plugin: 'com.android.library'\n").type).toBe('android');
+  });
+
+  it('classifies a Groovy `plugins { id ... }` kotlin.jvm block as jvm', () => {
+    expect(groovyModule("plugins {\n  id 'org.jetbrains.kotlin.jvm'\n}\n").type).toBe('jvm');
+  });
+
+  it('remaps the short `kotlin-android` id to android', () => {
+    expect(groovyModule("apply plugin: 'kotlin-android'\n").type).toBe('android');
+  });
+
+  it('treats the legacy `kotlin` short id as jvm', () => {
+    expect(groovyModule("apply plugin: 'kotlin'\n").type).toBe('jvm');
+  });
+
+  it('ignores a commented-out apply plugin (comment-safety)', () => {
+    expect(groovyModule("// apply plugin: 'com.android.library'\n").type).toBe('unknown');
+  });
+
+  it('prefers build.gradle.kts over build.gradle when both exist', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    writeFileSync(path.join(dir, 'm', 'build.gradle.kts'), 'plugins { kotlin("jvm") }');
+    writeFileSync(path.join(dir, 'm', 'build.gradle'), "apply plugin: 'com.android.library'");
+    expect(analyzeModule(dir, ':m').type).toBe('jvm'); // .kts wins
+  });
+
+  it('returns unknown when no build file exists', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, 'm'), { recursive: true });
+    expect(analyzeModule(dir, ':m').type).toBe('unknown');
+  });
+});
+
+describe('buildProjectModel — groovy-dsl fixture', () => {
+  const fixture = path.resolve('tests/fixtures/groovy-dsl');
+
+  it('discovers Groovy modules and classifies types (skipProbe)', () => {
+    const m = buildProjectModel(fixture, { skipProbe: true, useCache: false });
+    expect(Object.keys(m.modules).sort()).toEqual([':app', ':core-lib', ':data']);
+    expect(m.modules[':app'].type).toBe('android');
+    expect(m.modules[':core-lib'].type).toBe('jvm');
+    expect(m.modules[':data'].type).toBe('android');
+  });
+
+  it('resolves unitTestTask per module from a pre-written probe cache', () => {
+    // File convention: pre-write tasks-<sha>.txt instead of spawning gradle.
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle'), "include ':app'\ninclude ':lib'\n");
+    // src/test/ source sets so resolveTasksFor accepts the umbrella `test` task.
+    mkdirSync(path.join(dir, 'app', 'src', 'test'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle'), "apply plugin: 'com.android.library'\n");
+    mkdirSync(path.join(dir, 'lib', 'src', 'test'), { recursive: true });
+    writeFileSync(path.join(dir, 'lib', 'build.gradle'), "plugins { id 'org.jetbrains.kotlin.jvm' }\n");
+    const key = computeCacheKey(dir);
+    mkdirSync(path.join(dir, '.kmp-test-runner', 'cache'), { recursive: true });
+    writeFileSync(path.join(dir, '.kmp-test-runner', 'cache', `tasks-${key}.txt`),
+      'app:testDebugUnitTest - Runs.\napp:test - Runs.\nlib:test - Runs.\n');
+    const m = buildProjectModel(dir, { skipProbe: false, useCache: false });
+    expect(m.modules[':app'].type).toBe('android');
+    expect(m.modules[':app'].resolved.unitTestTask).toBe('test');
+    expect(m.modules[':lib'].resolved.unitTestTask).toBe('test');
+  });
+});
+
+describe('computeCacheKey — Groovy DSL additivity', () => {
+  it('changes when a Groovy build.gradle content changes (stale-cache fix)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle'), "include ':app'");
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    writeFileSync(path.join(dir, 'app', 'build.gradle'), "apply plugin: 'com.android.library'");
+    const k1 = computeCacheKey(dir);
+    writeFileSync(path.join(dir, 'app', 'build.gradle'), "apply plugin: 'java'");
+    expect(computeCacheKey(dir)).not.toBe(k1);
+  });
+
+  it('changes when Groovy settings.gradle content changes', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle'), "include ':a'");
+    const k1 = computeCacheKey(dir);
+    writeFileSync(path.join(dir, 'settings.gradle'), "include ':b'");
+    expect(computeCacheKey(dir)).not.toBe(k1);
+  });
+
+  it('hashes the pure-Groovy fixture to the pinned canonical SHA (sh/ps1 parity)', () => {
+    // Cross-platform parity: this SHA is mirrored byte-for-byte in
+    // tests/bats/test-gradle-tasks-probe.bats and
+    // tests/pester/Gradle-Tasks-Probe.Tests.ps1. Any divergence breaks one suite.
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle'), 'rootProject.name = "x"\ninclude \':app\'\n');
+    writeFileSync(path.join(dir, 'build.gradle'), 'apply plugin: \'com.android.library\'\n');
+    expect(computeCacheKey(dir)).toBe('f13a13f4af5d9e60b0b1efb1ff609aedfc88c896');
+  });
+});
+
+describe('Groovy DSL — Tier 3 (JDK signals + build-logic)', () => {
+  it('aggregateJdkSignals reads jvmToolchain / JavaVersion from a Groovy build.gradle', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'build.gradle'),
+      'kotlin { jvmToolchain(17) }\njava { sourceCompatibility = JavaVersion.VERSION_21 }\n');
+    expect(aggregateJdkSignals(dir).min).toBe(21);
+  });
+
+  it('extractAppliedPluginsFromConventionSource captures Groovy apply-plugin + short id', () => {
+    const ids = extractAppliedPluginsFromConventionSource(
+      "apply plugin: 'org.jetbrains.kotlinx.kover'\nplugins { id 'jacoco' }");
+    expect(ids).toContain('org.jetbrains.kotlinx.kover');
+    expect(ids).toContain('jacoco');
   });
 });

@@ -336,3 +336,30 @@ Describe 'Get-KmpCacheKey: cross-platform parity (Gap C)' {
         $withCR | Should -Be $withoutCR
     }
 }
+
+# ----------------------------------------------------------------------------
+# Groovy DSL additivity — settings.gradle + build.gradle are now hashed.
+# Canonical Groovy SHA mirrored byte-for-byte in
+# tests/vitest/project-model.test.js + tests/bats/test-gradle-tasks-probe.bats.
+# ----------------------------------------------------------------------------
+Describe 'Get-KmpCacheKey: Groovy DSL additivity' {
+    BeforeEach {
+        $script:WorkDir = Join-Path $TestDrive ("ck-groovy-" + [guid]::NewGuid().ToString('N').Substring(0,8))
+        New-Item -ItemType Directory -Path $script:WorkDir -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $script:WorkDir 'gradlew') -Force | Out-Null
+    }
+
+    It 'pure-.gradle LF fixture produces canonical Groovy SHA f13a13f4...' {
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'settings.gradle'), "rootProject.name = `"x`"`ninclude ':app'`n")
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'build.gradle'), "apply plugin: 'com.android.library'`n")
+        $sha = Get-KmpCacheKey -ProjectRoot $script:WorkDir
+        $sha | Should -Be 'f13a13f4af5d9e60b0b1efb1ff609aedfc88c896'
+    }
+
+    It 'CRLF .gradle fixture produces SAME Groovy SHA (cross-platform parity)' {
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'settings.gradle'), "rootProject.name = `"x`"`r`ninclude ':app'`r`n")
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'build.gradle'), "apply plugin: 'com.android.library'`r`n")
+        $sha = Get-KmpCacheKey -ProjectRoot $script:WorkDir
+        $sha | Should -Be 'f13a13f4af5d9e60b0b1efb1ff609aedfc88c896'
+    }
+}

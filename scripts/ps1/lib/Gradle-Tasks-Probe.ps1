@@ -56,14 +56,21 @@ function Get-KmpCacheKey {
     if (Test-Path $settings) {
         & $appendNormalized (Get-Content $settings -Raw -ErrorAction SilentlyContinue)
     }
+    $groovySettings = Join-Path $ProjectRoot 'settings.gradle'
+    if (Test-Path $groovySettings) {
+        & $appendNormalized (Get-Content $groovySettings -Raw -ErrorAction SilentlyContinue)
+    }
     $props = Join-Path $ProjectRoot 'gradle.properties'
     if (Test-Path $props) {
         & $appendNormalized (Get-Content $props -Raw -ErrorAction SilentlyContinue)
     }
 
-    $buildFiles = Get-ChildItem -Path $ProjectRoot -Recurse -Filter 'build.gradle.kts' `
-        -Depth 4 -ErrorAction SilentlyContinue |
+    # Enumerate then match by exact leaf name (-eq) rather than -Filter/-Include,
+    # which carry wildcard / legacy 8.3 quirks across PowerShell versions. Mirrors
+    # the bash sibling's `\( -name build.gradle.kts -o -name build.gradle \)`.
+    $buildFiles = Get-ChildItem -Path $ProjectRoot -Recurse -Depth 4 -File -ErrorAction SilentlyContinue |
         Where-Object {
+            ($_.Name -eq 'build.gradle.kts' -or $_.Name -eq 'build.gradle') -and
             $_.FullName -notmatch '[/\\]build[/\\]' -and
             $_.FullName -notmatch '[/\\]\.gradle[/\\]'
         } |
