@@ -1,0 +1,4 @@
+// Groovy module mixing apply-plugin with a SHORT id (kotlin-android) that the
+// Groovy short-id map remaps to the canonical kotlin.android id. Classifies android.
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'

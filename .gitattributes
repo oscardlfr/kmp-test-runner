@@ -47,6 +47,10 @@ tests/fixtures/convention-flavors/gradlew.bat text eol=crlf
 tests/fixtures/flavored-unit-only/gradlew text eol=lf
 tests/fixtures/flavored-unit-only/gradlew.bat text eol=crlf
 
+# groovy-dsl fixture — same LF/CRLF wrapper split.
+tests/fixtures/groovy-dsl/gradlew text eol=lf
+tests/fixtures/groovy-dsl/gradlew.bat text eol=crlf
+
 # Skill convenience scripts (.skills/**/*.sh) MUST be LF — on Windows
 # git-bash, CRLF corrupts `set -euo pipefail` (the trailing \r is parsed
 # as part of the option name, producing `set: pipefail : invalid option

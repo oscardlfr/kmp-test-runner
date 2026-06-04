@@ -1,0 +1,3 @@
+// Legacy Groovy module: applies the Android library plugin via the pre-plugins
+// apply-plugin form (no plugins {} block). analyzeModule must classify android.
+apply plugin: 'com.android.library'

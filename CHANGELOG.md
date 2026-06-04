@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Groovy Gradle DSL project support
+
+`kmp-test` now discovers and classifies projects written in the **Groovy Gradle
+DSL** (`settings.gradle` + `build.gradle` + `apply plugin: '…'`), not just the
+Kotlin DSL (`*.gradle.kts` + `plugins { id("…") }`). Previously a Groovy project
+discovered zero modules and/or typed every module as `unknown`, so `parallel`,
+`coverage`, `android`, `changed`, and `benchmark` all no-opped. Module discovery
+(`settings.gradle` includes), per-module plugin classification (`apply plugin:`
+plus the short `kotlin` / `kotlin-android` / `kotlin-multiplatform` ids and the
+Groovy `plugins {}` block), the content-addressed model cache (Groovy
+`settings.gradle` / `build.gradle` now invalidate it, with the cache key kept in
+byte-for-byte parity across the Node, bash, and PowerShell implementations), JDK
+toolchain-signal detection, and build-logic convention-plugin scanning all read
+both DSL forms — preferring `.kts` when a module ships both. The `gradlew tasks`
+probe is DSL-agnostic, so task resolution and dispatch then work unchanged.
+
 ## [0.11.2] — 2026-06-03
 
 ### Fixed — Coverage report `Duration` showed `0m 0s` after a full parallel run

@@ -1,0 +1,2 @@
+// Root build file (Groovy DSL). Intentionally minimal — this fixture exercises
+// Groovy settings/module discovery + plugin classification, not root config.
