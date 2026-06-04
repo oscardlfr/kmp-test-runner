@@ -278,3 +278,31 @@ EOF
     [ "$sha_a" = "$sha_b" ]
     rm -rf "$a" "$b"
 }
+
+# Groovy DSL additivity: settings.gradle + build.gradle (Groovy) are now hashed.
+# The canonical Groovy SHA below is mirrored byte-for-byte in
+# tests/vitest/project-model.test.js and tests/pester/Gradle-Tasks-Probe.Tests.ps1.
+
+@test "_kmp_compute_cache_key (Groovy DSL): pure-.gradle fixture produces canonical Groovy SHA" {
+    local fix
+    fix="$(mktemp -d)"
+    printf 'rootProject.name = "x"\ninclude '\'':app'\''\n' > "$fix/settings.gradle"
+    printf 'apply plugin: '\''com.android.library'\''\n' > "$fix/build.gradle"
+    source "$PROBE_LIB"
+    local sha
+    sha="$(_kmp_compute_cache_key "$fix")"
+    [ "$sha" = "f13a13f4af5d9e60b0b1efb1ff609aedfc88c896" ]
+    rm -rf "$fix"
+}
+
+@test "_kmp_compute_cache_key (Groovy DSL): CRLF .gradle fixture produces SAME Groovy SHA" {
+    local fix
+    fix="$(mktemp -d)"
+    printf 'rootProject.name = "x"\r\ninclude '\'':app'\''\r\n' > "$fix/settings.gradle"
+    printf 'apply plugin: '\''com.android.library'\''\r\n' > "$fix/build.gradle"
+    source "$PROBE_LIB"
+    local sha
+    sha="$(_kmp_compute_cache_key "$fix")"
+    [ "$sha" = "f13a13f4af5d9e60b0b1efb1ff609aedfc88c896" ]
+    rm -rf "$fix"
+}

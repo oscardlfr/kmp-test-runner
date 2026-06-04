@@ -40,9 +40,10 @@ _kmp_hash() {
 }
 
 # Internal: compute cache key for a project.
-# Concatenates settings.gradle.kts + gradle.properties + every per-module
-# build.gradle.kts content into one stream, hashes it. Any content change
-# triggers a new cache file.
+# Concatenates settings.gradle(.kts) + gradle.properties + every per-module
+# build.gradle(.kts) content into one stream, hashes it. Any content change
+# triggers a new cache file. Both the Kotlin (.kts) and Groovy (.gradle) script
+# forms are hashed; additive, so a Kotlin-only project hashes exactly as before.
 _kmp_compute_cache_key() {
     local project_root="$1"
     local concat=""
@@ -55,13 +56,16 @@ _kmp_compute_cache_key() {
     if [[ -f "$project_root/settings.gradle.kts" ]]; then
         concat="${concat}$(tr -d '\r' < "$project_root/settings.gradle.kts" 2>/dev/null)"
     fi
+    if [[ -f "$project_root/settings.gradle" ]]; then
+        concat="${concat}$(tr -d '\r' < "$project_root/settings.gradle" 2>/dev/null)"
+    fi
     if [[ -f "$project_root/gradle.properties" ]]; then
         concat="${concat}$(tr -d '\r' < "$project_root/gradle.properties" 2>/dev/null)"
     fi
 
-    # Find all build.gradle.kts up to depth 4, excluding build/ and .gradle/
+    # Find all build.gradle(.kts) up to depth 4, excluding build/ and .gradle/
     local found
-    found="$(find "$project_root" -maxdepth 4 -name "build.gradle.kts" \
+    found="$(find "$project_root" -maxdepth 4 \( -name "build.gradle.kts" -o -name "build.gradle" \) \
         -not -path "*/build/*" -not -path "*/.gradle/*" 2>/dev/null | sort)"
     local f
     while IFS= read -r f; do
