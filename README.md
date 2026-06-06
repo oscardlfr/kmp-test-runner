@@ -410,6 +410,8 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--device-task <name>` | _(none)_ | (`androidInstrumented` only) Force an explicit gradle task on the instrumented leg. Preempts every other resolution (project-model probe, `kmpAndroidLibrary` `androidConnectedCheck`, AGP `connected{Variant}AndroidTest`). Applies to `parallel --test-type androidInstrumented` / `android` |
 | `--auto-retry` | _(off)_ | (`androidInstrumented` only) Re-dispatch instrumented tasks that ran but failed at runtime. One retry per task; mutually exclusive with cascade-isolation. Surfaces `parallel.legs[i].retries[]`. Applies to `parallel --test-type androidInstrumented` / `android` |
 | `--clear-data` | _(off)_ | (`androidInstrumented` only) `adb shell pm clear <package>` between failed dispatch + retry. Implies `--auto-retry` to fire. Reads package from AndroidManifest.xml. Applies to `parallel --test-type androidInstrumented` / `android` |
+| `--capture-on-fail` | _(off)_ | (`kmp-test android`) On instrumented-test failure, capture a device screenshot + UI-hierarchy dump via `adb` (best-effort, forensic-only — **never** changes the exit code). Paths surface on `errors[].screenshot_file` / `.ui_hierarchy_file`; `errors[].capture_error` is set when adb can't oblige. **Post-hoc**: shows the device state at task-end (high value for crashes / ANRs / hangs), not the exact assertion frame — see [Capture on failure](#capture-on-failure-android). Captures sit beside the per-module log/logcat/errors artifacts |
+| `--capture-dir <path>` | _(per-run log dir)_ | (`kmp-test android`) Override where `--capture-on-fail` artifacts are written (default: `.kmp-test-runner/logs/android/<runId>/`). Implies `--capture-on-fail`. Relative paths resolve against `--project-root` |
 | `--flavor <name>` | _(none)_ | Android `productFlavors` weave for the unit (`test${Cap}${Variant}UnitTest`), instrumented (`connected${Cap}${Variant}AndroidTest`), and coverage report tasks. Flavors applied by a build-logic convention plugin are recovered from the gradle task-graph probe (not just per-module `productFlavors {}`). Without `--flavor` on a flavored project, the unit / instrumented leg falls back to the flavor-agnostic umbrella (`test` / `connectedAndroidTest`, runs every flavor) and warns `flavor_defaulted_umbrella`. Applies to `parallel` (`androidUnit` / `androidInstrumented` / coverage) / `android` |
 | `--gradle-args <string>` | _(none)_ | Escape hatch — append tokens to every gradlew invocation. Repeatable; whitespace-split. Tokens go LAST so they OVERRIDE CLI defaults via gradle's last-wins (`--gradle-args "--no-parallel"` wins over `--parallel`). Applies to `parallel` / `changed` / `android` / `benchmark` |
 | `--strict-timeouts` | _(off)_ | (`benchmark` only) Restore pre-graded exit-code behavior: any gradle timeout exits 3 even when other modules passed. Default (off) grades partial timeouts as exit 0 + `warnings[].code: "partial_timeout"` when at least one module passed. Use this in CI matrix cells that require hard fail on any timeout |
@@ -610,6 +612,28 @@ kmp-test benchmark --platform android --test-filter "*ScaleBenchmark*#fastPath"
 When the pattern contains `*`, the CLI walks the project sources (skipping `build/`, `.gradle/`, `node_modules/`, `.git/`) for a `class <stripped>` declaration and substitutes the FQN. If no match is found, the original pattern is forwarded — gradle/Android then surfaces a clear error rather than the CLI guessing.
 
 **Method-level filtering on Android.** When the pattern carries a method portion (`#method` separator or `.method` heuristic — last segment lowercase implies method, classes are conventionally UpperCamelCase), the CLI splits class+method, resolves the class, and emits the canonical AGP single-arg form `-Pandroid.testInstrumentationRunnerArguments.class=<FQN>#<method>`. This shape is what AndroidJUnitRunner + Microbenchmark both honor — earlier `class=` + `method=` separate-args form left Microbenchmark running every method on the class. Both input forms parse to the same wire form, so `kmp-test android --test-filter "com.example.WidgetTest#shouldRender"` and `... --test-filter "com.example.WidgetTest.shouldRender"` are equivalent. Use `#` if your class names happen to start with lowercase to avoid the heuristic.
+
+#### Capture on failure (Android)
+
+`--capture-on-fail` grabs forensic artifacts off the device when an instrumented test module fails — useful for Compose UI / Espresso failures an agent (or human) then has to triage:
+
+```sh
+kmp-test android --capture-on-fail --json
+```
+
+On each failed module it runs, best-effort, `adb exec-out screencap` (a PNG) and `adb exec-out uiautomator dump` (the view/semantics hierarchy as XML), writing them beside the existing log / logcat / errors artifacts under `.kmp-test-runner/logs/android/<runId>/` (already covered by the `.kmp-test-runner/` gitignore). The paths surface on the failed-module error entry:
+
+```json
+{ "code": "module_failed", "module": "feature-home",
+  "log_file": "…/feature-home.log", "logcat_file": "…/feature-home_logcat.log",
+  "errors_file": "…/feature-home_errors.json",
+  "screenshot_file": "…/feature-home_screenshot.png",
+  "ui_hierarchy_file": "…/feature-home_ui-hierarchy.xml" }
+```
+
+`--capture-dir <path>` redirects the artifacts elsewhere (and implies `--capture-on-fail`).
+
+The capture is **post-hoc** — adb runs after the gradle task ends, so the screenshot shows the device state at task-end, not the exact frame the assertion failed on (the same way the logcat buffer dump beside it is post-hoc). That makes it most valuable for **crashes, ANRs, and hangs** (the error dialog is still on screen); for a clean Compose assertion failure the screen may already be torn down, but the UI-hierarchy dump, logcat, and `errors.json` still carry the failure detail. It is forensic-only: a capture that can't run sets `errors[].capture_error` and **never** changes the exit code.
 
 ### `kmp-test doctor` — environment diagnosis
 

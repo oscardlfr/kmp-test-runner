@@ -43,6 +43,14 @@ open class AndroidTestsTask : DefaultTask() {
                 "node", runnerPath, "android",
                 "--project-root", extension.projectRoot
             )
+            // Optional --capture-on-fail: screenshot + UI-hierarchy dump on
+            // instrumented-test failure. captureDir (when set) implies it.
+            if (extension.captureOnFail) {
+                cmd += "--capture-on-fail"
+            }
+            if (extension.captureDir.isNotEmpty()) {
+                cmd += listOf("--capture-dir", extension.captureDir)
+            }
             val pb = ProcessBuilder(cmd).redirectErrorStream(true)
             if (extension.sharedProjectName.isNotEmpty()) {
                 pb.environment()["SHARED_PROJECT_NAME"] = extension.sharedProjectName
