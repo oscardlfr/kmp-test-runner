@@ -2396,6 +2396,29 @@ describe('main() — --exclude-modules / --include-untested passthrough', () => 
       process.stdout.write = origWrite;
     }
   });
+
+  it('--test-type help points instrumented-only modules at androidInstrumented', () => {
+    // 2026-06-06 discoverability: --help must steer the Compose-UI-only "no
+    // reports" case toward the instrumented path.
+    const writes = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { writes.push(String(chunk)); return true; };
+    try {
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--help'];
+      main();
+      const parallelOut = writes.join('');
+      expect(parallelOut).toMatch(/instrumented-only/);
+      expect(parallelOut).toMatch(/instrumented_only_skipped/);
+
+      writes.length = 0;
+      process.argv = ['node', 'kmp-test.js', 'android', '--help'];
+      main();
+      const androidOut = writes.join('');
+      expect(androidOut).toMatch(/Compose UI/);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
 });
 
 // ============================================================================
