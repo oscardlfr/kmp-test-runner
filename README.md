@@ -218,7 +218,20 @@ Pass `--project-root <path>` explicitly when scripting from a different director
 | **macOS** | `macos` | `:module:macosArm64Test` / `macosX64Test` / `macosTest` — picked per-module | macOS host (host-native; no simulator) |
 | **JS / Wasm** | _model-only_ (`webTestTask` field) | `:module:jsTest` / `:module:wasmJsTest` | host Node — wrapper-side `--test-type js`/`wasm` dispatch deferred (project model surfaces the task; pass it via `--gradle-args` when needed) |
 
-`kmp-test` auto-detects the project type (`kmp-desktop` → `common`, otherwise `androidUnit`) when `--test-type` is omitted. iOS / macOS / `androidInstrumented` are opt-in — the wrapper does not switch to them implicitly because they require platform-specific runners (simulator / connected device).
+`kmp-test` auto-detects the project type (`kmp-desktop` → `common`, otherwise `androidUnit`) when `--test-type` is omitted. iOS / macOS / `androidInstrumented` are opt-in — the wrapper does not switch to them implicitly because they require platform-specific runners (simulator / connected device). The auto-detected **unit** leg skips modules whose only tests are instrumented (see [Choosing a test type](#choosing-a-test-type)).
+
+### Choosing a test type
+
+Match the command to what you want to run:
+
+| Your tests | Command | Runs on |
+|---|---|---|
+| Unit tests (JVM / desktop, Android host) | `kmp-test parallel` _(auto)_ — or `--test-type common` / `desktop` / `androidUnit` | host JVM |
+| **Android instrumented / Compose UI tests** | `kmp-test android` — or `kmp-test parallel --test-type androidInstrumented` | connected device / emulator |
+| iOS / macOS | `kmp-test parallel --test-type ios` / `--test-type macos` | macOS host |
+| All of the above in one run | `kmp-test parallel --test-type all` | host + device (per leg) |
+
+> **Compose UI tests are instrumented tests** — they live in `androidInstrumentedTest` / `androidTest`, not the unit source set. The default `kmp-test parallel` auto-detects the **unit** leg, which **skips instrumented-only modules**: a project whose only tests are Compose UI tests produces no reports under a bare `kmp-test parallel`. Run those with `kmp-test android` (or `--test-type androidInstrumented`). When the unit leg skips a module for this reason, `kmp-test` flags it — a `[SKIP] … instrumented-only …` line on stderr and a `warnings[].code: "instrumented_only_skipped"` entry under `--json` — so the right flag is one hop away.
 
 ### Subcommands
 
@@ -226,7 +239,7 @@ Pass `--project-root <path>` explicitly when scripting from a different director
 |-----------|-------------|
 | `parallel` | Run all test targets in parallel with coverage |
 | `changed` | Run tests only for modules changed since last commit |
-| `android` | Run Android instrumented tests (requires connected device or emulator) |
+| `android` | Run Android **instrumented** tests — Compose UI included; requires a connected device/emulator. For host **unit** tests use `parallel` |
 | `benchmark` | Run benchmark suites with `Dispatchers.Default` for real contention |
 | `coverage` | Generate coverage report only (skips test execution) |
 | `doctor` | Diagnose the local environment (Node, bash/pwsh, gradlew, JDK, ADB) |
@@ -381,7 +394,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 |------|---------|-------------|
 | `--project-root` | `$PWD` | Path to the Gradle project root |
 | `--max-workers` | `4` | Maximum parallel Gradle workers |
-| `--test-type <type>` | _(auto-detect)_ | `common` \| `desktop` \| `androidUnit` \| `androidInstrumented` \| `ios` \| `macos` \| `all`. iOS / macOS pick the per-module task from the project model. See [Multi-platform test dispatch](#multi-platform-test-dispatch) |
+| `--test-type <type>` | _(auto-detect)_ | `common`/`desktop` (host JVM) \| `androidUnit` (host JVM) \| `androidInstrumented` (device — Compose UI) \| `ios` \| `macos` \| `all`. Omitted = auto-detect runs the **unit** leg (`androidUnit` or `common`), which skips instrumented-only modules with an `instrumented_only_skipped` warning. iOS / macOS pick the per-module task from the project model. See [Choosing a test type](#choosing-a-test-type) and [Multi-platform test dispatch](#multi-platform-test-dispatch) |
 | `--coverage-tool` | `auto` (on `parallel`/`coverage`/`info`) · `jacoco` (on `changed`) | `auto` \| `kover` \| `jacoco` \| `none`. Defaults differ per subcommand — `auto` reads the project's Gradle task graph (catches per-module, convention, and root `subprojects {}` application); `changed` defaults to `jacoco` for historical compatibility |
 | `--coverage-modules` | _(all)_ | Comma-separated module list for coverage aggregation |
 | `--min-missed-lines` | `0` | Fail if missed lines exceed this threshold |
@@ -419,6 +432,8 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--isolated-cache-dir <path>` | _(per-run tmpdir)_ | Override the temp project-cache-dir location. Implies `--isolated` |
 | `--isolated-no-lock` | _(off)_ | Skip the OS-level cache-dir lockfile. Implies `--isolated`. Use only when lockfile contention itself is the bottleneck (rare) |
 | `--color <mode>` | `auto` | `always` \| `never` \| `auto`. Controls defensive `--console=plain` injection into the gradle subprocess. `auto` injects when stdout isn't a TTY or `NO_COLOR` is set (POSIX). Skipped when the user already passes any `--console=*` via `--gradle-args` |
+
+> **Instrumented-only flags.** `--device`, `--device-task`, `--auto-retry`, `--clear-data`, `--capture-on-fail`, and `--capture-dir` apply only to the instrumented leg (`kmp-test android` or `parallel --test-type androidInstrumented`); they are ignored on the unit / `androidUnit` legs.
 
 **Env vars (skip-list):**
 
@@ -459,7 +474,7 @@ Per-machine, per-project presets for things the project-local file can't carry �
       "java_home": "C:/Program Files/Zulu/zulu-21"
     },
     "another-project-name": {
-      "defaults": { "testType": "jvm" }
+      "defaults": { "testType": "desktop" }
     }
   }
 }
@@ -558,7 +573,7 @@ Google's [`android` CLI for agents](https://developer.android.com/tools/agents/a
 
 - **Always valid JSON**, even if parsing the script output partially fails. Parse gaps are surfaced in the `errors[]` array rather than crashing the CLI.
 - **Stable schema**: `tool`, `subcommand`, `version`, `project_root`, `exit_code`, `duration_ms`, `tests {total/passed/failed/skipped}`, `modules[]`, `coverage {tool, missed_lines}`, `errors[]`, `warnings[]`.
-- **`errors` vs `warnings`**: `errors[]` carries fatal signals an agent must act on (`code: "lock_held"`, `"jdk_mismatch"`, BUILD FAILED, parse gaps). `warnings[]` carries non-fatal signals an agent can branch on differently — currently `code: "gradle_deprecation"` (gradle exit 1 caused solely by Gradle 9+ deprecation warnings while every task passed). The corresponding `BUILD FAILED` line is not duplicated to `errors[]` when paired with a deprecation notice.
+- **`errors` vs `warnings`**: `errors[]` carries fatal signals an agent must act on (`code: "lock_held"`, `"jdk_mismatch"`, BUILD FAILED, parse gaps). `warnings[]` carries non-fatal signals an agent can branch on differently — e.g. `code: "gradle_deprecation"` (gradle exit 1 caused solely by Gradle 9+ deprecation warnings while every task passed) or `code: "instrumented_only_skipped"` (the unit leg skipped a module whose only tests are instrumented — run it with `--test-type androidInstrumented`). The corresponding `BUILD FAILED` line is not duplicated to `errors[]` when paired with a deprecation notice. The full warning-code catalogue lives in [`docs/envelope-contract.md`](docs/envelope-contract.md#warning-codes-warningscode).
 - **Single line on stdout** — no surrounding noise, suitable for `JSON.parse()` directly.
 - **Exit code matches `exit_code` field**, so an agent can branch on either.
 
@@ -764,7 +779,9 @@ kmpTestRunner {
     coverageModules = ":core,:app"
     minMissedLines = 0
     sharedProjectName = "my-shared-lib"
-    // v0.7.0: opt into a specific test type. Empty = wrapper auto-detects.
+    // Opt into a specific test type. Empty = wrapper auto-detects (the unit leg).
+    // For a Compose-UI-only / instrumented-only module, set "androidInstrumented"
+    // — otherwise the unit leg skips it and you get no reports.
     // Accepts: "common" | "desktop" | "androidUnit" | "androidInstrumented" | "ios" | "macos" | "all".
     testType = ""
 }

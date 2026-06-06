@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `instrumented_only_skipped` warning + test-type selection docs
+
+`kmp-test parallel` / `changed` now emit `warnings[].code: "instrumented_only_skipped"`
+(carrying `module`) when the unit / auto-detect leg skips a module whose only test
+surface is instrumented (`androidInstrumentedTest` / `androidTest`) — the
+Compose-UI-only "no reports" case surfaced while shipping `--capture-on-fail`. The
+`[SKIP]` line and `skipped[].reason` also became actionable, pointing at
+`--test-type androidInstrumented` / `kmp-test android`. The warning is suppressed under
+`--test-type all` (that run already targets the instrumented leg). Additive — no
+`schema_version` bump.
+
+Docs: a new **"Choosing a test type"** decision table in the README (which command /
+`--test-type` per scenario, with a "Compose UI tests are instrumented" callout),
+per-value `--test-type` guidance, a clarified `android` subcommand description, a
+Gradle-plugin `testType = "androidInstrumented"` note, an "instrumented-only flags"
+grouping note, and a new warning-code catalogue in `docs/envelope-contract.md`. The
+`parallel` / `changed` / `android` `--help` text now steers instrumented-only projects
+to the right flag.
+
 ### Added — `--capture-on-fail` for `kmp-test android`
 
 On an instrumented-test failure, `kmp-test android --capture-on-fail` now grabs

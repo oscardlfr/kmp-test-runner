@@ -53,6 +53,7 @@ import {
   splitCsv,
   globToRegex,
   matchAnyGlob,
+  isInstrumentedOnly,
   pickGradleTaskFor,
   partitionBySkipEnv,
   legsForAll,
@@ -978,7 +979,7 @@ describe('pickGradleTaskFor', () => {
   // source set → orchestrator skips with reason instead of dispatching a
   // hardcoded task name that gradle doesn't have.
   describe('instrumented-only Android module skip', () => {
-    it('Android module with only androidTest/ source set → skipped with reason', () => {
+    it('Android module with only androidTest/ source set → actionable skip + hint', () => {
       const benchmarkModule = {
         name: 'benchmark',
         type: 'android',
@@ -988,12 +989,70 @@ describe('pickGradleTaskFor', () => {
       };
       const result = pickGradleTaskFor(benchmarkModule, '');
       expect(result.task).toBeNull();
-      expect(result.reason).toMatch(/no androidUnit source set/);
+      // Reason now points the user at the fix (was the opaque
+      // "no androidUnit source set (instrumented-only?)").
+      expect(result.reason).toMatch(/instrumented-only/i);
+      expect(result.reason).toMatch(/androidInstrumented/);
+      expect(result.hint).toBe('instrumented_only');
     });
 
     it('Android module with test/ source set → dispatches normally', () => {
       const result = pickGradleTaskFor(androidModule, '');
       expect(result.task).toBe(':app:testDebugUnitTest');
+    });
+
+    it('KMP module that is instrumented-only → hint (was a silent generic skip)', () => {
+      // Regression: a KMP module (type='kmp', no JVM target so unitTestTask is
+      // null) with only androidInstrumentedTest used to fall through to the
+      // opaque "no resolvable test task". It must now carry the hint.
+      const kmpInstrumented = {
+        name: 'ui',
+        type: 'kmp',
+        sourceSets: { androidInstrumentedTest: true },
+        resolved: { unitTestTask: null },
+      };
+      const result = pickGradleTaskFor(kmpInstrumented, '');
+      expect(result.task).toBeNull();
+      expect(result.reason).toMatch(/androidInstrumented/);
+      expect(result.hint).toBe('instrumented_only');
+    });
+
+    it('explicit --test-type androidUnit on instrumented-only → hint', () => {
+      const mod = {
+        name: 'compose-ui',
+        type: 'android',
+        androidDsl: true,
+        sourceSets: { androidInstrumentedTest: true },
+        resolved: null,
+      };
+      const result = pickGradleTaskFor(mod, 'androidUnit');
+      expect(result.task).toBeNull();
+      expect(result.hint).toBe('instrumented_only');
+    });
+
+    it('module WITH unit tests → no hint', () => {
+      const result = pickGradleTaskFor(androidModule, '');
+      expect(result.hint).toBeUndefined();
+    });
+  });
+
+  describe('isInstrumentedOnly predicate', () => {
+    it('instrumented source set + no unit source → true', () => {
+      expect(isInstrumentedOnly({ sourceSets: { androidInstrumentedTest: true } })).toBe(true);
+      expect(isInstrumentedOnly({ sourceSets: { androidTest: true } })).toBe(true);
+      expect(isInstrumentedOnly({ sourceSets: { androidDeviceTest: true } })).toBe(true);
+    });
+
+    it('has a unit source set alongside instrumented → false', () => {
+      expect(isInstrumentedOnly({ sourceSets: { androidTest: true, androidUnitTest: true } })).toBe(false);
+      expect(isInstrumentedOnly({ sourceSets: { androidTest: true, commonTest: true } })).toBe(false);
+      expect(isInstrumentedOnly({ sourceSets: { androidTest: true }, flavors: ['staging'] })).toBe(false);
+    });
+
+    it('NO test source sets at all → false (that is "no tests", not instrumented-only)', () => {
+      expect(isInstrumentedOnly({ sourceSets: { androidMain: true } })).toBe(false);
+      expect(isInstrumentedOnly({ sourceSets: {} })).toBe(false);
+      expect(isInstrumentedOnly({})).toBe(false);
     });
   });
 });
@@ -2210,6 +2269,53 @@ describe('runParallel', () => {
 });
 
 // ===========================================================================
+// instrumented_only_skipped warning (2026-06-06) — the Compose-UI-only
+// "no reports" discoverability fix. The unit/auto leg silently dropped modules
+// whose only test surface is androidInstrumentedTest; now it raises a structured
+// pointer at --test-type androidInstrumented (suppressed under --test-type all,
+// which already targets the instrumented leg).
+// ===========================================================================
+describe('instrumented_only_skipped warning', () => {
+  it('unit leg + instrumented-only module → warning + actionable skip reason', async () => {
+    const dir = makeProject([
+      { name: 'compose-ui', build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n', sourceSets: ['main', 'androidInstrumentedTest'] },
+    ]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidUnit'],
+      spawn,
+      env: { KMP_TEST_SKIP_ADB: '1' },
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const warn = (envelope.warnings || []).find(w => w.code === 'instrumented_only_skipped');
+    expect(warn).toBeTruthy();
+    expect(warn.message).toMatch(/androidInstrumented/);
+    // Module also lands on skipped[] with the actionable reason (not the old opaque text).
+    const sk = (envelope.skipped || []).find(s => /compose-ui/.test(s.module));
+    expect(sk).toBeTruthy();
+    expect(sk.reason).toMatch(/instrumented-only/i);
+  });
+
+  it('--test-type all suppresses the warning (instrumented leg is targeted by the run)', async () => {
+    const dir = makeProject([
+      { name: 'compose-ui', build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n', sourceSets: ['main', 'androidInstrumentedTest'] },
+    ]);
+    const spawn = makeSpawnStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'all'],
+      spawn,
+      env: { KMP_TEST_SKIP_ADB: '1' },
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect((envelope.warnings || []).some(w => w.code === 'instrumented_only_skipped')).toBe(false);
+  });
+});
+
+// ===========================================================================
 // applyModuleFilters
 // ===========================================================================
 describe('applyModuleFilters', () => {
@@ -2316,7 +2422,7 @@ describe('pickGradleTaskFor — flavored unit source-set gate (probe flavors)', 
   it('default leg: flavored app (probe flavors, no test src) → umbrella :app:test', () => {
     expect(pickGradleTaskFor(flavoredApp, '').task).toBe(':app:test');
   });
-  it('androidUnit: instrumented-only module without probe flavors → null (true negative)', () => {
+  it('androidUnit: instrumented-only module without probe flavors → null + instrumented_only hint', () => {
     const instr = {
       name: 'instrumented-only', type: 'android',
       sourceSets: { test: false, androidUnitTest: false, androidTest: true },
@@ -2324,7 +2430,10 @@ describe('pickGradleTaskFor — flavored unit source-set gate (probe flavors)', 
     };
     const r = pickGradleTaskFor(instr, 'androidUnit');
     expect(r.task).toBeNull();
-    expect(r.reason).toMatch(/no androidUnitTest source set/);
+    // 2026-06-06: the bare "no androidUnitTest source set" reason became an
+    // actionable instrumented-only pointer (still a true negative — task null).
+    expect(r.reason).toMatch(/androidInstrumented/);
+    expect(r.hint).toBe('instrumented_only');
   });
 });
 
