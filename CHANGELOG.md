@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `--capture-on-fail` for `kmp-test android`
+
+On an instrumented-test failure, `kmp-test android --capture-on-fail` now grabs
+forensic device artifacts via `adb` — a screenshot (`exec-out screencap`) and a
+UI-hierarchy dump (`exec-out uiautomator dump`) — and writes them beside the
+existing per-module log / logcat / errors files under
+`.kmp-test-runner/logs/android/<runId>/`. The paths surface on the failed-module
+`errors[]` entry as `screenshot_file` / `ui_hierarchy_file` (additive — no
+`schema_version` bump), giving an agent visual + structural context to triage a
+failing Compose UI / Espresso test. `--capture-dir <path>` overrides the artifact
+location (implies `--capture-on-fail`).
+
+The capture is **post-hoc** (adb runs after the gradle task ends, like the logcat
+buffer dump beside it): highest value for crashes / ANRs / hangs; for a clean
+Compose assertion failure the screen may already be torn down, but the UI dump,
+logcat, and `errors.json` retain the detail. It is forensic-only and best-effort —
+a capture that can't run sets `errors[].capture_error` and **never** changes the
+exit code. New Gradle-plugin extension properties `captureOnFail` / `captureDir`
+propagate the flags through the `androidTests` task.
+
+Visual-diff / golden-image screenshot testing is intentionally **out of scope**
+(that is Roborazzi / Paparazzi / Compose Preview Screenshot Testing territory).
+Capture on `parallel --test-type androidInstrumented` is a queued follow-up.
+
 ## [0.12.0] — 2026-06-04
 
 ### Added — Groovy Gradle DSL project support

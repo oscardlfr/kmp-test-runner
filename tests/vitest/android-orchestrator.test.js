@@ -75,19 +75,26 @@ function makeSpawnStub({ gradle = {}, perModuleStatus = {}, adb = {} } = {}) {
       args: [...args],
       cwd: opts?.cwd ?? null,
     });
-    // adb invocations: probe, logcat clear, logcat dump, pm clear.
+    // adb invocations: probe, logcat clear/dump, pm clear, and the
+    // --capture-on-fail captures (screencap → PNG buffer; uiautomator dump via
+    // /dev/tty or the /sdcard fallback + cat → hierarchy XML).
     if (cmd === 'adb') {
-      const sub = args[args.length - 1] === '-c' ? 'logcat-clear'
+      const sub = args.includes('screencap') ? 'screencap'
+                : (args.includes('uiautomator') && args.includes('/dev/tty')) ? 'ui-tty'
+                : args.includes('uiautomator') ? 'ui-file'
+                : args.includes('cat') ? 'cat'
+                : args[args.length - 1] === '-c' ? 'logcat-clear'
                 : args.includes('clear') ? 'pm-clear'
                 : args.includes('-d') ? 'logcat-dump'
                 : 'unknown-adb';
-      return {
-        status: 0,
-        stdout: adb[sub] ?? '',
-        stderr: '',
-        signal: null,
-        error: null,
-      };
+      // Sensible defaults so a plain --capture-on-fail run produces real
+      // artifacts without per-test wiring; override via the `adb` opts map.
+      let defStdout = '';
+      if (sub === 'screencap') defStdout = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      else if (sub === 'ui-tty' || sub === 'cat') defStdout = '<?xml version="1.0"?>\n<hierarchy><node text="x"/></hierarchy>\n';
+      const stdout = Object.prototype.hasOwnProperty.call(adb, sub) ? adb[sub] : defStdout;
+      const status = (adb._status && adb._status[sub] !== undefined) ? adb._status[sub] : 0;
+      return { status, stdout, stderr: '', signal: null, error: null };
     }
     // Otherwise: gradle. Look up per-module status by inspecting the task arg.
     // On Windows, spawnGradle wraps in cmd.exe so the task arg lives inside
@@ -1446,5 +1453,113 @@ describe('runAndroid --auto-retry refreshes adb server (PR 3.3 / A5)', () => {
     const startCall = spawn.calls.find(c => c.cmd === 'adb' && c.args[0] === 'start-server');
     expect(killCall).toBeUndefined();
     expect(startCall).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --capture-on-fail — best-effort device screenshot + UI-hierarchy dump on
+// instrumented-test failure. Forensic-only: written beside the log/logcat/
+// errors artifacts, surfaced on the module_failed error entry, and NEVER able
+// to change the run's exit code.
+// ---------------------------------------------------------------------------
+describe('runAndroid --capture-on-fail', () => {
+  const device = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+
+  it('failed module + flag → screenshot_file + ui_hierarchy_file on the error, files on disk', async () => {
+    const dir = makeProject([{ name: 'feature' }]);
+    const spawn = makeSpawnStub({ perModuleStatus: { feature: 1 } });
+
+    const { envelope, exitCode } = await runAndroid({
+      projectRoot: dir, args: ['--capture-on-fail'], spawn, adbProbe: device, runId: 'RUN1',
+    });
+
+    expect(exitCode).toBe(1);
+    const err = envelope.errors.find(e => e.code === 'module_failed' && e.module === 'feature');
+    expect(err).toBeTruthy();
+    expect(err.screenshot_file).toMatch(/feature_screenshot\.png$/);
+    expect(err.ui_hierarchy_file).toMatch(/feature_ui-hierarchy\.xml$/);
+    expect(err.capture_error).toBeUndefined();
+    expect(existsSync(err.screenshot_file)).toBe(true);
+    expect(existsSync(err.ui_hierarchy_file)).toBe(true);
+    // Rooted under the per-run android log dir (one .gitignore covers it).
+    expect(err.screenshot_file).toContain(path.join('.kmp-test-runner', 'logs', 'android', 'RUN1'));
+    // The capture adb calls actually targeted the resolved device serial.
+    const screencap = spawn.calls.find(c => c.cmd === 'adb' && c.args.includes('screencap'));
+    expect(screencap.args).toContain('R3CT30KAMEH');
+  });
+
+  it('passed module + flag → no capture performed (no screencap adb call)', async () => {
+    const dir = makeProject([{ name: 'feature' }]);
+    const spawn = makeSpawnStub({ perModuleStatus: { feature: 0 } });
+
+    const { envelope, exitCode } = await runAndroid({
+      projectRoot: dir, args: ['--capture-on-fail'], spawn, adbProbe: device,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(envelope.errors).toEqual([]);
+    expect(spawn.calls.some(c => c.cmd === 'adb' && c.args.includes('screencap'))).toBe(false);
+  });
+
+  it('failed module WITHOUT the flag → no capture, error entry carries no screenshot_file', async () => {
+    const dir = makeProject([{ name: 'feature' }]);
+    const spawn = makeSpawnStub({ perModuleStatus: { feature: 1 } });
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir, args: [], spawn, adbProbe: device,
+    });
+
+    const err = envelope.errors.find(e => e.code === 'module_failed');
+    expect(err).toBeTruthy();
+    expect(err.screenshot_file).toBeUndefined();
+    expect(err.ui_hierarchy_file).toBeUndefined();
+    expect(spawn.calls.some(c => c.cmd === 'adb' && c.args.includes('screencap'))).toBe(false);
+  });
+
+  it('adb capture failure → capture_error on the error, exit code unchanged (forensic-only)', async () => {
+    const dir = makeProject([{ name: 'feature' }]);
+    const spawn = makeSpawnStub({
+      perModuleStatus: { feature: 1 },
+      // Force every capture adb call to yield nothing usable.
+      adb: { screencap: Buffer.alloc(0), 'ui-tty': '', 'ui-file': '', cat: '', _status: { screencap: 1 } },
+    });
+
+    const { envelope, exitCode } = await runAndroid({
+      projectRoot: dir, args: ['--capture-on-fail'], spawn, adbProbe: device,
+    });
+
+    expect(exitCode).toBe(1); // capture failure does NOT change the test result
+    const err = envelope.errors.find(e => e.code === 'module_failed');
+    expect(err.screenshot_file).toBeUndefined();
+    expect(err.ui_hierarchy_file).toBeUndefined();
+    expect(err.capture_error).toBeTruthy();
+  });
+
+  it('capture runs AFTER the --auto-retry attempt (reflects the final failed state)', async () => {
+    const dir = makeProject([{ name: 'feature' }]);
+    const spawn = makeSpawnStub({ perModuleStatus: { feature: 1 } });
+
+    await runAndroid({
+      projectRoot: dir, args: ['--capture-on-fail', '--auto-retry'], spawn, adbProbe: device,
+    });
+
+    const gradleIdxs = spawn.calls.map((c, i) => (isGradleCall(c) ? i : -1)).filter(i => i >= 0);
+    const lastGradle = gradleIdxs[gradleIdxs.length - 1];
+    const screencapIdx = spawn.calls.findIndex(c => c.cmd === 'adb' && c.args.includes('screencap'));
+    expect(gradleIdxs.length).toBe(2);                 // initial + retry
+    expect(screencapIdx).toBeGreaterThan(lastGradle);  // capture after the retry dispatch
+  });
+
+  it('--capture-dir <path> redirects artifacts to the override directory', async () => {
+    const dir = makeProject([{ name: 'feature' }]);
+    const spawn = makeSpawnStub({ perModuleStatus: { feature: 1 } });
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir, args: ['--capture-on-fail', '--capture-dir', 'capture-out'], spawn, adbProbe: device,
+    });
+
+    const err = envelope.errors.find(e => e.code === 'module_failed');
+    expect(err.screenshot_file).toContain(path.join(dir, 'capture-out'));
+    expect(existsSync(err.screenshot_file)).toBe(true);
   });
 });
