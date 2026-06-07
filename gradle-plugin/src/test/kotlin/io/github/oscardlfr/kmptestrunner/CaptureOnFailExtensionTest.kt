@@ -11,10 +11,11 @@ import kotlin.test.assertNotNull
 
 /**
  * Verify the `captureOnFail` / `captureDir` extension properties (--capture-on-fail
- * for `kmp-test android`) are accepted at the DSL level and that the
- * `androidTests` task still registers when they are set. Runtime arg propagation
- * to the bundled runner is unit-tested Node-side
- * (tests/vitest/android-orchestrator.test.js); the on-device behaviour is
+ * for `kmp-test android` AND `parallel --test-type androidInstrumented`) are
+ * accepted at the DSL level and that the `androidTests` + `parallelTests` tasks
+ * still register when they are set. Runtime arg propagation to the bundled runner
+ * is unit-tested Node-side (tests/vitest/android-orchestrator.test.js +
+ * tests/vitest/parallel-orchestrator.test.js); the on-device behaviour is
  * validated manually (no device in CI). Mirrors TestTypeExtensionTest.
  */
 class CaptureOnFailExtensionTest {
@@ -67,10 +68,16 @@ class CaptureOnFailExtensionTest {
             .withArguments("tasks", "--all")
             .build()
 
-        // DSL parsed without error AND the androidTests task is still registered.
+        // DSL parsed without error AND both capture-aware tasks are registered:
+        // androidTests (the dedicated subcommand) and parallelTests (which
+        // propagates the same flags to the androidInstrumented leg).
         assertNotNull(
             result.output.lines().find { it.startsWith("androidTests") },
             "androidTests task should be registered with captureOnFail set"
+        )
+        assertNotNull(
+            result.output.lines().find { it.startsWith("parallelTests") },
+            "parallelTests task should be registered with captureOnFail set"
         )
     }
 }

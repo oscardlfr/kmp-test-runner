@@ -55,6 +55,13 @@ param(
     [switch]$AutoRetry,
     [switch]$ClearData,
     [string]$Flavor = "",
+    # 2026-06-07 — forensic capture on instrumented-module failure (screenshot +
+    # UI-hierarchy dump via adb). Parity with `kmp-test android`;
+    # androidInstrumented-only, no-op for other test types. CaptureDir (when set)
+    # implies CaptureOnFail. Param-block whitelist needed because the wrapper has
+    # `passthrough: false` (cli.js strips kebab→PascalCase upstream).
+    [switch]$CaptureOnFail,
+    [string]$CaptureDir = "",
     # 2026-05-05 v0.9 step 2 — global escape hatch. Single string param
     # (NOT [string[]]) because PowerShell binds string-array params via comma
     # syntax, but gradle prop values legitimately contain commas (`-Pfoo=a,b`).
@@ -116,6 +123,9 @@ if ($DeviceTask)           { $kmpArgv += @('--device-task', $DeviceTask) }
 if ($AutoRetry)            { $kmpArgv += @('--auto-retry') }
 if ($ClearData)            { $kmpArgv += @('--clear-data') }
 if ($Flavor)               { $kmpArgv += @('--flavor', $Flavor) }
+# 2026-06-07 — forensic capture on instrumented failure passthrough.
+if ($CaptureOnFail)        { $kmpArgv += @('--capture-on-fail') }
+if ($CaptureDir)           { $kmpArgv += @('--capture-dir', $CaptureDir) }
 # 2026-05-05 v0.9 step 2 — gradle-args escape hatch. cli.js joined multi-
 # invocation values with ASCII \x1F. Split + re-emit one --gradle-args per
 # token so the Node-side parser sees the canonical multi-invocation shape.
