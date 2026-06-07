@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `kmp-test android` mis-graded a failing AGP 9.2 connected test as passed
+
+Some AGP device-test reporters (observed AGP 9.2.1 `connectedDebugAndroidTest`)
+emit a parseable test `total` but no failure marker that `parseTestCounts`
+recognises on a failing run, so a single failing instrumented test surfaced as
+`tests: {total:1, passed:1, failed:0}` even though the task failed. The verdict
+was always correct (the gradle exit code is the authority — `exit_code:1` +
+`errors[].module_failed`), but the cosmetic counts contradicted it. A new
+format-agnostic `reconcileTestCounts(counts, exit)` attributes at least one
+failure when the task exited non-zero yet the parse found a `total` with zero
+failures; counts remain best-effort otherwise (no-op on exit 0, and when nothing
+parsed). Additive — no `schema_version` bump.
+
 ### Added — `--capture-on-fail` for `parallel --test-type androidInstrumented`
 
 `kmp-test parallel` now honors `--capture-on-fail` / `--capture-dir` on its
