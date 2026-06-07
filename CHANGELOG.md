@@ -5,7 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.13.0] — 2026-06-07
+
+### Changed — Opus 4.8 token-cost figures + clean numeric tables
+
+The published token-cost tables now report **`claude-opus-4-8`** (was `claude-opus-4-7`) across the
+README drill-downs, `docs/token-cost-measurement.md`, and the committed
+`tools/runs/cross-model-results-{parallel,coverage,changed,benchmark}.txt`. `claude-opus-4-8` shares
+`claude-opus-4-7`'s tokenizer — the cross-model re-measure showed a *constant* ~5-token `count_tokens`
+request-scaffolding delta independent of input size — so the within-project agent-vs-CLI (A:C) ratios
+barely move: parallel 336× (unchanged), changed 214× → 217×, benchmark 145× → 147×, coverage
+29,952× → 30,075×. The render-broken `█` ASCII bar charts (GitHub renders them as barcode noise) are
+replaced with clean numeric tables across the README + token-cost docs.
+
+### Documentation — CI-usage guide + Windows TLS troubleshooting
+
+A new **"Using `kmp-test` in CI"** section in the README and a **Windows TLS troubleshooting** recipe in
+the docs, covering how to wire the runner into a CI pipeline and recover from Windows TLS handshake failures.
 
 ### Fixed — shell-script line endings + stale-install guidance
 
