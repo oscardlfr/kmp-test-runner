@@ -61,6 +61,8 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP (the canonical source). Full p
 | `--flavor <name>` | none | Android `productFlavors` weave. Unused → `flavor_unused` (exit 2). |
 | `--auto-retry` | off | Re-dispatch instrumented tasks that ran but failed. One retry per task. |
 | `--clear-data` | off | `adb shell pm clear <pkg>` before retry. Implies `--auto-retry`. |
+| `--capture-on-fail` | off | On per-module failure, capture a device screenshot + UI-hierarchy dump via `adb` (best-effort). Paths on `errors[].screenshot_file` / `.ui_hierarchy_file`; `capture_error` when adb can't oblige. Forensic-only — never changes the exit code. Same flag on `parallel --test-type androidInstrumented`. |
+| `--capture-dir <path>` | per-run log dir | Override where `--capture-on-fail` artifacts land (default `.kmp-test-runner/logs/android/<runId>/`). Implies `--capture-on-fail`. |
 | `--skip-app` | off | Skip `app` / `androidApp` modules — library-only instrumented dispatch. |
 | `--verbose` | off | Show last 30 lines of log on per-module failure. |
 | `--isolated` | off | Wrap gradle with `--project-cache-dir <tmp>`. **Requires `--device <SERIAL>`** for instrumented dispatch — otherwise `isolated_runtime_race` (exit 2). |

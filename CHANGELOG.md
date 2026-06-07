@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `--capture-on-fail` for `parallel --test-type androidInstrumented`
+
+`kmp-test parallel` now honors `--capture-on-fail` / `--capture-dir` on its
+instrumented leg, extending the forensic device capture (screenshot via
+`adb exec-out screencap` + UI-hierarchy dump via `adb exec-out uiautomator dump`)
+that previously only the `kmp-test android` subcommand offered. When an
+`androidInstrumented` module fails — whether run directly
+(`--test-type androidInstrumented`) or as the instrumented leg of `--test-type all`
+— the artifacts land under `.kmp-test-runner/logs/android/<runId>/`, namespaced
+per module (`<module>_screenshot.png` / `<module>_ui-hierarchy.xml`), and their
+paths surface on the failed-module `errors[]` entry as `screenshot_file` /
+`ui_hierarchy_file`, with `capture_error` set when adb can't oblige. Capture fires
+once per still-failed module, **after** `--auto-retry` / cascade-isolation settle
+(final-failure state, no per-attempt spam), reuses the already-resolved device
+serial (`--device`, else the first probed device — emulators are first-class), and
+is forensic + best-effort: it **never** changes the exit code. The fields are
+additive on `errors[]` — no `schema_version` bump. The Gradle-plugin
+`parallelTests` task propagates the existing `captureOnFail` / `captureDir`
+extension properties.
+
 ### Added — `instrumented_only_skipped` warning + test-type selection docs
 
 `kmp-test parallel` / `changed` now emit `warnings[].code: "instrumented_only_skipped"`
@@ -48,7 +68,8 @@ propagate the flags through the `androidTests` task.
 
 Visual-diff / golden-image screenshot testing is intentionally **out of scope**
 (that is Roborazzi / Paparazzi / Compose Preview Screenshot Testing territory).
-Capture on `parallel --test-type androidInstrumented` is a queued follow-up.
+Capture on `parallel --test-type androidInstrumented` followed in a separate
+change (see the entry above).
 
 ## [0.12.0] — 2026-06-04
 

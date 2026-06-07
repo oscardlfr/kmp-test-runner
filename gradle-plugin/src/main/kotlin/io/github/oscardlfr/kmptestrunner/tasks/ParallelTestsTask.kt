@@ -33,6 +33,16 @@ open class ParallelTestsTask : DefaultTask() {
             if (extension.testType.isNotEmpty()) {
                 cmd += listOf("--test-type", extension.testType)
             }
+            // Optional --capture-on-fail: screenshot + UI-hierarchy dump on
+            // instrumented-test failure (effective only with
+            // testType = "androidInstrumented" / "all"). captureDir (when set)
+            // implies it. Mirrors AndroidTestsTask.
+            if (extension.captureOnFail) {
+                cmd += "--capture-on-fail"
+            }
+            if (extension.captureDir.isNotEmpty()) {
+                cmd += listOf("--capture-dir", extension.captureDir)
+            }
             val pb = ProcessBuilder(cmd).redirectErrorStream(true)
             if (extension.sharedProjectName.isNotEmpty()) {
                 pb.environment()["SHARED_PROJECT_NAME"] = extension.sharedProjectName

@@ -260,6 +260,16 @@ describe('parseArgs', () => {
     expect(opts.flavor).toBe('');
   });
 
+  it('--capture-on-fail / --capture-dir parse; --capture-dir implies --capture-on-fail', () => {
+    expect(parseArgs([]).captureOnFail).toBe(false);
+    expect(parseArgs([]).captureDir).toBe('');
+    expect(parseArgs(['--capture-on-fail']).captureOnFail).toBe(true);
+    const withDir = parseArgs(['--capture-dir', 'build/kmp-captures']);
+    expect(withDir.captureDir).toBe('build/kmp-captures');
+    // --capture-dir implies --capture-on-fail (mirrors kmp-test android).
+    expect(withDir.captureOnFail).toBe(true);
+  });
+
   it('v0.9 step 2 — --gradle-args accumulates across multiple invocations', () => {
     const opts = parseArgs([
       '--gradle-args', '--no-parallel',
@@ -1855,6 +1865,180 @@ describe('runParallel', () => {
     });
 
     expect(envelope.android.device_serial).toBe('FIRST');
+  });
+
+  // ---- --capture-on-fail (parallel androidInstrumented leg) ----------------
+  // The injected `spawn` serves BOTH gradle dispatch AND the adb capture calls,
+  // so this stub discriminates: gradle (gradlew path) → canned FAILED output;
+  // adb screencap → a PNG buffer; adb uiautomator dump → a <hierarchy> XML.
+  // adbOk:false makes every adb call fail so the capture_error path is exercised.
+  function makeCaptureSpawn({ failTasks = [], adbOk = true } = {}) {
+    const calls = [];
+    const fn = (cmd, args = [], _opts) => {
+      calls.push({ cmd, args: [...args] });
+      if (cmd === 'adb') {
+        if (args.includes('screencap')) {
+          return adbOk
+            ? { status: 0, stdout: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]), stderr: '', error: null }
+            : { status: 1, stdout: Buffer.alloc(0), stderr: '', error: null };
+        }
+        // uiautomator dump (/dev/tty) or the shell-dump + cat fallback.
+        return adbOk
+          ? { status: 0, stdout: '<?xml version="1.0"?><hierarchy rotation="0"></hierarchy>', stderr: '', error: null }
+          : { status: 0, stdout: '', stderr: '', error: null };
+      }
+      // gradle leg: mention each task with a FAILED suffix so classifyTaskResults
+      // marks it failed WITHOUT tripping the cascade-isolation (no_evidence) path.
+      let out = 'BUILD FAILED\n';
+      for (const t of failTasks) out += `> Task ${t} FAILED\n`;
+      return { status: failTasks.length ? 1 : 0, stdout: out, stderr: '', signal: null, error: null };
+    };
+    fn.calls = calls;
+    return fn;
+  }
+  const androidApp = (name = 'app') => ({
+    name,
+    sourceSets: ['androidInstrumentedTest'],
+    build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n',
+  });
+
+  it('--capture-on-fail: instrumented FAIL → screenshot_file + ui_hierarchy_file on errors[], exit 1', async () => {
+    const dir = makeProject([androidApp()]);
+    const spawn = makeCaptureSpawn({ failTasks: [':app:connectedDebugAndroidTest'] });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--capture-on-fail'],
+      spawn,
+      adbProbe: () => [{ serial: 'emulator-5554', type: 'emulator', model: 'SDK' }],
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).toBe(1);
+    const err = envelope.errors.find(e => e.code === 'module_failed');
+    expect(err).toBeDefined();
+    expect(err.screenshot_file).toMatch(/app_screenshot\.png$/);
+    expect(err.ui_hierarchy_file).toMatch(/app_ui-hierarchy\.xml$/);
+    expect(err.capture_error).toBeUndefined();
+    // Artifacts actually written under the per-run android log dir.
+    expect(existsSync(err.screenshot_file)).toBe(true);
+    expect(existsSync(err.ui_hierarchy_file)).toBe(true);
+    expect(err.screenshot_file).toContain(path.join('.kmp-test-runner', 'logs', 'android'));
+    // adb targeted the resolved serial, and screencap fired exactly once (one
+    // capture per failed module on the final state — no per-attempt spam).
+    const shots = spawn.calls.filter(c => c.cmd === 'adb' && c.args.includes('screencap'));
+    expect(shots.length).toBe(1);
+    expect(shots[0].args).toContain('emulator-5554');
+  });
+
+  it('--capture-dir overrides where capture artifacts land', async () => {
+    const dir = makeProject([androidApp()]);
+    const capDir = mkdtempSync(path.join(tmpdir(), 'kmp-cap-'));
+    const spawn = makeCaptureSpawn({ failTasks: [':app:connectedDebugAndroidTest'] });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--capture-dir', capDir],
+      spawn,
+      adbProbe: () => [{ serial: 'emulator-5554' }],
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const err = envelope.errors.find(e => e.code === 'module_failed');
+    expect(err.screenshot_file.startsWith(capDir)).toBe(true);
+    expect(existsSync(err.screenshot_file)).toBe(true);
+    rmSync(capDir, { recursive: true, force: true });
+  });
+
+  it('--capture-on-fail is a no-op on a non-instrumented (common) leg', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeCaptureSpawn({ failTasks: [':core:jvmTest'] });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--capture-on-fail'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).toBe(1);
+    const err = envelope.errors.find(e => e.code === 'module_failed');
+    expect(err).toBeDefined();
+    expect(err.screenshot_file).toBeUndefined();
+    expect(err.ui_hierarchy_file).toBeUndefined();
+    expect(spawn.calls.some(c => c.cmd === 'adb')).toBe(false);
+  });
+
+  it('--capture-on-fail: adb failure → capture_error set, no paths, exit unchanged (forensic-only)', async () => {
+    const dir = makeProject([androidApp()]);
+    const spawn = makeCaptureSpawn({ failTasks: [':app:connectedDebugAndroidTest'], adbOk: false });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--capture-on-fail'],
+      spawn,
+      adbProbe: () => [{ serial: 'emulator-5554' }],
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).toBe(1); // capture failure NEVER changes the exit code
+    const err = envelope.errors.find(e => e.code === 'module_failed');
+    expect(err.capture_error).toBeTruthy();
+    expect(err.screenshot_file).toBeUndefined();
+    expect(err.ui_hierarchy_file).toBeUndefined();
+  });
+
+  it('--capture-on-fail with no connected device → capture_error "no device serial", no adb spawn', async () => {
+    const dir = makeProject([androidApp()]);
+    const spawn = makeCaptureSpawn({ failTasks: [':app:connectedDebugAndroidTest'] });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--capture-on-fail'],
+      spawn,
+      adbProbe: () => [], // no devices / emulators
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).toBe(1);
+    const err = envelope.errors.find(e => e.code === 'module_failed');
+    expect(err.capture_error).toContain('no device serial');
+    expect(spawn.calls.some(c => c.cmd === 'adb')).toBe(false);
+  });
+
+  it('passing instrumented run with --capture-on-fail → no capture artifacts, exit 0', async () => {
+    const dir = makeProject([androidApp()]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--capture-on-fail'],
+      spawn,
+      adbProbe: () => [{ serial: 'emulator-5554' }],
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.errors.some(e => e.code === 'module_failed')).toBe(false);
+    // capture only fires inside the module_failed branch → no adb on a green run.
+    expect(spawn.calls.some(c => c.cmd === 'adb')).toBe(false);
+  });
+
+  it('--capture-on-fail: multiple failed modules get per-module namespaced artifacts', async () => {
+    const dir = makeProject([androidApp('app'), androidApp('feature')]);
+    const spawn = makeCaptureSpawn({
+      failTasks: [':app:connectedDebugAndroidTest', ':feature:connectedDebugAndroidTest'],
+    });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--capture-on-fail'],
+      spawn,
+      adbProbe: () => [{ serial: 'emulator-5554' }],
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const fails = envelope.errors.filter(e => e.code === 'module_failed');
+    expect(fails.length).toBe(2);
+    const shots = fails.map(e => e.screenshot_file);
+    expect(shots.every(Boolean)).toBe(true);
+    // Distinct, module-prefixed filenames — no overwrite under one runId.
+    expect(new Set(shots).size).toBe(2);
+    expect(shots.some(s => /app_screenshot\.png$/.test(s))).toBe(true);
+    expect(shots.some(s => /feature_screenshot\.png$/.test(s))).toBe(true);
   });
 
   it('module_failed WITH XML evidence → errors[] has NO setup_failed flag (OBS-A negative)', async () => {
