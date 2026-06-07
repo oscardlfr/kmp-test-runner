@@ -2273,7 +2273,10 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
 
-### 💡 IDEA — `.gitattributes` LF-pin gap on `scripts/*.sh` + `scripts/sh/**/*.sh` (surfaced 2026-05-25 during cross-platform parity audit)
+### ✅ DONE 2026-06-07 — `.gitattributes` LF-pin gap on `scripts/*.sh` + `scripts/sh/**/*.sh` (surfaced 2026-05-25 during cross-platform parity audit)
+
+**Fix:** added `scripts/*.sh` + `scripts/**/*.sh` → `text eol=lf` to `.gitattributes` (mirroring the `.skills/**/*.sh` pin). Covers install / uninstall / build-artifact + every bundled `scripts/sh/**/*.sh` wrapper. `git add --renormalize` confirmed the in-repo scripts were already LF (the entries are preventive — they stop a Windows `core.autocrlf=true` checkout from corrupting `set -euo pipefail` locally AND stop `build-artifact.sh` from baking CRLF into the release tarball). Was HIGH (Windows-local-dev + cross-host-tarball corruption vector).
+
 
 **Status: IDEA, no milestone assigned. HIGH — local Windows dev usage broken; published GH releases safe.** PR #244 Finding #5 pinned LF on `.skills/**/*.sh` + `tests/skill-scripts/*.bats` after a CRLF corruption of `set -euo pipefail` was discovered on Windows git-bash. The same logic was never extended to the canonical install / uninstall / build-artifact / wrapper scripts. With `core.autocrlf=true` (default on Windows git installs), `scripts/install.sh` + `scripts/uninstall.sh` + `scripts/build-artifact.sh` + every `scripts/sh/**/*.sh` lands on disk with CRLF. Confirmed live in this checkout: `file scripts/install.sh` reports `with CRLF line terminators` and `git check-attr text eol -- scripts/install.sh` returns `unspecified` on both fields.
 
@@ -2295,7 +2298,10 @@ Then `git add --renormalize .` on a Windows checkout to force-rewrite the workin
 
 ---
 
-### 💡 IDEA — `unknown subcommand` error gives no actionable signal for users on a stale install (surfaced 2026-05-25 during user-reported `kmp-test update` failure on a pre-v0.5 mac)
+### ✅ DONE 2026-06-07 — `unknown subcommand` error gives no actionable signal for users on a stale install (surfaced 2026-05-25 during user-reported `kmp-test update` failure on a pre-v0.5 mac)
+
+**Fix:** `lib/cli.js` unknown-subcommand handler now writes a "your installed kmp-test may be out of date" hint with a platform-aware re-install one-liner (`curl … install.sh | bash` on POSIX, `iwr … install.ps1 | iex` on Windows, + npm) BEFORE `printHelp()`. Generic over any unknown sub (a today-version binary that goes stale relative to a future subcommand surfaces the pointer). bats `test-json.bats` extended to assert the hint. Was MEDIUM (recurring stale-install UX trap).
+
 
 **Status: IDEA, no milestone assigned. MEDIUM — UX gap, recurring failure mode for any user whose install predates a now-canonical subcommand.** `lib/cli.js:838` emits `kmp-test: unknown subcommand '<sub>'` followed by `printHelp()`. When the local binary is obsolete (e.g. a mac install from before PR #148 which introduced `update` in v0.5.x), the help text printed comes from the obsolete binary too — and naturally lists only the subcommands that existed at the time of that install. The user has no signal that their installed `kmp-test` is the problem, not the requested subcommand. Concrete repro from a user session 2026-05-25: ran `kmp-test update` on a pre-v0.5 mac, got "unknown subcommand 'update'", concluded the bug was in current `develop` rather than in their stale install. The actual fix was a one-liner `curl ... | bash` re-run of `install.sh`, which the error gave zero pointers toward.
 

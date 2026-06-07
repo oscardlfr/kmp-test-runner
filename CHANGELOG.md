@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — shell-script line endings + stale-install guidance
+
+- **`.gitattributes` now pins LF on `scripts/**/*.sh`** (install / uninstall /
+  build-artifact + every bundled `scripts/sh/**/*.sh` wrapper), matching the
+  existing `.skills/**/*.sh` pin. Without it, a Windows `core.autocrlf=true`
+  checkout corrupts `set -euo pipefail` (`set: pipefail : invalid option name`),
+  and `build-artifact.sh` could bake CRLF wrappers into the release tarball that
+  then hard-fail on macOS/Linux extraction. Published GH-release builds were
+  already safe (ubuntu CI clones with `core.autocrlf=false`); this closes the
+  Windows-local-dev + cross-host-tarball vector.
+- **`kmp-test <unknown-subcommand>` now prints a stale-install hint** — a
+  platform-aware re-install one-liner before the help text. An install that
+  predates a now-canonical subcommand (e.g. `update`) previously printed only
+  the obsolete binary's own help, giving no signal that the *install* was the
+  problem.
+
 ### Fixed — `kmp-test android` mis-graded a failing AGP 9.2 connected test as passed
 
 Some AGP device-test reporters (observed AGP 9.2.1 `connectedDebugAndroidTest`)
