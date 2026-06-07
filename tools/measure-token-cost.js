@@ -24,17 +24,17 @@
 //   # Cross-model re-tokenisation (no gradle, reads tools/runs/<feature>/*.txt):
 //   node tools/measure-token-cost.js \
 //     --feature coverage \
-//     --anthropic-models claude-opus-4-7,claude-sonnet-4-6,claude-haiku-4-5
+//     --anthropic-models claude-opus-4-8,claude-sonnet-4-6,claude-haiku-4-5
 //
 //   # Multi-account workflows: set both keys, the tool auto-falls-back on 401:
 //   export ANTHROPIC_API_KEY=sk-ant-account-A...
 //   export ANTHROPIC_API_KEY_FALLBACK=sk-ant-account-B...
 //   node tools/measure-token-cost.js --feature parallel \
-//     --anthropic-models claude-opus-4-7
+//     --anthropic-models claude-opus-4-8
 //
 //   # One-shot CLI override (skips env entirely):
 //   node tools/measure-token-cost.js --feature parallel \
-//     --anthropic-models claude-opus-4-7 --anthropic-api-key sk-ant-...
+//     --anthropic-models claude-opus-4-8 --anthropic-api-key sk-ant-...
 
 import { spawnSync } from 'node:child_process';
 import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';

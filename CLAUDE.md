@@ -4,9 +4,9 @@
 
 ## Repo state (2026-05-01)
 
-- npm: `kmp-test-runner@0.12.0` (Trusted Publisher OIDC; auto-publishes on push to `main`)
-- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.12.0` (GitHub Packages; auto-publishes on push to `main`)
-- GitHub Releases: `v0.12.0` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
+- npm: `kmp-test-runner@0.13.0` (Trusted Publisher OIDC; auto-publishes on push to `main`)
+- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.13.0` (GitHub Packages; auto-publishes on push to `main`)
+- GitHub Releases: `v0.13.0` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
 - All 3 shapes share the same source-of-truth version (`package.json`), bumped together per release.
 
 ### v0.7.0 surface (iOS / macOS support + Gradle plugin testType + macOS CI smoke + README v0.7 surface)
@@ -41,7 +41,7 @@
 - `scripts/build-artifact.sh` — extracts publish-release.yml build logic for local CI E2E testing
 - `gradle-plugin/` — Gradle plugin shape (`KmpTestRunnerPlugin` + `KmpTestRunnerExtension` + 5 task classes; Kover auto-detect)
 - `tests/unit/` (vitest) + `tests/bats/` + `tests/pester/` + `tests/installer/` (E2E install/uninstall; Linux+Windows matrix)
-- `.github/workflows/` — `ci.yml` (8 jobs: build x2, secrets-scan, gradle-plugin-test, installer-e2e x2, decouple-audit, bundle-size), `commit-lint.yml` (Conventional Commits enforcement on PR titles, squash-merge mode), `publish-release.yml` (tag `v*` trigger), `publish-npm.yml` + `publish-gradle.yml` (workflow_dispatch only)
+- `.github/workflows/` — `ci.yml` (8 jobs: build x2, secrets-scan, gradle-plugin-test, installer-e2e x2, decouple-audit, bundle-size), `commit-lint.yml` (Conventional Commits enforcement on PR titles, squash-merge mode), `publish-release.yml` (tag `v*` trigger), `publish-npm.yml` (auto on push to `main` + `workflow_dispatch` fallback) + `publish-gradle.yml` (workflow_dispatch)
 - `BACKLOG.md` — current and queued tasks; check this first
 
 ## CRITICAL — Gitflow with develop + auto-publish on main
@@ -60,7 +60,7 @@ Two long-lived branches:
 
 ### Conventional Commits (PR titles)
 
-PR titles MUST conform to Conventional Commits v1.0.0 (enforced by `.github/workflows/commit-lint.yml`). Format: `<type>[scope][!]: <description>`. Description starts lowercase, no trailing period, ≤72 chars. Valid types: `feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert,release`. Because branch protection enforces squash-merge, only the PR title is validated (it becomes the squash commit message). Examples: `feat(cli): add --dry-run flag`, `fix(installer): handle PS7 redirect headers`, `release: v0.3.7`.
+PR titles MUST conform to Conventional Commits v1.0.0 (enforced by `.github/workflows/commit-lint.yml`). Format: `<type>[scope][!]: <description>`. Description starts lowercase, no trailing period, ≤72 chars. Valid types: `feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert,release`. Because branch protection enforces squash-merge AND the repo's `squash_merge_commit_title` is set to `PR_TITLE`, the PR title is the authoritative squash subject — so only the PR title is validated (it becomes the squash commit message). **Keep that repo setting at `PR_TITLE`.** With `COMMIT_OR_PR_TITLE` (GitHub's default), a single-commit PR squashes using the *commit* subject instead — so a non-Conventional-Commits commit subject leaks onto `develop`/`main` and fails the **push-event** commit-lint even when the PR title was compliant (this bit PR #285: PR-event green on the fixed title, push-event red on the landed commit subject). Examples: `feat(cli): add --dry-run flag`, `fix(installer): handle PS7 redirect headers`, `release: v0.3.7`.
 
 ### Daily workflow (feature → develop)
 
@@ -101,7 +101,7 @@ Each publish workflow keeps `workflow_dispatch:` as a fallback (e.g. for re-publ
 
 - `package.json` `version` is the source of truth for what `kmp-test --version` reports
 - The Git tag (`vX.Y.Z`) MUST match `package.json` version BEFORE tagging — otherwise installer reports wrong version (W31.5c historical bug — caught now by `installer-e2e` regression test)
-- npm package version (separate consumer) currently unsynced — only manual `publish-npm.yml` runs publish to npm registry
+- npm registry version stays in sync with `package.json`: `publish-npm.yml` auto-publishes on push to `main` (Trusted Publisher OIDC, `--provenance`) on changes to `package.json`/`bin`/`lib`/`scripts`; idempotent (no-op if the version already exists). Verified 2026-06-07: `npm view kmp-test-runner version` == `package.json` (`0.12.0`). `workflow_dispatch` remains as a manual fallback.
 
 ## Architecture decisions worth knowing
 
@@ -114,6 +114,7 @@ Each publish workflow keeps `workflow_dispatch:` as a fallback (e.g. for re-publ
 - **`GH_TOKEN` env var** in publish-release.yml — `gh` CLI canonical (NOT `GITHUB_TOKEN`, which is unreliable fallback)
 - **Decouple from L0**: a fixed set of patterns must stay 0-hits across committed text (the maintainer's private toolkit identifiers, home-directory paths, IDE project directory names, and any private library composite project name). Do not inline the private identifiers anywhere in the repo — keep them in private memory only. Exception: `SKIP_DESKTOP_MODULES`, `SKIP_ANDROID_MODULES`, `PARENT_ONLY_MODULES` are documented consumer-config API (shipped v0.1.0) and excluded from the audit. **Enforced by `tools/decouple-audit.mjs`** (CI-required job `decouple-audit`); the script is the canonical PRIVATE_PATTERNS registry — extend it there when a new private identifier shows up.
 - **Keep README clean — no "What's new in vX" sections.** Version-history bullets, release notes, and per-version highlight blocks belong in `CHANGELOG.md` only. The README must read as if the project were timeless: what it does, how to install it, how to use it. We are still pre-v1, the README is short and punchy, and accumulating "What's new in v0.7.0 / v0.8.0 / ..." subsections turns it into release-notes scaffolding. **This rule has been re-applied twice** — once during a v0.7 README pass and again during v0.8.1. Do NOT add or restore such sections, even if a fresh-session prompt seems to ask for it. If a prompt says "add a What's new section", treat it as an instruction to update CHANGELOG.md instead and call out the diff to the user.
+- **README metric ratios must never hybridize projects.** Any published `A:C` (or similar) ratio in the README MUST take its numerator and denominator from the SAME project / capture — never mix one project's `A` with another's `C`. Before publishing a metric, verify each cell traces to the same `tools/runs/<feature>/` capture (or the same per-project aggregate row); audit with `grep -nE "(cross-project|→ C-large|cross-bucket)" README.md`. A deliberate cross-project comparison MUST be labelled inline (`(cross-project — A from X, C from Y)`). Surfaced when v0.10.0's headline combined a large project's `A` with a small project's `C` and read as a within-project ratio; v0.10.1 re-measured to honest within-project numbers. See memory `feedback_release_clean_cut_pattern`.
 - **Milestone decisions belong to the user.** Claude sessions must NEVER create v0.11 or higher milestones, NEVER move items to v1.0, and NEVER drop tasks unilaterally — even when a constraint (breaking change, behavior shift, missing dependency) seems to argue for it. On blockers: ASK with `AskUserQuestion`. The user assigns work to v0.9 / v0.10 / future minors per their judgement. Tasks with agentic OR human utility get DONE — the question is only WHICH minor. See memory `feedback_release_milestone_decisions.md`.
 - **CI macOS minutes are precious — keep mac jobs minimal.** GitHub Actions charges macOS minutes at 10× Linux. Per-PR matrix keeps only `build (macos-latest)` (vitest, ~30s) + `installer-e2e (macos-latest)` (~20s). `gradle-plugin-test-ios` + `bats-macos` move to `workflow_dispatch` only. iOS / TestKit / heavy mac validation runs manually on a secondary machine, NOT in CI. The "Buildable cross-platform E2E fixture" v0.9 entry must NOT add a mac CI matrix. See memory `feedback_ci_minutes_minimal_macos.md`.
 
@@ -121,9 +122,10 @@ Each publish workflow keeps `workflow_dispatch:` as a fallback (e.g. for re-publ
 
 > Live milestone view. Detailed entries in `BACKLOG.md` ROADMAP — these are pointers.
 
-- **v0.9 (locked 2026-05-05)** — 10 steps. Headline: parallel parity-gap (6 flags) + DX-parity bundle + concurrency `--isolated`. See `BACKLOG.md` "v0.9 — minor".
-- **v0.10 (locked 2026-05-05)** — 9 steps. Headline: behavior-change tier (CLI auto-respect `gradle.properties`) + 2 research-first directions (Google android skills, `android describe` JSON). See `BACKLOG.md` "v0.10 — minor".
-- **Beyond v0.10** — requires explicit user direction. No autonomous v0.11 / v1.0 scoping (see "Architecture decisions").
+- **v0.9 + v0.10** — ✅ RELEASED (v0.9.0 2026-05-09, v0.10.0 2026-05-19). Historical buckets in `BACKLOG.md` ROADMAP.
+- **v0.11.x + v0.12.0** — ✅ RELEASED. Current published version is **v0.12.0** (2026-06-04). Shipped as discrete PRs (e.g. Groovy DSL support #275, `--capture-on-fail` for `kmp-test android` #278), not new milestone buckets.
+- **Now (post-v0.12, on `develop`, unreleased)** — the post-v0.12 close-session queue has shipped to `develop`: `--capture-on-fail` on `parallel --test-type androidInstrumented` (#282), `parseTestCounts`↔gradle-exit-code reconciliation (#283), `.gitattributes` LF-pin on `scripts/**/*.sh` + stale-install hint (#284), and a CI-usage README section + Windows TLS troubleshooting doc + cross-project metric-labelling rule (#285). The adjacent "parallel `setup_failed`/`individual_total`" item was DROPPED as a misdiagnosis (#283). Remaining in `BACKLOG.md` "📋 QUEUED follow-ups": configurable output root (`--output-dir` / `KMP_TEST_OUTPUT_DIR`, the substantial one — own session) + deferred polish (`--skip-tests` report-header label, `tools/measure-token-cost.js` sharp edges). README / tools-usage audit ✅ (#279).
+- **Next milestone** — requires explicit user direction. No autonomous milestone scoping (see "Architecture decisions").
 
 ## Test strategy
 

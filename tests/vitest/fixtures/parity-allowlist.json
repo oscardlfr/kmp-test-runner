@@ -9,6 +9,8 @@
     "--device-task",
     "--auto-retry",
     "--clear-data",
+    "--capture-on-fail",
+    "--capture-dir",
     "--flavor",
     "--staged-only",
     "--show-modules-only",
@@ -28,12 +30,27 @@
   ],
   "_categories": {
     "globalMeta": ["--help", "--version", "--force"],
-    "androidSubcommand": ["--device", "--device-task", "--auto-retry", "--clear-data", "--flavor", "--skip-app", "--verbose", "--list", "--list-only"],
+    "androidSubcommand": ["--device", "--device-task", "--auto-retry", "--clear-data", "--capture-on-fail", "--capture-dir", "--flavor", "--skip-app", "--verbose", "--list", "--list-only"],
     "changedSubcommand": ["--staged-only", "--show-modules-only", "--max-failures"],
     "benchmarkSubcommand": ["--platform", "--timeout", "--ignore-gradle-timeout"],
     "infoSubcommand": ["--no-adb"],
     "describeSubcommand": ["--skip-probe", "--no-cache"],
     "updateSubcommand": ["--check", "--prefix", "--prerelease"]
   },
-  "readmeButNotParsed": []
+  "readmeButNotParsed": [],
+  "_skillRefComment": "Allowlist for parity.test.js sub-check 5 (SKILL flags-reference ↔ code drift). `.skills/kmp-test-runner/references/cli/flags-reference.md` is the canonical agent flag reference; it aims for near-complete coverage of the test-running flow flags. Each entry below is a parsed flag deliberately NOT documented there, with a category. The gate's value is catching a NEW parser flag that skips the agent reference — add a row to flags-reference.md OR a justified entry here.",
+  "parsedButNotInSkillRef": [
+    "--benchmark",
+    "--check",
+    "--prefix",
+    "--prerelease",
+    "--format",
+    "--version"
+  ],
+  "_skillRefCategories": {
+    "globalMetaOrAlias": ["--version", "--format"],
+    "parallelBenchmarkPassthrough": ["--benchmark"],
+    "updateSubcommand": ["--check", "--prefix", "--prerelease"]
+  },
+  "skillRefButNotParsed": []
 }

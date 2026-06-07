@@ -62,6 +62,8 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `--auto-retry` | off | ✓ (`androidInstrumented`) | — | — | ✓ | Re-dispatch instrumented tasks that ran but failed. One retry per task. Surfaces `parallel.legs[i].retries[]`. |
 | `--clear-data` | off | ✓ (`androidInstrumented`) | — | — | ✓ | `adb shell pm clear <pkg>` before retry. Implies `--auto-retry`. |
 | `--flavor <name>` | none | ✓ (`androidUnit`/`androidInstrumented`/`all` + coverage) | — | — | ✓ | Android `productFlavors` weave for the unit (`test${Cap}${Variant}UnitTest`), instrumented (`connected${Cap}${Variant}AndroidTest`), and coverage report tasks. Convention-applied flavors are recovered from the gradle probe. No `--flavor` on a flavored project → flavor-agnostic umbrella (`test`/`connectedAndroidTest`) + `flavor_defaulted_umbrella` warning. `--flavor` on a non-flavored project → `flavor_unused` (exit 2). |
+| `--capture-on-fail` | off | ✓ (`androidInstrumented`) | — | — | ✓ | On instrumented-module failure, capture a device screenshot (`adb exec-out screencap`) + UI-hierarchy dump (`adb exec-out uiautomator dump`), best-effort. Paths surface on `errors[].screenshot_file` / `.ui_hierarchy_file` (`capture_error` when adb can't oblige). On `parallel`: once per still-failed module, after `--auto-retry`/cascade settle (no per-attempt spam). Forensic-only — **never** changes the exit code. Emulators are first-class. |
+| `--capture-dir <path>` | per-run log dir | ✓ (`androidInstrumented`) | — | — | ✓ | Override where `--capture-on-fail` artifacts land (default `.kmp-test-runner/logs/android/<runId>/`, namespaced `<module>_screenshot.png` / `<module>_ui-hierarchy.xml`). Implies `--capture-on-fail`. Relative → resolved against `--project-root`. |
 | `--skip-app` | off | — | — | — | ✓ | Skip `app/androidApp` modules. android-only. |
 | `--verbose` | off | — | — | — | ✓ | Show last 30 lines of log on failure. android-only. |
 
@@ -91,6 +93,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 |------|---------|-------|
 | `--config <name>` | `smoke` | `smoke` / `main` / `stress`. Controls iterations + per-task timeout. |
 | `--platform <name>` | `all` | `all` / `jvm` / `android`. |
+| `--strict-timeouts` | off | Restore pre-graded exit-code behaviour: any gradle timeout exits 3 even when other modules passed. Default (off) grades partial timeouts as exit 0 + `warnings[].code: partial_timeout` when ≥1 module passed. Use in CI cells that must hard-fail on any timeout. |
 
 ### `info` only
 

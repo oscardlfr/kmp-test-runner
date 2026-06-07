@@ -59,3 +59,15 @@ tests/fixtures/groovy-dsl/gradlew.bat text eol=crlf
 # post-PR-242/243 wet validation.
 .skills/**/*.sh text eol=lf
 tests/skill-scripts/*.bats text eol=lf
+
+# Canonical install / uninstall / build-artifact scripts + every bundled
+# wrapper (scripts/**/*.sh) MUST be LF for the same reason as .skills/**/*.sh
+# above: under Windows git-bash with core.autocrlf=true, CRLF corrupts
+# `set -euo pipefail` (the trailing \r becomes part of the option name →
+# `set: pipefail : invalid option name`, exit 2). Worse, scripts/build-artifact.sh
+# `cp -r`s the wrappers into the release tarball, so a CRLF checkout would bake
+# CRLF into every scripts/sh/run-*.sh and hard-fail on mac/Linux extraction.
+# GH release builds (ubuntu-latest, core.autocrlf=false) were already safe; this
+# closes the Windows-local-dev + cross-host-tarball corruption vector.
+scripts/*.sh text eol=lf
+scripts/**/*.sh text eol=lf
