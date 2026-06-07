@@ -57,5 +57,14 @@ The repo pins `scripts/**/*.sh` (and `.skills/**/*.sh`) to LF via
 [`.gitattributes`](../.gitattributes). If you clone with `core.autocrlf=true`
 (the Windows git default) on a **stale** checkout that predates those pins,
 `bash scripts/install.sh` may fail with `set: pipefail : invalid option name`
-(a CRLF `\r` swallowed into the option name). Re-clone, or run
-`git add --renormalize . && git checkout -- .`, to restore LF.
+(a CRLF `\r` swallowed into the option name). The fix is a fresh checkout that
+honors the pins — either re-clone, or force the affected scripts to be
+re-created from the index:
+
+```bash
+find scripts -name '*.sh' -delete && git checkout -- scripts/
+```
+
+`git add --renormalize . && git checkout -- .` does **not** fix it once the
+committed blobs are already LF: git treats the CRLF working copy as equivalent
+to the LF index and skips the rewrite, so the working-tree CRLF persists.

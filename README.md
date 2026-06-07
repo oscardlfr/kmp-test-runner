@@ -497,7 +497,7 @@ The CLI writes its outputs (cache, coverage reports, Android log dumps) under a 
 
 `kmp-test-runner` is built for non-interactive use — the `--json` envelope and the exit-code contract target a CI step (or an agent) just as much as the console. Two ways to wire it into a GitHub Actions job:
 
-### Option 1 — npm CLI (least friction)
+### Via the npm CLI (least friction)
 
 The package is public on npm, so no auth is needed; and because it's Node, the same step runs on `ubuntu-latest` / `windows-latest` / `macos-latest`:
 
@@ -524,7 +524,7 @@ Fail the build when coverage regresses:
 
 > **Pin a version for reproducible CI.** `kmp-test-runner` is pre-v1 — flags can evolve between minor releases. Pin a published version (`npx kmp-test-runner@<x.y.z> …`, current version on [npm](https://www.npmjs.com/package/kmp-test-runner)) instead of `@latest` once your pipeline is set up. The envelope contract itself is stable from `schema_version: 2`.
 
-### Option 2 — Gradle plugin
+### Via the Gradle plugin
 
 Apply the [Gradle plugin](#option-3--gradle-plugin) and run its task (`parallelTests` / `coverageTask` / `androidTests`) in the job. The plugin is published to **GitHub Packages**, so the consuming project's `settings.gradle.kts` needs that repository plus `GITHUB_TOKEN` auth — for an external project the npm CLI above is usually less friction.
 
