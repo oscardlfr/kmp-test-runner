@@ -939,7 +939,10 @@ Option (a) is the safest in-tree fix and matches the existing chunked-Anthropic 
 
 ---
 
-### 💡 IDEA — Document `NODE_OPTIONS=--use-system-ca` Windows TLS escape hatch in CLAUDE.md / docs
+### ✅ DONE 2026-06-07 — Document `NODE_OPTIONS=--use-system-ca` Windows TLS escape hatch in CLAUDE.md / docs
+
+**Fix:** new `docs/troubleshooting-windows.md` (linked from `docs/README.md`) with the `UNABLE_TO_VERIFY_LEAF_SIGNATURE` symptom, the one-line `node -e "fetch(...)"` diagnosis, and the `--use-system-ca` fix (PowerShell session + persist + CMD). Notes which Node tools hit external HTTPS (`update`, `measure-token-cost.js`) and that the core gradle flow is unaffected. Also folded in the shell-script line-ending note. Doc-only.
+
 
 **Status: IDEA, no milestone assigned. LOW severity — documentation gap, no code change.** Hosts running Windows with corporate TLS interception (corporate AV / proxy SSL inspection) reject Node's bundled CA bundle when validating the Anthropic API certificate. Node's fetch / Anthropic SDK fails with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`. Fix: set `NODE_OPTIONS=--use-system-ca` (Node 22+) to use the Windows trust store, which the corp AV typically populates.
 
@@ -955,7 +958,10 @@ Affects any Node-tool in this repo that hits external HTTPS — `tools/measure-t
 
 ---
 
-### 💡 IDEA — Add "cross-project metric labelling" rule to publication checklist (surfaced 2026-05-19 from v0.10.0 → v0.10.1 patch)
+### ✅ DONE 2026-06-07 — Add "cross-project metric labelling" rule to publication checklist (surfaced 2026-05-19 from v0.10.0 → v0.10.1 patch)
+
+**Fix:** added a concise rule to `CLAUDE.md` "Architecture decisions worth knowing" (next to "Keep README clean"): any published `A:C` ratio must take numerator + denominator from the same project/capture; cross-project comparisons must be labelled inline; audit grep provided. Doc/process-only.
+
 
 **Status: IDEA, no milestone assigned. PROCESS — README publication checklist enhancement, no code change.** v0.10.0's "Large-project ceiling — coverage outlier" headline claimed `85,376× cross-project ratio` by combining `private-large-A`'s 28.7M cl100k A baseline with NowInAndroid's 336 cl100k C envelope. Side-by-side the per-feature drill-down table reported the honest within-private-large-A coverage A:C as `77,114×` (`28,686,309 / 372`). Two different numbers, two different denominators — the cross-project mix was technically labelled in the aggregate doc as `A:C (private-large-A → C-large)` but the README prose presented it as if it were a within-project ratio. The user spotted the inconsistency post-ship; v0.10.1 re-measured and replaced the cross-project number with an honest within-project `39,175× / 29,952× / 30,350×`.
 
