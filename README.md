@@ -493,6 +493,47 @@ The CLI writes its outputs (cache, coverage reports, Android log dumps) under a 
 .kmp-test-runner/
 ```
 
+## Continuous integration
+
+`kmp-test-runner` is built for non-interactive use — the `--json` envelope and the exit-code contract target a CI step (or an agent) just as much as the console. Two ways to wire it into a GitHub Actions job:
+
+### Option 1 — npm CLI (least friction)
+
+The package is public on npm, so no auth is needed; and because it's Node, the same step runs on `ubuntu-latest` / `windows-latest` / `macos-latest`:
+
+```yaml
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4          # the project still needs a JDK + ./gradlew
+        with: { distribution: temurin, java-version: 17 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npx kmp-test-runner@latest parallel --json
+```
+
+Swap `parallel` for `coverage` / `changed` / `android` as the job needs. The step's **exit code is the gate** — `0` pass, `1` test failure (or coverage-gate breach), `2` config error, `3` environment error — so the job fails or passes with no extra scripting (full table in [Exit codes](#exit-codes)). `--json` keeps the output structured and low-token (pipe to `jq` in a script, or hand it to an agent); add `--isolated` for parallel-safe matrix / fan-out runs.
+
+Fail the build when coverage regresses:
+
+```yaml
+      - run: npx kmp-test-runner@latest coverage --min-missed-lines 100 --json
+```
+
+> **Pin a version for reproducible CI.** `kmp-test-runner` is pre-v1 — flags can evolve between minor releases. Pin a published version (`npx kmp-test-runner@<x.y.z> …`, current version on [npm](https://www.npmjs.com/package/kmp-test-runner)) instead of `@latest` once your pipeline is set up. The envelope contract itself is stable from `schema_version: 2`.
+
+### Option 2 — Gradle plugin
+
+Apply the [Gradle plugin](#option-3--gradle-plugin) and run its task (`parallelTests` / `coverageTask` / `androidTests`) in the job. The plugin is published to **GitHub Packages**, so the consuming project's `settings.gradle.kts` needs that repository plus `GITHUB_TOKEN` auth — for an external project the npm CLI above is usually less friction.
+
+### Runner requirements
+
+- **JDK + `gradlew`** must be present — any Gradle / KMP / Android project (see `actions/setup-java` above).
+- **Instrumented tests** (`--test-type androidInstrumented`, or `kmp-test android`) need a device/emulator on the runner — e.g. [`reactivecircus/android-emulator-runner`](https://github.com/ReactiveCircus/android-emulator-runner). The `common` / `desktop` / `androidUnit` / `coverage` legs need no device.
+- **iOS / macOS** legs require a `macos-*` runner (billed at ~10× Linux minutes).
+
 ## Use as an Agent Skill
 
 `kmp-test-runner` ships an [Agent Skill](https://agentskills.io) at `.skills/kmp-test-runner/` conforming to the open `agentskills.io` standard. The skill makes the CLI auto-discoverable by Claude Code, Gemini CLI, Cursor, GitHub Copilot, OpenAI Codex, and 30+ other agentskills.io-compatible tools — agents activate the skill automatically when the user asks to run tests in a KMP or Android Gradle project.
