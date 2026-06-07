@@ -28,7 +28,7 @@ import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { runAndroid, parseArgs, parseTestCounts, parseTestFailures } from '../../lib/orchestrators/android-orchestrator.js';
+import { runAndroid, parseArgs, parseTestCounts, reconcileTestCounts, parseTestFailures } from '../../lib/orchestrators/android-orchestrator.js';
 import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 
 let workDir;
@@ -247,6 +247,35 @@ Finished 99 tests on Bogus-Device`;
     expect(parseTestCounts('')).toEqual({ total: 0, failed: 0, skipped: 0, passed: 0 });
     expect(parseTestCounts('BUILD SUCCESSFUL\nNothing else relevant'))
       .toEqual({ total: 0, failed: 0, skipped: 0, passed: 0 });
+  });
+
+  // reconcileTestCounts — exit-code is the authority; correct the cosmetic
+  // "parsed a total but missed the failure" drift seen on AGP 9.2.1
+  // connectedDebugAndroidTest (wet-finding 2026-06-06: tests:{total:1,passed:1,
+  // failed:0} on a failing task). Pure function — exercised directly.
+  it('reconcileTestCounts: AGP-9.2 shape (total parsed, failure missed) on exit!=0 → ≥1 failure', () => {
+    const parsed = { total: 1, passed: 1, failed: 0, skipped: 0 };
+    expect(reconcileTestCounts(parsed, 1)).toEqual({ total: 1, passed: 0, failed: 1, skipped: 0 });
+  });
+
+  it('reconcileTestCounts: recounts passed against skipped when attributing a failure', () => {
+    const parsed = { total: 3, passed: 2, failed: 0, skipped: 1 };
+    expect(reconcileTestCounts(parsed, 1)).toEqual({ total: 3, passed: 1, failed: 1, skipped: 1 });
+  });
+
+  it('reconcileTestCounts: exit 0 → never touches the counts', () => {
+    const parsed = { total: 5, passed: 5, failed: 0, skipped: 0 };
+    expect(reconcileTestCounts(parsed, 0)).toEqual(parsed);
+  });
+
+  it('reconcileTestCounts: parse already saw a failure → unchanged (no double-attribution)', () => {
+    const parsed = { total: 4, passed: 1, failed: 2, skipped: 1 };
+    expect(reconcileTestCounts(parsed, 1)).toEqual(parsed);
+  });
+
+  it('reconcileTestCounts: nothing parsed (total:0) on exit!=0 → no-op (module_failed carries the verdict)', () => {
+    const parsed = { total: 0, passed: 0, failed: 0, skipped: 0 };
+    expect(reconcileTestCounts(parsed, 1)).toEqual(parsed);
   });
 
   // Surfaced 2026-05-06 by tools/macos-validation-gate.mjs --mode probe
