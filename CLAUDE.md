@@ -121,9 +121,10 @@ Each publish workflow keeps `workflow_dispatch:` as a fallback (e.g. for re-publ
 
 > Live milestone view. Detailed entries in `BACKLOG.md` ROADMAP — these are pointers.
 
-- **v0.9 (locked 2026-05-05)** — 10 steps. Headline: parallel parity-gap (6 flags) + DX-parity bundle + concurrency `--isolated`. See `BACKLOG.md` "v0.9 — minor".
-- **v0.10 (locked 2026-05-05)** — 9 steps. Headline: behavior-change tier (CLI auto-respect `gradle.properties`) + 2 research-first directions (Google android skills, `android describe` JSON). See `BACKLOG.md` "v0.10 — minor".
-- **Beyond v0.10** — requires explicit user direction. No autonomous v0.11 / v1.0 scoping (see "Architecture decisions").
+- **v0.9 + v0.10** — ✅ RELEASED (v0.9.0 2026-05-09, v0.10.0 2026-05-19). Historical buckets in `BACKLOG.md` ROADMAP.
+- **v0.11.x + v0.12.0** — ✅ RELEASED. Current published version is **v0.12.0** (2026-06-04). Shipped as discrete PRs (e.g. Groovy DSL support #275, `--capture-on-fail` for `kmp-test android` #278), not new milestone buckets.
+- **Now (post-v0.12, on `develop`)** — live queue is `BACKLOG.md` "📋 QUEUED follow-ups": `--capture-on-fail` on `parallel --test-type androidInstrumented` + the `parseTestCounts` AGP 9.2.x fix. (README / tools-usage audit ✅ done — PR #279.)
+- **Next milestone** — requires explicit user direction. No autonomous milestone scoping (see "Architecture decisions").
 
 ## Test strategy
 

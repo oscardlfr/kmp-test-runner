@@ -6,22 +6,24 @@
 
 ## ROADMAP (locked 2026-05-05 — user-decided buckets)
 
-> Milestone view of OPEN items. Order within each milestone is **load-bearing**: features land FIRST, validation gates next, token-cost re-measurement after that, README refresh LAST (right before tagging the release). This applies uniformly to v0.9 and v0.10. Detailed entries below; search by title.
+> **Status (2026-06-07):** the v0.9 + v0.10 buckets below are ✅ **RELEASED** and kept for traceability (not open work). Current published version is **v0.12.0** — v0.11.x + v0.12.0 shipped as discrete PRs, not new milestone buckets. The live near-term queue is "📋 QUEUED follow-ups" further down.
+>
+> Milestone view of the v0.9 / v0.10 buckets (now released — see Status above). Order within each milestone was **load-bearing**: features land FIRST, validation gates next, token-cost re-measurement after that, README refresh LAST (right before tagging the release). This applied uniformly to v0.9 and v0.10. Detailed entries below; search by title.
 >
 > **Hard rule**: Claude sessions cannot create v0.11 or move items to v1.0 without explicit user consent. See `CLAUDE.md` "Project conventions" + memory `feedback_release_milestone_decisions.md`.
 
-### v0.9 — minor (locked 2026-05-05)
+### v0.9 — minor (locked 2026-05-05) — ✅ RELEASED 2026-05-09
 
-1. **parallel parity-gap (6 flags)** — `--clear-data`, `--auto-retry`, `--device <serial>`, `--flavor <name>`, `--device-task <name>`, `class=<FQN>#<method>` filter shape. ~3-4h. See entry "v0.9 — parallel parity gap" below.
-2. **`--gradle-args` passthrough** — Tier 2 of "Adapt CLI to Gradle config". ~1h. See entry "Adapt CLI to project's Gradle config" Tier 2.
-3. **DX-parity bundle** — global `--variant`, `kmp-test describe`, `kmp-test info`, `kmp-test update`. ~4-8h. See entry "DX/UX parity audit" — high-value 4 items.
-4. **Concurrency Tier 3 `--isolated` flag** — opt-in `--project-cache-dir <tmp>` per run. ~3-4h. See entry "Concurrent-invocation safety" Tier 3.
-5. **Cross-platform parity check in CI** — flag matrix audit + envelope schema snapshot + README ↔ code drift detection + platform-behaviour matrix. ~4-5h. New entry below.
+1. ✅ **parallel parity-gap (6 flags)** — DONE 2026-05-05 (v0.9 step 1; CHANGELOG [0.9.0]). `--clear-data`, `--auto-retry`, `--device <serial>`, `--flavor <name>`, `--device-task <name>`, `class=<FQN>#<method>` filter shape. ~3-4h. See entry "v0.9 — parallel parity gap" below.
+2. ✅ **`--gradle-args` passthrough** — DONE 2026-05-05 (v0.9 step 2; CHANGELOG [0.9.0]). Tier 2 of "Adapt CLI to Gradle config". ~1h. See entry "Adapt CLI to project's Gradle config" Tier 2.
+3. ✅ **DX-parity bundle** — DONE 2026-05-05 (v0.9 step 3; CHANGELOG [0.9.0]). global `--variant`, `kmp-test describe`, `kmp-test info`, `kmp-test update`. ~4-8h. See entry "DX/UX parity audit" — high-value 4 items.
+4. ✅ **Concurrency Tier 3 `--isolated` flag** — DONE 2026-05-05 (v0.9 step 4; CHANGELOG [0.9.0]). opt-in `--project-cache-dir <tmp>` per run. ~3-4h. See entry "Concurrent-invocation safety" Tier 3.
+5. ✅ **Cross-platform parity check in CI** — DONE 2026-05-06 (v0.9 step 5; CHANGELOG [0.9.0]). flag matrix audit + envelope schema snapshot + README ↔ code drift detection + platform-behaviour matrix. ~4-5h. New entry below.
 6. ✅ **Buildable cross-platform E2E fixture (build only, NO CI matrix)** — DONE 2026-05-06 (PR #151 / `f296d21` on develop). Synthetic KMP fixture under `tests/fixtures/kmp-cross-platform-e2e/` with `:sample` exercising `jvm()` + `js(IR)` + `wasmJs` + `iosX64`/`iosSimulatorArm64`/`iosArm64` + `macosArm64` + `androidLibrary { withHostTestBuilder { } }`. Pinned Kotlin 2.3.20 / AGP 9.0.1 / Gradle 9.1.0. Vitest 1004 → 1018 (+14 in `tests/vitest/cross-platform-fixture.test.js`). Zero new CI minutes. See L975 entry below for closure details.
 7. ✅ **macOS validation gate** — DONE 2026-05-06 (PRs #153 + #154 + #155 on develop). Manual smoke driver `tools/macos-validation-gate.mjs` with 4 modes (`dry`/`probe`/`scoped`/`full`); 45-cell matrix. Probe sweep on the 3 KMP projects (in-repo fixture + the reference KMP composite project + `KaMPKit`) reports **44 PASS / 0 DRIFT / 1 SKIP**. **Wet pass** (real gradle invocations across jvm/desktop/jsTest/wasmJsTest/iosSimulatorArm64Test/macosArm64Test/testAndroidHostTest, plus `kmp-test android` instrumented on a connected Samsung S22) executed real tests on real hardware — surfaced **3 inline-fixed bugs** (gradlew exec-bit on the v0.9 fixture, parallel-orchestrator hybrid-plugin gate, android-orchestrator parseTestCounts new-plugin format). Evidence: the macOS gate summary + the macOS gate wet-results notes (PR #155). See L372 entry below for closure details.
 8. ✅ **Token-cost re-measurement** — DONE 2026-05-07 (PR #<TBD> on develop). Re-ran the full matrix on a reference KMP composite project (4 gradle-backed + 2 agent-query features). `tools/measure-token-cost.js` extended with `info` + `describe` features (B+C only — no raw-gradle equivalent); `skipApproachA` + `acceptsModuleFilter` per-feature flags. New numbers committed under `tools/runs/`. Headline: coverage A=28.7M cl100k tokens (74 MB kover reports) → C=372 = **77,114× reduction**; coverage A overflows Anthropic's `count_tokens` (413 request_too_large) — even Anthropic's own tokenizer can't process raw gradle on a real KMP project. Vitest 1068 → 1078 (+10). Evidence: the v0.9 measurement notes. README prose deferred to step 9 (re-framing required, not a one-line tweak). See L412 entry below for closure details.
 9. ✅ **README v0.9 refresh + CHANGELOG** — DONE 2026-05-XX (PR #<num>). Token-cost narrative re-framed against a reference KMP composite project (consumed the v0.9 measurement notes); 6 new flag rows + 3 new subcommand entries documented; canonical `class=<FQN>#<method>` filter shape documented; AI-agent envelope JSON example bumped to `version: "0.9.0"`; CHANGELOG `[0.9.0]` section assembled per-PR (steps 1–9). Vitest 1078 unchanged. v0.9.0 release ceremony (step 10) unblocked.
-10. **Tag v0.9.0** — release ceremony per the v0.8.0 / v0.8.1 pattern (intermediate develop PR + clean-cut release/main PR with `git read-tree --reset -u`).
+10. ✅ **Tag v0.9.0** — DONE 2026-05-09 (v0.9.0 released; CHANGELOG [0.9.0]). Release ceremony per the v0.8.0 / v0.8.1 pattern (intermediate develop PR + clean-cut release/main PR with `git read-tree --reset -u`).
 
 ### Pre-v0.10 — refactor train tail + polish queue (locked 2026-05-10)
 
@@ -69,7 +71,7 @@
 
 ---
 
-### v0.10 — minor (locked 2026-05-05)
+### v0.10 — minor (locked 2026-05-05) — ✅ RELEASED 2026-05-19
 
 1. **Defensive `--console=plain` injection** — ✅ DONE 2026-05-15 (PR #227 / 22fd8c8 on develop, v0.10 #1). Auto-injects `--console=plain` in `spawnGradle` when `process.stdout.isTTY === false` or `NO_COLOR` set, plus `--color={always,never,auto}` override and idempotency guard (skip when user already passes any `--console=*` via `--gradle-args`). New `lib/runners/console-mode.js` + injection callsite in `lib/orchestrators/orchestrator-utils.js`; `KMP_COLOR_MODE` env survives the cli.js → wrapper → runner.js re-exec chain.
 2. **CLI auto-respect `gradle.properties`** — ✅ DONE 2026-05-16 (v0.10 #2 — `parallel`-only scope). `kmp-test parallel` drops `--parallel` from the gradle dispatch when the project has a `gradle.properties` AND the resolved `org.gradle.parallel` is `false`. Optional envelope field `gradle_config_applied:{parallel_dropped:true}` (additive, schema_version unchanged). Migration note in `CHANGELOG.md` covers the "project file present + key absent → resolves to gradle default `false` → drop fires" case. Escape hatches: `org.gradle.parallel=true` in `gradle.properties` or `--gradle-args "--parallel"` (last-wins, v0.9 passthrough).
