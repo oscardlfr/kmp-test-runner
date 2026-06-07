@@ -163,6 +163,56 @@ describe('parity / README ↔ code drift', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Sub-check 5 — SKILL flags-reference ↔ code drift detection
+//
+// `.skills/kmp-test-runner/references/cli/flags-reference.md` is the canonical
+// AGENT-facing flag reference (the bundled agentskills.io skill an AI consumer
+// reads). This gate keeps it in lockstep with the parsers exactly as sub-check 3
+// does for the README: a new orchestrator flag that lands in cli.js --help +
+// README but silently misses the skill the agents actually consume now fails CI
+// unless deliberately allowlisted (parity-allowlist.json#parsedButNotInSkillRef).
+// Closes the doc-coherence gap where the agent reference could drift behind the
+// human-facing docs.
+// ---------------------------------------------------------------------------
+
+describe('parity / SKILL flags-reference ↔ code drift', () => {
+  const allowlistPath = path.join(REPO_ROOT, 'tests', 'vitest', 'fixtures', 'parity-allowlist.json');
+  const allowlist = JSON.parse(readFileSync(allowlistPath, 'utf8'));
+  const allowParsedNotInRef = new Set(allowlist.parsedButNotInSkillRef || []);
+  const allowRefNotParsed = new Set(allowlist.skillRefButNotParsed || []);
+
+  const skillRefPath = path.join(
+    REPO_ROOT, '.skills', 'kmp-test-runner', 'references', 'cli', 'flags-reference.md');
+  // parseReadmeFlagTable is a generic markdown flag-table parser (col-1
+  // backtick-flags + `### \`--flag\`` headings) — reused verbatim on the skill ref.
+  const skillRefFlags = parseReadmeFlagTable(skillRefPath);
+
+  const allParsed = new Set();
+  for (const f of CLI_GLOBAL_FLAGS) allParsed.add(f);
+  for (const sub of SUBCOMMANDS) {
+    for (const f of getParsedFlagsForSubcommand(sub)) allParsed.add(f);
+  }
+
+  it('every SKILL flags-reference flag has at least one parser case', () => {
+    const orphans = [...skillRefFlags].filter(f => !allParsed.has(f) && !allowRefNotParsed.has(f));
+    expect(orphans).toEqual([]);
+  });
+
+  it('every parsed user-facing flag appears in the SKILL flags-reference', () => {
+    const allInternal = new Set();
+    for (const sub of SUBCOMMANDS) {
+      for (const f of (ORCHESTRATOR_INTERNAL_LITERALS[sub] || new Set())) {
+        allInternal.add(f);
+      }
+    }
+    const userFacing = [...allParsed].filter(f =>
+      !GRADLE_PASSTHROUGH_FLAGS.has(f) && !allInternal.has(f));
+    const orphans = userFacing.filter(f => !skillRefFlags.has(f) && !allowParsedNotInRef.has(f));
+    expect(orphans).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Sub-check 2 — Envelope JSON schema snapshot
 // ---------------------------------------------------------------------------
 

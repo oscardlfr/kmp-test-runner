@@ -52,6 +52,21 @@ Applies to `parallel`, `changed`, `android`, `benchmark` — anywhere a per-modu
 
 This discriminator was added in v0.9.0 (schema:2). Pre-v0.9, agents couldn't tell whether `module_failed` meant "test broke" or "couldn't even build".
 
+## Capture artifacts (instrumented + `--capture-on-fail`)
+
+When the failing task is an instrumented run — `kmp-test android` **or** `parallel --test-type androidInstrumented` — launched with `--capture-on-fail`, the `module_failed` entry additionally carries `screenshot_file` / `ui_hierarchy_file` (paths under `.kmp-test-runner/logs/android/<runId>/`, namespaced per module) plus `capture_error` when adb couldn't oblige:
+
+```json
+{
+  "code": "module_failed",
+  "module": ":feature:home",
+  "screenshot_file": ".kmp-test-runner/logs/android/<runId>/feature_home_screenshot.png",
+  "ui_hierarchy_file": ".kmp-test-runner/logs/android/<runId>/feature_home_ui-hierarchy.xml"
+}
+```
+
+Surface these to the user — the screenshot + view hierarchy are the fastest triage signal for a Compose UI / Espresso failure. Capture is **post-hoc** (adb runs after the task ends, so it reflects the device state at task-end — highest value for crashes / ANRs / hangs) and **best-effort**: it never changes the exit code, and a capture that can't run only sets `capture_error`.
+
 ## Root causes
 
 For `setup_failed: false` (tests ran, failed):

@@ -89,4 +89,8 @@ teardown() {
     run node "$CLI" not-a-subcommand
     [ "$status" -eq 2 ]
     [[ "$output" == *"unknown subcommand"* ]]
+    # Stale-install hint points the user at a re-install (the help text comes
+    # from the same possibly-obsolete binary, so it can't self-diagnose).
+    [[ "$output" == *"out of date"* ]]
+    [[ "$output" == *"install"* ]]
 }

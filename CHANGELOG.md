@@ -5,7 +5,116 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.13.0] — 2026-06-07
+
+### Changed — Opus 4.8 token-cost figures + clean numeric tables
+
+The published token-cost tables now report **`claude-opus-4-8`** (was `claude-opus-4-7`) across the
+README drill-downs, `docs/token-cost-measurement.md`, and the committed
+`tools/runs/cross-model-results-{parallel,coverage,changed,benchmark}.txt`. `claude-opus-4-8` shares
+`claude-opus-4-7`'s tokenizer — the cross-model re-measure showed a *constant* ~5-token `count_tokens`
+request-scaffolding delta independent of input size — so the within-project agent-vs-CLI (A:C) ratios
+barely move: parallel 336× (unchanged), changed 214× → 217×, benchmark 145× → 147×, coverage
+29,952× → 30,075×. The render-broken `█` ASCII bar charts (GitHub renders them as barcode noise) are
+replaced with clean numeric tables across the README + token-cost docs.
+
+### Documentation — CI-usage guide + Windows TLS troubleshooting
+
+A new **"Using `kmp-test` in CI"** section in the README and a **Windows TLS troubleshooting** recipe in
+the docs, covering how to wire the runner into a CI pipeline and recover from Windows TLS handshake failures.
+
+### Fixed — shell-script line endings + stale-install guidance
+
+- **`.gitattributes` now pins LF on `scripts/**/*.sh`** (install / uninstall /
+  build-artifact + every bundled `scripts/sh/**/*.sh` wrapper), matching the
+  existing `.skills/**/*.sh` pin. Without it, a Windows `core.autocrlf=true`
+  checkout corrupts `set -euo pipefail` (`set: pipefail : invalid option name`),
+  and `build-artifact.sh` could bake CRLF wrappers into the release tarball that
+  then hard-fail on macOS/Linux extraction. Published GH-release builds were
+  already safe (ubuntu CI clones with `core.autocrlf=false`); this closes the
+  Windows-local-dev + cross-host-tarball vector.
+- **`kmp-test <unknown-subcommand>` now prints a stale-install hint** — a
+  platform-aware re-install one-liner before the help text. An install that
+  predates a now-canonical subcommand (e.g. `update`) previously printed only
+  the obsolete binary's own help, giving no signal that the *install* was the
+  problem.
+
+### Fixed — `kmp-test android` mis-graded a failing AGP 9.2 connected test as passed
+
+Some AGP device-test reporters (observed AGP 9.2.1 `connectedDebugAndroidTest`)
+emit a parseable test `total` but no failure marker that `parseTestCounts`
+recognises on a failing run, so a single failing instrumented test surfaced as
+`tests: {total:1, passed:1, failed:0}` even though the task failed. The verdict
+was always correct (the gradle exit code is the authority — `exit_code:1` +
+`errors[].module_failed`), but the cosmetic counts contradicted it. A new
+format-agnostic `reconcileTestCounts(counts, exit)` attributes at least one
+failure when the task exited non-zero yet the parse found a `total` with zero
+failures; counts remain best-effort otherwise (no-op on exit 0, and when nothing
+parsed). Additive — no `schema_version` bump.
+
+### Added — `--capture-on-fail` for `parallel --test-type androidInstrumented`
+
+`kmp-test parallel` now honors `--capture-on-fail` / `--capture-dir` on its
+instrumented leg, extending the forensic device capture (screenshot via
+`adb exec-out screencap` + UI-hierarchy dump via `adb exec-out uiautomator dump`)
+that previously only the `kmp-test android` subcommand offered. When an
+`androidInstrumented` module fails — whether run directly
+(`--test-type androidInstrumented`) or as the instrumented leg of `--test-type all`
+— the artifacts land under `.kmp-test-runner/logs/android/<runId>/`, namespaced
+per module (`<module>_screenshot.png` / `<module>_ui-hierarchy.xml`), and their
+paths surface on the failed-module `errors[]` entry as `screenshot_file` /
+`ui_hierarchy_file`, with `capture_error` set when adb can't oblige. Capture fires
+once per still-failed module, **after** `--auto-retry` / cascade-isolation settle
+(final-failure state, no per-attempt spam), reuses the already-resolved device
+serial (`--device`, else the first probed device — emulators are first-class), and
+is forensic + best-effort: it **never** changes the exit code. The fields are
+additive on `errors[]` — no `schema_version` bump. The Gradle-plugin
+`parallelTests` task propagates the existing `captureOnFail` / `captureDir`
+extension properties.
+
+### Added — `instrumented_only_skipped` warning + test-type selection docs
+
+`kmp-test parallel` / `changed` now emit `warnings[].code: "instrumented_only_skipped"`
+(carrying `module`) when the unit / auto-detect leg skips a module whose only test
+surface is instrumented (`androidInstrumentedTest` / `androidTest`) — the
+Compose-UI-only "no reports" case surfaced while shipping `--capture-on-fail`. The
+`[SKIP]` line and `skipped[].reason` also became actionable, pointing at
+`--test-type androidInstrumented` / `kmp-test android`. The warning is suppressed under
+`--test-type all` (that run already targets the instrumented leg). Additive — no
+`schema_version` bump.
+
+Docs: a new **"Choosing a test type"** decision table in the README (which command /
+`--test-type` per scenario, with a "Compose UI tests are instrumented" callout),
+per-value `--test-type` guidance, a clarified `android` subcommand description, a
+Gradle-plugin `testType = "androidInstrumented"` note, an "instrumented-only flags"
+grouping note, and a new warning-code catalogue in `docs/envelope-contract.md`. The
+`parallel` / `changed` / `android` `--help` text now steers instrumented-only projects
+to the right flag.
+
+### Added — `--capture-on-fail` for `kmp-test android`
+
+On an instrumented-test failure, `kmp-test android --capture-on-fail` now grabs
+forensic device artifacts via `adb` — a screenshot (`exec-out screencap`) and a
+UI-hierarchy dump (`exec-out uiautomator dump`) — and writes them beside the
+existing per-module log / logcat / errors files under
+`.kmp-test-runner/logs/android/<runId>/`. The paths surface on the failed-module
+`errors[]` entry as `screenshot_file` / `ui_hierarchy_file` (additive — no
+`schema_version` bump), giving an agent visual + structural context to triage a
+failing Compose UI / Espresso test. `--capture-dir <path>` overrides the artifact
+location (implies `--capture-on-fail`).
+
+The capture is **post-hoc** (adb runs after the gradle task ends, like the logcat
+buffer dump beside it): highest value for crashes / ANRs / hangs; for a clean
+Compose assertion failure the screen may already be torn down, but the UI dump,
+logcat, and `errors.json` retain the detail. It is forensic-only and best-effort —
+a capture that can't run sets `errors[].capture_error` and **never** changes the
+exit code. New Gradle-plugin extension properties `captureOnFail` / `captureDir`
+propagate the flags through the `androidTests` task.
+
+Visual-diff / golden-image screenshot testing is intentionally **out of scope**
+(that is Roborazzi / Paparazzi / Compose Preview Screenshot Testing territory).
+Capture on `parallel --test-type androidInstrumented` followed in a separate
+change (see the entry above).
 
 ## [0.12.0] — 2026-06-04
 

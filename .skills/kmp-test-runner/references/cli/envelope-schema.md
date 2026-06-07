@@ -104,7 +104,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `no_gradlew` | any | 3 | No `gradlew` / `gradlew.bat` in `--project-root`. | — |
 | `missing_shell` | any | 3 | `pwsh`/`powershell` (Windows) or `bash` (Unix) not on `PATH`. | — |
 | `no_test_modules` | parallel, changed | **2 \| 3** | No modules match the leg's test-type or `--module-filter`. | `caused_by_filter:bool` (`true` → 2, `false` → 3) |
-| `module_failed` | parallel, android | 1 | A gradle task failed. | `setup_failed:bool`, `module:string` |
+| `module_failed` | parallel, android | 1 | A gradle task failed. | `setup_failed:bool`, `module:string`; on `kmp-test android --capture-on-fail` or `parallel --test-type androidInstrumented --capture-on-fail`: `screenshot_file?:string`, `ui_hierarchy_file?:string`, `capture_error?:string` |
 | `instrumented_setup_failed` | android, parallel (`androidInstrumented`), benchmark | 3 | adb has no devices when one was required (or `--device <serial>` mismatch). | — |
 | `flavor_unused` | parallel (`androidUnit`/`androidInstrumented`/`all`) | 2 | `--flavor <name>` passed but no module on the leg is flavored (static `productFlavors {}` or probe-recovered). | — |
 | `isolated_runtime_race` | parallel | 2 | `--isolated` combined with a test-type that hits a shared runtime resource (iOS sim, ADB without `--device`, `--test-type all`). | — |
@@ -225,6 +225,7 @@ Additive changes do NOT bump:
 - New top-level fields (e.g. a future `notices: []`).
 - New enum entries in `errors[].code`.
 - New entries in a subcommand-specific block.
+- New optional fields on an existing `errors[]` entry (e.g. `module_failed` gains `screenshot_file` / `ui_hierarchy_file` / `capture_error` under `kmp-test android` or `parallel --test-type androidInstrumented` with `--capture-on-fail`).
 
 ### Version 2 (v0.9.0) breaking changes
 
