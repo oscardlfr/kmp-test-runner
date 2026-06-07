@@ -1,37 +1,41 @@
 # Cross-model token-cost — feature: coverage
 
 Captures: 3 from `tools/runs/coverage/`
-Models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
+Models: claude-opus-4-8, claude-sonnet-4-6, claude-haiku-4-5
 Tokenizer: cl100k_base baseline + Anthropic `messages.countTokens` per model
 
-| Approach | Capture | cl100k_base | claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 |
+| Approach | Capture | cl100k_base | claude-opus-4-8 | claude-sonnet-4-6 | claude-haiku-4-5 |
 |---|---|---:|---:|---:|---:|
-| A | `A-run1.txt` | 28754177 | 36571927 | 28468274 | 28468274 |
-| B | `B-run1.txt` | 803 | 1399 | 1055 | 1055 |
-| C | `C-run1.txt` | 734 | 1221 | 938 | 938 |
+| A | `A-run1.txt` | 28754177 | 36571742 | 28468274 | 28468274 |
+| B | `B-run1.txt` | 803 | 1394 | 1055 | 1055 |
+| C | `C-run1.txt` | 734 | 1216 | 938 | 938 |
 
 ## Cross-family variation
 
 | Approach | Capture | spread (max/min - 1) |
 |----------|---------|---------------------:|
 | A | `A-run1.txt` | 28.5% |
-| B | `B-run1.txt` | 74.2% |
-| C | `C-run1.txt` | 66.3% |
+| B | `B-run1.txt` | 73.6% |
+| C | `C-run1.txt` | 65.7% |
 
 ## Approach ratio vs C (per tokenizer)
 
-| Approach | cl100k_base | claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 |
+| Approach | cl100k_base | claude-opus-4-8 | claude-sonnet-4-6 | claude-haiku-4-5 |
 |---|---|---|---|---|
-| A | 39174.6× | 29952.4× | 30349.97× | 30349.97× |
+| A | 39174.6× | 30075.4× | 30349.97× | 30349.97× |
 | B | 1.1× | 1.1× | 1.1× | 1.1× |
 | C | 1.0× | 1.0× | 1.0× | 1.0× |
 
-A row Anthropic counts obtained via chunked counting at file-record boundaries
-(27 chunks @ ~2.6 MiB UTF-8 each; sum per-chunk `input_tokens`). Single-request
-count_tokens returns `413 request_too_large` on the 74 MB raw `./gradlew` +
-kover XML/HTML capture; chunked path bypasses that limit. cl100k_base baseline
-on the full 74 MB string crashed js-tiktoken in this Node v24 environment
-(TypedArray segfault inside `bytePairMerge`); the cl100k value committed here
-(`28,754,177`) is from the prior single-project measurement, which streamed
-the capture through `runApproachA` during slurping without retaining the full
-string in memory for re-encoding. Raw captures in `tools/runs/coverage/`.
+The opus row is a fresh `claude-opus-4-8` measurement; `cl100k_base`,
+`claude-sonnet-4-6` and `claude-haiku-4-5` are unchanged from the v0.10.1
+capture — re-measuring `claude-opus-4-7` reproduced 36,571,879 ≈ the prior
+36,571,927 (within chunk-boundary tolerance), confirming the 74 MB capture is
+byte-identical and the opus tokenizer is shared across 4.7 / 4.8. A-row
+Anthropic counts use chunked counting at file-record boundaries (23 chunks @
+~3.1 MiB UTF-8 each; sum per-chunk `input_tokens`): single-request count_tokens
+returns `413 request_too_large` on the 74 MB raw `./gradlew` + kover XML/HTML
+capture, and the chunked path bypasses that limit. cl100k_base on the full
+74 MB string crashes js-tiktoken under Node v24 (TypedArray segfault inside
+`bytePairMerge`); the committed cl100k value (`28,754,177`) is carried from the
+gradle-mode capture, which streams the output through `runApproachA` without
+retaining the full string for re-encoding. Raw captures in `tools/runs/coverage/`.
