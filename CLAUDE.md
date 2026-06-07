@@ -60,7 +60,7 @@ Two long-lived branches:
 
 ### Conventional Commits (PR titles)
 
-PR titles MUST conform to Conventional Commits v1.0.0 (enforced by `.github/workflows/commit-lint.yml`). Format: `<type>[scope][!]: <description>`. Description starts lowercase, no trailing period, ≤72 chars. Valid types: `feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert,release`. Because branch protection enforces squash-merge, only the PR title is validated (it becomes the squash commit message). Examples: `feat(cli): add --dry-run flag`, `fix(installer): handle PS7 redirect headers`, `release: v0.3.7`.
+PR titles MUST conform to Conventional Commits v1.0.0 (enforced by `.github/workflows/commit-lint.yml`). Format: `<type>[scope][!]: <description>`. Description starts lowercase, no trailing period, ≤72 chars. Valid types: `feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert,release`. Because branch protection enforces squash-merge AND the repo's `squash_merge_commit_title` is set to `PR_TITLE`, the PR title is the authoritative squash subject — so only the PR title is validated (it becomes the squash commit message). **Keep that repo setting at `PR_TITLE`.** With `COMMIT_OR_PR_TITLE` (GitHub's default), a single-commit PR squashes using the *commit* subject instead — so a non-Conventional-Commits commit subject leaks onto `develop`/`main` and fails the **push-event** commit-lint even when the PR title was compliant (this bit PR #285: PR-event green on the fixed title, push-event red on the landed commit subject). Examples: `feat(cli): add --dry-run flag`, `fix(installer): handle PS7 redirect headers`, `release: v0.3.7`.
 
 ### Daily workflow (feature → develop)
 
@@ -124,7 +124,7 @@ Each publish workflow keeps `workflow_dispatch:` as a fallback (e.g. for re-publ
 
 - **v0.9 + v0.10** — ✅ RELEASED (v0.9.0 2026-05-09, v0.10.0 2026-05-19). Historical buckets in `BACKLOG.md` ROADMAP.
 - **v0.11.x + v0.12.0** — ✅ RELEASED. Current published version is **v0.12.0** (2026-06-04). Shipped as discrete PRs (e.g. Groovy DSL support #275, `--capture-on-fail` for `kmp-test android` #278), not new milestone buckets.
-- **Now (post-v0.12, on `develop`)** — live queue is `BACKLOG.md` "📋 QUEUED follow-ups": `--capture-on-fail` on `parallel --test-type androidInstrumented` + the `parseTestCounts` AGP 9.2.x fix. (README / tools-usage audit ✅ done — PR #279.)
+- **Now (post-v0.12, on `develop`, unreleased)** — the post-v0.12 close-session queue has shipped to `develop`: `--capture-on-fail` on `parallel --test-type androidInstrumented` (#282), `parseTestCounts`↔gradle-exit-code reconciliation (#283), `.gitattributes` LF-pin on `scripts/**/*.sh` + stale-install hint (#284), and a CI-usage README section + Windows TLS troubleshooting doc + cross-project metric-labelling rule (#285). The adjacent "parallel `setup_failed`/`individual_total`" item was DROPPED as a misdiagnosis (#283). Remaining in `BACKLOG.md` "📋 QUEUED follow-ups": configurable output root (`--output-dir` / `KMP_TEST_OUTPUT_DIR`, the substantial one — own session) + deferred polish (`--skip-tests` report-header label, `tools/measure-token-cost.js` sharp edges). README / tools-usage audit ✅ (#279).
 - **Next milestone** — requires explicit user direction. No autonomous milestone scoping (see "Architecture decisions").
 
 ## Test strategy
