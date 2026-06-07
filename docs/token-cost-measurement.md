@@ -8,39 +8,37 @@ with real numbers from a representative KMP SDK module.
 ## Cross-feature summary — 4 features × 3 approaches × 4 tokenizers
 
 Every cell is a real token count (`cl100k_base` via `js-tiktoken` offline; the
-three Claude columns via Anthropic's `messages.countTokens` API). Bars are
-full-block unicode characters (`█`) scaled to the global table max
-(`coverage · A · opus-4-7` = **123,845 tokens** = 10 chars wide). `sonnet-4-6`
+three Claude columns via Anthropic's `messages.countTokens` API). `sonnet-4-6`
 and `haiku-4-5` share a tokenizer (identical counts to the unit on every cell)
-so they're merged into a single column here. Sub-1-char values render as `▏`.
+so they're merged into a single column here.
 
-| Feature · Approach    | 🟦 cl100k_base       | 🟥 opus-4-7          | 🟩🟧 sonnet · haiku   |
+| Feature · Approach | 🟦 cl100k_base | 🟥 opus-4-8 | 🟩🟧 sonnet · haiku |
 |-----------------------|----------------------|----------------------|-----------------------|
-| `parallel`  · A. raw  | ` 12,807 █`          | ` 25,780 ██`         | ` 19,234 ██`          |
-| `parallel`  · B. md   | `    376 ▏`          | `    642 ▏`          | `    444 ▏`           |
-| `parallel`  · C. json | `    101 ▏`          | `    187 ▏`          | `    125 ▏`           |
-| ─────────             | ──────────────────── | ──────────────────── | ───────────────────── |
-| `coverage`  · A. raw  | `108,405 █████████`  | `123,845 ██████████` | ` 92,940 ████████`    |
-| `coverage`  · B. md   | `    273 ▏`          | `    482 ▏`          | `    317 ▏`           |
-| `coverage`  · C. json | `     89 ▏`          | `    162 ▏`          | `    109 ▏`           |
-| ─────────             | ──────────────────── | ──────────────────── | ───────────────────── |
-| `changed`   · A. raw  | ` 12,694 █`          | ` 25,580 ██`         | ` 19,098 ██`          |
-| `changed`   · B. md   | `    466 ▏`          | `    787 ▏`          | `    550 ▏`           |
-| `changed`   · C. json | `    100 ▏`          | `    186 ▏`          | `    125 ▏`           |
-| ─────────             | ──────────────────── | ──────────────────── | ───────────────────── |
-| `benchmark` · A. raw  | ` 16,083 █`          | ` 23,527 ██`         | ` 19,266 ██`          |
-| `benchmark` · B. md   | `  6,211 █`          | `  9,916 █`          | `  7,596 █`           |
-| `benchmark` · C. json | `     89 ▏`          | `    163 ▏`          | `    109 ▏`           |
+| `parallel` · A. raw | 12,807 | 25,780 | 19,234 |
+| `parallel` · B. md | 376 | 642 | 444 |
+| `parallel` · C. json | 101 | 187 | 125 |
+| ───────── | ──────────────────── | ──────────────────── | ───────────────────── |
+| `coverage` · A. raw | 108,405 | 123,845 | 92,940 |
+| `coverage` · B. md | 273 | 482 | 317 |
+| `coverage` · C. json | 89 | 162 | 109 |
+| ───────── | ──────────────────── | ──────────────────── | ───────────────────── |
+| `changed` · A. raw | 12,694 | 25,580 | 19,098 |
+| `changed` · B. md | 466 | 787 | 550 |
+| `changed` · C. json | 100 | 186 | 125 |
+| ───────── | ──────────────────── | ──────────────────── | ───────────────────── |
+| `benchmark` · A. raw | 16,083 | 23,527 | 19,266 |
+| `benchmark` · B. md | 6,211 | 9,916 | 7,596 |
+| `benchmark` · C. json | 89 | 163 | 109 |
 
 A:C savings ratio per feature, per tokenizer (the headline number — relative
 cost of raw gradle vs `--json`):
 
-| Feature      | 🟦 cl100k_base | 🟥 opus-4-7 | 🟩 sonnet-4-6 | 🟧 haiku-4-5 |
+| Feature | 🟦 cl100k_base | 🟥 opus-4-8 | 🟩 sonnet-4-6 | 🟧 haiku-4-5 |
 |--------------|--------------:|------------:|--------------:|-------------:|
-| `parallel`   |          127× |        138× |          154× |         154× |
-| `coverage`   |     **1218×** |    **765×** |      **853×** |     **853×** |
-| `changed`    |          127× |        138× |          153× |         153× |
-| `benchmark`  |          181× |        144× |          177× |         177× |
+| `parallel` | 127× | 138× | 154× | 154× |
+| `coverage` | **1218×** | **765×** | **853×** | **853×** |
+| `changed` | 127× | 138× | 153× | 153× |
+| `benchmark` | 181× | 144× | 177× | 177× |
 
 Three patterns hold across every feature × tokenizer combination:
 
@@ -48,7 +46,7 @@ Three patterns hold across every feature × tokenizer combination:
    feature down to `{exit_code, tests, modules, errors[]}` regardless of
    how heavy the underlying gradle workload is.
 2. **A always exceeds 12 K tokens** on `cl100k_base` (and ~25 K on
-   `claude-opus-4-7`). Raw gradle stdout alone is verbose; the report
+   `claude-opus-4-8`). Raw gradle stdout alone is verbose; the report
    files multiply it. `coverage` is an outlier (108–124 K) because
    Kover HTML reports include per-line annotated source pages.
 3. **B's variance comes from how rich the per-feature markdown report is.**
@@ -60,7 +58,7 @@ Three patterns hold across every feature × tokenizer combination:
 Two cross-tokenizer observations:
 - **Tokenizer transition.** `claude-sonnet-4-6` and `claude-haiku-4-5`
   share a tokenizer (identical counts to the unit on every cell).
-  `claude-opus-4-7` ships a new tokenizer that produces 30–100% more
+  `claude-opus-4-8` uses a different tokenizer that produces 30–100% more
   tokens for the same input — most visibly on heavy XML/HTML payloads
   (approach A).
 - **Ratios survive across tokenizers.** Despite per-model spreads of
@@ -70,35 +68,31 @@ Two cross-tokenizer observations:
 
 ## Per-feature drill-down
 
-Each per-feature table is scaled to its own column max (so the bar
-visualisation maximises within the feature). Bars in column A always
-dominate; B/C are sub-1-char unicode blocks that visually disappear —
-that's the savings story.
+Each per-feature table shows cl100k plus the three Claude tokenizers.
+Column A (raw gradle) always dominates; B/C stay tiny — that's the
+savings story.
 
 ### `parallel` — full test suite
 
-Bars scaled to `25,780` (opus, A).
-
-| Model               | A. raw                              | B. md         | C. --json     | A:C   |
+| Model | A. raw | B. md | C. --json | A:C |
 |---------------------|-------------------------------------|---------------|---------------|-------|
-| 🟦 `cl100k_base`    | ` 12,807 ██████████`                | `   376 ▏`    | `   101 ▏`    | 127×  |
-| 🟥 `opus-4-7`       | ` 25,780 ████████████████████`      | `   642 █`    | `   187 ▏`    | 138×  |
-| 🟩 `sonnet-4-6`     | ` 19,234 ███████████████`           | `   444 ▏`    | `   125 ▏`    | 154×  |
-| 🟧 `haiku-4-5`      | ` 19,234 ███████████████`           | `   444 ▏`    | `   125 ▏`    | 154×  |
+| 🟦 `cl100k_base` | 12,807 | 376 | 101 | 127× |
+| 🟥 `opus-4-8` | 25,780 | 642 | 187 | 138× |
+| 🟩 `sonnet-4-6` | 19,234 | 444 | 125 | 154× |
+| 🟧 `haiku-4-5` | 19,234 | 444 | 125 | 154× |
 
 Captures: [`tools/runs/parallel/`](../tools/runs/parallel/) · evidence: [`tools/runs/cross-model-results-parallel.txt`](../tools/runs/cross-model-results-parallel.txt).
 
 ### `coverage` — Kover XML + HTML reports
 
-Bars scaled to `123,845` (opus, A) — the largest cell across the whole
-measurement.
+The largest cell across the whole measurement.
 
-| Model               | A. raw                                    | B. md         | C. --json     | A:C       |
+| Model | A. raw | B. md | C. --json | A:C |
 |---------------------|-------------------------------------------|---------------|---------------|-----------|
-| 🟦 `cl100k_base`    | `108,405 ██████████████████`              | `   273 ▏`    | `    89 ▏`    | **1218×** |
-| 🟥 `opus-4-7`       | `123,845 ████████████████████`            | `   482 ▏`    | `   162 ▏`    | 765×      |
-| 🟩 `sonnet-4-6`     | ` 92,940 ███████████████`                 | `   317 ▏`    | `   109 ▏`    | 853×      |
-| 🟧 `haiku-4-5`      | ` 92,940 ███████████████`                 | `   317 ▏`    | `   109 ▏`    | 853×      |
+| 🟦 `cl100k_base` | 108,405 | 273 | 89 | **1218×** |
+| 🟥 `opus-4-8` | 123,845 | 482 | 162 | 765× |
+| 🟩 `sonnet-4-6` | 92,940 | 317 | 109 | 853× |
+| 🟧 `haiku-4-5` | 92,940 | 317 | 109 | 853× |
 
 The largest savings of any feature. Kover HTML reports include a fully
 annotated source page per file (line numbers, hit counts, branch summaries,
@@ -109,14 +103,12 @@ Captures: [`tools/runs/coverage/`](../tools/runs/coverage/) · evidence: [`tools
 
 ### `changed` — tests for modules touched since `HEAD~1`
 
-Bars scaled to `25,580` (opus, A).
-
-| Model               | A. raw                              | B. md         | C. --json     | A:C   |
+| Model | A. raw | B. md | C. --json | A:C |
 |---------------------|-------------------------------------|---------------|---------------|-------|
-| 🟦 `cl100k_base`    | ` 12,694 ██████████`                | `   466 ▏`    | `   100 ▏`    | 127×  |
-| 🟥 `opus-4-7`       | ` 25,580 ████████████████████`      | `   787 █`    | `   186 ▏`    | 138×  |
-| 🟩 `sonnet-4-6`     | ` 19,098 ███████████████`           | `   550 ▏`    | `   125 ▏`    | 153×  |
-| 🟧 `haiku-4-5`      | ` 19,098 ███████████████`           | `   550 ▏`    | `   125 ▏`    | 153×  |
+| 🟦 `cl100k_base` | 12,694 | 466 | 100 | 127× |
+| 🟥 `opus-4-8` | 25,580 | 787 | 186 | 138× |
+| 🟩 `sonnet-4-6` | 19,098 | 550 | 125 | 153× |
+| 🟧 `haiku-4-5` | 19,098 | 550 | 125 | 153× |
 
 Wall-clock note: B/C take 33–42s vs A's 2s because `kmp-test changed`
 delegates to the full parallel coverage suite (broader test selection),
@@ -129,16 +121,16 @@ Captures: [`tools/runs/changed/`](../tools/runs/changed/) · evidence: [`tools/r
 
 ### `benchmark` — JMH `desktopSmokeBenchmark`
 
-Bars scaled to `23,527` (opus, A). B is unusually heavy here
+B is unusually heavy here
 (`6,211`–`9,916`) — the markdown report inlines per-benchmark scores
 by design.
 
-| Model               | A. raw                              | B. md             | C. --json     | A:C   |
+| Model | A. raw | B. md | C. --json | A:C |
 |---------------------|-------------------------------------|-------------------|---------------|-------|
-| 🟦 `cl100k_base`    | ` 16,083 ██████████████`            | ` 6,211 █████`    | `    89 ▏`    | 181×  |
-| 🟥 `opus-4-7`       | ` 23,527 ████████████████████`      | ` 9,916 ████████` | `   163 ▏`    | 144×  |
-| 🟩 `sonnet-4-6`     | ` 19,266 ████████████████`          | ` 7,596 ██████`   | `   109 ▏`    | 177×  |
-| 🟧 `haiku-4-5`      | ` 19,266 ████████████████`          | ` 7,596 ██████`   | `   109 ▏`    | 177×  |
+| 🟦 `cl100k_base` | 16,083 | 6,211 | 89 | 181× |
+| 🟥 `opus-4-8` | 23,527 | 9,916 | 163 | 144× |
+| 🟩 `sonnet-4-6` | 19,266 | 7,596 | 109 | 177× |
+| 🟧 `haiku-4-5` | 19,266 | 7,596 | 109 | 177× |
 
 Largest B:C gap of any feature (60×–70×). If you need the per-benchmark
 scores, use B; if you only need to know whether benchmarks regressed, C
@@ -247,7 +239,7 @@ Cross-model re-tokenize (per feature; reads existing captures from
 ```bash
 ANTHROPIC_API_KEY=sk-ant-... node tools/measure-token-cost.js \
   --feature <name> \
-  --anthropic-models claude-opus-4-7,claude-sonnet-4-6,claude-haiku-4-5 \
+  --anthropic-models claude-opus-4-8,claude-sonnet-4-6,claude-haiku-4-5 \
   > tools/runs/cross-model-results-<name>.txt
 ```
 
@@ -255,12 +247,12 @@ ANTHROPIC_API_KEY=sk-ant-... node tools/measure-token-cost.js \
 
 Per agent iteration the absolute token saving is feature-specific:
 
-| Feature    | A→C absolute saving (cl100k_base) | 5-iteration loop saving |
+| Feature | A→C absolute saving (cl100k_base) | 5-iteration loop saving |
 |------------|----------------------------------:|------------------------:|
-| `parallel`  |                            12,706 |                  ~64 K |
-| `coverage`  |                       **108,316** |             **~542 K** |
-| `changed`   |                            12,594 |                  ~63 K |
-| `benchmark` |                            15,994 |                  ~80 K |
+| `parallel` | 12,706 | ~64 K |
+| `coverage` | **108,316** | **~542 K** |
+| `changed` | 12,594 | ~63 K |
+| `benchmark` | 15,994 | ~80 K |
 
 A 5-iteration coverage loop on raw gradle burns ~542 K tokens — more
 than two full 200 K Claude contexts. The same loop on `--json` burns
@@ -272,7 +264,7 @@ instead of log noise.
 
 - **Tokenizer drift, validated.** `cl100k_base` is OpenAI's; Claude's
   tokenizer differs and isn't even consistent within the 4.x family
-  (`claude-opus-4-7` ships a new tokenizer that's 34–50% less compact
+  (`claude-opus-4-8` uses a tokenizer that's 34–50% less compact
   than the one shared by `sonnet-4-6` / `haiku-4-5`). The *ratio*
   between approaches (127× to 1218× for A vs C, depending on feature)
   is robust across all four tokenizers measured per feature.
