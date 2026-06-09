@@ -363,3 +363,40 @@ Describe 'Get-KmpCacheKey: Groovy DSL additivity' {
         $sha | Should -Be 'f13a13f4af5d9e60b0b1efb1ff609aedfc88c896'
     }
 }
+
+# ----------------------------------------------------------------------------
+# Version-catalog additivity (schema v8) — gradle/libs.versions.toml is hashed
+# after gradle.properties, before the build-file walk. Canonical toml SHA
+# mirrored byte-for-byte in tests/vitest/project-model.test.js +
+# tests/bats/test-gradle-tasks-probe.bats. Toml-free fixtures above keep
+# their pre-toml canonical SHAs (additive).
+# ----------------------------------------------------------------------------
+Describe 'Get-KmpCacheKey: version-catalog additivity' {
+    BeforeEach {
+        $script:WorkDir = Join-Path $TestDrive ("ck-toml-" + [guid]::NewGuid().ToString('N').Substring(0,8))
+        New-Item -ItemType Directory -Path (Join-Path $script:WorkDir 'gradle') -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $script:WorkDir 'gradlew') -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'settings.gradle.kts'), "rootProject.name = `"x`"`nplugins { kotlin(`"jvm`") }`n")
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'build.gradle.kts'), "plugins { kotlin(`"jvm`") }`n")
+    }
+
+    It 'toml fixture produces canonical toml SHA 8945e98... (3-way parity)' {
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'gradle/libs.versions.toml'), "[versions]`nkotlin = `"2.0.0`"`n[plugins]`ndemo = { id = `"com.example.demo`", version.ref = `"kotlin`" }`n")
+        $sha = Get-KmpCacheKey -ProjectRoot $script:WorkDir
+        $sha | Should -Be '8945e98482aa99c576da4ea5f3e9a56a8139d7a6'
+    }
+
+    It 'CRLF toml produces SAME canonical toml SHA (cross-platform parity)' {
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'gradle/libs.versions.toml'), "[versions]`r`nkotlin = `"2.0.0`"`r`n[plugins]`r`ndemo = { id = `"com.example.demo`", version.ref = `"kotlin`" }`r`n")
+        $sha = Get-KmpCacheKey -ProjectRoot $script:WorkDir
+        $sha | Should -Be '8945e98482aa99c576da4ea5f3e9a56a8139d7a6'
+    }
+
+    It 'editing the toml changes the key (the H4 invalidation gap this slot closes)' {
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'gradle/libs.versions.toml'), "[versions]`nkotlin = `"2.0.0`"`n")
+        $before = Get-KmpCacheKey -ProjectRoot $script:WorkDir
+        [IO.File]::WriteAllText((Join-Path $script:WorkDir 'gradle/libs.versions.toml'), "[versions]`nkotlin = `"2.1.0`"`n")
+        $after = Get-KmpCacheKey -ProjectRoot $script:WorkDir
+        $before | Should -Not -Be $after
+    }
+}

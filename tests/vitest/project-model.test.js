@@ -135,6 +135,46 @@ describe('computeCacheKey', () => {
       expect(computeCacheKey(dir)).not.toBe(canonicalSha);
     });
 
+    // Version-catalog slot (schema v8): gradle/libs.versions.toml joins the
+    // hashed input set AFTER gradle.properties, BEFORE the build-file walk —
+    // analyzeModule resolves alias(libs.plugins.X) through the catalog, so a
+    // toml edit must invalidate the model cache. Additive: the toml-free
+    // fixtures above keep the pre-toml canonical SHA. Fixture + SHA mirrored
+    // byte-for-byte in tests/bats/test-gradle-tasks-probe.bats and
+    // tests/pester/Gradle-Tasks-Probe.Tests.ps1.
+    const tomlLf = '[versions]\nkotlin = "2.0.0"\n[plugins]\ndemo = { id = "com.example.demo", version.ref = "kotlin" }\n';
+    const tomlCanonicalSha = '8945e98482aa99c576da4ea5f3e9a56a8139d7a6';
+
+    it('toml fixture produces the toml canonical SHA (3-way parity)', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), lfContent);
+      writeFileSync(path.join(dir, 'build.gradle.kts'), buildLf);
+      mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'), tomlLf);
+      expect(computeCacheKey(dir)).toBe(tomlCanonicalSha);
+    });
+
+    it('CRLF toml hashes identically to the LF toml (parity)', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), lfContent);
+      writeFileSync(path.join(dir, 'build.gradle.kts'), buildLf);
+      mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'), tomlLf.replace(/\n/g, '\r\n'));
+      expect(computeCacheKey(dir)).toBe(tomlCanonicalSha);
+    });
+
+    it('editing the toml changes the key (the H4 invalidation gap this slot closes)', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), lfContent);
+      writeFileSync(path.join(dir, 'build.gradle.kts'), buildLf);
+      mkdirSync(path.join(dir, 'gradle'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'), tomlLf);
+      const before = computeCacheKey(dir);
+      writeFileSync(path.join(dir, 'gradle', 'libs.versions.toml'),
+        tomlLf.replace('2.0.0', '2.1.0'));
+      expect(computeCacheKey(dir)).not.toBe(before);
+    });
+
     it('multiple trailing newlines fold to a single SHA (LF-only invariant)', () => {
       const dirA = makeProject();
       writeFileSync(path.join(dirA, 'settings.gradle.kts'), lfContent);

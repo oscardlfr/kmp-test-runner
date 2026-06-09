@@ -62,6 +62,12 @@ _kmp_compute_cache_key() {
     if [[ -f "$project_root/gradle.properties" ]]; then
         concat="${concat}$(tr -d '\r' < "$project_root/gradle.properties" 2>/dev/null)"
     fi
+    # Version catalog — hashed after gradle.properties, before the build-file
+    # walk. Slot mirrored in lib/project/cache.js#computeCacheKey and the PS1
+    # sibling (3-way parity); analyzeModule resolves plugin aliases from it.
+    if [[ -f "$project_root/gradle/libs.versions.toml" ]]; then
+        concat="${concat}$(tr -d '\r' < "$project_root/gradle/libs.versions.toml" 2>/dev/null)"
+    fi
 
     # Find all build.gradle(.kts) up to depth 4, excluding build/ and .gradle/
     local found
