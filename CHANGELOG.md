@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — artifact lifecycle sweep + `kmp-test clean`
+
+`.kmp-test-runner/` no longer grows unbounded. Every test run (after acquiring the project
+lock) sweeps stale artifacts: orphaned `cache-isolated/` gradle caches, init-scripts and
+`*.tmp.*` rename leftovers older than 24 h, and per-run `logs/` directories older than a
+configurable TTL (`cleanup: { auto, logsTtlDays }` in project-local/user-global config,
+default 7 days; hard opt-out `KMP_TEST_NO_SWEEP=1`). The model/tasks cache, `reports/`, the
+lockfile, and `.kmp-test-runner.json` are never auto-swept. New **`kmp-test clean`**
+subcommand for explicit purges (`--all` adds caches + reports, `--dry-run` lists targets
+with sizes, `--json` envelope, lock-aware). Cache writes additionally retry
+`renameSync` on Windows EPERM/EBUSY (antivirus contention) and unlink their tmp file on
+final failure.
+
+### Fixed — `gradle/libs.versions.toml` now invalidates the project-model cache
+
+`computeCacheKey` (and its bash + PowerShell siblings) now hash `gradle/libs.versions.toml`
+alongside settings/properties/build files. `analyzeModule` resolves `alias(libs.plugins.X)`
+through the version catalog, so editing a plugin alias/version previously kept serving a
+**stale cached model** until an unrelated build file changed. Model-cache schema bumps 7 → 8.
+
+**Migration note:** the first `kmp-test` run after upgrading re-probes gradle once per project
+(the cache key rotates, so pre-upgrade `tasks-*.txt` / `model-*.json` entries no longer match).
+Subsequent runs cache as before. Projects without a version catalog hash byte-identically to
+the previous key apart from the schema bump.
+
 ## [0.13.0] — 2026-06-07
 
 ### Changed — Opus 4.8 token-cost figures + clean numeric tables

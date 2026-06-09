@@ -140,6 +140,9 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `partial_timeout` | benchmark | At least one benchmark module timed out but at least one other passed. Exit code stays at `0` (graded). Pass `--strict-timeouts` to restore pre-graded hard-fail behavior. | `timed_out:int`, `passed:int` |
 | `flavor_defaulted_umbrella` | parallel (`androidUnit`/`androidInstrumented`/`all`) | Project is flavored and no `--flavor` was supplied, so the leg dispatched the flavor-agnostic umbrella task (`:module:test` / `:module:connectedAndroidTest`, which run every flavor — slower). Pass `--flavor <name>` to target one. | `candidates:string[]`, `test_type:string` |
 | `gradle_config_applied` | parallel (envelope payload, not `warnings[]` entry) | Project's `gradle.properties` had `org.gradle.parallel=false` so the CLI dropped its own `--parallel` injection to respect user intent. | `parallel_dropped:bool` (on the top-level `gradle_config_applied:{}` field) |
+| `config_invalid_field` | any (runner-backed) | A `.kmp-test-runner.json` / user-global config field failed validation and was dropped — previously visible only as a stderr `[WARN]` line, invisible to `--json` consumers. | `source: "project_local" \| "user_global"` |
+| `envelope_parse_failed` | parallel, changed, android, benchmark, coverage | The orchestrator's envelope sentinel was present in stdout but its JSON did not parse (truncated/corrupted); results come from the coarser legacy output parser. | `reason: "json_parse_failed"` |
+| `log_write_failed` | android | A per-module log/logcat/errors artifact could not be written (disk full, read-only dir) — that module's `log_file`/`logcat_file`/`errors_file` pointer may be a dead link. | `path:string` |
 
 > Like errors, future warning codes can land additively without bumping `schema_version`. Treat unrecognized codes as opaque.
 
