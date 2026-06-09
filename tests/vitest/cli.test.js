@@ -51,6 +51,7 @@ import {
   parseGradleConfig,
   parseGradleTimeoutMs,
   DEFAULT_GRADLE_TIMEOUT_MS,
+  extractMigratedEnvelopeDetailed,
 } from '../../lib/cli.js';
 import { withFakeGradleProject, DEAD_PID } from './_test-helpers.js';
 
@@ -3626,6 +3627,75 @@ describe('kmp-test clean', () => {
       expect(code).toBe(EXIT.ENV_ERROR);
       const json = JSON.parse(captured.join('').trim());
       expect(json.errors[0].code).toBe('lock_held');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// envelope_parse_failed — degraded migrated-envelope fallback discrimination
+// ---------------------------------------------------------------------------
+describe('extractMigratedEnvelopeDetailed', () => {
+  it('sentinel absent → { envelope: null, sentinelSeen: false }', () => {
+    const r = extractMigratedEnvelopeDetailed('plain legacy output\n');
+    expect(r.envelope).toBeNull();
+    expect(r.sentinelSeen).toBe(false);
+  });
+
+  it('sentinel present + corrupt JSON → { envelope: null, sentinelSeen: true }', () => {
+    const r = extractMigratedEnvelopeDetailed(
+      '__KMP_TEST_ENVELOPE_V1_BEGIN__\ngarbage{\n__KMP_TEST_ENVELOPE_V1_END__\n'
+    );
+    expect(r.envelope).toBeNull();
+    expect(r.sentinelSeen).toBe(true);
+  });
+
+  it('sentinel present + valid JSON → parsed envelope', () => {
+    const r = extractMigratedEnvelopeDetailed(
+      '__KMP_TEST_ENVELOPE_V1_BEGIN__\n{"tool":"kmp-test"}\n__KMP_TEST_ENVELOPE_V1_END__\n'
+    );
+    expect(r.envelope).toEqual({ tool: 'kmp-test' });
+    expect(r.sentinelSeen).toBe(true);
+  });
+});
+
+describe('dispatcher envelope_parse_failed fallback (e2e via main)', () => {
+  it('corrupt sentinel block falls back to the legacy parser WITH a discriminable warning', () => {
+    spawnMock.mockReturnValue({
+      status: 0,
+      stdout: '__KMP_TEST_ENVELOPE_V1_BEGIN__\ngarbage{\n__KMP_TEST_ENVELOPE_V1_END__\n',
+      stderr: '',
+    });
+    withFakeGradleProject(dir => {
+      const captured = [];
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (c) => { captured.push(String(c)); return true; };
+      try {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+        main();
+      } finally {
+        process.stdout.write = origWrite;
+      }
+      const json = JSON.parse(captured.join('').trim());
+      const w = (json.warnings || []).find(x => x.code === 'envelope_parse_failed');
+      expect(w).toBeTruthy();
+      expect(w.reason).toBe('json_parse_failed');
+    });
+  });
+
+  it('sentinel-absent legacy output stays silent (no envelope_parse_failed)', () => {
+    spawnMock.mockReturnValue({ status: 0, stdout: 'plain output\n', stderr: '' });
+    withFakeGradleProject(dir => {
+      const captured = [];
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (c) => { captured.push(String(c)); return true; };
+      try {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+        main();
+      } finally {
+        process.stdout.write = origWrite;
+      }
+      const json = JSON.parse(captured.join('').trim());
+      expect((json.warnings || []).find(x => x.code === 'envelope_parse_failed')).toBeUndefined();
     });
   });
 });

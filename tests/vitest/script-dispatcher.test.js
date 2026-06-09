@@ -148,6 +148,15 @@ describe('classifySpawnError', () => {
     expect(r.message).toContain("'bash'");
   });
 
+  it('ENOBUFS (the Windows overflow errno) also gets the maxBuffer hint', () => {
+    const r = classifySpawnError(
+      Object.assign(new Error('spawnSync pwsh ENOBUFS'), { code: 'ENOBUFS' }),
+      { isWin: true, spawnCmd: 'pwsh' },
+    );
+    expect(r.code).toBe('spawn_error');
+    expect(r.message).toContain('KMP_GRADLE_MAXBUFFER_MB');
+  });
+
   it('any other errno is a generic spawn_error carrying the original message', () => {
     const r = classifySpawnError(
       Object.assign(new Error('resource temporarily unavailable'), { code: 'EAGAIN' }),

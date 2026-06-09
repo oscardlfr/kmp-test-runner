@@ -1642,4 +1642,21 @@ describe('runAndroid spawn maxBuffer + spawn_error', () => {
     expect(err.errno).toBe('ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
     expect(err.message).toContain('KMP_GRADLE_MAXBUFFER_MB');
   });
+
+  it('ENOBUFS (Windows overflow errno) also carries the maxBuffer hint', async () => {
+    const dir = makeProject([
+      { name: 'app', build: `plugins { id("com.android.library") }\nandroid { namespace = "x" }\n` },
+    ]);
+    const overflow = Object.assign(new Error('spawnSync ENOBUFS'), { code: 'ENOBUFS' });
+    const spawn = (cmd, args) => {
+      if (cmd === 'adb') return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+      return { status: null, stdout: '', stderr: '', signal: null, error: overflow };
+    };
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe });
+    const err = envelope.errors.find(e => e.code === 'spawn_error');
+    expect(err.errno).toBe('ENOBUFS');
+    expect(err.message).toContain('KMP_GRADLE_MAXBUFFER_MB');
+  });
 });
