@@ -442,6 +442,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `PARENT_ONLY_MODULES` | always | Comma-separated module names that are aggregator-only (skipped at discovery time) |
 | `NO_COLOR` | always (POSIX) | Any non-empty value disables gradle ANSI output (equivalent to `--color=never`) |
 | `KMP_TEST_SKIP_ADB` | `info` / `android` | Equivalent to `--no-adb`. On `android` it implies `--list-only` (instrumented tests require adb) |
+| `KMP_GRADLE_MAXBUFFER_MB` | always | Max stdout/stderr captured per gradle/adb subprocess, in megabytes (default `64`). Raise on machines running very verbose builds; exceeding the cap surfaces as `errors[].code: "spawn_error"` instead of killing the run silently |
 
 ### Project config — `.kmp-test-runner.json`
 

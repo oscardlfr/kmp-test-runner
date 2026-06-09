@@ -105,6 +105,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `missing_shell` | any | 3 | `pwsh`/`powershell` (Windows) or `bash` (Unix) not on `PATH`. | — |
 | `no_test_modules` | parallel, changed | **2 \| 3** | No modules match the leg's test-type or `--module-filter`. | `caused_by_filter:bool` (`true` → 2, `false` → 3) |
 | `module_failed` | parallel, android | 1 | A gradle task failed. | `setup_failed:bool`, `module:string`; on `kmp-test android --capture-on-fail` or `parallel --test-type androidInstrumented --capture-on-fail`: `screenshot_file?:string`, `ui_hierarchy_file?:string`, `capture_error?:string` |
+| `spawn_error` | android, benchmark | 1 | The gradle child errored at the spawn layer and never ran to completion (e.g. output exceeded `KMP_GRADLE_MAXBUFFER_MB`, default 64 MB). | `errno:string` (Node error code, e.g. `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`), `module:string` |
 | `instrumented_setup_failed` | android, parallel (`androidInstrumented`), benchmark | 3 | adb has no devices when one was required (or `--device <serial>` mismatch). | — |
 | `flavor_unused` | parallel (`androidUnit`/`androidInstrumented`/`all`) | 2 | `--flavor <name>` passed but no module on the leg is flavored (static `productFlavors {}` or probe-recovered). | — |
 | `isolated_runtime_race` | parallel | 2 | `--isolated` combined with a test-type that hits a shared runtime resource (iOS sim, ADB without `--device`, `--test-type all`). | — |

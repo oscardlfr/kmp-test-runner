@@ -1084,3 +1084,34 @@ describe('runBenchmark graded partial-timeout exit (PR 3.2 / A10)', () => {
     expect(envelope.warnings.find(w => w.code === 'partial_timeout')).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// spawn_error discrimination (spawn-layer failures vs ordinary module_failed)
+// ---------------------------------------------------------------------------
+describe('runBenchmark spawn_error discrimination', () => {
+  it('surfaces a spawn-layer error as spawn_error with errno + maxBuffer hint', async () => {
+    const dir = copyFixture();
+    const overflow = Object.assign(new Error('stdout maxBuffer length exceeded'), {
+      code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+    });
+    const spawn = (cmd, args) => {
+      spawn.calls.push({ cmd, args: [...args] });
+      return { status: null, stdout: 'partial', stderr: '', signal: null, error: overflow };
+    };
+    spawn.calls = [];
+
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    expect(exitCode).not.toBe(0);
+    const err = envelope.errors.find(e => e.code === 'spawn_error');
+    expect(err).toBeTruthy();
+    expect(err.errno).toBe('ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+    expect(err.message).toContain('KMP_GRADLE_MAXBUFFER_MB');
+    expect(envelope.errors.find(e => e.code === 'module_failed')).toBeUndefined();
+  });
+});
