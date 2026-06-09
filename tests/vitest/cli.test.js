@@ -1598,7 +1598,9 @@ describe('main() — Phase 4 step 7 (eager ProjectModel build before spawn)', ()
       const modelFiles = readdirSync(cacheDir).filter(f => f.startsWith('model-') && f.endsWith('.json'));
       expect(modelFiles.length).toBeGreaterThan(0);
       const model = JSON.parse(readFileSync(path.join(cacheDir, modelFiles[0]), 'utf8'));
-      expect(model.schemaVersion).toBe(7);
+      // Hardcoded on purpose — forces a conscious edit on every SCHEMA bump.
+      // 7 → 8: gradle/libs.versions.toml joined the cache-key input set.
+      expect(model.schemaVersion).toBe(8);
       expect(model.settingsIncludes).toEqual([':m']);
       expect(model.modules[':m'].type).toBe('jvm');
     });

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — `gradle/libs.versions.toml` now invalidates the project-model cache
+
+`computeCacheKey` (and its bash + PowerShell siblings) now hash `gradle/libs.versions.toml`
+alongside settings/properties/build files. `analyzeModule` resolves `alias(libs.plugins.X)`
+through the version catalog, so editing a plugin alias/version previously kept serving a
+**stale cached model** until an unrelated build file changed. Model-cache schema bumps 7 → 8.
+
+**Migration note:** the first `kmp-test` run after upgrading re-probes gradle once per project
+(the cache key rotates, so pre-upgrade `tasks-*.txt` / `model-*.json` entries no longer match).
+Subsequent runs cache as before. Projects without a version catalog hash byte-identically to
+the previous key apart from the schema bump.
+
 ## [0.13.0] — 2026-06-07
 
 ### Changed — Opus 4.8 token-cost figures + clean numeric tables

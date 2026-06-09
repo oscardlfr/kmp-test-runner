@@ -326,7 +326,7 @@ exports[`parity / envelope JSON schema snapshot > describe --json --skip-probe e
         "type": "kmp",
       },
     ],
-    "schema_version": 7,
+    "schema_version": 8,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [],
