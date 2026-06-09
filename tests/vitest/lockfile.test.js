@@ -6,7 +6,7 @@
 // cli.js in refactor PR-09 — its tests follow the source.
 
 import { describe, it, expect } from 'vitest';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync, readdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -234,6 +234,17 @@ describe('acquireLock', () => {
       // PID / time-stale). Invalid JSON claims silently — same contract as
       // the pre-exclusive-create implementation.
       expect(r.reclaimed).toBeUndefined();
+    });
+  });
+
+  it('leaves no .lock.tmp.* sidecar behind (hard-link write path)', () => {
+    withFakeGradleProject(dir => {
+      const r = acquireLock(dir, 'parallel');
+      expect(r.ok).toBe(true);
+      const leftovers = readdirSync(dir).filter(f => f.includes('.lock.tmp.'));
+      expect(leftovers).toEqual([]);
+      // The lock itself landed with full content (atomic link — never empty).
+      expect(readLockfile(dir).pid).toBe(process.pid);
     });
   });
 });
