@@ -121,6 +121,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `KMP_COLOR_MODE` | always | `always` / `never` / `auto`. Set via `--color`; persists across re-exec chain. |
 | `KMP_GRADLE_TIMEOUT_MS` | parallel / benchmark | Per-task gradle watchdog override in milliseconds. Precedence: `--ignore-gradle-timeout` > `--timeout` > this > config default. |
 | `KMP_GRADLE_MAXBUFFER_MB` | always | Max stdout/stderr captured per gradle/adb subprocess, in megabytes (default `64`). Exceeding the cap surfaces as `errors[].code: "spawn_error"`. |
+| `KMP_TEST_NO_SWEEP` | test subcommands | Set to `1` to disable the startup artifact-lifecycle sweep of `.kmp-test-runner/` (config key `cleanup:{auto,logsTtlDays}`). Explicit purge: `kmp-test clean [--all] [--dry-run]`. |
 | `KMP_PROBE_TIMEOUT` | always | `lib/gradle-tasks-probe.sh` timeout in seconds (default 60). |
 | `KMP_TEST_SKIP_ADB` | info, doctor | Set to `1` to skip ADB probe (equivalent to `--no-adb` on `info`). |
 | `JAVA_HOME` | always | Injected via JDK catalogue auto-select when host default mismatches project's `jvmToolchain(N)`. |

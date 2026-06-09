@@ -443,6 +443,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `NO_COLOR` | always (POSIX) | Any non-empty value disables gradle ANSI output (equivalent to `--color=never`) |
 | `KMP_TEST_SKIP_ADB` | `info` / `android` | Equivalent to `--no-adb`. On `android` it implies `--list-only` (instrumented tests require adb) |
 | `KMP_GRADLE_MAXBUFFER_MB` | always | Max stdout/stderr captured per gradle/adb subprocess, in megabytes (default `64`). Raise on machines running very verbose builds; exceeding the cap surfaces as `errors[].code: "spawn_error"` instead of killing the run silently |
+| `KMP_TEST_NO_SWEEP` | test subcommands | Set to `1` to disable the startup artifact-lifecycle sweep of `.kmp-test-runner/` (see the `cleanup` config key) |
 
 ### Project config — `.kmp-test-runner.json`
 
@@ -452,11 +453,14 @@ Drop a `.kmp-test-runner.json` at your project root to pin stable defaults inste
 {
   "sharedProject": { "name": "shared-libs", "path": "../shared-libs" },
   "defaults":     { "testType": "common", "coverageTool": "kover", "excludeModules": "*:test-fakes" },
-  "skip":         { "android": ["legacy-app"], "ios": ["bench-android"] }
+  "skip":         { "android": ["legacy-app"], "ios": ["bench-android"] },
+  "cleanup":      { "auto": true, "logsTtlDays": 7 }
 }
 ```
 
 All fields are optional. Unknown fields are preserved silently for forward compat. Type-mismatched fields are dropped with a `[WARN]` line on stderr.
+
+`cleanup` controls the **artifact lifecycle sweep**: every test run (after acquiring the project lock) removes stale entries under `.kmp-test-runner/` — orphaned `cache-isolated/` gradle caches, init-scripts and `*.tmp.*` leftovers older than 24 h, and per-run `logs/` directories older than `logsTtlDays` (default 7). The model/tasks cache, `reports/`, the lockfile, and this config file are never auto-swept. Disable with `"auto": false` or the `KMP_TEST_NO_SWEEP=1` env var. For an explicit purge use `kmp-test clean` (`--all` adds the model cache + reports, `--dry-run` lists targets with sizes first).
 
 ### User-global config — `~/.kmp-test/config.json`
 
@@ -689,6 +693,16 @@ On each failed module it runs, best-effort, `adb exec-out screencap` (a PNG) and
 The same flags work on `kmp-test parallel --test-type androidInstrumented` (and the instrumented leg of `--test-type all`): each failed instrumented module captures into the same per-run `<runId>/` tree, namespaced by module (`<module>_screenshot.png` / `<module>_ui-hierarchy.xml`), with the paths on its `errors[]` entry. Capture fires once per module on the final failure — after any `--auto-retry` — against the resolved `--device` (or the first connected device / emulator).
 
 The capture is **post-hoc** — adb runs after the gradle task ends, so the screenshot shows the device state at task-end, not the exact frame the assertion failed on (the same way the logcat buffer dump beside it is post-hoc). That makes it most valuable for **crashes, ANRs, and hangs** (the error dialog is still on screen); for a clean Compose assertion failure the screen may already be torn down, but the UI-hierarchy dump, logcat, and `errors.json` still carry the failure detail. It is forensic-only: a capture that can't run sets `errors[].capture_error` and **never** changes the exit code.
+
+### `kmp-test clean` — purge run artifacts
+
+Removes the per-run debris under `.kmp-test-runner/` (logs, orphaned isolated gradle caches, init-scripts, stale cache tmp files) regardless of age. `--all` also purges the model/tasks cache (next run re-probes gradle once) and `reports/`. `--dry-run` lists the targets and their sizes without deleting. The command respects the project lock — it refuses with `lock_held` while another `kmp-test` run is live. The lockfile itself and `.kmp-test-runner.json` are never touched. Day-to-day you rarely need it: the test subcommands already auto-sweep stale artifacts on startup (see the `cleanup` config key above).
+
+```sh
+kmp-test clean --dry-run     # list what would go, with sizes
+kmp-test clean               # purge run artifacts
+kmp-test clean --all --json  # full purge incl. caches, JSON envelope
+```
 
 ### `kmp-test doctor` — environment diagnosis
 

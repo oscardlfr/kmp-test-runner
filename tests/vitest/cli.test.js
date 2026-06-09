@@ -1,5 +1,5 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, rmSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -3515,6 +3515,118 @@ describe('android subcommand — v0.5.1 Bug B\' (--device-task flag)', () => {
 
   it('translateFlagForPowerShell: --device-task -> -DeviceTask', () => {
     expect(translateFlagForPowerShell('--device-task')).toBe('-DeviceTask');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Artifact-sweep wiring + `kmp-test clean`
+// ---------------------------------------------------------------------------
+describe('artifact sweep wiring (dispatchScriptCommand)', () => {
+  function makeStaleIsolated(dir) {
+    const iso = path.join(dir, '.kmp-test-runner', 'cache-isolated', '111-222');
+    mkdirSync(iso, { recursive: true });
+    writeFileSync(path.join(iso, 'junk.bin'), 'x');
+    const t = (Date.now() - 2 * 24 * 60 * 60 * 1000) / 1000;
+    utimesSync(iso, t, t);
+    return iso;
+  }
+
+  it('a parallel run sweeps stale disposables after acquiring the lock', () => {
+    spawnMock.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    withFakeGradleProject(dir => {
+      const iso = makeStaleIsolated(dir);
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      main();
+      expect(existsSync(iso)).toBe(false);
+    });
+  });
+
+  it('KMP_TEST_NO_SWEEP=1 disables the auto-sweep', () => {
+    spawnMock.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    const prev = process.env.KMP_TEST_NO_SWEEP;
+    process.env.KMP_TEST_NO_SWEEP = '1';
+    try {
+      withFakeGradleProject(dir => {
+        const iso = makeStaleIsolated(dir);
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+        main();
+        expect(existsSync(iso)).toBe(true);
+      });
+    } finally {
+      if (prev === undefined) delete process.env.KMP_TEST_NO_SWEEP;
+      else process.env.KMP_TEST_NO_SWEEP = prev;
+    }
+  });
+});
+
+describe('kmp-test clean', () => {
+  it('--dry-run --json lists targets without deleting', () => {
+    withFakeGradleProject(dir => {
+      const logRun = path.join(dir, '.kmp-test-runner', 'logs', 'android', 'r1');
+      mkdirSync(logRun, { recursive: true });
+      writeFileSync(path.join(logRun, 'a.log'), 'x');
+
+      const captured = [];
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+      let code;
+      try {
+        process.argv = ['node', 'kmp-test.js', 'clean', '--dry-run', '--json', '--project-root', dir];
+        code = main();
+      } finally {
+        process.stdout.write = origWrite;
+      }
+      expect(code).toBe(EXIT.SUCCESS);
+      const json = JSON.parse(captured.join('').trim());
+      expect(json.subcommand).toBe('clean');
+      expect(json.clean.dry_run).toBe(true);
+      expect(json.clean.targets.length).toBe(1);
+      expect(json.clean.removed).toEqual([]);
+      expect(existsSync(logRun)).toBe(true);
+    });
+  });
+
+  it('removes run artifacts; --all also purges the model cache', () => {
+    withFakeGradleProject(dir => {
+      const logRun = path.join(dir, '.kmp-test-runner', 'logs', 'android', 'r1');
+      mkdirSync(logRun, { recursive: true });
+      writeFileSync(path.join(logRun, 'a.log'), 'x');
+      const model = path.join(dir, '.kmp-test-runner', 'cache', 'model-x.json');
+      mkdirSync(path.dirname(model), { recursive: true });
+      writeFileSync(model, '{}');
+
+      process.argv = ['node', 'kmp-test.js', 'clean', '--project-root', dir];
+      expect(main()).toBe(EXIT.SUCCESS);
+      expect(existsSync(logRun)).toBe(false);
+      expect(existsSync(model)).toBe(true); // default scope keeps the cache
+
+      process.argv = ['node', 'kmp-test.js', 'clean', '--all', '--project-root', dir];
+      expect(main()).toBe(EXIT.SUCCESS);
+      expect(existsSync(model)).toBe(false);
+    });
+  });
+
+  it('refuses with lock_held while another live process holds the lock', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, '.kmp-test-runner.lock'), JSON.stringify({
+        schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+        subcommand: 'parallel', project_root: dir, version: 'x',
+      }), 'utf8');
+
+      const captured = [];
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (c) => { captured.push(String(c)); return true; };
+      let code;
+      try {
+        process.argv = ['node', 'kmp-test.js', 'clean', '--json', '--project-root', dir];
+        code = main();
+      } finally {
+        process.stdout.write = origWrite;
+      }
+      expect(code).toBe(EXIT.ENV_ERROR);
+      const json = JSON.parse(captured.join('').trim());
+      expect(json.errors[0].code).toBe('lock_held');
+    });
   });
 });
 
