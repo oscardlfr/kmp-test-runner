@@ -253,3 +253,56 @@ describe('loadMergedConfig', () => {
     expect(captured.join('')).toContain('java_home is not allowed in project-local config');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Warning collector — config-validation drops surfaced to envelope warnings[]
+// ---------------------------------------------------------------------------
+describe('loadMergedConfig warning collector', () => {
+  it('collects per-field drops from project-local config with source tag', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, CONFIG_FILE_NAME), JSON.stringify({
+      defaults: { testType: 42 },          // wrong type — dropped
+      cleanup: { logsTtlDays: 'soon' },    // wrong type — dropped
+    }), 'utf8');
+    const collected = [];
+    withSilencedStderr(() => {
+      loadMergedConfig(dir, { collect: (w) => collected.push(w), projectKey: 'no-such-key' });
+    });
+    expect(collected.length).toBe(2);
+    for (const w of collected) {
+      expect(w.code).toBe('config_invalid_field');
+      expect(w.source).toBe('project_local');
+      expect(typeof w.message).toBe('string');
+    }
+    expect(collected.map(w => w.message).join('\n')).toContain('defaults.testType');
+    expect(collected.map(w => w.message).join('\n')).toContain('cleanup.logsTtlDays');
+  });
+
+  it('collects the project-local java_home security drop', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, CONFIG_FILE_NAME), JSON.stringify({
+      java_home: '/evil/jdk',
+    }), 'utf8');
+    const collected = [];
+    withSilencedStderr(() => {
+      loadMergedConfig(dir, { collect: (w) => collected.push(w), projectKey: 'no-such-key' });
+    });
+    const drop = collected.find(w => w.message.includes('java_home is not allowed'));
+    expect(drop).toBeTruthy();
+    expect(drop.code).toBe('config_invalid_field');
+    expect(drop.source).toBe('project_local');
+  });
+
+  it('collects nothing for a fully valid config', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, CONFIG_FILE_NAME), JSON.stringify({
+      defaults: { testType: 'common' },
+      cleanup: { auto: true, logsTtlDays: 7 },
+    }), 'utf8');
+    const collected = [];
+    withSilencedStderr(() => {
+      loadMergedConfig(dir, { collect: (w) => collected.push(w), projectKey: 'no-such-key' });
+    });
+    expect(collected).toEqual([]);
+  });
+});
