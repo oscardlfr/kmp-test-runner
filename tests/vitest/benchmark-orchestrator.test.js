@@ -1115,3 +1115,54 @@ describe('runBenchmark spawn_error discrimination', () => {
     expect(envelope.errors.find(e => e.code === 'module_failed')).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Convention-plugin benchmark discovery (build-logic descriptors)
+// ---------------------------------------------------------------------------
+// Wet finding on the reference composite: kotlinx-benchmark applied through a
+// build-logic convention plugin (custom id) was invisible to the literal
+// markers — `kmp-test benchmark` discovered 0 modules on a project where the
+// v0.8-era direct application used to work. Discovery now expands a module's
+// convention plugin ids via parseBuildLogicPluginDescriptors.appliedPlugins.
+describe('discoverBenchmarkModules via build-logic convention plugin', () => {
+  it('discovers + dispatches a module whose benchmark plugin comes from a convention descriptor', async () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-bench-conv-'));
+    writeFileSync(path.join(workDir, 'settings.gradle.kts'),
+      'rootProject.name = "conv"\ninclude(":bench-mod")\n');
+    mkdirSync(path.join(workDir, 'bench-mod'), { recursive: true });
+    // The module applies ONLY the custom convention id — no literal
+    // kotlinx.benchmark marker anywhere in its build file.
+    writeFileSync(path.join(workDir, 'bench-mod', 'build.gradle.kts'),
+      'plugins {\n    id("com.acme.kmp.benchmark")\n}\n');
+    mkdirSync(path.join(workDir, 'build-logic', 'src', 'main', 'kotlin'), { recursive: true });
+    writeFileSync(path.join(workDir, 'build-logic', 'build.gradle.kts'),
+      'gradlePlugin {\n    plugins {\n        register("kmpBenchmark") {\n'
+      + '            id = "com.acme.kmp.benchmark"\n'
+      + '            implementationClass = "AcmeBenchmarkConventionPlugin"\n'
+      + '        }\n    }\n}\n');
+    writeFileSync(
+      path.join(workDir, 'build-logic', 'src', 'main', 'kotlin', 'AcmeBenchmarkConventionPlugin.kt'),
+      'class AcmeBenchmarkConventionPlugin : Plugin<Project> {\n'
+      + '    override fun apply(target: Project) {\n'
+      + '        target.pluginManager.apply("org.jetbrains.kotlinx.benchmark")\n'
+      + '    }\n}\n');
+    writeFileSync(path.join(workDir, 'gradlew'), '#!/usr/bin/env bash\nexit 0\n');
+    writeFileSync(path.join(workDir, 'gradlew.bat'), '@echo off\r\nexit /b 0\r\n');
+
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: workDir,
+      args: ['--platform', 'jvm', '--config', 'smoke'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    expect(exitCode).toBe(0);
+    expect(envelope.modules).toContain('bench-mod');
+    expect(envelope.tests.passed).toBe(1);
+    expect(envelope.errors).toEqual([]);
+    // The dispatched task is the jvm smoke benchmark task.
+    const gradleCalls = spawn.calls.filter(c => isGradleCall(c));
+    expect(effectiveGradleArgs(gradleCalls[0])).toContain(':bench-mod:desktopSmokeBenchmark');
+  });
+});
