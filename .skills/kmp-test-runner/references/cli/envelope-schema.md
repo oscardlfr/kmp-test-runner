@@ -143,6 +143,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `config_invalid_field` | any (runner-backed) | A `.kmp-test-runner.json` / user-global config field failed validation and was dropped — previously visible only as a stderr `[WARN]` line, invisible to `--json` consumers. | `source: "project_local" \| "user_global"` |
 | `envelope_parse_failed` | parallel, changed, android, benchmark, coverage | The orchestrator's envelope sentinel was present in stdout but its JSON did not parse (truncated/corrupted); results come from the coarser legacy output parser. | `reason: "json_parse_failed"` |
 | `log_write_failed` | android | A per-module log/logcat/errors artifact could not be written (disk full, read-only dir) — that module's `log_file`/`logcat_file`/`errors_file` pointer may be a dead link. | `path:string` |
+| `junit_xml_oversized` | parallel, changed | A `TEST-*.xml` report exceeded the size cap (default 32 MB; tunable via `KMP_JUNIT_XML_MAX_MB`) and was skipped — `tests.individual_total` undercounts and that task's `test_failures[]` may be incomplete. | `module:string`, `task:string`, `file:string`, `size_bytes:int`, `max_mb:int` |
 
 > Like errors, future warning codes can land additively without bumping `schema_version`. Treat unrecognized codes as opaque.
 
