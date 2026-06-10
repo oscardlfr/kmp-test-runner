@@ -11,8 +11,9 @@
 # Cache layout: <project>\.kmp-test-runner\cache\tasks-<sha>.txt
 #               (v0.8.0 — dual-read fallback for legacy `.kmp-test-runner-cache\`
 #                covers v0.7.x users for one transition release.)
-# Cache key:    SHA1 of concatenated file contents of settings.gradle.kts,
-#               gradle.properties, and every per-module build.gradle.kts.
+# Cache key:    SHA1 of concatenated file contents of settings.gradle(.kts),
+#               gradle.properties, gradle/libs.versions.toml, and every
+#               per-module build.gradle(.kts).
 #               Any content change invalidates the cache deterministically.
 #
 # Probe failure (gradle missing, timeout, exit nonzero) is non-fatal: the
@@ -63,6 +64,13 @@ function Get-KmpCacheKey {
     $props = Join-Path $ProjectRoot 'gradle.properties'
     if (Test-Path $props) {
         & $appendNormalized (Get-Content $props -Raw -ErrorAction SilentlyContinue)
+    }
+    # Version catalog — hashed after gradle.properties, before the build-file
+    # walk. Slot mirrored in lib/project/cache.js#computeCacheKey and the bash
+    # sibling (3-way parity); analyzeModule resolves plugin aliases from it.
+    $versionCatalog = Join-Path $ProjectRoot 'gradle/libs.versions.toml'
+    if (Test-Path $versionCatalog) {
+        & $appendNormalized (Get-Content $versionCatalog -Raw -ErrorAction SilentlyContinue)
     }
 
     # Enumerate then match by exact leaf name (-eq) rather than -Filter/-Include,

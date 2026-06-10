@@ -442,6 +442,9 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `PARENT_ONLY_MODULES` | always | Comma-separated module names that are aggregator-only (skipped at discovery time) |
 | `NO_COLOR` | always (POSIX) | Any non-empty value disables gradle ANSI output (equivalent to `--color=never`) |
 | `KMP_TEST_SKIP_ADB` | `info` / `android` | Equivalent to `--no-adb`. On `android` it implies `--list-only` (instrumented tests require adb) |
+| `KMP_GRADLE_MAXBUFFER_MB` | always | Max stdout/stderr captured per gradle/adb subprocess, in megabytes (default `64`). Raise on machines running very verbose builds; exceeding the cap surfaces as `errors[].code: "spawn_error"` instead of killing the run silently |
+| `KMP_JUNIT_XML_MAX_MB` | `parallel` / `changed` | Size cap (megabytes) for a single `TEST-*.xml` report before it's skipped during the test-count walk (default `32`). A skipped report surfaces as `warnings[].code: "junit_xml_oversized"`; `tests.individual_total` then undercounts and that task's `test_failures[]` may be incomplete |
+| `KMP_TEST_NO_SWEEP` | test subcommands | Set to `1` to disable the startup artifact-lifecycle sweep of `.kmp-test-runner/` (see the `cleanup` config key) |
 
 ### Project config — `.kmp-test-runner.json`
 
@@ -451,11 +454,14 @@ Drop a `.kmp-test-runner.json` at your project root to pin stable defaults inste
 {
   "sharedProject": { "name": "shared-libs", "path": "../shared-libs" },
   "defaults":     { "testType": "common", "coverageTool": "kover", "excludeModules": "*:test-fakes" },
-  "skip":         { "android": ["legacy-app"], "ios": ["bench-android"] }
+  "skip":         { "android": ["legacy-app"], "ios": ["bench-android"] },
+  "cleanup":      { "auto": true, "logsTtlDays": 7 }
 }
 ```
 
 All fields are optional. Unknown fields are preserved silently for forward compat. Type-mismatched fields are dropped with a `[WARN]` line on stderr.
+
+`cleanup` controls the **artifact lifecycle sweep**: every test run (after acquiring the project lock) removes stale entries under `.kmp-test-runner/` — orphaned `cache-isolated/` gradle caches, init-scripts and `*.tmp.*` leftovers older than 24 h, and per-run `logs/` directories older than `logsTtlDays` (default 7). The model/tasks cache, `reports/`, the lockfile, and this config file are never auto-swept. Disable with `"auto": false` or the `KMP_TEST_NO_SWEEP=1` env var. For an explicit purge use `kmp-test clean` (`--all` adds the model cache + reports, `--dry-run` lists targets with sizes first).
 
 ### User-global config — `~/.kmp-test/config.json`
 
@@ -689,22 +695,33 @@ The same flags work on `kmp-test parallel --test-type androidInstrumented` (and 
 
 The capture is **post-hoc** — adb runs after the gradle task ends, so the screenshot shows the device state at task-end, not the exact frame the assertion failed on (the same way the logcat buffer dump beside it is post-hoc). That makes it most valuable for **crashes, ANRs, and hangs** (the error dialog is still on screen); for a clean Compose assertion failure the screen may already be torn down, but the UI-hierarchy dump, logcat, and `errors.json` still carry the failure detail. It is forensic-only: a capture that can't run sets `errors[].capture_error` and **never** changes the exit code.
 
+### `kmp-test clean` — purge run artifacts
+
+Removes the per-run debris under `.kmp-test-runner/` (logs, orphaned isolated gradle caches, init-scripts, stale cache tmp files) regardless of age. `--all` also purges the model/tasks cache (next run re-probes gradle once) and `reports/`. `--dry-run` lists the targets and their sizes without deleting. The command respects the project lock — it refuses with `lock_held` while another `kmp-test` run is live. The lockfile itself and `.kmp-test-runner.json` are never touched. Day-to-day you rarely need it: the test subcommands already auto-sweep stale artifacts on startup (see the `cleanup` config key above).
+
+```sh
+kmp-test clean --dry-run     # list what would go, with sizes
+kmp-test clean               # purge run artifacts
+kmp-test clean --all --json  # full purge incl. caches, JSON envelope
+```
+
 ### `kmp-test doctor` — environment diagnosis
 
-Six quick checks that catch the usual "why isn't this running" suspects:
+Six quick checks that catch the usual "why isn't this running" suspects — plus a conditional seventh (`gradle java.home`) that only appears when your `gradle.properties` sets `org.gradle.java.home`:
 
 ```sh
 kmp-test doctor
-# CHECK          STATUS  VALUE       MESSAGE
-# Node           OK      v22.5.0     >=18 required
-# bash           OK      available   shell present
-# gradlew        OK      present     /path/to/project
-# JDK            OK      21.0.10     >=17 recommended
-# JDK catalogue  OK      3 installs  JDK 11 (Adoptium), JDK 17 (Adoptium), JDK 21 (Azul Zulu)
-# ADB            WARN    not found   install Android SDK platform-tools to run android subcommand
+# CHECK            STATUS  VALUE        MESSAGE
+# Node             OK      v22.5.0      >=18 required
+# bash             OK      available    shell present
+# gradlew          OK      present      /path/to/project
+# JDK              OK      21.0.10      >=17 recommended
+# JDK catalogue    OK      3 installs   JDK 11 (Adoptium), JDK 17 (Adoptium), JDK 21 (Azul Zulu)
+# gradle java.home WARN    ~/jdks/21    Gradle does not expand ~ here — use an absolute path
+# ADB              WARN    not found    install Android SDK platform-tools to run android subcommand
 ```
 
-Exit `0` if every check is OK or WARN; exit `3` if any FAIL (Node <18, missing shell, missing JDK). The "JDK catalogue" row (v0.6.1+) lists every JDK detected in the system locations consulted by the [auto-select chain](#jdk-toolchain-mismatch-auto-resolved-when-possible-since-v061) — empty catalogue → WARN ("auto-select disabled, gate will fire on JDK mismatch"). `--json` emits the same data as a structured array for agents, plus a top-level `gradle_config{}` diagnostic (v0.8.1):
+Exit `0` if every check is OK or WARN; exit `3` if any FAIL (Node <18, missing shell, missing JDK). The "JDK catalogue" row (v0.6.1+) lists every JDK detected in the system locations consulted by the [auto-select chain](#jdk-toolchain-mismatch-auto-resolved-when-possible-since-v061) — empty catalogue → WARN ("auto-select disabled, gate will fire on JDK mismatch"). The "gradle java.home" row appears only when `org.gradle.java.home` is set in `gradle.properties`: WARN when the value starts with `~` (Gradle does not expand it and will fail to launch) or points at a missing path, OK with the resolved path otherwise. `--json` emits the same data as a structured array for agents, plus a top-level `gradle_config{}` diagnostic (v0.8.1):
 
 ```json
 {"tool":"kmp-test","subcommand":"doctor","exit_code":0,"checks":[{"name":"Node","status":"OK","value":"v22.5.0","message":">=18 required"},…,{"name":"JDK catalogue","status":"OK","value":"3 installs","message":"JDK 11 (Eclipse Adoptium), JDK 17 (Eclipse Adoptium), JDK 21 (Azul Systems, Inc.)"}],"gradle_config":{"parallel":true,"workers_max":4,"caching":true,"daemon":true,"jvmargs":"-Xmx4g","configureondemand":false,"sources":{"project":true,"user":false}}}
@@ -808,7 +825,7 @@ pluginManagement {
 In `build.gradle.kts`:
 ```kotlin
 plugins {
-    id("io.github.oscardlfr.kmp-test-runner") version "0.13.0"
+    id("io.github.oscardlfr.kmp-test-runner") version "0.14.0"
 }
 
 kmpTestRunner {

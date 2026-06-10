@@ -22,7 +22,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 |------|---------|:--------:|:--------:|:---------:|:-------:|:-------:|-------|
 | `--test-type <type>` | auto-detect | ✓ | — | — | ✓ | — | `all` / `common` / `androidUnit` / `androidInstrumented` / `desktop` / `ios` / `macos` / `jvm` / `js` / `wasm`. |
 | `--module-filter <glob>` | `*` | ✓ | — | ✓ | ✓ | ✓ | Glob, comma-separated. Composes with `changed`'s derived filter (both must match). |
-| `--test-filter <pattern>` | none | ✓ | — | ✓ | ✓ | ✓ | Single class or `Class#method`. JVM uses gradle `--tests`; Android resolves wildcards to FQN by source scan. |
+| `--test-filter <pattern>` | none | ✓ | — | android only | ✓ | ✓ | Single class or `Class#method`. JVM test tasks use gradle `--tests`; Android resolves wildcards to FQN by source scan. **benchmark**: only the android leg filters (`-P` instrumentation args); jvm benchmark legs are SKIPPED with `warnings[].code: test_filter_unsupported` + `skipped[]` entries — kotlinx-benchmark tasks reject `--tests` and have no CLI filter (use `benchmark { configurations { include(...) } }` in the build script, or `--module-filter` + `--config smoke` to narrow). |
 | `--exclude-modules <list>` | none | ✓ | — | — | ✓ | — | Comma-separated globs to skip entirely (not probed, not tested). |
 | `--include-untested` | off | ✓ | — | — | ✓ | — | Re-include modules auto-skipped because filesystem has no `src/*Test*` directory. |
 | `--include-shared` | off | ✓ | — | ✓ | ✓ | — | Include sibling shared-libs project (composite-build context). |
@@ -120,6 +120,8 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `NO_COLOR` | always (POSIX) | Any non-empty value disables gradle ANSI output (equivalent to `--color never`). |
 | `KMP_COLOR_MODE` | always | `always` / `never` / `auto`. Set via `--color`; persists across re-exec chain. |
 | `KMP_GRADLE_TIMEOUT_MS` | parallel / benchmark | Per-task gradle watchdog override in milliseconds. Precedence: `--ignore-gradle-timeout` > `--timeout` > this > config default. |
+| `KMP_GRADLE_MAXBUFFER_MB` | always | Max stdout/stderr captured per gradle/adb subprocess, in megabytes (default `64`). Exceeding the cap surfaces as `errors[].code: "spawn_error"`. |
+| `KMP_TEST_NO_SWEEP` | test subcommands | Set to `1` to disable the startup artifact-lifecycle sweep of `.kmp-test-runner/` (config key `cleanup:{auto,logsTtlDays}`). Explicit purge: `kmp-test clean [--all] [--dry-run]`. |
 | `KMP_PROBE_TIMEOUT` | always | `lib/gradle-tasks-probe.sh` timeout in seconds (default 60). |
 | `KMP_TEST_SKIP_ADB` | info, doctor | Set to `1` to skip ADB probe (equivalent to `--no-adb` on `info`). |
 | `JAVA_HOME` | always | Injected via JDK catalogue auto-select when host default mismatches project's `jvmToolchain(N)`. |
@@ -139,8 +141,9 @@ kmp-test coverage --json
 # Coverage gate in CI
 kmp-test coverage --min-missed-lines 100 --json
 
-# Benchmark smoke with FQN narrowing (avoid 4-hour full suite)
-kmp-test benchmark --config smoke --test-filter "com.foo.MyBenchmark#fastPath" --json
+# Benchmark smoke narrowed by module (jvm legs have no per-test filter —
+# --test-filter would skip them; android legs DO honor --test-filter)
+kmp-test benchmark --config smoke --module-filter "core-perf*" --json
 
 # Changed-only with staged scope (pre-commit hook)
 kmp-test changed --staged-only --json

@@ -13,12 +13,14 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { validateEnum, validateNonNegativeInt } from '../../lib/orchestrators/orchestrator-utils.js';
+import { validateEnum, validateNonNegativeInt, requireFlagValue } from '../../lib/orchestrators/orchestrator-utils.js';
+import { runUpdate } from '../../lib/orchestrators/update-orchestrator.js';
 import { runParallel } from '../../lib/orchestrators/parallel-orchestrator.js';
 import { runChanged } from '../../lib/orchestrators/changed-orchestrator.js';
 import { runBenchmark } from '../../lib/orchestrators/benchmark-orchestrator.js';
 import { runCoverage } from '../../lib/orchestrators/coverage-orchestrator.js';
 import { runDescribe } from '../../lib/orchestrators/describe-orchestrator.js';
+import { runAndroid } from '../../lib/orchestrators/android-orchestrator.js';
 import { EXIT } from '../../lib/cli.js';
 
 // ---------------------------------------------------------------------------
@@ -45,11 +47,20 @@ describe('validateEnum', () => {
     expect(errors[0].message).toContain('common');
   });
 
-  it('treats undefined as missing (not invalid)', () => {
+  // Contract flip (dangling-flag normalization, 2026-06-10): `undefined`
+  // (dangling flag — no value token) is now INVALID. Pre-fix it was treated
+  // as "missing, not invalid", silently swallowing a trailing `--test-type`.
+  it('treats undefined (dangling flag) as invalid', () => {
     const errors = [];
     const result = validateEnum('--test-type', undefined, ['common'], errors);
-    expect(result).toBeUndefined();
-    expect(errors).toEqual([]);
+    expect(result).toBeNull();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      code: 'invalid_flag_value',
+      flag: '--test-type',
+      value: null,
+    });
+    expect(errors[0].message).toContain('missing required value');
   });
 });
 
@@ -84,11 +95,43 @@ describe('validateNonNegativeInt', () => {
     expect(errors[0].code).toBe('invalid_flag_value');
   });
 
-  it('treats undefined as missing (not invalid)', () => {
+  // Contract flip (dangling-flag normalization, 2026-06-10) — see the enum
+  // sibling above.
+  it('treats undefined (dangling flag) as invalid', () => {
     const errors = [];
     const result = validateNonNegativeInt('--max-workers', undefined, errors);
-    expect(result).toBeUndefined();
+    expect(result).toBeNull();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      code: 'invalid_flag_value',
+      flag: '--max-workers',
+      value: null,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// requireFlagValue — the dangling-flag normalization helper
+// ---------------------------------------------------------------------------
+
+describe('requireFlagValue', () => {
+  it('returns the value verbatim, including empty string (legacy falsy fallbacks intact)', () => {
+    const errors = [];
+    expect(requireFlagValue('--device', 'R5CT', errors)).toBe('R5CT');
+    expect(requireFlagValue('--device', '', errors)).toBe('');
     expect(errors).toEqual([]);
+  });
+
+  it('pushes invalid_flag_value and returns null on undefined (dangling)', () => {
+    const errors = [];
+    expect(requireFlagValue('--device', undefined, errors)).toBeNull();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      code: 'invalid_flag_value',
+      flag: '--device',
+      value: null,
+      message: '--device: missing required value',
+    });
   });
 });
 
@@ -128,6 +171,107 @@ describe.each([...ENUM_CASES, ...NUMERIC_CASES])(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// L1 (2026-06-09 audit) — dangling `--isolated-cache-dir` (last token, no
+// value). Pre-fix behavior diverged per orchestrator: parallel / benchmark /
+// android silently ran NON-isolated with the token leaking into args;
+// changed silently enabled isolation with an auto-generated dir. Post-fix all
+// four exit CONFIG_ERROR with invalid_flag_value BEFORE any git / adb /
+// gradle work (runner.js-direct defense; cli.js gates the CLI route via
+// peekIsolatedFlags).
+// ---------------------------------------------------------------------------
+
+const DANGLING_ISOLATED_CASES = [
+  { sub: 'parallel',  run: runParallel },
+  { sub: 'changed',   run: runChanged },
+  { sub: 'benchmark', run: runBenchmark },
+  { sub: 'android',   run: runAndroid },
+];
+
+describe.each(DANGLING_ISOLATED_CASES)(
+  'L1: $sub --isolated-cache-dir (dangling)',
+  ({ run }) => {
+    it("exits CONFIG_ERROR (2) with errors[].code === 'invalid_flag_value', flag === '--isolated-cache-dir'", async () => {
+      const result = await run({
+        projectRoot: '/tmp/nonexistent-stub',
+        args: ['--isolated-cache-dir'],
+      });
+      expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+      const matching = (result.envelope.errors || []).find(
+        e => e.code === 'invalid_flag_value' && e.flag === '--isolated-cache-dir',
+      );
+      expect(matching).toBeTruthy();
+      expect(matching.message).toContain('--isolated-cache-dir');
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Dangling value-bearing flags (2026-06-10 normalization — extends the L1
+// `--isolated-cache-dir` fix to the whole bug-class). Pre-fix every parser
+// silently treated a trailing value-bearing flag as if it had been omitted
+// (`argv[++i] || ''`), hiding the user's mistake until gradle/adb failed
+// confusingly later. One case per parser per flag class (string / enum /
+// numeric / gradle-args).
+// ---------------------------------------------------------------------------
+
+const DANGLING_VALUE_CASES = [
+  // string flags
+  { sub: 'parallel',  run: runParallel,  flag: '--device' },
+  { sub: 'parallel',  run: runParallel,  flag: '--module-filter' },
+  { sub: 'parallel',  run: runParallel,  flag: '--output-file' },
+  { sub: 'changed',   run: runChanged,   flag: '--test-filter' },
+  { sub: 'changed',   run: runChanged,   flag: '--variant' },
+  { sub: 'android',   run: runAndroid,   flag: '--device' },
+  { sub: 'android',   run: runAndroid,   flag: '--capture-dir' },
+  { sub: 'benchmark', run: runBenchmark, flag: '--module-filter' },
+  { sub: 'benchmark', run: runBenchmark, flag: '--config' },
+  { sub: 'coverage',  run: runCoverage,  flag: '--coverage-modules' },
+  { sub: 'coverage',  run: runCoverage,  flag: '--output-file' },
+  { sub: 'describe',  run: runDescribe,  flag: '--module-filter' },
+  { sub: 'update',    run: runUpdate,    flag: '--prefix' },
+  // enum flags (validateEnum contract flip)
+  { sub: 'parallel',  run: runParallel,  flag: '--test-type' },
+  { sub: 'benchmark', run: runBenchmark, flag: '--platform' },
+  // numeric flags (validateNonNegativeInt contract flip)
+  { sub: 'parallel',  run: runParallel,  flag: '--max-workers' },
+  { sub: 'changed',   run: runChanged,   flag: '--max-failures' },
+  // gradle-args accumulator
+  { sub: 'parallel',  run: runParallel,  flag: '--gradle-args' },
+  { sub: 'android',   run: runAndroid,   flag: '--gradle-args' },
+];
+
+describe.each(DANGLING_VALUE_CASES)(
+  'dangling $sub $flag',
+  ({ run, flag }) => {
+    it("exits CONFIG_ERROR (2) with errors[].code === 'invalid_flag_value'", async () => {
+      const result = await run({
+        projectRoot: '/tmp/nonexistent-stub',
+        args: [flag],
+      });
+      expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+      const matching = (result.envelope.errors || []).find(
+        e => e.code === 'invalid_flag_value' && e.flag === flag,
+      );
+      expect(matching).toBeTruthy();
+      expect(matching.message).toContain('missing required value');
+    });
+  },
+);
+
+// Explicit-empty stays on each flag's legacy fallback — only true dangling
+// (undefined) is invalid. Locks the policy boundary of this PR.
+it('explicit-empty value is NOT invalid (legacy falsy fallback preserved)', async () => {
+  const result = await runParallel({
+    projectRoot: '/tmp/nonexistent-stub',
+    args: ['--module-filter', '', '--dry-run'],
+  });
+  const danglingErr = (result.envelope.errors || []).find(
+    e => e.code === 'invalid_flag_value' && e.flag === '--module-filter',
+  );
+  expect(danglingErr).toBeFalsy();
+});
 
 // ---------------------------------------------------------------------------
 // Bug-C — describe regex validation

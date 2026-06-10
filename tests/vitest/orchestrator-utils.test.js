@@ -16,6 +16,7 @@ import path from 'node:path';
 
 import {
   parseIsolatedArgs,
+  assessIsolatedRuntimeRace,
   resolveIsolatedDir,
   injectProjectCacheDir,
   shouldKeepIsolated,
@@ -38,6 +39,10 @@ import {
   writeCoverageXmlInitScript,
   injectInitScript,
   cleanupInitScript,
+  resolveMaxBuffer,
+  tailTruncate,
+  spawnGradle,
+  DEFAULT_SPAWN_MAX_BUFFER_MB,
 } from '../../lib/orchestrators/orchestrator-utils.js';
 
 let workDir;
@@ -95,6 +100,63 @@ describe('parseIsolatedArgs', () => {
     expect(r.cacheDir).toBe('/x');
     expect(r.noLock).toBe(true);
     expect(r.args).toEqual(['--variant', 'debug']);
+  });
+
+  // L1 (2026-06-09 audit) — dangling / empty `--isolated-cache-dir`. Pre-fix
+  // the `i + 1 < args.length` guard left the flag unconsumed: isolation
+  // silently OFF + the dangling token leaked into the orchestrator args.
+  it('L1: errors is [] on every happy path', () => {
+    expect(parseIsolatedArgs([]).errors).toEqual([]);
+    expect(parseIsolatedArgs(['--isolated']).errors).toEqual([]);
+    expect(parseIsolatedArgs(['--isolated-cache-dir', '/x']).errors).toEqual([]);
+  });
+
+  it('L1: dangling --isolated-cache-dir (last token) pushes invalid_flag_value, no isolation, no leak', () => {
+    const r = parseIsolatedArgs(['--module-filter', 'X', '--isolated-cache-dir']);
+    expect(r.enabled).toBe(false);
+    expect(r.cacheDir).toBe(null);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]).toMatchObject({
+      code: 'invalid_flag_value',
+      flag: '--isolated-cache-dir',
+      value: null,
+    });
+    // The flag must NOT leak into the residual args the orchestrator parses.
+    expect(r.args).toEqual(['--module-filter', 'X']);
+  });
+
+  it('L1: explicit-empty value pushes invalid_flag_value with value:"" and consumes the token', () => {
+    const r = parseIsolatedArgs(['--isolated-cache-dir', '', '--module-filter', 'X']);
+    expect(r.enabled).toBe(false);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].value).toBe('');
+    expect(r.args).toEqual(['--module-filter', 'X']);
+  });
+
+  it('L1: raw `--isolated-cache-dir=` equals-empty form is rejected (in-function expansion)', () => {
+    const r = parseIsolatedArgs(['--isolated-cache-dir=', '--module-filter', 'X']);
+    expect(r.enabled).toBe(false);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].code).toBe('invalid_flag_value');
+    expect(r.args).toEqual(['--module-filter', 'X']);
+  });
+
+  // Runner.js-direct invocations reach parseIsolatedArgs with the raw equals
+  // form (orchestrator parsers expand equals only AFTER this strip). Pre-fix
+  // the token fell through unparsed and isolation silently no-opped.
+  it('L1: raw `--isolated-cache-dir=/x` equals form engages isolation on runner.js-direct routes', () => {
+    const r = parseIsolatedArgs(['--isolated-cache-dir=/x', '--module-filter', 'X']);
+    expect(r.enabled).toBe(true);
+    expect(r.cacheDir).toBe('/x');
+    expect(r.errors).toEqual([]);
+    expect(r.args).toEqual(['--module-filter', 'X']);
+  });
+
+  it('L1: dangling error does not mask flags seen earlier in the argv', () => {
+    const r = parseIsolatedArgs(['--isolated-no-lock', '--isolated-cache-dir']);
+    expect(r.noLock).toBe(true);
+    expect(r.enabled).toBe(true);
+    expect(r.errors).toHaveLength(1);
   });
 });
 
@@ -707,5 +769,103 @@ describe('discoverIncludedModules — Groovy DSL', () => {
     writeFileSync(path.join(workDir, 'app', 'build.gradle'),
       "apply plugin: 'com.android.library'\n");
     expect(readBuildFile(workDir, 'app')).toContain('com.android.library');
+  });
+});
+
+describe('resolveMaxBuffer (KMP_GRADLE_MAXBUFFER_MB)', () => {
+  it('defaults to DEFAULT_SPAWN_MAX_BUFFER_MB megabytes when the env knob is absent', () => {
+    expect(resolveMaxBuffer({})).toBe(DEFAULT_SPAWN_MAX_BUFFER_MB * 1024 * 1024);
+  });
+
+  it('honors a positive-integer override (megabytes)', () => {
+    expect(resolveMaxBuffer({ KMP_GRADLE_MAXBUFFER_MB: '128' })).toBe(128 * 1024 * 1024);
+  });
+
+  it('falls back to the default on non-integer / non-positive values', () => {
+    for (const bad of ['lots', '-5', '0', '1.5']) {
+      expect(resolveMaxBuffer({ KMP_GRADLE_MAXBUFFER_MB: bad })).toBe(DEFAULT_SPAWN_MAX_BUFFER_MB * 1024 * 1024);
+    }
+  });
+});
+
+describe('tailTruncate', () => {
+  it('returns the string unchanged when at or under the cap', () => {
+    expect(tailTruncate('abc', 3)).toBe('abc');
+    expect(tailTruncate('abc', 10)).toBe('abc');
+  });
+
+  it('keeps the LAST maxChars and prepends a truncation marker', () => {
+    const s = 'x'.repeat(1000) + 'TAIL';
+    const out = tailTruncate(s, 100);
+    expect(out.endsWith('TAIL')).toBe(true);
+    expect(out.startsWith('[kmp-test: aggregate output truncated')).toBe(true);
+    // marker (~60 chars) + 100-char tail — far below the original 1004.
+    expect(out.length).toBeLessThan(s.length);
+  });
+
+  it('passes non-strings through untouched', () => {
+    expect(tailTruncate(null, 10)).toBe(null);
+    expect(tailTruncate(undefined, 10)).toBe(undefined);
+  });
+});
+
+describe('spawnGradle maxBuffer choke point', () => {
+  const okResult = { status: 0, stdout: '', stderr: '', signal: null, error: null };
+
+  it('injects the resolved default when the caller omits maxBuffer', () => {
+    let seen = null;
+    const spawn = (cmd, args, opts) => { seen = opts; return okResult; };
+    spawnGradle(spawn, '/x/gradlew', ['test'], { cwd: '/x', encoding: 'utf8' });
+    expect(seen.maxBuffer).toBe(DEFAULT_SPAWN_MAX_BUFFER_MB * 1024 * 1024);
+  });
+
+  it('an explicit caller maxBuffer wins over the default', () => {
+    let seen = null;
+    const spawn = (cmd, args, opts) => { seen = opts; return okResult; };
+    spawnGradle(spawn, '/x/gradlew', ['test'], { cwd: '/x', maxBuffer: 1234 });
+    expect(seen.maxBuffer).toBe(1234);
+  });
+
+  it('resolves the env knob from the spawn env the caller threads through', () => {
+    let seen = null;
+    const spawn = (cmd, args, opts) => { seen = opts; return okResult; };
+    spawnGradle(spawn, '/x/gradlew', ['test'], { cwd: '/x', env: { KMP_GRADLE_MAXBUFFER_MB: '2' } });
+    expect(seen.maxBuffer).toBe(2 * 1024 * 1024);
+  });
+});
+
+// Single source of truth for the `--isolated` runtime-race rule, shared by the
+// parallel orchestrator (real runs) and the dispatcher's --dry-run short-circuit.
+describe('assessIsolatedRuntimeRace', () => {
+  it('returns null when isolation is disabled (regardless of test-type)', () => {
+    expect(assessIsolatedRuntimeRace({ enabled: false, testType: 'ios' })).toBeNull();
+    expect(assessIsolatedRuntimeRace({ enabled: false, testType: 'all' })).toBeNull();
+  });
+
+  it('rejects --isolated + ios (shared simulator)', () => {
+    const r = assessIsolatedRuntimeRace({ enabled: true, testType: 'ios' });
+    expect(r).toMatchObject({ code: 'isolated_runtime_race', test_type: 'ios' });
+    expect(r.message).toMatch(/simulator/i);
+  });
+
+  it('rejects --isolated + all (expands to include ios)', () => {
+    expect(assessIsolatedRuntimeRace({ enabled: true, testType: 'all' }))
+      .toMatchObject({ code: 'isolated_runtime_race', test_type: 'all' });
+  });
+
+  it('rejects --isolated + androidInstrumented WITHOUT a device', () => {
+    expect(assessIsolatedRuntimeRace({ enabled: true, testType: 'androidInstrumented', hasDevice: false }))
+      .toMatchObject({ code: 'isolated_runtime_race', test_type: 'androidInstrumented' });
+  });
+
+  it('ALLOWS --isolated + androidInstrumented WITH a device', () => {
+    expect(assessIsolatedRuntimeRace({ enabled: true, testType: 'androidInstrumented', hasDevice: true }))
+      .toBeNull();
+  });
+
+  it('ALLOWS isolation-safe test-types (macos/desktop/common/androidUnit/empty)', () => {
+    for (const tt of ['macos', 'desktop', 'common', 'androidUnit', '']) {
+      expect(assessIsolatedRuntimeRace({ enabled: true, testType: tt })).toBeNull();
+    }
   });
 });

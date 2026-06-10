@@ -150,6 +150,13 @@ Each run gets its own `.kmp-test-runner/cache-isolated/<runId>/` dir. Cleanup ru
 - Cross-host coordination (use a real lock manager — Redis, etcd, etc.).
 - Gradle-internal concurrency tuning beyond `--project-cache-dir`.
 - Rewriting the daemon model.
+- Symlink resolution in the project-model cache key. `computeCacheKey`
+  hashes build files by their walked path content without `realpathSync`,
+  so two worktrees sharing gradle sources via symlinks hash identically and
+  share one cache entry. Deliberate trade-off: symlinked gradle build files
+  are rare and resolving every file adds I/O per walk; if two such worktrees
+  must not share a model cache, run one with `--no-cache` or distinct
+  project roots.
 
 ## Reference
 

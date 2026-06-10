@@ -245,8 +245,25 @@ export function parseArgs(argv) {
 // Tokenisation + summary helpers
 // ---------------------------------------------------------------------------
 
-export function countTokensCl100k(text) {
-  return enc.encode(text || '').length;
+// js-tiktoken's bytePairMerge crashes on very large single strings (observed
+// Node v24: TypedArray bounds TypeError at a few MB, SIGSEGV at 74 MB during
+// the v0.10.1 coverage-capture re-measure). Above the threshold, split at the
+// same `\n=== <file> ===\n` record boundaries the chunked-Anthropic path uses
+// and sum per-chunk counts — boundary error is ≤1 token per chunk (same
+// additivity rationale documented on countTokensAnthropic).
+export const CL100K_CHUNK_BYTES = 4 * 1024 * 1024;
+
+export function countTokensCl100k(text, opts = {}) {
+  const safeText = text || '';
+  const threshold = opts.chunkBytes ?? CL100K_CHUNK_BYTES;
+  if (Buffer.byteLength(safeText, 'utf8') <= threshold) {
+    return enc.encode(safeText).length;
+  }
+  let total = 0;
+  for (const chunk of splitForAnthropic(safeText, { chunkBytes: threshold })) {
+    total += enc.encode(chunk).length;
+  }
+  return total;
 }
 
 export function summarize(values) {
@@ -1131,12 +1148,19 @@ async function main() {
   // Cross-model mode still wins over multi-project when --anthropic-models is
   // also set — that combination would re-tokenise existing single-project
   // captures, not multi-project. Multi-project + cross-model is a v0.10+ idea.
+  //
+  // An explicit --project-root disables the CONVENTIONAL auto-detect only:
+  // it's the strongest single-project signal, and pre-fix the gitignored
+  // tools/.measurement-projects.json silently hijacked such runs into
+  // multi-project mode (v0.10.1 re-measure overwrote the OSS aggregate).
+  // Explicit --projects-config / KMP_MEASUREMENT_PROJECTS still win — those
+  // are deliberate multi-project requests.
   const conventionalConfig = path.join(repoRoot, 'tools', '.measurement-projects.json');
   const projects = opts.anthropicModels.length === 0
     ? resolveProjectsConfig({
         cliPath: opts.projectsConfig,
         envValue: process.env.KMP_MEASUREMENT_PROJECTS || null,
-        conventionalPath: conventionalConfig,
+        conventionalPath: opts.projectRoot ? null : conventionalConfig,
       })
     : null;
   if (projects && projects.length > 0) {

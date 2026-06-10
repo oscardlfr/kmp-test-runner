@@ -7,10 +7,13 @@
 // tarball exceeds named-constant budgets. Mirrors the `tools/decouple-audit.mjs`
 // shape (always-runnable, zero deps, clear failure message).
 //
-// Baseline measured 2026-05-11 on develop tip `cd719d0`:
-//   tarball: 215_614 bytes (210.6 KB)
-//   unpacked: 727_541 bytes (710.5 KB)
-//   files: 76 (kmp-test-runner-0.9.0.tgz)
+// Baseline re-measured 2026-06-10 on the audit-train tip (post #293-#301 +
+// the benchmark convention-discovery fix — new artifact-sweep module, clean
+// subcommand, diagnostics warnings):
+//   tarball: 271_968 bytes (265.6 KB)
+//   unpacked: 904_089 bytes (882.9 KB)
+// Previous baseline (2026-05-11, develop `cd719d0`): tarball 215_614 /
+// unpacked 727_541 — the train consumed that budget's +25% headroom.
 //
 // Budgets = ceil(baseline * 1.25 / 1024) * 1024 — +25% headroom rounded up
 // to the next KB. Retune by re-measuring and updating the constants below.
@@ -26,8 +29,8 @@ import { spawnSync } from 'node:child_process';
 
 // Budgets in bytes — named so they show up in stack traces if a future
 // regression demands debugging.
-const TARBALL_BUDGET_BYTES  = 270_336;  // 264 KB (+25% from 210.6 KB baseline)
-const UNPACKED_BUDGET_BYTES = 910_336;  // 889 KB (+25% from 710.5 KB baseline)
+const TARBALL_BUDGET_BYTES  = 339_968;    // 332 KB (+25% from 265.6 KB baseline)
+const UNPACKED_BUDGET_BYTES = 1_130_496;  // 1104 KB (+25% from 882.9 KB baseline)
 
 function fmtKB(bytes) {
   return `${(bytes / 1024).toFixed(1)} KB`;

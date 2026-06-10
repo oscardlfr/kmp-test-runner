@@ -31,19 +31,25 @@ const FORBIDDEN_FLAGS = ['--ignore-jdk-mismatch'];
 // ones that would break either bash or cmd if they leaked unquoted.
 const SHELL_METACHARS = /[;&|`$<>(){}*?\[\]!]/;
 
+// discoverScopedModule is injected so scoped-mode cells resolve deterministically
+// without touching the filesystem (the in-repo fixture + KaMPKit carry explicit
+// scopedModule overrides; private-lib auto-discovers → this stub feeds it).
 const happyDeps = () => ({
   adbHasDevice: () => true,
   projectExists: () => true,
+  discoverScopedModule: () => 'auto-mod',
 });
 
 const noDeviceDeps = () => ({
   adbHasDevice: () => false,
   projectExists: () => true,
+  discoverScopedModule: () => 'auto-mod',
 });
 
 const allMissingDeps = () => ({
   adbHasDevice: () => true,
   projectExists: () => false,
+  discoverScopedModule: () => 'auto-mod',
 });
 
 const baseDryOpts = {
@@ -190,6 +196,26 @@ describe('macos-validation-gate / argv hygiene', () => {
     const cells = buildMatrix(baseDryOpts, happyDeps());
     for (const c of cells) {
       expect(c.args).not.toContain('--module-filter');
+    }
+  });
+
+  it('scoped mode skips cells whose project has no resolvable module (no-scopable-module)', () => {
+    // Project present but no override + auto-discovery finds nothing → the cell
+    // would otherwise fan gradle across ALL modules; the gate pre-skips it.
+    const noScoped = {
+      adbHasDevice: () => true,
+      projectExists: () => true,
+      discoverScopedModule: () => null,
+    };
+    const cells = buildMatrix({ ...baseDryOpts, mode: 'scoped' }, noScoped)
+      .filter((c) => c.subcommand !== 'android');
+    // private-lib carries no scopedModule override → null discovery → skipped.
+    const privateLib = cells.filter((c) => c.project === 'private-lib');
+    expect(privateLib.length).toBeGreaterThan(0);
+    for (const c of privateLib) expect(c.skipReason).toBe('no-scopable-module');
+    // fixture + KaMPKit carry explicit overrides → resolvable → not skipped.
+    for (const c of cells.filter((x) => x.project !== 'private-lib')) {
+      expect(c.skipReason).not.toBe('no-scopable-module');
     }
   });
 });

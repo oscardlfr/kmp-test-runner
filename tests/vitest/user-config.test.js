@@ -301,3 +301,40 @@ describe('mergeConfigs', () => {
     expect(merged.customC).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Warning collector — user-global validation drops with source tag
+// ---------------------------------------------------------------------------
+describe('loadUserGlobalPresetForProject warning collector', () => {
+  it('collects per-field drops from a user-global preset with source user_global', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'kmp-ucfg-collect-'));
+    tmpDirs.push(home);
+    mkdirSync(path.join(home, USER_CONFIG_DIR_NAME), { recursive: true });
+    writeFileSync(path.join(home, USER_CONFIG_DIR_NAME, USER_CONFIG_FILE_NAME), JSON.stringify({
+      projects: {
+        'my-key': {
+          defaults: { coverageTool: 99 },   // wrong type — dropped
+          java_home: 17,                    // wrong type — dropped
+        },
+      },
+    }), 'utf8');
+
+    const collected = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = () => true;
+    try {
+      loadUserGlobalPresetForProject('/irrelevant', {
+        homeOverride: home,
+        projectKey: 'my-key',
+        collect: (w) => collected.push(w),
+      });
+    } finally {
+      process.stderr.write = origWrite;
+    }
+    expect(collected.length).toBe(2);
+    for (const w of collected) {
+      expect(w.code).toBe('config_invalid_field');
+      expect(w.source).toBe('user_global');
+    }
+  });
+});

@@ -15,6 +15,7 @@ import path from 'node:path';
 import {
   dedupBooleanFlags,
   KNOWN_BOOLEAN_FLAGS,
+  classifySpawnError,
 } from '../../lib/runners/script-dispatcher.js';
 import { makeFixtureProject, runSubcommand } from './_parity-helpers.js';
 
@@ -110,4 +111,112 @@ describe('v0.10 #2 — dispatcher dry-run surfaces gradle_config_applied for par
     expect(envelope.dry_run).toBe(true);
     expect('gradle_config_applied' in envelope).toBe(false);
   });
+});
+
+// ---------------------------------------------------------------------------
+// classifySpawnError — spawn-layer error → envelope { code, message } pair.
+// Pre-fix the dispatcher emitted a JSON envelope only for ENOENT; any other
+// spawn error (maxBuffer exceeded, EAGAIN, …) wrote plain stderr and exited
+// TEST_FAIL without JSON — agents in --json mode got nothing to parse.
+// ---------------------------------------------------------------------------
+describe('classifySpawnError', () => {
+  it('ENOENT keeps the historical missing_shell code + per-OS message', () => {
+    const winR = classifySpawnError(
+      Object.assign(new Error('spawn pwsh ENOENT'), { code: 'ENOENT' }),
+      { isWin: true, spawnCmd: 'pwsh' },
+    );
+    expect(winR.code).toBe('missing_shell');
+    expect(winR.message).toContain('pwsh/powershell');
+
+    const nixR = classifySpawnError(
+      Object.assign(new Error('spawn bash ENOENT'), { code: 'ENOENT' }),
+      { isWin: false, spawnCmd: 'bash' },
+    );
+    expect(nixR.code).toBe('missing_shell');
+    expect(nixR.message).toContain("'bash'");
+  });
+
+  it('maxBuffer overflow discriminates as spawn_error with the env-var hint', () => {
+    const r = classifySpawnError(
+      Object.assign(new Error('stdout maxBuffer length exceeded'), {
+        code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+      }),
+      { isWin: false, spawnCmd: 'bash' },
+    );
+    expect(r.code).toBe('spawn_error');
+    expect(r.message).toContain('KMP_GRADLE_MAXBUFFER_MB');
+    expect(r.message).toContain("'bash'");
+  });
+
+  it('ENOBUFS (the Windows overflow errno) also gets the maxBuffer hint', () => {
+    const r = classifySpawnError(
+      Object.assign(new Error('spawnSync pwsh ENOBUFS'), { code: 'ENOBUFS' }),
+      { isWin: true, spawnCmd: 'pwsh' },
+    );
+    expect(r.code).toBe('spawn_error');
+    expect(r.message).toContain('KMP_GRADLE_MAXBUFFER_MB');
+  });
+
+  it('any other errno is a generic spawn_error carrying the original message', () => {
+    const r = classifySpawnError(
+      Object.assign(new Error('resource temporarily unavailable'), { code: 'EAGAIN' }),
+      { isWin: false, spawnCmd: 'bash' },
+    );
+    expect(r.code).toBe('spawn_error');
+    expect(r.message).toContain('resource temporarily unavailable');
+  });
+
+  it('survives a message-less / null error without throwing', () => {
+    expect(classifySpawnError(null, { spawnCmd: 'x' }).code).toBe('spawn_error');
+    expect(classifySpawnError({}, { spawnCmd: 'x' }).code).toBe('spawn_error');
+  });
+});
+
+// Dispatcher --dry-run must surface the SAME `isolated_runtime_race` rejection a
+// real `parallel` run enforces. The dispatcher short-circuits --dry-run before
+// the orchestrator, so before the shared-helper fix `--isolated --test-type ios
+// --dry-run` returned exit 0 + a plan while the real run returned exit 2 — a
+// false all-clear for agents validating via --dry-run. Locks dry-run↔real parity.
+describe('dispatcher dry-run enforces isolated_runtime_race parity', () => {
+  let fixtureRoot = null;
+  afterEach(() => {
+    if (fixtureRoot && existsSync(fixtureRoot)) {
+      try { rmSync(fixtureRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+    fixtureRoot = null;
+  });
+
+  const reject = [
+    ['ios', ['--test-type', 'ios', '--isolated']],
+    ['all', ['--test-type', 'all', '--isolated']],
+    ['androidInstrumented-without-device', ['--test-type', 'androidInstrumented', '--isolated']],
+  ];
+  for (const [label, flags] of reject) {
+    it(`parallel --dry-run ${label} → exit 2 + isolated_runtime_race`, () => {
+      fixtureRoot = makeFixtureProject();
+      const { envelope, stdout, exitCode } = runSubcommand('parallel', [
+        '--project-root', fixtureRoot, ...flags, '--dry-run', '--json',
+      ], { cwd: fixtureRoot });
+      expect(exitCode).toBe(2); // CONFIG_ERROR — matches the real-run gate
+      if (!envelope) throw new Error(`No envelope (exit ${exitCode}): ${stdout.slice(0, 600)}`);
+      expect(envelope.errors[0].code).toBe('isolated_runtime_race');
+    });
+  }
+
+  const allow = [
+    ['macos (Konan host-native, isolation-safe)', ['--test-type', 'macos', '--isolated']],
+    ['androidInstrumented WITH --device', ['--test-type', 'androidInstrumented', '--isolated', '--device', 'emulator-5554']],
+  ];
+  for (const [label, flags] of allow) {
+    it(`parallel --dry-run ${label} → exit 0 (allowed)`, () => {
+      fixtureRoot = makeFixtureProject();
+      const { envelope, stdout, exitCode } = runSubcommand('parallel', [
+        '--project-root', fixtureRoot, ...flags, '--dry-run', '--json',
+      ], { cwd: fixtureRoot });
+      expect(exitCode).toBe(0);
+      if (!envelope) throw new Error(`No envelope (exit ${exitCode}): ${stdout.slice(0, 600)}`);
+      expect(envelope.dry_run).toBe(true);
+      expect((envelope.errors || []).some((e) => e.code === 'isolated_runtime_race')).toBe(false);
+    });
+  }
 });
