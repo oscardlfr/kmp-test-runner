@@ -2362,6 +2362,80 @@ describe('runParallel', () => {
     expect(envelope.tests.individual_total).toBe(0);
   });
 
+  // L2 (2026-06-09 audit) — oversized TEST-*.xml files are skipped by the
+  // size guard and surfaced as a `junit_xml_oversized` envelope warning so
+  // agents know individual_total undercounts for that task.
+  it('L2: oversized TEST-*.xml skips surface as junit_xml_oversized warning on the envelope', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    writeStaleJunitXml(dir, 'core', 'jvmTest', 'com.foo.Small', 2);
+    const taskDir = path.join(dir, 'core', 'build', 'test-results', 'jvmTest');
+    writeFileSync(path.join(taskDir, 'TEST-com.foo.Big.xml'),
+      `<testsuite><testcase/><system-out>${'y'.repeat(1_500_000)}</system-out></testsuite>`);
+    // UP-TO-DATE → cacheRespected → sinceMs=0, both files reach the size guard.
+    const spawn = makeSpawnStub({ stdout: '> Task :core:jvmTest UP-TO-DATE\nBUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub();
+    const saved = process.env.KMP_JUNIT_XML_MAX_MB;
+    process.env.KMP_JUNIT_XML_MAX_MB = '1';
+    try {
+      const { envelope } = await runParallel({
+        projectRoot: dir,
+        args: ['--test-type', 'common'],
+        spawn,
+        log: () => {},
+        runCoverageInjection: stubCoverage,
+      });
+      expect(envelope.tests.individual_total).toBe(2); // Big skipped, Small counted
+      const w = envelope.warnings.filter(x => x.code === 'junit_xml_oversized');
+      expect(w).toHaveLength(1);
+      expect(w[0].module).toBe('core');
+      expect(w[0].task).toBe(':core:jvmTest');
+      expect(w[0].file).toContain('TEST-com.foo.Big.xml');
+      expect(w[0].size_bytes).toBeGreaterThan(1024 * 1024);
+      expect(w[0].max_mb).toBe(1);
+      expect(w[0].message).toContain('KMP_JUNIT_XML_MAX_MB');
+    } finally {
+      if (saved === undefined) delete process.env.KMP_JUNIT_XML_MAX_MB;
+      else process.env.KMP_JUNIT_XML_MAX_MB = saved;
+    }
+  });
+
+  it('L2: failed task walks the same files twice (count + failures) but warns once per file', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const taskDir = path.join(dir, 'core', 'build', 'test-results', 'jvmTest');
+    mkdirSync(taskDir, { recursive: true });
+    const bigFile = path.join(taskDir, 'TEST-com.foo.BigFail.xml');
+    writeFileSync(bigFile,
+      `<testsuite><testcase name="t" classname="C"><failure message="m">b</failure></testcase><system-out>${'y'.repeat(1_500_000)}</system-out></testsuite>`);
+    // Future mtime so the fresh-task sinceMs guard deterministically passes
+    // and the file reaches the size guard on BOTH walks.
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    utimesSync(bigFile, future, future);
+    const spawn = makeSpawnStub({
+      stdout: '> Task :core:jvmTest FAILED\nBUILD FAILED in 1s\n',
+      status: 1,
+    });
+    const stubCoverage = makeRunCoverageStub();
+    const saved = process.env.KMP_JUNIT_XML_MAX_MB;
+    process.env.KMP_JUNIT_XML_MAX_MB = '1';
+    try {
+      const { envelope } = await runParallel({
+        projectRoot: dir,
+        args: ['--test-type', 'common'],
+        spawn,
+        log: () => {},
+        runCoverageInjection: stubCoverage,
+      });
+      // The count walk AND the failures walk both skipped the same file —
+      // dedupe must collapse them into ONE warning.
+      const w = envelope.warnings.filter(x => x.code === 'junit_xml_oversized');
+      expect(w).toHaveLength(1);
+      expect(w[0].file).toContain('TEST-com.foo.BigFail.xml');
+    } finally {
+      if (saved === undefined) delete process.env.KMP_JUNIT_XML_MAX_MB;
+      else process.env.KMP_JUNIT_XML_MAX_MB = saved;
+    }
+  });
+
   it('F2: --test-type all suppresses per-leg no_test_modules when another leg passes', async () => {
     // Module declares only jvm() — leg `common` matches, leg `androidUnit` does not.
     // Pre-fix: per-leg `no_test_modules` error → exit 3 even though `common` passed.
