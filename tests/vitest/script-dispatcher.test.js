@@ -171,3 +171,52 @@ describe('classifySpawnError', () => {
     expect(classifySpawnError({}, { spawnCmd: 'x' }).code).toBe('spawn_error');
   });
 });
+
+// Dispatcher --dry-run must surface the SAME `isolated_runtime_race` rejection a
+// real `parallel` run enforces. The dispatcher short-circuits --dry-run before
+// the orchestrator, so before the shared-helper fix `--isolated --test-type ios
+// --dry-run` returned exit 0 + a plan while the real run returned exit 2 — a
+// false all-clear for agents validating via --dry-run. Locks dry-run↔real parity.
+describe('dispatcher dry-run enforces isolated_runtime_race parity', () => {
+  let fixtureRoot = null;
+  afterEach(() => {
+    if (fixtureRoot && existsSync(fixtureRoot)) {
+      try { rmSync(fixtureRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+    fixtureRoot = null;
+  });
+
+  const reject = [
+    ['ios', ['--test-type', 'ios', '--isolated']],
+    ['all', ['--test-type', 'all', '--isolated']],
+    ['androidInstrumented-without-device', ['--test-type', 'androidInstrumented', '--isolated']],
+  ];
+  for (const [label, flags] of reject) {
+    it(`parallel --dry-run ${label} → exit 2 + isolated_runtime_race`, () => {
+      fixtureRoot = makeFixtureProject();
+      const { envelope, stdout, exitCode } = runSubcommand('parallel', [
+        '--project-root', fixtureRoot, ...flags, '--dry-run', '--json',
+      ], { cwd: fixtureRoot });
+      expect(exitCode).toBe(2); // CONFIG_ERROR — matches the real-run gate
+      if (!envelope) throw new Error(`No envelope (exit ${exitCode}): ${stdout.slice(0, 600)}`);
+      expect(envelope.errors[0].code).toBe('isolated_runtime_race');
+    });
+  }
+
+  const allow = [
+    ['macos (Konan host-native, isolation-safe)', ['--test-type', 'macos', '--isolated']],
+    ['androidInstrumented WITH --device', ['--test-type', 'androidInstrumented', '--isolated', '--device', 'emulator-5554']],
+  ];
+  for (const [label, flags] of allow) {
+    it(`parallel --dry-run ${label} → exit 0 (allowed)`, () => {
+      fixtureRoot = makeFixtureProject();
+      const { envelope, stdout, exitCode } = runSubcommand('parallel', [
+        '--project-root', fixtureRoot, ...flags, '--dry-run', '--json',
+      ], { cwd: fixtureRoot });
+      expect(exitCode).toBe(0);
+      if (!envelope) throw new Error(`No envelope (exit ${exitCode}): ${stdout.slice(0, 600)}`);
+      expect(envelope.dry_run).toBe(true);
+      expect((envelope.errors || []).some((e) => e.code === 'isolated_runtime_race')).toBe(false);
+    });
+  }
+});

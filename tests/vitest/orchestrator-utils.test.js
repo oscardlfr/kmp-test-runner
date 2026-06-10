@@ -16,6 +16,7 @@ import path from 'node:path';
 
 import {
   parseIsolatedArgs,
+  assessIsolatedRuntimeRace,
   resolveIsolatedDir,
   injectProjectCacheDir,
   shouldKeepIsolated,
@@ -830,5 +831,41 @@ describe('spawnGradle maxBuffer choke point', () => {
     const spawn = (cmd, args, opts) => { seen = opts; return okResult; };
     spawnGradle(spawn, '/x/gradlew', ['test'], { cwd: '/x', env: { KMP_GRADLE_MAXBUFFER_MB: '2' } });
     expect(seen.maxBuffer).toBe(2 * 1024 * 1024);
+  });
+});
+
+// Single source of truth for the `--isolated` runtime-race rule, shared by the
+// parallel orchestrator (real runs) and the dispatcher's --dry-run short-circuit.
+describe('assessIsolatedRuntimeRace', () => {
+  it('returns null when isolation is disabled (regardless of test-type)', () => {
+    expect(assessIsolatedRuntimeRace({ enabled: false, testType: 'ios' })).toBeNull();
+    expect(assessIsolatedRuntimeRace({ enabled: false, testType: 'all' })).toBeNull();
+  });
+
+  it('rejects --isolated + ios (shared simulator)', () => {
+    const r = assessIsolatedRuntimeRace({ enabled: true, testType: 'ios' });
+    expect(r).toMatchObject({ code: 'isolated_runtime_race', test_type: 'ios' });
+    expect(r.message).toMatch(/simulator/i);
+  });
+
+  it('rejects --isolated + all (expands to include ios)', () => {
+    expect(assessIsolatedRuntimeRace({ enabled: true, testType: 'all' }))
+      .toMatchObject({ code: 'isolated_runtime_race', test_type: 'all' });
+  });
+
+  it('rejects --isolated + androidInstrumented WITHOUT a device', () => {
+    expect(assessIsolatedRuntimeRace({ enabled: true, testType: 'androidInstrumented', hasDevice: false }))
+      .toMatchObject({ code: 'isolated_runtime_race', test_type: 'androidInstrumented' });
+  });
+
+  it('ALLOWS --isolated + androidInstrumented WITH a device', () => {
+    expect(assessIsolatedRuntimeRace({ enabled: true, testType: 'androidInstrumented', hasDevice: true }))
+      .toBeNull();
+  });
+
+  it('ALLOWS isolation-safe test-types (macos/desktop/common/androidUnit/empty)', () => {
+    for (const tt of ['macos', 'desktop', 'common', 'androidUnit', '']) {
+      expect(assessIsolatedRuntimeRace({ enabled: true, testType: tt })).toBeNull();
+    }
   });
 });
