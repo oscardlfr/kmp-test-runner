@@ -443,6 +443,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `NO_COLOR` | always (POSIX) | Any non-empty value disables gradle ANSI output (equivalent to `--color=never`) |
 | `KMP_TEST_SKIP_ADB` | `info` / `android` | Equivalent to `--no-adb`. On `android` it implies `--list-only` (instrumented tests require adb) |
 | `KMP_GRADLE_MAXBUFFER_MB` | always | Max stdout/stderr captured per gradle/adb subprocess, in megabytes (default `64`). Raise on machines running very verbose builds; exceeding the cap surfaces as `errors[].code: "spawn_error"` instead of killing the run silently |
+| `KMP_JUNIT_XML_MAX_MB` | `parallel` / `changed` | Size cap (megabytes) for a single `TEST-*.xml` report before it's skipped during the test-count walk (default `32`). A skipped report surfaces as `warnings[].code: "junit_xml_oversized"`; `tests.individual_total` then undercounts and that task's `test_failures[]` may be incomplete |
 | `KMP_TEST_NO_SWEEP` | test subcommands | Set to `1` to disable the startup artifact-lifecycle sweep of `.kmp-test-runner/` (see the `cleanup` config key) |
 
 ### Project config — `.kmp-test-runner.json`
@@ -706,20 +707,21 @@ kmp-test clean --all --json  # full purge incl. caches, JSON envelope
 
 ### `kmp-test doctor` — environment diagnosis
 
-Six quick checks that catch the usual "why isn't this running" suspects:
+Six quick checks that catch the usual "why isn't this running" suspects — plus a conditional seventh (`gradle java.home`) that only appears when your `gradle.properties` sets `org.gradle.java.home`:
 
 ```sh
 kmp-test doctor
-# CHECK          STATUS  VALUE       MESSAGE
-# Node           OK      v22.5.0     >=18 required
-# bash           OK      available   shell present
-# gradlew        OK      present     /path/to/project
-# JDK            OK      21.0.10     >=17 recommended
-# JDK catalogue  OK      3 installs  JDK 11 (Adoptium), JDK 17 (Adoptium), JDK 21 (Azul Zulu)
-# ADB            WARN    not found   install Android SDK platform-tools to run android subcommand
+# CHECK            STATUS  VALUE        MESSAGE
+# Node             OK      v22.5.0      >=18 required
+# bash             OK      available    shell present
+# gradlew          OK      present      /path/to/project
+# JDK              OK      21.0.10      >=17 recommended
+# JDK catalogue    OK      3 installs   JDK 11 (Adoptium), JDK 17 (Adoptium), JDK 21 (Azul Zulu)
+# gradle java.home WARN    ~/jdks/21    Gradle does not expand ~ here — use an absolute path
+# ADB              WARN    not found    install Android SDK platform-tools to run android subcommand
 ```
 
-Exit `0` if every check is OK or WARN; exit `3` if any FAIL (Node <18, missing shell, missing JDK). The "JDK catalogue" row (v0.6.1+) lists every JDK detected in the system locations consulted by the [auto-select chain](#jdk-toolchain-mismatch-auto-resolved-when-possible-since-v061) — empty catalogue → WARN ("auto-select disabled, gate will fire on JDK mismatch"). `--json` emits the same data as a structured array for agents, plus a top-level `gradle_config{}` diagnostic (v0.8.1):
+Exit `0` if every check is OK or WARN; exit `3` if any FAIL (Node <18, missing shell, missing JDK). The "JDK catalogue" row (v0.6.1+) lists every JDK detected in the system locations consulted by the [auto-select chain](#jdk-toolchain-mismatch-auto-resolved-when-possible-since-v061) — empty catalogue → WARN ("auto-select disabled, gate will fire on JDK mismatch"). The "gradle java.home" row appears only when `org.gradle.java.home` is set in `gradle.properties`: WARN when the value starts with `~` (Gradle does not expand it and will fail to launch) or points at a missing path, OK with the resolved path otherwise. `--json` emits the same data as a structured array for agents, plus a top-level `gradle_config{}` diagnostic (v0.8.1):
 
 ```json
 {"tool":"kmp-test","subcommand":"doctor","exit_code":0,"checks":[{"name":"Node","status":"OK","value":"v22.5.0","message":">=18 required"},…,{"name":"JDK catalogue","status":"OK","value":"3 installs","message":"JDK 11 (Eclipse Adoptium), JDK 17 (Eclipse Adoptium), JDK 21 (Azul Systems, Inc.)"}],"gradle_config":{"parallel":true,"workers_max":4,"caching":true,"daemon":true,"jvmargs":"-Xmx4g","configureondemand":false,"sources":{"project":true,"user":false}}}
