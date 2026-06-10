@@ -859,12 +859,24 @@ describe('consumeTestFilter', () => {
     expect(pattern).toBe('B');
     expect(args).toEqual([]);
   });
-  it('does not consume --test-filter without a value', () => {
-    // Trailing flag with no value: no value to capture, flag swallowed (defensive).
-    const { args, pattern } = consumeTestFilter(['--test-filter']);
+  // Contract flip (dangling-flag normalization, 2026-06-10): pre-fix the
+  // value-less flag was PRESERVED in args and leaked downstream to the
+  // wrapper. Now it is stripped and reported via errors[] so cli.js can
+  // reject with invalid_flag_value before any spawn.
+  it('strips a dangling --test-filter and reports it via errors[]', () => {
+    const { args, pattern, errors } = consumeTestFilter(['--test-filter']);
     expect(pattern).toBeNull();
-    // Edge: unconsumed value-less flag is preserved (loop hits last index without next).
-    expect(args).toEqual(['--test-filter']);
+    expect(args).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      code: 'invalid_flag_value',
+      flag: '--test-filter',
+      value: null,
+    });
+  });
+  it('errors is [] on every happy path', () => {
+    expect(consumeTestFilter([]).errors).toEqual([]);
+    expect(consumeTestFilter(['--test-filter', 'A']).errors).toEqual([]);
   });
 });
 
