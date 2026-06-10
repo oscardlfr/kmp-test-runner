@@ -31,28 +31,29 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Detected gradle-plugin version: $version"
 
-      - name: Check if version already on GitHub Packages (idempotency)
-        id: check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # GitHub Packages Maven endpoint for an io.github.oscardlfr.kmp-test-runner artefact:
-          #   /repos/${owner}/${repo}/packages/maven/{group}.{artifact}/versions
-          # Public-read on this repo so a 200 means "exists".
-          status=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            "https://maven.pkg.github.com/oscardlfr/kmp-test-runner/io/github/oscardlfr/kmp-test-runner-gradle-plugin/${{ steps.ver.outputs.version }}/maven-metadata.xml")
-          if [ "$status" = "200" ]; then
-            echo "Gradle plugin ${{ steps.ver.outputs.version }} already published — skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Gradle plugin ${{ steps.ver.outputs.version }} not on GitHub Packages (HTTP $status) — will publish."
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish to GitHub Packages
-        if: steps.check.outputs.skip == 'false'
-        run: cd gradle-plugin && ./gradlew publishAllPublicationsToGitHubPackagesRepository
+      # Idempotent publish: GitHub Packages (Maven) rejects re-publishing an existing
+      # version with HTTP 409. That is a benign no-op (the artefact is already there),
+      # so we tolerate exactly that case and fail loudly on anything else. This keeps
+      # re-runs / re-pushes at an already-released version green without a brittle
+      # pre-flight existence probe (the Packages read API needs a read:packages PAT;
+      # the 409 from the publish itself is the authoritative "already published" signal).
+      - name: Publish to GitHub Packages (idempotent)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          cd gradle-plugin
+          set +e
+          out="$(./gradlew --no-daemon publishAllPublicationsToGitHubPackagesRepository 2>&1)"
+          code=$?
+          printf '%s\n' "$out"
+          if [ "$code" -eq 0 ]; then
+            echo "Published gradle plugin ${VERSION} to GitHub Packages."
+            exit 0
+          fi
+          if printf '%s' "$out" | grep -qiE "status code 409|409 from server|already exists"; then
+            echo "::notice::Gradle plugin ${VERSION} already on GitHub Packages — idempotent no-op."
+            exit 0
+          fi
+          echo "::error::Gradle publish failed (exit ${code}) for a reason other than an already-published version."
+          exit "$code"

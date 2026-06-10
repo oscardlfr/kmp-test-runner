@@ -86,7 +86,7 @@ git checkout develop && git pull
 3. The FF push to `main` fires the cascade automatically (unchanged):
     - `auto-tag.yml` — creates `vX.Y.Z` tag from `package.json` (if missing) → `workflow_call` → `publish-release.yml` (`linux.tar.gz` + `windows.zip` + GitHub Release)
     - `publish-npm.yml` — `npm publish` (skipped if version already on registry)
-    - `publish-gradle.yml` — GitHub Packages (skipped if version already there)
+    - `publish-gradle.yml` — GitHub Packages (idempotent — no-op if the version is already published)
 4. **No sync step.** `main` and `develop` are now the same commit (FF, identical SHAs); the next cycle just continues on `develop`.
 
 > **One-time setup** (done when this model landed): `main` `enforce_admins=false`; a fine-grained PAT `RELEASE_FF_TOKEN` (Contents: write) as an Actions secret; `main` aligned as an ancestor of `develop`. The PAT is required because GitHub's anti-recursion guard suppresses downstream workflow triggers for `GITHUB_TOKEN` pushes. The legacy `release/*` + `git read-tree` recipe (used through v0.14.0) is retired.
