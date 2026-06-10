@@ -50,11 +50,12 @@ Two long-lived branches:
 - **`develop`** — integration branch where features land
 - **`main`** — only contains released versions; **every push to main is a release**
 
-**NEVER push directly to `main` or `develop`.** Branch protection on both requires:
+**Never push directly to `develop`, and never push `main` by hand.** `develop` is the integration trunk; `main` fast-forwards to follow it (see "Release workflow"). Branch protection on `develop` requires:
 - PR (no direct push, no force push, no delete)
 - All 10 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `commit-lint / Commit Lint` (job renamed from `🔤 Commit Lint` in v0.4.x — see `commit-lint.yml` for context), `decouple-audit` (added 2026-05-12 from PR #209), `bundle-size` (added 2026-05-12 from PR #216), `skills-validate` (added 2026-05-16 from PR #230)
 - Linear history (squash/rebase only)
-- `enforce_admins: true` (rule applies to repo owner — no bypass)
+
+`main` is **never** the target of a PR. It carries the same 10 required checks + linear history, but runs with **`enforce_admins: false`** so the `Release` workflow's `RELEASE_FF_TOKEN` PAT (owner-admin) can fast-forward it — humans never push `main` directly. The same-SHA FF inherits the checks already green on `develop`.
 
 > **Adding a new required check:** when a new workflow lands (e.g. v0.3.7's `commit-lint`), branch protection must be updated manually via `Settings → Branches → Edit rule` to add the check name (matches the workflow's `jobs.<id>.name`) to the required-status-checks list. Do this once per branch (`main` and `develop`).
 
@@ -76,18 +77,19 @@ gh pr merge <num> --squash --delete-branch
 git checkout develop && git pull
 ```
 
-### Release workflow (develop → main)
+### Release workflow (fast-forward `main` from `develop`)
 
-When `develop` is ready to release:
+`main` is a pointer that fast-forwards to `develop` at release time and carries the version tags. There is **no `develop → main` PR** and **no `release/*` branch**: a direct develop→main PR falsely conflicts (the develop↔main merge-base is ancient — main was historically built from squash commits), and GitHub has no fast-forward merge button, so `main` is advanced by the `Release` workflow's true FF push. When `develop` is ready to release:
 
-1. On `develop`: bump `package.json` `version` (and `gradle-plugin/build.gradle.kts` `version` to match), update `CHANGELOG.md`, commit, push, PR to develop, merge.
-2. Open `release: vX.Y.Z` PR from `develop` → `main`. CI runs the full 7-check matrix (6 build/test + commit-lint).
-3. Squash-merge to `main`. **Three workflows fire automatically:**
-    - `auto-tag.yml` — creates `vX.Y.Z` git tag from `package.json` version (if missing)
-    - `publish-npm.yml` — runs `npm publish` (skipped if version already on registry)
-    - `publish-gradle.yml` — publishes to GitHub Packages (skipped if version already there)
-    - The `auto-tag.yml` tag push then cascades into `publish-release.yml`, building `linux.tar.gz` + `windows.zip` and creating the GitHub Release.
-4. Sync develop with main (`git checkout develop && git merge main && git push`) so the next cycle starts from a clean base.
+1. **Prep PR to `develop`** (normal feature-style PR): bump `package.json` `version`, run `node tools/sync-versions.js` (no flag = apply; propagates to the 6 targets: `gradle-plugin/build.gradle.kts`, README DSL sample, 3 `CLAUDE.md` lines, `.claude-plugin/plugin.json`), retitle `CHANGELOG.md` `[Unreleased]` → `[X.Y.Z] — <date>`. Title `chore(release): prepare vX.Y.Z`. Merge on green.
+2. **Dispatch the `Release` workflow** (`Actions → Release (fast-forward main from develop) → Run`, input the version). It guards (input matches develop's `package.json`; `main` is an ancestor of `develop`; tag absent), then `git push origin develop:main` (FF) via `RELEASE_FF_TOKEN`.
+3. The FF push to `main` fires the cascade automatically (unchanged):
+    - `auto-tag.yml` — creates `vX.Y.Z` tag from `package.json` (if missing) → `workflow_call` → `publish-release.yml` (`linux.tar.gz` + `windows.zip` + GitHub Release)
+    - `publish-npm.yml` — `npm publish` (skipped if version already on registry)
+    - `publish-gradle.yml` — GitHub Packages (skipped if version already there)
+4. **No sync step.** `main` and `develop` are now the same commit (FF, identical SHAs); the next cycle just continues on `develop`.
+
+> **One-time setup** (done when this model landed): `main` `enforce_admins=false`; a fine-grained PAT `RELEASE_FF_TOKEN` (Contents: write) as an Actions secret; `main` aligned as an ancestor of `develop`. The PAT is required because GitHub's anti-recursion guard suppresses downstream workflow triggers for `GITHUB_TOKEN` pushes. The legacy `release/*` + `git read-tree` recipe (used through v0.14.0) is retired.
 
 ### Idempotency
 
@@ -101,7 +103,7 @@ Each publish workflow keeps `workflow_dispatch:` as a fallback (e.g. for re-publ
 
 - `package.json` `version` is the source of truth for what `kmp-test --version` reports
 - The Git tag (`vX.Y.Z`) MUST match `package.json` version BEFORE tagging — otherwise installer reports wrong version (W31.5c historical bug — caught now by `installer-e2e` regression test)
-- npm registry version stays in sync with `package.json`: `publish-npm.yml` auto-publishes on push to `main` (Trusted Publisher OIDC, `--provenance`) on changes to `package.json`/`bin`/`lib`/`scripts`; idempotent (no-op if the version already exists). Verified 2026-06-07: `npm view kmp-test-runner version` == `package.json` (`0.12.0`). `workflow_dispatch` remains as a manual fallback.
+- npm registry version stays in sync with `package.json`: `publish-npm.yml` auto-publishes on push to `main` (Trusted Publisher OIDC, `--provenance`) on changes to `package.json`/`bin`/`lib`/`scripts`; idempotent (no-op if the version already exists). Verified 2026-06-10: `npm view kmp-test-runner version` == `package.json` (`0.14.0`). `workflow_dispatch` remains as a manual fallback.
 
 ## Architecture decisions worth knowing
 
@@ -123,7 +125,7 @@ Each publish workflow keeps `workflow_dispatch:` as a fallback (e.g. for re-publ
 > Live milestone view. Detailed entries in `BACKLOG.md` ROADMAP — these are pointers.
 
 - **v0.9 + v0.10** — ✅ RELEASED (v0.9.0 2026-05-09, v0.10.0 2026-05-19). Historical buckets in `BACKLOG.md` ROADMAP.
-- **v0.11.x + v0.12.0** — ✅ RELEASED. Current published version is **v0.12.0** (2026-06-04). Shipped as discrete PRs (e.g. Groovy DSL support #275, `--capture-on-fail` for `kmp-test android` #278), not new milestone buckets.
+- **v0.11.x–v0.14.0** — ✅ RELEASED. Current published version is **v0.14.0** (2026-06-10). Shipped as discrete PRs (e.g. Groovy DSL support #275, `--capture-on-fail` for `kmp-test android` #278, dry-run race parity #312, doc coherence #314), not new milestone buckets.
 - **Now (post-v0.12, on `develop`, unreleased)** — the post-v0.12 close-session queue has shipped to `develop`: `--capture-on-fail` on `parallel --test-type androidInstrumented` (#282), `parseTestCounts`↔gradle-exit-code reconciliation (#283), `.gitattributes` LF-pin on `scripts/**/*.sh` + stale-install hint (#284), and a CI-usage README section + Windows TLS troubleshooting doc + cross-project metric-labelling rule (#285). The adjacent "parallel `setup_failed`/`individual_total`" item was DROPPED as a misdiagnosis (#283). Remaining in `BACKLOG.md` "📋 QUEUED follow-ups": configurable output root (`--output-dir` / `KMP_TEST_OUTPUT_DIR`, the substantial one — own session) + deferred polish (`--skip-tests` report-header label, `tools/measure-token-cost.js` sharp edges). README / tools-usage audit ✅ (#279).
 - **Next milestone** — requires explicit user direction. No autonomous milestone scoping (see "Architecture decisions").
 

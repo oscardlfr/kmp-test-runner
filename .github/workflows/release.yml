@@ -1,0 +1,83 @@
+name: Release (fast-forward main from develop)
+# Manual release entry point. Fast-forwards `main` to `develop`'s HEAD, which fires the
+# existing cascade: auto-tag.yml -> publish-release.yml (workflow_call) + publish-npm.yml +
+# publish-gradle.yml. `main` is a pointer that FF-follows `develop`; releases are tags.
+#
+# Why a PAT (RELEASE_FF_TOKEN) and not GITHUB_TOKEN:
+#   1. The push to `main` must trigger the downstream publish workflows. GitHub's
+#      anti-recursion guard suppresses workflow triggers for pushes made with the default
+#      GITHUB_TOKEN — a PAT push does trigger them.
+#   2. `main` is protected; with `enforce_admins=false` the owner-admin PAT can FF-push it
+#      while humans still cannot push `main` by hand.
+#
+# Prep BEFORE dispatching: land a normal PR on `develop` that bumps package.json, runs
+# `node tools/sync-versions.js`, and retitles CHANGELOG `[Unreleased]` -> `[X.Y.Z]`.
+# Then run this workflow with the same version. Idempotent: re-running at an already-released
+# version is a no-op (tag exists / publishes skip).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.15.0) — must equal develop package.json'
+        required: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  fast-forward:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_FF_TOKEN }}
+
+      # All workflow_dispatch inputs / step outputs are passed via env and referenced as
+      # shell variables (never interpolated into the script body) to avoid command injection.
+      - name: Resolve + validate version
+        id: v
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          ver=$(node -p "require('./package.json').version")
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          if [ "$ver" != "$VERSION_INPUT" ]; then
+            echo "::error::input '$VERSION_INPUT' != develop package.json '$ver'"
+            exit 1
+          fi
+
+      - name: Guard — main must be an ancestor of develop (clean fast-forward)
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor origin/main HEAD; then
+            echo "::error::main is not an ancestor of develop — fast-forward impossible. Re-align main onto develop first."
+            exit 1
+          fi
+
+      - name: Guard — tag must not already exist
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::tag v$VERSION already exists — nothing to release"
+            exit 1
+          fi
+
+      - name: Fast-forward main -> develop
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          echo "Fast-forwarding main to $(git rev-parse --short HEAD) (v$VERSION)"
+          git push origin HEAD:main
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          echo "main fast-forwarded to develop (v$VERSION)." >> "$GITHUB_STEP_SUMMARY"
+          echo "auto-tag + publish-npm/gradle/release will now fire." >> "$GITHUB_STEP_SUMMARY"
