@@ -100,6 +100,63 @@ describe('parseIsolatedArgs', () => {
     expect(r.noLock).toBe(true);
     expect(r.args).toEqual(['--variant', 'debug']);
   });
+
+  // L1 (2026-06-09 audit) — dangling / empty `--isolated-cache-dir`. Pre-fix
+  // the `i + 1 < args.length` guard left the flag unconsumed: isolation
+  // silently OFF + the dangling token leaked into the orchestrator args.
+  it('L1: errors is [] on every happy path', () => {
+    expect(parseIsolatedArgs([]).errors).toEqual([]);
+    expect(parseIsolatedArgs(['--isolated']).errors).toEqual([]);
+    expect(parseIsolatedArgs(['--isolated-cache-dir', '/x']).errors).toEqual([]);
+  });
+
+  it('L1: dangling --isolated-cache-dir (last token) pushes invalid_flag_value, no isolation, no leak', () => {
+    const r = parseIsolatedArgs(['--module-filter', 'X', '--isolated-cache-dir']);
+    expect(r.enabled).toBe(false);
+    expect(r.cacheDir).toBe(null);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]).toMatchObject({
+      code: 'invalid_flag_value',
+      flag: '--isolated-cache-dir',
+      value: null,
+    });
+    // The flag must NOT leak into the residual args the orchestrator parses.
+    expect(r.args).toEqual(['--module-filter', 'X']);
+  });
+
+  it('L1: explicit-empty value pushes invalid_flag_value with value:"" and consumes the token', () => {
+    const r = parseIsolatedArgs(['--isolated-cache-dir', '', '--module-filter', 'X']);
+    expect(r.enabled).toBe(false);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].value).toBe('');
+    expect(r.args).toEqual(['--module-filter', 'X']);
+  });
+
+  it('L1: raw `--isolated-cache-dir=` equals-empty form is rejected (in-function expansion)', () => {
+    const r = parseIsolatedArgs(['--isolated-cache-dir=', '--module-filter', 'X']);
+    expect(r.enabled).toBe(false);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].code).toBe('invalid_flag_value');
+    expect(r.args).toEqual(['--module-filter', 'X']);
+  });
+
+  // Runner.js-direct invocations reach parseIsolatedArgs with the raw equals
+  // form (orchestrator parsers expand equals only AFTER this strip). Pre-fix
+  // the token fell through unparsed and isolation silently no-opped.
+  it('L1: raw `--isolated-cache-dir=/x` equals form engages isolation on runner.js-direct routes', () => {
+    const r = parseIsolatedArgs(['--isolated-cache-dir=/x', '--module-filter', 'X']);
+    expect(r.enabled).toBe(true);
+    expect(r.cacheDir).toBe('/x');
+    expect(r.errors).toEqual([]);
+    expect(r.args).toEqual(['--module-filter', 'X']);
+  });
+
+  it('L1: dangling error does not mask flags seen earlier in the argv', () => {
+    const r = parseIsolatedArgs(['--isolated-no-lock', '--isolated-cache-dir']);
+    expect(r.noLock).toBe(true);
+    expect(r.enabled).toBe(true);
+    expect(r.errors).toHaveLength(1);
+  });
 });
 
 describe('resolveIsolatedDir', () => {

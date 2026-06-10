@@ -108,6 +108,15 @@ describe('characterization / invalid-args envelopes', () => {
       args: ['--timeout', 'abc', '--json'],
       tag: '--timeout abc',
     },
+    {
+      // L1 (2026-06-09 audit): dangling --isolated-cache-dir. `--json` is
+      // hoisted at main() entry, so the flag IS the last token by the time
+      // peekIsolatedFlags runs — the exact BACKLOG repro shape. Pre-fix:
+      // isolation silently OFF + lock taken + token leaked into args.
+      sub: 'parallel',
+      args: ['--isolated-cache-dir', '--json'],
+      tag: '--isolated-cache-dir (dangling)',
+    },
   ];
 
   for (const { sub, args, tag } of INVALID_CASES) {

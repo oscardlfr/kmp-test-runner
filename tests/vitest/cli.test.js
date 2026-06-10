@@ -3401,7 +3401,9 @@ describe('main() — lockfile integration', () => {
 describe('peekIsolatedFlags', () => {
   it('returns disabled defaults when no --isolated* flag is present', () => {
     const r = peekIsolatedFlags(['parallel', '--project-root', '/x', '--variant', 'debug']);
-    expect(r).toEqual({ enabled: false, cacheDir: null, noLock: false });
+    // errors: [] is the L1 dangling-flag fix's additive key (PR 1 of the
+    // 2026-06-09 LOW-tier audit train).
+    expect(r).toEqual({ enabled: false, cacheDir: null, noLock: false, errors: [] });
   });
 
   it('detects bare --isolated', () => {
@@ -3433,6 +3435,41 @@ describe('peekIsolatedFlags', () => {
     expect(r.enabled).toBe(true);
     expect(r.cacheDir).toBe('/tmp/x');
     expect(r.noLock).toBe(false);
+  });
+
+  // L1 (2026-06-09 audit) — dangling `--isolated-cache-dir` (last token, no
+  // value) pre-fix silently left isolation OFF while the Tier 1 lock was
+  // still taken and the flag leaked into orchestrator args. Now it surfaces
+  // an invalid_flag_value error; cli.js rejects before the acquireLock
+  // decision.
+  it('L1: dangling --isolated-cache-dir (last token) pushes invalid_flag_value and does NOT enable isolation', () => {
+    const r = peekIsolatedFlags(['--project-root', '/x', '--isolated-cache-dir']);
+    expect(r.enabled).toBe(false);
+    expect(r.cacheDir).toBe(null);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].code).toBe('invalid_flag_value');
+    expect(r.errors[0].flag).toBe('--isolated-cache-dir');
+    expect(r.errors[0].value).toBe(null);
+  });
+
+  it('L1: explicit-empty value (pre-expanded `--isolated-cache-dir=`) pushes invalid_flag_value', () => {
+    // cli.js#main expands `--isolated-cache-dir=` to ['--isolated-cache-dir', '']
+    // before the peek — assert on the post-expansion shape it actually sees.
+    const r = peekIsolatedFlags(['--isolated-cache-dir', '', '--project-root', '/x']);
+    expect(r.enabled).toBe(false);
+    expect(r.cacheDir).toBe(null);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].code).toBe('invalid_flag_value');
+    expect(r.errors[0].value).toBe('');
+  });
+
+  it('L1: dangling --isolated-cache-dir does not mask other isolated flags seen earlier', () => {
+    const r = peekIsolatedFlags(['--isolated-no-lock', '--isolated-cache-dir']);
+    // The dangling error is independent: noLock/enabled from the earlier flag
+    // survive, and cli.js still rejects on errors[] before the lock decision.
+    expect(r.noLock).toBe(true);
+    expect(r.enabled).toBe(true);
+    expect(r.errors).toHaveLength(1);
   });
 });
 
