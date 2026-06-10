@@ -44,7 +44,7 @@
 
 import { spawnSync } from 'node:child_process';
 import {
-  mkdirSync, writeFileSync, readFileSync, existsSync, statSync,
+  mkdirSync, writeFileSync, readFileSync, existsSync, statSync, readdirSync,
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,10 +66,13 @@ console.error(`[NOTICE] WORKSPACE = ${WORKSPACE}`);
 
 // ─── matrix dimensions ─────────────────────────────────────────────────────
 
-// 3 KMP gradle roots used by the gate. `scopedModule` is the smallest
-// representative module per project (used by --mode scoped to keep gradle
-// daemon + cache footprint small enough for the secondary Mac's tight
-// disk situation).
+// 3 KMP gradle roots used by the gate. `scopedModule` is an OPTIONAL override
+// of the small representative module used by --mode scoped to keep the gradle
+// daemon + cache footprint small. When null, the gate auto-discovers a testable
+// module at runtime (discoverScopedModule) — set explicitly only for the
+// in-repo fixture (version-controlled, stable) and the upstream KaMPKit
+// `:shared`. The private composite's module set DRIFTS (a previously-hardcoded
+// `:sample-result` vanished and errored every scoped cell), so it auto-discovers.
 export const PROJECTS = [
   {
     name: 'fixture',
@@ -80,7 +83,7 @@ export const PROJECTS = [
   {
     name: 'private-lib',
     path: path.join(WORKSPACE, 'private-lib'),
-    scopedModule: ':sample-result',
+    scopedModule: null, // auto-discover — composite module set drifts
     hasAndroidInstrumented: true,
   },
   {
@@ -169,6 +172,7 @@ export function parseArgs(argv) {
 export function buildMatrix(opts, deps = {}) {
   const adbHasDevice = deps.adbHasDevice ?? defaultAdbHasDevice;
   const projectExists = deps.projectExists ?? defaultProjectExists;
+  const discoverScoped = deps.discoverScopedModule ?? discoverScopedModule;
 
   const targetSubs = opts.subcommand === 'all'
     ? SUBCOMMANDS
@@ -187,25 +191,47 @@ export function buildMatrix(opts, deps = {}) {
   const requireAdb = opts.mode !== 'probe';
   const cells = [];
 
+  // Resolve the scoped module per project ONCE: explicit override
+  // (PROJECTS[].scopedModule, leading colon stripped) else auto-discover (only
+  // in scoped mode, where --module-filter is actually applied). Memoized so the
+  // fs scan runs at most once per project across all its cells.
+  const scopedCache = new Map();
+  const scopedFor = (proj) => {
+    if (scopedCache.has(proj.name)) return scopedCache.get(proj.name);
+    let m = null;
+    if (proj.scopedModule) m = proj.scopedModule.replace(/^:/, '');
+    else if (opts.mode === 'scoped' && projectExists(proj.path)) m = discoverScoped(proj.path);
+    scopedCache.set(proj.name, m);
+    return m;
+  };
+  // In scoped mode a cell with no resolvable module would fan gradle out across
+  // ALL modules (disk/daemon blowup) — pre-skip it instead. Distinct reason from
+  // project-absent so the summary shows WHY (drifted/empty project structure).
+  const scopedSkip = (proj, baseSkip) =>
+    (!baseSkip && opts.mode === 'scoped' && projectExists(proj.path) && !scopedFor(proj))
+      ? 'no-scopable-module'
+      : baseSkip;
+
   for (const sub of targetSubs) {
     for (const proj of targetProjects) {
+      const scopedModule = scopedFor(proj);
       if (sub === 'android') {
         // android subcommand is instrumented-only and ignores --test-type.
         // One cell per project. Skip if no project on disk or no device
         // (the latter only outside probe mode).
         cells.push(buildCell({
-          sub, testType: null, proj,
+          sub, testType: null, proj, scopedModule,
           opts, adbReady, projectExists,
-          skipReason: pickAndroidSkip({ proj, adbReady, projectExists, requireAdb }),
+          skipReason: scopedSkip(proj, pickAndroidSkip({ proj, adbReady, projectExists, requireAdb })),
         }));
         continue;
       }
       // parallel + changed: cross with all selected test-types.
       for (const tt of targetTypes) {
         cells.push(buildCell({
-          sub, testType: tt, proj,
+          sub, testType: tt, proj, scopedModule,
           opts, adbReady, projectExists,
-          skipReason: pickSkip({ tt, proj, adbReady, projectExists, requireAdb }),
+          skipReason: scopedSkip(proj, pickSkip({ tt, proj, adbReady, projectExists, requireAdb })),
         }));
       }
     }
@@ -213,7 +239,7 @@ export function buildMatrix(opts, deps = {}) {
   return cells;
 }
 
-function buildCell({ sub, testType, proj, opts, skipReason }) {
+function buildCell({ sub, testType, proj, scopedModule = null, opts, skipReason }) {
   const args = [KMP_TEST, sub, '--project-root', proj.path];
   if (testType !== null) args.push('--test-type', testType);
   if (opts.mode === 'probe') {
@@ -225,11 +251,11 @@ function buildCell({ sub, testType, proj, opts, skipReason }) {
     if (sub === 'android') args.push('--list-only');
     else args.push('--dry-run');
   }
-  if (opts.mode === 'scoped' && proj.scopedModule) {
-    // Strip leading `:` — the CLI's --module-filter is a name-glob,
-    // not a gradle path. `:sample-result` → `sample-result`.
-    const pattern = proj.scopedModule.replace(/^:/, '');
-    args.push('--module-filter', pattern);
+  if (opts.mode === 'scoped' && scopedModule) {
+    // `scopedModule` is the already-resolved name-glob (override or
+    // auto-discovered, leading `:` stripped by buildMatrix). The CLI's
+    // --module-filter is a name-glob, not a gradle path.
+    args.push('--module-filter', scopedModule);
   }
   args.push('--json', '--timeout', String(opts.timeout));
   // CRITICAL — never emit --ignore-jdk-mismatch (memory rule
@@ -271,6 +297,34 @@ function defaultAdbHasDevice() {
 function defaultProjectExists(p) {
   try { return statSync(p).isDirectory(); }
   catch { return false; }
+}
+
+// Auto-discover a small testable module for --mode scoped when PROJECTS[].
+// scopedModule is null. Returns the FIRST top-level module dir (alphabetical →
+// deterministic) that has a unit-test source set, or null when none. Keeps the
+// gate robust to project drift instead of hard-coding a module name that goes
+// stale (the composite's removed `:sample-result` errored every scoped cell).
+// Top-level scan only — enough for a one-module scoped smoke; skips build/tooling
+// dirs. Overridable via deps for tests.
+const SCOPED_TEST_SOURCE_SETS = ['commonTest', 'jvmTest', 'test', 'androidUnitTest'];
+const SCOPED_SKIP_DIRS = new Set(['build', 'buildSrc', 'build-logic', 'gradle', 'src']);
+
+function discoverScopedModule(projectPath) {
+  let entries;
+  try { entries = readdirSync(projectPath, { withFileTypes: true }); }
+  catch { return null; }
+  const dirs = entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !SCOPED_SKIP_DIRS.has(e.name))
+    .map((e) => e.name)
+    .sort();
+  for (const dir of dirs) {
+    for (const ts of SCOPED_TEST_SOURCE_SETS) {
+      try {
+        if (statSync(path.join(projectPath, dir, 'src', ts)).isDirectory()) return dir;
+      } catch { /* not this source set */ }
+    }
+  }
+  return null;
 }
 
 // ─── safe filename helper ──────────────────────────────────────────────────

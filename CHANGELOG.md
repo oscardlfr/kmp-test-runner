@@ -133,6 +133,18 @@ test_filter, skipped_modules }`). The android leg still filters via `-P` instrum
 Narrow jvm runs with `--module-filter` instead. Exit code stays `0` when capable modules exist and all jvm
 cells are intentionally skipped; `no_test_modules` (exit 3) is unchanged when no module is capable at all.
 
+### Fixed — `--dry-run` now surfaces the `isolated_runtime_race` rejection
+
+`kmp-test parallel --isolated` combined with `--test-type ios` / `all` / `androidInstrumented`
+(without `--device`) is rejected at runtime with `isolated_runtime_race` (exit 2) because
+isolation cannot protect a shared runtime resource (the host-wide iOS simulator, a single ADB
+device). That gate previously lived only in the real-run path, so `--dry-run` returned exit 0
+with a plan — a false all-clear for agents that validate a command via `--dry-run` before
+running it. The check now lives in one shared helper (`assessIsolatedRuntimeRace`) called by
+both the orchestrator and the dispatcher's `--dry-run` short-circuit, so dry-run reports the
+identical verdict a real run would. Safe combos (`macos`, `desktop`, `common`, `androidUnit`,
+`androidInstrumented` *with* `--device`) are unaffected.
+
 ## [0.13.0] — 2026-06-07
 
 ### Changed — Opus 4.8 token-cost figures + clean numeric tables
