@@ -2955,7 +2955,15 @@ describe('main() — JDK gate integration', () => {
           c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
         );
         expect(scriptCall).toBeTruthy();
-        expect(scriptCall[2]?.env?.JAVA_HOME).toBeUndefined();
+        // No JAVA_HOME OVERRIDE — host preserved. The dispatcher may pass an
+        // explicit env for unrelated threading (KMP_ORIGINATING_SUBCOMMAND
+        // spreads process.env); in that case JAVA_HOME is the verbatim host
+        // inheritance, never the catalogue path the bug used to inject.
+        const spawnedJavaHome = scriptCall[2]?.env?.JAVA_HOME;
+        if (spawnedJavaHome !== undefined) {
+          expect(spawnedJavaHome).toBe(process.env.JAVA_HOME);
+        }
+        expect(spawnedJavaHome).not.toBe('/fake/jdk-17');
       });
     });
 
