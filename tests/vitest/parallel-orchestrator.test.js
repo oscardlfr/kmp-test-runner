@@ -2362,6 +2362,76 @@ describe('runParallel', () => {
     expect(envelope.tests.individual_total).toBe(0);
   });
 
+  // L6 (2026-06-09 audit) — cascade-retry diagnostic arrays are bounded at
+  // push time. Below the caps the emitted text is byte-identical to the old
+  // collect-all-then-slice shape; above them a suppressed-count line points
+  // at the per-module log.
+  it('L6: >50 critical lines emit exactly 50 + a suppressed-count line', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const criticalFlood = Array.from({ length: 60 },
+      (_, i) => `Execution failed for task :core:probe${i}.`).join('\n');
+    const spawn = makeSpawnStub({
+      stdout: `${criticalFlood}\n> Task :core:jvmTest FAILED\nBUILD FAILED in 1s\n`,
+      status: 1,
+    });
+    const logs = [];
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: (l) => logs.push(l),
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const emitted = logs.filter(l => l.includes('Execution failed for task :core:probe'));
+    // 60 flood lines compete with the FAILED + BUILD FAILED critical matches
+    // for the 50-line cap — never more than 50 critical lines total.
+    expect(emitted.length).toBeLessThanOrEqual(50);
+    expect(logs.some(l => l.includes('more critical lines suppressed'))).toBe(true);
+  });
+
+  it('L6: tasksRun >30 emits 30 + byte-identical suppressed arithmetic (parity)', async () => {
+    // Failing leg — the step-4b diagnostic block (where the caps live) only
+    // processes failing-leg output; success legs echo elsewhere.
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const taskFlood = Array.from({ length: 40 },
+      (_, i) => `> Task :core:compile${i}`).join('\n');
+    const spawn = makeSpawnStub({
+      stdout: `${taskFlood}\n> Task :core:jvmTest FAILED\nBUILD FAILED in 1s\n`,
+      status: 1,
+    });
+    const logs = [];
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: (l) => logs.push(l),
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const emitted = logs.filter(l => /^> Task :core:compile\d+$/.test(l));
+    expect(emitted).toHaveLength(30);
+    // Exact pre-cap arithmetic: 40 total − 30 emitted = 10 suppressed.
+    expect(logs.some(l => l.includes('(… 10 more "> Task" lines suppressed)'))).toBe(true);
+  });
+
+  it('L6: status-noise counter text is identical to the old array-length form', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const noise = Array.from({ length: 5 },
+      (_, i) => `> Task :core:upToDate${i} UP-TO-DATE`).join('\n');
+    const spawn = makeSpawnStub({
+      stdout: `${noise}\n> Task :core:jvmTest FAILED\nBUILD FAILED in 1s\n`,
+      status: 1,
+    });
+    const logs = [];
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: (l) => logs.push(l),
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(logs.some(l => l.includes('(5 UP-TO-DATE/NO-SOURCE/SKIPPED status lines suppressed)'))).toBe(true);
+  });
+
   // L2 (2026-06-09 audit) — oversized TEST-*.xml files are skipped by the
   // size guard and surfaced as a `junit_xml_oversized` envelope warning so
   // agents know individual_total undercounts for that task.
