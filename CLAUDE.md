@@ -55,7 +55,7 @@ Two long-lived branches:
 - All 10 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `commit-lint / Commit Lint` (job renamed from `🔤 Commit Lint` in v0.4.x — see `commit-lint.yml` for context), `decouple-audit` (added 2026-05-12 from PR #209), `bundle-size` (added 2026-05-12 from PR #216), `skills-validate` (added 2026-05-16 from PR #230)
 - Linear history (squash/rebase only)
 
-`main` is **never** the target of a PR. It carries the same 10 required checks + linear history, but runs with **`enforce_admins: false`** so the `Release` workflow's `RELEASE_FF_TOKEN` PAT (owner-admin) can fast-forward it — humans never push `main` directly. The same-SHA FF inherits the checks already green on `develop`.
+`main` is **never** the target of a PR, and **no human can push it** (owner included). It is protected by a **ruleset** (same 10 required checks + linear history + no force-push) whose **only bypass actor is the release-bot GitHub App**. The `Release` workflow mints a short-lived App token and fast-forwards `main` with it. The same-SHA FF inherits the checks already green on `develop`.
 
 > **Adding a new required check:** when a new workflow lands (e.g. v0.3.7's `commit-lint`), branch protection must be updated manually via `Settings → Branches → Edit rule` to add the check name (matches the workflow's `jobs.<id>.name`) to the required-status-checks list. Do this once per branch (`main` and `develop`).
 
@@ -82,14 +82,14 @@ git checkout develop && git pull
 `main` is a pointer that fast-forwards to `develop` at release time and carries the version tags. There is **no `develop → main` PR** and **no `release/*` branch**: a direct develop→main PR falsely conflicts (the develop↔main merge-base is ancient — main was historically built from squash commits), and GitHub has no fast-forward merge button, so `main` is advanced by the `Release` workflow's true FF push. When `develop` is ready to release:
 
 1. **Prep PR to `develop`** (normal feature-style PR): bump `package.json` `version`, run `node tools/sync-versions.js` (no flag = apply; propagates to the 6 targets: `gradle-plugin/build.gradle.kts`, README DSL sample, 3 `CLAUDE.md` lines, `.claude-plugin/plugin.json`), retitle `CHANGELOG.md` `[Unreleased]` → `[X.Y.Z] — <date>`. Title `chore(release): prepare vX.Y.Z`. Merge on green.
-2. **Dispatch the `Release` workflow** (`Actions → Release (fast-forward main from develop) → Run`, input the version). It guards (input matches develop's `package.json`; `main` is an ancestor of `develop`; tag absent), then `git push origin develop:main` (FF) via `RELEASE_FF_TOKEN`.
+2. **Dispatch the `Release` workflow** (`Actions → Release (fast-forward main from develop) → Run`, input the version). It mints a release-bot App token, guards (input matches develop's `package.json`; `main` is an ancestor of `develop`; tag absent), then `git push origin develop:main` (FF) as the App.
 3. The FF push to `main` fires the cascade automatically (unchanged):
     - `auto-tag.yml` — creates `vX.Y.Z` tag from `package.json` (if missing) → `workflow_call` → `publish-release.yml` (`linux.tar.gz` + `windows.zip` + GitHub Release)
     - `publish-npm.yml` — `npm publish` (skipped if version already on registry)
     - `publish-gradle.yml` — GitHub Packages (idempotent — no-op if the version is already published)
 4. **No sync step.** `main` and `develop` are now the same commit (FF, identical SHAs); the next cycle just continues on `develop`.
 
-> **One-time setup** (done when this model landed): `main` `enforce_admins=false`; a fine-grained PAT `RELEASE_FF_TOKEN` (Contents: write) as an Actions secret; `main` aligned as an ancestor of `develop`. The PAT is required because GitHub's anti-recursion guard suppresses downstream workflow triggers for `GITHUB_TOKEN` pushes. The legacy `release/*` + `git read-tree` recipe (used through v0.14.0) is retired.
+> **One-time setup** (done when this model landed): a dedicated **release-bot GitHub App** (Contents + Workflows: write) installed on the repo, with secrets `RELEASE_APP_ID` + `RELEASE_APP_PRIVATE_KEY`; `main` migrated to a **ruleset** whose sole bypass actor is that App (humans, owner included, cannot push `main`); `main` aligned as an ancestor of `develop`. An App token (not `GITHUB_TOKEN`) is required because GitHub's anti-recursion guard suppresses downstream workflow triggers for `GITHUB_TOKEN` pushes. The legacy `release/*` + `git read-tree` recipe (used through v0.14.0) is retired.
 
 ### Idempotency
 
