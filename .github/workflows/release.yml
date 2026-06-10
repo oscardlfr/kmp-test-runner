@@ -3,12 +3,11 @@ name: Release (fast-forward main from develop)
 # existing cascade: auto-tag.yml -> publish-release.yml (workflow_call) + publish-npm.yml +
 # publish-gradle.yml. `main` is a pointer that FF-follows `develop`; releases are tags.
 #
-# Why a PAT (RELEASE_FF_TOKEN) and not GITHUB_TOKEN:
-#   1. The push to `main` must trigger the downstream publish workflows. GitHub's
-#      anti-recursion guard suppresses workflow triggers for pushes made with the default
-#      GITHUB_TOKEN — a PAT push does trigger them.
-#   2. `main` is protected; with `enforce_admins=false` the owner-admin PAT can FF-push it
-#      while humans still cannot push `main` by hand.
+# Auth: a dedicated GitHub App (the "release bot") is the ONLY actor allowed to push `main`
+# — it is the sole bypass on main's ruleset, so no human (incl. the owner) can push `main`
+# by hand. Its installation token is minted per-run (short-lived, scoped) from two secrets,
+# RELEASE_APP_ID + RELEASE_APP_PRIVATE_KEY. App-token pushes also trigger the downstream
+# publish workflows (unlike GITHUB_TOKEN pushes, which GitHub's anti-recursion guard suppresses).
 #
 # Prep BEFORE dispatching: land a normal PR on `develop` that bumps package.json, runs
 # `node tools/sync-versions.js`, and retitles CHANGELOG `[Unreleased]` -> `[X.Y.Z]`.
@@ -30,12 +29,19 @@ jobs:
   fast-forward:
     runs-on: ubuntu-latest
     steps:
+      - name: Mint release-bot (GitHub App) token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - name: Checkout develop
         uses: actions/checkout@v4
         with:
           ref: develop
           fetch-depth: 0
-          token: ${{ secrets.RELEASE_FF_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       # All workflow_dispatch inputs / step outputs are passed via env and referenced as
       # shell variables (never interpolated into the script body) to avoid command injection.
