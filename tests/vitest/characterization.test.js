@@ -108,6 +108,31 @@ describe('characterization / invalid-args envelopes', () => {
       args: ['--timeout', 'abc', '--json'],
       tag: '--timeout abc',
     },
+    {
+      // L1 (2026-06-09 audit): dangling --isolated-cache-dir. `--json` is
+      // hoisted at main() entry, so the flag IS the last token by the time
+      // peekIsolatedFlags runs — the exact BACKLOG repro shape. Pre-fix:
+      // isolation silently OFF + lock taken + token leaked into args.
+      sub: 'parallel',
+      args: ['--isolated-cache-dir', '--json'],
+      tag: '--isolated-cache-dir (dangling)',
+    },
+    {
+      // Dangling enum flag (validator contract flip, 2026-06-10): a trailing
+      // `--test-type` with no value is invalid_flag_value instead of being
+      // silently swallowed by the pre-spawn loop.
+      sub: 'parallel',
+      args: ['--test-type', '--json'],
+      tag: '--test-type (dangling)',
+    },
+    {
+      // Dangling string flag via the VALUE_BEARING_FLAGS last-token gate:
+      // pre-fix the Windows ps1 wrapper died in parameter binding and the
+      // run surfaced as `no_summary` exit 1 (wet-reproduced 2026-06-10).
+      sub: 'parallel',
+      args: ['--device', '--json'],
+      tag: '--device (dangling)',
+    },
   ];
 
   for (const { sub, args, tag } of INVALID_CASES) {

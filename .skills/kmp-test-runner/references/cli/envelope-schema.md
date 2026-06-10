@@ -8,7 +8,7 @@ The `kmp-test` CLI emits a JSON envelope to stdout when invoked with `--json`. T
 |-------|------|-------|
 | `tool` | string | Always `"kmp-test"`. Discriminator for nested-tool scenarios. |
 | `schema_version` | number | Currently `2`. Bumped only on breaking shape changes (additive fields don't bump). |
-| `subcommand` | string | One of: `parallel`, `changed`, `android`, `benchmark`, `coverage`, `doctor`, `info`, `describe`. |
+| `subcommand` | string | One of: `parallel`, `changed`, `android`, `benchmark`, `coverage`, `doctor`, `info`, `describe`, `clean`, `update`. |
 | `version` | string | kmp-test CLI version (matches `package.json`). |
 | `project_root` | string | Absolute path to the gradle project root. |
 | `exit_code` | number | `0` SUCCESS / `1` TEST_FAIL / `2` CONFIG_ERROR / `3` ENV_ERROR. See [`exit-codes.md`](exit-codes.md). |
@@ -34,6 +34,7 @@ Exactly one subcommand-specific block is emitted per envelope, at the top level 
 | `doctor` | doctor | `{ checks[], gradle_config{} }` |
 | `info` | info | `{ node, os, platform, shell, gradlew{}, jdk{}, jdk_catalogue{}, android_sdk{}, adb{}, config{}, gradle_config{} }` |
 | `describe` | describe | `{ schema_version, cache_key, generated_at, coverage_tool, jdk_requirement, dependency_graph, modules[] }` |
+| `clean` | clean | `{ all, dry_run, targets[], removed[], failed[], bytes_freed, bytes_in_targets }` — artifact purge summary (`kmp-test clean`) |
 
 Plus the orthogonal `dry_run: true` flag (with a `plan{}` block) on any subcommand invoked with `--dry-run`.
 
@@ -105,6 +106,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `missing_shell` | any | 3 | `pwsh`/`powershell` (Windows) or `bash` (Unix) not on `PATH`. | — |
 | `no_test_modules` | parallel, changed | **2 \| 3** | No modules match the leg's test-type or `--module-filter`. | `caused_by_filter:bool` (`true` → 2, `false` → 3) |
 | `module_failed` | parallel, android | 1 | A gradle task failed. | `setup_failed:bool`, `module:string`; on `kmp-test android --capture-on-fail` or `parallel --test-type androidInstrumented --capture-on-fail`: `screenshot_file?:string`, `ui_hierarchy_file?:string`, `capture_error?:string` |
+| `spawn_error` | any | **1 \| 3** | A child process errored at the spawn layer (e.g. output exceeded `KMP_GRADLE_MAXBUFFER_MB`, default 64 MB). Orchestrator-level gradle child → exit 1; dispatcher-level wrapper spawn failure → exit 3 (env-error envelope, sibling of `missing_shell`). | orchestrator-level: `errno:string` (Node error code), `module:string` |
 | `instrumented_setup_failed` | android, parallel (`androidInstrumented`), benchmark | 3 | adb has no devices when one was required (or `--device <serial>` mismatch). | — |
 | `flavor_unused` | parallel (`androidUnit`/`androidInstrumented`/`all`) | 2 | `--flavor <name>` passed but no module on the leg is flavored (static `productFlavors {}` or probe-recovered). | — |
 | `isolated_runtime_race` | parallel | 2 | `--isolated` combined with a test-type that hits a shared runtime resource (iOS sim, ADB without `--device`, `--test-type all`). | — |
@@ -116,6 +118,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `release_resolve_failed` | update | 3 | `kmp-test update` could not resolve the latest release tag (HEAD redirect + REST API both failed). | `probe_errors: [{tier, source, message}]` — per-tier diagnostic (cert / proxy / DNS / rate-limit error message) |
 | `current_version_unresolvable` | update | 3 | `kmp-test update` could not read its own `package.json` to compare versions. | — |
 | `install_failed` | update | 3 | `kmp-test update` resolved the release but the install script exited non-zero. | `install_command: string` |
+| `clean_failed` | clean | 3 | `kmp-test clean` could not remove one or more targets under `.kmp-test-runner/` (file locks / antivirus contention). | `message` lists the offending paths |
 
 **Soft codes** (do **not** affect `exit_code` and do **not** trigger WS-5 promotion):
 
@@ -139,6 +142,15 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `partial_timeout` | benchmark | At least one benchmark module timed out but at least one other passed. Exit code stays at `0` (graded). Pass `--strict-timeouts` to restore pre-graded hard-fail behavior. | `timed_out:int`, `passed:int` |
 | `flavor_defaulted_umbrella` | parallel (`androidUnit`/`androidInstrumented`/`all`) | Project is flavored and no `--flavor` was supplied, so the leg dispatched the flavor-agnostic umbrella task (`:module:test` / `:module:connectedAndroidTest`, which run every flavor — slower). Pass `--flavor <name>` to target one. | `candidates:string[]`, `test_type:string` |
 | `gradle_config_applied` | parallel (envelope payload, not `warnings[]` entry) | Project's `gradle.properties` had `org.gradle.parallel=false` so the CLI dropped its own `--parallel` injection to respect user intent. | `parallel_dropped:bool` (on the top-level `gradle_config_applied:{}` field) |
+| `config_invalid_field` | any (runner-backed) | A `.kmp-test-runner.json` / user-global config field failed validation and was dropped — previously visible only as a stderr `[WARN]` line, invisible to `--json` consumers. | `source: "project_local" \| "user_global"` |
+| `envelope_parse_failed` | parallel, changed, android, benchmark, coverage | The orchestrator's envelope sentinel was present in stdout but its JSON did not parse (truncated/corrupted); results come from the coarser legacy output parser. | `reason: "json_parse_failed"` |
+| `log_write_failed` | android | A per-module log/logcat/errors artifact could not be written (disk full, read-only dir) — that module's `log_file`/`logcat_file`/`errors_file` pointer may be a dead link. | `path:string` |
+| `junit_xml_oversized` | parallel, changed | A `TEST-*.xml` report exceeded the size cap (default 32 MB; tunable via `KMP_JUNIT_XML_MAX_MB`) and was skipped — `tests.individual_total` undercounts and that task's `test_failures[]` may be incomplete. | `module:string`, `task:string`, `file:string`, `size_bytes:int`, `max_mb:int` |
+| `test_filter_unsupported` | benchmark | `--test-filter` was set, so jvm benchmark legs were skipped: kotlinx-benchmark tasks reject gradle's `--tests` and have no CLI filter — running unfiltered would dispatch the full suite the user narrowed. Per-module detail in `skipped[]`; the android leg still filters via `-P` instrumentation args. Narrow jvm runs with `--module-filter` or the build-script `benchmark { configurations { include(...) } }` DSL. | `platform:"jvm"`, `test_filter:string`, `skipped_modules:int` |
+| `instrumented_only_skipped` | parallel, changed | The unit / auto-detect leg skipped a module whose only test surface is instrumented (`androidInstrumentedTest` / `androidTest`). Run those tests with `--test-type androidInstrumented` (or `kmp-test android`). Suppressed under `--test-type all` (that run already targets the instrumented leg). | `module:string` |
+| `gradle_deprecation` | any | gradle exited 1 solely because of Gradle 9+ deprecation warnings while every task passed; the `BUILD FAILED` line is not duplicated to `errors[]`. | — |
+| `no_test_modules_for_leg` | parallel (`all`) | a leg matched no modules, but at least one sibling leg passed — demoted from the `no_test_modules` error to a per-leg warning. | `test_type:string` |
+| `no_adb_implies_list_only` | android, info | `--no-adb` / `KMP_TEST_SKIP_ADB` was set on the instrumented path; dispatch was skipped and the module set emitted as list-only. | — |
 
 > Like errors, future warning codes can land additively without bumping `schema_version`. Treat unrecognized codes as opaque.
 

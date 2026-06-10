@@ -6,9 +6,11 @@
 // cli.js in refactor PR-09 — its tests follow the source.
 
 import { describe, it, expect } from 'vitest';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync, readdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   isPidAlive,
@@ -222,6 +224,83 @@ describe('acquireLock', () => {
       expect(r.reason).toBe('lock_held');
     });
   });
+
+  it('unparseable-lockfile claim does NOT carry the reclaimed flag (contract)', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, '.kmp-test-runner.lock'), 'garbage{', 'utf8');
+      const r = acquireLock(dir, 'parallel', { force: false });
+      expect(r.ok).toBe(true);
+      // `reclaimed` is reserved for displacing a STALE-but-valid lock (dead
+      // PID / time-stale). Invalid JSON claims silently — same contract as
+      // the pre-exclusive-create implementation.
+      expect(r.reclaimed).toBeUndefined();
+    });
+  });
+
+  it('leaves no .lock.tmp.* sidecar behind (hard-link write path)', () => {
+    withFakeGradleProject(dir => {
+      const r = acquireLock(dir, 'parallel');
+      expect(r.ok).toBe(true);
+      const leftovers = readdirSync(dir).filter(f => f.includes('.lock.tmp.'));
+      expect(leftovers).toEqual([]);
+      // The lock itself landed with full content (atomic link — never empty).
+      expect(readLockfile(dir).pid).toBe(process.pid);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Exclusive-create acquisition — the TOCTOU race the 'wx' rewrite closes
+// ---------------------------------------------------------------------------
+describe('acquireLock exclusive-create race', () => {
+  // True 2-process race: both children attempt acquireLock against the same
+  // project dir and then HOLD (keep their event loop alive) so PID-liveness
+  // cannot reclaim mid-test. openSync('wx') is atomic at the FS layer, so
+  // regardless of interleaving exactly one child wins and the other reports
+  // lock_held. Pre-fix (read→check→writeFileSync) both could "win".
+  // Manages its own temp dir — withFakeGradleProject tears down synchronously
+  // and this test is async.
+  it('exactly one of two concurrent processes acquires; the loser gets lock_held', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-lock-race-'));
+    const lockfileUrl = pathToFileURL(
+      path.resolve('lib', 'runners', 'lockfile.js')
+    ).href;
+    const childScript = `
+      const m = await import(${JSON.stringify(lockfileUrl)});
+      const r = m.acquireLock(${JSON.stringify(dir)}, 'race-test');
+      process.stdout.write(JSON.stringify({ ok: r.ok, reason: r.reason ?? null, reclaimed: r.reclaimed ?? false }));
+      if (r.ok) setInterval(() => {}, 1000); // hold the lock (stay alive) until killed
+    `;
+    const launch = () => new Promise((res) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', childScript], {
+        stdio: ['ignore', 'pipe', 'inherit'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => {
+        out += String(d);
+        // Both outcomes print exactly one JSON object — resolve on it.
+        try { res({ child, result: JSON.parse(out) }); } catch { /* partial chunk */ }
+      });
+      child.on('error', (e) => res({ child, result: { ok: false, reason: `spawn-error:${e.message}` } }));
+    });
+
+    const [a, b] = await Promise.all([launch(), launch()]);
+    try {
+      const results = [a.result, b.result];
+      const winners = results.filter(r => r.ok === true);
+      const losers = results.filter(r => r.ok === false);
+      expect(winners.length).toBe(1);
+      expect(losers.length).toBe(1);
+      expect(losers[0].reason).toBe('lock_held');
+      // Nobody "reclaimed" — both PIDs were alive the whole time.
+      expect(winners[0].reclaimed).toBe(false);
+    } finally {
+      a.child.kill();
+      b.child.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 describe('isLockfileStaleByTime', () => {

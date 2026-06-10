@@ -306,3 +306,53 @@ EOF
     [ "$sha" = "f13a13f4af5d9e60b0b1efb1ff609aedfc88c896" ]
     rm -rf "$fix"
 }
+
+# Version-catalog additivity (schema v8): gradle/libs.versions.toml is hashed
+# after gradle.properties, before the build-file walk. Canonical toml SHA
+# mirrored byte-for-byte in tests/vitest/project-model.test.js and
+# tests/pester/Gradle-Tasks-Probe.Tests.ps1. Toml-free fixtures above keep
+# their pre-toml canonical SHAs (additive).
+
+@test "_kmp_compute_cache_key (version catalog): toml fixture produces canonical toml SHA" {
+    local fix
+    fix="$(mktemp -d)"
+    printf 'rootProject.name = "x"\nplugins { kotlin("jvm") }\n' > "$fix/settings.gradle.kts"
+    printf 'plugins { kotlin("jvm") }\n' > "$fix/build.gradle.kts"
+    mkdir -p "$fix/gradle"
+    printf '[versions]\nkotlin = "2.0.0"\n[plugins]\ndemo = { id = "com.example.demo", version.ref = "kotlin" }\n' > "$fix/gradle/libs.versions.toml"
+    source "$PROBE_LIB"
+    local sha
+    sha="$(_kmp_compute_cache_key "$fix")"
+    [ "$sha" = "8945e98482aa99c576da4ea5f3e9a56a8139d7a6" ]
+    rm -rf "$fix"
+}
+
+@test "_kmp_compute_cache_key (version catalog): CRLF toml produces SAME canonical toml SHA" {
+    local fix
+    fix="$(mktemp -d)"
+    printf 'rootProject.name = "x"\nplugins { kotlin("jvm") }\n' > "$fix/settings.gradle.kts"
+    printf 'plugins { kotlin("jvm") }\n' > "$fix/build.gradle.kts"
+    mkdir -p "$fix/gradle"
+    printf '[versions]\r\nkotlin = "2.0.0"\r\n[plugins]\r\ndemo = { id = "com.example.demo", version.ref = "kotlin" }\r\n' > "$fix/gradle/libs.versions.toml"
+    source "$PROBE_LIB"
+    local sha
+    sha="$(_kmp_compute_cache_key "$fix")"
+    [ "$sha" = "8945e98482aa99c576da4ea5f3e9a56a8139d7a6" ]
+    rm -rf "$fix"
+}
+
+@test "_kmp_compute_cache_key (version catalog): editing the toml changes the key" {
+    local fix
+    fix="$(mktemp -d)"
+    printf 'rootProject.name = "x"\nplugins { kotlin("jvm") }\n' > "$fix/settings.gradle.kts"
+    printf 'plugins { kotlin("jvm") }\n' > "$fix/build.gradle.kts"
+    mkdir -p "$fix/gradle"
+    printf '[versions]\nkotlin = "2.0.0"\n' > "$fix/gradle/libs.versions.toml"
+    source "$PROBE_LIB"
+    local before after
+    before="$(_kmp_compute_cache_key "$fix")"
+    printf '[versions]\nkotlin = "2.1.0"\n' > "$fix/gradle/libs.versions.toml"
+    after="$(_kmp_compute_cache_key "$fix")"
+    [ "$before" != "$after" ]
+    rm -rf "$fix"
+}

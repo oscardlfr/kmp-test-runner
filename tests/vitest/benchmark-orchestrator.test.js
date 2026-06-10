@@ -314,20 +314,69 @@ describe('runBenchmark empty-result regression', () => {
 // Case 5 — `--test-filter` resolution
 // ---------------------------------------------------------------------------
 describe('runBenchmark --test-filter', () => {
-  it('jvm: passes through to gradle --tests verbatim (gradle handles globs)', async () => {
+  // Premise rewrite (L7, 2026-06-10): this test previously asserted the jvm
+  // leg passes `--tests` through to gradle — wet-DISPROVEN on a reference
+  // composite: kotlinx-benchmark BenchmarkExec tasks reject `--tests`
+  // ("Unknown command-line option '--tests'" → module_failed). The jvm leg
+  // now SKIPS filtered cells (never runs the un-narrowed suite, never emits
+  // a flag gradle rejects).
+  it('jvm: --test-filter skips the leg with skipped[] + test_filter_unsupported warning, no gradle spawn', async () => {
     const dir = copyFixture();
     const spawn = makeSpawnStub();
 
-    await runBenchmark({
+    const { envelope, exitCode } = await runBenchmark({
       projectRoot: dir,
       args: ['--platform', 'jvm', '--test-filter', '*ScaleBenchmark*'],
       spawn,
       adbProbe: () => [],
     });
 
-    const args = effectiveGradleArgs(spawn.calls[0]);
-    expect(args).toContain('--tests');
-    expect(args).toContain('*ScaleBenchmark*');
+    // No gradle dispatched for the filtered jvm leg.
+    expect(spawn.calls.length).toBe(0);
+    const skips = envelope.skipped.filter(s =>
+      s.reason.includes('--test-filter not supported by kotlinx-benchmark'));
+    expect(skips.length).toBeGreaterThan(0);
+    const w = envelope.warnings.filter(x => x.code === 'test_filter_unsupported');
+    expect(w).toHaveLength(1);
+    expect(w[0].platform).toBe('jvm');
+    expect(w[0].test_filter).toBe('*ScaleBenchmark*');
+    expect(w[0].skipped_modules).toBe(skips.length);
+    expect(w[0].message).toContain('benchmark { configurations { include(...) } }');
+    // Capable modules exist but every cell was an intentional skip → the
+    // aggregate path treats it like the KMP_TEST_SKIP_ADB opt-out: exit 0.
+    expect(exitCode).toBe(0);
+  });
+
+  it('jvm: warning is pushed ONCE even when multiple jvm modules skip', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+
+    const { envelope } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--test-filter', 'X'],  // default platform → jvm cells skip, android cells follow adb
+      spawn,
+      adbProbe: () => [],
+    });
+
+    expect(envelope.warnings.filter(x => x.code === 'test_filter_unsupported')).toHaveLength(1);
+  });
+
+  it('jvm: no filter → leg still dispatches (skip is filter-gated only)', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+
+    const { envelope } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    expect(spawn.calls.length).toBeGreaterThan(0);
+    expect(envelope.warnings.filter(x => x.code === 'test_filter_unsupported')).toHaveLength(0);
+    // And the dispatched args never contain --tests in any shape.
+    const allArgs = spawn.calls.flatMap(c => c.args).join(' ');
+    expect(allArgs).not.toContain('--tests');
   });
 
   it('android: emits -Pandroid.testInstrumentationRunnerArguments.class= with FQN', async () => {
@@ -1082,5 +1131,87 @@ describe('runBenchmark graded partial-timeout exit (PR 3.2 / A10)', () => {
     expect(envelope.benchmark.passed).toBe(0);
     expect(envelope.benchmark.timed_out).toBeGreaterThanOrEqual(2);
     expect(envelope.warnings.find(w => w.code === 'partial_timeout')).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// spawn_error discrimination (spawn-layer failures vs ordinary module_failed)
+// ---------------------------------------------------------------------------
+describe('runBenchmark spawn_error discrimination', () => {
+  it('surfaces a spawn-layer error as spawn_error with errno + maxBuffer hint', async () => {
+    const dir = copyFixture();
+    const overflow = Object.assign(new Error('stdout maxBuffer length exceeded'), {
+      code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+    });
+    const spawn = (cmd, args) => {
+      spawn.calls.push({ cmd, args: [...args] });
+      return { status: null, stdout: 'partial', stderr: '', signal: null, error: overflow };
+    };
+    spawn.calls = [];
+
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    expect(exitCode).not.toBe(0);
+    const err = envelope.errors.find(e => e.code === 'spawn_error');
+    expect(err).toBeTruthy();
+    expect(err.errno).toBe('ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+    expect(err.message).toContain('KMP_GRADLE_MAXBUFFER_MB');
+    expect(envelope.errors.find(e => e.code === 'module_failed')).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Convention-plugin benchmark discovery (build-logic descriptors)
+// ---------------------------------------------------------------------------
+// Wet finding on the reference composite: kotlinx-benchmark applied through a
+// build-logic convention plugin (custom id) was invisible to the literal
+// markers — `kmp-test benchmark` discovered 0 modules on a project where the
+// v0.8-era direct application used to work. Discovery now expands a module's
+// convention plugin ids via parseBuildLogicPluginDescriptors.appliedPlugins.
+describe('discoverBenchmarkModules via build-logic convention plugin', () => {
+  it('discovers + dispatches a module whose benchmark plugin comes from a convention descriptor', async () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-bench-conv-'));
+    writeFileSync(path.join(workDir, 'settings.gradle.kts'),
+      'rootProject.name = "conv"\ninclude(":bench-mod")\n');
+    mkdirSync(path.join(workDir, 'bench-mod'), { recursive: true });
+    // The module applies ONLY the custom convention id — no literal
+    // kotlinx.benchmark marker anywhere in its build file.
+    writeFileSync(path.join(workDir, 'bench-mod', 'build.gradle.kts'),
+      'plugins {\n    id("com.acme.kmp.benchmark")\n}\n');
+    mkdirSync(path.join(workDir, 'build-logic', 'src', 'main', 'kotlin'), { recursive: true });
+    writeFileSync(path.join(workDir, 'build-logic', 'build.gradle.kts'),
+      'gradlePlugin {\n    plugins {\n        register("kmpBenchmark") {\n'
+      + '            id = "com.acme.kmp.benchmark"\n'
+      + '            implementationClass = "AcmeBenchmarkConventionPlugin"\n'
+      + '        }\n    }\n}\n');
+    writeFileSync(
+      path.join(workDir, 'build-logic', 'src', 'main', 'kotlin', 'AcmeBenchmarkConventionPlugin.kt'),
+      'class AcmeBenchmarkConventionPlugin : Plugin<Project> {\n'
+      + '    override fun apply(target: Project) {\n'
+      + '        target.pluginManager.apply("org.jetbrains.kotlinx.benchmark")\n'
+      + '    }\n}\n');
+    writeFileSync(path.join(workDir, 'gradlew'), '#!/usr/bin/env bash\nexit 0\n');
+    writeFileSync(path.join(workDir, 'gradlew.bat'), '@echo off\r\nexit /b 0\r\n');
+
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: workDir,
+      args: ['--platform', 'jvm', '--config', 'smoke'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    expect(exitCode).toBe(0);
+    expect(envelope.modules).toContain('bench-mod');
+    expect(envelope.tests.passed).toBe(1);
+    expect(envelope.errors).toEqual([]);
+    // The dispatched task is the jvm smoke benchmark task.
+    const gradleCalls = spawn.calls.filter(c => isGradleCall(c));
+    expect(effectiveGradleArgs(gradleCalls[0])).toContain(':bench-mod:desktopSmokeBenchmark');
   });
 });

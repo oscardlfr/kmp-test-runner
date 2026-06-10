@@ -1,5 +1,5 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, rmSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -30,6 +30,7 @@ import {
   getIgnoreJdkMismatch,
   findRequiredJdkVersion,
   preflightJdkCheck,
+  readGradleJavaHome,
   jdkMismatchHint,
   lockfilePath,
   readLockfile,
@@ -51,6 +52,7 @@ import {
   parseGradleConfig,
   parseGradleTimeoutMs,
   DEFAULT_GRADLE_TIMEOUT_MS,
+  extractMigratedEnvelopeDetailed,
 } from '../../lib/cli.js';
 import { withFakeGradleProject, DEAD_PID } from './_test-helpers.js';
 
@@ -858,12 +860,24 @@ describe('consumeTestFilter', () => {
     expect(pattern).toBe('B');
     expect(args).toEqual([]);
   });
-  it('does not consume --test-filter without a value', () => {
-    // Trailing flag with no value: no value to capture, flag swallowed (defensive).
-    const { args, pattern } = consumeTestFilter(['--test-filter']);
+  // Contract flip (dangling-flag normalization, 2026-06-10): pre-fix the
+  // value-less flag was PRESERVED in args and leaked downstream to the
+  // wrapper. Now it is stripped and reported via errors[] so cli.js can
+  // reject with invalid_flag_value before any spawn.
+  it('strips a dangling --test-filter and reports it via errors[]', () => {
+    const { args, pattern, errors } = consumeTestFilter(['--test-filter']);
     expect(pattern).toBeNull();
-    // Edge: unconsumed value-less flag is preserved (loop hits last index without next).
-    expect(args).toEqual(['--test-filter']);
+    expect(args).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      code: 'invalid_flag_value',
+      flag: '--test-filter',
+      value: null,
+    });
+  });
+  it('errors is [] on every happy path', () => {
+    expect(consumeTestFilter([]).errors).toEqual([]);
+    expect(consumeTestFilter(['--test-filter', 'A']).errors).toEqual([]);
   });
 });
 
@@ -1249,6 +1263,59 @@ describe('runDoctorChecks', () => {
     });
   });
 
+  // L4 (2026-06-09 audit) — `gradle java.home` row states. No row when the
+  // property is unset; WARN on tilde (gradle does not expand it) and on a
+  // missing path; OK when set and existing.
+  it('L4: no `gradle java.home` row when org.gradle.java.home is unset', () => {
+    spawnMock.mockImplementation((cmd) => {
+      if (cmd === 'java') return { status: 0, stderr: 'openjdk version "17.0.1"\n' };
+      return { status: 0 };
+    });
+    withFakeGradleProject(dir => {
+      const { checks } = runDoctorChecks(dir);
+      expect(checks.find(c => c.name === 'gradle java.home')).toBeUndefined();
+    });
+  });
+
+  it('L4: tilde value → WARN row "Gradle does not expand ~"', () => {
+    spawnMock.mockImplementation((cmd) => {
+      if (cmd === 'java') return { status: 0, stderr: 'openjdk version "17.0.1"\n' };
+      return { status: 0 };
+    });
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=~/jdk-17\n');
+      const { checks } = runDoctorChecks(dir);
+      const row = checks.find(c => c.name === 'gradle java.home');
+      expect(row).toBeTruthy();
+      expect(row.status).toBe('WARN');
+      expect(row.value).toBe('~/jdk-17');
+      expect(row.message).toContain('does not expand ~');
+    });
+  });
+
+  it('L4: set-but-missing path → WARN row; set-and-existing → OK row', () => {
+    spawnMock.mockImplementation((cmd) => {
+      if (cmd === 'java') return { status: 0, stderr: 'openjdk version "17.0.1"\n' };
+      return { status: 0 };
+    });
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=/nonexistent/jdk\n');
+      let { checks } = runDoctorChecks(dir);
+      let row = checks.find(c => c.name === 'gradle java.home');
+      expect(row.status).toBe('WARN');
+      expect(row.message).toContain('does not exist');
+
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        `org.gradle.java.home=${dir}\n`);
+      ({ checks } = runDoctorChecks(dir));
+      row = checks.find(c => c.name === 'gradle java.home');
+      expect(row.status).toBe('OK');
+      expect(row.value).toBe(dir);
+    });
+  });
+
   // v0.8.0 BACKLOG #6 + #9 — closes the macos-latest bats hang where the
   // adb client inherits Node's pipe FDs and prevents bats from reaching
   // pipe EOF on suite exit. test-doctor.bats / test-concurrency.bats now
@@ -1598,7 +1665,9 @@ describe('main() — Phase 4 step 7 (eager ProjectModel build before spawn)', ()
       const modelFiles = readdirSync(cacheDir).filter(f => f.startsWith('model-') && f.endsWith('.json'));
       expect(modelFiles.length).toBeGreaterThan(0);
       const model = JSON.parse(readFileSync(path.join(cacheDir, modelFiles[0]), 'utf8'));
-      expect(model.schemaVersion).toBe(7);
+      // Hardcoded on purpose — forces a conscious edit on every SCHEMA bump.
+      // 7 → 8: gradle/libs.versions.toml joined the cache-key input set.
+      expect(model.schemaVersion).toBe(8);
       expect(model.settingsIncludes).toEqual([':m']);
       expect(model.modules[':m'].type).toBe('jvm');
     });
@@ -2598,6 +2667,47 @@ describe('preflightJdkCheck', () => {
     });
   });
 
+  // L4 (2026-06-09 audit) — `~` in org.gradle.java.home. Gradle does NOT
+  // expand it, and pre-fix the gate silently treated the value as unset
+  // (existsSync('~/jdk') false → fall-through, no diagnosis). Now: one
+  // stderr [WARN], then the signal-based gate still applies (deliberately
+  // NOT expanded — expanding would suppress kmp-test's gate for a build
+  // gradle rejects anyway).
+  it('L4: tilde value warns on stderr and still falls through to the signal gate', () => {
+    withFakeKmpProject(17, dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=~/jdk-17\n');
+      mockJavaVersion(11); // host below floor → gate must STILL fire
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const result = preflightJdkCheck(dir);
+        expect(result).toEqual({ kind: 'mismatch', required: 17, current: 11, agpVersion: null });
+        const warns = stderrSpy.mock.calls.filter(c =>
+          String(c[0]).includes("org.gradle.java.home starts with '~'"));
+        expect(warns).toHaveLength(1);
+      } finally {
+        stderrSpy.mockRestore();
+      }
+    });
+  });
+
+  it('L4: non-tilde missing path does NOT emit the tilde warn (fall-through only)', () => {
+    withFakeKmpProject(17, dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=/nonexistent/jdk\n');
+      mockJavaVersion(17);
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        preflightJdkCheck(dir);
+        const warns = stderrSpy.mock.calls.filter(c =>
+          String(c[0]).includes("starts with '~'"));
+        expect(warns).toHaveLength(0);
+      } finally {
+        stderrSpy.mockRestore();
+      }
+    });
+  });
+
   it('returns mismatch info when jvmToolchain != current java major (host BELOW floor)', () => {
     // v0.8.0 fix-PR-B: result is now a tagged union; `kind: 'mismatch'` fires
     // only when host < floor. (Pre-fix host=23 + jvmToolchain(17) returned
@@ -2651,6 +2761,49 @@ describe('preflightJdkCheck', () => {
       });
       // 1.8 → major 8, equals required → null
       expect(preflightJdkCheck(dir)).toBeNull();
+    });
+  });
+});
+
+// L4 (2026-06-09 audit) — the single gradle.properties org.gradle.java.home
+// reader shared by preflightJdkCheck and lib/commands/doctor.js.
+describe('readGradleJavaHome (L4 single reader)', () => {
+  it('returns null when gradle.properties is absent or property unset', () => {
+    withFakeGradleProject(dir => {
+      expect(readGradleJavaHome(dir)).toBeNull();
+      writeFileSync(path.join(dir, 'gradle.properties'), 'org.gradle.parallel=true\n');
+      expect(readGradleJavaHome(dir)).toBeNull();
+    });
+  });
+
+  it('returns raw + exists:true for an absolute existing path', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        `org.gradle.java.home=${dir}\n`);
+      expect(readGradleJavaHome(dir)).toEqual({ raw: dir, exists: true, hasTilde: false });
+    });
+  });
+
+  it('returns exists:false for an absolute missing path', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=/nonexistent/jdk\n');
+      expect(readGradleJavaHome(dir)).toEqual({
+        raw: '/nonexistent/jdk', exists: false, hasTilde: false,
+      });
+    });
+  });
+
+  it('flags hasTilde for `~/...` and bare `~user` forms, verbatim raw (no expansion)', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=~/jdk-17\n');
+      expect(readGradleJavaHome(dir)).toEqual({
+        raw: '~/jdk-17', exists: false, hasTilde: true,
+      });
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=~bob/jdk\n');
+      expect(readGradleJavaHome(dir)).toMatchObject({ raw: '~bob/jdk', hasTilde: true });
     });
   });
 });
@@ -2940,7 +3093,15 @@ describe('main() — JDK gate integration', () => {
           c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
         );
         expect(scriptCall).toBeTruthy();
-        expect(scriptCall[2]?.env?.JAVA_HOME).toBeUndefined();
+        // No JAVA_HOME OVERRIDE — host preserved. The dispatcher may pass an
+        // explicit env for unrelated threading (KMP_ORIGINATING_SUBCOMMAND
+        // spreads process.env); in that case JAVA_HOME is the verbatim host
+        // inheritance, never the catalogue path the bug used to inject.
+        const spawnedJavaHome = scriptCall[2]?.env?.JAVA_HOME;
+        if (spawnedJavaHome !== undefined) {
+          expect(spawnedJavaHome).toBe(process.env.JAVA_HOME);
+        }
+        expect(spawnedJavaHome).not.toBe('/fake/jdk-17');
       });
     });
 
@@ -3398,7 +3559,9 @@ describe('main() — lockfile integration', () => {
 describe('peekIsolatedFlags', () => {
   it('returns disabled defaults when no --isolated* flag is present', () => {
     const r = peekIsolatedFlags(['parallel', '--project-root', '/x', '--variant', 'debug']);
-    expect(r).toEqual({ enabled: false, cacheDir: null, noLock: false });
+    // errors: [] is the L1 dangling-flag fix's additive key (PR 1 of the
+    // 2026-06-09 LOW-tier audit train).
+    expect(r).toEqual({ enabled: false, cacheDir: null, noLock: false, errors: [] });
   });
 
   it('detects bare --isolated', () => {
@@ -3430,6 +3593,41 @@ describe('peekIsolatedFlags', () => {
     expect(r.enabled).toBe(true);
     expect(r.cacheDir).toBe('/tmp/x');
     expect(r.noLock).toBe(false);
+  });
+
+  // L1 (2026-06-09 audit) — dangling `--isolated-cache-dir` (last token, no
+  // value) pre-fix silently left isolation OFF while the Tier 1 lock was
+  // still taken and the flag leaked into orchestrator args. Now it surfaces
+  // an invalid_flag_value error; cli.js rejects before the acquireLock
+  // decision.
+  it('L1: dangling --isolated-cache-dir (last token) pushes invalid_flag_value and does NOT enable isolation', () => {
+    const r = peekIsolatedFlags(['--project-root', '/x', '--isolated-cache-dir']);
+    expect(r.enabled).toBe(false);
+    expect(r.cacheDir).toBe(null);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].code).toBe('invalid_flag_value');
+    expect(r.errors[0].flag).toBe('--isolated-cache-dir');
+    expect(r.errors[0].value).toBe(null);
+  });
+
+  it('L1: explicit-empty value (pre-expanded `--isolated-cache-dir=`) pushes invalid_flag_value', () => {
+    // cli.js#main expands `--isolated-cache-dir=` to ['--isolated-cache-dir', '']
+    // before the peek — assert on the post-expansion shape it actually sees.
+    const r = peekIsolatedFlags(['--isolated-cache-dir', '', '--project-root', '/x']);
+    expect(r.enabled).toBe(false);
+    expect(r.cacheDir).toBe(null);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].code).toBe('invalid_flag_value');
+    expect(r.errors[0].value).toBe('');
+  });
+
+  it('L1: dangling --isolated-cache-dir does not mask other isolated flags seen earlier', () => {
+    const r = peekIsolatedFlags(['--isolated-no-lock', '--isolated-cache-dir']);
+    // The dangling error is independent: noLock/enabled from the earlier flag
+    // survive, and cli.js still rejects on errors[] before the lock decision.
+    expect(r.noLock).toBe(true);
+    expect(r.enabled).toBe(true);
+    expect(r.errors).toHaveLength(1);
   });
 });
 
@@ -3513,6 +3711,187 @@ describe('android subcommand — v0.5.1 Bug B\' (--device-task flag)', () => {
 
   it('translateFlagForPowerShell: --device-task -> -DeviceTask', () => {
     expect(translateFlagForPowerShell('--device-task')).toBe('-DeviceTask');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Artifact-sweep wiring + `kmp-test clean`
+// ---------------------------------------------------------------------------
+describe('artifact sweep wiring (dispatchScriptCommand)', () => {
+  function makeStaleIsolated(dir) {
+    const iso = path.join(dir, '.kmp-test-runner', 'cache-isolated', '111-222');
+    mkdirSync(iso, { recursive: true });
+    writeFileSync(path.join(iso, 'junk.bin'), 'x');
+    const t = (Date.now() - 2 * 24 * 60 * 60 * 1000) / 1000;
+    utimesSync(iso, t, t);
+    return iso;
+  }
+
+  it('a parallel run sweeps stale disposables after acquiring the lock', () => {
+    spawnMock.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    withFakeGradleProject(dir => {
+      const iso = makeStaleIsolated(dir);
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+      main();
+      expect(existsSync(iso)).toBe(false);
+    });
+  });
+
+  it('KMP_TEST_NO_SWEEP=1 disables the auto-sweep', () => {
+    spawnMock.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    const prev = process.env.KMP_TEST_NO_SWEEP;
+    process.env.KMP_TEST_NO_SWEEP = '1';
+    try {
+      withFakeGradleProject(dir => {
+        const iso = makeStaleIsolated(dir);
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir];
+        main();
+        expect(existsSync(iso)).toBe(true);
+      });
+    } finally {
+      if (prev === undefined) delete process.env.KMP_TEST_NO_SWEEP;
+      else process.env.KMP_TEST_NO_SWEEP = prev;
+    }
+  });
+});
+
+describe('kmp-test clean', () => {
+  it('--dry-run --json lists targets without deleting', () => {
+    withFakeGradleProject(dir => {
+      const logRun = path.join(dir, '.kmp-test-runner', 'logs', 'android', 'r1');
+      mkdirSync(logRun, { recursive: true });
+      writeFileSync(path.join(logRun, 'a.log'), 'x');
+
+      const captured = [];
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+      let code;
+      try {
+        process.argv = ['node', 'kmp-test.js', 'clean', '--dry-run', '--json', '--project-root', dir];
+        code = main();
+      } finally {
+        process.stdout.write = origWrite;
+      }
+      expect(code).toBe(EXIT.SUCCESS);
+      const json = JSON.parse(captured.join('').trim());
+      expect(json.subcommand).toBe('clean');
+      expect(json.clean.dry_run).toBe(true);
+      expect(json.clean.targets.length).toBe(1);
+      expect(json.clean.removed).toEqual([]);
+      expect(existsSync(logRun)).toBe(true);
+    });
+  });
+
+  it('removes run artifacts; --all also purges the model cache', () => {
+    withFakeGradleProject(dir => {
+      const logRun = path.join(dir, '.kmp-test-runner', 'logs', 'android', 'r1');
+      mkdirSync(logRun, { recursive: true });
+      writeFileSync(path.join(logRun, 'a.log'), 'x');
+      const model = path.join(dir, '.kmp-test-runner', 'cache', 'model-x.json');
+      mkdirSync(path.dirname(model), { recursive: true });
+      writeFileSync(model, '{}');
+
+      process.argv = ['node', 'kmp-test.js', 'clean', '--project-root', dir];
+      expect(main()).toBe(EXIT.SUCCESS);
+      expect(existsSync(logRun)).toBe(false);
+      expect(existsSync(model)).toBe(true); // default scope keeps the cache
+
+      process.argv = ['node', 'kmp-test.js', 'clean', '--all', '--project-root', dir];
+      expect(main()).toBe(EXIT.SUCCESS);
+      expect(existsSync(model)).toBe(false);
+    });
+  });
+
+  it('refuses with lock_held while another live process holds the lock', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, '.kmp-test-runner.lock'), JSON.stringify({
+        schema: 1, pid: process.pid, start_time: new Date().toISOString(),
+        subcommand: 'parallel', project_root: dir, version: 'x',
+      }), 'utf8');
+
+      const captured = [];
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (c) => { captured.push(String(c)); return true; };
+      let code;
+      try {
+        process.argv = ['node', 'kmp-test.js', 'clean', '--json', '--project-root', dir];
+        code = main();
+      } finally {
+        process.stdout.write = origWrite;
+      }
+      expect(code).toBe(EXIT.ENV_ERROR);
+      const json = JSON.parse(captured.join('').trim());
+      expect(json.errors[0].code).toBe('lock_held');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// envelope_parse_failed — degraded migrated-envelope fallback discrimination
+// ---------------------------------------------------------------------------
+describe('extractMigratedEnvelopeDetailed', () => {
+  it('sentinel absent → { envelope: null, sentinelSeen: false }', () => {
+    const r = extractMigratedEnvelopeDetailed('plain legacy output\n');
+    expect(r.envelope).toBeNull();
+    expect(r.sentinelSeen).toBe(false);
+  });
+
+  it('sentinel present + corrupt JSON → { envelope: null, sentinelSeen: true }', () => {
+    const r = extractMigratedEnvelopeDetailed(
+      '__KMP_TEST_ENVELOPE_V1_BEGIN__\ngarbage{\n__KMP_TEST_ENVELOPE_V1_END__\n'
+    );
+    expect(r.envelope).toBeNull();
+    expect(r.sentinelSeen).toBe(true);
+  });
+
+  it('sentinel present + valid JSON → parsed envelope', () => {
+    const r = extractMigratedEnvelopeDetailed(
+      '__KMP_TEST_ENVELOPE_V1_BEGIN__\n{"tool":"kmp-test"}\n__KMP_TEST_ENVELOPE_V1_END__\n'
+    );
+    expect(r.envelope).toEqual({ tool: 'kmp-test' });
+    expect(r.sentinelSeen).toBe(true);
+  });
+});
+
+describe('dispatcher envelope_parse_failed fallback (e2e via main)', () => {
+  it('corrupt sentinel block falls back to the legacy parser WITH a discriminable warning', () => {
+    spawnMock.mockReturnValue({
+      status: 0,
+      stdout: '__KMP_TEST_ENVELOPE_V1_BEGIN__\ngarbage{\n__KMP_TEST_ENVELOPE_V1_END__\n',
+      stderr: '',
+    });
+    withFakeGradleProject(dir => {
+      const captured = [];
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (c) => { captured.push(String(c)); return true; };
+      try {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+        main();
+      } finally {
+        process.stdout.write = origWrite;
+      }
+      const json = JSON.parse(captured.join('').trim());
+      const w = (json.warnings || []).find(x => x.code === 'envelope_parse_failed');
+      expect(w).toBeTruthy();
+      expect(w.reason).toBe('json_parse_failed');
+    });
+  });
+
+  it('sentinel-absent legacy output stays silent (no envelope_parse_failed)', () => {
+    spawnMock.mockReturnValue({ status: 0, stdout: 'plain output\n', stderr: '' });
+    withFakeGradleProject(dir => {
+      const captured = [];
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (c) => { captured.push(String(c)); return true; };
+      try {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+        main();
+      } finally {
+        process.stdout.write = origWrite;
+      }
+      const json = JSON.parse(captured.join('').trim());
+      expect((json.warnings || []).find(x => x.code === 'envelope_parse_failed')).toBeUndefined();
+    });
   });
 });
 

@@ -1,6 +1,6 @@
 # Benchmarks — `kmp-test benchmark`
 
-Run benchmark suites (kotlinx-benchmark on JVM, androidx-benchmark on Android, JMH variants when the project uses them) with real `Dispatchers.Default` contention. Adaptive timeouts per profile. `--test-filter` narrowing is **strongly recommended** for any agent-driven run.
+Run benchmark suites (kotlinx-benchmark on JVM, androidx-benchmark on Android, JMH variants when the project uses them) with real `Dispatchers.Default` contention. Adaptive timeouts per profile. Narrowing is **strongly recommended** for any agent-driven run: `--module-filter` + `--config smoke` on jvm legs; `--test-filter` additionally narrows the android leg (jvm benchmark tasks have no per-test CLI filter — see step 2 below).
 
 ## Goal
 
@@ -11,7 +11,7 @@ Dispatch every module that has a benchmark plugin applied, run the configured pr
 The agent should dispatch `kmp-test benchmark` when the user asks any of:
 
 - "Run benchmarks" / "run the benchmark suite"
-- "Run a specific benchmark" — combine with `--test-filter <FQN>#<method>`
+- "Run a specific benchmark" — `--test-filter <FQN>#<method>` narrows the **android** leg; for jvm benchmarks narrow with `--module-filter` instead (jvm legs skip under `--test-filter` — see step 2)
 - "Smoke benchmark this PR" — `--config smoke` (default; ~30 s/module)
 - "Full benchmark run" — `--config main` (~5 min/module) or `--config stress` (~longer)
 - "Benchmark on the JVM only" / "on the device only" — narrow with `--platform jvm` / `--platform android`
@@ -25,16 +25,16 @@ Do **not** dispatch `benchmark` for:
 ## Quickstart
 
 ```bash
-kmp-test benchmark --config smoke --test-filter "com.example.UserBenchmark#fastPath" --json
+kmp-test benchmark --config smoke --module-filter "core-perf*" --json
 ```
 
-The `--test-filter` is **almost always required** for agent invocations — full suites take 30 min to 4 h depending on size. Smoke profile with a single-method filter usually completes in 1-3 min.
+Narrowing is **almost always required** for agent invocations — full suites take 30 min to 4 h depending on size. Smoke profile narrowed to one module usually completes in minutes.
 
 That command:
 
 1. Probes for modules applying `org.jetbrains.kotlinx.benchmark`, `androidx.benchmark.microbenchmark`, `androidx.benchmark.macrobenchmark`, or `org.jetbrains.kotlin.plugin.allopen` (the kotlinx-benchmark companion).
-2. Resolves the test-filter pattern per-platform:
-   - JVM legs: `gradle --tests "<pattern>"` natively.
+2. Applies `--test-filter` per-platform:
+   - **JVM legs: SKIPPED when `--test-filter` is set.** kotlinx-benchmark tasks reject gradle's `--tests` and expose no CLI filter — running unfiltered would dispatch the full suite the user tried to narrow. Skipped cells land in `skipped[]` plus one `warnings[].code: "test_filter_unsupported"` entry. To run a subset of jvm benchmarks: `--module-filter`, or configure `benchmark { configurations { include("<regex>") } }` in the build script.
    - Android-instrumented legs: source-scan resolves wildcards to FQN, then emits the canonical AGP form `-Pandroid.testInstrumentationRunnerArguments.class=<FQN>#<method>`.
 3. Auto-selects a compatible JDK — kotlinx-benchmark's JMH bytecode generator **requires JDK 21+**, even for projects whose runtime target is JDK 17. See troubleshooting `unsupported_class_version`.
 4. Dispatches with the profile's per-task timeout (`smoke=300s`, `main=1800s`, `stress=3600s` — see `--timeout`).
@@ -50,7 +50,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags
 | `--config <name>` | `smoke` | `smoke` / `main` / `stress`. Controls per-iteration count + per-task gradle watchdog timeout. |
 | `--platform <name>` | `all` | `all` / `jvm` / `android`. Narrow to one platform when the user only cares about that side. |
 | `--module-filter <pattern>` | `*` | Glob, comma-separated. **Strongly recommended** to narrow to specific benchmark modules. |
-| `--test-filter <pattern>` | none | **Critical for agent invocations.** Filter to a single benchmark class or method. Wildcard pattern `*UserBenchmark*` resolves to FQN by source scan (Android); JVM uses gradle's native `--tests`. `Class#method` form is honored verbatim across both platforms. |
+| `--test-filter <pattern>` | none | **Android leg only.** Filter to a single benchmark class or method; wildcard pattern `*UserBenchmark*` resolves to FQN by source scan. **jvm legs SKIP under this flag** (kotlinx-benchmark rejects `--tests`; `skipped[]` + `test_filter_unsupported` warning) — narrow jvm runs with `--module-filter` instead. |
 | `--include-shared` | off | Include sibling shared-libs benchmark modules (composite-build context). |
 | `--variant <auto\|debug\|release\|all>` | `auto` | Android variant selector for instrumented benchmarks. JVM benchmarks ignore this flag (no Debug/Release split for `desktopBenchmark`). |
 | `--timeout <seconds>` | per-config default | Per-task gradle watchdog. Overrides `KMP_GRADLE_TIMEOUT_MS` and the per-config default. `0` disables. Precedence: `--ignore-gradle-timeout` > `--timeout` > `KMP_GRADLE_TIMEOUT_MS` > config default. |
@@ -95,11 +95,11 @@ Per `lib/orchestrators/benchmark-orchestrator.js`, a module qualifies as "has be
 
 Modules without any of these are silently skipped (no `[SKIP]` line, no `skipped[]` entry — benchmark modules are explicitly opted-in). `errors[].code: no_test_modules` fires only when the filter narrows to zero qualifying modules.
 
-### `--test-filter` resolution
+### `--test-filter` resolution (android leg)
 
-The orchestrator handles three input shapes:
+jvm legs skip under `--test-filter` (see step 2 above); the resolution below applies to the android-instrumented leg. The orchestrator handles three input shapes:
 
-1. **Literal FQN with method**: `com.example.UserBench#fastPath` → passes verbatim to gradle (JVM) or as `-Pandroid.testInstrumentationRunnerArguments.class=com.example.UserBench#fastPath` (Android).
+1. **Literal FQN with method**: `com.example.UserBench#fastPath` → emitted as `-Pandroid.testInstrumentationRunnerArguments.class=com.example.UserBench#fastPath`.
 2. **Literal FQN without method**: `com.example.UserBench` → runs every `@Benchmark` method on the class.
 3. **Wildcard pattern**: `*UserBench*` → source-walk every `.kt` file (skipping `build/`, `.gradle/`, `node_modules/`, `.git/`) for a `class UserBench` declaration, substitute the FQN, then dispatch.
 
@@ -115,11 +115,11 @@ The wrapper applies an outer `setTimeout` on the spawn (`resolveBenchmarkOuterTi
 - `main` → 60 min
 - `stress` → 90 min
 
-This is independent of the per-task gradle watchdog. The outer kicks in when the total run exceeds the cap — usually a sign that someone forgot `--test-filter`. The envelope's `errors[]` will then carry a watchdog-style entry.
+This is independent of the per-task gradle watchdog. The outer kicks in when the total run exceeds the cap — usually a sign the run wasn't narrowed (`--module-filter` / `--config smoke`). The envelope's `errors[]` will then carry a watchdog-style entry.
 
 ## Edge cases
 
-- **Full suite without `--test-filter` on a 70-module project**: takes up to 4 h. Agent runs MUST narrow with `--test-filter` (memory rule: `feedback_dipatternsdemo_benchmarks_must_be_narrowed.md`). If the user truly wants a full run, escalate the decision before dispatching.
+- **Un-narrowed full suite on a 70-module project**: takes up to 4 h. Agent runs MUST narrow — `--module-filter` + `--config smoke` (jvm), plus `--test-filter` on the android leg. If the user truly wants a full run, escalate the decision before dispatching.
 - **kotlinx-benchmark + JDK 17**: surfaces `errors[].code: unsupported_class_version` because the JMH bytecode generator (`JmhBytecodeGeneratorWorker`) is compiled against JDK 21. Recovery: ensure a JDK 21+ install is in `~/.kmp-test/config.json java_home` or pass `--java-home <jdk21-path>`.
 - **`--platform android` without a connected device**: emits `errors[].code: instrumented_setup_failed` (exit 3) at dispatch. Recovery: check `adb devices`, or use `--platform jvm` to skip the Android leg.
 - **`--platform jvm` on an Android-only project**: emits `errors[].code: no_test_modules` because no JVM benchmark module qualifies. Recovery: use `--platform android` or `--platform all`.

@@ -932,6 +932,54 @@ describe('resolveProjectsConfig', () => {
     expect(resolveProjectsConfig({})).toBeNull();
     expect(resolveProjectsConfig({ conventionalPath: '/nonexistent.json' })).toBeNull();
   });
+
+  // Sharp edge (v0.10.1 re-measure): an explicit --project-root must disable
+  // the CONVENTIONAL auto-detect — main() passes conventionalPath: null in
+  // that case. Explicit cli/env sources still win (deliberate multi-project
+  // requests).
+  it('conventionalPath: null (explicit --project-root) suppresses auto-detect but not cli/env', () => {
+    tmp = mkdtempSync(path.join(tmpdir(), 'kmp-projects-'));
+    const conv = path.join(tmp, 'conv.json');
+    writeFileSync(conv, JSON.stringify([{ path: '/x', label: 'conv', bucket: 'large' }]));
+    // Auto-detect suppressed → null even though the conventional file exists.
+    expect(resolveProjectsConfig({ conventionalPath: null })).toBeNull();
+    // Deliberate env request still resolves with conventionalPath null.
+    expect(resolveProjectsConfig({ envValue: '/e|env|medium', conventionalPath: null }))
+      .toEqual([{ path: '/e', label: 'env', bucket: 'medium' }]);
+  });
+});
+
+describe('countTokensCl100k — chunked path (js-tiktoken large-string crash workaround)', () => {
+  it('below the threshold short-circuits to a single encode (identical count)', () => {
+    const text = 'hello world '.repeat(100);
+    expect(countTokensCl100k(text, { chunkBytes: 1024 * 1024 }))
+      .toBe(countTokensCl100k(text));
+  });
+
+  it('above the threshold sums per-chunk counts within ±chunks of the whole count', () => {
+    // Record-boundary corpus, tiny chunkBytes override so the chunked path
+    // runs without a multi-MB fixture.
+    const records = Array.from({ length: 8 },
+      (_, i) => `\n=== file-${i}.kt ===\ncontent ${'x'.repeat(400)} ${i}`).join('');
+    const whole = countTokensCl100k(records);
+    const chunked = countTokensCl100k(records, { chunkBytes: 512 });
+    const chunkCount = splitForAnthropic(records, { chunkBytes: 512 }).length;
+    expect(chunkCount).toBeGreaterThan(1);
+    expect(Math.abs(chunked - whole)).toBeLessThanOrEqual(chunkCount);
+  });
+
+  it('prefers record boundaries (chunks start at the === separators)', () => {
+    const records = `head\n=== a.kt ===\n${'a'.repeat(600)}\n=== b.kt ===\n${'b'.repeat(600)}`;
+    const chunks = splitForAnthropic(records, { chunkBytes: 700 });
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.slice(1).every(c => c.startsWith('\n=== '))).toBe(true);
+  });
+
+  it('empty/nullish input stays 0 through both paths', () => {
+    expect(countTokensCl100k('')).toBe(0);
+    expect(countTokensCl100k(null)).toBe(0);
+    expect(countTokensCl100k(undefined, { chunkBytes: 1 })).toBe(0);
+  });
 });
 
 describe('resolveProjectOpts', () => {

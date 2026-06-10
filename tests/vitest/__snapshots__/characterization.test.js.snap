@@ -181,6 +181,88 @@ exports[`characterization / invalid-args envelopes > parallel --coverage-tool bo
 }
 `;
 
+exports[`characterization / invalid-args envelopes > parallel --device (dangling) → CONFIG_ERROR envelope 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "code": "invalid_flag_value",
+      "flag": "--device",
+      "message": "--device: missing required value",
+      "value": null,
+    },
+  ],
+  "exit_code": 2,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "parallel",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`characterization / invalid-args envelopes > parallel --isolated-cache-dir (dangling) → CONFIG_ERROR envelope 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "code": "invalid_flag_value",
+      "flag": "--isolated-cache-dir",
+      "message": "--isolated-cache-dir: missing required <path> value",
+      "value": null,
+    },
+  ],
+  "exit_code": 2,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "parallel",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
 exports[`characterization / invalid-args envelopes > parallel --max-failures 1.5 (non-integer) → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
@@ -284,6 +366,47 @@ exports[`characterization / invalid-args envelopes > parallel --max-workers abc 
       "flag": "--max-workers",
       "message": "--max-workers: invalid value 'abc' — expected a non-negative integer",
       "value": "abc",
+    },
+  ],
+  "exit_code": 2,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "parallel",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`characterization / invalid-args envelopes > parallel --test-type (dangling) → CONFIG_ERROR envelope 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "code": "invalid_flag_value",
+      "flag": "--test-type",
+      "message": "--test-type: missing required value",
+      "value": null,
     },
   ],
   "exit_code": 2,

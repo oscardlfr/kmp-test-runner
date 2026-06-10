@@ -587,6 +587,30 @@ describe('runAndroid per-module log files', () => {
     expect(failError.errors_file).toBe(path.join(logDir, 'fail-mod_errors.json'));
   });
 
+  it('persists gradle stderr in the per-module log (the FAILURE cause lives on stderr)', async () => {
+    // S22 wet finding: gradle writes `FAILURE: ... What went wrong` to
+    // STDERR; a stdout-only log left config/install failures with no cause
+    // in any artifact. Same `--- STDERR ---` separator as benchmark logs.
+    const dir = makeProject([{ name: 'mod' }]);
+    const spawn = makeSpawnStub({
+      gradle: {
+        status: 1,
+        stdout: '> Task :mod:connectedDebugAndroidTest\n',
+        stderr: 'FAILURE: Build failed with an exception.\n* What went wrong:\nInstall failed\n',
+      },
+    });
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe, runId: 'stderr-run' });
+
+    const log = readFileSync(
+      path.join(dir, '.kmp-test-runner', 'logs', 'android', 'stderr-run', 'mod.log'), 'utf8'
+    );
+    expect(log).toContain('> Task :mod:connectedDebugAndroidTest');
+    expect(log).toContain('--- STDERR ---');
+    expect(log).toContain('What went wrong');
+  });
+
   it('safeModuleName converts colons to underscores (:core:db → core_db.log)', async () => {
     const dir = makeProject([{ name: 'core:db' }]);
     const spawn = makeSpawnStub();
@@ -1590,5 +1614,73 @@ describe('runAndroid --capture-on-fail', () => {
     const err = envelope.errors.find(e => e.code === 'module_failed');
     expect(err.screenshot_file).toContain(path.join(dir, 'capture-out'));
     expect(existsSync(err.screenshot_file)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// maxBuffer threading + spawn_error discrimination
+// ---------------------------------------------------------------------------
+describe('runAndroid spawn maxBuffer + spawn_error', () => {
+  it('threads the resolved maxBuffer into the gradle dispatch and the logcat -d dump', async () => {
+    const dir = makeProject([
+      { name: 'app', build: `plugins { id("com.android.library") }\nandroid { namespace = "x" }\n` },
+    ]);
+    const calls = [];
+    const spawn = (cmd, args, opts) => {
+      calls.push({ cmd, args: [...args], maxBuffer: opts?.maxBuffer ?? null });
+      if (cmd === 'adb') return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+      return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '', signal: null, error: null };
+    };
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe });
+
+    const gradleCalls = calls.filter(c => isGradleCall(c));
+    expect(gradleCalls.length).toBeGreaterThan(0);
+    for (const c of gradleCalls) expect(c.maxBuffer).toBe(64 * 1024 * 1024);
+
+    const logcatDump = calls.find(c => c.cmd === 'adb' && c.args.includes('logcat') && c.args.includes('-d'));
+    expect(logcatDump).toBeTruthy();
+    expect(logcatDump.maxBuffer).toBe(64 * 1024 * 1024);
+  });
+
+  it('discriminates a spawn-layer error as spawn_error with errno + maxBuffer hint', async () => {
+    const dir = makeProject([
+      { name: 'app', build: `plugins { id("com.android.library") }\nandroid { namespace = "x" }\n` },
+    ]);
+    const overflow = Object.assign(new Error('stdout maxBuffer length exceeded'), {
+      code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+    });
+    const spawn = (cmd, args) => {
+      if (cmd === 'adb') return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+      return { status: null, stdout: 'partial output', stderr: '', signal: null, error: overflow };
+    };
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope, exitCode } = await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe });
+
+    expect(exitCode).not.toBe(0);
+    expect(envelope.errors.length).toBe(1);
+    const err = envelope.errors[0];
+    expect(err.code).toBe('spawn_error');
+    expect(err.errno).toBe('ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+    expect(err.message).toContain('KMP_GRADLE_MAXBUFFER_MB');
+  });
+
+  it('ENOBUFS (Windows overflow errno) also carries the maxBuffer hint', async () => {
+    const dir = makeProject([
+      { name: 'app', build: `plugins { id("com.android.library") }\nandroid { namespace = "x" }\n` },
+    ]);
+    const overflow = Object.assign(new Error('spawnSync ENOBUFS'), { code: 'ENOBUFS' });
+    const spawn = (cmd, args) => {
+      if (cmd === 'adb') return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+      return { status: null, stdout: '', stderr: '', signal: null, error: overflow };
+    };
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe });
+    const err = envelope.errors.find(e => e.code === 'spawn_error');
+    expect(err.errno).toBe('ENOBUFS');
+    expect(err.message).toContain('KMP_GRADLE_MAXBUFFER_MB');
   });
 });
