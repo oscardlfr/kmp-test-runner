@@ -314,20 +314,69 @@ describe('runBenchmark empty-result regression', () => {
 // Case 5 — `--test-filter` resolution
 // ---------------------------------------------------------------------------
 describe('runBenchmark --test-filter', () => {
-  it('jvm: passes through to gradle --tests verbatim (gradle handles globs)', async () => {
+  // Premise rewrite (L7, 2026-06-10): this test previously asserted the jvm
+  // leg passes `--tests` through to gradle — wet-DISPROVEN on a reference
+  // composite: kotlinx-benchmark BenchmarkExec tasks reject `--tests`
+  // ("Unknown command-line option '--tests'" → module_failed). The jvm leg
+  // now SKIPS filtered cells (never runs the un-narrowed suite, never emits
+  // a flag gradle rejects).
+  it('jvm: --test-filter skips the leg with skipped[] + test_filter_unsupported warning, no gradle spawn', async () => {
     const dir = copyFixture();
     const spawn = makeSpawnStub();
 
-    await runBenchmark({
+    const { envelope, exitCode } = await runBenchmark({
       projectRoot: dir,
       args: ['--platform', 'jvm', '--test-filter', '*ScaleBenchmark*'],
       spawn,
       adbProbe: () => [],
     });
 
-    const args = effectiveGradleArgs(spawn.calls[0]);
-    expect(args).toContain('--tests');
-    expect(args).toContain('*ScaleBenchmark*');
+    // No gradle dispatched for the filtered jvm leg.
+    expect(spawn.calls.length).toBe(0);
+    const skips = envelope.skipped.filter(s =>
+      s.reason.includes('--test-filter not supported by kotlinx-benchmark'));
+    expect(skips.length).toBeGreaterThan(0);
+    const w = envelope.warnings.filter(x => x.code === 'test_filter_unsupported');
+    expect(w).toHaveLength(1);
+    expect(w[0].platform).toBe('jvm');
+    expect(w[0].test_filter).toBe('*ScaleBenchmark*');
+    expect(w[0].skipped_modules).toBe(skips.length);
+    expect(w[0].message).toContain('benchmark { configurations { include(...) } }');
+    // Capable modules exist but every cell was an intentional skip → the
+    // aggregate path treats it like the KMP_TEST_SKIP_ADB opt-out: exit 0.
+    expect(exitCode).toBe(0);
+  });
+
+  it('jvm: warning is pushed ONCE even when multiple jvm modules skip', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+
+    const { envelope } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--test-filter', 'X'],  // default platform → jvm cells skip, android cells follow adb
+      spawn,
+      adbProbe: () => [],
+    });
+
+    expect(envelope.warnings.filter(x => x.code === 'test_filter_unsupported')).toHaveLength(1);
+  });
+
+  it('jvm: no filter → leg still dispatches (skip is filter-gated only)', async () => {
+    const dir = copyFixture();
+    const spawn = makeSpawnStub();
+
+    const { envelope } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm'],
+      spawn,
+      adbProbe: () => [],
+    });
+
+    expect(spawn.calls.length).toBeGreaterThan(0);
+    expect(envelope.warnings.filter(x => x.code === 'test_filter_unsupported')).toHaveLength(0);
+    // And the dispatched args never contain --tests in any shape.
+    const allArgs = spawn.calls.flatMap(c => c.args).join(' ');
+    expect(allArgs).not.toContain('--tests');
   });
 
   it('android: emits -Pandroid.testInstrumentationRunnerArguments.class= with FQN', async () => {
