@@ -587,6 +587,30 @@ describe('runAndroid per-module log files', () => {
     expect(failError.errors_file).toBe(path.join(logDir, 'fail-mod_errors.json'));
   });
 
+  it('persists gradle stderr in the per-module log (the FAILURE cause lives on stderr)', async () => {
+    // S22 wet finding: gradle writes `FAILURE: ... What went wrong` to
+    // STDERR; a stdout-only log left config/install failures with no cause
+    // in any artifact. Same `--- STDERR ---` separator as benchmark logs.
+    const dir = makeProject([{ name: 'mod' }]);
+    const spawn = makeSpawnStub({
+      gradle: {
+        status: 1,
+        stdout: '> Task :mod:connectedDebugAndroidTest\n',
+        stderr: 'FAILURE: Build failed with an exception.\n* What went wrong:\nInstall failed\n',
+      },
+    });
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe, runId: 'stderr-run' });
+
+    const log = readFileSync(
+      path.join(dir, '.kmp-test-runner', 'logs', 'android', 'stderr-run', 'mod.log'), 'utf8'
+    );
+    expect(log).toContain('> Task :mod:connectedDebugAndroidTest');
+    expect(log).toContain('--- STDERR ---');
+    expect(log).toContain('What went wrong');
+  });
+
   it('safeModuleName converts colons to underscores (:core:db → core_db.log)', async () => {
     const dir = makeProject([{ name: 'core:db' }]);
     const spawn = makeSpawnStub();
