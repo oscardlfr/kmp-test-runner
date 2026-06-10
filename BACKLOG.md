@@ -919,9 +919,11 @@ java.io.FileNotFoundException: C:\Users\<user>\AppData\Local\Temp\benchmarks<lon
 
 ---
 
-### 💡 IDEA — `tools/measure-token-cost.js` `--project-root` silently overridden when `.measurement-projects.json` exists (surfaced 2026-05-19 during v0.10.1 re-measurement)
+### ✅ SHIPPED 2026-06-10 (this PR) — `tools/measure-token-cost.js` `--project-root` silently overridden when `.measurement-projects.json` exists (surfaced 2026-05-19 during v0.10.1 re-measurement)
 
-**Status: IDEA, no milestone assigned. LOW severity — tooling sharp edge, not user-facing.** Captured during the v0.10.1 token-cost re-measurement: invoking `node tools/measure-token-cost.js --project-root <single-project-path> --feature parallel --runs 1` against the `private-large-A` reference composite silently entered multi-project mode instead and overwrote the v0.10 #7 OSS aggregate file. Root cause at `tools/measure-token-cost.js#main` (line 1135): when the conventional gitignored `tools/.measurement-projects.json` exists, multi-project mode auto-resolves and wins unconditionally over single-project mode — even when `--project-root` is explicitly passed.
+**Status: SHIPPED 2026-06-10 (this PR), LOW-tier audit train (8/9).** Option (a) implemented: an explicit `--project-root` passes `conventionalPath: null` into `resolveProjectsConfig`, disabling ONLY the gitignored auto-detect; explicit `--projects-config` / `KMP_MEASUREMENT_PROJECTS` still win (deliberate multi-project requests). +1 vitest locks the gating contract. Original entry preserved below.
+
+**Original status: IDEA, no milestone assigned. LOW severity — tooling sharp edge, not user-facing.** Captured during the v0.10.1 token-cost re-measurement: invoking `node tools/measure-token-cost.js --project-root <single-project-path> --feature parallel --runs 1` against the `private-large-A` reference composite silently entered multi-project mode instead and overwrote the v0.10 #7 OSS aggregate file. Root cause at `tools/measure-token-cost.js#main` (line 1135): when the conventional gitignored `tools/.measurement-projects.json` exists, multi-project mode auto-resolves and wins unconditionally over single-project mode — even when `--project-root` is explicitly passed.
 
 **Recommendation:**
 - **(a) Single-project wins** when `--project-root` is explicit. Multi-project mode only fires if `--projects-config <path>` / `--features <list>` / `$KMP_MEASUREMENT_PROJECTS` is explicit OR no `--project-root` is passed.
@@ -934,9 +936,11 @@ Option (a) is the least disruptive — `--project-root` is the strongest user si
 
 ---
 
-### 💡 IDEA — `tools/measure-token-cost.js` `runCrossModelMode` segfaults on 74 MB capture (surfaced 2026-05-19 during v0.10.1 re-measurement)
+### ✅ SHIPPED 2026-06-10 (this PR) — `tools/measure-token-cost.js` `runCrossModelMode` segfaults on 74 MB capture (surfaced 2026-05-19 during v0.10.1 re-measurement)
 
-**Status: IDEA, no milestone assigned. MEDIUM severity — blocks `coverage` A-row Anthropic counts on large composites in Node v24.** When `runCrossModelMode` re-reads the coverage A capture (74 MB, 28.7 M cl100k tokens) and re-encodes via `countTokensCl100k(cap.text)` at line 1013, Node v24.12.0 segfaults inside `js-tiktoken/lite.cjs#bytePairMerge` (`TypeError: Derived TypedArray constructor created an array which was too small` at smaller chunks; SIGSEGV at larger). The original measurement (`runApproachA`) computes cl100k successfully because it streams the slurp; the cross-model re-read of the full string crashes.
+**Status: SHIPPED 2026-06-10 (this PR), LOW-tier audit train (8/9).** Option (a) implemented: `countTokensCl100k(text, {chunkBytes})` chunks above 4 MB (`CL100K_CHUNK_BYTES`) via the existing `splitForAnthropic` record-boundary splitter and sums per-chunk `enc.encode` lengths — same ≤1-token-per-chunk boundary-error argument as the chunked-Anthropic path. The one-off `chunked-count.mjs` workaround approach is now first-class in the tool. +4 vitest (short-circuit identity below threshold, chunked-vs-whole within ±chunks, record-boundary preference, empty/nullish 0). Original entry preserved below.
+
+**Original status: IDEA, no milestone assigned. MEDIUM severity — blocks `coverage` A-row Anthropic counts on large composites in Node v24.** When `runCrossModelMode` re-reads the coverage A capture (74 MB, 28.7 M cl100k tokens) and re-encodes via `countTokensCl100k(cap.text)` at line 1013, Node v24.12.0 segfaults inside `js-tiktoken/lite.cjs#bytePairMerge` (`TypeError: Derived TypedArray constructor created an array which was too small` at smaller chunks; SIGSEGV at larger). The original measurement (`runApproachA`) computes cl100k successfully because it streams the slurp; the cross-model re-read of the full string crashes.
 
 **Workaround used during v0.10.1:** dropped a one-off `tools/runs/chunked-count.mjs` helper that splits the capture at `\n=== <file> ===\n` file-record boundaries (27 chunks @ ~2.6 MiB UTF-8 each), spawns Anthropic `count_tokens` per chunk per model, sums `input_tokens`. cl100k baseline taken from the prior `runApproachA` value (`28,754,177`). Helper deleted post-use; chunked Anthropic counts succeeded for opus / sonnet / haiku.
 
