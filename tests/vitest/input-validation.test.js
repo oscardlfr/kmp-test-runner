@@ -19,6 +19,7 @@ import { runChanged } from '../../lib/orchestrators/changed-orchestrator.js';
 import { runBenchmark } from '../../lib/orchestrators/benchmark-orchestrator.js';
 import { runCoverage } from '../../lib/orchestrators/coverage-orchestrator.js';
 import { runDescribe } from '../../lib/orchestrators/describe-orchestrator.js';
+import { runAndroid } from '../../lib/orchestrators/android-orchestrator.js';
 import { EXIT } from '../../lib/cli.js';
 
 // ---------------------------------------------------------------------------
@@ -125,6 +126,41 @@ describe.each([...ENUM_CASES, ...NUMERIC_CASES])(
       expect(result.envelope.errors.length).toBeGreaterThan(0);
       const matching = result.envelope.errors.find(e => e.code === code && e.flag === flag);
       expect(matching).toBeTruthy();
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// L1 (2026-06-09 audit) — dangling `--isolated-cache-dir` (last token, no
+// value). Pre-fix behavior diverged per orchestrator: parallel / benchmark /
+// android silently ran NON-isolated with the token leaking into args;
+// changed silently enabled isolation with an auto-generated dir. Post-fix all
+// four exit CONFIG_ERROR with invalid_flag_value BEFORE any git / adb /
+// gradle work (runner.js-direct defense; cli.js gates the CLI route via
+// peekIsolatedFlags).
+// ---------------------------------------------------------------------------
+
+const DANGLING_ISOLATED_CASES = [
+  { sub: 'parallel',  run: runParallel },
+  { sub: 'changed',   run: runChanged },
+  { sub: 'benchmark', run: runBenchmark },
+  { sub: 'android',   run: runAndroid },
+];
+
+describe.each(DANGLING_ISOLATED_CASES)(
+  'L1: $sub --isolated-cache-dir (dangling)',
+  ({ run }) => {
+    it("exits CONFIG_ERROR (2) with errors[].code === 'invalid_flag_value', flag === '--isolated-cache-dir'", async () => {
+      const result = await run({
+        projectRoot: '/tmp/nonexistent-stub',
+        args: ['--isolated-cache-dir'],
+      });
+      expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+      const matching = (result.envelope.errors || []).find(
+        e => e.code === 'invalid_flag_value' && e.flag === '--isolated-cache-dir',
+      );
+      expect(matching).toBeTruthy();
+      expect(matching.message).toContain('--isolated-cache-dir');
     });
   },
 );
