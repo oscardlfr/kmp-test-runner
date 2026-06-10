@@ -676,6 +676,46 @@ describe('runCoverage', () => {
     expect(existsSync(path.join(projectRoot, 'coverage-full-report-TEST-RUN-ID.md'))).toBe(false);
   });
 
+  // Tests-Run header through the FULL runCoverage path (one level above the
+  // PR 3.4 writeMarkdownReport-level cases below). These opts shapes are
+  // exactly what lib/runner.js's coverage branch passes after reading the
+  // dispatcher-threaded KMP_ORIGINATING_SUBCOMMAND env var — the live CLI
+  // route `kmp-test parallel --skip-tests` is wrapper-rewritten to a
+  // `coverage` invocation, so this seam is where the header is decided.
+  // (The dispatcher env injection + runner.js allowlist mapping themselves
+  // are wet-validated — a bin-level CI e2e would be the suite's first
+  // python3-dependent test, brittle for a header string.)
+  it('runCoverage(originatingSubcommand:parallel) → latest.md header "No (--skip-tests)"', async () => {
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'a', 'kover');
+    const spawn = makeSpawnStub({
+      rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+    });
+    await runCoverage({
+      projectRoot,
+      args: [],
+      spawn,
+      runId: 'HDR-PARALLEL',
+      testsRan: false,
+      originatingSubcommand: 'parallel',
+    });
+    const md = readFileSync(
+      path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'latest.md'), 'utf8');
+    expect(md).toContain('> **Tests Run**: No (--skip-tests)');
+  });
+
+  it('runCoverage() defaults → latest.md header "No (coverage subcommand)"', async () => {
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'a', 'kover');
+    const spawn = makeSpawnStub({
+      rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+    });
+    await runCoverage({ projectRoot, args: [], spawn, runId: 'HDR-DEFAULT' });
+    const md = readFileSync(
+      path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'latest.md'), 'utf8');
+    expect(md).toContain('> **Tests Run**: No (coverage subcommand)');
+  });
+
   it('two coverage runs in same project produce two <runId>.md files + single latest.md overwrite', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'a', 'kover');
