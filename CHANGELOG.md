@@ -32,6 +32,107 @@ through the version catalog, so editing a plugin alias/version previously kept s
 Subsequent runs cache as before. Projects without a version catalog hash byte-identically to
 the previous key apart from the schema bump.
 
+### Added — config + envelope-fallback diagnostics surface as `warnings[]`
+
+Three previously stderr-only (or silent) conditions now reach `--json` consumers as discriminated
+warning codes:
+
+- **`config_invalid_field`** — a `.kmp-test-runner.json` / user-global config field that fails
+  validation is dropped *and* reported on `warnings[]` (carrying `source: "project_local" | "user_global"`
+  plus the per-field message). Previously a typo'd config key was visible only as a stderr `[WARN]` line,
+  invisible to agents parsing the envelope.
+- **`envelope_parse_failed`** — when the orchestrator's envelope sentinel is present in stdout but its
+  JSON does not parse (truncated / corrupted), the fallback envelope is now tagged with this code (and
+  `reason: "json_parse_failed"`) instead of silently degrading to the coarser legacy output parser. A new
+  additive `extractMigratedEnvelopeDetailed` distinguishes sentinel-absent (legacy) from sentinel-present-but-corrupt.
+- **`log_write_failed`** (`android`) — a per-module log / logcat / errors artifact that cannot be written
+  (disk full, read-only dir) surfaces this code with the dead-link `path`, so a stale `log_file` /
+  `logcat_file` / `errors_file` pointer is diagnosable.
+
+All three are additive — no `schema_version` bump.
+
+### Added — `KMP_GRADLE_MAXBUFFER_MB` + `spawn_error` for over-buffered gradle/adb spawns
+
+`spawnGradle` (android / benchmark dispatch) and the `logcat -d` dump now default their subprocess
+`maxBuffer` to **64 MB** (override via `KMP_GRADLE_MAXBUFFER_MB`) instead of inheriting Node's 1 MB
+`spawnSync` default, which silently killed chatty builds and mis-reported them as plain module failures.
+Spawn-layer failures now discriminate as **`errors[].code: "spawn_error"`** (carrying the Node `errno`
+and a raise-`KMP_GRADLE_MAXBUFFER_MB` hint on overflow — fired for both `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`
+and the `ENOBUFS` errno Windows reports). The dispatcher now also emits a JSON envelope for *non-ENOENT*
+spawn errors (previously only ENOENT got an envelope; everything else broke the contract by writing plain
+stderr): ENOENT keeps `missing_shell`, everything else becomes `spawn_error`, and the spawn-layer exit code
+moves from `1` to `3` (ENV_ERROR), consistent with the sibling `missing_shell` / `gradle_timeout` paths.
+Cross-module aggregate output buffers are tail-capped in android / benchmark (full per-module output is
+already persisted to log files).
+
+### Fixed — oversized JUnit XML reports are skipped with a warning
+
+`forEachJunitXml` previously read every `TEST-*.xml` whole; a pathological report (huge `<system-out>`
+CDATA) could reach hundreds of MB and spike RAM across a multi-module walk. The walker now `stat`s every
+candidate and skips files above a **32 MB** cap (tunable via `KMP_JUNIT_XML_MAX_MB`, warn-once on garbage
+values). A skip surfaces as **`warnings[].code: "junit_xml_oversized"`** (`{ module, task, file, size_bytes,
+max_mb }`); `tests.individual_total` then undercounts and that task's `test_failures[]` may be incomplete.
+Additive — no `schema_version` bump.
+
+### Fixed — dangling value-bearing flags rejected as `invalid_flag_value`
+
+Every parser previously treated a trailing value-bearing flag (last token, no value) as if it had been
+omitted (`argv[++i] || fallback`), hiding the mistake until gradle / adb failed confusingly later — and on
+the Windows route a dangling string flag died in PowerShell parameter binding and surfaced as `no_summary`
+exit 1. A new `requireFlagValue` helper (and a canonical `VALUE_BEARING_FLAGS` list with a `cli.js`
+pre-spawn gate covering both OSes) now rejects a dangling value-bearing flag with `errors[].code:
+"invalid_flag_value"` and exit `2` (CONFIG_ERROR) *before* any lock / git / adb / gradle work. Applied
+across `parallel`, `changed`, `android` (gains its first `errors[]`), `benchmark`, `coverage`, `describe`,
+and `update` — starting with `--isolated-cache-dir`, whose dangling form previously left isolation silently
+disabled while the lockfile was still held. Only `undefined` (truly dangling) is invalid; an explicit empty
+string keeps each flag's legacy fallback.
+
+### Fixed — benchmark module discovery sees kotlinx-benchmark applied via convention plugins
+
+`kmp-test benchmark` discovered **0 modules** on projects that apply `kotlinx-benchmark` through a
+build-logic convention plugin (the literal markers in `moduleHasBenchmarkPlugin` only saw direct
+application). Discovery now lazily expands a module's convention-plugin ids through the existing build-logic
+descriptor machinery, so the existing markers + platform detection fire unchanged. Zero cost for
+direct-application projects (descriptors parse only when the static markers miss).
+
+### Fixed — `kmp-test android` now persists gradle **stderr** in the per-module log
+
+Gradle writes its failure cause (`FAILURE: … What went wrong`) to **stderr**, but the android orchestrator
+persisted stdout only — so a `module_failed` from a configuration / install failure left no cause in any
+artifact (the log ended mid-merge-tasks, `errors.json` buckets empty). The per-module log now appends
+stderr behind the same `--- STDERR ---` separator the benchmark orchestrator already uses, so the
+envelope's `log_file` pointer always carries the diagnosis.
+
+### Fixed — `org.gradle.java.home` with an unexpanded `~` is now diagnosed
+
+Gradle does not expand `~` (or any shell-ism) in `org.gradle.java.home` and fails to launch on the literal
+path, but the JDK preflight gate silently treated such a value as unset. `kmp-test doctor` now emits a new
+conditional **`gradle java.home`** check row (only when the property is set): WARN on an unexpanded `~`,
+WARN on a set-but-missing path, OK with the resolved path otherwise. The preflight gate also warns once on
+stderr for the tilde case, then still falls through to its signal-based JDK check. The value is deliberately
+**not** expanded — Gradle itself rejects `~` there, so expanding it would suppress the gate for a build
+Gradle will reject anyway.
+
+### Fixed — lockfile acquisition is now atomic
+
+Project-lock acquisition was read-check-write: two simultaneous `kmp-test` processes could both pass the
+liveness check and both "acquire" (last write wins), defeating the lock's purpose. Acquisition now writes the
+full lock payload to a private tmp file and **hard-links** it into place (`link(2)` is atomic and fails
+`EEXIST` when the lock already exists), with an `O_EXCL` exclusive-create fallback on filesystems without
+hard links and a short grace re-read before reclaiming an unparseable lock. The result: exactly one winner,
+even under a reclaim race on a stale lock. The `--force` overwrite contract is preserved.
+
+### Changed — benchmark `--test-filter` skips jvm legs (kotlinx-benchmark has no `--tests`)
+
+`kotlinx-benchmark` tasks reject gradle's `--tests` (wet-confirmed `Unknown command-line option '--tests'`)
+and expose no CLI / `-P` filter — filtering is build-script DSL only. Rather than drop the filter (which
+would dispatch the full unfiltered jvm suite the user explicitly narrowed — potentially hours), the dispatch
+loop now **skips** jvm `(module, platform)` cells when `--test-filter` is set, recording per-cell
+`skipped[].reason` plus one aggregate **`warnings[].code: "test_filter_unsupported"`** (`{ platform: "jvm",
+test_filter, skipped_modules }`). The android leg still filters via `-P` instrumentation args, unchanged.
+Narrow jvm runs with `--module-filter` instead. Exit code stays `0` when capable modules exist and all jvm
+cells are intentionally skipped; `no_test_modules` (exit 3) is unchanged when no module is capable at all.
+
 ### Fixed — `--dry-run` now surfaces the `isolated_runtime_race` rejection
 
 `kmp-test parallel --isolated` combined with `--test-type ios` / `all` / `androidInstrumented`
