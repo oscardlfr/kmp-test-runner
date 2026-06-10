@@ -144,6 +144,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `envelope_parse_failed` | parallel, changed, android, benchmark, coverage | The orchestrator's envelope sentinel was present in stdout but its JSON did not parse (truncated/corrupted); results come from the coarser legacy output parser. | `reason: "json_parse_failed"` |
 | `log_write_failed` | android | A per-module log/logcat/errors artifact could not be written (disk full, read-only dir) — that module's `log_file`/`logcat_file`/`errors_file` pointer may be a dead link. | `path:string` |
 | `junit_xml_oversized` | parallel, changed | A `TEST-*.xml` report exceeded the size cap (default 32 MB; tunable via `KMP_JUNIT_XML_MAX_MB`) and was skipped — `tests.individual_total` undercounts and that task's `test_failures[]` may be incomplete. | `module:string`, `task:string`, `file:string`, `size_bytes:int`, `max_mb:int` |
+| `test_filter_unsupported` | benchmark | `--test-filter` was set, so jvm benchmark legs were skipped: kotlinx-benchmark tasks reject gradle's `--tests` and have no CLI filter — running unfiltered would dispatch the full suite the user narrowed. Per-module detail in `skipped[]`; the android leg still filters via `-P` instrumentation args. Narrow jvm runs with `--module-filter` or the build-script `benchmark { configurations { include(...) } }` DSL. | `platform:"jvm"`, `test_filter:string`, `skipped_modules:int` |
 
 > Like errors, future warning codes can land additively without bumping `schema_version`. Treat unrecognized codes as opaque.
 

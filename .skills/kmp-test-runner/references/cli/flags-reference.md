@@ -22,7 +22,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 |------|---------|:--------:|:--------:|:---------:|:-------:|:-------:|-------|
 | `--test-type <type>` | auto-detect | ✓ | — | — | ✓ | — | `all` / `common` / `androidUnit` / `androidInstrumented` / `desktop` / `ios` / `macos` / `jvm` / `js` / `wasm`. |
 | `--module-filter <glob>` | `*` | ✓ | — | ✓ | ✓ | ✓ | Glob, comma-separated. Composes with `changed`'s derived filter (both must match). |
-| `--test-filter <pattern>` | none | ✓ | — | ✓ | ✓ | ✓ | Single class or `Class#method`. JVM uses gradle `--tests`; Android resolves wildcards to FQN by source scan. |
+| `--test-filter <pattern>` | none | ✓ | — | android only | ✓ | ✓ | Single class or `Class#method`. JVM test tasks use gradle `--tests`; Android resolves wildcards to FQN by source scan. **benchmark**: only the android leg filters (`-P` instrumentation args); jvm benchmark legs are SKIPPED with `warnings[].code: test_filter_unsupported` + `skipped[]` entries — kotlinx-benchmark tasks reject `--tests` and have no CLI filter (use `benchmark { configurations { include(...) } }` in the build script, or `--module-filter` + `--config smoke` to narrow). |
 | `--exclude-modules <list>` | none | ✓ | — | — | ✓ | — | Comma-separated globs to skip entirely (not probed, not tested). |
 | `--include-untested` | off | ✓ | — | — | ✓ | — | Re-include modules auto-skipped because filesystem has no `src/*Test*` directory. |
 | `--include-shared` | off | ✓ | — | ✓ | ✓ | — | Include sibling shared-libs project (composite-build context). |
@@ -141,8 +141,9 @@ kmp-test coverage --json
 # Coverage gate in CI
 kmp-test coverage --min-missed-lines 100 --json
 
-# Benchmark smoke with FQN narrowing (avoid 4-hour full suite)
-kmp-test benchmark --config smoke --test-filter "com.foo.MyBenchmark#fastPath" --json
+# Benchmark smoke narrowed by module (jvm legs have no per-test filter —
+# --test-filter would skip them; android legs DO honor --test-filter)
+kmp-test benchmark --config smoke --module-filter "core-perf*" --json
 
 # Changed-only with staged scope (pre-commit hook)
 kmp-test changed --staged-only --json
