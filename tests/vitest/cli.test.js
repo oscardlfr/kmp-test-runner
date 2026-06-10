@@ -30,6 +30,7 @@ import {
   getIgnoreJdkMismatch,
   findRequiredJdkVersion,
   preflightJdkCheck,
+  readGradleJavaHome,
   jdkMismatchHint,
   lockfilePath,
   readLockfile,
@@ -1259,6 +1260,59 @@ describe('runDoctorChecks', () => {
       const { checks } = runDoctorChecks(dir);
       const gw = checks.find(c => c.name === 'gradlew');
       expect(gw.status).toBe('OK');
+    });
+  });
+
+  // L4 (2026-06-09 audit) — `gradle java.home` row states. No row when the
+  // property is unset; WARN on tilde (gradle does not expand it) and on a
+  // missing path; OK when set and existing.
+  it('L4: no `gradle java.home` row when org.gradle.java.home is unset', () => {
+    spawnMock.mockImplementation((cmd) => {
+      if (cmd === 'java') return { status: 0, stderr: 'openjdk version "17.0.1"\n' };
+      return { status: 0 };
+    });
+    withFakeGradleProject(dir => {
+      const { checks } = runDoctorChecks(dir);
+      expect(checks.find(c => c.name === 'gradle java.home')).toBeUndefined();
+    });
+  });
+
+  it('L4: tilde value → WARN row "Gradle does not expand ~"', () => {
+    spawnMock.mockImplementation((cmd) => {
+      if (cmd === 'java') return { status: 0, stderr: 'openjdk version "17.0.1"\n' };
+      return { status: 0 };
+    });
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=~/jdk-17\n');
+      const { checks } = runDoctorChecks(dir);
+      const row = checks.find(c => c.name === 'gradle java.home');
+      expect(row).toBeTruthy();
+      expect(row.status).toBe('WARN');
+      expect(row.value).toBe('~/jdk-17');
+      expect(row.message).toContain('does not expand ~');
+    });
+  });
+
+  it('L4: set-but-missing path → WARN row; set-and-existing → OK row', () => {
+    spawnMock.mockImplementation((cmd) => {
+      if (cmd === 'java') return { status: 0, stderr: 'openjdk version "17.0.1"\n' };
+      return { status: 0 };
+    });
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=/nonexistent/jdk\n');
+      let { checks } = runDoctorChecks(dir);
+      let row = checks.find(c => c.name === 'gradle java.home');
+      expect(row.status).toBe('WARN');
+      expect(row.message).toContain('does not exist');
+
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        `org.gradle.java.home=${dir}\n`);
+      ({ checks } = runDoctorChecks(dir));
+      row = checks.find(c => c.name === 'gradle java.home');
+      expect(row.status).toBe('OK');
+      expect(row.value).toBe(dir);
     });
   });
 
@@ -2613,6 +2667,47 @@ describe('preflightJdkCheck', () => {
     });
   });
 
+  // L4 (2026-06-09 audit) — `~` in org.gradle.java.home. Gradle does NOT
+  // expand it, and pre-fix the gate silently treated the value as unset
+  // (existsSync('~/jdk') false → fall-through, no diagnosis). Now: one
+  // stderr [WARN], then the signal-based gate still applies (deliberately
+  // NOT expanded — expanding would suppress kmp-test's gate for a build
+  // gradle rejects anyway).
+  it('L4: tilde value warns on stderr and still falls through to the signal gate', () => {
+    withFakeKmpProject(17, dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=~/jdk-17\n');
+      mockJavaVersion(11); // host below floor → gate must STILL fire
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const result = preflightJdkCheck(dir);
+        expect(result).toEqual({ kind: 'mismatch', required: 17, current: 11, agpVersion: null });
+        const warns = stderrSpy.mock.calls.filter(c =>
+          String(c[0]).includes("org.gradle.java.home starts with '~'"));
+        expect(warns).toHaveLength(1);
+      } finally {
+        stderrSpy.mockRestore();
+      }
+    });
+  });
+
+  it('L4: non-tilde missing path does NOT emit the tilde warn (fall-through only)', () => {
+    withFakeKmpProject(17, dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=/nonexistent/jdk\n');
+      mockJavaVersion(17);
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        preflightJdkCheck(dir);
+        const warns = stderrSpy.mock.calls.filter(c =>
+          String(c[0]).includes("starts with '~'"));
+        expect(warns).toHaveLength(0);
+      } finally {
+        stderrSpy.mockRestore();
+      }
+    });
+  });
+
   it('returns mismatch info when jvmToolchain != current java major (host BELOW floor)', () => {
     // v0.8.0 fix-PR-B: result is now a tagged union; `kind: 'mismatch'` fires
     // only when host < floor. (Pre-fix host=23 + jvmToolchain(17) returned
@@ -2666,6 +2761,49 @@ describe('preflightJdkCheck', () => {
       });
       // 1.8 → major 8, equals required → null
       expect(preflightJdkCheck(dir)).toBeNull();
+    });
+  });
+});
+
+// L4 (2026-06-09 audit) — the single gradle.properties org.gradle.java.home
+// reader shared by preflightJdkCheck and lib/commands/doctor.js.
+describe('readGradleJavaHome (L4 single reader)', () => {
+  it('returns null when gradle.properties is absent or property unset', () => {
+    withFakeGradleProject(dir => {
+      expect(readGradleJavaHome(dir)).toBeNull();
+      writeFileSync(path.join(dir, 'gradle.properties'), 'org.gradle.parallel=true\n');
+      expect(readGradleJavaHome(dir)).toBeNull();
+    });
+  });
+
+  it('returns raw + exists:true for an absolute existing path', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        `org.gradle.java.home=${dir}\n`);
+      expect(readGradleJavaHome(dir)).toEqual({ raw: dir, exists: true, hasTilde: false });
+    });
+  });
+
+  it('returns exists:false for an absolute missing path', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=/nonexistent/jdk\n');
+      expect(readGradleJavaHome(dir)).toEqual({
+        raw: '/nonexistent/jdk', exists: false, hasTilde: false,
+      });
+    });
+  });
+
+  it('flags hasTilde for `~/...` and bare `~user` forms, verbatim raw (no expansion)', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=~/jdk-17\n');
+      expect(readGradleJavaHome(dir)).toEqual({
+        raw: '~/jdk-17', exists: false, hasTilde: true,
+      });
+      writeFileSync(path.join(dir, 'gradle.properties'),
+        'org.gradle.java.home=~bob/jdk\n');
+      expect(readGradleJavaHome(dir)).toMatchObject({ raw: '~bob/jdk', hasTilde: true });
     });
   });
 });
