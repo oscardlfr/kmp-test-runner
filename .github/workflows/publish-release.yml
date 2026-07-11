@@ -22,27 +22,60 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      # Step 1: Pre-checkout shell format guard for workflow_dispatch / workflow_call inputs.
+      # This rejects clearly malformed tags before they can be used as checkout.ref.
+      # push:tags trigger uses GITHUB_REF which is already a valid git ref.
+      - name: Validate tag format (pre-checkout, inputs only)
+        if: inputs.tag != ''
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if ! echo "$INPUT_TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid tag format: '$INPUT_TAG'. Expected: v<major>.<minor>.<patch>"
+            exit 1
+          fi
+
+      # Step 2: Checkout — safe after the pre-checkout format guard for inputs.
+      # For push:tags, GITHUB_REF is the tag ref and the default checkout is correct.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           fetch-depth: 0
-          # When invoked via workflow_call (from auto-tag.yml) or workflow_dispatch,
-          # check out the tag explicitly so the build runs against the right commit.
-          # When triggered by the tag push itself (push:tags:), GITHUB_REF_NAME is the
-          # tag and the default checkout is fine.
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Determine version
-        id: version
+      # Step 3: Resolve TAG from any trigger path and validate via release-gate.
+      # No "if: inputs.tag != ''" here — this runs for ALL trigger paths so that
+      # push:tags with an invalid suffix (e.g. v1.2.3-bad) is also refused.
+      - name: Resolve and validate tag (all trigger paths)
+        id: validated-tag
+        env:
+          INPUTS_TAG: ${{ inputs.tag }}
         run: |
-          # Three trigger paths, all need to resolve to the same TAG/VER:
-          #   - push: tags:  → use GITHUB_REF_NAME ("vX.Y.Z")
-          #   - workflow_dispatch → use github.event.inputs.tag
-          #   - workflow_call    → use inputs.tag (passed by the calling workflow)
-          if [ -n "${{ inputs.tag }}" ]; then
-            TAG="${{ inputs.tag }}"
+          if [ -n "$INPUTS_TAG" ]; then
+            TAG="$INPUTS_TAG"
           else
             TAG="${GITHUB_REF_NAME}"
           fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          node tools/release-gate.mjs validate-tag "$TAG" package.json
+
+      # Step 4: Verify the tag's target commit is reachable from origin/main.
+      # This blocks feature-branch tags while allowing both new releases (tip of main)
+      # and idempotent reruns of older releases (earlier main ancestors).
+      - name: Verify tag commit is on main history
+        run: |
+          TAG="${{ steps.validated-tag.outputs.tag }}"
+          git fetch origin main
+          TAG_COMMIT=$(git rev-parse "${TAG}^{commit}")
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+            echo "::error::Tag ${TAG} target commit (${TAG_COMMIT}) is not reachable from origin/main. Refusing release."
+            exit 1
+          fi
+
+      # Step 5: Determine version string from the already-validated TAG.
+      - name: Determine version
+        id: version
+        run: |
+          TAG="${{ steps.validated-tag.outputs.tag }}"
           VER="${TAG#v}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "ver=${VER}" >> "$GITHUB_OUTPUT"
@@ -75,6 +108,14 @@ jobs:
 
           rm -rf "staging-${VER}"
 
+      # Step 6: Generate SHA-256 checksums for both release artifacts.
+      - name: Generate SHA-256 checksums
+        run: |
+          sha256sum "${{ env.linux_archive }}"   > "${{ env.linux_archive }}.sha256"
+          sha256sum "${{ env.windows_archive }}" > "${{ env.windows_archive }}.sha256"
+          echo "linux_sha256=${{ env.linux_archive }}.sha256"   >> "$GITHUB_ENV"
+          echo "windows_sha256=${{ env.windows_archive }}.sha256" >> "$GITHUB_ENV"
+
       - name: Extract release notes
         run: |
           VER="${{ steps.version.outputs.ver }}"
@@ -84,6 +125,7 @@ jobs:
             exit 1
           fi
 
+      # Step 7: Create GitHub Release and attach both archives plus their .sha256 files.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -93,4 +135,6 @@ jobs:
             --title "${TAG}" \
             --notes-file release-notes.txt \
             "${{ env.linux_archive }}" \
-            "${{ env.windows_archive }}"
+            "${{ env.linux_sha256 }}" \
+            "${{ env.windows_archive }}" \
+            "${{ env.windows_sha256 }}"

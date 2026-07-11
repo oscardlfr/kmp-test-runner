@@ -31,13 +31,13 @@ jobs:
     steps:
       - name: Mint release-bot (GitHub App) token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
       - name: Checkout develop
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           ref: develop
           fetch-depth: 0
@@ -73,6 +73,14 @@ jobs:
             echo "::error::tag v$VERSION already exists — nothing to release"
             exit 1
           fi
+
+      - name: Guard — all required CI checks green on develop SHA
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          SHA=$(git rev-parse HEAD)
+          node tools/release-gate.mjs poll-checks "$SHA" .github/required-checks.json \
+            --repo "$GITHUB_REPOSITORY" --timeout-minutes 15
 
       - name: Fast-forward main -> develop
         env:

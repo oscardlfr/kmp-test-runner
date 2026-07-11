@@ -26,10 +26,21 @@ jobs:
       tag_created: ${{ steps.check.outputs.skip != 'true' }}
       version: ${{ steps.ver.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           fetch-depth: 0          # full history so we can see all existing tags
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Guard — workflow_dispatch must be from tip of main
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git fetch origin main
+          MAIN_SHA=$(git rev-parse origin/main)
+          HEAD_SHA=$(git rev-parse HEAD)
+          if [ "$HEAD_SHA" != "$MAIN_SHA" ]; then
+            echo "::error::workflow_dispatch ($HEAD_SHA) is not the tip of origin/main ($MAIN_SHA). Tag creation is only allowed from main."
+            exit 1
+          fi
 
       - name: Read version
         id: ver
