@@ -153,7 +153,7 @@ describe('runAndroid WS-3 (single source of truth via deviceTestTask)', () => {
       { name: 'no-android', build: `plugins { kotlin("jvm") }\n` },
     ]);
     const spawn = makeSpawnStub();
-    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+    const adbProbe = () => [{ serial: 'FAKEDEVICE12X', type: 'physical', model: 'SM-S908B' }];
 
     const { envelope, exitCode } = await runAndroid({
       projectRoot: dir,
@@ -327,11 +327,11 @@ Finished 99 tests on Bogus-Device`;
     const spawn = makeSpawnStub();
     const { envelope } = await runAndroid({
       projectRoot: dir,
-      args: ['--list-only', '--device', 'R3CT30KAMEH'],
+      args: ['--list-only', '--device', 'FAKEDEVICE12X'],
       spawn,
       adbProbe: () => [],
     });
-    expect(envelope.android.device_serial).toBe('R3CT30KAMEH');
+    expect(envelope.android.device_serial).toBe('FAKEDEVICE12X');
   });
 
   it('--list-only without --device leaves android.device_serial empty (back-compat)', async () => {
@@ -471,7 +471,7 @@ describe('runAndroid envelope shape', () => {
   it('includes android:{device_serial, device_task, flavor, instrumented_modules}', async () => {
     const dir = makeProject([{ name: 'a' }, { name: 'b' }]);
     const spawn = makeSpawnStub();
-    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+    const adbProbe = () => [{ serial: 'FAKEDEVICE12X', type: 'physical', model: 'SM-S908B' }];
 
     const { envelope } = await runAndroid({
       projectRoot: dir,
@@ -481,7 +481,7 @@ describe('runAndroid envelope shape', () => {
     });
 
     expect(envelope.android).toBeDefined();
-    expect(envelope.android.device_serial).toBe('R3CT30KAMEH');
+    expect(envelope.android.device_serial).toBe('FAKEDEVICE12X');
     expect(envelope.android.device_task).toBe('');
     expect(envelope.android.flavor).toBe('staging');
     expect(Array.isArray(envelope.android.instrumented_modules)).toBe(true);
@@ -1377,13 +1377,13 @@ describe('runAndroid --device propagation to gradle (PR 3.3 / A1)', () => {
     const dir = makeProject([{ name: 'managed-lib' }]);
     const spawn = makeEnvCapturingSpawn();
     const adbProbe = () => [
-      { serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' },
+      { serial: 'FAKEDEVICE12X', type: 'physical', model: 'SM-S908B' },
       { serial: 'emulator-5554', type: 'emulator', model: 'sdk' },
     ];
 
     await runAndroid({
       projectRoot: dir,
-      args: ['--device', 'R3CT30KAMEH', '--device-task', 'connectedAndroidDeviceTest'],
+      args: ['--device', 'FAKEDEVICE12X', '--device-task', 'connectedAndroidDeviceTest'],
       spawn,
       adbProbe,
     });
@@ -1392,19 +1392,19 @@ describe('runAndroid --device propagation to gradle (PR 3.3 / A1)', () => {
     expect(gradleCalls.length).toBe(1);
     const eArgs = effectiveGradleArgs(gradleCalls[0]);
     expect(eArgs).toContain(':managed-lib:connectedAndroidDeviceTest');
-    expect(eArgs).toContain('-Pandroid.testInstrumentationRunnerArguments.deviceSerial=R3CT30KAMEH');
+    expect(eArgs).toContain('-Pandroid.testInstrumentationRunnerArguments.deviceSerial=FAKEDEVICE12X');
   });
 
   it('--device <serial> on legacy connectedDebugAndroidTest does NOT inject the runner-args property (ANDROID_SERIAL env covers legacy tasks)', async () => {
     const dir = makeProject([{ name: 'legacy' }]);
     const spawn = makeEnvCapturingSpawn();
     const adbProbe = () => [
-      { serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' },
+      { serial: 'FAKEDEVICE12X', type: 'physical', model: 'SM-S908B' },
     ];
 
     await runAndroid({
       projectRoot: dir,
-      args: ['--device', 'R3CT30KAMEH'], // no --device-task → falls back to connectedDebugAndroidTest
+      args: ['--device', 'FAKEDEVICE12X'], // no --device-task → falls back to connectedDebugAndroidTest
       spawn,
       adbProbe,
     });
@@ -1420,13 +1420,13 @@ describe('runAndroid --device propagation to gradle (PR 3.3 / A1)', () => {
     const dir = makeProject([{ name: 'legacy' }]);
     const spawn = makeEnvCapturingSpawn();
     const adbProbe = () => [
-      { serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' },
+      { serial: 'FAKEDEVICE12X', type: 'physical', model: 'SM-S908B' },
       { serial: 'emulator-5554', type: 'emulator', model: 'sdk' },
     ];
 
     await runAndroid({
       projectRoot: dir,
-      args: ['--device', 'R3CT30KAMEH'],
+      args: ['--device', 'FAKEDEVICE12X'],
       spawn,
       adbProbe,
     });
@@ -1434,7 +1434,7 @@ describe('runAndroid --device propagation to gradle (PR 3.3 / A1)', () => {
     const gradleCalls = findGradleCalls(spawn.calls);
     expect(gradleCalls.length).toBe(1);
     expect(gradleCalls[0].env).toBeTruthy();
-    expect(gradleCalls[0].env.ANDROID_SERIAL).toBe('R3CT30KAMEH');
+    expect(gradleCalls[0].env.ANDROID_SERIAL).toBe('FAKEDEVICE12X');
   });
 
   it('no --device + single device probed → ANDROID_SERIAL is set to the single device serial (existing implicit behavior, locked here)', async () => {
@@ -1516,7 +1516,7 @@ describe('runAndroid --auto-retry refreshes adb server (PR 3.3 / A5)', () => {
 // to change the run's exit code.
 // ---------------------------------------------------------------------------
 describe('runAndroid --capture-on-fail', () => {
-  const device = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+  const device = () => [{ serial: 'FAKEDEVICE12X', type: 'physical', model: 'SM-S908B' }];
 
   it('failed module + flag → screenshot_file + ui_hierarchy_file on the error, files on disk', async () => {
     const dir = makeProject([{ name: 'feature' }]);
@@ -1538,7 +1538,7 @@ describe('runAndroid --capture-on-fail', () => {
     expect(err.screenshot_file).toContain(path.join('.kmp-test-runner', 'logs', 'android', 'RUN1'));
     // The capture adb calls actually targeted the resolved device serial.
     const screencap = spawn.calls.find(c => c.cmd === 'adb' && c.args.includes('screencap'));
-    expect(screencap.args).toContain('R3CT30KAMEH');
+    expect(screencap.args).toContain('FAKEDEVICE12X');
   });
 
   it('passed module + flag → no capture performed (no screencap adb call)', async () => {

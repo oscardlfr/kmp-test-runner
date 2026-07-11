@@ -73,10 +73,10 @@ teardown() {
 @test "run-tests.sh TYPE=android emits env preamble on stderr" {
     # The env preamble line is the one stderr signal that distinguishes
     # android from other types. The kmp-test stub's stdout still fires.
-    run env PATH="$TMPBIN:$PATH" bash "$SCRIPT" android --device R3CT30KAMEH
+    run env PATH="$TMPBIN:$PATH" bash "$SCRIPT" android --device FAKEDEVICE12X
     [ "$status" -eq 0 ]
     [[ "$output" == *"[INFO] env:"* ]]
-    [[ "$output" == *"STUB_KMP_TEST_ARGS: android --json --project-root . --device R3CT30KAMEH"* ]]
+    [[ "$output" == *"STUB_KMP_TEST_ARGS: android --json --project-root . --device FAKEDEVICE12X"* ]]
 }
 
 @test "run-tests.sh TYPE=unit does NOT emit env preamble on stderr" {

@@ -53,7 +53,7 @@ For `--test-type all`:
 
 ```bash
 # androidInstrumented with explicit device pin
-kmp-test parallel --test-type androidInstrumented --device R3CT30KAMEH --isolated --json
+kmp-test parallel --test-type androidInstrumented --device <DEVICE_SERIAL> --isolated --json
 
 # Drop --isolated for ios
 kmp-test parallel --test-type ios --json

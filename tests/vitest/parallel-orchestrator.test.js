@@ -238,13 +238,13 @@ describe('parseArgs', () => {
 
   it('parses v0.9 step 1 parity-gap flags (#1-#5)', () => {
     const opts = parseArgs([
-      '--device', 'R3CT30KAMEH',
+      '--device', 'FAKEDEVICE12X',
       '--device-task', 'androidConnectedCheck',
       '--auto-retry',
       '--clear-data',
       '--flavor', 'staging',
     ]);
-    expect(opts.device).toBe('R3CT30KAMEH');
+    expect(opts.device).toBe('FAKEDEVICE12X');
     expect(opts.deviceTaskOverride).toBe('androidConnectedCheck');
     expect(opts.autoRetry).toBe(true);
     expect(opts.clearData).toBe(true);
@@ -3414,13 +3414,13 @@ describe('runParallel --device <serial> (v0.9 step 1, flag #3)', () => {
     ]);
     const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
     const adbProbe = () => [
-      { serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' },
+      { serial: 'FAKEDEVICE12X', type: 'physical', model: 'SM-S908B' },
       { serial: 'emulator-5554', type: 'emulator', model: 'sdk' },
     ];
 
     const { envelope, exitCode } = await runParallel({
       projectRoot: dir,
-      args: ['--test-type', 'androidInstrumented', '--device', 'R3CT30KAMEH'],
+      args: ['--test-type', 'androidInstrumented', '--device', 'FAKEDEVICE12X'],
       spawn,
       adbProbe,
       log: () => {},
@@ -3431,12 +3431,12 @@ describe('runParallel --device <serial> (v0.9 step 1, flag #3)', () => {
     // Envelope surfaces resolved device on the androidInstrumented leg.
     const leg = envelope.parallel.legs.find(l => l.test_type === 'androidInstrumented');
     expect(leg).toBeDefined();
-    expect(leg.device).toEqual({ serial: 'R3CT30KAMEH' });
+    expect(leg.device).toEqual({ serial: 'FAKEDEVICE12X' });
 
     // Gradle spawn env got ANDROID_SERIAL.
     const gradleCalls = spawn.calls.filter(c => isGradleCall(c) && !isStopCall(c));
     expect(gradleCalls.length).toBeGreaterThanOrEqual(1);
-    expect(gradleCalls[0].env.ANDROID_SERIAL).toBe('R3CT30KAMEH');
+    expect(gradleCalls[0].env.ANDROID_SERIAL).toBe('FAKEDEVICE12X');
   });
 
   it('--device with no adb devices → instrumented_setup_failed, exit 3', async () => {
@@ -3496,7 +3496,7 @@ describe('runParallel --device <serial> (v0.9 step 1, flag #3)', () => {
 
     const { envelope, exitCode } = await runParallel({
       projectRoot: dir,
-      args: ['--test-type', 'common', '--device', 'R3CT30KAMEH'],
+      args: ['--test-type', 'common', '--device', 'FAKEDEVICE12X'],
       spawn,
       adbProbe,
       log: () => {},
@@ -4098,7 +4098,7 @@ describe('runParallel androidInstrumented envelope parity (drift #3)', () => {
       projectRoot: dir,
       args: ['--test-type', 'androidInstrumented', '--module-filter', ':app'],
       // Stub adb to return the S22-style serial so resolvedDeviceSerial populates.
-      env: { KMP_TEST_FAKE_DEVICES: 'R3CT30KAMEH' },
+      env: { KMP_TEST_FAKE_DEVICES: 'FAKEDEVICE12X' },
       spawn: makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 2s\n' }),
       log: () => {},
       runCoverageInjection: stubCoverage,

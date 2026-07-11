@@ -31,7 +31,7 @@ Device-mismatch variant:
   "exit_code": 3,
   "errors": [{
     "code": "instrumented_setup_failed",
-    "message": "Requested device \"BAD_SERIAL\" not found in adb devices output. Available: R3CT30KAMEH."
+    "message": "Requested device \"BAD_SERIAL\" not found in adb devices output. Available: <DEVICE_SERIAL>."
   }],
   "android": {
     "device_serial": "BAD_SERIAL",
@@ -84,7 +84,7 @@ android emulator stop                               # adb emu kill under the hoo
 adb kill-server && adb start-server && adb devices -l
 
 # Re-dispatch with explicit pin
-kmp-test android --device R3CT30KAMEH --json
+kmp-test android --device <DEVICE_SERIAL> --json
 
 # Very-rare escape hatch — only useful for `kmp-test doctor` / `info` paths,
 # NOT a recovery for `android` subcommand (the orchestrator legitimately needs devices)

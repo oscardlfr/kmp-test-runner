@@ -32,7 +32,7 @@ import {
 
 describe('findFlagValue', () => {
   it('returns the value following the named flag', () => {
-    expect(findFlagValue(['--device', 'R3CT30KAMEH'], '--device')).toBe('R3CT30KAMEH');
+    expect(findFlagValue(['--device', 'FAKEDEVICE12X'], '--device')).toBe('FAKEDEVICE12X');
   });
 
   it('returns empty string when the flag is absent', () => {
@@ -50,7 +50,7 @@ describe('findFlagValue', () => {
   it('returns empty string for non-array input (defensive)', () => {
     expect(findFlagValue(null, '--device')).toBe('');
     expect(findFlagValue(undefined, '--device')).toBe('');
-    expect(findFlagValue('--device R3CT30KAMEH', '--device')).toBe('');
+    expect(findFlagValue('--device FAKEDEVICE12X', '--device')).toBe('');
   });
 
   it('finds the first occurrence when the flag is repeated', () => {
@@ -123,7 +123,7 @@ describe('buildAndroidBlock', () => {
   });
 
   it('echoes --device value to device_serial', () => {
-    expect(buildAndroidBlock({ device: 'R3CT30KAMEH' }).device_serial).toBe('R3CT30KAMEH');
+    expect(buildAndroidBlock({ device: 'FAKEDEVICE12X' }).device_serial).toBe('FAKEDEVICE12X');
   });
 
   it('echoes --device-task to device_task', () => {
@@ -313,9 +313,9 @@ describe('buildParallelBlock', () => {
 describe('buildDryRunBlockFromArgv', () => {
   describe('android', () => {
     it('echoes --device + --device-task + --flavor', () => {
-      const argv = ['--device', 'R3CT30KAMEH', '--device-task', 'androidConnectedCheck', '--flavor', 'staging'];
+      const argv = ['--device', 'FAKEDEVICE12X', '--device-task', 'androidConnectedCheck', '--flavor', 'staging'];
       expect(buildDryRunBlockFromArgv('android', argv, {})).toEqual({
-        device_serial: 'R3CT30KAMEH',
+        device_serial: 'FAKEDEVICE12X',
         device_task: 'androidConnectedCheck',
         flavor: 'staging',
         instrumented_modules: [],
@@ -323,7 +323,7 @@ describe('buildDryRunBlockFromArgv', () => {
     });
 
     it('passes plan.modules through to instrumented_modules', () => {
-      const argv = ['--device', 'R3CT30KAMEH'];
+      const argv = ['--device', 'FAKEDEVICE12X'];
       const plan = { modules: [{ name: ':app' }, { name: ':feature:auth' }] };
       expect(buildDryRunBlockFromArgv('android', argv, plan).instrumented_modules)
         .toEqual([':app', ':feature:auth']);

@@ -155,7 +155,7 @@ kmp-test parallel --module-filter "core-*" --list-only --json
 kmp-test parallel --isolated --json
 
 # Android instrumented on specific device
-kmp-test android --device R3CT30KAMEH --test-filter "*UserAuthTest*" --json
+kmp-test android --device <DEVICE_SERIAL> --test-filter "*UserAuthTest*" --json
 
 # Diagnose JDK / shell / ADB state
 kmp-test doctor --json
