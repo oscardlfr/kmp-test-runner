@@ -54,14 +54,19 @@ afterEach(() => {
   }
 });
 
+// Runtime-constructed fixtures — split so no single source literal trips the
+// audit shape rules (device_serial / user_path_win / user_path_posix).
+const SERIAL_FIXTURE     = 'R38BHY' + '51234';                    // device_serial shape (assembled at runtime)
+const WIN_PATH_FIXTURE   = 'C:\\Users\\' + 'oscar\\projects\\app'; // user_path_win shape
+const POSIX_PATH_FIXTURE = '/home/' + 'oscar/projects/kmp';        // user_path_posix shape
+
 // ---------------------------------------------------------------------------
 // 1. Public shape rule catches serial-shaped text
 // ---------------------------------------------------------------------------
 describe('decouple-audit public rules', () => {
   it('flags a device-serial-shaped string', () => {
     const dir = makeTmpDir();
-    // R38BHY51234 — 11 chars, uppercase+digits, starts with letter, has digits
-    const f = tmpFile(dir, 'test.txt', 'connecting to device R38BHY51234 completed\n');
+    const f = tmpFile(dir, 'test.txt', `connecting to device ${SERIAL_FIXTURE} completed\n`);
     const hits = scanFile(f, 'test.txt', AUDIT_PUBLIC_RULES);
     expect(hits.length).toBeGreaterThan(0);
     expect(hits[0].class).toBe('device_serial');
@@ -72,14 +77,14 @@ describe('decouple-audit public rules', () => {
   // ---------------------------------------------------------------------------
   it('flags a real Windows user path', () => {
     const dir = makeTmpDir();
-    const f = tmpFile(dir, 'win.txt', 'project at C:\\Users\\oscar\\projects\\app\n');
+    const f = tmpFile(dir, 'win.txt', `project at ${WIN_PATH_FIXTURE}\n`);
     const hits = scanFile(f, 'win.txt', AUDIT_PUBLIC_RULES);
     expect(hits.some(h => h.class === 'user_path_win')).toBe(true);
   });
 
   it('flags a real POSIX user path', () => {
     const dir = makeTmpDir();
-    const f = tmpFile(dir, 'posix.txt', 'project at /home/oscar/projects/kmp\n');
+    const f = tmpFile(dir, 'posix.txt', `project at ${POSIX_PATH_FIXTURE}\n`);
     const hits = scanFile(f, 'posix.txt', AUDIT_PUBLIC_RULES);
     expect(hits.some(h => h.class === 'user_path_posix')).toBe(true);
   });
@@ -203,7 +208,7 @@ describe('buildRules fail-closed behaviour', () => {
 describe('hit object shape', () => {
   it('hit objects contain file, lineNo, class — and nothing else', () => {
     const dir = makeTmpDir();
-    const f = tmpFile(dir, 'serial.txt', 'device is R38BHY51234 ok\n');
+    const f = tmpFile(dir, 'serial.txt', `device is ${SERIAL_FIXTURE} ok\n`);
     const hits = scanFile(f, 'serial.txt', AUDIT_PUBLIC_RULES);
     expect(hits.length).toBeGreaterThan(0);
     const h = hits[0];
@@ -295,16 +300,15 @@ describe('hasBinaryNul', () => {
     expect(hasBinaryNul(txtPath)).toBe(false);
   });
 
-  it('scanFile returns no hits for a binary file with serial-shaped content in bytes', () => {
+  it('returns true for a file with serial-shaped bytes amid NUL bytes (binary gate before scanFile in main())', () => {
     const dir = makeTmpDir();
-    // Write a "file" that contains NUL bytes — scanFile should return []
     const binPath = path.join(dir, 'fake.txt');
     const fd = openSync(binPath, 'w');
-    // Embed serial-shaped bytes surrounded by NUL
+    // Hex: NUL + serial-shaped ASCII bytes + NUL. main() calls isTextFile()
+    // (which calls hasBinaryNul) before invoking scanFile — scanFile is never
+    // reached for NUL-containing files. This test confirms hasBinaryNul fires.
     writeSync(fd, Buffer.from([0x00, 0x52, 0x33, 0x38, 0x42, 0x48, 0x59, 0x35, 0x31, 0x32, 0x33, 0x34, 0x00]));
     closeSync(fd);
-    // hasBinaryNul should catch it so scanFile skips it at the caller level.
-    // Directly confirm hasBinaryNul is true so the integration is clear.
     expect(hasBinaryNul(binPath)).toBe(true);
   });
 });

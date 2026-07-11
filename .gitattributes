@@ -77,3 +77,8 @@ tests/skill-scripts/*.bats text eol=lf
 # closes the Windows-local-dev + cross-host-tarball corruption vector.
 scripts/*.sh text eol=lf
 scripts/**/*.sh text eol=lf
+
+# PR-02 decouple-audit v2 — multi-line ESM import block triggers same
+# vitest 2.1.x CRLF parser bug as the other .mjs entries above.
+tools/decouple-audit.mjs text eol=lf
+tests/vitest/decouple-audit.test.js text eol=lf
