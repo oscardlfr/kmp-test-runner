@@ -148,7 +148,7 @@ describe('runBenchmark --platform android', () => {
   it('with adb device, dispatches :bench-android:connectedAndroidTest', async () => {
     const dir = copyFixture();
     const spawn = makeSpawnStub();
-    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+    const adbProbe = () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'SM-S908B' }];
 
     const { envelope, exitCode } = await runBenchmark({
       projectRoot: dir,
@@ -783,7 +783,7 @@ describe('runBenchmark --variant (v0.9 step 3)', () => {
   it('--variant release on android dispatches :mod:connectedReleaseAndroidTest', async () => {
     const dir = copyFixture();
     const spawn = makeSpawnStub();
-    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+    const adbProbe = () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'SM-S908B' }];
 
     await runBenchmark({
       projectRoot: dir,
@@ -800,7 +800,7 @@ describe('runBenchmark --variant (v0.9 step 3)', () => {
   it('--variant debug on android dispatches :mod:connectedDebugAndroidTest', async () => {
     const dir = copyFixture();
     const spawn = makeSpawnStub();
-    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+    const adbProbe = () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'SM-S908B' }];
 
     await runBenchmark({
       projectRoot: dir,
@@ -1059,7 +1059,7 @@ describe('runBenchmark graded partial-timeout exit (PR 3.2 / A10)', () => {
   it('1 timeout + 1 pass (no --strict-timeouts) → exit 0 + warnings[].code=partial_timeout', async () => {
     const dir = copyFixture();
     // Two spawns: bench-jvm first (SIGTERM = timeout), bench-android second (pass).
-    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+    const adbProbe = () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'SM-S908B' }];
     let callIdx = 0;
     const spawn = (cmd, args, opts) => {
       const idx = callIdx++;
@@ -1092,7 +1092,7 @@ describe('runBenchmark graded partial-timeout exit (PR 3.2 / A10)', () => {
 
   it('1 timeout + 1 pass + --strict-timeouts → exit 3 + NO partial_timeout warning', async () => {
     const dir = copyFixture();
-    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+    const adbProbe = () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'SM-S908B' }];
     let callIdx = 0;
     const spawn = (cmd, args, opts) => {
       const idx = callIdx++;
@@ -1115,7 +1115,7 @@ describe('runBenchmark graded partial-timeout exit (PR 3.2 / A10)', () => {
 
   it('all modules timed out (zero passes) → exit 3 regardless of --strict-timeouts (everything-hung guard)', async () => {
     const dir = copyFixture();
-    const adbProbe = () => [{ serial: 'R3CT30KAMEH', type: 'physical', model: 'SM-S908B' }];
+    const adbProbe = () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'SM-S908B' }];
     const spawn = (cmd, args, opts) => ({
       status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: null,
     });

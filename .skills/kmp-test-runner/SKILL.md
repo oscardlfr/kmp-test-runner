@@ -129,7 +129,7 @@ The skill ships executable helpers under `.skills/kmp-test-runner/scripts/` for 
 Example:
 
 ```bash
-bash .skills/kmp-test-runner/scripts/run-tests.sh android --device R3CT30KAMEH
+bash .skills/kmp-test-runner/scripts/run-tests.sh android --device <DEVICE_SERIAL>
 # [INFO] env: HAS_ANDROID_CLI                          (stderr)
 # {"tool":"kmp-test","subcommand":"android",...}      (stdout)
 ```

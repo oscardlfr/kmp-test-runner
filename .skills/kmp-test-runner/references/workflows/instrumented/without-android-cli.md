@@ -33,7 +33,7 @@ emulator -list-avds                              # AVDs (offline) — from $ANDR
 adb devices -l                                   # connected devices (online status)
 
 # Pick a device + dispatch
-kmp-test android --device R3CT30KAMEH --json
+kmp-test android --device <DEVICE_SERIAL> --json
 ```
 
 That command:
@@ -183,7 +183,7 @@ The `android` subcommand emits the standard top-level envelope (see [`../../cli/
     "modules_with_jacoco_plugin": []
   },
   "android": {
-    "device_serial": "R3CT30KAMEH",
+    "device_serial": "<DEVICE_SERIAL>",
     "device_task": "",
     "flavor": "",
     "instrumented_modules": [":app"]

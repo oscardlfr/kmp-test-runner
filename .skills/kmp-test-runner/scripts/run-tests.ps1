@@ -28,9 +28,9 @@
     # → npx kmp-test parallel --json --project-root .
 
 .EXAMPLE
-    pwsh run-tests.ps1 android --device R3CT30KAMEH
+    pwsh run-tests.ps1 android --device <DEVICE_SERIAL>
     # → [INFO] env: HAS_ANDROID_CLI (on stderr)
-    # → npx kmp-test android --json --project-root . --device R3CT30KAMEH
+    # → npx kmp-test android --json --project-root . --device <DEVICE_SERIAL>
 #>
 [CmdletBinding()]
 param(
