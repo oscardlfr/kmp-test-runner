@@ -5,7 +5,7 @@
 .DESCRIPTION
     Downloads the kmp-test-runner Windows zip from GitHub Releases, extracts it
     to $env:LOCALAPPDATA\kmp-test-runner, and adds the bin directory to the
-    current user's PATH (HKCU only — never machine-wide).
+    current user's PATH (HKCU only - never machine-wide).
 
 .PARAMETER Version
     Specific version to install (e.g. "0.3.0"). Defaults to latest release.
@@ -37,6 +37,9 @@ $Repo       = "oscardlfr/kmp-test-runner"
 $Package    = "kmp-test-runner"
 $BinName    = "kmp-test"
 
+# TLS 1.2 -- required for PS 5.1; -bor preserves any other already-enabled protocols.
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+
 # --------------------------------------------------------------------------
 # Usage / help is handled by standard PowerShell Get-Help
 # --------------------------------------------------------------------------
@@ -64,7 +67,7 @@ function Get-LocationHeader {
     try {
         # Try the PS 5.1 indexer path first; if Headers is a Hashtable / WebHeaderCollection this returns
         # a [string]. If Headers is HttpResponseHeaders, the indexer either throws (caught below) or
-        # returns [string[]] in some intermediate runtimes — we then collapse to the first value.
+        # returns [string[]] in some intermediate runtimes - we then collapse to the first value.
         $value = $Headers['Location']
         if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
             $value = ($value | Select-Object -First 1)
@@ -87,7 +90,7 @@ function Get-LocationHeader {
 }
 
 function Resolve-LatestVersion {
-    # Primary: follow redirect URL — avoids 60/hr API rate limit
+    # Primary: follow redirect URL - avoids 60/hr API rate limit
     $RedirectUrl = "https://github.com/$Repo/releases/latest"
     try {
         $Response = Invoke-WebRequest -Uri $RedirectUrl -UseBasicParsing -MaximumRedirection 0 -ErrorAction SilentlyContinue
@@ -210,7 +213,7 @@ Set-Content -Path $MarkerPath -Value $MarkerContent -Encoding UTF8
 Remove-Item -Recurse -Force $TempFolder -ErrorAction SilentlyContinue
 
 # --------------------------------------------------------------------------
-# PATH setup — HKCU only, never Machine
+# PATH setup - HKCU only, never Machine
 # --------------------------------------------------------------------------
 $CurrentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
 if ([string]::IsNullOrEmpty($CurrentPath)) {
@@ -239,7 +242,7 @@ else {
 $env:PATH = $BinDir + ";" + $env:PATH
 
 # --------------------------------------------------------------------------
-# Done — Bug D fix (v0.5.0): old message said "Restart your shell to pick
+# Done - Bug D fix (v0.5.0): old message said "Restart your shell to pick
 # up the PATH change" without acknowledging that this session is already
 # usable. Make the distinction explicit so users don't waste a shell
 # restart they don't need.
@@ -249,7 +252,7 @@ Write-Host "$Package v$Version installed successfully."
 Write-Host "  Wrapper : $WrapperPath"
 Write-Host "  Runtime : $InstallDir"
 Write-Host ""
-Write-Host "kmp-test is ready in this PowerShell session — verify with:"
+Write-Host "kmp-test is ready in this PowerShell session - verify with:"
 Write-Host "  kmp-test --version"
 Write-Host ""
 Write-Host "New PowerShell / cmd.exe sessions pick up the user PATH automatically."

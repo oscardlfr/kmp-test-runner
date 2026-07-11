@@ -20,6 +20,11 @@ Describe 'run-tests.ps1 — syntax + structure' {
     It 'exists at the expected path' {
         Test-Path $script:ScriptPath | Should -BeTrue
     }
+
+    It 'does not invoke npx' {
+        $content = Get-Content $script:ScriptPath -Raw
+        $content | Should -Not -Match '\bnpx\b'
+    }
 }
 
 Describe 'run-tests.ps1 — --help / -h short-circuit' {
@@ -50,20 +55,16 @@ Describe 'run-tests.ps1 — argument validation' {
 
 Describe 'run-tests.ps1 — dispatch + arg forwarding' {
     BeforeAll {
-        # Stub kmp-test that echoes its argv. .ps1 isn't on PATHEXT by
-        # default so we install both a .cmd shim AND a .ps1 stub (the
-        # script calls `npx kmp-test` — npx itself resolves the binary
-        # through PATH; the .cmd is what wins).
+        # Stub kmp-test.cmd that echoes its argv verbatim via %*.
+        # run-tests.ps1 resolves it via Get-Command 'kmp-test' -CommandType Application,
+        # which finds the .cmd through PATHEXT when the temp dir is on PATH.
         $script:TmpBin = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "kmp-run-tests-$(Get-Random)")
-        $script:NpxShim = Join-Path $script:TmpBin.FullName 'npx.cmd'
-        # npx.cmd that ignores leading "kmp-test" and echoes the rest.
-        # %* gives all args; we strip the first ("kmp-test") via shift.
-        Set-Content -Path $script:NpxShim -Value @'
+        $script:KmpShim = Join-Path $script:TmpBin.FullName 'kmp-test.cmd'
+        Set-Content -Path $script:KmpShim -Value @'
 @echo off
-shift
-echo STUB_KMP_TEST_ARGS: %1 %2 %3 %4 %5 %6 %7 %8 %9
+echo STUB_KMP_TEST_ARGS: %*
 exit /b 0
-'@
+'@ -Encoding ASCII
         $script:OldPath = $env:PATH
         $env:PATH = "$($script:TmpBin.FullName);$($script:OldPath)"
     }
@@ -97,5 +98,27 @@ exit /b 0
         $combined = & pwsh -NoLogo -NoProfile -File $script:ScriptPath unit 2>&1
         $LASTEXITCODE | Should -Be 0
         ($combined -join "`n") | Should -Not -Match '\[INFO\] env:'
+    }
+}
+
+Describe 'run-tests.ps1 - kmp-test not found' {
+    It 'exits 1 with clear guidance when kmp-test absent from PATH and LOCALAPPDATA unavailable' {
+        $pwshBin = (Get-Command pwsh).Source
+        # Isolate PATH to a temp dir that has no kmp-test; clear LOCALAPPDATA so
+        # the installer fallback path also cannot be constructed via Join-Path.
+        $tmp = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "kmp-absent-$(Get-Random)")
+        $oldPath = $env:PATH
+        $oldLad  = $env:LOCALAPPDATA
+        try {
+            $env:PATH        = $tmp.FullName
+            $env:LOCALAPPDATA = ''
+            $combined = & $pwshBin -NoLogo -NoProfile -File $script:ScriptPath unit 2>&1
+            $LASTEXITCODE | Should -Be 1
+            ($combined -join "`n") | Should -Match 'kmp-test not found'
+        } finally {
+            $env:PATH         = $oldPath
+            $env:LOCALAPPDATA = $oldLad
+            Remove-Item -Recurse -Force $tmp.FullName -ErrorAction SilentlyContinue
+        }
     }
 }

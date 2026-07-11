@@ -7,13 +7,13 @@
 
 .DESCRIPTION
     For -Type android, an env preamble runs detect-env.ps1 first and prints
-    [INFO] env: HAS_ANDROID_CLI|NO_ANDROID_CLI to stderr — the agent can
+    [INFO] env: HAS_ANDROID_CLI|NO_ANDROID_CLI to stderr - the agent can
     branch on the enriched-vs-fallback troubleshooting workflow without
     parsing it out of the envelope.
 
-    kmp-test is invoked via `npx kmp-test` so the script works regardless of
-    whether the CLI was installed via npm-global or the installer's HKCU
-    PATH augmentation (npx resolves both forms identically).
+    kmp-test is resolved directly via Get-Command -CommandType Application (PATH
+    lookup) with a fallback to the installer's known HKCU location, so the
+    script works regardless of how the CLI was installed.
 
 .PARAMETER Type
     Test type / kmp-test subcommand selector. Default 'unit'. One of:
@@ -25,12 +25,12 @@
 
 .EXAMPLE
     pwsh run-tests.ps1
-    # → npx kmp-test parallel --json --project-root .
+    # -> kmp-test parallel --json --project-root .
 
 .EXAMPLE
     pwsh run-tests.ps1 android --device <DEVICE_SERIAL>
-    # → [INFO] env: HAS_ANDROID_CLI (on stderr)
-    # → npx kmp-test android --json --project-root . --device <DEVICE_SERIAL>
+    # -> [INFO] env: HAS_ANDROID_CLI (on stderr)
+    # -> kmp-test android --json --project-root . --device <DEVICE_SERIAL>
 #>
 [CmdletBinding()]
 param(
@@ -42,7 +42,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# PowerShell binds dash-prefixed args to $Rest, not $Type — scan the
+# PowerShell binds dash-prefixed args to $Rest, not $Type - scan the
 # combined arg surface so `pwsh run-tests.ps1 --help` works whether the
 # flag lands in $Type (rare) or $Rest (the common case).
 $allArgs = @($Type)
@@ -53,14 +53,14 @@ if ($allArgs | Where-Object { $_ -in $helpFlags }) {
 Usage: pwsh run-tests.ps1 [-Type TYPE] [-- extra kmp-test args...]
 
 TYPE (-Type or first positional, default = unit):
-  unit       → kmp-test parallel --json
-  android    → kmp-test android --json
-  coverage   → kmp-test coverage --json
-  benchmark  → kmp-test benchmark --json
-  changed    → kmp-test changed --json
-  info       → kmp-test info --json
-  doctor     → kmp-test doctor --json
-  describe   → kmp-test describe --json
+  unit       -> kmp-test parallel --json
+  android    -> kmp-test android --json
+  coverage   -> kmp-test coverage --json
+  benchmark  -> kmp-test benchmark --json
+  changed    -> kmp-test changed --json
+  info       -> kmp-test info --json
+  doctor     -> kmp-test doctor --json
+  describe   -> kmp-test describe --json
 
 Extra args after TYPE are forwarded verbatim. --json and
 --project-root . are injected automatically.
@@ -93,18 +93,32 @@ $sub = $typeMap[$Type]
 if ($Type -eq 'android') {
     $detectEnv = Join-Path $PSScriptRoot 'detect-env.ps1'
     if (Test-Path $detectEnv) {
-        $env = & pwsh -NoLogo -NoProfile -File $detectEnv
-        [Console]::Error.WriteLine("[INFO] env: $env")
+        . $detectEnv
+        [Console]::Error.WriteLine("[INFO] env: $(Get-KmpAndroidCliStatus)")
     }
 }
 
-# Build the args list. $Rest may be $null when no extras were passed —
+# Build the args list. $Rest may be $null when no extras were passed --
 # guard so we don't splat a $null into the argv.
 $forwarded = @($sub, '--json', '--project-root', '.')
 if ($Rest) { $forwarded += $Rest }
 
-# `npx` resolves both `npm install -g kmp-test-runner` and the installer's
-# HKCU PATH augmentation. Using the call operator (&) ensures the args
-# pass through verbatim with PowerShell's native arg parsing.
-& npx kmp-test @forwarded
+# Resolve kmp-test directly via PATH; fall back to the installer's known HKCU location.
+# Select-Object -First 1 prevents a multi-result array when multiple kmp-test shims exist.
+$kmpCmd = Get-Command 'kmp-test' -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if ($kmpCmd) {
+    $kmpExe = $kmpCmd.Source
+} else {
+    $kmpExe = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $candidate = Join-Path $env:LOCALAPPDATA 'kmp-test-runner\bin\kmp-test.cmd'
+        if (Test-Path $candidate) { $kmpExe = $candidate }
+    }
+    if (-not $kmpExe) {
+        [Console]::Error.WriteLine('kmp-test not found. Install: npm install -g kmp-test-runner')
+        exit 1
+    }
+}
+& $kmpExe @forwarded
 exit $LASTEXITCODE
