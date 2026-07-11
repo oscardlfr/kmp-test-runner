@@ -16,13 +16,40 @@ jobs:
       contents: read
       packages: write
       id-token: write
+      checks: read          # release-gate reads check-runs API
+      statuses: read        # release-gate reads commit statuses API
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9  # v4.8.0
         with:
           java-version: '17'
           distribution: 'temurin'
+
+      # Node is required to run tools/release-gate.mjs (this job has no setup-node by default).
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 20
+
+      # Guard 1: only publish when GITHUB_SHA is the tip of origin/main.
+      # Blocks manual workflow_dispatch from non-main branches.
+      - name: Guard — only publish from tip of main
+        run: |
+          git fetch origin main
+          MAIN_SHA=$(git rev-parse origin/main)
+          if [ "$GITHUB_SHA" != "$MAIN_SHA" ]; then
+            echo "::error::GITHUB_SHA ($GITHUB_SHA) is not the tip of origin/main ($MAIN_SHA). Refusing to publish."
+            exit 1
+          fi
+
+      # Guard 2: verify all required CI checks are green on this SHA.
+      # Manual workflow_dispatch cannot bypass this — same check as the auto path.
+      - name: Guard — required CI checks green on this SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node tools/release-gate.mjs poll-checks "$GITHUB_SHA" .github/required-checks.json \
+            --repo "$GITHUB_REPOSITORY" --timeout-minutes 10
 
       - name: Read gradle-plugin version
         id: ver
