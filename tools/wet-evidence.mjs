@@ -26,8 +26,10 @@
 //   1. --project-kind private without a private-pattern source exits 1.
 //   2. --allow-missing-private-rules with --project-kind private exits 1.
 //   3. No --stdout / --stderr / --no-output specified exits 1.
+//   3b. --no-output combined with a non-none --stdout or --stderr exits 1.
 //   4. Any redaction class still present in the processed output exits 1
 //      (content never printed in the refusal message).
+//   5. Any redaction class still present in the evidence payload string fields exits 1.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -112,6 +114,12 @@ function readSrc(src, label) {
   return '';
 }
 
+// Escape | and strip newlines from a markdown table cell value so that a
+// user-supplied command or alias cannot break column structure.
+function safeCell(val) {
+  return String(val).replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');
+}
+
 // Count per-class matches in text before redaction runs.
 function countMatches(text, rules) {
   const counts = {};
@@ -147,6 +155,11 @@ function main() {
     die(`--format must be "table" or "json", got "${opts.format}"`);
   }
 
+  // --- Alias must be a safe identifier (no path separators, pipes, or control chars)
+  if (!/^[A-Za-z0-9_.-]+$/.test(opts.alias)) {
+    die('--alias must match ^[A-Za-z0-9_.-]+$ (use a safe project identifier)');
+  }
+
   // --- Fail-closed rule 1: --allow-missing-private-rules incompatible with private kind
   if (opts.allowMissingPrivate && opts.projectKind === 'private') {
     die('--allow-missing-private-rules cannot be used with --project-kind private');
@@ -159,6 +172,15 @@ function main() {
     opts.stderrSrc !== undefined;
   if (!outputSpecified) {
     die('output source not specified; use --no-output if there is no output to sanitize');
+  }
+
+  // --- Fail-closed rule 2b: --no-output must not be combined with a real source
+  if (opts.noOutput) {
+    const stdoutConflict = opts.stdoutSrc !== undefined && opts.stdoutSrc !== 'none';
+    const stderrConflict = opts.stderrSrc !== undefined && opts.stderrSrc !== 'none';
+    if (stdoutConflict || stderrConflict) {
+      die('--no-output conflicts with --stdout / --stderr (use --stdout none or --stderr none to be explicit)');
+    }
   }
 
   // --- Fail-closed rule 3: private kind needs a private-pattern source ------
@@ -227,12 +249,34 @@ function main() {
     sha:             opts.sha || null,
   };
 
+  // --- Fail-closed rule 5: redact + leak-check the evidence payload fields --
+  // alias and sha are user-supplied strings that may contain private data
+  // (e.g. a serial-shaped alias). command is already redacted but re-applied
+  // for safety. Enum fields (projectKind, platform, result) are controlled values.
+  evidence.alias   = redactText(evidence.alias,   rules);
+  evidence.command = redactText(evidence.command,  rules);
+  if (evidence.sha) evidence.sha = redactText(evidence.sha, rules);
+
+  for (const [key, val] of Object.entries(evidence)) {
+    if (typeof val !== 'string') continue;
+    const fieldLeaks = findLeaks(val, rules);
+    if (fieldLeaks.length > 0) {
+      for (const leak of fieldLeaks) {
+        process.stderr.write(
+          `REFUSED: ${leak.class} in evidence payload field "${key}" at line ${leak.lineNo} (content suppressed)\n`,
+        );
+      }
+      process.exit(1);
+    }
+  }
+
   if (opts.format === 'json') {
     process.stdout.write(JSON.stringify(evidence, null, 2) + '\n');
   } else {
-    // Markdown table row followed by a JSON block for reviewers.
+    // Markdown table row: safeCell escapes | and strips newlines so that a
+    // user-supplied command cannot break the column structure.
     process.stdout.write(
-      `| ${opts.alias} | ${opts.projectKind} | ${opts.platform} | ${redactedCmd} | ${opts.exitCode} | ${result} |\n`,
+      `| ${safeCell(evidence.alias)} | ${safeCell(evidence.projectKind)} | ${safeCell(evidence.platform)} | ${safeCell(evidence.command)} | ${evidence.exitCode} | ${evidence.result} |\n`,
     );
     process.stdout.write('```json\n' + JSON.stringify(evidence, null, 2) + '\n```\n');
   }

@@ -427,3 +427,140 @@ describe('wet-evidence CLI — fail-closed refusals', () => {
     expect(r.stderr).toContain('REFUSED');
   });
 });
+
+// ---- Regression tests — PR-00 amendment fixes -----------------------------
+
+describe('wet-evidence CLI — --no-output + --stdout/--stderr conflict', () => {
+  it('refuses when --no-output is combined with a real --stdout file', () => {
+    const f = tmpFile('out.txt', `device: ${FAKE_SERIAL}`);
+    const r = spawnCli([
+      '--alias', 'OSS-A', '--cmd', 'kmp-test parallel', '--exit', '0',
+      '--project-kind', 'official', '--platform', 'windows',
+      '--no-output', '--stdout', f,
+    ]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('REFUSED');
+    expect(r.stderr).toContain('--no-output');
+  });
+
+  it('refuses when --no-output is combined with a real --stderr file', () => {
+    const f = tmpFile('err.txt', 'some error output');
+    const r = spawnCli([
+      '--alias', 'OSS-A', '--cmd', 'kmp-test parallel', '--exit', '0',
+      '--project-kind', 'official', '--platform', 'windows',
+      '--no-output', '--stderr', f,
+    ]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('REFUSED');
+  });
+
+  it('accepts --no-output combined with --stdout none (explicit none)', () => {
+    const r = spawnCli([
+      '--alias', 'OSS-A', '--cmd', 'kmp-test parallel', '--exit', '0',
+      '--project-kind', 'official', '--platform', 'windows',
+      '--no-output', '--stdout', 'none',
+    ]);
+    expect(r.status).toBe(0);
+  });
+});
+
+describe('wet-evidence CLI — evidence payload redaction', () => {
+  it('does not emit a serial-shaped alias raw in the output', () => {
+    // FAKEDEVICE12X passes ^[A-Za-z0-9_.-]+$ format check but is serial-shaped.
+    // The payload redaction must replace it before emit.
+    const r = spawnCli([
+      '--alias', FAKE_SERIAL,
+      '--cmd', 'kmp-test parallel', '--exit', '0',
+      '--project-kind', 'official', '--platform', 'windows',
+      '--no-output', '--format', 'json',
+    ]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toContain(FAKE_SERIAL);
+    const obj = JSON.parse(r.stdout);
+    expect(obj.alias).toBe('<DEVICE_SERIAL>');
+  });
+
+  it('redacts a serial-shaped alias in table format too', () => {
+    const r = spawnCli([
+      '--alias', FAKE_SERIAL,
+      '--cmd', 'kmp-test parallel', '--exit', '0',
+      '--project-kind', 'official', '--platform', 'windows',
+      '--no-output', '--format', 'table',
+    ]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toContain(FAKE_SERIAL);
+    const tableLine = r.stdout.split('\n').find(l => l.startsWith('|'));
+    expect(tableLine).toContain('<DEVICE_SERIAL>');
+  });
+
+  it('refuses if the --alias is not a safe identifier', () => {
+    const r = spawnCli([
+      '--alias', 'bad alias!',
+      '--cmd', 'kmp-test parallel', '--exit', '0',
+      '--project-kind', 'official', '--platform', 'windows', '--no-output',
+    ]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('REFUSED');
+    expect(r.stderr).toContain('--alias');
+  });
+});
+
+describe('redact.mjs — full user path suffix redaction', () => {
+  it('redacts the full Windows user path including subdirectories', () => {
+    const text = 'project at C:\\Users\\testuser\\projects\\myapp end';
+    const out  = redactText(text, PUBLIC_SHAPE_RULES);
+    expect(out).not.toContain('testuser');
+    expect(out).not.toContain('projects');
+    expect(out).not.toContain('myapp');
+    expect(out).toContain('<USER_PATH>');
+    expect(out).toBe('project at <USER_PATH> end');
+  });
+
+  it('redacts the full POSIX user path including subdirectories', () => {
+    const text = 'path is /home/testuser/projects/kmp-test end';
+    const out  = redactText(text, PUBLIC_SHAPE_RULES);
+    expect(out).not.toContain('testuser');
+    expect(out).not.toContain('projects');
+    expect(out).toContain('<USER_PATH>');
+    expect(out).toBe('path is <USER_PATH> end');
+  });
+
+  it('redacts a macOS /Users/<user> path including subdirectories', () => {
+    const text = 'running from /Users/testuser/workspace/kmp-test-runner/bin';
+    const out  = redactText(text, PUBLIC_SHAPE_RULES);
+    expect(out).not.toContain('testuser');
+    expect(out).not.toContain('workspace');
+    expect(out).toContain('<USER_PATH>');
+  });
+});
+
+describe('wet-evidence CLI — table cell injection protection', () => {
+  it('escapes pipe characters in the command to prevent column-breaking', () => {
+    const r = spawnCli([
+      '--alias', 'OSS-X',
+      '--cmd', 'kmp-test parallel --test-filter x|y',
+      '--exit', '0',
+      '--project-kind', 'official', '--platform', 'windows',
+      '--no-output', '--format', 'table',
+    ]);
+    expect(r.status).toBe(0);
+    const tableLine = r.stdout.split('\n').find(l => l.startsWith('|'));
+    expect(tableLine).toBeDefined();
+    // The raw pipe in the command must be escaped so it cannot break the table row.
+    expect(tableLine).toContain('\\|');
+  });
+
+  it('replaces newlines in table cells to keep the row on a single line', () => {
+    const r = spawnCli([
+      '--alias', 'OSS-X',
+      '--cmd', 'kmp-test\nparallel',
+      '--exit', '0',
+      '--project-kind', 'official', '--platform', 'windows',
+      '--no-output', '--format', 'table',
+    ]);
+    expect(r.status).toBe(0);
+    // The newline in the command must be replaced so exactly one table row exists.
+    const tableLines = r.stdout.split('\n').filter(l => l.startsWith('| OSS-X |'));
+    expect(tableLines).toHaveLength(1);
+  });
+});

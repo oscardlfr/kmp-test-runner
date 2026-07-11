@@ -35,14 +35,16 @@ export const PUBLIC_SHAPE_RULES = [
   },
   {
     class: 'user_path_win',
-    // Windows user home directory paths.
-    re: /[A-Za-z]:\\(?:Users|home)\\[^\\"\s]+/g,
+    // Windows user home directory paths including all subdirectories.
+    // [^\s"] allows backslashes so C:\Users\user\projects\app is fully consumed.
+    re: /[A-Za-z]:\\(?:Users|home)\\[^\s"]+/g,
     replacement: '<USER_PATH>',
   },
   {
     class: 'user_path_posix',
-    // POSIX user home directory paths (/home/<user>/... or /Users/<user>/...).
-    re: /\/(?:home|Users)\/[^/\s"]+/g,
+    // POSIX user home directory paths including all subdirectories.
+    // [^\s"] allows forward-slashes so /home/user/projects/kmp is fully consumed.
+    re: /\/(?:home|Users)\/[^\s"]+/g,
     replacement: '<USER_PATH>',
   },
   {
