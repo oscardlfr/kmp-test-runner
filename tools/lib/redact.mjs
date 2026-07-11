@@ -17,6 +17,8 @@
 //   { "class": "private_project", "literal": "my-project-name", "replacement": "<PRIVATE_PROJECT>" }
 //   { "class": "custom_re",       "regex":   "com\\.example",    "replacement": "<PRIVATE_PKG>"     }
 // "literal" entries are escaped verbatim; "regex" entries are compiled with the global flag.
+// Optional "flags" field adds extra flags (e.g. "i" for case-insensitive); "g" is always forced.
+// Duplicate or invalid flag characters throw (fail-closed).
 
 import { readFileSync } from 'node:fs';
 
@@ -36,15 +38,17 @@ export const PUBLIC_SHAPE_RULES = [
   {
     class: 'user_path_win',
     // Windows user home directory paths including all subdirectories.
-    // [^\s"] allows backslashes so C:\Users\user\projects\app is fully consumed.
-    re: /[A-Za-z]:\\(?:Users|home)\\[^\s"]+/g,
+    // (?!<) excludes placeholder notation like C:\Users\<username>\... used in docs.
+    // [^\s"] allows backslashes so C:\Users\<username>\projects\app is fully consumed.
+    re: /[A-Za-z]:\\(?:Users|home)\\(?!<)[^\s"]+/g,
     replacement: '<USER_PATH>',
   },
   {
     class: 'user_path_posix',
     // POSIX user home directory paths including all subdirectories.
-    // [^\s"] allows forward-slashes so /home/user/projects/kmp is fully consumed.
-    re: /\/(?:home|Users)\/[^\s"]+/g,
+    // (?!<) excludes placeholder notation like /home/<username>/... used in docs.
+    // [^\s"] allows forward-slashes so /home/<username>/projects/kmp is fully consumed.
+    re: /\/(?:home|Users)\/(?!<)[^\s"]+/g,
     replacement: '<USER_PATH>',
   },
   {
@@ -98,6 +102,23 @@ export function loadPrivateRules(configPath) {
       throw new Error(`${ctx}: exactly one of "literal" or "regex" must be present`);
     }
 
+    // Build regex flags. Always forces 'g' (required by redactText).
+    // Optional "flags" field adds extra flags (e.g. "i" for case-insensitive).
+    // Fail-closed: invalid characters and duplicate characters both throw.
+    const rawFlags = typeof entry.flags === 'string' ? entry.flags : '';
+    if (rawFlags !== '') {
+      if (!/^[gimsuy]*$/.test(rawFlags)) {
+        throw new Error(`${ctx}: "flags" contains invalid characters: "${rawFlags}"`);
+      }
+      const dupes = [...rawFlags].filter((c, ii) => rawFlags.indexOf(c) !== ii);
+      if (dupes.length > 0) {
+        throw new Error(`${ctx}: "flags" has duplicate characters: "${dupes.join('')}"`);
+      }
+    }
+    // Use Set to avoid double-g when the user also specified 'g' in flags.
+    const flagSet = new Set(['g', ...rawFlags]);
+    const flags = [...flagSet].join('');
+
     let re;
     if (hasLiteral) {
       if (typeof entry.literal !== 'string') {
@@ -105,13 +126,13 @@ export function loadPrivateRules(configPath) {
       }
       // Escape every regex metacharacter so the literal is matched verbatim.
       const escaped = entry.literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      re = new RegExp(escaped, 'g');
+      re = new RegExp(escaped, flags);
     } else {
       if (typeof entry.regex !== 'string') {
         throw new Error(`${ctx}: "regex" must be a string`);
       }
       try {
-        re = new RegExp(entry.regex, 'g');
+        re = new RegExp(entry.regex, flags);
       } catch (err) {
         throw new Error(`${ctx}: invalid regex "${entry.regex}": ${err.message}`);
       }
