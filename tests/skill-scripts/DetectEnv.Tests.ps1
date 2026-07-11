@@ -93,3 +93,34 @@ Describe 'detect-env.ps1 — runtime behavior' {
         }
     }
 }
+
+Describe 'detect-env.ps1 - dot-source safety' {
+    It 'dot-sourcing does not terminate the caller' {
+        # Write a temp script that dot-sources detect-env.ps1 then prints a
+        # sentinel. If exit 0 ran during dot-source the sentinel is never
+        # printed and the test fails.
+        $tmp = Join-Path $env:TEMP "kmp-ds-exit-$(Get-Random).ps1"
+        try {
+            $escaped = $script:ScriptPath -replace "'", "''"
+            Set-Content -Path $tmp -Value ". '$escaped'`nWrite-Output 'CALLER_CONTINUED'" -Encoding UTF8
+            $out = & pwsh -NoLogo -NoProfile -File $tmp
+            $LASTEXITCODE | Should -Be 0
+            $out | Should -Contain 'CALLER_CONTINUED'
+        } finally {
+            Remove-Item $tmp -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'Get-KmpAndroidCliStatus is callable after dot-sourcing' {
+        $tmp = Join-Path $env:TEMP "kmp-ds-fn-$(Get-Random).ps1"
+        try {
+            $escaped = $script:ScriptPath -replace "'", "''"
+            Set-Content -Path $tmp -Value ". '$escaped'`nWrite-Output (Get-KmpAndroidCliStatus)" -Encoding UTF8
+            $out = & pwsh -NoLogo -NoProfile -File $tmp
+            $LASTEXITCODE | Should -Be 0
+            $out | Should -BeIn @('HAS_ANDROID_CLI', 'NO_ANDROID_CLI')
+        } finally {
+            Remove-Item $tmp -ErrorAction SilentlyContinue
+        }
+    }
+}

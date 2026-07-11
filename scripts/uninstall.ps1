@@ -54,7 +54,7 @@ if (Test-Path $Prefix -PathType Container) {
 }
 
 # --------------------------------------------------------------------------
-# Hard guards — refuse protected paths before any filesystem mutation
+# Hard guards - refuse protected paths before any filesystem mutation
 # --------------------------------------------------------------------------
 if ([string]::IsNullOrWhiteSpace($Prefix)) {
     Write-Error "Resolved installation prefix is empty or whitespace."
@@ -153,10 +153,10 @@ function Test-LegacyLayout {
 $MarkerPath = Join-Path $Prefix ".kmp-test-runner-install.json"
 
 if ((Test-MarkerValid $MarkerPath) -and (Test-LayoutOwnership $Prefix $BinName)) {
-    # marker + layout valid — proceed
+    # marker + layout valid - proceed
 }
 elseif (Test-LegacyLayout $Prefix $BinName) {
-    Write-Host "Legacy install detected — validating layout and adopting..."
+    Write-Host "Legacy install detected - validating layout and adopting..."
     $MarkerContent = '{"tool":"kmp-test-runner","schema":1,"version":"legacy"}'
     Set-Content -Path $MarkerPath -Value $MarkerContent -Encoding UTF8
     Write-Host "Adopted install at $Prefix."

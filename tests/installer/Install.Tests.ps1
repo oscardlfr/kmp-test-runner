@@ -255,3 +255,60 @@ if (args[0] === '--help')    { console.log('kmp-test-runner help'); process.exit
         $script:E2EPrefix | Should -Not -Exist
     }
 }
+
+Describe 'install.ps1 - TLS 1.2 enforcement' {
+    It 'sets TLS 1.2 before the first Invoke-WebRequest call' {
+        $content = Get-Content (Join-Path $PSScriptRoot '..\..\scripts\install.ps1') -Raw
+        $tlsPos = $content.IndexOf('[System.Net.ServicePointManager]::SecurityProtocol')
+        $webPos = $content.IndexOf('Invoke-WebRequest')
+        $tlsPos | Should -BeGreaterThan -1 -Because 'TLS 1.2 setup must be present'
+        $webPos | Should -BeGreaterThan -1 -Because 'Invoke-WebRequest must be present'
+        $tlsPos | Should -BeLessThan $webPos -Because 'TLS must be set before any web call'
+    }
+}
+
+Describe 'ps1 encoding - PS 5.1 ASCII safety' {
+    BeforeAll {
+        $root = Join-Path $PSScriptRoot '..\..'
+        $script:LintFiles = @(
+            (Join-Path $root 'scripts\install.ps1'),
+            (Join-Path $root 'scripts\uninstall.ps1'),
+            (Join-Path $root '.skills\kmp-test-runner\scripts\detect-env.ps1'),
+            (Join-Path $root '.skills\kmp-test-runner\scripts\run-tests.ps1')
+        )
+    }
+
+    It 'runtime ps1 files contain only ASCII characters' {
+        foreach ($f in $script:LintFiles) {
+            $bytes = [System.IO.File]::ReadAllBytes($f)
+            $nonAscii = @($bytes | Where-Object { $_ -gt 127 })
+            $nonAscii.Count | Should -Be 0 -Because "PS 5.1 needs ASCII-only in $(Split-Path $f -Leaf)"
+        }
+    }
+
+    It 'runtime ps1 files parse cleanly under Windows PowerShell 5.1' {
+        $ps51 = Get-Command 'powershell.exe' -ErrorAction SilentlyContinue
+        if (-not $ps51) {
+            Set-ItResult -Skipped -Because 'powershell.exe (5.1) not available on this host'
+            return
+        }
+        # Write a helper script to powershell.exe that parses a file and exits
+        # with the error count -- avoids escaping a full inline command string.
+        $helper = Join-Path $env:TEMP "kmp-ps51-parse-$(Get-Random).ps1"
+        try {
+            Set-Content -Path $helper -Encoding ASCII -Value @'
+param([string]$Path)
+$errors = $null
+[System.Management.Automation.Language.Parser]::ParseFile(
+    $Path, [ref]$null, [ref]$errors) | Out-Null
+exit $errors.Count
+'@
+            foreach ($f in $script:LintFiles) {
+                & 'powershell.exe' -NoLogo -NoProfile -NonInteractive -File $helper -Path $f
+                $LASTEXITCODE | Should -Be 0 -Because "PS 5.1 parse errors in $(Split-Path $f -Leaf)"
+            }
+        } finally {
+            Remove-Item $helper -ErrorAction SilentlyContinue
+        }
+    }
+}
