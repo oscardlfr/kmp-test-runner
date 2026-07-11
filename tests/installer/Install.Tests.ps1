@@ -110,6 +110,40 @@ Describe 'install.ps1 safety constraints' {
 }
 
 # --------------------------------------------------------------------------
+# Guarded uninstall — safety / negative tests (no archive needed).
+# Guard tests run uninstall in a subprocess so exit 1 cannot poison Pester.
+# --------------------------------------------------------------------------
+
+Describe 'uninstall.ps1 guard checks' {
+    BeforeAll {
+        $script:GuardUninstallScript = Join-Path $PSScriptRoot '..\..\scripts\uninstall.ps1'
+    }
+
+    It 'refuses when prefix exists but has no marker and invalid layout' {
+        $tmpdir  = Join-Path $env:TEMP ("kmp-guard-" + [System.IO.Path]::GetRandomFileName())
+        $fakePfx = Join-Path $tmpdir "fake-prefix"
+        New-Item -ItemType Directory -Path $fakePfx | Out-Null
+        Set-Content -Path (Join-Path $fakePfx "random-file.txt") -Value "junk" -Encoding UTF8
+        $null = pwsh -NoProfile -NonInteractive -File $script:GuardUninstallScript -Prefix $fakePfx 2>&1
+        $exitCode    = $LASTEXITCODE
+        $stillExists = Test-Path $fakePfx
+        Remove-Item -Recurse -Force $tmpdir -ErrorAction SilentlyContinue
+        $exitCode    | Should -Not -Be 0
+        $stillExists | Should -BeTrue
+    }
+
+    It 'refuses drive root' {
+        $null = pwsh -NoProfile -NonInteractive -File $script:GuardUninstallScript -Prefix 'C:\' 2>&1
+        $LASTEXITCODE | Should -Not -Be 0
+    }
+
+    It 'refuses USERPROFILE' {
+        $null = pwsh -NoProfile -NonInteractive -File $script:GuardUninstallScript -Prefix $env:USERPROFILE 2>&1
+        $LASTEXITCODE | Should -Not -Be 0
+    }
+}
+
+# --------------------------------------------------------------------------
 # E2E tests — use local archive (no network). Tagged 'E2E'.
 # Run with: Invoke-Pester -TagFilter 'E2E'
 # --------------------------------------------------------------------------
@@ -187,6 +221,33 @@ if (args[0] === '--help')    { console.log('kmp-test-runner help'); process.exit
     It 'package.json is present after install (v0.3.2 regression guard)' {
         $pkgPath = Join-Path $script:E2EPrefix "lib\package.json"
         $pkgPath | Should -Exist
+    }
+
+    It 'install.ps1 writes install marker' {
+        $marker = Join-Path $script:E2EPrefix ".kmp-test-runner-install.json"
+        $marker | Should -Exist
+        $json = Get-Content $marker -Raw | ConvertFrom-Json
+        $json.tool | Should -Be 'kmp-test-runner'
+    }
+
+    It 'uninstall.ps1 adopts legacy layout when marker is missing' {
+        # Install fresh to a separate temp prefix, remove marker, verify adoption succeeds.
+        $tmpdir2 = Join-Path $env:TEMP ("kmp-legacy-" + [System.IO.Path]::GetRandomFileName())
+        $pfx2    = Join-Path $tmpdir2 "kmp-test-runner"
+        New-Item -ItemType Directory -Path $tmpdir2 | Out-Null
+        & $script:InstallScript `
+            -Version      $script:ArtifactVer `
+            -Prefix       $pfx2 `
+            -LocalArchive $script:LocalArchive
+        Remove-Item (Join-Path $pfx2 ".kmp-test-runner-install.json") -ErrorAction SilentlyContinue
+        $proc = Start-Process pwsh `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $script:UninstallScript, '-Prefix', $pfx2) `
+            -Wait -PassThru -NoNewWindow
+        $exitCode    = $proc.ExitCode
+        $stillExists = Test-Path $pfx2
+        Remove-Item -Recurse -Force $tmpdir2 -ErrorAction SilentlyContinue
+        $exitCode    | Should -Be 0
+        $stillExists | Should -BeFalse
     }
 
     It 'uninstall.ps1 removes prefix cleanly' {

@@ -200,6 +200,12 @@ $NodeBin     = Join-Path $InstallDir "bin\$BinName.js"
 $WrapperContent = "@echo off`r`nnode `"$NodeBin`" %*"
 Set-Content -Path $WrapperPath -Value $WrapperContent -Encoding ASCII
 
+# Write install marker so uninstall can verify ownership before deleting.
+# Written after the layout is complete so uninstall can always trust it.
+$MarkerPath    = Join-Path $Prefix ".kmp-test-runner-install.json"
+$MarkerContent = '{"tool":"kmp-test-runner","schema":1,"version":"' + $Version + '"}'
+Set-Content -Path $MarkerPath -Value $MarkerContent -Encoding UTF8
+
 # Clean up temp
 Remove-Item -Recurse -Force $TempFolder -ErrorAction SilentlyContinue
 

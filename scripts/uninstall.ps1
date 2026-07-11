@@ -33,21 +33,134 @@ $BinName = "kmp-test"
 if ([string]::IsNullOrEmpty($Prefix)) {
     $Prefix = Join-Path $env:LOCALAPPDATA $Package
 }
-$BinDir = Join-Path $Prefix "bin"
 
 # --------------------------------------------------------------------------
-# Verify installed
+# Canonicalize: syntax normalization then reparse-point check
+# --------------------------------------------------------------------------
+$Prefix = [System.IO.Path]::GetFullPath($Prefix)
+
+# For existing directories: refuse junctions/symlinks, then resolve to real path
+if (Test-Path $Prefix -PathType Container) {
+    $reparseAttr = [System.IO.FileAttributes]::ReparsePoint
+    $attrs = (Get-Item -LiteralPath $Prefix -Force).Attributes
+    if ($attrs -band $reparseAttr) {
+        Write-Error "Refusing to remove a reparse point (junction/symlink): $Prefix"
+        exit 1
+    }
+    $resolved = Resolve-Path -LiteralPath $Prefix -ErrorAction SilentlyContinue
+    if ($null -ne $resolved) {
+        $Prefix = $resolved.ProviderPath
+    }
+}
+
+# --------------------------------------------------------------------------
+# Hard guards — refuse protected paths before any filesystem mutation
+# --------------------------------------------------------------------------
+if ([string]::IsNullOrWhiteSpace($Prefix)) {
+    Write-Error "Resolved installation prefix is empty or whitespace."
+    exit 1
+}
+
+# Drive root guard: matches C:\ D:\ etc. (exactly drive letter + colon + backslash)
+if ($Prefix -match '^[A-Za-z]:\\$') {
+    Write-Error "Refusing to remove drive root: $Prefix"
+    exit 1
+}
+
+# USERPROFILE guard
+$realProfile = $env:USERPROFILE
+try {
+    $rp = Resolve-Path -LiteralPath $env:USERPROFILE -ErrorAction Stop
+    $realProfile = $rp.ProviderPath
+} catch { }
+if ($Prefix.TrimEnd('\') -eq $realProfile.TrimEnd('\')) {
+    Write-Error "Refusing to remove user profile directory: $realProfile"
+    exit 1
+}
+
+# --------------------------------------------------------------------------
+# Existence check
 # --------------------------------------------------------------------------
 if (-not (Test-Path $Prefix)) {
     Write-Error "$Package does not appear to be installed at $Prefix"
     exit 1
 }
 
-Write-Host "Removing $Package from $Prefix ..."
+$BinDir = Join-Path $Prefix "bin"
+
+# --------------------------------------------------------------------------
+# Ownership validation helpers
+# --------------------------------------------------------------------------
+function Test-MarkerValid {
+    param([string]$MarkerPath)
+    if (-not (Test-Path $MarkerPath -PathType Leaf)) { return $false }
+    try {
+        $json = Get-Content $MarkerPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        return $json.tool -eq 'kmp-test-runner'
+    } catch { return $false }
+}
+
+function Test-PackageJsonValid {
+    param([string]$InstallPrefix)
+    $pj = Join-Path $InstallPrefix "lib\package.json"
+    if (-not (Test-Path $pj)) { return $false }
+    try {
+        $json = Get-Content $pj -Raw -ErrorAction Stop | ConvertFrom-Json
+        return $json.name -eq 'kmp-test-runner'
+    } catch { return $false }
+}
+
+function Test-LauncherValid {
+    param([string]$InstallPrefix, [string]$BinFileName)
+    $cmd = Join-Path $InstallPrefix "bin\$BinFileName.cmd"
+    if (-not (Test-Path $cmd)) { return $false }
+    $content = Get-Content $cmd -Raw -ErrorAction SilentlyContinue
+    $expected = Join-Path $InstallPrefix "lib\bin\$BinFileName.js"
+    return (-not [string]::IsNullOrEmpty($content)) -and $content.Contains($expected)
+}
+
+function Test-LayoutOwnership {
+    param([string]$InstallPrefix, [string]$BinFileName)
+    return (Test-PackageJsonValid $InstallPrefix) -and
+           (Test-Path (Join-Path $InstallPrefix "lib\bin\$BinFileName.js")) -and
+           (Test-LauncherValid $InstallPrefix $BinFileName)
+}
+
+function Test-LegacyLayout {
+    param([string]$InstallPrefix, [string]$BinFileName)
+    $leaf = Split-Path $InstallPrefix -Leaf
+    if ($leaf -ne 'kmp-test-runner') { return $false }
+    return Test-LayoutOwnership $InstallPrefix $BinFileName
+}
+
+# --------------------------------------------------------------------------
+# Decide whether to proceed: marker+layout (Path A) or legacy adoption (Path B)
+# --------------------------------------------------------------------------
+$MarkerPath = Join-Path $Prefix ".kmp-test-runner-install.json"
+
+if ((Test-MarkerValid $MarkerPath) -and (Test-LayoutOwnership $Prefix $BinName)) {
+    # marker + layout valid — proceed
+}
+elseif (Test-LegacyLayout $Prefix $BinName) {
+    Write-Host "Legacy install detected — validating layout and adopting..."
+    $MarkerContent = '{"tool":"kmp-test-runner","schema":1,"version":"legacy"}'
+    Set-Content -Path $MarkerPath -Value $MarkerContent -Encoding UTF8
+    Write-Host "Adopted install at $Prefix."
+}
+else {
+    Write-Error @"
+$Prefix does not contain a valid kmp-test-runner install.
+  No valid install marker+layout or recognizable legacy layout found.
+  To manually remove, verify the directory contents and run:
+    Remove-Item -Recurse -Force '$Prefix'
+"@
+    exit 1
+}
 
 # --------------------------------------------------------------------------
 # Remove installation directory
 # --------------------------------------------------------------------------
+Write-Host "Removing $Package from $Prefix ..."
 Remove-Item -Recurse -Force $Prefix
 Write-Host "Removed directory: $Prefix"
 
