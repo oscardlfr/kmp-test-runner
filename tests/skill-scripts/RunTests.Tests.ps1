@@ -100,3 +100,25 @@ exit /b 0
         ($combined -join "`n") | Should -Not -Match '\[INFO\] env:'
     }
 }
+
+Describe 'run-tests.ps1 - kmp-test not found' {
+    It 'exits 1 with clear guidance when kmp-test absent from PATH and LOCALAPPDATA unavailable' {
+        $pwshBin = (Get-Command pwsh).Source
+        # Isolate PATH to a temp dir that has no kmp-test; clear LOCALAPPDATA so
+        # the installer fallback path also cannot be constructed via Join-Path.
+        $tmp = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "kmp-absent-$(Get-Random)")
+        $oldPath = $env:PATH
+        $oldLad  = $env:LOCALAPPDATA
+        try {
+            $env:PATH        = $tmp.FullName
+            $env:LOCALAPPDATA = ''
+            $combined = & $pwshBin -NoLogo -NoProfile -File $script:ScriptPath unit 2>&1
+            $LASTEXITCODE | Should -Be 1
+            ($combined -join "`n") | Should -Match 'kmp-test not found'
+        } finally {
+            $env:PATH         = $oldPath
+            $env:LOCALAPPDATA = $oldLad
+            Remove-Item -Recurse -Force $tmp.FullName -ErrorAction SilentlyContinue
+        }
+    }
+}

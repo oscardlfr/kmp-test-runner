@@ -110,8 +110,12 @@ $kmpCmd = Get-Command 'kmp-test' -CommandType Application -ErrorAction SilentlyC
 if ($kmpCmd) {
     $kmpExe = $kmpCmd.Source
 } else {
-    $kmpExe = Join-Path $env:LOCALAPPDATA 'kmp-test-runner\bin\kmp-test.cmd'
-    if (-not (Test-Path $kmpExe)) {
+    $kmpExe = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $candidate = Join-Path $env:LOCALAPPDATA 'kmp-test-runner\bin\kmp-test.cmd'
+        if (Test-Path $candidate) { $kmpExe = $candidate }
+    }
+    if (-not $kmpExe) {
         [Console]::Error.WriteLine('kmp-test not found. Install: npm install -g kmp-test-runner')
         exit 1
     }
