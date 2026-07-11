@@ -28,6 +28,9 @@ tools/runs/multi-project-token-cost-*/per-project/**
 # commit — contains private project paths. Use --projects-config <path> or
 # KMP_MEASUREMENT_PROJECTS env var as documented sources.
 tools/.measurement-projects.json
+# PR-00: local private-pattern config for the wet-evidence generator.
+# Real configs live outside the repo; tests use OS temp files.
+tools/.private-patterns.json
 .gradle/
 build/
 .idea/
