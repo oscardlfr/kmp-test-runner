@@ -76,9 +76,13 @@ setup_e2e_archive() {
     STAGING="${E2E_TMPDIR}/staging/kmp-test-runner-${ARTIFACT_VER}"
     mkdir -p "${STAGING}/bin" "${STAGING}/lib" "${STAGING}/scripts"
 
-    # Minimal package.json so cli.js can resolve version
+    # Minimal package.json so cli.js can resolve version (pretty format to cover
+    # the whitespace-tolerant grep in _validate_package_json)
     cat > "${STAGING}/package.json" <<EOF
-{"name":"kmp-test-runner","version":"${ARTIFACT_VER}"}
+{
+  "name": "kmp-test-runner",
+  "version": "${ARTIFACT_VER}"
+}
 EOF
 
     # Minimal bin/kmp-test.js that reads version from package.json
@@ -260,4 +264,94 @@ run_install_with_shell() {
         --archive "${E2E_TMPDIR}/does-not-exist.tar.gz"
     rm -rf "$E2E_TMPDIR"
     [ "$status" -ne 0 ]
+}
+
+# --------------------------------------------------------------------------
+# Guarded uninstall — safety / negative tests (no E2E archive needed)
+# --------------------------------------------------------------------------
+
+@test "uninstall.sh --prefix with no value exits non-zero" {
+    run bash "$UNINSTALL_SCRIPT" --prefix
+    [ "$status" -ne 0 ]
+}
+
+@test "uninstall.sh refuses root path /" {
+    run bash "$UNINSTALL_SCRIPT" --prefix "/"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ root|refusing ]]
+}
+
+@test "uninstall.sh refuses home directory" {
+    # Run with a fake HOME that is a real directory so the guard triggers.
+    FAKE_HOME="$(mktemp -d)"
+    run env HOME="$FAKE_HOME" bash "$UNINSTALL_SCRIPT" --prefix "$FAKE_HOME"
+    rm -rf "$FAKE_HOME"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ home|refusing ]]
+}
+
+@test "uninstall.sh refuses and does not delete when prefix has no marker and invalid layout" {
+    # Create a directory that looks nothing like a kmp-test-runner install.
+    local tmpdir fake_prefix fake_bin rm_log
+    tmpdir="$(mktemp -d)"
+    fake_prefix="$tmpdir/fake-prefix"
+    mkdir -p "$fake_prefix"
+    touch "$fake_prefix/random-file.txt"
+
+    # Intercept rm -rf: shim records calls but does NOT actually delete.
+    fake_bin="$(mktemp -d)"
+    rm_log="$fake_bin/rm.log"
+    printf '#!/usr/bin/env bash\necho "RM_CALLED: $*" >> "%s"\n/bin/rm "$@"\n' \
+        "$rm_log" > "$fake_bin/rm"
+    # Make the shim NOT forward -rf on our fake_prefix (never delete it).
+    printf '#!/usr/bin/env bash\nif [[ "$*" == *"-rf"* && "$*" == *"%s"* ]]; then\n  echo "RM_BLOCKED: $*" >> "%s"\n  exit 0\nfi\n/bin/rm "$@"\n' \
+        "$fake_prefix" "$rm_log" > "$fake_bin/rm"
+    chmod +x "$fake_bin/rm"
+
+    run env PATH="$fake_bin:$PATH" bash "$UNINSTALL_SCRIPT" --prefix "$fake_prefix"
+    local exit_status="$status"
+    local still_exists=0; [[ -d "$fake_prefix" ]] && still_exists=1
+    # Any recursive-delete attempt targeting fake_prefix would appear in the log.
+    local rm_hit=0
+    if [[ -f "$rm_log" ]] && grep -q "$fake_prefix" "$rm_log" 2>/dev/null; then
+        rm_hit=1
+    fi
+    rm -rf "$tmpdir" "$fake_bin"
+
+    [ "$exit_status" -ne 0 ]
+    [ "$still_exists" -eq 1 ]
+    [ "$rm_hit" -eq 0 ]
+}
+
+# --------------------------------------------------------------------------
+# Guarded uninstall — E2E tests
+# --------------------------------------------------------------------------
+
+@test "E2E: install.sh writes install marker" {
+    setup_e2e_archive
+    bash "$INSTALL_SCRIPT" \
+        --version "$ARTIFACT_VER" \
+        --prefix  "$E2E_PREFIX" \
+        --archive "$LOCAL_ARCHIVE"
+    local marker="$E2E_PREFIX/.kmp-test-runner-install.json"
+    [ -f "$marker" ]
+    grep -qF '"tool":"kmp-test-runner"' "$marker"
+    teardown_e2e_archive
+}
+
+@test "E2E: uninstall.sh adopts legacy layout when marker is missing" {
+    setup_e2e_archive
+    # Legacy validation requires the prefix basename to be 'kmp-test-runner'.
+    local LEGACY_PREFIX="${E2E_TMPDIR}/kmp-test-runner"
+    bash "$INSTALL_SCRIPT" \
+        --version "$ARTIFACT_VER" \
+        --prefix  "$LEGACY_PREFIX" \
+        --archive "$LOCAL_ARCHIVE"
+    # Remove marker to simulate a pre-marker legacy install.
+    rm -f "$LEGACY_PREFIX/.kmp-test-runner-install.json"
+    run bash "$UNINSTALL_SCRIPT" --prefix "$LEGACY_PREFIX"
+    local removed=0; [[ ! -d "$LEGACY_PREFIX" ]] && removed=1
+    teardown_e2e_archive
+    [ "$status" -eq 0 ]
+    [ "$removed" -eq 1 ]
 }

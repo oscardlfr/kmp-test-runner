@@ -34,9 +34,15 @@ LOCAL_ARCHIVE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --version) VERSION="$2"; shift 2 ;;
-        --prefix)  PREFIX="$2";  shift 2 ;;
-        --archive) LOCAL_ARCHIVE="$2"; shift 2 ;;
+        --version)
+            [[ -z "${2:-}" || "${2:-}" == --* ]] && { echo "Error: --version requires a value" >&2; usage 1; }
+            VERSION="$2"; shift 2 ;;
+        --prefix)
+            [[ -z "${2:-}" || "${2:-}" == --* ]] && { echo "Error: --prefix requires a value" >&2; usage 1; }
+            PREFIX="$2"; shift 2 ;;
+        --archive)
+            [[ -z "${2:-}" || "${2:-}" == --* ]] && { echo "Error: --archive requires a value" >&2; usage 1; }
+            LOCAL_ARCHIVE="$2"; shift 2 ;;
         --help|-h) usage 0 ;;
         *) echo "Unknown option: $1" >&2; usage 1 ;;
     esac
@@ -160,6 +166,11 @@ if [[ -L "$SYMLINK" || -e "$SYMLINK" ]]; then
 fi
 ln -s "$INSTALL_DIR/bin/$BIN_NAME.js" "$SYMLINK"
 chmod +x "$SYMLINK"
+
+# Write install marker so uninstall can verify ownership before deleting.
+# Written after the layout is complete so uninstall can always trust it.
+MARKER_PATH="$PREFIX/.kmp-test-runner-install.json"
+printf '{"tool":"kmp-test-runner","schema":1,"version":"%s"}\n' "$VERSION" > "$MARKER_PATH"
 
 # --------------------------------------------------------------------------
 # PATH setup — append to shell rc if not already present.
