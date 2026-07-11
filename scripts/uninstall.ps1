@@ -91,6 +91,15 @@ $BinDir = Join-Path $Prefix "bin"
 # --------------------------------------------------------------------------
 # Ownership validation helpers
 # --------------------------------------------------------------------------
+function Get-CanonicalPath {
+    param([string]$Path)
+    try {
+        return (Get-Item -LiteralPath $Path -Force -ErrorAction Stop).FullName
+    } catch {
+        return [System.IO.Path]::GetFullPath($Path)
+    }
+}
+
 function Test-MarkerValid {
     param([string]$MarkerPath)
     if (-not (Test-Path $MarkerPath -PathType Leaf)) { return $false }
@@ -115,8 +124,13 @@ function Test-LauncherValid {
     $cmd = Join-Path $InstallPrefix "bin\$BinFileName.cmd"
     if (-not (Test-Path $cmd)) { return $false }
     $content = Get-Content $cmd -Raw -ErrorAction SilentlyContinue
-    $expected = Join-Path $InstallPrefix "lib\bin\$BinFileName.js"
-    return (-not [string]::IsNullOrEmpty($content)) -and $content.Contains($expected)
+    if ([string]::IsNullOrEmpty($content)) { return $false }
+    # Extract the quoted node target path; compare canonical forms so short paths
+    # (e.g. RUNNER~1) and long paths (runneradmin) both match correctly.
+    if (-not ($content -match 'node\s+"([^"]+)"')) { return $false }
+    $canonActual   = Get-CanonicalPath $Matches[1]
+    $canonExpected = Get-CanonicalPath (Join-Path $InstallPrefix "lib\bin\$BinFileName.js")
+    return $canonActual -eq $canonExpected
 }
 
 function Test-LayoutOwnership {
@@ -151,8 +165,7 @@ else {
     Write-Error @"
 $Prefix does not contain a valid kmp-test-runner install.
   No valid install marker+layout or recognizable legacy layout found.
-  To manually remove, verify the directory contents and run:
-    Remove-Item -Recurse -Force '$Prefix'
+  Inspect the directory manually and remove it only if you are certain it is safe.
 "@
     exit 1
 }

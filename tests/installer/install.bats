@@ -76,9 +76,13 @@ setup_e2e_archive() {
     STAGING="${E2E_TMPDIR}/staging/kmp-test-runner-${ARTIFACT_VER}"
     mkdir -p "${STAGING}/bin" "${STAGING}/lib" "${STAGING}/scripts"
 
-    # Minimal package.json so cli.js can resolve version
+    # Minimal package.json so cli.js can resolve version (pretty format to cover
+    # the whitespace-tolerant grep in _validate_package_json)
     cat > "${STAGING}/package.json" <<EOF
-{"name":"kmp-test-runner","version":"${ARTIFACT_VER}"}
+{
+  "name": "kmp-test-runner",
+  "version": "${ARTIFACT_VER}"
+}
 EOF
 
     # Minimal bin/kmp-test.js that reads version from package.json
@@ -337,14 +341,16 @@ run_install_with_shell() {
 
 @test "E2E: uninstall.sh adopts legacy layout when marker is missing" {
     setup_e2e_archive
+    # Legacy validation requires the prefix basename to be 'kmp-test-runner'.
+    local LEGACY_PREFIX="${E2E_TMPDIR}/kmp-test-runner"
     bash "$INSTALL_SCRIPT" \
         --version "$ARTIFACT_VER" \
-        --prefix  "$E2E_PREFIX" \
+        --prefix  "$LEGACY_PREFIX" \
         --archive "$LOCAL_ARCHIVE"
     # Remove marker to simulate a pre-marker legacy install.
-    rm -f "$E2E_PREFIX/.kmp-test-runner-install.json"
-    run bash "$UNINSTALL_SCRIPT" --prefix "$E2E_PREFIX"
-    local removed=0; [[ ! -d "$E2E_PREFIX" ]] && removed=1
+    rm -f "$LEGACY_PREFIX/.kmp-test-runner-install.json"
+    run bash "$UNINSTALL_SCRIPT" --prefix "$LEGACY_PREFIX"
+    local removed=0; [[ ! -d "$LEGACY_PREFIX" ]] && removed=1
     teardown_e2e_archive
     [ "$status" -eq 0 ]
     [ "$removed" -eq 1 ]

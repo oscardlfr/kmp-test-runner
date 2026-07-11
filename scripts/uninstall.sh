@@ -77,7 +77,7 @@ fi
 _validate_package_json() {
     local prefix="$1"
     local pjson="$prefix/lib/package.json"
-    [[ -f "$pjson" ]] && grep -qF '"name":"kmp-test-runner"' "$pjson" 2>/dev/null
+    [[ -f "$pjson" ]] && grep -Eq '"name"[[:space:]]*:[[:space:]]*"kmp-test-runner"' "$pjson" 2>/dev/null
 }
 
 _validate_runtime_entry() {
@@ -93,9 +93,14 @@ _validate_launcher_posix() {
     # Target must resolve to <prefix>/lib/bin/<BIN_NAME>.js
     local target
     target="$(readlink "$launcher" 2>/dev/null)" || return 1
-    # Resolve relative symlinks relative to the launcher's parent directory
+    # Canonicalize target path via pwd -P so both absolute and relative targets
+    # are resolved through the real filesystem (handles macOS /var -> /private/var).
     case "$target" in
-        /*) ;;
+        /*)
+            if [[ -e "$target" ]]; then
+                target="$(cd "$(dirname "$target")" && pwd -P)/$(basename "$target")"
+            fi
+            ;;
         *) target="$(cd "$(dirname "$launcher")" && cd "$(dirname "$target")" && pwd -P)/$(basename "$target")" ;;
     esac
     [[ "$target" == "$prefix/lib/bin/$BIN_NAME.js" ]]
@@ -133,8 +138,7 @@ elif _validate_legacy_layout "$CANON_PREFIX"; then
 else
     echo "Error: $PREFIX does not contain a valid kmp-test-runner install." >&2
     echo "  No valid install marker+layout or recognizable legacy layout found." >&2
-    echo "  To manually remove, verify the directory contents and run:" >&2
-    echo "    rm -rf \"$PREFIX\"" >&2
+    echo "  Inspect the directory manually and remove it only if you are certain it is safe." >&2
     exit 1
 fi
 
