@@ -28,6 +28,12 @@ tests/vitest/validate-plugin.test.js text eol=lf
 tests/vitest/plugin-manifest.test.js text eol=lf
 .claude-plugin/plugin.json text eol=lf
 
+# PR-00 wet-evidence generator — multi-line .mjs imports + ESM test imports
+# trigger the same vitest 2.1.x CRLF parser bug as validate-plugin.mjs above.
+tools/lib/redact.mjs text eol=lf
+tools/wet-evidence.mjs text eol=lf
+tests/vitest/wet-evidence.test.js text eol=lf
+
 # Fixture wrapper scripts: gradlew (POSIX) needs LF; gradlew.bat needs CRLF
 # so cmd.exe parses it correctly across hosts.
 tests/fixtures/fake-gradlew/gradlew text eol=lf
