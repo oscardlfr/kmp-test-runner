@@ -94,12 +94,29 @@ export function mergeCheckSources(checkRuns, statuses, contexts) {
     if (!statusMap[s.context]) statusMap[s.context] = s;
   }
 
-  // Build check-run map: keep the "dominant" entry when multiple runs share a name
+  // Build check-run map: keep the LATEST run per name using started_at / completed_at.
+  // Never rank by conclusion (e.g. "success beats failure") — a newer failure must
+  // beat an older success, not the other way around.
+  // If no timestamps are available and conclusions conflict, fail closed (refuse).
   const checkRunMap = {};
   for (const cr of checkRuns) {
     const existing = checkRunMap[cr.name];
-    if (!existing || _crRank(cr.conclusion) > _crRank(existing.conclusion)) {
+    if (!existing) {
       checkRunMap[cr.name] = cr;
+      continue;
+    }
+    const newTs  = _crTimestamp(cr);
+    const prevTs = _crTimestamp(existing);
+    if (newTs !== null && prevTs !== null) {
+      if (newTs > prevTs) checkRunMap[cr.name] = cr;
+      // else keep existing (it's newer or same time)
+    } else {
+      // Timestamps absent: fail closed — if either is a REFUSE conclusion, keep it.
+      // This covers the case where a re-run has no timestamps yet (in-progress replacement).
+      const newRefuse  = REFUSE_CONCLUSIONS.has(cr.conclusion) || cr.conclusion === 'skipped';
+      const prevRefuse = REFUSE_CONCLUSIONS.has(existing.conclusion) || existing.conclusion === 'skipped';
+      if (newRefuse && !prevRefuse) checkRunMap[cr.name] = cr;
+      // else keep existing
     }
   }
 
@@ -118,12 +135,11 @@ export function mergeCheckSources(checkRuns, statuses, contexts) {
   return result;
 }
 
-function _crRank(conclusion) {
-  // Higher rank = more authoritative; used to pick dominant check-run when multiple exist
-  if (conclusion === 'success') return 5;
-  if (REFUSE_CONCLUSIONS.has(conclusion)) return 4;
-  if (conclusion === 'skipped') return 3;
-  return 1; // null (in_progress/queued)
+// Returns the best available timestamp for a check-run as a comparable value,
+// or null if no timestamp is present.
+function _crTimestamp(cr) {
+  const ts = cr.completed_at ?? cr.started_at ?? null;
+  return ts ? new Date(ts).getTime() : null;
 }
 
 function _classify(cr, st) {

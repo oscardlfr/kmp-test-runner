@@ -82,3 +82,12 @@ scripts/**/*.sh text eol=lf
 # vitest 2.1.x CRLF parser bug as the other .mjs entries above.
 tools/decouple-audit.mjs text eol=lf
 tests/vitest/decouple-audit.test.js text eol=lf
+
+# PR-06 trusted release path — same vitest 2.1.x CRLF parser sensitivity as
+# above entries: multi-line ESM import blocks in .mjs / .js test files
+# produce "SyntaxError: Invalid or unexpected token" on Windows runners
+# when core.autocrlf=true converts LF to CRLF at checkout.
+tools/release-gate.mjs text eol=lf
+tools/validate-required-checks.mjs text eol=lf
+tests/vitest/release-gate.test.js text eol=lf
+tests/vitest/workflow-static.test.js text eol=lf

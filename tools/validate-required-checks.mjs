@@ -88,29 +88,34 @@ async function checkDrift(manifestContexts) {
   }
 
   // --- main: repository ruleset ---
+  // The list endpoint (/rulesets) does NOT include conditions — each ruleset must be
+  // fetched individually to read conditions.ref_name.include. Fetch each detail and
+  // pick the one whose include list contains "~DEFAULT_BRANCH" or "refs/heads/main".
   let mainContexts;
   try {
     const rulesets = ghApi(`/repos/${repo}/rulesets`);
     if (!Array.isArray(rulesets)) throw new Error('rulesets API did not return an array');
 
-    // Find the ruleset targeting main — accepts ~DEFAULT_BRANCH or refs/heads/main
-    const mainRuleset = rulesets.find(rs => {
-      const include = rs?.conditions?.ref_name?.include;
-      if (!Array.isArray(include)) return false;
-      return include.some(ref => ref === '~DEFAULT_BRANCH' || ref === 'refs/heads/main');
-    });
-    if (!mainRuleset) {
+    let detail = null;
+    for (const rs of rulesets) {
+      const d = ghApi(`/repos/${repo}/rulesets/${rs.id}`);
+      const include = d?.conditions?.ref_name?.include;
+      if (!Array.isArray(include)) continue;
+      if (include.some(ref => ref === '~DEFAULT_BRANCH' || ref === 'refs/heads/main')) {
+        detail = d;
+        break;
+      }
+    }
+    if (!detail) {
       throw new Error('No ruleset found targeting main branch (expected ~DEFAULT_BRANCH or refs/heads/main in conditions.ref_name.include)');
     }
-
-    const detail = ghApi(`/repos/${repo}/rulesets/${mainRuleset.id}`);
     const rcRule = (detail.rules ?? []).find(r => r.type === 'required_status_checks');
     if (!rcRule) {
-      throw new Error(`Ruleset ${mainRuleset.id} (${mainRuleset.name}) has no required_status_checks rule`);
+      throw new Error(`Ruleset ${detail.id} (${detail.name}) has no required_status_checks rule`);
     }
     mainContexts = (rcRule.parameters?.required_status_checks ?? []).map(c => c.context);
     if (mainContexts.length === 0) {
-      throw new Error(`Ruleset ${mainRuleset.id} required_status_checks list is empty`);
+      throw new Error(`Ruleset ${detail.id} required_status_checks list is empty`);
     }
   } catch (err) {
     throw new Error(`Failed to fetch main ruleset: ${err.message}`);

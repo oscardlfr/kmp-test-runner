@@ -228,6 +228,38 @@ describe('mergeCheckSources', () => {
     const stats = [st(CTX[0], 'success')];
     expect(mergeCheckSources(runs, stats, CTX)[CTX[0]].verdict).toBe('refuse');
   });
+
+  // Duplicate check-run deduplication — must pick LATEST by timestamp, not by conclusion rank
+
+  it('duplicate runs: newer failure beats older success → refuse', () => {
+    // Regression: conclusion-rank dedup (success > failure) would WRONGLY return ok here.
+    const old = { name: CTX[0], conclusion: 'success',  status: 'completed',
+                  started_at: '2024-01-01T00:00:00Z', completed_at: '2024-01-01T00:01:00Z' };
+    const newer = { name: CTX[0], conclusion: 'failure', status: 'completed',
+                    started_at: '2024-01-01T00:02:00Z', completed_at: '2024-01-01T00:03:00Z' };
+    const runs = [old, newer, cr(CTX[1], 'success'), cr(CTX[2], 'success')];
+    expect(mergeCheckSources(runs, [], CTX)[CTX[0]].verdict).toBe('refuse');
+  });
+
+  it('duplicate runs: newer success beats older failure → ok', () => {
+    const old = { name: CTX[0], conclusion: 'failure', status: 'completed',
+                  started_at: '2024-01-01T00:00:00Z', completed_at: '2024-01-01T00:01:00Z' };
+    const newer = { name: CTX[0], conclusion: 'success', status: 'completed',
+                    started_at: '2024-01-01T00:02:00Z', completed_at: '2024-01-01T00:03:00Z' };
+    const runs = [old, newer, cr(CTX[1], 'success'), cr(CTX[2], 'success')];
+    expect(mergeCheckSources(runs, [], CTX)[CTX[0]].verdict).toBe('ok');
+  });
+
+  it('duplicate runs: no timestamps, one success and one failure → fail closed (refuse)', () => {
+    // When timestamps are unavailable and conclusions conflict, err on the side of caution.
+    const a = { name: CTX[0], conclusion: 'success', status: 'completed' };
+    const b = { name: CTX[0], conclusion: 'failure', status: 'completed' };
+    const runs1 = [a, b, cr(CTX[1], 'success'), cr(CTX[2], 'success')];
+    const runs2 = [b, a, cr(CTX[1], 'success'), cr(CTX[2], 'success')];
+    // Either order should refuse
+    expect(mergeCheckSources(runs1, [], CTX)[CTX[0]].verdict).toBe('refuse');
+    expect(mergeCheckSources(runs2, [], CTX)[CTX[0]].verdict).toBe('refuse');
+  });
 });
 
 // ---------------------------------------------------------------------------
