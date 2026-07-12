@@ -428,7 +428,7 @@ exports[`parity / envelope JSON schema snapshot > info --json --no-adb envelope 
       "project_root": "<string>",
     },
     "jdk": {
-      "java_home": "<string>",
+      "java_home": "<string?>",
       "note": "<string>",
       "version": "<string>",
     },

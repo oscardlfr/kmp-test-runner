@@ -51,14 +51,14 @@ BeforeAll {
 }
 
 Describe 'parallel wrapper iOS / macOS dispatch (v0.7.0 Phase 2)' {
-    It '-TestType ios is in the ValidateSet (no parameter binding error)' {
+    It '-TestType ios accepted without parameter binding error' {
         $work = New-FixtureProject
         try {
             $output = & pwsh -NoLogo -NoProfile -File $script:Wrapper `
                 -ProjectRoot $work -TestType 'ios' -ModuleFilter 'ios-only' `
                 -IgnoreJdkMismatch -CoverageTool 'none' 2>&1
             $stderr = ($output | Out-String)
-            # ValidateSet rejection would emit "does not belong to the set" — must NOT appear.
+            # Parameter binding error must NOT appear (validation is at the Node layer).
             $stderr | Should -Not -Match 'does not belong to the set'
             $stderr | Should -Not -Match 'Cannot validate argument'
         } finally {
@@ -66,7 +66,7 @@ Describe 'parallel wrapper iOS / macOS dispatch (v0.7.0 Phase 2)' {
         }
     }
 
-    It '-TestType macos is in the ValidateSet (no parameter binding error)' {
+    It '-TestType macos accepted without parameter binding error' {
         $work = New-FixtureProject
         try {
             $output = & pwsh -NoLogo -NoProfile -File $script:Wrapper `
@@ -75,6 +75,34 @@ Describe 'parallel wrapper iOS / macOS dispatch (v0.7.0 Phase 2)' {
             $stderr = ($output | Out-String)
             $stderr | Should -Not -Match 'does not belong to the set'
             $stderr | Should -Not -Match 'Cannot validate argument'
+        } finally {
+            Remove-Item -Recurse -Force -Path $work -ErrorAction SilentlyContinue
+        }
+    }
+
+    It '-TestType jvm accepted without parameter binding error' {
+        # jvm was absent from the old [ValidateSet] list — this test would have caused
+        # "Cannot validate argument on Windows before PR-10. ValidateSet removed; validation
+        # now handled by Node (exit 2 invalid_flag_value when a bogus value arrives).
+        $work = New-FixtureProject
+        try {
+            $output = & pwsh -NoLogo -NoProfile -File $script:Wrapper `
+                -ProjectRoot $work -TestType 'jvm' -IgnoreJdkMismatch -CoverageTool 'none' 2>&1
+            ($output | Out-String) | Should -Not -Match 'does not belong to the set'
+            ($output | Out-String) | Should -Not -Match 'Cannot validate argument'
+        } finally {
+            Remove-Item -Recurse -Force -Path $work -ErrorAction SilentlyContinue
+        }
+    }
+
+    It '-TestType android accepted without parameter binding error' {
+        # android was absent from the old [ValidateSet] — same regression class as jvm.
+        $work = New-FixtureProject
+        try {
+            $output = & pwsh -NoLogo -NoProfile -File $script:Wrapper `
+                -ProjectRoot $work -TestType 'android' -IgnoreJdkMismatch -CoverageTool 'none' 2>&1
+            ($output | Out-String) | Should -Not -Match 'does not belong to the set'
+            ($output | Out-String) | Should -Not -Match 'Cannot validate argument'
         } finally {
             Remove-Item -Recurse -Force -Path $work -ErrorAction SilentlyContinue
         }
@@ -102,12 +130,18 @@ Describe 'parallel wrapper iOS / macOS dispatch (v0.7.0 Phase 2)' {
         }
     }
 
-    It '-TestType notreal is rejected by ValidateSet' {
+    It '-TestType notreal is rejected with exit 2 (Node-layer validation)' {
+        # ValidateSet removed from the PS wrapper; validation now happens in the
+        # Node orchestrator (validateEnum → invalid_flag_value → exit 2).
         $work = New-FixtureProject
         try {
             $output = & pwsh -NoLogo -NoProfile -File $script:Wrapper `
                 -ProjectRoot $work -TestType 'notreal' 2>&1
-            ($output | Out-String) | Should -Match '(does not belong to the set|Cannot validate argument)'
+            # PS must NOT crash with a binding error — the wrapper accepts the value,
+            # forwards it to Node, which emits exit 2.
+            ($output | Out-String) | Should -Not -Match 'Cannot validate argument'
+            # Node layer must reject it (exit 2 or any non-zero for invalid args)
+            $LASTEXITCODE | Should -BeGreaterThan 0
         } finally {
             Remove-Item -Recurse -Force -Path $work -ErrorAction SilentlyContinue
         }

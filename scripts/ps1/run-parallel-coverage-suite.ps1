@@ -20,7 +20,6 @@ param(
     [string]$ProjectRoot,
 
     [switch]$IncludeShared,
-    [ValidateSet("all", "common", "androidUnit", "androidInstrumented", "desktop", "ios", "macos")]
     [string]$TestType = "",
     [string]$ModuleFilter = "*",
     [switch]$SkipTests,
@@ -32,7 +31,6 @@ param(
     [switch]$CoverageOnly,
     [string]$CoverageModules = "",
     [int]$Timeout = 600,
-    [ValidateSet("jacoco", "kover", "auto", "none")]
     [string]$CoverageTool = "auto",
     [string]$ExcludeCoverage = "",
     [string]$TestFilter = "",
@@ -42,9 +40,7 @@ param(
     [switch]$DryRun,
     [switch]$NoCoverage,
     [switch]$Benchmark,
-    [ValidateSet("smoke", "main", "stress")]
     [string]$BenchmarkConfig = "smoke",
-    [ValidateSet("auto", "debug", "release", "all")]
     [string]$Variant = "auto",
     # 2026-05-05 v0.9 step 1 — parity-gap flags (close the gap between
     # `kmp-test parallel --test-type androidInstrumented` and the dedicated
@@ -85,7 +81,13 @@ param(
     # gradle dispatch, emitting the post-filter module set + skipped[] +
     # coverage block. Param-block whitelist needed because the wrapper has
     # `passthrough: false` (cli.js strips kebab→PascalCase upstream).
-    [switch]$ListOnly
+    [switch]$ListOnly,
+    # Safety net for unrecognized flags. cli.js's Layer-1 unknown-flag gate
+    # should reject these before the wrapper is invoked; this prevents a
+    # "parameter cannot be found" binding error from masking the proper
+    # cli.js envelope on direct invocations or testing harnesses.
+    [Parameter(ValueFromRemainingArguments)]
+    [string[]]$RemainingArgs = @()
 )
 
 $ErrorActionPreference = "Continue"
@@ -141,6 +143,7 @@ if ($IsolatedCacheDir) { $kmpArgv += @('--isolated-cache-dir', $IsolatedCacheDir
 if ($IsolatedNoLock)   { $kmpArgv += @('--isolated-no-lock') }
 # 2026-05-08 v0.9 step 9.8 (Bug #7) — --list-only passthrough.
 if ($ListOnly)         { $kmpArgv += @('--list-only') }
+foreach ($r in $RemainingArgs) { $kmpArgv += $r }
 
 $kmpScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $kmpRunner = Join-Path $kmpScriptDir '..\..\lib\runner.js'
