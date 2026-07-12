@@ -75,9 +75,18 @@ const LOCAL_PRIVATE_PATTERNS = path.join(__dirname, '.private-patterns.json');
 //      Angle-bracket placeholders (/home/<username>/...) are also excluded
 //      because < is not \w.
 // ---------------------------------------------------------------------------
+// npm lockfiles encode each package's checksum as a sha512/sha1 base64 string on
+// the "integrity" line.  Base64 word-boundary segments can match the device_serial
+// pattern but are not privacy leaks.  Exempt only that line class from the rule;
+// all other lockfile content (package names, resolved URLs, paths) remains scanned.
+const _baseDeviceSerial = PUBLIC_SHAPE_RULES.find(r => r.class === 'device_serial');
+
 export const AUDIT_PUBLIC_RULES = [
-  // Reuse the device_serial rule from PUBLIC_SHAPE_RULES — it is narrow enough.
-  PUBLIC_SHAPE_RULES.find(r => r.class === 'device_serial'),
+  {
+    ..._baseDeviceSerial,
+    // Skip device_serial check on lines whose content is an npm/yarn integrity hash.
+    excludeLineRe: /"integrity"\s*:\s*"sha\d+-/,
+  },
   {
     class: 'user_path_win',
     // Windows user home paths. \w{3,} requires the username to be ≥3 word chars,
@@ -101,15 +110,10 @@ export const AUDIT_PUBLIC_RULES = [
 // fixture data to be construction-split, which is a follow-on audit.
 // TODO: schedule a __snapshots__ audit pass and remove this exception once clean.
 //
-// package-lock.json: skipped because npm integrity fields are sha512 base64 strings.
-// Base64 segments that happen to be 8-15 uppercase alphanumeric characters match the
-// device_serial heuristic but are not privacy leaks. The lockfile is auto-generated
-// and does not originate from human-authored text.
-//
 // tools/runs/ is NOT skipped: the 8 tracked files were verified clean in the PR-02
 // pre-flight. Keeping them in scope ensures future private-data additions are caught.
 // ---------------------------------------------------------------------------
-const SKIP_PREFIXES = ['__snapshots__/', 'package-lock.json'];
+const SKIP_PREFIXES = ['__snapshots__/'];
 
 // ---------------------------------------------------------------------------
 // NUL/binary sniffing — reads first 512 bytes; any NUL byte signals binary.
@@ -164,6 +168,10 @@ export function scanFile(absPath, rel, rules) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     for (const rule of rules) {
+      if (rule.excludeLineRe) {
+        rule.excludeLineRe.lastIndex = 0;
+        if (rule.excludeLineRe.test(line)) continue;
+      }
       rule.re.lastIndex = 0;
       if (rule.re.test(line)) {
         hits.push({ file: rel, lineNo: i + 1, class: rule.class });
