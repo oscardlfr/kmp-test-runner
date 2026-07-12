@@ -12,16 +12,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Fast pre-check: decides whether the heavy CI matrix needs to run.
-  # When ALL diffed files are docs (any *.md) or local smoke captures
-  # (.smoke/**), the downstream heavy jobs short-circuit. GitHub treats
-  # `skipped` as `success` for required-check gating (since 2022), so
-  # branch protection still passes without burning Linux/Windows minutes.
+  # GitHub treats `skipped` as `success` for required-check gating (since
+  # 2022), so branch protection still passes without burning CI minutes.
   #
-  # Source code, tests/, scripts/, tools/, gradle-plugin/, package.json,
-  # .github/workflows/**, .gitignore, AND .gitattributes ALWAYS trigger the
-  # full matrix. .gitattributes is the source of truth for
-  # check-line-endings.mjs — a change to LF rules must run build (which
-  # invokes the checker and workflow-static tests) to be validated.
+  # Skip-eligible (heavy=false when ALL changes fall here):
+  #   *.md, .smoke/**, .gitignore
+  #
+  # Always heavy=true (triggers the full matrix):
+  #   source code, tests/, scripts/, tools/, gradle-plugin/, package.json,
+  #   .github/workflows/**, AND .gitattributes.
+  #   .gitattributes is the source of truth for check-line-endings.mjs —
+  #   a change to LF rules must run build (checker + workflow-static tests).
   #
   # secrets-scan stays unconditional (security is non-negotiable).
   decide:
