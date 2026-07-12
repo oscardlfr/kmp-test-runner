@@ -44,6 +44,12 @@ tests/fixtures/kmp-cross-platform-e2e/gradlew text eol=lf
 tests/fixtures/kmp-cross-platform-e2e/gradlew.bat text eol=crlf
 tests/fixtures/kmp-cross-platform-e2e/gradle/wrapper/gradle-wrapper.jar binary
 
+# PR-25 metachar fixtures — echo-args.bat is a cmd.exe batch file (CRLF);
+# echo-args.mjs and ArgsEcho.java are POSIX-friendly scripts (LF).
+tests/fixtures/echo-args/echo-args.bat text eol=crlf
+tests/fixtures/echo-args/echo-args.mjs text eol=lf
+tests/fixtures/java-args-passthrough/ArgsEcho.java text eol=lf
+
 # convention-flavors fixture — fake wrapper scripts need the same LF/CRLF split:
 # gradlew (POSIX) LF, gradlew.bat (cmd.exe) CRLF.
 tests/fixtures/convention-flavors/gradlew text eol=lf
