@@ -15,7 +15,7 @@ import { describe, it, expect } from 'vitest';
 
 import { validateEnum, validateNonNegativeInt, requireFlagValue } from '../../lib/orchestrators/orchestrator-utils.js';
 import { runUpdate } from '../../lib/orchestrators/update-orchestrator.js';
-import { runParallel } from '../../lib/orchestrators/parallel-orchestrator.js';
+import { runParallel, parseArgs as parseParallelArgs } from '../../lib/orchestrators/parallel-orchestrator.js';
 import { runChanged } from '../../lib/orchestrators/changed-orchestrator.js';
 import { runBenchmark } from '../../lib/orchestrators/benchmark-orchestrator.js';
 import { runCoverage } from '../../lib/orchestrators/coverage-orchestrator.js';
@@ -259,6 +259,155 @@ describe.each(DANGLING_VALUE_CASES)(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// PR-10 — contextual argument schema
+// ---------------------------------------------------------------------------
+
+// requireFlagValue — opaque option
+//
+// Non-opaque (default): a value starting with '--' is rejected as
+// `invalid_flag_value` because the user likely forgot the actual value
+// and the next token is another flag.
+// Opaque (--gradle-args): the value is forwarded verbatim to Gradle and
+// may legitimately start with '--' or contain '%' characters.
+describe('requireFlagValue — opaque option', () => {
+  it('non-opaque: rejects value starting with -- as invalid_flag_value', () => {
+    const errors = [];
+    const result = requireFlagValue('--module-filter', '--test-type', errors);
+    expect(result).toBeNull();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      code: 'invalid_flag_value',
+      flag: '--module-filter',
+      value: '--test-type',
+    });
+    expect(errors[0].message).toMatch(/forgot the value/);
+  });
+
+  it('opaque: accepts value starting with --', () => {
+    const errors = [];
+    const result = requireFlagValue('--gradle-args', '--no-parallel', errors, { opaque: true });
+    expect(result).toBe('--no-parallel');
+    expect(errors).toHaveLength(0);
+  });
+
+  it('opaque: accepts value containing percent characters', () => {
+    const errors = [];
+    const pct = '-Pkmp.test.literal=%KMP_SHOULD_NOT_EXPAND%';
+    const result = requireFlagValue('--gradle-args', pct, errors, { opaque: true });
+    expect(result).toBe(pct);
+    expect(errors).toHaveLength(0);
+  });
+
+  it('(regression) non-opaque: undefined still emits missing-value error', () => {
+    const errors = [];
+    const result = requireFlagValue('--module-filter', undefined, errors);
+    expect(result).toBeNull();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      code: 'invalid_flag_value',
+      flag: '--module-filter',
+      value: null,
+    });
+    expect(errors[0].message).toMatch(/missing required value/);
+  });
+
+  it('(regression) opaque: undefined still emits missing-value error', () => {
+    const errors = [];
+    const result = requireFlagValue('--gradle-args', undefined, errors, { opaque: true });
+    expect(result).toBeNull();
+    expect(errors[0].message).toMatch(/missing required value/);
+  });
+});
+
+// orchestrator-level unknown_flag
+//
+// The parallel parseArgs default case emits unknown_flag for any --flag
+// token not present in the parallel switch. Positionals and single-dash
+// tokens (gradle-style) are NOT flagged.
+describe('parallel parseArgs — unknown_flag', () => {
+  it('emits unknown_flag for an unrecognised --flag', () => {
+    const opts = parseParallelArgs(['--no-such-kmp-flag']);
+    expect(opts.errors.some(e => e.code === 'unknown_flag' && e.flag === '--no-such-kmp-flag'))
+      .toBe(true);
+  });
+
+  it('emits unknown_flag for multiple unknown --flags', () => {
+    const opts = parseParallelArgs(['--no-such-kmp-flag', '--another-unknown']);
+    const codes = opts.errors.filter(e => e.code === 'unknown_flag').map(e => e.flag);
+    expect(codes).toContain('--no-such-kmp-flag');
+    expect(codes).toContain('--another-unknown');
+  });
+
+  it('does NOT flag positional tokens', () => {
+    const opts = parseParallelArgs(['positional']);
+    expect(opts.errors.filter(e => e.code === 'unknown_flag')).toHaveLength(0);
+  });
+
+  it('does NOT flag single-dash tokens (gradle-style pass-through values)', () => {
+    const opts = parseParallelArgs(['-Pfoo=bar']);
+    expect(opts.errors.filter(e => e.code === 'unknown_flag')).toHaveLength(0);
+  });
+
+  it('emits unknown_flag that exits CONFIG_ERROR (2) via runParallel', async () => {
+    const result = await runParallel({
+      projectRoot: '/tmp/nonexistent-stub',
+      args: ['--no-such-kmp-flag'],
+    });
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(
+      (result.envelope.errors || []).some(e => e.code === 'unknown_flag' && e.flag === '--no-such-kmp-flag'),
+    ).toBe(true);
+  });
+});
+
+// --gradle-args lossless round-trip
+//
+// Opaque values (--flag-shaped, percent-containing, equals-form) must
+// survive the parser and appear verbatim in gradleArgs[].
+// Values with no embedded spaces are fully lossless under splitGradleArgs.
+describe('parallel parseArgs — --gradle-args lossless values', () => {
+  it('--gradle-args --no-parallel: preserves flag-shaped value, no error', () => {
+    const opts = parseParallelArgs(['--gradle-args', '--no-parallel']);
+    expect(opts.errors).toHaveLength(0);
+    expect(opts.gradleArgs).toContain('--no-parallel');
+  });
+
+  it('--gradle-args=--no-parallel (equals form): split then preserved', () => {
+    const opts = parseParallelArgs(['--gradle-args=--no-parallel']);
+    expect(opts.errors).toHaveLength(0);
+    expect(opts.gradleArgs).toContain('--no-parallel');
+  });
+
+  it('--gradle-args with percent literal: round-trips without expansion', () => {
+    const pct = '-Pkmp.test.literal=%KMP_SHOULD_NOT_EXPAND%';
+    const opts = parseParallelArgs(['--gradle-args', pct]);
+    expect(opts.errors).toHaveLength(0);
+    expect(opts.gradleArgs).toContain(pct);
+  });
+
+  it('--gradle-args with equals inside value: preserved intact', () => {
+    const opts = parseParallelArgs(['--gradle-args', '-Pfoo=bar=baz']);
+    expect(opts.errors).toHaveLength(0);
+    expect(opts.gradleArgs).toContain('-Pfoo=bar=baz');
+  });
+
+  it('repeated --gradle-args: accumulates all values', () => {
+    const pct = '-Pkmp.test.literal=%KMP_SHOULD_NOT_EXPAND%';
+    const opts = parseParallelArgs(['--gradle-args', '--no-parallel', '--gradle-args', pct]);
+    expect(opts.errors).toHaveLength(0);
+    expect(opts.gradleArgs).toContain('--no-parallel');
+    expect(opts.gradleArgs).toContain(pct);
+  });
+
+  it('non-opaque --module-filter followed by -- flag: emits invalid_flag_value', () => {
+    const opts = parseParallelArgs(['--module-filter', '--test-type', 'android']);
+    expect(
+      opts.errors.some(e => e.code === 'invalid_flag_value' && e.flag === '--module-filter'),
+    ).toBe(true);
+  });
+});
 
 // Explicit-empty stays on each flag's legacy fallback — only true dangling
 // (undefined) is invalid. Locks the policy boundary of this PR.
