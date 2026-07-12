@@ -178,7 +178,20 @@ export function parseReadmeFlagTable(readmePath) {
 // snapshot doesn't lock the count) when their elements are homogeneous;
 // heterogeneous arrays keep per-position shapes. Used inside HOST_ENV_KEY
 // fields to lock the schema without locking the values.
-function schemaOf(v) {
+//
+// Nullable-string fields: within HOST_ENV_KEY blocks some fields are legitimately
+// null on machines that don't have the tool installed (e.g. java_home when
+// JAVA_HOME is unset on a Linux CI runner) but are strings when the tool is
+// present. schemaOf normalises these to '<string?>' so the snapshot stays
+// hermetic regardless of the runner's environment.
+const NULLABLE_STRING_SCHEMA_FIELDS = new Set(['java_home']);
+
+function schemaOf(v, key) {
+  // Nullable-string normalisation: field is null when tool not present, string
+  // when present. Collapse both to '<string?>' so the snapshot is hermetic.
+  if (key !== undefined && NULLABLE_STRING_SCHEMA_FIELDS.has(key)) {
+    if (v === null || typeof v === 'string') return '<string?>';
+  }
   if (v === null) return '<null>';
   if (v === undefined) return '<undefined>';
   if (typeof v === 'string') return '<string>';
@@ -192,7 +205,7 @@ function schemaOf(v) {
   }
   if (typeof v === 'object') {
     const out = {};
-    for (const [k, val] of Object.entries(v)) out[k] = schemaOf(val);
+    for (const [k, val] of Object.entries(v)) out[k] = schemaOf(val, k);
     return out;
   }
   return `<${typeof v}>`;
