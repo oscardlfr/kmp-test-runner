@@ -107,6 +107,18 @@ Describe 'install.ps1 safety constraints' {
     It 'does not use Invoke-Expression on remote content' {
         $script:InstallContent | Should -Not -Match 'Invoke-Expression'
     }
+
+    It 'uses Get-FileHash for checksum verification' {
+        $script:InstallContent | Should -Match 'Get-FileHash'
+    }
+
+    It 'accepts -LocalArchiveSha256 parameter' {
+        $script:InstallContent | Should -Match 'LocalArchiveSha256'
+    }
+
+    It 'does not suggest destructive commands in error messages' {
+        $script:InstallContent | Should -Not -Match 'Write-Error[^\r\n]*(Remove-Item|rm -rf)'
+    }
 }
 
 # --------------------------------------------------------------------------
@@ -253,6 +265,160 @@ if (args[0] === '--help')    { console.log('kmp-test-runner help'); process.exit
     It 'uninstall.ps1 removes prefix cleanly' {
         & $script:UninstallScript -Prefix $script:E2EPrefix
         $script:E2EPrefix | Should -Not -Exist
+    }
+}
+
+# --------------------------------------------------------------------------
+# E2E tests -- checksum and atomic install. Tagged 'E2E'.
+# Each test that can fail mid-install uses Start-Process pwsh (subprocess)
+# to avoid Pester state contamination from exit 1.
+# --------------------------------------------------------------------------
+
+Describe 'install.ps1 E2E -- checksum and atomic install' -Tag 'E2E' {
+    BeforeAll {
+        $script:CsInstallScript   = Join-Path $PSScriptRoot '..\..\scripts\install.ps1'
+        $script:CsUninstallScript = Join-Path $PSScriptRoot '..\..\scripts\uninstall.ps1'
+
+        $script:CsTmpDir = Join-Path $env:TEMP ("kmp-cs-" + [System.IO.Path]::GetRandomFileName())
+        $script:CsVer    = "0.3.3"
+        New-Item -ItemType Directory -Path $script:CsTmpDir | Out-Null
+
+        # Build minimal valid archive (same structure as the main E2E block)
+        $wrapper    = "kmp-test-runner-$($script:CsVer)"
+        $staging    = Join-Path $script:CsTmpDir "staging\$wrapper"
+        $stagingBin = Join-Path $staging "bin"
+        New-Item -ItemType Directory -Path $stagingBin | Out-Null
+
+        $pkgJson = '{"name":"kmp-test-runner","version":"' + $script:CsVer + '"}'
+        Set-Content -Path (Join-Path $staging "package.json") -Value $pkgJson -Encoding UTF8
+
+        $binJs = @'
+#!/usr/bin/env node
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
+const args = process.argv.slice(2);
+if (args[0] === '--version') { console.log(pkg.version); process.exit(0); }
+if (args[0] === '--help')    { console.log('kmp-test-runner help'); process.exit(0); }
+'@
+        Set-Content -Path (Join-Path $stagingBin "kmp-test.js") -Value $binJs -Encoding UTF8
+        Set-Content -Path (Join-Path $staging "LICENSE") -Value "MIT" -Encoding UTF8
+
+        $script:CsArchive = Join-Path $script:CsTmpDir "kmp-test-runner-$($script:CsVer)-windows.zip"
+        Compress-Archive -Path (Join-Path $script:CsTmpDir "staging\$wrapper") `
+                         -DestinationPath $script:CsArchive
+        Remove-Item -Recurse -Force (Join-Path $script:CsTmpDir "staging")
+    }
+
+    AfterAll {
+        Remove-Item -Recurse -Force $script:CsTmpDir -ErrorAction SilentlyContinue
+    }
+
+    It 'checksum: valid sha256 allows install' {
+        $pfx  = Join-Path $script:CsTmpDir "pfx-valid"
+        $hash = (Get-FileHash -LiteralPath $script:CsArchive -Algorithm SHA256).Hash.ToLower()
+        $sha256 = Join-Path $script:CsTmpDir "valid.sha256"
+        Set-Content -Path $sha256 -Value "$hash  $($script:CsArchive | Split-Path -Leaf)" -Encoding ASCII
+        & $script:CsInstallScript -Version $script:CsVer -Prefix $pfx `
+            -LocalArchive $script:CsArchive -LocalArchiveSha256 $sha256
+        # Check file existence rather than $LASTEXITCODE -- $LASTEXITCODE only
+        # reflects native exe exit codes; a PS-only script leaves it stale.
+        (Join-Path $pfx "bin\kmp-test.cmd")              | Should -Exist
+        (Join-Path $pfx ".kmp-test-runner-install.json") | Should -Exist
+        Remove-Item -Recurse -Force $pfx -ErrorAction SilentlyContinue
+    }
+
+    It 'checksum: mismatched sha256 refuses install with no lib directory' {
+        $pfx    = Join-Path $script:CsTmpDir "pfx-mismatch"
+        $sha256 = Join-Path $script:CsTmpDir "mismatch.sha256"
+        Set-Content -Path $sha256 `
+            -Value "0000000000000000000000000000000000000000000000000000000000000000  fake" `
+            -Encoding ASCII
+        $proc = Start-Process pwsh `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $script:CsInstallScript,
+                            '-Version', $script:CsVer, '-Prefix', $pfx,
+                            '-LocalArchive', $script:CsArchive, '-LocalArchiveSha256', $sha256) `
+            -Wait -PassThru -NoNewWindow
+        $libExists = Test-Path (Join-Path $pfx "lib")
+        Remove-Item -Recurse -Force $pfx -ErrorAction SilentlyContinue
+        $proc.ExitCode | Should -Not -Be 0
+        $libExists | Should -BeFalse
+    }
+
+    It 'checksum: empty sha256 file fails as malformed' {
+        $pfx    = Join-Path $script:CsTmpDir "pfx-empty-sha"
+        $sha256 = Join-Path $script:CsTmpDir "empty.sha256"
+        Set-Content -Path $sha256 -Value "" -Encoding ASCII
+        $proc = Start-Process pwsh `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $script:CsInstallScript,
+                            '-Version', $script:CsVer, '-Prefix', $pfx,
+                            '-LocalArchive', $script:CsArchive, '-LocalArchiveSha256', $sha256) `
+            -Wait -PassThru -NoNewWindow
+        Remove-Item -Recurse -Force $pfx -ErrorAction SilentlyContinue
+        $proc.ExitCode | Should -Not -Be 0
+    }
+
+    It 'checksum: non-hex 64-char sha256 fails as malformed' {
+        $pfx    = Join-Path $script:CsTmpDir "pfx-nonhex"
+        $sha256 = Join-Path $script:CsTmpDir "nonhex.sha256"
+        Set-Content -Path $sha256 -Value ("z" * 64 + "  fake") -Encoding ASCII
+        $proc = Start-Process pwsh `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $script:CsInstallScript,
+                            '-Version', $script:CsVer, '-Prefix', $pfx,
+                            '-LocalArchive', $script:CsArchive, '-LocalArchiveSha256', $sha256) `
+            -Wait -PassThru -NoNewWindow
+        Remove-Item -Recurse -Force $pfx -ErrorAction SilentlyContinue
+        $proc.ExitCode | Should -Not -Be 0
+    }
+
+    It 'atomic: corrupt archive leaves no lib directory' {
+        $td  = Join-Path $script:CsTmpDir "corrupt"
+        $pfx = Join-Path $td "prefix"
+        New-Item -ItemType Directory -Path $td | Out-Null
+        $bad = Join-Path $td "bad.zip"
+        Set-Content -Path $bad -Value "not a zip" -Encoding ASCII
+        $proc = Start-Process pwsh `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $script:CsInstallScript,
+                            '-Version', $script:CsVer, '-Prefix', $pfx, '-LocalArchive', $bad) `
+            -Wait -PassThru -NoNewWindow
+        $libExists = Test-Path (Join-Path $pfx "lib")
+        Remove-Item -Recurse -Force $td -ErrorAction SilentlyContinue
+        $proc.ExitCode | Should -Not -Be 0
+        $libExists | Should -BeFalse
+    }
+
+    It 'atomic: invalid layout archive leaves existing lib, launcher, and marker intact' {
+        $td  = Join-Path $script:CsTmpDir "layout-guard"
+        $pfx = Join-Path $td "prefix"
+        New-Item -ItemType Directory -Path $td | Out-Null
+        try {
+            # Install valid version first
+            & $script:CsInstallScript -Version $script:CsVer -Prefix $pfx `
+                -LocalArchive $script:CsArchive
+
+            # Bad archive: package.json present but bin/kmp-test.js missing
+            $badRoot = Join-Path $td "bad-staging\kmp-test-runner-$($script:CsVer)"
+            New-Item -ItemType Directory -Path (Join-Path $badRoot "bin") | Out-Null
+            Set-Content -Path (Join-Path $badRoot "package.json") `
+                -Value '{"name":"kmp-test-runner","version":"0.0.0"}' -Encoding UTF8
+            $bad2 = Join-Path $td "bad2.zip"
+            Compress-Archive `
+                -Path (Join-Path $td "bad-staging\kmp-test-runner-$($script:CsVer)") `
+                -DestinationPath $bad2
+
+            $proc = Start-Process pwsh `
+                -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $script:CsInstallScript,
+                                '-Version', $script:CsVer, '-Prefix', $pfx, '-LocalArchive', $bad2) `
+                -Wait -PassThru -NoNewWindow
+            $proc.ExitCode | Should -Not -Be 0
+            (Join-Path $pfx "lib\bin\kmp-test.js")           | Should -Exist
+            (Join-Path $pfx "bin\kmp-test.cmd")              | Should -Exist
+            (Join-Path $pfx ".kmp-test-runner-install.json") | Should -Exist
+        } finally {
+            Remove-Item -Recurse -Force $td -ErrorAction SilentlyContinue
+        }
     }
 }
 

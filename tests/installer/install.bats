@@ -355,3 +355,127 @@ run_install_with_shell() {
     [ "$status" -eq 0 ]
     [ "$removed" -eq 1 ]
 }
+
+# --------------------------------------------------------------------------
+# Checksum and atomic install tests
+# --------------------------------------------------------------------------
+
+compute_sha256() {
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    fi
+}
+
+@test "install.sh uses sha256sum or shasum for checksum" {
+    run grep -E 'sha256sum|shasum' "$INSTALL_SCRIPT"
+    [ "$status" -eq 0 ]
+}
+
+@test "install.sh --archive-sha256 flag appears in usage" {
+    run bash "$INSTALL_SCRIPT" --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--archive-sha256"* ]]
+}
+
+@test "install.sh error messages do not suggest rm -rf" {
+    run grep -E "(echo|printf).*rm -rf" "$INSTALL_SCRIPT"
+    [ "$status" -ne 0 ]
+}
+
+@test "E2E: checksum: valid sha256 allows install" {
+    setup_e2e_archive
+    local sha256="${E2E_TMPDIR}/archive.sha256"
+    compute_sha256 "$LOCAL_ARCHIVE" > "$sha256"
+    run bash "$INSTALL_SCRIPT" \
+        --version        "$ARTIFACT_VER" \
+        --prefix         "$E2E_PREFIX" \
+        --archive        "$LOCAL_ARCHIVE" \
+        --archive-sha256 "$sha256"
+    teardown_e2e_archive
+    [ "$status" -eq 0 ]
+}
+
+@test "E2E: checksum: mismatched sha256 refuses install and leaves no prefix" {
+    setup_e2e_archive
+    local sha256="${E2E_TMPDIR}/bad.sha256"
+    echo "0000000000000000000000000000000000000000000000000000000000000000  fake" > "$sha256"
+    run bash "$INSTALL_SCRIPT" \
+        --version        "$ARTIFACT_VER" \
+        --prefix         "$E2E_PREFIX" \
+        --archive        "$LOCAL_ARCHIVE" \
+        --archive-sha256 "$sha256"
+    local pfx_lib=0; [[ -d "${E2E_PREFIX}/lib" ]] && pfx_lib=1
+    teardown_e2e_archive
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"mismatch"* || "$output" == *"Mismatch"* ]]
+    [ "$pfx_lib" -eq 0 ]
+}
+
+@test "E2E: checksum: empty sha256 file fails as malformed" {
+    setup_e2e_archive
+    local sha256="${E2E_TMPDIR}/empty.sha256"
+    > "$sha256"
+    run bash "$INSTALL_SCRIPT" \
+        --version        "$ARTIFACT_VER" \
+        --prefix         "$E2E_PREFIX" \
+        --archive        "$LOCAL_ARCHIVE" \
+        --archive-sha256 "$sha256"
+    teardown_e2e_archive
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"alformed"* ]]
+}
+
+@test "E2E: checksum: non-hex 64-char sha256 fails as malformed" {
+    setup_e2e_archive
+    local sha256="${E2E_TMPDIR}/nonhex.sha256"
+    echo "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz  fake" > "$sha256"
+    run bash "$INSTALL_SCRIPT" \
+        --version        "$ARTIFACT_VER" \
+        --prefix         "$E2E_PREFIX" \
+        --archive        "$LOCAL_ARCHIVE" \
+        --archive-sha256 "$sha256"
+    teardown_e2e_archive
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"alformed"* ]]
+}
+
+@test "E2E: atomic: corrupt archive leaves no prefix" {
+    local tmpdir; tmpdir="$(mktemp -d)"
+    local pfx="${tmpdir}/prefix"
+    local bad="${tmpdir}/bad.tar.gz"
+    echo "not a gzip archive" > "$bad"
+    run bash "$INSTALL_SCRIPT" --version "0.3.3" --prefix "$pfx" --archive "$bad"
+    local pfx_lib=0; [[ -d "${pfx}/lib" ]] && pfx_lib=1
+    rm -rf "$tmpdir"
+    [ "$status" -ne 0 ]
+    [ "$pfx_lib" -eq 0 ]
+}
+
+@test "E2E: atomic: invalid layout archive leaves existing lib, launcher, and marker intact" {
+    setup_e2e_archive
+    bash "$INSTALL_SCRIPT" \
+        --version "$ARTIFACT_VER" \
+        --prefix  "$E2E_PREFIX" \
+        --archive "$LOCAL_ARCHIVE"
+    # Build a bad archive: has package.json but missing bin/kmp-test.js
+    local bad_root="${E2E_TMPDIR}/bad/kmp-test-runner-${ARTIFACT_VER}"
+    mkdir -p "${bad_root}/bin"
+    echo '{"name":"kmp-test-runner","version":"0.0.0"}' > "${bad_root}/package.json"
+    local bad_archive="${E2E_TMPDIR}/bad.tar.gz"
+    tar -czf "$bad_archive" -C "${E2E_TMPDIR}/bad" "kmp-test-runner-${ARTIFACT_VER}"
+    run bash "$INSTALL_SCRIPT" \
+        --version "$ARTIFACT_VER" \
+        --prefix  "$E2E_PREFIX" \
+        --archive "$bad_archive"
+    local lib_ok=0; [[ -f "${E2E_PREFIX}/lib/bin/kmp-test.js" ]]           && lib_ok=1
+    local lnk_ok=0; [[ -L "${E2E_PREFIX}/bin/kmp-test" ]]                   && lnk_ok=1
+    local mrk_ok=0; [[ -f "${E2E_PREFIX}/.kmp-test-runner-install.json" ]]  && mrk_ok=1
+    teardown_e2e_archive
+    [ "$status" -ne 0 ]
+    [ "$lib_ok" -eq 1 ]
+    [ "$lnk_ok" -eq 1 ]
+    [ "$mrk_ok" -eq 1 ]
+}
