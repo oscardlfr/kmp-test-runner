@@ -161,6 +161,17 @@ describe('parseArgs', () => {
     const opts = parseArgs(['--skip-tests', '--coverage-tool', 'jacoco']);
     expect(opts.coverageTool).toBe('jacoco');
   });
+
+  it('emits unknown_flag for unrecognised --flags (regression: was silent drop)', () => {
+    const opts = parseArgs(['--no-such-coverage-flag']);
+    expect(opts.errors.some(e => e.code === 'unknown_flag' && e.flag === '--no-such-coverage-flag'))
+      .toBe(true);
+  });
+
+  it('does NOT emit unknown_flag for positionals or single-dash tokens', () => {
+    const opts = parseArgs(['positional', '-Pfoo=bar']);
+    expect(opts.errors.filter(e => e.code === 'unknown_flag')).toHaveLength(0);
+  });
 });
 
 describe('expandNoCoverageAlias', () => {

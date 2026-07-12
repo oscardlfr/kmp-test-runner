@@ -81,6 +81,10 @@ export const ORCHESTRATOR_INTERNAL_LITERALS = Object.freeze({
   ]),
   coverage: new Set([
     '--no-coverage',         // arg-stripper
+    '--skip-tests',          // wrapper-side prefix routed to coverage subcommand; consumed silently
+    '--isolated',            // isolation flags passed by parallel shell dispatch; coverage never spawns gradle so irrelevant
+    '--isolated-no-lock',
+    '--isolated-cache-dir',  // value-bearing; value consumed with i++
   ]),
   benchmark: new Set([]),
   android: new Set([]),

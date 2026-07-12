@@ -115,6 +115,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `task_not_found` | any | 3 | Gradle task class missing — typically a plugin not applied to the requested module. | — |
 | `unsupported_class_version` | any | 3 | JDK toolchain mismatch — gradle daemon ran on an older JVM than the test classes target. | — |
 | `invalid_*` | any | 2 | CLI validation failure (e.g. `invalid_flag_value`, `invalid_regex`). | `flag?`, `value?` |
+| `unknown_flag` | any | 2 | A `--flag` token was not recognized by any subcommand. Two-layer gate: Layer 1 (cli.js) catches flags unknown to all subcommands before the PS wrapper spawns; Layer 2 (each orchestrator's `default:` case) catches flags valid for other subcommands but not this one. | `flag:string` |
 | `no_project` | any | 3 | No gradle project found at `--project-root`. | — |
 | `release_resolve_failed` | update | 3 | `kmp-test update` could not resolve the latest release tag (HEAD redirect + REST API both failed). | `probe_errors: [{tier, source, message}]` — per-tier diagnostic (cert / proxy / DNS / rate-limit error message) |
 | `current_version_unresolvable` | update | 3 | `kmp-test update` could not read its own `package.json` to compare versions. | — |

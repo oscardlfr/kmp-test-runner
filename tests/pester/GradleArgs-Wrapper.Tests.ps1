@@ -41,8 +41,9 @@ Describe 'GradleArgs wrapper — flag-shaped and special-char values (PR-10)' {
 
     It '-GradleArgs preserves percent literal without expansion' {
         # PowerShell does NOT expand %VAR% syntax (unlike cmd.exe).
-        # Verifies the value reaches Node intact — the string 'KMP_SHOULD_NOT_EXPAND'
-        # must appear in the dry-run output, not whatever that env var might hold.
+        # Verifies the value reaches Node as a single intact token — the banner
+        # shows "Gradle args: 1 token(s)" (count-only; value redacted for security).
+        # 1 token = the percent literal was not expanded into multiple words.
         $work = New-MinimalFixture
         try {
             $env:KMP_SHOULD_NOT_EXPAND = 'EXPANDED'
@@ -51,9 +52,11 @@ Describe 'GradleArgs wrapper — flag-shaped and special-char values (PR-10)' {
                 -GradleArgs '-Pkmp.test.literal=%KMP_SHOULD_NOT_EXPAND%' `
                 -DryRun 2>&1
             $text = $output | Out-String
-            # The literal percent form must be present (not the expanded value).
-            $text | Should -Match '%KMP_SHOULD_NOT_EXPAND%'
-            $text | Should -Not -Match 'KMP_SHOULD_NOT_EXPAND%.*EXPANDED|EXPANDED.*%'
+            # Count = 1 confirms the value was not split or expanded (PS never
+            # expands %VAR% — this guard catches accidental Node-side eval).
+            $text | Should -Match 'Gradle args: 1 token'
+            # The env-var expansion value must never appear in any output.
+            $text | Should -Not -Match '\bEXPANDED\b'
         } finally {
             $env:KMP_SHOULD_NOT_EXPAND = $null
             Remove-Item -Recurse -Force -Path $work -ErrorAction SilentlyContinue
