@@ -101,10 +101,15 @@ export const AUDIT_PUBLIC_RULES = [
 // fixture data to be construction-split, which is a follow-on audit.
 // TODO: schedule a __snapshots__ audit pass and remove this exception once clean.
 //
+// package-lock.json: skipped because npm integrity fields are sha512 base64 strings.
+// Base64 segments that happen to be 8-15 uppercase alphanumeric characters match the
+// device_serial heuristic but are not privacy leaks. The lockfile is auto-generated
+// and does not originate from human-authored text.
+//
 // tools/runs/ is NOT skipped: the 8 tracked files were verified clean in the PR-02
 // pre-flight. Keeping them in scope ensures future private-data additions are caught.
 // ---------------------------------------------------------------------------
-const SKIP_PREFIXES = ['__snapshots__/'];
+const SKIP_PREFIXES = ['__snapshots__/', 'package-lock.json'];
 
 // ---------------------------------------------------------------------------
 // NUL/binary sniffing — reads first 512 bytes; any NUL byte signals binary.

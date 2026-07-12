@@ -276,6 +276,11 @@ describe('shouldSkip', () => {
     expect(shouldSkip('__snapshots__/foo.snap', SELF_REL)).toBe(true);
   });
 
+  it('skips package-lock.json (sha512 base64 segments are not device serials)', () => {
+    expect(shouldSkip('package-lock.json', SELF_REL)).toBe(true);
+    expect(shouldSkip('subdir/package-lock.json', SELF_REL)).toBe(true);
+  });
+
   it('skips the audit script itself', () => {
     expect(shouldSkip(SELF_REL, SELF_REL)).toBe(true);
   });
