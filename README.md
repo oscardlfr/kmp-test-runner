@@ -171,6 +171,20 @@ curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/main/scri
 iwr -useb https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/main/scripts/install.ps1 | iex
 ```
 
+Remote downloads verify the `.sha256` checksum published alongside each GitHub Release before extraction — corrupt or tampered archives are rejected before any file is written to disk. Failed installs restore previous components (upgrades) or remove empty directories created by this run (fresh installs).
+
+For offline or air-gapped installs, use `--archive <path>` to supply a local archive (checksum skipped by default). Add `--archive-sha256 <path>` to verify a locally-downloaded `.sha256` file:
+```sh
+# Linux/macOS — offline install with checksum verification
+bash scripts/install.sh --archive kmp-test-runner-0.14.0-linux.tar.gz \
+     --archive-sha256 kmp-test-runner-0.14.0-linux.tar.gz.sha256
+```
+```powershell
+# Windows — offline install with checksum verification
+.\install.ps1 -LocalArchive kmp-test-runner-0.14.0-windows.zip `
+              -LocalArchiveSha256 kmp-test-runner-0.14.0-windows.zip.sha256
+```
+
 To uninstall:
 ```sh
 # Linux/macOS

@@ -34,6 +34,7 @@ LINUX_ARCHIVE="${OUTPUT_DIR}/kmp-test-runner-${VERSION}-linux.tar.gz"
 tar -czf "$LINUX_ARCHIVE" -C "$STAGING_ROOT" "$WRAPPER"
 echo "linux_archive=$LINUX_ARCHIVE"
 
+WINDOWS_ARCHIVE=""
 if command -v zip >/dev/null 2>&1; then
     WINDOWS_ARCHIVE="${OUTPUT_DIR}/kmp-test-runner-${VERSION}-windows.zip"
     (cd "$STAGING_ROOT" && zip -r "../$(basename "$WINDOWS_ARCHIVE")" "$WRAPPER")
@@ -41,3 +42,20 @@ if command -v zip >/dev/null 2>&1; then
 fi
 
 rm -rf "$STAGING_ROOT"
+
+# Generate SHA-256 checksums (mirrors publish-release.yml Step 6).
+sha256_file() {
+    local f="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$f"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$f"
+    fi
+}
+
+if sha256_file "$LINUX_ARCHIVE" > "${LINUX_ARCHIVE}.sha256" 2>/dev/null; then
+    echo "linux_sha256=${LINUX_ARCHIVE}.sha256"
+fi
+if [[ -n "${WINDOWS_ARCHIVE:-}" ]] && sha256_file "$WINDOWS_ARCHIVE" > "${WINDOWS_ARCHIVE}.sha256" 2>/dev/null; then
+    echo "windows_sha256=${WINDOWS_ARCHIVE}.sha256"
+fi
