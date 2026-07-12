@@ -15,13 +15,61 @@ const WORKFLOWS   = join(REPO_ROOT, '.github', 'workflows');
 const REQUIRED_CHECKS_JSON = join(REPO_ROOT, '.github', 'required-checks.json');
 
 // Extracts the YAML text block for a named job (2-space-indented key).
+// Normalizes CRLF → LF first so equality checks work on Windows checkouts.
+// The end-of-job sentinel matches any 2-space-indented identifier including
+// hyphenated job names (e.g. installer-e2e, gradle-plugin-test-ios).
 function jobSection(yaml, jobName) {
-  const lines = yaml.split('\n');
+  const normalized = yaml.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
   const start = lines.findIndex(l => l === `  ${jobName}:`);
   if (start === -1) return null;
-  const end = lines.findIndex((l, i) => i > start && /^  \w/.test(l));
+  const end = lines.findIndex((l, i) => i > start && /^  [\w][\w-]*:/.test(l));
   return (end === -1 ? lines.slice(start) : lines.slice(start, end)).join('\n');
 }
+
+// ---------------------------------------------------------------------------
+// jobSection() CRLF safety regression
+
+describe('jobSection() helper', () => {
+  it('extracts a job block correctly from LF-terminated YAML', () => {
+    const yaml = [
+      'jobs:',
+      '  build:',
+      '    runs-on: ubuntu-latest',
+      '    timeout-minutes: 15',
+      '  secrets-scan:',
+      '    runs-on: ubuntu-latest',
+    ].join('\n');
+    const section = jobSection(yaml, 'build');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/runs-on/);
+    expect(section).toMatch(/timeout-minutes/);
+    expect(section).not.toMatch(/secrets-scan/);
+  });
+
+  it('extracts a job block correctly from CRLF-terminated YAML (Windows checkout)', () => {
+    const yaml = [
+      'jobs:',
+      '  installer-e2e:',
+      '    runs-on: ubuntu-latest',
+      '    timeout-minutes: 10',
+      '    steps:',
+      '      - run: npm ci',
+      '  gradle-plugin-test:',
+      '    runs-on: ubuntu-latest',
+    ].join('\r\n');
+    const section = jobSection(yaml, 'installer-e2e');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/npm ci/);
+    expect(section).toMatch(/timeout-minutes/);
+    expect(section).not.toMatch(/gradle-plugin-test/);
+  });
+
+  it('returns null for an unknown job name', () => {
+    const yaml = '  build:\n    runs-on: ubuntu-latest\n';
+    expect(jobSection(yaml, 'nonexistent')).toBeNull();
+  });
+});
 
 // Load all workflow files once
 let wf = {};
