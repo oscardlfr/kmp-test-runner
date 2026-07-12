@@ -12,15 +12,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Fast pre-check: decides whether the heavy CI matrix needs to run.
-  # When ALL diffed files are docs (any *.md), local smoke captures,
-  # or git config (.gitignore / .gitattributes), the downstream heavy
-  # jobs short-circuit. GitHub treats `skipped` as `success` for
-  # required-check gating (since 2022), so branch protection still
-  # passes without burning Linux/Windows minutes.
+  # GitHub treats `skipped` as `success` for required-check gating (since
+  # 2022), so branch protection still passes without burning CI minutes.
   #
-  # Source code, tests/, scripts/, tools/, gradle-plugin/, package.json,
-  # and .github/workflows/** ALWAYS trigger the full matrix — anything
-  # the test suite or installer could regress on.
+  # Skip-eligible (heavy=false when ALL changes fall here):
+  #   *.md, .smoke/**, .gitignore
+  #
+  # Always heavy=true (triggers the full matrix):
+  #   source code, tests/, scripts/, tools/, gradle-plugin/, package.json,
+  #   .github/workflows/**, AND .gitattributes.
+  #   .gitattributes is the source of truth for check-line-endings.mjs —
+  #   a change to LF rules must run build (checker + workflow-static tests).
   #
   # secrets-scan stays unconditional (security is non-negotiable).
   decide:
@@ -56,7 +58,7 @@ jobs:
           # Capture exit explicitly to avoid bash -e killing the step on that
           # legitimate "no matches" outcome.
           set +e
-          NON_SKIPPABLE=$(printf '%s\n' "$CHANGED" | grep -vE '^(.+\.md|\.smoke/.*|\.gitignore|\.gitattributes)$')
+          NON_SKIPPABLE=$(printf '%s\n' "$CHANGED" | grep -vE '^(.+\.md|\.smoke/.*|\.gitignore)$')
           GREP_EXIT=$?
           set -e
           if [ "$GREP_EXIT" -eq 0 ]; then
@@ -83,15 +85,17 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
           cache-dependency-path: package-lock.json
       - run: npm ci
+      - name: Check line endings (tools/check-line-endings.mjs)
+        run: node tools/check-line-endings.mjs
       # Blocking security gate scopes to PRODUCTION dependencies — what
       # consumers actually install. This package ships ZERO runtime deps (all
       # devDependencies are the vitest/vite/esbuild test toolchain, never
@@ -119,6 +123,19 @@ jobs:
         run: Invoke-Pester -Path tests/pester/,tests/installer/,tests/skill-scripts/ -CI
       - name: vitest
         run: npx vitest run --coverage
+      # Node 18 smoke: validate the declared engines.node >=18 floor.
+      # Node 18 is EOL (April 2025) — this validates legacy compatibility only.
+      # A future PR should raise engines.node to a supported LTS (22+ or 24).
+      # Runs on both ubuntu and windows: Windows-specific spawnSync dispatch
+      # paths (cmd.exe routing) exercise code paths sensitive to Node version.
+      # npm ci runs fresh under Node 18 — node_modules from Node 24 are not reused.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 18
+      - name: Node 18 smoke — npm ci under Node 18
+        run: npm ci
+      - name: Node 18 smoke — vitest run on declared-minimum Node (engines.node >=18)
+        run: npx vitest run
   secrets-scan:
     # Always runs — security checks are non-negotiable, even on docs-only PRs.
     # Also gates the release version-pin invariant: tools/sync-versions.js --check
@@ -131,7 +148,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
       - name: Verify version pins are in sync (tools/sync-versions.js --check)
         run: node tools/sync-versions.js --check
       - name: Validate required-checks manifest (schema)
@@ -156,7 +173,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
       - name: Decouple-from-L0 audit (tools/decouple-audit.mjs)
         run: node tools/decouple-audit.mjs
   bundle-size:
@@ -170,7 +187,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
       - name: Bundle-size budget gate (tools/check-bundle-size.mjs)
         run: node tools/check-bundle-size.mjs
   skills-validate:
@@ -190,7 +207,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
       - name: Validate agent skill (npx skills-ref@0.1.5)
         run: npx -y skills-ref@0.1.5 validate .skills/kmp-test-runner/
       - name: Validate Claude Code plugin manifest (tools/validate-plugin.mjs)
@@ -208,7 +225,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
           cache-dependency-path: package-lock.json
       - name: Build local artifact (Linux)

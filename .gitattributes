@@ -91,3 +91,8 @@ tools/release-gate.mjs text eol=lf
 tools/validate-required-checks.mjs text eol=lf
 tests/vitest/release-gate.test.js text eol=lf
 tests/vitest/workflow-static.test.js text eol=lf
+
+# PR-20b line-ending guard tool + test — same vitest 2.1.x CRLF parser protection
+# as the other .mjs / test file pairs above.
+tools/check-line-endings.mjs text eol=lf
+tests/vitest/check-line-endings.test.js text eol=lf

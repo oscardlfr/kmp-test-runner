@@ -345,3 +345,76 @@ describe('.github/required-checks.json', () => {
     expect(ctx).toContain('Commit Lint');
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR-20b: Node 24 upgrade + line-ending guard + Node 18 floor smoke
+
+describe('ci.yml Node 24 upgrade and PR-20b guards', () => {
+  it('regular CI still has no macos-latest', () => {
+    expect(wf['ci.yml']).not.toMatch(/macos-latest/);
+  });
+
+  it('ci.yml has no node-version: 20 (EOL Node fully replaced by Node 24)', () => {
+    // Node 20 reached EOL April 2026. Primary runtime upgraded to Node 24 (Active LTS).
+    expect(wf['ci.yml']).not.toMatch(/node-version:\s+20\b/);
+  });
+
+  it('build job uses Node 24 as primary runtime with npm cache', () => {
+    const section = jobSection(wf['ci.yml'], 'build');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/node-version:\s+24/);
+    expect(section).toMatch(/cache:\s+'?npm'?/);
+  });
+
+  it('build job contains Node 18 floor smoke (setup-node + fresh npm ci + vitest run)', () => {
+    const section = jobSection(wf['ci.yml'], 'build');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/node-version:\s+18/);
+    expect(section).toMatch(/Node 18 smoke/i);
+  });
+
+  it('build job invokes check-line-endings.mjs', () => {
+    const section = jobSection(wf['ci.yml'], 'build');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/check-line-endings\.mjs/);
+  });
+
+  it('required_contexts count unchanged — still exactly 10', () => {
+    const manifest = JSON.parse(readFileSync(REQUIRED_CHECKS_JSON, 'utf8'));
+    expect(manifest.required_contexts.length).toBe(10);
+  });
+
+  it('decide job skip filter does not include .gitattributes (it is source of truth for line-ending rules)', () => {
+    // .gitattributes is not skip-eligible: a PR that weakens LF rules must run
+    // build (check-line-endings.mjs + workflow-static tests) to be validated.
+    const section = jobSection(wf['ci.yml'], 'decide');
+    expect(section).not.toBeNull();
+    expect(section).not.toMatch(/\.gitattributes/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// .gitattributes minimum LF-rule invariants
+
+describe('.gitattributes minimum LF rules', () => {
+  let ga;
+  beforeAll(() => {
+    ga = readFileSync(join(REPO_ROOT, '.gitattributes'), 'utf8');
+  });
+
+  const REQUIRED_LF_PATTERNS = [
+    'scripts/*.sh',
+    'scripts/**/*.sh',
+    '.skills/**/*.sh',
+    'tests/skill-scripts/*.bats',
+    'tools/check-line-endings.mjs',
+  ];
+
+  for (const pattern of REQUIRED_LF_PATTERNS) {
+    it(`${pattern} has eol=lf rule`, () => {
+      // Escape regex metacharacters in the pattern for the contains-check.
+      const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      expect(ga).toMatch(new RegExp(`^${escaped}\\s+.*eol=lf`, 'm'));
+    });
+  }
+});
