@@ -276,8 +276,48 @@ describe('shouldSkip', () => {
     expect(shouldSkip('__snapshots__/foo.snap', SELF_REL)).toBe(true);
   });
 
+  it('does not skip package-lock.json (integrity lines are exempted per-rule, not file-level)', () => {
+    expect(shouldSkip('package-lock.json', SELF_REL)).toBe(false);
+    expect(shouldSkip('subdir/package-lock.json', SELF_REL)).toBe(false);
+  });
+
   it('skips the audit script itself', () => {
     expect(shouldSkip(SELF_REL, SELF_REL)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// integrity-line exemption in package-lock.json
+// ---------------------------------------------------------------------------
+describe('package-lock.json integrity-line exemption', () => {
+  it('does not flag a serial-shaped base64 segment on an npm integrity line', () => {
+    const dir = makeTmpDir();
+    // Integrity line: the base64 payload contains SERIAL_FIXTURE between slashes.
+    // Without excludeLineRe this would trip device_serial; the rule must suppress it.
+    const f = tmpFile(dir, 'lock.json',
+      `      "integrity": "sha512-abc/${SERIAL_FIXTURE}/xyz=="\n`
+    );
+    const hits = scanFile(f, 'package-lock.json', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial')).toHaveLength(0);
+  });
+
+  it('still flags a serial-shaped string on a non-integrity line in package-lock.json', () => {
+    const dir = makeTmpDir();
+    // A "name" or other field — not an integrity hash — must still trip the rule.
+    const f = tmpFile(dir, 'lock.json',
+      `    "name": "adb-device-${SERIAL_FIXTURE}"\n`
+    );
+    const hits = scanFile(f, 'package-lock.json', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial').length).toBeGreaterThan(0);
+  });
+
+  it('still flags a user path in package-lock.json (e.g. a local file: resolved URL)', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'lock.json',
+      `    "resolved": "file:${POSIX_PATH_FIXTURE}/my-private-pkg"\n`
+    );
+    const hits = scanFile(f, 'package-lock.json', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'user_path_posix').length).toBeGreaterThan(0);
   });
 });
 
