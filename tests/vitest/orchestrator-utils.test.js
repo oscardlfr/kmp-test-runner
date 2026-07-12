@@ -7,7 +7,7 @@
 // spawnGradle, readPackageName, defaultAdbProbe) are exercised indirectly via
 // the orchestrator tests and don't need duplicate coverage here.
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import {
   mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync,
 } from 'node:fs';
@@ -42,6 +42,7 @@ import {
   resolveMaxBuffer,
   tailTruncate,
   spawnGradle,
+  splitJvmOpts,
   DEFAULT_SPAWN_MAX_BUFFER_MB,
 } from '../../lib/orchestrators/orchestrator-utils.js';
 
@@ -867,5 +868,120 @@ describe('assessIsolatedRuntimeRace', () => {
     for (const tt of ['macos', 'desktop', 'common', 'androidUnit', '']) {
       expect(assessIsolatedRuntimeRace({ enabled: true, testType: tt })).toBeNull();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// splitJvmOpts
+// ---------------------------------------------------------------------------
+describe('splitJvmOpts', () => {
+  it('returns [] for empty string', () => expect(splitJvmOpts('')).toEqual([]));
+  it('returns [] for whitespace-only string', () => expect(splitJvmOpts('   ')).toEqual([]));
+  it('returns [] for null / undefined', () => {
+    expect(splitJvmOpts(null)).toEqual([]);
+    expect(splitJvmOpts(undefined)).toEqual([]);
+  });
+
+  it('splits simple space-separated opts', () => {
+    expect(splitJvmOpts('-Xmx2g -Xms512m')).toEqual(['-Xmx2g', '-Xms512m']);
+  });
+
+  it('splits a single opt', () => {
+    expect(splitJvmOpts('-Dfile.encoding=UTF-8')).toEqual(['-Dfile.encoding=UTF-8']);
+  });
+
+  it('strips surrounding double quotes from each token', () => {
+    expect(splitJvmOpts('"-Xmx2g" "-Dsome.prop=value with space"')).toEqual([
+      '-Xmx2g',
+      '-Dsome.prop=value with space',
+    ]);
+  });
+
+  it('handles mix of quoted and unquoted tokens', () => {
+    expect(splitJvmOpts('-Xmx2g "-Dsome.prop=hello world" -Xms512m')).toEqual([
+      '-Xmx2g',
+      '-Dsome.prop=hello world',
+      '-Xms512m',
+    ]);
+  });
+
+  it('preserves = and : inside tokens', () => {
+    expect(splitJvmOpts('-Dhttp.proxyHost=proxy.example.com')).toEqual([
+      '-Dhttp.proxyHost=proxy.example.com',
+    ]);
+  });
+
+  it('trims leading/trailing whitespace around tokens', () => {
+    expect(splitJvmOpts('  -Xmx1g   -Xms256m  ')).toEqual(['-Xmx1g', '-Xms256m']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// spawnGradle — Candidate A: JAVA_OPTS / GRADLE_OPTS propagation
+// ---------------------------------------------------------------------------
+describe('spawnGradle — Candidate A JAVA_OPTS/GRADLE_OPTS propagation', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(tmpdir(), 'kmp-jvmopts-'));
+    mkdirSync(path.join(tmpDir, 'gradle', 'wrapper'), { recursive: true });
+    writeFileSync(path.join(tmpDir, 'gradle', 'wrapper', 'gradle-wrapper.jar'), '');
+    writeFileSync(path.join(tmpDir, 'gradlew.bat'), '@echo off\r\n');
+  });
+
+  afterEach(() => {
+    if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('prepends JAVA_OPTS tokens before -classpath in the JVM argv', () => {
+    const calls = [];
+    const fakeSpawn = (cmd, args, _opts) => { calls.push({ cmd, args }); return { status: 0, stdout: '', stderr: '' }; };
+    const gradlewBat = path.join(tmpDir, 'gradlew.bat');
+    spawnGradle(fakeSpawn, gradlewBat, [':app:test'], {
+      env: { ...process.env, JAVA_OPTS: '-Xmx2g -Dhttp.proxyHost=proxy.local', GRADLE_OPTS: '' },
+    });
+    // On Windows the Candidate A branch fires; on POSIX the non-.bat direct branch fires.
+    if (process.platform !== 'win32') return;
+    expect(calls).toHaveLength(1);
+    const { cmd, args } = calls[0];
+    expect(/(java(\.exe)?)$/i.test(cmd)).toBe(true);
+    const cpIdx = args.indexOf('-classpath');
+    expect(cpIdx).toBeGreaterThan(-1);
+    // JAVA_OPTS tokens must appear before -classpath
+    expect(args.indexOf('-Xmx2g')).toBeLessThan(cpIdx);
+    expect(args.indexOf('-Dhttp.proxyHost=proxy.local')).toBeLessThan(cpIdx);
+    // Gradle arg must appear after GradleWrapperMain
+    const mainIdx = args.indexOf('org.gradle.wrapper.GradleWrapperMain');
+    expect(args.indexOf(':app:test')).toBeGreaterThan(mainIdx);
+  });
+
+  it('prepends GRADLE_OPTS tokens before -classpath in the JVM argv', () => {
+    const calls = [];
+    const fakeSpawn = (cmd, args, _opts) => { calls.push({ cmd, args }); return { status: 0, stdout: '', stderr: '' }; };
+    const gradlewBat = path.join(tmpDir, 'gradlew.bat');
+    spawnGradle(fakeSpawn, gradlewBat, [':lib:check'], {
+      env: { ...process.env, JAVA_OPTS: '', GRADLE_OPTS: '-Dgradle.user.home=/ci/.gradle' },
+    });
+    if (process.platform !== 'win32') return;
+    expect(calls).toHaveLength(1);
+    const { args } = calls[0];
+    const cpIdx = args.indexOf('-classpath');
+    expect(args.indexOf('-Dgradle.user.home=/ci/.gradle')).toBeLessThan(cpIdx);
+  });
+
+  it('includes no extra JVM opts when both JAVA_OPTS and GRADLE_OPTS are absent', () => {
+    const calls = [];
+    const fakeSpawn = (cmd, args, _opts) => { calls.push({ cmd, args }); return { status: 0, stdout: '', stderr: '' }; };
+    const gradlewBat = path.join(tmpDir, 'gradlew.bat');
+    const env = { ...process.env };
+    delete env.JAVA_OPTS;
+    delete env.GRADLE_OPTS;
+    spawnGradle(fakeSpawn, gradlewBat, ['tasks'], { env });
+    if (process.platform !== 'win32') return;
+    const { args } = calls[0];
+    const cpIdx = args.indexOf('-classpath');
+    // Nothing before -classpath except the implicit -Dorg.gradle.appname is AFTER -classpath
+    // so cpIdx should be 0 (no jvmOpts prepended)
+    expect(cpIdx).toBe(0);
   });
 });

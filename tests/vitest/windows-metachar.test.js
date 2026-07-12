@@ -231,15 +231,17 @@ const CAND_B_PASSES = new Set([
   'class=com.example.Percent%NameTest',
 ]);
 
-describe('Candidate B — PowerShell single-quoted args via .bat boundary (B discarded)', () => {
+// describe.skipIf gates the whole block on Windows-only so that:
+// • it.fails tests (documenting B rejections) don't "unexpectedly pass"
+//   on Linux/macOS (where the early-return would count as no-failure).
+// • it() tests (documenting B successes) don't trivially pass off-platform.
+describe.skipIf(process.platform !== 'win32')('Candidate B — PowerShell single-quoted args via .bat boundary (B discarded)', () => {
   for (const testArg of METACHAR_MATRIX) {
     // Tests that PASS: B happens to handle these values correctly.
     // Tests that FAIL (it.fails): B is BROKEN for these — the expected
     // assertion fails, which is the documented rejection evidence.
     const itFn = CAND_B_PASSES.has(testArg) ? it : it.fails;
     itFn(`PS + .bat: ${JSON.stringify(testArg)}`, () => {
-      if (process.platform !== 'win32') return;
-
       const shell = resolveShell();
       // PowerShell single-quote escaping: '' is a literal ' inside '...'
       const psEsc = (s) => `'${String(s).replace(/'/g, "''")}'`;
