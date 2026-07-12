@@ -345,3 +345,42 @@ describe('.github/required-checks.json', () => {
     expect(ctx).toContain('Commit Lint');
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR-20b: Node 24 upgrade + line-ending guard + Node 18 floor smoke
+
+describe('ci.yml Node 24 upgrade and PR-20b guards', () => {
+  it('regular CI still has no macos-latest', () => {
+    expect(wf['ci.yml']).not.toMatch(/macos-latest/);
+  });
+
+  it('ci.yml has no node-version: 20 (EOL Node fully replaced by Node 24)', () => {
+    // Node 20 reached EOL April 2026. Primary runtime upgraded to Node 24 (Active LTS).
+    expect(wf['ci.yml']).not.toMatch(/node-version:\s+20\b/);
+  });
+
+  it('build job uses Node 24 as primary runtime with npm cache', () => {
+    const section = jobSection(wf['ci.yml'], 'build');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/node-version:\s+24/);
+    expect(section).toMatch(/cache:\s+'?npm'?/);
+  });
+
+  it('build job contains Node 18 floor smoke (setup-node + fresh npm ci + vitest run)', () => {
+    const section = jobSection(wf['ci.yml'], 'build');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/node-version:\s+18/);
+    expect(section).toMatch(/Node 18 smoke/i);
+  });
+
+  it('build job invokes check-line-endings.mjs', () => {
+    const section = jobSection(wf['ci.yml'], 'build');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/check-line-endings\.mjs/);
+  });
+
+  it('required_contexts count unchanged — still exactly 10', () => {
+    const manifest = JSON.parse(readFileSync(REQUIRED_CHECKS_JSON, 'utf8'));
+    expect(manifest.required_contexts.length).toBe(10);
+  });
+});
