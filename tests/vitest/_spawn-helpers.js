@@ -1,10 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Test helpers: normalize platform-specific spawn-call shapes.
-// On Windows, lib/orchestrator-utils.js#spawnGradle wraps gradle dispatches
-// in the system shell to bypass the Node 18.20.2+ EINVAL block on direct
-// .bat invocations. These helpers give vitest assertions a unified view.
+// On Windows, lib/orchestrators/orchestrator-utils.js#spawnGradle uses one of
+// three shapes depending on which branch is taken:
+//
+//  1. POSIX / non-.bat : spawn(gradlewPath, gradleArgs, opts)
+//  2. Candidate A (Windows + JAR found): spawn(javaExe, ['-classpath', jar,
+//       '-Dorg.gradle.appname=gradlew', 'GradleWrapperMain', ...gradleArgs], opts)
+//  3. cmd.exe fallback (Windows + JAR absent): spawn(comspec,
+//       ['/d', '/v:off', '/s', '/c', cmdLine], opts)
+//     Note: /v:off was added in PR-25 — cmdLine is now at args[4] (after /c),
+//     not args[3]. Use indexOf('/c') + 1 to find it robustly.
+//
+// These helpers give vitest assertions a unified view regardless of shape.
 
 const SHELL_RE = /(^|[\\/])cmd(\.exe)?$/i;
+const JAVA_RE = /(^|[\\/])java(\.exe)?$/i;
+const GRADLE_MAIN = 'org.gradle.wrapper.GradleWrapperMain';
 
 export function isGradleCall(call) {
   if (!call) return false;
@@ -13,18 +24,24 @@ export function isGradleCall(call) {
   if (SHELL_RE.test(cmd) && Array.isArray(call.args)) {
     return call.args.some(a => /gradlew/i.test(String(a)));
   }
+  // Candidate A: java.exe -classpath <jar> ... GradleWrapperMain <gradleArgs>
+  if (JAVA_RE.test(cmd) && Array.isArray(call.args)) {
+    return call.args.includes(GRADLE_MAIN);
+  }
   return false;
 }
 
 export function effectiveGradleArgs(call) {
   if (!call || !Array.isArray(call.args)) return [];
   if (/gradlew/i.test(String(call.cmd))) return call.args;
-  // Wrapped shape from spawnGradle on Windows. The cmdLine sits at args[3]
-  // and looks like `""<gradlewPath>" arg1 arg2 ..."` (always-quoted path,
-  // outer wrapper consumed by cmd.exe /s /c strip rule). We peel the outer
-  // wrap and the path-quote pair, then tokenize the rest respecting any
-  // remaining inline-quoted args.
-  let cmdLine = call.args[3] || '';
+  // Candidate A: java.exe + GradleWrapperMain — args after the main class.
+  if (JAVA_RE.test(String(call.cmd)) && call.args.includes(GRADLE_MAIN)) {
+    return call.args.slice(call.args.indexOf(GRADLE_MAIN) + 1);
+  }
+  // cmd.exe fallback: find /c to locate cmdLine (robust to flag insertions
+  // like /v:off that shift the position relative to a fixed index).
+  const cIdx = call.args.indexOf('/c');
+  let cmdLine = cIdx !== -1 ? (call.args[cIdx + 1] || '') : (call.args[3] || '');
   // Strip the outer wrap (first + last char if both `"`).
   if (cmdLine.startsWith('"') && cmdLine.endsWith('"')) {
     cmdLine = cmdLine.slice(1, -1);
