@@ -111,6 +111,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `flavor_unused` | parallel (`androidUnit`/`androidInstrumented`/`all`) | 2 | `--flavor <name>` passed but no module on the leg is flavored (static `productFlavors {}` or probe-recovered). | — |
 | `isolated_runtime_race` | parallel | 2 | `--isolated` combined with a test-type that hits a shared runtime resource (iOS sim, ADB without `--device`, `--test-type all`). | — |
 | `coverage_threshold_exceeded` | parallel (`--min-missed-lines`), coverage | 1 | Aggregated `coverage.missed_lines` exceeds the threshold. | — |
+| `git_error` | changed | 3 | A git command failed — repo unreadable, corrupted, or access denied. **Hard code** — `exit_code` is always 3. Only emitted when git probing fails; `no_changed_modules` is emitted instead when git succeeds but the diff is empty. | `git_command:string` (subcommand invoked), `exit_status:number` (git exit code), `stderr_summary?:string` (first 300 chars of stderr, CR/LF collapsed, omitted when empty) |
 | `task_not_found` | any | 3 | Gradle task class missing — typically a plugin not applied to the requested module. | — |
 | `unsupported_class_version` | any | 3 | JDK toolchain mismatch — gradle daemon ran on an older JVM than the test classes target. | — |
 | `invalid_*` | any | 2 | CLI validation failure (e.g. `invalid_flag_value`, `invalid_regex`). | `flag?`, `value?` |
@@ -125,7 +126,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | Code | Subcommand | Description |
 |------|-----------|-------------|
 | `no_summary` | any | Wrapper output had no recognizable summary line. Parse-gap fallback — stub scripts in unit tests legitimately exit 0 with this signal. |
-| `no_changed_modules` | changed | Working tree clean — no changed modules to test. Legitimate exit-0 outcome with structured signal. |
+| `no_changed_modules` | changed | Working tree clean — no changed modules to test. Legitimate exit-0 outcome. **Only emitted when git probing succeeds** and the diff is genuinely empty; git failures produce `git_error` (hard, exit 3) instead. |
 
 > Other discriminated codes may be reserved for orchestrator-internal use; agents should treat unrecognized codes as **opaque** and forward `message` to the user verbatim.
 

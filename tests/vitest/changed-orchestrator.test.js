@@ -576,10 +576,10 @@ describe('runChanged banner emission', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Case 12 — Non-git directory
+// Case 12 — Git failures → git_error (hard error, exit 3)
 // ---------------------------------------------------------------------------
-describe('runChanged non-git directory', () => {
-  it('git rev-parse fails → no_changed_modules with "Not a git repository"', async () => {
+describe('runChanged git failures (git_error)', () => {
+  it('git rev-parse fails → git_error + exit 3 (both exitCode and envelope.exit_code)', async () => {
     const dir = makeProject(['mod']);
     const spawn = makeSpawnStub({ git: { notRepo: true } });
 
@@ -589,12 +589,13 @@ describe('runChanged non-git directory', () => {
       spawn,
     });
 
-    expect(envelope.errors[0].code).toBe('no_changed_modules');
+    expect(envelope.errors[0].code).toBe('git_error');
     expect(envelope.errors[0].message).toMatch(/not a git repository/i);
-    // Per current bash shape (run-changed-modules-tests.sh:191): exit 1 on non-git.
-    // The orchestrator's discriminator promotes via enforceErrorsExitCodeInvariant,
-    // but cleanest is to emit ENV_ERROR (3) so agents branch on a meaningful code.
-    expect(exitCode).not.toBe(0);
+    expect(envelope.errors[0].git_command).toBeTruthy();
+    expect(exitCode).toBe(3);
+    expect(envelope.exit_code).toBe(3);
+    // Hard error must NOT be confused with no_changed_modules (soft code).
+    expect(envelope.errors.find(e => e.code === 'no_changed_modules')).toBeUndefined();
   });
 });
 
@@ -785,5 +786,158 @@ describe('runChanged --isolated propagation (v0.9 step 4)', () => {
     expect(envelope.isolated).toEqual({
       enabled: true, cache_dir: null, kept: false, locked: false,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case 12b — git step-2 failures (git status / git diff --cached) → git_error
+// ---------------------------------------------------------------------------
+
+// Spawn stub where rev-parse succeeds but the named git sub-command fails.
+// Covers both 'status' (default path) and 'diff' (--staged-only path).
+function makeSpawnStubGitSubFails(failSub, { status = 128, stderr = 'fatal: some git error\n' } = {}) {
+  const calls = [];
+  const fn = (cmd, args) => {
+    calls.push({ cmd, args: [...args] });
+    if (cmd === 'git') {
+      if (args[0] === 'rev-parse') return { status: 0, stdout: 'true\n', stderr: '', error: null, signal: null };
+      if (args[0] === failSub)    return { status, stdout: '', stderr, error: null, signal: null };
+    }
+    return { status: 0, stdout: '', stderr: '', error: null, signal: null };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+describe('runChanged git step-2 failures → git_error', () => {
+  it('git status fails → git_error + exit 3, no_changed_modules NOT emitted', async () => {
+    const dir = makeProject(['mod']);
+    const spawn = makeSpawnStubGitSubFails('status', { status: 128, stderr: 'fatal: read error\n' });
+
+    const { envelope, exitCode } = await runChanged({ projectRoot: dir, args: [], spawn });
+
+    expect(envelope.errors[0].code).toBe('git_error');
+    expect(envelope.errors[0].git_command).toMatch(/status/);
+    expect(envelope.errors[0].exit_status).toBe(128);
+    expect(exitCode).toBe(3);
+    expect(envelope.exit_code).toBe(3);
+    expect(envelope.errors.find(e => e.code === 'no_changed_modules')).toBeUndefined();
+    // changed block still present for envelope-shape consistency
+    expect(envelope.changed.detected_modules).toEqual([]);
+  });
+
+  it('git diff --cached fails (--staged-only) → git_error + exit 3', async () => {
+    const dir = makeProject(['mod']);
+    const spawn = makeSpawnStubGitSubFails('diff', { status: 129 });
+
+    const { envelope, exitCode } = await runChanged({
+      projectRoot: dir, args: ['--staged-only'], spawn,
+    });
+
+    expect(envelope.errors[0].code).toBe('git_error');
+    expect(envelope.errors[0].git_command).toMatch(/diff/);
+    expect(envelope.errors[0].exit_status).toBe(129);
+    expect(exitCode).toBe(3);
+    expect(envelope.exit_code).toBe(3);
+    expect(envelope.errors.find(e => e.code === 'no_changed_modules')).toBeUndefined();
+  });
+
+  it('successful empty diff still emits no_changed_modules + exit 0 (regression guard)', async () => {
+    const dir = makeProject(['mod']);
+    const spawn = makeSpawnStub({ git: { statusOutput: '' } });
+
+    const { envelope, exitCode } = await runChanged({ projectRoot: dir, args: [], spawn });
+
+    // git succeeded but diff was empty → soft no_changed_modules, NOT git_error
+    expect(envelope.errors[0].code).toBe('no_changed_modules');
+    expect(envelope.errors.find(e => e.code === 'git_error')).toBeUndefined();
+    expect(exitCode).toBe(0);
+    expect(envelope.exit_code).toBe(0);
+  });
+
+  it('stderr_summary: CR/LF collapsed to spaces, capped at 300 chars', async () => {
+    const longStderr = 'fatal:\r\nsome\r\nerror\n' + 'x'.repeat(400);
+    const dir = makeProject(['mod']);
+    const spawn = makeSpawnStubGitSubFails('status', { status: 1, stderr: longStderr });
+
+    const { envelope } = await runChanged({ projectRoot: dir, args: [], spawn });
+
+    const summary = envelope.errors[0].stderr_summary;
+    expect(summary).toBeDefined();
+    expect(summary.length).toBeLessThanOrEqual(300);
+    expect(summary).not.toMatch(/\r/);
+    expect(summary).not.toMatch(/\n/);
+  });
+
+  it('stderr_summary is omitted when stderr is empty', async () => {
+    const dir = makeProject(['mod']);
+    const spawn = makeSpawnStubGitSubFails('status', { status: 1, stderr: '' });
+
+    const { envelope } = await runChanged({ projectRoot: dir, args: [], spawn });
+
+    expect('stderr_summary' in envelope.errors[0]).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --max-failures forwarding (PR-09: wire parsed flag to runParallel)
+// ---------------------------------------------------------------------------
+describe('runChanged --max-failures forwarding', () => {
+  it('--max-failures 3 is forwarded to runParallel as ["--max-failures", "3"]', async () => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['app/src/jvmTest/X.kt']) },
+    });
+    const parallelCalls = [];
+    const runParallelInjection = async (opts) => {
+      parallelCalls.push(opts);
+      return {
+        envelope: {
+          tests: { total: 0, passed: 0, failed: 0, skipped: 0 },
+          modules: [], skipped: [],
+          coverage: { tool: 'auto', missed_lines: null },
+          errors: [], warnings: [],
+        },
+        exitCode: 0,
+      };
+    };
+
+    await runChanged({
+      projectRoot: dir,
+      args: ['--max-failures', '3'],
+      spawn,
+      runParallelInjection,
+    });
+
+    expect(parallelCalls.length).toBe(1);
+    const args = parallelCalls[0].args;
+    const idx = args.indexOf('--max-failures');
+    expect(idx).toBeGreaterThan(-1);
+    expect(args[idx + 1]).toBe('3');
+  });
+
+  it('--max-failures 0 (default) is absent from parallel args', async () => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['app/src/jvmTest/X.kt']) },
+    });
+    const parallelCalls = [];
+    const runParallelInjection = async (opts) => {
+      parallelCalls.push(opts);
+      return {
+        envelope: {
+          tests: { total: 0, passed: 0, failed: 0, skipped: 0 },
+          modules: [], skipped: [],
+          coverage: { tool: 'auto', missed_lines: null },
+          errors: [], warnings: [],
+        },
+        exitCode: 0,
+      };
+    };
+
+    await runChanged({ projectRoot: dir, args: [], spawn, runParallelInjection });
+
+    expect(parallelCalls.length).toBe(1);
+    expect(parallelCalls[0].args.indexOf('--max-failures')).toBe(-1);
   });
 });
