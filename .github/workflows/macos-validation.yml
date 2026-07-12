@@ -1,0 +1,96 @@
+name: macOS Validation (manual)
+# All macOS CI cost is opt-in. Trigger manually when you want to spend
+# macOS minutes (e.g., before a release, after a macOS-specific change,
+# or to verify Bash 3.2 / iOS TestKit parity). No schedule/nightly.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  # macOS equivalent of the Linux/Windows build job: npm audit + vitest.
+  # shellcheck/bats/Pester are OS-specific and covered by the ubuntu/windows
+  # legs in ci.yml; this job focuses on the platform-agnostic suite on macOS.
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: npm audit (production deps — blocking)
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: false
+      - name: npm audit (dev toolchain — informational)
+        run: npm audit --audit-level=high
+        continue-on-error: true
+      - name: vitest
+        run: npx vitest run --coverage
+
+  # macOS leg of the installer E2E suite. Mirrors the Linux E2E path:
+  # builds the linux.tar.gz artifact (Node.js is arch-agnostic), installs
+  # via install.sh --archive, and asserts `kmp-test --version` round-trips.
+  installer-e2e-macos:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+      - name: Build local artifact (macOS reuses linux.tar.gz)
+        run: |
+          ARTIFACT_VER="$(node -p "require('./package.json').version")"
+          bash scripts/build-artifact.sh "$ARTIFACT_VER" /tmp/kmp-e2e-artifacts
+          echo "LOCAL_ARCHIVE=/tmp/kmp-e2e-artifacts/kmp-test-runner-${ARTIFACT_VER}-linux.tar.gz" >> "$GITHUB_ENV"
+          echo "ARTIFACT_VER=${ARTIFACT_VER}" >> "$GITHUB_ENV"
+      - name: Install npm deps (bats via local node_modules)
+        run: npm ci
+      - name: Run E2E bats tests (macOS)
+        run: npx bats tests/installer/install.bats --filter "E2E"
+
+  # Bash 3.2 regression coverage. macOS ships /bin/bash 3.2.57 (Apple froze
+  # it for licensing). Bash 3.2 lacks `declare -A` and is strict about
+  # `"${arr[@]}"` over empty arrays under set -u. The ubuntu bats job in
+  # ci.yml uses bash 5.x and cannot catch these regressions.
+  #
+  # 2026-05-03 — orphan-adb hang root-caused and fixed (v0.8.0 BACKLOG #6 + #9):
+  # `kmp-test doctor`'s adb probe was forking an adb child that inherited
+  # Node's pipe FDs, blocking bats from reaching pipe EOF on suite exit.
+  # Fixed by KMP_TEST_SKIP_ADB=1 opt-out set in setup_file hooks inside
+  # tests/bats/test-doctor.bats and test-concurrency.bats (not here).
+  bats-macos:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: bats (macOS — Bash 3.2 regression coverage)
+        run: npx bats --timing tests/bats/ tests/installer/ tests/skill-scripts/
+
+  # v0.7.0 Phase 3 — verify the Gradle plugin builds + TestKit suite passes
+  # on macOS. Catches mac-specific build/test regressions (BSD vs GNU shell
+  # tooling, JDK locator differences, Gradle daemon quirks) before they
+  # reach iOS users.
+  gradle-plugin-test-ios:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9  # v4.8.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+      - name: Test Gradle plugin (macOS)
+        run: cd gradle-plugin && ./gradlew test

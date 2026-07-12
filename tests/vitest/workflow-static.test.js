@@ -14,6 +14,63 @@ const REPO_ROOT   = join(__dirname, '..', '..');
 const WORKFLOWS   = join(REPO_ROOT, '.github', 'workflows');
 const REQUIRED_CHECKS_JSON = join(REPO_ROOT, '.github', 'required-checks.json');
 
+// Extracts the YAML text block for a named job (2-space-indented key).
+// Normalizes CRLF → LF first so equality checks work on Windows checkouts.
+// The end-of-job sentinel matches any 2-space-indented identifier including
+// hyphenated job names (e.g. installer-e2e, gradle-plugin-test-ios).
+function jobSection(yaml, jobName) {
+  const normalized = yaml.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
+  const start = lines.findIndex(l => l === `  ${jobName}:`);
+  if (start === -1) return null;
+  const end = lines.findIndex((l, i) => i > start && /^  [\w][\w-]*:/.test(l));
+  return (end === -1 ? lines.slice(start) : lines.slice(start, end)).join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// jobSection() CRLF safety regression
+
+describe('jobSection() helper', () => {
+  it('extracts a job block correctly from LF-terminated YAML', () => {
+    const yaml = [
+      'jobs:',
+      '  build:',
+      '    runs-on: ubuntu-latest',
+      '    timeout-minutes: 15',
+      '  secrets-scan:',
+      '    runs-on: ubuntu-latest',
+    ].join('\n');
+    const section = jobSection(yaml, 'build');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/runs-on/);
+    expect(section).toMatch(/timeout-minutes/);
+    expect(section).not.toMatch(/secrets-scan/);
+  });
+
+  it('extracts a job block correctly from CRLF-terminated YAML (Windows checkout)', () => {
+    const yaml = [
+      'jobs:',
+      '  installer-e2e:',
+      '    runs-on: ubuntu-latest',
+      '    timeout-minutes: 10',
+      '    steps:',
+      '      - run: npm ci',
+      '  gradle-plugin-test:',
+      '    runs-on: ubuntu-latest',
+    ].join('\r\n');
+    const section = jobSection(yaml, 'installer-e2e');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/npm ci/);
+    expect(section).toMatch(/timeout-minutes/);
+    expect(section).not.toMatch(/gradle-plugin-test/);
+  });
+
+  it('returns null for an unknown job name', () => {
+    const yaml = '  build:\n    runs-on: ubuntu-latest\n';
+    expect(jobSection(yaml, 'nonexistent')).toBeNull();
+  });
+});
+
 // Load all workflow files once
 let wf = {};
 beforeAll(() => {
@@ -149,6 +206,115 @@ describe('ci.yml', () => {
     expect(c).not.toMatch(/npx\s+(?:-y\s+)?skills-ref\s+validate/);
     // The run: command MUST have skills-ref@x.y.z
     expect(c).toMatch(/skills-ref@\d+\.\d+\.\d+/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR-19 CI cost discipline guards
+
+describe('ci.yml PR-19 guards', () => {
+  it('declares a concurrency group', () => {
+    expect(wf['ci.yml']).toMatch(/^concurrency:/m);
+  });
+
+  it('cancel-in-progress is conditional on pull_request, not unconditional true', () => {
+    const c = wf['ci.yml'];
+    expect(c).not.toMatch(/cancel-in-progress:\s+true\b/);
+    expect(c).toMatch(/cancel-in-progress:.*github\.event_name/);
+  });
+
+  it('non-PR CI concurrency group uses github.run_id (each push run is isolated)', () => {
+    expect(wf['ci.yml']).toMatch(/github\.run_id/);
+  });
+
+  it('every job declares timeout-minutes (count matches runs-on count)', () => {
+    const c = wf['ci.yml'];
+    const runsOn   = (c.match(/^    runs-on:/gm) || []).length;
+    const timeouts = (c.match(/^    timeout-minutes:/gm) || []).length;
+    expect(timeouts).toBe(runsOn);
+  });
+
+  it('bats-macos job is not in ci.yml', () => {
+    expect(wf['ci.yml']).not.toMatch(/^\s*bats-macos:/m);
+  });
+
+  it('gradle-plugin-test-ios job is not in ci.yml', () => {
+    expect(wf['ci.yml']).not.toMatch(/^\s*gradle-plugin-test-ios:/m);
+  });
+
+  it('regular CI does not run macOS jobs (all macOS is in macos-validation.yml)', () => {
+    expect(wf['ci.yml']).not.toMatch(/macos-latest/);
+  });
+
+  it('build job setup-node uses npm cache (build runs npm ci)', () => {
+    const section = jobSection(wf['ci.yml'], 'build');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/npm ci/);
+    expect(section).toMatch(/cache:\s+'?npm'?/);
+  });
+
+  it('installer-e2e job setup-node uses npm cache (installer-e2e runs npm ci)', () => {
+    const section = jobSection(wf['ci.yml'], 'installer-e2e');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/npm ci/);
+    expect(section).toMatch(/cache:\s+'?npm'?/);
+  });
+});
+
+describe('macos-validation.yml', () => {
+  it('file exists', () => {
+    expect(wf['macos-validation.yml']).toBeDefined();
+  });
+
+  it('triggers only on workflow_dispatch (no push, pull_request, or schedule)', () => {
+    const c = wf['macos-validation.yml'];
+    expect(c).toMatch(/workflow_dispatch/);
+    expect(c).not.toMatch(/\bpush:/);
+    expect(c).not.toMatch(/\bpull_request:/);
+    expect(c).not.toMatch(/\bschedule:/);
+  });
+
+  it('contains build-macos job', () => {
+    expect(wf['macos-validation.yml']).toMatch(/^\s*build-macos:/m);
+  });
+
+  it('contains installer-e2e-macos job', () => {
+    expect(wf['macos-validation.yml']).toMatch(/^\s*installer-e2e-macos:/m);
+  });
+
+  it('contains bats-macos job', () => {
+    expect(wf['macos-validation.yml']).toMatch(/^\s*bats-macos:/m);
+  });
+
+  it('contains gradle-plugin-test-ios job', () => {
+    expect(wf['macos-validation.yml']).toMatch(/^\s*gradle-plugin-test-ios:/m);
+  });
+
+  it('declares permissions: contents: read', () => {
+    const c = wf['macos-validation.yml'];
+    expect(c).toMatch(/permissions:/);
+    expect(c).toMatch(/contents:\s*read/);
+  });
+});
+
+describe('.github/required-checks.json — PR-19 stability', () => {
+  it('contains exactly the 10 required check names (no renames, no additions)', () => {
+    const manifest = JSON.parse(readFileSync(REQUIRED_CHECKS_JSON, 'utf8'));
+    const ctx = manifest.required_contexts;
+    const EXPECTED = [
+      'build (ubuntu-latest)',
+      'build (windows-latest)',
+      'secrets-scan',
+      'gradle-plugin-test',
+      'installer-e2e (ubuntu-latest)',
+      'installer-e2e (windows-latest)',
+      'Commit Lint',
+      'decouple-audit',
+      'bundle-size',
+      'skills-validate',
+    ];
+    for (const name of EXPECTED) expect(ctx).toContain(name);
+    expect(ctx.length).toBe(EXPECTED.length);
   });
 });
 
