@@ -1,3 +1,5 @@
+import org.gradle.language.jvm.tasks.ProcessResources
+
 plugins {
     `java-gradle-plugin`
     `maven-publish`
@@ -20,6 +22,8 @@ gradlePlugin {
     }
 }
 
+val testMavenRepoDir = layout.buildDirectory.dir("test-maven-repo").get().asFile
+
 publishing {
     publications {
         withType<MavenPublication>().configureEach {
@@ -41,6 +45,10 @@ publishing {
         }
     }
     repositories {
+        maven {
+            name = "TestLocal"
+            url = uri(testMavenRepoDir)
+        }
         maven {
             name = "GitHubPackages"
             url = uri("https://maven.pkg.github.com/oscardlfr/kmp-test-runner")
@@ -67,33 +75,19 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
-    dependsOn("publishToMavenLocal")
+    dependsOn("publishAllPublicationsToTestLocalRepository")
     maxParallelForks = 1
-    // Expose plugin version to TestKit fixtures so they can resolve the freshly
-    // published artefact without hardcoding a literal that would rot on every bump.
     systemProperty("plugin.version", project.version.toString())
+    systemProperty("test.maven.repo", testMavenRepoDir.absolutePath.replace('\\', '/'))
 }
 
-val syncScripts by tasks.registering(Sync::class) {
-    from("../scripts/sh")
-    into(layout.buildDirectory.dir("resources/main/scripts/sh"))
-}
-
-// v0.8 STRATEGIC PIVOT: bundle lib/ + package.json for migrated subcommands.
-// Tasks (BenchmarkTestsTask + future ChangedTestsTask, AndroidTestsTask, etc.)
-// extract this tree to a temp dir at runtime and invoke `node lib/runner.js
-// <feature>` directly. Sub-entry 1 (benchmark) is the first consumer.
-val syncLib by tasks.registering(Sync::class) {
-    from("../lib")
-    into(layout.buildDirectory.dir("resources/main/lib"))
-}
-val syncPackageJson by tasks.registering(Sync::class) {
-    from("..") {
-        include("package.json")
-    }
-    into(layout.buildDirectory.dir("resources/main"))
-}
-
-tasks.named("processResources") {
-    dependsOn(syncScripts, syncLib, syncPackageJson)
+// Additive processResources: copies lib/, scripts/{sh,ps1,lib}/, and package.json
+// into the plugin JAR. Unlike Sync, each from() block only adds files — no other
+// destinations are deleted when this block runs.
+tasks.named<ProcessResources>("processResources") {
+    from("../scripts/sh")  { into("scripts/sh");  exclude(".gitkeep") }
+    from("../scripts/ps1") { into("scripts/ps1"); exclude(".gitkeep") }
+    from("../scripts/lib") { into("scripts/lib"); exclude(".gitkeep") }
+    from("../lib")         { into("lib") }
+    from("..") { include("package.json") }
 }

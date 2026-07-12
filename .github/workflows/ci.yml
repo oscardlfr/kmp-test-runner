@@ -121,6 +121,16 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: Invoke-Pester -Path tests/pester/,tests/installer/,tests/skill-scripts/ -CI
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9  # v4.8.0
+        if: matrix.os == 'windows-latest'
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+      - name: Gradle plugin Windows TaskAction smoke
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: cd gradle-plugin && .\gradlew.bat test --tests "*.TaskActionTest"
       - name: vitest
         run: npx vitest run --coverage
       # Node 18 smoke: validate the declared engines.node >=18 floor.

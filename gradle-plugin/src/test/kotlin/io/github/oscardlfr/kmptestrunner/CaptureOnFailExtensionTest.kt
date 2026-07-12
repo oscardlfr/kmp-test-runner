@@ -9,19 +9,12 @@ import java.io.File
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 
-/**
- * Verify the `captureOnFail` / `captureDir` extension properties (--capture-on-fail
- * for `kmp-test android` AND `parallel --test-type androidInstrumented`) are
- * accepted at the DSL level and that the `androidTests` + `parallelTests` tasks
- * still register when they are set. Runtime arg propagation to the bundled runner
- * is unit-tested Node-side (tests/vitest/android-orchestrator.test.js +
- * tests/vitest/parallel-orchestrator.test.js); the on-device behaviour is
- * validated manually (no device in CI). Mirrors TestTypeExtensionTest.
- */
 class CaptureOnFailExtensionTest {
-    @TempDir(cleanup = CleanupMode.NEVER)
+    @TempDir
     lateinit var projectDir: File
 
+    // CleanupMode.NEVER: Gradle Tooling API always starts a daemon in testKitDir
+    // that holds file locks on Windows. JUnit 5 cannot delete a live daemon's files.
     @TempDir(cleanup = CleanupMode.NEVER)
     lateinit var testKitDir: File
 
@@ -35,12 +28,14 @@ class CaptureOnFailExtensionTest {
     @Test
     fun `extension accepts captureOnFail and captureDir without DSL error`() {
         val pluginVersion = System.getProperty("plugin.version")
-            ?: error("plugin.version system property not set — did the build script wire it up?")
+            ?: error("plugin.version system property not set")
+        val testMavenRepo = System.getProperty("test.maven.repo")
+            ?: error("test.maven.repo system property not set")
         projectDir.resolve("settings.gradle.kts").writeText(
             """
             pluginManagement {
                 repositories {
-                    mavenLocal()
+                    maven { url = uri("$testMavenRepo") }
                     gradlePluginPortal()
                     google()
                     mavenCentral()
@@ -68,9 +63,6 @@ class CaptureOnFailExtensionTest {
             .withArguments("tasks", "--all")
             .build()
 
-        // DSL parsed without error AND both capture-aware tasks are registered:
-        // androidTests (the dedicated subcommand) and parallelTests (which
-        // propagates the same flags to the androidInstrumented leg).
         assertNotNull(
             result.output.lines().find { it.startsWith("androidTests") },
             "androidTests task should be registered with captureOnFail set"

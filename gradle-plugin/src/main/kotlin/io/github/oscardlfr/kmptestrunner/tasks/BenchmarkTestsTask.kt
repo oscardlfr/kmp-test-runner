@@ -2,49 +2,30 @@
 package io.github.oscardlfr.kmptestrunner.tasks
 
 import io.github.oscardlfr.kmptestrunner.KmpTestRunnerExtension
+import io.github.oscardlfr.kmptestrunner.RuntimeExtractor
+import io.github.oscardlfr.kmptestrunner.buildNodeCommand
 import org.gradle.api.DefaultTask
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.TaskAction
 import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 
 open class BenchmarkTestsTask : DefaultTask() {
     @get:Internal
     lateinit var extension: KmpTestRunnerExtension
 
-    // v0.8 STRATEGIC PIVOT: benchmark logic now lives in lib/benchmark-orchestrator.js
-    // (PRODUCT.md "logic in Node, plumbing in shell"). The bundled .sh wrapper is
-    // a thin Node-launcher; this task extracts the lib/ tree alongside it and
-    // invokes `node lib/runner.js benchmark` directly, bypassing the shell hop.
-    // Requires `node` on PATH (npm-installed gradle-plugin users typically have
-    // it). Sub-entries 2-5 will follow the same pattern.
-    private val libResources = listOf(
-        "/lib/runner.js",
-        "/lib/benchmark-orchestrator.js",
-        "/lib/orchestrator-utils.js",
-        "/lib/cli.js",
-        "/lib/jdk-catalogue.js",
-        "/lib/project-model.js",
-        "/package.json",
-    )
+    @get:Internal
+    var defaultProjectRoot: String = ""
 
     @TaskAction
     fun run() {
+        val effectiveRoot = extension.projectRoot.ifEmpty { defaultProjectRoot }
         val tempDir = Files.createTempDirectory("kmp-test-bench-")
         try {
-            for (resource in libResources) {
-                val url = javaClass.getResource(resource)
-                    ?: error("Bundled resource not found: $resource")
-                val dest: Path = tempDir.resolve(resource.trimStart('/'))
-                Files.createDirectories(dest.parent)
-                url.openStream().use { Files.copy(it, dest, StandardCopyOption.REPLACE_EXISTING) }
-            }
+            RuntimeExtractor.extractTo(tempDir, javaClass)
             val runnerPath = tempDir.resolve("lib/runner.js").toString()
-            val cmd = mutableListOf(
-                "node", runnerPath, "benchmark",
-                "--project-root", extension.projectRoot
-            )
+            val cmd = buildNodeCommand(runnerPath, "benchmark",
+                "--project-root", effectiveRoot
+            ).toMutableList()
             val pb = ProcessBuilder(cmd).redirectErrorStream(true)
             if (extension.sharedProjectName.isNotEmpty()) {
                 pb.environment()["SHARED_PROJECT_NAME"] = extension.sharedProjectName
@@ -52,12 +33,9 @@ open class BenchmarkTestsTask : DefaultTask() {
             val proc = pb.start()
             proc.inputStream.transferTo(System.out)
             val rc = proc.waitFor()
-            if (rc != 0) error("[benchmarkTests] script exited with code $rc")
+            if (rc != 0) error("[benchmarkTests] runner exited with code $rc")
         } finally {
-            // Best-effort cleanup of the staged tree.
-            try {
-                Files.walk(tempDir).sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
-            } catch (_: Exception) { /* best-effort */ }
+            RuntimeExtractor.cleanup(tempDir)
         }
     }
 }
