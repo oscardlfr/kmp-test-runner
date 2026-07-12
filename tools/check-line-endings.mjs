@@ -31,8 +31,13 @@ const REGEX_META = /[.+^${}()|[\]\\]/;
 /**
  * Convert a git-attributes glob pattern to a JS RegExp anchored to repo root.
  * Handles: * (non-slash), ** / (zero-or-more dirs), ? (single non-slash char).
- * All patterns in this repo's .gitattributes contain '/', so they are treated
- * as root-anchored (matching relative to the repo root).
+ *
+ * Supported subset: patterns that contain at least one '/'. All current
+ * .gitattributes eol=lf patterns contain '/', so they are matched root-anchored
+ * (relative to the repo root). Patterns WITHOUT '/' have different git semantics
+ * (recursive filename match), which this tool does NOT implement — if a no-slash
+ * pattern like `*.sh text eol=lf` is ever added to .gitattributes, update this
+ * function to handle the recursive case.
  */
 function gitGlobToRegex(pattern) {
   let result = '';

@@ -12,15 +12,16 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Fast pre-check: decides whether the heavy CI matrix needs to run.
-  # When ALL diffed files are docs (any *.md), local smoke captures,
-  # or git config (.gitignore / .gitattributes), the downstream heavy
-  # jobs short-circuit. GitHub treats `skipped` as `success` for
-  # required-check gating (since 2022), so branch protection still
-  # passes without burning Linux/Windows minutes.
+  # When ALL diffed files are docs (any *.md) or local smoke captures
+  # (.smoke/**), the downstream heavy jobs short-circuit. GitHub treats
+  # `skipped` as `success` for required-check gating (since 2022), so
+  # branch protection still passes without burning Linux/Windows minutes.
   #
   # Source code, tests/, scripts/, tools/, gradle-plugin/, package.json,
-  # and .github/workflows/** ALWAYS trigger the full matrix — anything
-  # the test suite or installer could regress on.
+  # .github/workflows/**, .gitignore, AND .gitattributes ALWAYS trigger the
+  # full matrix. .gitattributes is the source of truth for
+  # check-line-endings.mjs — a change to LF rules must run build (which
+  # invokes the checker and workflow-static tests) to be validated.
   #
   # secrets-scan stays unconditional (security is non-negotiable).
   decide:
@@ -56,7 +57,7 @@ jobs:
           # Capture exit explicitly to avoid bash -e killing the step on that
           # legitimate "no matches" outcome.
           set +e
-          NON_SKIPPABLE=$(printf '%s\n' "$CHANGED" | grep -vE '^(.+\.md|\.smoke/.*|\.gitignore|\.gitattributes)$')
+          NON_SKIPPABLE=$(printf '%s\n' "$CHANGED" | grep -vE '^(.+\.md|\.smoke/.*|\.gitignore)$')
           GREP_EXIT=$?
           set -e
           if [ "$GREP_EXIT" -eq 0 ]; then

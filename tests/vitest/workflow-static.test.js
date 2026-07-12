@@ -383,4 +383,38 @@ describe('ci.yml Node 24 upgrade and PR-20b guards', () => {
     const manifest = JSON.parse(readFileSync(REQUIRED_CHECKS_JSON, 'utf8'));
     expect(manifest.required_contexts.length).toBe(10);
   });
+
+  it('decide job skip filter does not include .gitattributes (it is source of truth for line-ending rules)', () => {
+    // .gitattributes is not skip-eligible: a PR that weakens LF rules must run
+    // build (check-line-endings.mjs + workflow-static tests) to be validated.
+    const section = jobSection(wf['ci.yml'], 'decide');
+    expect(section).not.toBeNull();
+    expect(section).not.toMatch(/\.gitattributes/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// .gitattributes minimum LF-rule invariants
+
+describe('.gitattributes minimum LF rules', () => {
+  let ga;
+  beforeAll(() => {
+    ga = readFileSync(join(REPO_ROOT, '.gitattributes'), 'utf8');
+  });
+
+  const REQUIRED_LF_PATTERNS = [
+    'scripts/*.sh',
+    'scripts/**/*.sh',
+    '.skills/**/*.sh',
+    'tests/skill-scripts/*.bats',
+    'tools/check-line-endings.mjs',
+  ];
+
+  for (const pattern of REQUIRED_LF_PATTERNS) {
+    it(`${pattern} has eol=lf rule`, () => {
+      // Escape regex metacharacters in the pattern for the contains-check.
+      const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      expect(ga).toMatch(new RegExp(`^${escaped}\\s+.*eol=lf`, 'm'));
+    });
+  }
 });
