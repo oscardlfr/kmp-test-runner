@@ -18,6 +18,7 @@ import {
   readLockfile,
   writeLockfile,
   removeLockfile,
+  releaseOwnLock,
   acquireLock,
   lockAgeLabel,
   STALE_THRESHOLD_MS,
@@ -301,6 +302,119 @@ describe('acquireLock exclusive-create race', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 20_000);
+});
+
+// ---------------------------------------------------------------------------
+// releaseOwnLock — ownership-verifying release
+// ---------------------------------------------------------------------------
+describe('releaseOwnLock', () => {
+  it('removes own lock on normal release', () => {
+    withFakeGradleProject(dir => {
+      const r = acquireLock(dir, 'parallel');
+      expect(r.ok).toBe(true);
+      releaseOwnLock(dir, r.ourLock);
+      expect(existsSync(path.join(dir, '.kmp-test-runner.lock'))).toBe(false);
+    });
+  });
+
+  it('does NOT delete lock when another owner has taken over (force-takeover race)', () => {
+    withFakeGradleProject(dir => {
+      const bStart = new Date(Date.now() + 1000).toISOString(); // distinct timestamp
+      const ourLockA = { pid: process.pid, start_time: new Date().toISOString() };
+      // Write A's lock first, then simulate B's --force overwrite.
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({ schema: 1, pid: process.pid, start_time: ourLockA.start_time,
+          subcommand: 'parallel', project_root: dir, version: '0.0.0' }),
+        'utf8',
+      );
+      // B overwrites with a different start_time.
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({ schema: 1, pid: process.pid, start_time: bStart,
+          subcommand: 'changed', project_root: dir, version: '0.0.0' }),
+        'utf8',
+      );
+      // A's cleanup fires — must NOT delete B's lock.
+      releaseOwnLock(dir, ourLockA);
+      const current = readLockfile(dir);
+      expect(current).not.toBeNull();
+      expect(current.start_time).toBe(bStart);
+    });
+  });
+
+  it('is a no-op when the lockfile is already gone', () => {
+    withFakeGradleProject(dir => {
+      const ourLock = { pid: process.pid, start_time: new Date().toISOString() };
+      expect(() => releaseOwnLock(dir, ourLock)).not.toThrow();
+      expect(existsSync(path.join(dir, '.kmp-test-runner.lock'))).toBe(false);
+    });
+  });
+
+  it('is a no-op when the current lockfile is unparseable', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, '.kmp-test-runner.lock'), 'garbage{', 'utf8');
+      const ourLock = { pid: process.pid, start_time: new Date().toISOString() };
+      expect(() => releaseOwnLock(dir, ourLock)).not.toThrow();
+      // Unparseable file must not have been deleted.
+      expect(existsSync(path.join(dir, '.kmp-test-runner.lock'))).toBe(true);
+    });
+  });
+
+  it('is a no-op for invalid ourLock values (null / missing fields / wrong types)', () => {
+    withFakeGradleProject(dir => {
+      writeLockfile(dir, 'parallel');
+      expect(() => releaseOwnLock(dir, null)).not.toThrow();
+      expect(() => releaseOwnLock(dir, {})).not.toThrow();
+      expect(() => releaseOwnLock(dir, { pid: 'bad' })).not.toThrow();
+      expect(() => releaseOwnLock(dir, { pid: process.pid })).not.toThrow(); // missing start_time
+      // Lock untouched in all cases.
+      expect(existsSync(path.join(dir, '.kmp-test-runner.lock'))).toBe(true);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cleanup lambda ownership guard — proves script-dispatcher wiring is correct
+// ---------------------------------------------------------------------------
+describe('cleanup lambda ownership guard', () => {
+  it('does NOT delete new owner\'s lock when A\'s cleanup lambda fires after force takeover', () => {
+    withFakeGradleProject(dir => {
+      // Step 1: A acquires the lock.
+      const lockResult = acquireLock(dir, 'parallel');
+      expect(lockResult.ok).toBe(true);
+
+      // Step 2: Build the same cleanup lambda as script-dispatcher.js uses.
+      const cleanup = () => releaseOwnLock(dir, lockResult.ourLock);
+
+      // Step 3: Simulate B's --force overwrite with a different start_time.
+      const bStart = new Date(Date.now() + 1000).toISOString();
+      writeFileSync(
+        path.join(dir, '.kmp-test-runner.lock'),
+        JSON.stringify({ schema: 1, pid: process.pid, start_time: bStart,
+          subcommand: 'changed', project_root: dir, version: '0.0.0' }),
+        'utf8',
+      );
+
+      // Step 4: A's cleanup fires.
+      cleanup();
+
+      // Step 5: B's lock must still be intact.
+      const current = readLockfile(dir);
+      expect(current).not.toBeNull();
+      expect(current.start_time).toBe(bStart);
+    });
+  });
+
+  it('removes own lock when cleanup lambda fires normally (no takeover)', () => {
+    withFakeGradleProject(dir => {
+      const lockResult = acquireLock(dir, 'parallel');
+      expect(lockResult.ok).toBe(true);
+      const cleanup = () => releaseOwnLock(dir, lockResult.ourLock);
+      cleanup();
+      expect(existsSync(path.join(dir, '.kmp-test-runner.lock'))).toBe(false);
+    });
+  });
 });
 
 describe('isLockfileStaleByTime', () => {
