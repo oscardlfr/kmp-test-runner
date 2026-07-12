@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: MIT
+package io.github.oscardlfr.kmptestrunner
+
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.util.Comparator.reverseOrder
+import java.util.jar.JarFile
+
+internal object RuntimeExtractor {
+
+    fun extractTo(destDir: Path, loader: Class<*>) {
+        val srcFile = File(loader.protectionDomain.codeSource.location.toURI())
+        if (srcFile.isFile) extractFromJar(destDir, srcFile)
+        else extractFromClassDir(destDir, srcFile)
+        makeShExecutable(destDir)
+    }
+
+    private fun extractFromJar(destDir: Path, jar: File) {
+        JarFile(jar).use { jf ->
+            jf.entries().asSequence()
+                .filter { !it.isDirectory && isRuntimeEntry(it.name) }
+                .forEach { entry ->
+                    val dest = destDir.resolve(entry.name)
+                    Files.createDirectories(dest.parent)
+                    jf.getInputStream(entry).use { Files.copy(it, dest, REPLACE_EXISTING) }
+                }
+        }
+    }
+
+    // Fallback for development (class directory, not a JAR).
+    // Recursively copies lib/, scripts/, and package.json from the class root.
+    private fun extractFromClassDir(destDir: Path, classDir: File) {
+        for (prefix in listOf("lib", "scripts")) {
+            val src = File(classDir, prefix)
+            if (!src.isDirectory) continue
+            src.walkTopDown().filter { it.isFile }.forEach { file ->
+                val dest = destDir.resolve(file.toRelativeString(classDir)).toFile()
+                dest.parentFile.mkdirs()
+                file.copyTo(dest, overwrite = true)
+            }
+        }
+        File(classDir, "package.json")
+            .takeIf { it.exists() }
+            ?.copyTo(destDir.resolve("package.json").toFile(), overwrite = true)
+    }
+
+    private fun isRuntimeEntry(name: String) =
+        name.startsWith("lib/") || name.startsWith("scripts/") || name == "package.json"
+
+    private fun makeShExecutable(dir: Path) {
+        if (File.separator != "/") return
+        Files.walk(dir).use { stream ->
+            stream.filter { it.toString().endsWith(".sh") }
+                  .forEach { it.toFile().setExecutable(true) }
+        }
+    }
+
+    fun cleanup(dir: Path) {
+        try {
+            Files.walk(dir).use { stream ->
+                stream.sorted(reverseOrder()).forEach(Files::deleteIfExists)
+            }
+        } catch (_: Exception) { /* best-effort */ }
+    }
+}
+
+/**
+ * Builds the node command list for spawning the bundled runner.
+ *
+ * Production default is always `["node", runnerPath, ...]`.
+ * KMP_NODE_LAUNCHER is a test-only hook: tests on Windows inject
+ * "cmd.exe /c node" here so that a node.bat recorder shim placed on PATH
+ * is found via PATHEXT (CreateProcess ignores PATHEXT without cmd.exe routing).
+ * This variable is never set in production and has no user-facing semantics.
+ */
+internal fun buildNodeCommand(runnerPath: String, vararg extra: String): List<String> {
+    val launcher = System.getenv("KMP_NODE_LAUNCHER")
+    return if (!launcher.isNullOrEmpty())
+        launcher.split(" ") + listOf(runnerPath, *extra)
+    else
+        listOf("node", runnerPath, *extra)
+}

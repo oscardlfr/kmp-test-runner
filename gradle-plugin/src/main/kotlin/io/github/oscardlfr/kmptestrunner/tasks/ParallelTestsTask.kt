@@ -2,41 +2,39 @@
 package io.github.oscardlfr.kmptestrunner.tasks
 
 import io.github.oscardlfr.kmptestrunner.KmpTestRunnerExtension
+import io.github.oscardlfr.kmptestrunner.RuntimeExtractor
+import io.github.oscardlfr.kmptestrunner.buildNodeCommand
 import org.gradle.api.DefaultTask
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.TaskAction
 import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 open class ParallelTestsTask : DefaultTask() {
     @get:Internal
     lateinit var extension: KmpTestRunnerExtension
 
+    @get:Internal
+    var defaultProjectRoot: String = ""
+
     @TaskAction
     fun run() {
-        val url = javaClass.getResource("/scripts/sh/run-parallel-coverage-suite.sh")
-            ?: error("Bundled script not found: run-parallel-coverage-suite.sh")
-        val tempScript = Files.createTempFile("kmp-test-", ".sh")
+        val effectiveRoot = extension.projectRoot.ifEmpty { defaultProjectRoot }
+        val tempDir = Files.createTempDirectory("kmp-test-parallel-")
         try {
-            url.openStream().use { Files.copy(it, tempScript, StandardCopyOption.REPLACE_EXISTING) }
-            tempScript.toFile().setExecutable(true)
-            val cmd = mutableListOf(
-                "bash", tempScript.toString(),
-                "--project-root", extension.projectRoot,
+            RuntimeExtractor.extractTo(tempDir, javaClass)
+            val runnerPath = tempDir.resolve("lib/runner.js").toString()
+            val cmd = buildNodeCommand(runnerPath, "parallel",
+                "--project-root", effectiveRoot,
                 "--max-workers", extension.maxWorkers.toString(),
                 "--coverage-tool", extension.coverageTool,
                 "--min-missed-lines", extension.minMissedLines.toString()
-            )
+            ).toMutableList()
             if (extension.coverageModules.isNotEmpty()) {
                 cmd += listOf("--coverage-modules", extension.coverageModules)
             }
             if (extension.testType.isNotEmpty()) {
                 cmd += listOf("--test-type", extension.testType)
             }
-            // Optional --capture-on-fail: screenshot + UI-hierarchy dump on
-            // instrumented-test failure (effective only with
-            // testType = "androidInstrumented" / "all"). captureDir (when set)
-            // implies it. Mirrors AndroidTestsTask.
             if (extension.captureOnFail) {
                 cmd += "--capture-on-fail"
             }
@@ -50,9 +48,9 @@ open class ParallelTestsTask : DefaultTask() {
             val proc = pb.start()
             proc.inputStream.transferTo(System.out)
             val rc = proc.waitFor()
-            if (rc != 0) error("[parallelTests] script exited with code $rc")
+            if (rc != 0) error("[parallelTests] runner exited with code $rc")
         } finally {
-            Files.deleteIfExists(tempScript)
+            RuntimeExtractor.cleanup(tempDir)
         }
     }
 }
