@@ -4,13 +4,19 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+# Cancel in-progress CI for the same PR when a new commit is pushed.
+# Push-to-develop/main runs are isolated (keyed by run_id) and are never
+# cancelled — each push run completes independently.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('push-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Fast pre-check: decides whether the heavy CI matrix needs to run.
   # When ALL diffed files are docs (any *.md), local smoke captures,
   # or git config (.gitignore / .gitattributes), the downstream heavy
   # jobs short-circuit. GitHub treats `skipped` as `success` for
   # required-check gating (since 2022), so branch protection still
-  # passes without burning macOS minutes.
+  # passes without burning Linux/Windows minutes.
   #
   # Source code, tests/, scripts/, tools/, gradle-plugin/, package.json,
   # and .github/workflows/** ALWAYS trigger the full matrix — anything
@@ -19,6 +25,7 @@ jobs:
   # secrets-scan stays unconditional (security is non-negotiable).
   decide:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       heavy: ${{ steps.filter.outputs.heavy }}
     steps:
@@ -55,12 +62,13 @@ jobs:
           if [ "$GREP_EXIT" -eq 0 ]; then
             echo "Non-skippable file changes detected — heavy=true"
             echo "Non-skippable files:"
-            printf '  %s\n' $NON_SKIPPABLE
+            printf '%s\n' "$NON_SKIPPABLE" | sed 's/^/  /'
             echo "heavy=true" >> "$GITHUB_OUTPUT"
           elif [ "$GREP_EXIT" -eq 1 ]; then
-            echo "All ${#CHANGED} changed files are skip-eligible — heavy=false"
+            CHANGED_COUNT=$(printf '%s\n' "$CHANGED" | wc -l | tr -d ' ')
+            echo "All ${CHANGED_COUNT} changed files are skip-eligible — heavy=false"
             echo "Skipped files:"
-            printf '  %s\n' $CHANGED
+            printf '%s\n' "$CHANGED" | sed 's/^/  /'
             echo "heavy=false" >> "$GITHUB_OUTPUT"
           else
             echo "Grep failed with exit $GREP_EXIT — defaulting to heavy=true (safe)"
@@ -73,13 +81,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: 20
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
       - run: npm ci
       # Blocking security gate scopes to PRODUCTION dependencies — what
       # consumers actually install. This package ships ZERO runtime deps (all
@@ -98,7 +109,7 @@ jobs:
         continue-on-error: true
       - name: shellcheck
         if: matrix.os == 'ubuntu-latest'
-        run: shellcheck --severity=warning --external-sources --exclude=SC2034,SC2053,SC2069 scripts/sh/*.sh scripts/sh/lib/*.sh scripts/install.sh scripts/uninstall.sh
+        run: shellcheck --severity=warning --external-sources --exclude=SC2034,SC2053,SC2069 scripts/sh/*.sh scripts/sh/lib/*.sh scripts/install.sh scripts/uninstall.sh .skills/kmp-test-runner/scripts/*.sh
       - name: bats
         if: matrix.os == 'ubuntu-latest'
         run: npx bats tests/bats/ tests/installer/ tests/skill-scripts/
@@ -113,6 +124,7 @@ jobs:
     # Also gates the release version-pin invariant: tools/sync-versions.js --check
     # exits non-zero if package.json version drifts from gradle-plugin / README / CLAUDE.md.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
@@ -139,6 +151,7 @@ jobs:
     # registry (private project / module names, home-directory paths, etc.).
     # See `tools/decouple-audit.mjs` and CLAUDE.md "Decouple from L0".
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
@@ -152,6 +165,7 @@ jobs:
     # Fails when the would-be-published tarball or unpacked size exceeds
     # the named-constant budgets in tools/check-bundle-size.mjs.
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
@@ -171,6 +185,7 @@ jobs:
     # sub-train). Same job, same required check — no new branch-protection
     # update needed. See `tools/validate-plugin.mjs` for the rule list.
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
@@ -186,7 +201,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -194,17 +209,19 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: 20
-      - name: Build local artifact (Linux/macOS — both reuse linux.tar.gz)
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+      - name: Build local artifact (Linux)
         if: matrix.os != 'windows-latest'
         run: |
           ARTIFACT_VER="$(node -p "require('./package.json').version")"
           bash scripts/build-artifact.sh "$ARTIFACT_VER" /tmp/kmp-e2e-artifacts
           echo "LOCAL_ARCHIVE=/tmp/kmp-e2e-artifacts/kmp-test-runner-${ARTIFACT_VER}-linux.tar.gz" >> "$GITHUB_ENV"
           echo "ARTIFACT_VER=${ARTIFACT_VER}" >> "$GITHUB_ENV"
-      - name: Install npm deps (Linux/macOS — bats via local node_modules)
+      - name: Install npm deps (Linux — bats via local node_modules)
         if: matrix.os != 'windows-latest'
         run: npm ci
-      - name: Run E2E bats tests (Linux/macOS)
+      - name: Run E2E bats tests (Linux)
         if: matrix.os != 'windows-latest'
         # --filter "E2E" runs the install.sh archive-roundtrip tests only.
         # The non-E2E install.bats tests are static-grep / mocked-uname checks
@@ -218,65 +235,16 @@ jobs:
     needs: decide
     if: needs.decide.outputs.heavy == 'true'
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
-      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9  # v4.8.0
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-      - name: Test Gradle plugin
-        run: cd gradle-plugin && ./gradlew test
-  # v0.7.0 Phase 3 — verify the gradle plugin builds + TestKit suite passes
-  # on macOS. Catches mac-specific build/test regressions in the plugin
-  # (BSD vs GNU shell tooling, JDK locator differences, etc.) before they
-  # reach iOS users. This is informational by default; promote to required
-  # in branch protection when the v0.7 line stabilises.
-  gradle-plugin-test-ios:
-    needs: decide
-    if: needs.decide.outputs.heavy == 'true'
-    runs-on: macos-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
-      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9  # v4.8.0
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-      - name: Test Gradle plugin (macOS)
-        run: cd gradle-plugin && ./gradlew test
-  # v0.7.x WS-2 — bats parity on macOS. macOS ships /bin/bash 3.2.57 (Apple
-  # froze it for licensing). Bash 3.2 lacks `declare -A` and is strict about
-  # `"${arr[@]}"` over empty arrays under set -u. The ubuntu-only bats job
-  # (line 26-28 above) cannot catch these regressions because Linux runners
-  # use bash 5.x. This job mirrors the ubuntu invocation against the system
-  # bash on macos-latest, full parity (tests/bats/ + tests/installer/).
-  #
-  # 2026-05-03 — orphan-adb hang root-caused and fixed (v0.8.0 BACKLOG #6 + #9):
-  # `kmp-test doctor`'s adb probe (lib/cli.js#runDoctorChecks) was forking an
-  # adb child that inherited Node's pipe FDs, blocking bats from reaching pipe
-  # EOF on suite exit (first-run evidence: 227 tests passed in ~3 min, then
-  # 8-min hang, then runner-cancel + "Terminate orphan process: pid (...) (adb)").
-  # The actual leak source was tests/bats/test-doctor.bats + test-concurrency.bats
-  # (the only files invoking `node $CLI doctor`); install.bats was incorrectly
-  # blamed in the original investigation. Fixed by KMP_TEST_SKIP_ADB=1 opt-out
-  # exported from those two setup_file hooks. tests/installer/ is now back in
-  # scope here.
-  #
-  # Informational by default; promote to required in branch protection
-  # alongside gradle-plugin-test-ios when the v0.7 line stabilises.
-  bats-macos:
-    needs: decide
-    if: needs.decide.outputs.heavy == 'true'
-    runs-on: macos-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9  # v4.8.0
         with:
-          node-version: 20
-      - run: npm ci
-      - name: bats (macOS — Bash 3.2 regression coverage)
-        run: npx bats --timing tests/bats/ tests/installer/ tests/skill-scripts/
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+      - name: Test Gradle plugin
+        run: cd gradle-plugin && ./gradlew test
 
   # 2026-05-05 — CI cost discipline + branch protection bridge.
   # PR4 introduced the `decide` job to skip heavy jobs on docs-only PRs
@@ -296,13 +264,14 @@ jobs:
   # list (verified 2026-05-05 via `gh api repos/.../branches/develop/protection`).
   # `secrets-scan` and `Commit Lint` are NOT in this list — they always run
   # regardless of heavy state, so branch protection sees them green directly.
-  # Informational-only contexts (build (macos-latest), installer-e2e
-  # (macos-latest), bats-macos, gradle-plugin-test-ios) are also excluded —
-  # they're not required, so faking them would be misleading.
+  # All macOS jobs (build-macos, installer-e2e-macos, bats-macos,
+  # gradle-plugin-test-ios) run only in macos-validation.yml
+  # (workflow_dispatch). None are required checks.
   report-skipped-as-success:
     needs: decide
     if: needs.decide.outputs.heavy != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       statuses: write
     env:
