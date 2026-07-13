@@ -864,6 +864,15 @@ describe('discoverIncludedModules — multiline', () => {
     expect(discoverIncludedModules(workDir)).toEqual(['real']);
   });
 
+  it('KTS double-quoted string containing include(\\\":fake\\\") is not treated as a module', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-ktslit-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle.kts'),
+      'rootProject.name = "include(\\":fake\\")"\ninclude(":real")\n',
+    );
+    expect(discoverIncludedModules(workDir)).toEqual(['real']);
+  });
+
   it('Groovy trailing-comma continuation does not swallow an unrelated later line', () => {
     workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-cont-'));
     writeFileSync(

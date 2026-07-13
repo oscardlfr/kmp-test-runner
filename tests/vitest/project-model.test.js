@@ -566,6 +566,13 @@ describe('parseSettingsIncludes', () => {
     expect(parseSettingsIncludes(dir)).toEqual([':real']);
   });
 
+  it('KTS double-quoted string containing include(\\\":fake\\\") is not treated as a module', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      'rootProject.name = "include(\\":fake\\")"\ninclude(":real")\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':real']);
+  });
+
   it('Groovy trailing-comma continuation does not swallow an unrelated later line', () => {
     const dir = makeProject();
     writeFileSync(path.join(dir, 'settings.gradle'),
