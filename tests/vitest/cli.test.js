@@ -547,6 +547,32 @@ describe('enforceErrorsExitCodeInvariant (WS-5)', () => {
     expect(enforceErrorsExitCodeInvariant(0, parsed)).toBe(0);
   });
 
+  it('does NOT promote when only no_changed_modules is present (soft — clean working tree)', () => {
+    // A clean working tree is a legitimate exit-0 outcome; no_changed_modules
+    // carries structured signal in errors[] but must not trigger the invariant.
+    const parsed = { errors: [{ code: 'no_changed_modules', message: 'nothing changed' }] };
+    expect(enforceErrorsExitCodeInvariant(0, parsed)).toBe(0);
+  });
+
+  it('does NOT promote when only gradle_timeout is present at scriptStatus 0 (soft — partial-timeout grading)', () => {
+    // Benchmark partial-timeout: ≥1 module passed, remaining timed out, no
+    // --strict-timeouts. Orchestrator intentionally exits 0; the per-module
+    // timeout in errors[] is an observability signal, not a hard failure.
+    // Promoting to 1 would diverge from text-mode exit code (the production bug
+    // fixed by adding gradle_timeout to SOFT_ERROR_CODES).
+    const parsed = { errors: [{ code: 'gradle_timeout', module: ':bench-jvm', platform: 'jvm' }] };
+    expect(enforceErrorsExitCodeInvariant(0, parsed)).toBe(0);
+  });
+
+  it('promotes when gradle_timeout coexists with a hard discriminator', () => {
+    // A mix of soft + hard → the hard error wins and promotion happens.
+    const parsed = { errors: [
+      { code: 'gradle_timeout', module: ':bench-jvm', platform: 'jvm' },
+      { code: 'module_failed', module: ':bench-android', message: 'FAILED' },
+    ] };
+    expect(enforceErrorsExitCodeInvariant(0, parsed)).toBe(1);
+  });
+
   it('promotes when no_summary coexists with a hard discriminator', () => {
     // Mixed-bag case: parse-gap fallback fires AND a real discriminator
     // (task_not_found) is present. The hard error wins → promotion.
