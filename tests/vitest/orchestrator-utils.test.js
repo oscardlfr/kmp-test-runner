@@ -855,6 +855,15 @@ describe('discoverIncludedModules — multiline', () => {
     expect(discoverIncludedModules(workDir)).toEqual(['real']);
   });
 
+  it('string literal containing include(":fake") is not treated as a module', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-strlit-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle'),
+      "rootProject.name = 'include(\":fake\")'\ninclude(':real')\n",
+    );
+    expect(discoverIncludedModules(workDir)).toEqual(['real']);
+  });
+
   it('Groovy trailing-comma continuation does not swallow an unrelated later line', () => {
     workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-cont-'));
     writeFileSync(
