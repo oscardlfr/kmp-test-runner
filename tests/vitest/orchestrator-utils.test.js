@@ -44,6 +44,8 @@ import {
   spawnGradle,
   splitJvmOpts,
   DEFAULT_SPAWN_MAX_BUFFER_MB,
+  parseAdbDevicesOutput,
+  resolveAdbDevice,
 } from '../../lib/orchestrators/orchestrator-utils.js';
 
 let workDir;
@@ -1093,5 +1095,166 @@ describe('spawnGradle — Candidate A JAVA_OPTS/GRADLE_OPTS propagation', () => 
     // Nothing before -classpath except the implicit -Dorg.gradle.appname is AFTER -classpath
     // so cpIdx should be 0 (no jvmOpts prepended)
     expect(cpIdx).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part B — parseAdbDevicesOutput state parsing
+// ---------------------------------------------------------------------------
+describe('parseAdbDevicesOutput — state field', () => {
+  it('parses a ready device as state:"device"', () => {
+    const out = parseAdbDevicesOutput(
+      'List of devices attached\nABC123\tdevice\tproduct:redfin model:Pixel_5 device:redfin transport_id:1\n',
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].serial).toBe('ABC123');
+    expect(out[0].state).toBe('device');
+    expect(out[0].model).toBe('Pixel_5');
+    expect(out[0].type).toBe('physical');
+  });
+
+  it('parses an offline device as state:"offline"', () => {
+    const out = parseAdbDevicesOutput(
+      'List of devices attached\nDEF456\toffline\n',
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].state).toBe('offline');
+    expect(out[0].serial).toBe('DEF456');
+  });
+
+  it('parses an unauthorized device as state:"unauthorized"', () => {
+    const out = parseAdbDevicesOutput(
+      'List of devices attached\nGHI789\tunauthorized\n',
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].state).toBe('unauthorized');
+  });
+
+  it('parses an emulator device as type:"emulator"', () => {
+    const out = parseAdbDevicesOutput(
+      'List of devices attached\nemulator-5554\tdevice\tproduct:sdk model:sdk_gphone_arm64 device:emulator_arm64 transport_id:2\n',
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].type).toBe('emulator');
+    expect(out[0].state).toBe('device');
+  });
+
+  it('parses mixed output — one ready and one offline', () => {
+    const stdout = [
+      'List of devices attached',
+      'ABC123\tdevice\tproduct:redfin model:Pixel_5 device:redfin transport_id:1',
+      'DEF456\toffline',
+      '',
+    ].join('\n');
+    const out = parseAdbDevicesOutput(stdout);
+    expect(out).toHaveLength(2);
+    expect(out.find(d => d.serial === 'ABC123').state).toBe('device');
+    expect(out.find(d => d.serial === 'DEF456').state).toBe('offline');
+  });
+
+  it('returns [] for empty/null stdout', () => {
+    expect(parseAdbDevicesOutput('')).toEqual([]);
+    expect(parseAdbDevicesOutput(null)).toEqual([]);
+    expect(parseAdbDevicesOutput(undefined)).toEqual([]);
+  });
+
+  it('returns [] when only header line present', () => {
+    expect(parseAdbDevicesOutput('List of devices attached\n')).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part B — resolveAdbDevice shared helper
+// ---------------------------------------------------------------------------
+describe('resolveAdbDevice', () => {
+  it('empty devices → instrumented_setup_failed', () => {
+    const r = resolveAdbDevice([]);
+    expect(r.deviceSerial).toBeNull();
+    expect(r.error.code).toBe('instrumented_setup_failed');
+  });
+
+  it('one usable device, no --device → resolves to its serial', () => {
+    const r = resolveAdbDevice([{ serial: 'A', type: 'physical', model: 'X', state: 'device' }]);
+    expect(r.error).toBeNull();
+    expect(r.deviceSerial).toBe('A');
+  });
+
+  it('one usable + one unusable, no --device → resolves to usable serial', () => {
+    const devices = [
+      { serial: 'A', state: 'device' },
+      { serial: 'B', state: 'offline' },
+    ];
+    const r = resolveAdbDevice(devices);
+    expect(r.error).toBeNull();
+    expect(r.deviceSerial).toBe('A');
+  });
+
+  it('all offline → device_offline', () => {
+    const r = resolveAdbDevice([
+      { serial: 'A', state: 'offline' },
+      { serial: 'B', state: 'offline' },
+    ]);
+    expect(r.deviceSerial).toBeNull();
+    expect(r.error.code).toBe('device_offline');
+  });
+
+  it('all unauthorized → device_unauthorized', () => {
+    const r = resolveAdbDevice([{ serial: 'A', state: 'unauthorized' }]);
+    expect(r.error.code).toBe('device_unauthorized');
+  });
+
+  it('mixed offline + unauthorized → device_unauthorized (unauthorized takes priority)', () => {
+    const r = resolveAdbDevice([
+      { serial: 'A', state: 'offline' },
+      { serial: 'B', state: 'unauthorized' },
+    ]);
+    expect(r.error.code).toBe('device_unauthorized');
+  });
+
+  it('multiple usable, no --device → multiple_adb_devices', () => {
+    const r = resolveAdbDevice([
+      { serial: 'A', state: 'device' },
+      { serial: 'B', state: 'device' },
+    ]);
+    expect(r.error.code).toBe('multiple_adb_devices');
+  });
+
+  it('multiple usable, --device pins to named serial', () => {
+    const r = resolveAdbDevice(
+      [{ serial: 'A', state: 'device' }, { serial: 'B', state: 'device' }],
+      { device: 'B' },
+    );
+    expect(r.error).toBeNull();
+    expect(r.deviceSerial).toBe('B');
+  });
+
+  it('--device targeting offline serial → device_offline', () => {
+    const r = resolveAdbDevice(
+      [{ serial: 'A', state: 'offline' }],
+      { device: 'A' },
+    );
+    expect(r.error.code).toBe('device_offline');
+  });
+
+  it('--device targeting unauthorized serial → device_unauthorized', () => {
+    const r = resolveAdbDevice(
+      [{ serial: 'A', state: 'unauthorized' }],
+      { device: 'A' },
+    );
+    expect(r.error.code).toBe('device_unauthorized');
+  });
+
+  it('--device not in list → instrumented_setup_failed', () => {
+    const r = resolveAdbDevice(
+      [{ serial: 'A', state: 'device' }],
+      { device: 'Z' },
+    );
+    expect(r.error.code).toBe('instrumented_setup_failed');
+  });
+
+  it('missing state field (legacy stubs) treated as usable', () => {
+    const r = resolveAdbDevice([{ serial: 'X', type: 'physical', model: 'Y' }]);
+    expect(r.error).toBeNull();
+    expect(r.deviceSerial).toBe('X');
   });
 });

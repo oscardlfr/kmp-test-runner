@@ -423,6 +423,87 @@ describe('runAndroid PRODUCT criterion 5 (no silent pass on missing platform)', 
     expect(envelope.android.device_serial).toBe('NONEXISTENT');
     expect(exitCode).toBe(3);
   });
+
+  it('device offline → device_offline, exit 3, no gradle call', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'ABC', type: 'physical', model: 'X', state: 'offline' }];
+
+    const { envelope, exitCode } = await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe });
+
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('device_offline');
+    expect(findGradleCalls(spawn.calls)).toHaveLength(0);
+  });
+
+  it('device unauthorized → device_unauthorized, exit 3, no gradle call', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'ABC', type: 'physical', model: 'X', state: 'unauthorized' }];
+
+    const { envelope, exitCode } = await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe });
+
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('device_unauthorized');
+    expect(findGradleCalls(spawn.calls)).toHaveLength(0);
+  });
+
+  it('--device targeting offline serial → device_offline', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'DEF', type: 'physical', model: 'X', state: 'offline' }];
+
+    const { envelope, exitCode } = await runAndroid({
+      projectRoot: dir, args: ['--device', 'DEF'], spawn, adbProbe,
+    });
+
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('device_offline');
+  });
+
+  it('--device targeting unauthorized serial → device_unauthorized', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [{ serial: 'GHI', type: 'physical', model: 'X', state: 'unauthorized' }];
+
+    const { envelope, exitCode } = await runAndroid({
+      projectRoot: dir, args: ['--device', 'GHI'], spawn, adbProbe,
+    });
+
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('device_unauthorized');
+  });
+
+  it('multiple usable, no --device → multiple_adb_devices, exit 3', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [
+      { serial: 'A', type: 'physical', model: 'X', state: 'device' },
+      { serial: 'B', type: 'physical', model: 'Y', state: 'device' },
+    ];
+
+    const { envelope, exitCode } = await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe });
+
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('multiple_adb_devices');
+    expect(findGradleCalls(spawn.calls)).toHaveLength(0);
+  });
+
+  it('multiple usable, --device pins one → success, dispatches to that serial', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const spawn = makeSpawnStub();
+    const adbProbe = () => [
+      { serial: 'A', type: 'physical', model: 'X', state: 'device' },
+      { serial: 'B', type: 'physical', model: 'Y', state: 'device' },
+    ];
+
+    const { envelope, exitCode } = await runAndroid({
+      projectRoot: dir, args: ['--device', 'B'], spawn, adbProbe,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(envelope.android.device_serial).toBe('B');
+  });
 });
 
 // ---------------------------------------------------------------------------

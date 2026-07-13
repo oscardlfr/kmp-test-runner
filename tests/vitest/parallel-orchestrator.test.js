@@ -1816,7 +1816,7 @@ describe('runParallel', () => {
     expect(envelope.android.device_serial).toBe('PROBED-X1');
   });
 
-  it('androidInstrumented surfaces empty device_serial when adb has no devices (no failure)', async () => {
+  it('androidInstrumented with no devices → instrumented_setup_failed, exit 3', async () => {
     const dir = makeProject([
       { name: 'app',
         sourceSets: ['androidInstrumentedTest'],
@@ -1834,28 +1834,26 @@ describe('runParallel', () => {
       runCoverageInjection: makeRunCoverageStub(),
     });
 
-    // Best-effort probe: empty serial is fine; orchestrator does NOT
-    // fail (gradle will surface its own error if it actually needs a
-    // device). No instrumented_setup_failed pushed — best-effort, not strict.
-    expect(exitCode).toBe(0);
-    expect(envelope.android).toBeDefined();
-    expect(envelope.android.device_serial).toBe('');
-    expect(envelope.errors.find(e => e.code === 'instrumented_setup_failed')).toBeUndefined();
+    // Unified policy: no devices → instrumented_setup_failed / exit 3, matches
+    // android-orchestrator and benchmark-orchestrator.
+    expect(exitCode).toBe(3);
+    expect(envelope.errors.find(e => e.code === 'instrumented_setup_failed')).toBeDefined();
   });
 
-  it('androidInstrumented picks first device when multiple connected, no --device (gradle default)', async () => {
+  it('androidInstrumented with multiple connected devices and no --device → multiple_adb_devices, exit 3', async () => {
     const dir = makeProject([
       { name: 'app',
         sourceSets: ['androidInstrumentedTest'],
         build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
     ]);
     const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+    // Two devices without state (both treated as usable via backward-compat default).
     const adbProbe = () => [
-      { serial: 'FIRST', type: 'physical', model: 'A' },
-      { serial: 'SECOND', type: 'emulator', model: 'B' },
+      { serial: 'FIRST', type: 'physical', model: 'A', state: 'device' },
+      { serial: 'SECOND', type: 'emulator', model: 'B', state: 'device' },
     ];
 
-    const { envelope } = await runParallel({
+    const { envelope, exitCode } = await runParallel({
       projectRoot: dir,
       args: ['--test-type', 'androidInstrumented'],
       spawn,
@@ -1864,7 +1862,8 @@ describe('runParallel', () => {
       runCoverageInjection: makeRunCoverageStub(),
     });
 
-    expect(envelope.android.device_serial).toBe('FIRST');
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('multiple_adb_devices');
   });
 
   // ---- --capture-on-fail (parallel androidInstrumented leg) ----------------
@@ -1984,20 +1983,21 @@ describe('runParallel', () => {
     expect(err.ui_hierarchy_file).toBeUndefined();
   });
 
-  it('--capture-on-fail with no connected device → capture_error "no device serial", no adb spawn', async () => {
+  it('--capture-on-fail with no connected device → instrumented_setup_failed, exit 3', async () => {
     const dir = makeProject([androidApp()]);
     const spawn = makeCaptureSpawn({ failTasks: [':app:connectedDebugAndroidTest'] });
     const { envelope, exitCode } = await runParallel({
       projectRoot: dir,
       args: ['--test-type', 'androidInstrumented', '--capture-on-fail'],
       spawn,
-      adbProbe: () => [], // no devices / emulators
+      adbProbe: () => [], // no devices — unified policy: fail early, no gradle call
       log: () => {},
       runCoverageInjection: makeRunCoverageStub(),
     });
-    expect(exitCode).toBe(1);
-    const err = envelope.errors.find(e => e.code === 'module_failed');
-    expect(err.capture_error).toContain('no device serial');
+    // No devices → instrumented_setup_failed / exit 3 (same policy as android + benchmark).
+    // capture_error "no device serial" is no longer reachable since we fail before gradle.
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('instrumented_setup_failed');
     expect(spawn.calls.some(c => c.cmd === 'adb')).toBe(false);
   });
 
@@ -3612,6 +3612,75 @@ describe('runParallel --auto-retry + --clear-data (v0.9 step 1, flags #1 + #2)',
     });
   });
 
+  it('--clear-data + offline device → device_offline, exit 3', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n' });
+    const adbProbe = () => [{ serial: 'offline-dev', type: 'physical', model: 'X', state: 'offline' }];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--auto-retry', '--clear-data'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('device_offline');
+  });
+
+  it('--clear-data + unauthorized device → device_unauthorized, exit 3', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n' });
+    const adbProbe = () => [{ serial: 'UNAUTH1', type: 'physical', model: 'X', state: 'unauthorized' }];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--auto-retry', '--clear-data'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('device_unauthorized');
+  });
+
+  it('--clear-data + multiple usable devices, no --device → multiple_adb_devices, exit 3', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n' });
+    const adbProbe = () => [
+      { serial: 'DEV1', type: 'physical', model: 'A', state: 'device' },
+      { serial: 'DEV2', type: 'physical', model: 'B', state: 'device' },
+    ];
+
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--auto-retry', '--clear-data'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('multiple_adb_devices');
+  });
+
   // wet-audit-v0.9-part2 OBS-7 — `--flavor <name>` against a project where
   // no module declares productFlavors {} now hard-fails as CONFIG_ERROR (2)
   // instead of emitting a soft warning + exit 0. Pre-fix (v0.9 step 1)
@@ -4097,8 +4166,7 @@ describe('runParallel androidInstrumented envelope parity (drift #3)', () => {
     const { envelope } = await runParallel({
       projectRoot: dir,
       args: ['--test-type', 'androidInstrumented', '--module-filter', ':app'],
-      // Stub adb to return the S22-style serial so resolvedDeviceSerial populates.
-      env: { KMP_TEST_FAKE_DEVICES: 'DEVICE_SERIAL_FAKE' },
+      adbProbe: () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'FakeDevice', state: 'device' }],
       spawn: makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 2s\n' }),
       log: () => {},
       runCoverageInjection: stubCoverage,
@@ -4699,5 +4767,79 @@ describe('runParallel — coverage report dispatch (Fix 2)', () => {
     });
     const gradleArgLists = spawn.calls.filter(isGradleCall).map(effectiveGradleArgs);
     expect(gradleArgLists.some(a => a.includes(':core:jacocoTestReport'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part A — pickGradleTaskFor JS/Wasm guard for explicit common/desktop
+// ---------------------------------------------------------------------------
+describe('pickGradleTaskFor — JS/Wasm guard for common/desktop (Part A)', () => {
+  const jsOnlyModule = {
+    name: 'js-lib',
+    type: 'kmp',
+    androidDsl: false,
+    resolved: {
+      unitTestTask: 'jsTest',
+      deviceTestTask: null,
+      iosTestTask: null,
+      macosTestTask: null,
+      webTestTask: 'jsTest',
+    },
+  };
+  const wasmOnlyModule = {
+    name: 'wasm-lib',
+    type: 'kmp',
+    androidDsl: false,
+    resolved: {
+      unitTestTask: 'wasmJsTest',
+      deviceTestTask: null,
+      iosTestTask: null,
+      macosTestTask: null,
+      webTestTask: 'wasmJsBrowserTest',
+    },
+  };
+  const jvmModule = {
+    name: 'shared',
+    type: 'kmp',
+    androidDsl: false,
+    resolved: {
+      unitTestTask: 'jvmTest',
+      deviceTestTask: null,
+      iosTestTask: null,
+      macosTestTask: null,
+      webTestTask: null,
+    },
+  };
+
+  it('--test-type common with unitTestTask=jsTest → null + reason (guard)', () => {
+    const r = pickGradleTaskFor(jsOnlyModule, 'common');
+    expect(r.task).toBeNull();
+    expect(r.reason).toMatch(/no common target/);
+  });
+
+  it('--test-type desktop with unitTestTask=wasmJsTest → null + reason (guard)', () => {
+    const r = pickGradleTaskFor(wasmOnlyModule, 'desktop');
+    expect(r.task).toBeNull();
+    expect(r.reason).toMatch(/no desktop target/);
+  });
+
+  it('non-regression: auto-detect "" with unitTestTask=jsTest → dispatches jsTest', () => {
+    const r = pickGradleTaskFor(jsOnlyModule, '');
+    expect(r.task).toBe(':js-lib:jsTest');
+  });
+
+  it('non-regression: --test-type js with webTestTask → dispatches webTestTask', () => {
+    const r = pickGradleTaskFor(jsOnlyModule, 'js');
+    expect(r.task).toBe(':js-lib:jsTest');
+  });
+
+  it('non-regression: --test-type wasmJs with webTestTask → dispatches webTestTask', () => {
+    const r = pickGradleTaskFor(wasmOnlyModule, 'wasmJs');
+    expect(r.task).toBe(':wasm-lib:wasmJsBrowserTest');
+  });
+
+  it('non-regression: --test-type common with unitTestTask=jvmTest → dispatches jvmTest', () => {
+    const r = pickGradleTaskFor(jvmModule, 'common');
+    expect(r.task).toBe(':shared:jvmTest');
   });
 });
