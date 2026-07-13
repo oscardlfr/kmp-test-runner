@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { runBenchmark, resolveBenchmarkTimeoutMs, BENCHMARK_TIMEOUT_DEFAULTS_MS, parseArgs } from '../../lib/orchestrators/benchmark-orchestrator.js';
 import { resolveBenchmarkOuterTimeoutMs, BENCHMARK_OUTER_TIMEOUTS_MS } from '../../lib/cli.js';
+import { enforceErrorsExitCodeInvariant } from '../../lib/envelope/builder.js';
 import { isGradleCall, effectiveGradleArgs } from './_spawn-helpers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1284,5 +1285,88 @@ describe('runBenchmark ADB device-state validation (Part B)', () => {
       ],
     });
     expect(exitCode).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Orchestrator exit_code consistency (supporting proof for dispatcher parity)
+//
+// Confirms that runBenchmark() always returns exitCode === envelope.exit_code
+// AND that applying enforceErrorsExitCodeInvariant again is a no-op (the
+// orchestrator already produced the canonical code). These properties are
+// preconditions for the dispatcher parity tests in benchmark-dispatcher-parity.test.js.
+// ---------------------------------------------------------------------------
+describe('runBenchmark orchestrator exit_code consistency', () => {
+  it('all pass: exitCode === envelope.exit_code, invariant is a no-op', async () => {
+    const dir = copyFixture();
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke'],
+      spawn: makeSpawnStub({ defaultStatus: 0 }),
+      adbProbe: () => [],
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.exit_code).toBe(exitCode);
+    expect(enforceErrorsExitCodeInvariant(
+      envelope.exit_code, { tests: envelope.tests, errors: envelope.errors }
+    )).toBe(envelope.exit_code);
+  });
+
+  it('module fails: exitCode === envelope.exit_code, invariant is a no-op', async () => {
+    const dir = copyFixture();
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke'],
+      spawn: makeSpawnStub({ defaultStatus: 1 }),
+      adbProbe: () => [],
+    });
+    expect(exitCode).toBe(1);
+    expect(envelope.exit_code).toBe(exitCode);
+    expect(enforceErrorsExitCodeInvariant(
+      envelope.exit_code, { tests: envelope.tests, errors: envelope.errors }
+    )).toBe(envelope.exit_code);
+  });
+
+  it('partial timeout: exitCode === envelope.exit_code === 0; gradle_timeout in errors[] is soft', async () => {
+    // Partial timeout (≥1 pass, remaining timed out, no --strict-timeouts):
+    // orchestrator intentionally exits 0. The per-module timeout stays in
+    // errors[] as an observability signal. Applying the invariant must be a
+    // no-op because gradle_timeout is in SOFT_ERROR_CODES.
+    const dir = copyFixture();
+    const adbProbe = () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'SM-S908B' }];
+    let i = 0;
+    const spawn = () => i++ === 0
+      ? { status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: null }
+      : { status: 0, signal: null, stdout: 'BUILD SUCCESSFUL\n', stderr: '', error: null };
+
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'all', '--config', 'smoke'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(envelope.exit_code).toBe(0);
+    expect(envelope.errors.some(e => e.code === 'gradle_timeout')).toBe(true);
+    // gradle_timeout is soft — re-applying the invariant must not promote 0 → 1
+    expect(enforceErrorsExitCodeInvariant(
+      envelope.exit_code, { tests: envelope.tests, errors: envelope.errors }
+    )).toBe(0);
+  });
+
+  it('no benchmark modules: exitCode === envelope.exit_code === 3, invariant is a no-op', async () => {
+    const dir = makeEmptyProject();
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm'],
+      spawn: makeSpawnStub(),
+      adbProbe: () => [],
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.exit_code).toBe(exitCode);
+    expect(enforceErrorsExitCodeInvariant(
+      envelope.exit_code, { tests: envelope.tests, errors: envelope.errors }
+    )).toBe(envelope.exit_code);
   });
 });
