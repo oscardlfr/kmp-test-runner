@@ -2251,6 +2251,11 @@ describe('runParallel', () => {
     });
     expect(envelope.errors.some(e => e.code === 'gradle_timeout')).toBe(true);
     expect(exitCode).toBe(3);
+    // Counter invariants: total and failed must both equal gradle_timeout count.
+    const timeoutCount = envelope.errors.filter(e => e.code === 'gradle_timeout').length;
+    expect(envelope.tests.total).toBe(timeoutCount);
+    expect(envelope.tests.failed).toBe(timeoutCount);
+    expect(envelope.parallel.legs[0].execution.failed).toBe(timeoutCount);
   });
 
   it('T2: Windows timeout (error.code ETIMEDOUT) → gradle_timeout error, exit 3', async () => {
@@ -2370,6 +2375,10 @@ describe('runParallel', () => {
     // Both modules surfaced as timeout, not as cascade-isolated failures.
     const timeoutErrors = envelope.errors.filter(e => e.code === 'gradle_timeout');
     expect(timeoutErrors).toHaveLength(2);
+    // Counter invariants for multi-module timeout.
+    expect(envelope.tests.total).toBe(2);
+    expect(envelope.tests.failed).toBe(2);
+    expect(envelope.parallel.legs[0].execution.failed).toBe(2);
   });
 
   it('T7: normal test failure STILL retries with --auto-retry (regression)', async () => {
