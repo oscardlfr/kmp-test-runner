@@ -773,6 +773,116 @@ describe('discoverIncludedModules — Groovy DSL', () => {
   });
 });
 
+describe('discoverIncludedModules — multiline', () => {
+  it('parses KTS multiline include(...)', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle.kts'),
+      'include(\n  ":app",\n  ":core:domain",\n  ":feature:home"\n)\n',
+    );
+    expect(discoverIncludedModules(workDir).sort()).toEqual(['app', 'core:domain', 'feature:home']);
+  });
+
+  it('strips inline comment inside multiline include block', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-cmt-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle.kts'),
+      'include(\n  ":real",\n  // ":phantom",\n  ":also-real"\n)\n',
+    );
+    expect(discoverIncludedModules(workDir).sort()).toEqual(['also-real', 'real']);
+  });
+
+  it('parses Groovy DSL multiline via trailing comma', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-groovy-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle'),
+      "include ':app',\n  ':core',\n  ':feature:home'\n",
+    );
+    expect(discoverIncludedModules(workDir).sort()).toEqual(['app', 'core', 'feature:home']);
+  });
+
+  it('parses multiple multiline include blocks', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-multi-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle.kts'),
+      'include(\n  ":app",\n  ":core"\n)\ninclude(\n  ":feature"\n)\n',
+    );
+    expect(discoverIncludedModules(workDir).sort()).toEqual(['app', 'core', 'feature']);
+  });
+
+  it('does not pick up block-commented multiline include', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-bcmt-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle.kts'),
+      '/*\ninclude(\n  ":phantom"\n)\n*/\ninclude(":real")\n',
+    );
+    expect(discoverIncludedModules(workDir)).toEqual(['real']);
+  });
+
+  it('parentheses in adjacent comment do not corrupt paren scan', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-paren-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle.kts'),
+      '// some(note) about modules\ninclude(":real")\n',
+    );
+    expect(discoverIncludedModules(workDir)).toEqual(['real']);
+  });
+
+  it('includeBuild(":foo") is not treated as a module include', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-ib-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle.kts'),
+      'includeBuild(":foo")\n',
+    );
+    expect(discoverIncludedModules(workDir)).toEqual([]);
+  });
+
+  it('pluginManagement { includeBuild(...) } is not treated as a module include', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-pm-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle.kts'),
+      'pluginManagement {\n  includeBuild(":plugin")\n}\ninclude(":real")\n',
+    );
+    expect(discoverIncludedModules(workDir)).toEqual(['real']);
+  });
+
+  it('rootProject.name string containing include(:fake) does not yield a module', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-rp-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle.kts'),
+      'rootProject.name = "include(:fake)"\ninclude(":real")\n',
+    );
+    expect(discoverIncludedModules(workDir)).toEqual(['real']);
+  });
+
+  it('string literal containing include(":fake") is not treated as a module', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-strlit-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle'),
+      "rootProject.name = 'include(\":fake\")'\ninclude(':real')\n",
+    );
+    expect(discoverIncludedModules(workDir)).toEqual(['real']);
+  });
+
+  it('KTS double-quoted string containing include(\\\":fake\\\") is not treated as a module', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-ktslit-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle.kts'),
+      'rootProject.name = "include(\\":fake\\")"\ninclude(":real")\n',
+    );
+    expect(discoverIncludedModules(workDir)).toEqual(['real']);
+  });
+
+  it('Groovy trailing-comma continuation does not swallow an unrelated later line', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-ou-ml-cont-'));
+    writeFileSync(
+      path.join(workDir, 'settings.gradle'),
+      "include ':app',\n  ':core'\nrootProject.name = \":myProject\"\n",
+    );
+    expect(discoverIncludedModules(workDir).sort()).toEqual(['app', 'core']);
+  });
+});
+
 describe('resolveMaxBuffer (KMP_GRADLE_MAXBUFFER_MB)', () => {
   it('defaults to DEFAULT_SPAWN_MAX_BUFFER_MB megabytes when the env knob is absent', () => {
     expect(resolveMaxBuffer({})).toBe(DEFAULT_SPAWN_MAX_BUFFER_MB * 1024 * 1024);

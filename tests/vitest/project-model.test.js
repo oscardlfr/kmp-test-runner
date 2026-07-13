@@ -516,6 +516,69 @@ describe('parseSettingsIncludes', () => {
       'include(":real")  // TODO: rename someday\n');
     expect(parseSettingsIncludes(dir)).toEqual([':real']);
   });
+
+  it('parses KTS multiline include(...)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      'include(\n  ":app",\n  ":core:domain",\n  ":feature:home"\n)\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':app', ':core:domain', ':feature:home']);
+  });
+
+  it('strips inline comment inside multiline include block', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      'include(\n  ":real",\n  // ":phantom",\n  ":also-real"\n)\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':also-real', ':real']);
+  });
+
+  it('parses Groovy DSL multiline via trailing comma', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle'),
+      "include ':app',\n  ':core',\n  ':feature:home'\n");
+    expect(parseSettingsIncludes(dir)).toEqual([':app', ':core', ':feature:home']);
+  });
+
+  it('parses multiple multiline include blocks', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      'include(\n  ":app",\n  ":core"\n)\ninclude(\n  ":feature"\n)\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':app', ':core', ':feature']);
+  });
+
+  it('does not pick up block-commented multiline include', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      '/*\ninclude(\n  ":phantom"\n)\n*/\ninclude(":real")\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':real']);
+  });
+
+  it('includeBuild(":foo") is not treated as a module include', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      'includeBuild(":foo")\ninclude(":real")\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':real']);
+  });
+
+  it('string literal containing include(":fake") is not treated as a module', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle'),
+      "rootProject.name = 'include(\":fake\")'\ninclude(':real')\n");
+    expect(parseSettingsIncludes(dir)).toEqual([':real']);
+  });
+
+  it('KTS double-quoted string containing include(\\\":fake\\\") is not treated as a module', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'),
+      'rootProject.name = "include(\\":fake\\")"\ninclude(":real")\n');
+    expect(parseSettingsIncludes(dir)).toEqual([':real']);
+  });
+
+  it('Groovy trailing-comma continuation does not swallow an unrelated later line', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle'),
+      "include ':app',\n  ':core'\nrootProject.name = \":myProject\"\n");
+    expect(parseSettingsIncludes(dir)).toEqual([':app', ':core']);
+  });
 });
 
 // ------------------------------------------------------------------
