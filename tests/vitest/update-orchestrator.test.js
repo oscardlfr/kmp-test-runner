@@ -12,7 +12,7 @@
 //   7. Failed probe → release_resolve_failed
 //   8. Win32 spawns install.ps1 with -Version; non-win32 spawns install.sh with --version
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 
 import {
   runUpdate,
@@ -53,11 +53,11 @@ function makeFetchStub({ redirect, api } = {}) {
   };
 }
 
-function makeSpawnStub({ status = 0 } = {}) {
+function makeSpawnStub({ status = 0, stdout = '', stderr = '' } = {}) {
   const calls = [];
   const fn = (cmd, args, opts) => {
     calls.push({ cmd, args: [...args], cwd: opts?.cwd, stdio: opts?.stdio });
-    return { status, stdout: '', stderr: '', signal: null, error: null };
+    return { status, stdout, stderr, signal: null, error: null };
   };
   fn.calls = calls;
   return fn;
@@ -316,4 +316,102 @@ describe('formatUpdateText', () => {
     expect(text).toMatch(/Current.*0\.8\.1/);
     expect(text).toMatch(/Already on the latest/);
   });
+});
+
+// JSON-mode stdio routing: when --json is active the installer must run with
+// stdio:'pipe' so its stdout/stderr never reach the parent process stdout.
+// Captured output is forwarded to process.stderr to preserve user visibility.
+// The single-JSON-object contract on stdout is guaranteed by:
+//   (a) stdio:'pipe' — installer output captured, not inherited
+//   (b) emitJson(envelope) in lib/commands/update.js — exactly one write to stdout
+describe('runUpdate --json stdio routing', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('JSON mode success: spawn uses stdio:pipe, installer noise forwarded to stderr not envelope', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const spawn = makeSpawnStub({
+      status: 0,
+      stdout: 'Downloading kmp-test-runner v99.99.99...\nExtracting...\nDone!\n',
+      stderr: 'Warning: checksum skipped\n',
+    });
+    const fetchImpl = makeFetchStub({ redirect: '99.99.99' });
+    const { envelope, exitCode } = await runUpdate({
+      args: [],
+      spawn,
+      fetchImpl,
+      jsonMode: true,
+    });
+    expect(spawn.calls[0].stdio).toBe('pipe');
+    expect(envelope.update.action).toBe('installed');
+    expect(exitCode).toBe(0);
+    // Installer noise must not appear in the envelope
+    const json = JSON.stringify(envelope);
+    expect(json).not.toContain('Downloading');
+    expect(json).not.toContain('checksum skipped');
+    // Noise was forwarded to stderr
+    const stderrCalls = stderrSpy.mock.calls.flat().join('');
+    expect(stderrCalls).toContain('Downloading');
+    expect(stderrCalls).toContain('checksum skipped');
+  });
+
+  it('JSON mode failure: spawn uses stdio:pipe, install_failed envelope clean, noise on stderr', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const spawn = makeSpawnStub({
+      status: 7,
+      stdout: 'Download failed at step 3\n',
+      stderr: 'Error: connection refused\n',
+    });
+    const fetchImpl = makeFetchStub({ redirect: '99.99.99' });
+    const { envelope, exitCode } = await runUpdate({
+      args: [],
+      spawn,
+      fetchImpl,
+      jsonMode: true,
+    });
+    expect(spawn.calls[0].stdio).toBe('pipe');
+    expect(envelope.errors[0].code).toBe('install_failed');
+    expect(exitCode).toBe(3);
+    const json = JSON.stringify(envelope);
+    expect(json).not.toContain('Download failed');
+    expect(json).not.toContain('connection refused');
+    const stderrCalls = stderrSpy.mock.calls.flat().join('');
+    expect(stderrCalls).toContain('Download failed');
+    expect(stderrCalls).toContain('connection refused');
+  });
+
+  it('non-JSON mode uses stdio:inherit', async () => {
+    const spawn = makeSpawnStub();
+    const fetchImpl = makeFetchStub({ redirect: '99.99.99' });
+    await runUpdate({ args: [], spawn, fetchImpl, jsonMode: false });
+    expect(spawn.calls[0].stdio).toBe('inherit');
+  });
+
+  it.skipIf(process.platform !== 'win32')(
+    'Windows fallback path uses same JSON-safe stdio as primary',
+    async () => {
+      const calls = [];
+      let callCount = 0;
+      const spawnWithFallback = (cmd, args, opts) => {
+        calls.push({ cmd, args: [...args], stdio: opts?.stdio });
+        callCount++;
+        if (callCount === 1) {
+          return { status: null, error: new Error('pwsh not found'), stdout: '', stderr: '' };
+        }
+        return { status: 0, stdout: '', stderr: '' };
+      };
+      const fetchImpl = makeFetchStub({ redirect: '99.99.99' });
+      const { exitCode } = await runUpdate({
+        args: [],
+        spawn: spawnWithFallback,
+        fetchImpl,
+        jsonMode: true,
+      });
+      expect(calls).toHaveLength(2);
+      expect(calls[0].stdio).toBe('pipe');
+      expect(calls[1].stdio).toBe('pipe');
+      expect(exitCode).toBe(0);
+    },
+  );
 });
