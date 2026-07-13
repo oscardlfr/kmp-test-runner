@@ -772,6 +772,151 @@ describe('runAndroid --auto-retry', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Case 9.1 — --auto-retry retry-count accounting (PR-15 regression guard)
+// ---------------------------------------------------------------------------
+describe('runAndroid --auto-retry retry-count accounting', () => {
+  // Test A: retry succeeds — final counts must reflect the retry, not the
+  // first-attempt failure. On current buggy code, parseTestCounts(combinedStdout)
+  // finds "5 tests completed, 2 failed" (first match) and returns failed=2 even
+  // though exit=0 after retry. With the fix, only finalStdout (retry output) is
+  // parsed, so failed=0.
+  it('retry succeeds: envelope counts reflect the successful retry, not the first-attempt failure', async () => {
+    const dir = makeProject([{ name: 'flaky' }]);
+    let gradleIdx = 0;
+    const spawn = (cmd, args, opts) => {
+      spawn.calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null });
+      if (cmd === 'adb') return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+      const isFirst = gradleIdx === 0;
+      gradleIdx++;
+      return {
+        status: isFirst ? 1 : 0,
+        stdout: isFirst
+          ? '> Task :flaky:connectedDebugAndroidTest\n5 tests completed, 2 failed\nBUILD FAILED\n'
+          : '> Task :flaky:connectedDebugAndroidTest\n5 tests completed\nBUILD SUCCESSFUL\n',
+        stderr: '',
+        signal: null,
+        error: null,
+      };
+    };
+    spawn.calls = [];
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope, exitCode } = await runAndroid({
+      projectRoot: dir,
+      args: ['--auto-retry'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(envelope.errors).toEqual([]);
+    expect(envelope.tests.failed).toBe(0);
+    expect(envelope.tests.passed).toBe(5);
+    expect(envelope.tests.total).toBe(5);
+  });
+
+  // Test B: retry also fails but with a different count — counts must reflect
+  // the retry (final attempt), not the first attempt.
+  it('retry fails with different count: counts reflect the retry attempt, not the first', async () => {
+    const dir = makeProject([{ name: 'flaky' }]);
+    let gradleIdx = 0;
+    const spawn = (cmd, args, opts) => {
+      spawn.calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null });
+      if (cmd === 'adb') return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+      const isFirst = gradleIdx === 0;
+      gradleIdx++;
+      return {
+        status: 1,
+        stdout: isFirst
+          ? '> Task :flaky:connectedDebugAndroidTest\n10 tests completed, 3 failed\nBUILD FAILED\n'
+          : '> Task :flaky:connectedDebugAndroidTest\n5 tests completed, 1 failed\nBUILD FAILED\n',
+        stderr: '',
+        signal: null,
+        error: null,
+      };
+    };
+    spawn.calls = [];
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope, exitCode } = await runAndroid({
+      projectRoot: dir,
+      args: ['--auto-retry'],
+      spawn,
+      adbProbe,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(envelope.tests.total).toBe(5);
+    expect(envelope.tests.failed).toBe(1);
+    expect(envelope.tests.passed).toBe(4);
+    expect(envelope.errors.filter(e => e.code === 'module_failed')).toHaveLength(1);
+  });
+
+  // Test C: stale compilation errors from the first attempt must NOT survive
+  // into the errorsFile when the retry's stderr is clean.
+  it('retry fails: stale first-attempt compilation errors do not appear in errorsFile', async () => {
+    const dir = makeProject([{ name: 'flaky' }]);
+    let gradleIdx = 0;
+    const spawn = (cmd, args, opts) => {
+      spawn.calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null });
+      if (cmd === 'adb') return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+      const isFirst = gradleIdx === 0;
+      gradleIdx++;
+      return {
+        status: 1,
+        stdout: isFirst
+          ? ''
+          : '> Task :flaky:connectedDebugAndroidTest\n5 tests completed, 1 failed\nBUILD FAILED\n',
+        stderr: isFirst
+          ? 'e: /src/SomeFile.kt: (10, 5): Unresolved reference: missingFn\nBUILD FAILED\n'
+          : '',
+        signal: null,
+        error: null,
+      };
+    };
+    spawn.calls = [];
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope } = await runAndroid({
+      projectRoot: dir,
+      args: ['--auto-retry'],
+      spawn,
+      adbProbe,
+    });
+
+    const err = envelope.errors.find(e => e.code === 'module_failed');
+    expect(err).toBeDefined();
+    const errBuckets = JSON.parse(readFileSync(err.errors_file, 'utf8'));
+    expect(errBuckets.compilationErrors).toEqual([]);
+    expect(envelope.tests.failed).toBe(1);
+  });
+
+  // Test D: without --auto-retry, existing single-attempt count behavior is
+  // unchanged (finalStdout initialises to the first-attempt output).
+  it('without --auto-retry: single-attempt counts are preserved unchanged', async () => {
+    const dir = makeProject([{ name: 'flaky' }]);
+    const spawn = makeSpawnStub({
+      gradle: {
+        status: 1,
+        stdout: '> Task :flaky:connectedDebugAndroidTest\n5 tests completed, 2 failed\nBUILD FAILED\n',
+      },
+    });
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+
+    const { envelope, exitCode } = await runAndroid({
+      projectRoot: dir,
+      args: [],
+      spawn,
+      adbProbe,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(envelope.tests.total).toBe(5);
+    expect(envelope.tests.failed).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Case 10 — --auto-retry --clear-data invokes adb shell pm clear
 // ---------------------------------------------------------------------------
 describe('runAndroid --auto-retry --clear-data', () => {
