@@ -2229,6 +2229,213 @@ describe('runParallel', () => {
     expect(gradleSpawnCount).toBe(3);
   });
 
+  // ---------------------------------------------------------------------------
+  // Gradle spawn timeouts — T1-T8 (PR-14)
+  // ---------------------------------------------------------------------------
+  // spawnSync with a `timeout` option kills the child and returns:
+  //   POSIX: { status: null, signal: 'SIGTERM', ... }
+  //   Windows: { status: null, signal: null, error: { code: 'ETIMEDOUT' }, ... }
+  // These tests verify discrimination, metadata, and no-retry invariants.
+
+  it('T1: POSIX timeout (signal SIGTERM) → gradle_timeout error, exit 3', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = (cmd, args, opts) => ({ status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: null });
+    spawn.calls = [];
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--timeout', '30', '--no-coverage'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.errors.some(e => e.code === 'gradle_timeout')).toBe(true);
+    expect(exitCode).toBe(3);
+    // Counter invariants: total and failed must both equal gradle_timeout count.
+    const timeoutCount = envelope.errors.filter(e => e.code === 'gradle_timeout').length;
+    expect(envelope.tests.total).toBe(timeoutCount);
+    expect(envelope.tests.failed).toBe(timeoutCount);
+    expect(envelope.parallel.legs[0].execution.failed).toBe(timeoutCount);
+  });
+
+  it('T2: Windows timeout (error.code ETIMEDOUT) → gradle_timeout error, exit 3', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const winErr = Object.assign(new Error('ETIMEDOUT'), { code: 'ETIMEDOUT' });
+    const spawn = (cmd, args, opts) => ({ status: null, signal: null, stdout: '', stderr: '', error: winErr });
+    spawn.calls = [];
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--timeout', '30', '--no-coverage'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.errors.some(e => e.code === 'gradle_timeout')).toBe(true);
+    expect(exitCode).toBe(3);
+  });
+
+  it('T3: timeout error carries module, task, timeout_ms — no gradlew path', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = (cmd, args, opts) => ({ status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: null });
+    spawn.calls = [];
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--timeout', '45', '--no-coverage'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    const err = envelope.errors.find(e => e.code === 'gradle_timeout');
+    expect(err).toBeDefined();
+    expect(err.module).toBe('core');
+    expect(err.task).toMatch(/^:core:/);
+    expect(err.timeout_ms).toBe(45000);
+    // Must not leak gradlew path or raw command-line args
+    expect(JSON.stringify(err)).not.toMatch(/gradlew/);
+  });
+
+  it('T4: nested module path → module name from taskOwners, task contains full path', async () => {
+    // Gradle uses colons for project hierarchy. `:feature:auth:jvmTest` is the
+    // task; module name is `feature:auth` (as declared in settings.gradle.kts).
+    const dir = makeProject([{ name: 'feature:auth', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = (cmd, args, opts) => ({ status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: null });
+    spawn.calls = [];
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--timeout', '60', '--no-coverage'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    const err = envelope.errors.find(e => e.code === 'gradle_timeout');
+    expect(err).toBeDefined();
+    expect(err.module).toBe('feature:auth');
+    expect(err.task).toMatch(/:feature:auth:/);
+    expect(err.timeout_ms).toBe(60000);
+  });
+
+  it('T5: --auto-retry does NOT fire on timeout (spawn called once)', async () => {
+    // --auto-retry only fires for androidInstrumented, so we use a real Android
+    // module with an adb probe to reach the auto-retry gate before the timeout guard.
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const manifestDir = path.join(dir, 'app', 'src', 'main');
+    mkdirSync(manifestDir, { recursive: true });
+    writeFileSync(path.join(manifestDir, 'AndroidManifest.xml'), '<manifest package="com.example.app"/>');
+    const calls = [];
+    const spawn = (cmd, args, opts) => {
+      calls.push({ cmd, args: [...args] });
+      if (cmd === 'adb') return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+      return { status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: null };
+    };
+    spawn.calls = calls;
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--timeout', '30', '--auto-retry', '--no-coverage'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const gradleCount = calls.filter(c => isGradleCall(c)).length;
+    expect(gradleCount).toBe(1);
+  });
+
+  it('T6: cascade-isolation does NOT fire on timeout (spawn called once)', async () => {
+    // All tasks show no_evidence (empty stdout) — without the timedOut guard
+    // the cascade check would trigger a per-module re-run.
+    const dir = makeProject([
+      { name: 'alpha', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'beta',  sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const calls = [];
+    const spawn = (cmd, args, opts) => {
+      calls.push({ cmd, args: [...args] });
+      // Empty stdout = all tasks no_evidence; signal triggers timeout path.
+      return { status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: null };
+    };
+    spawn.calls = calls;
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--timeout', '30', '--no-coverage'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    const gradleCount = calls.filter(c => isGradleCall(c)).length;
+    expect(gradleCount).toBe(1);
+    // Both modules surfaced as timeout, not as cascade-isolated failures.
+    const timeoutErrors = envelope.errors.filter(e => e.code === 'gradle_timeout');
+    expect(timeoutErrors).toHaveLength(2);
+    // Counter invariants for multi-module timeout.
+    expect(envelope.tests.total).toBe(2);
+    expect(envelope.tests.failed).toBe(2);
+    expect(envelope.parallel.legs[0].execution.failed).toBe(2);
+  });
+
+  it('T7: normal test failure STILL retries with --auto-retry (regression)', async () => {
+    const dir = makeProject([
+      { name: 'app',
+        sourceSets: ['androidInstrumentedTest'],
+        build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+    ]);
+    const manifestDir = path.join(dir, 'app', 'src', 'main');
+    mkdirSync(manifestDir, { recursive: true });
+    writeFileSync(path.join(manifestDir, 'AndroidManifest.xml'), '<manifest package="com.example.app"/>');
+    const calls = [];
+    let gradleCallNum = 0;
+    const spawn = (cmd, args, opts) => {
+      calls.push({ cmd, args: [...args] });
+      if (cmd === 'adb') return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+      gradleCallNum++;
+      const task = effectiveGradleArgs({ cmd, args }).find(a => a.startsWith(':')) || ':app:connectedDebugAndroidTest';
+      return gradleCallNum === 1
+        ? { status: 1, stdout: `> Task ${task} FAILED\nBUILD FAILED\n`, stderr: '', signal: null, error: null }
+        : { status: 0, stdout: `> Task ${task}\nBUILD SUCCESSFUL\n`, stderr: '', signal: null, error: null };
+    };
+    spawn.calls = calls;
+    const adbProbe = () => [{ serial: 'X', type: 'physical', model: 'Y' }];
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--auto-retry', '--no-coverage'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const gradleCount = calls.filter(c => isGradleCall(c)).length;
+    expect(gradleCount).toBe(2);
+  });
+
+  it('T8: non-timeout spawn error (no signal, no ETIMEDOUT) keeps module_failed', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const genericErr = Object.assign(new Error('ENOMEM'), { code: 'ENOMEM' });
+    const spawn = (cmd, args, opts) => ({
+      status: null, signal: null, stdout: '', stderr: '', error: genericErr,
+    });
+    spawn.calls = [];
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--timeout', '30', '--no-coverage'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    // Not a timeout — must NOT emit gradle_timeout.
+    expect(envelope.errors.every(e => e.code !== 'gradle_timeout')).toBe(true);
+    // Standard failure path applies.
+    expect(envelope.errors.some(e => e.code === 'module_failed')).toBe(true);
+  });
+
   it('envelope shape: parallel:{test_type, legs[], max_workers, timeout_s}', async () => {
     const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
     const stubCoverage = makeRunCoverageStub();
