@@ -1215,3 +1215,74 @@ describe('discoverBenchmarkModules via build-logic convention plugin', () => {
     expect(effectiveGradleArgs(gradleCalls[0])).toContain(':bench-mod:desktopSmokeBenchmark');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Part B — ADB device-state validation for benchmark --platform android
+// ---------------------------------------------------------------------------
+describe('runBenchmark ADB device-state validation (Part B)', () => {
+  beforeEach(() => { copyFixture(); });
+
+  function makeAndroidSpawnStub() {
+    const calls = [];
+    const fn = (cmd, args, _opts) => {
+      calls.push({ cmd, args: [...args] });
+      return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '', signal: null, error: null };
+    };
+    fn.calls = calls;
+    return fn;
+  }
+
+  it('all offline → device_offline, exit 3, no gradle call', async () => {
+    const spawn = makeAndroidSpawnStub();
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: workDir,
+      args: ['--platform', 'android'],
+      spawn,
+      adbProbe: () => [{ serial: 'A', type: 'physical', model: 'X', state: 'offline' }],
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('device_offline');
+    expect(spawn.calls.filter(c => isGradleCall(c))).toHaveLength(0);
+  });
+
+  it('all unauthorized → device_unauthorized, exit 3', async () => {
+    const spawn = makeAndroidSpawnStub();
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: workDir,
+      args: ['--platform', 'android'],
+      spawn,
+      adbProbe: () => [{ serial: 'A', type: 'physical', model: 'X', state: 'unauthorized' }],
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('device_unauthorized');
+  });
+
+  it('multiple usable → multiple_adb_devices, exit 3', async () => {
+    const spawn = makeAndroidSpawnStub();
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: workDir,
+      args: ['--platform', 'android'],
+      spawn,
+      adbProbe: () => [
+        { serial: 'A', type: 'physical', model: 'X', state: 'device' },
+        { serial: 'B', type: 'physical', model: 'Y', state: 'device' },
+      ],
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.errors[0].code).toBe('multiple_adb_devices');
+  });
+
+  it('one usable + one unusable → proceeds (usable device selected)', async () => {
+    const spawn = makeAndroidSpawnStub();
+    const { exitCode } = await runBenchmark({
+      projectRoot: workDir,
+      args: ['--platform', 'android'],
+      spawn,
+      adbProbe: () => [
+        { serial: 'A', type: 'physical', model: 'X', state: 'device' },
+        { serial: 'B', type: 'physical', model: 'Y', state: 'offline' },
+      ],
+    });
+    expect(exitCode).toBe(0);
+  });
+});
