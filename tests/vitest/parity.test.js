@@ -17,7 +17,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync, rmSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -411,18 +411,25 @@ describe('parity / envelope JSON schema snapshot', () => {
       if (realPath) expect(text.includes(realPath)).toBe(false);
     });
 
-    it('normalizes both backslash- and forward-slash-style project roots to <PROJECT_ROOT>', () => {
-      const root = 'C:\\Users\\someone\\AppData\\Local\\Temp\\kmp-parity-abc123';
-      const rootForward = root.replace(/\\/g, '/');
+    it('normalizes the project root in both its native and forward-slash forms', () => {
+      // Must derive both variants from a REAL path.resolve()'d root for
+      // *this* platform — a hardcoded Windows-style literal (`C:\Users\...`)
+      // fed through path.resolve() on Linux/macOS isn't recognized as
+      // absolute at all (no drive letter / backslash awareness) and gets
+      // silently mangled (CWD-prefixed) before normalizeEnvelopeForSnapshot
+      // ever sees it, which is exactly what broke this test on
+      // `build (ubuntu-latest)` in this PR's first CI run.
+      const root = path.resolve(path.join(tmpdir(), 'kmp-parity-normalize-test'));
+      const rootForwardSlashes = root.replace(/\\/g, '/');
       const fake = {
         project_root: root,
-        note_backslash: `see ${root}\\mod\\build`,
-        note_forward: `see ${rootForward}/mod/build`,
+        note_native: `see ${root}${path.sep}mod${path.sep}build`,
+        note_forward_slashes: `see ${rootForwardSlashes}/mod/build`,
       };
       const normalized = normalizeEnvelopeForSnapshot(fake, root);
       expect(normalized.project_root).toBe('<PROJECT_ROOT>');
-      expect(normalized.note_backslash).toBe('see <PROJECT_ROOT>\\mod\\build');
-      expect(normalized.note_forward).toBe('see <PROJECT_ROOT>/mod/build');
+      expect(normalized.note_native).toBe(`see <PROJECT_ROOT>${path.sep}mod${path.sep}build`);
+      expect(normalized.note_forward_slashes).toBe('see <PROJECT_ROOT>/mod/build');
     });
 
     it('still catches a real command-shape regression outside the fixed-schema fields', () => {
