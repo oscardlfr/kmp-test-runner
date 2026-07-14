@@ -16,7 +16,7 @@ The `kmp-test` CLI emits a JSON envelope to stdout when invoked with `--json`. T
 | `tests` | object | `{ total, passed, failed, skipped, individual_total? }` — see [`tests` shape](#tests-shape). |
 | `modules` | array | Per-module results — see [`modules[]` shape](#modules-shape). |
 | `skipped` | array | `[{ module, reason }]` — modules the dispatcher legitimately skipped. |
-| `coverage` | object | `{ tool, missed_lines, modules_with_kover_plugin, modules_with_jacoco_plugin }`. |
+| `coverage` | object | `{ tool, missed_lines, modules_contributing, modules_with_kover_plugin, modules_with_jacoco_plugin, module_buckets }` — see [`coverage` shape](#coverage-shape). `missed_lines` / `modules_contributing` are always the complete, unfiltered project total. |
 | `errors` | array | `[{ message, code?, ...extra }]` — see [error-codes table](#errors-discriminated-codes). |
 | `warnings` | array | Soft signals — never affect `exit_code`. |
 | `isolated` | object | `{ enabled, cache_dir, kept, locked }` — present when `--isolated` was passed (omitted by `coverage` orchestrator since it never spawns gradle). |
@@ -113,7 +113,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `multiple_adb_devices` | android, parallel (`androidInstrumented`), benchmark | 3 | Multiple usable adb devices without `--device <serial>` — pass `--device` to eliminate ambiguity. | — |
 | `flavor_unused` | parallel (`androidUnit`/`androidInstrumented`/`all`) | 2 | `--flavor <name>` passed but no module on the leg is flavored (static `productFlavors {}` or probe-recovered). | — |
 | `isolated_runtime_race` | parallel | 2 | `--isolated` combined with a test-type that hits a shared runtime resource (iOS sim, ADB without `--device`, `--test-type all`). | — |
-| `coverage_threshold_exceeded` | parallel (`--min-missed-lines`), coverage | 1 | Aggregated `coverage.missed_lines` exceeds the threshold. | — |
+| `coverage_threshold_exceeded` | parallel (`--min-missed-lines`), coverage | 1 | Aggregated (unfiltered) `coverage.missed_lines` exceeds the threshold. `--min-missed-lines` never removes coverage data — it only decides this gate and narrows the *markdown report's* per-class detail section; `coverage.missed_lines` / `modules_contributing` / `module_buckets` always reflect the complete project even when this error fires. | `threshold:int`, `missed_lines:int` |
 | `git_error` | changed | 3 | A git command failed — repo unreadable, corrupted, or access denied. **Hard code** — `exit_code` is always 3. Only emitted when git probing fails; `no_changed_modules` is emitted instead when git succeeds but the diff is empty. | `git_command:string` (subcommand invoked), `exit_status:number` (git exit code), `stderr_summary?:string` (first 300 chars of stderr, CR/LF collapsed, omitted when empty) |
 | `gradle_timeout` | parallel, benchmark | 3 | The gradle spawn process was killed by the `--timeout` deadline (SIGTERM on POSIX; ETIMEDOUT on Windows). Never retried — spawn timeouts are infra failures, not flaky tests. | **parallel**: `module:string`, `task:string`, `timeout_ms:number`. **benchmark**: additionally `platform:string`, `log_path:string` |
 | `task_not_found` | any | 3 | Gradle task class missing — typically a plugin not applied to the requested module. | — |
@@ -145,6 +145,9 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `coverage_aggregation_skipped` | coverage | `--coverage-tool none` (or the `--no-coverage` alias) disabled the aggregation step. | — |
 | `coverage_aggregation_drift` | coverage, parallel | The four `module_buckets` (`with_data` + `no_xml` + `parse_errored` + `skipped_by_user`) didn't sum to `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length`. Defensive guard against silent model drops. | `detected:int`, `accounted:int`, `unaccounted:int` |
 | `coverage_xml_disabled` | coverage, parallel | A jacoco module ran its report but emitted HTML/`.exec` only — no XML (Gradle's default `xml.required=false`). `kmp-test parallel` enables jacoco XML automatically; this fires when `--no-coverage-xml-autofix` was passed (or XML is otherwise absent). The module is also in `module_buckets.no_xml`. | `modules:string[]` |
+| `coverage_parse_failed` | coverage, parallel | A module's coverage XML failed to read or parse (malformed, truncated, or missing content) — the module lands in `module_buckets.parse_errored` and is excluded from the aggregate, never silently folded into a bare `no_coverage_data`. | `modules:string[]` |
+| `coverage_xml_oversized` | coverage, parallel | A module's coverage XML exceeded the parser's size cap (default 128 MB; tunable via `KMP_COVERAGE_XML_MAX_MB`) and was skipped — a size-cap-specific subset of `coverage_parse_failed`, discriminated so a legitimately huge report is distinguishable from a malformed one. | `modules:string[]` |
+| `coverage_report_write_failed` | coverage, parallel | The coverage markdown report could not be written to disk (full disk, permissions) — the JSON envelope and its `coverage` data are still valid; only the on-disk `.md` file failed. | `message` carries the short fs error code (e.g. `ENOSPC`/`EACCES`) only, never a resolved path |
 | `partial_timeout` | benchmark | At least one benchmark module timed out but at least one other passed. Exit code stays at `0` (graded). Pass `--strict-timeouts` to restore pre-graded hard-fail behavior. | `timed_out:int`, `passed:int` |
 | `flavor_defaulted_umbrella` | parallel (`androidUnit`/`androidInstrumented`/`all`) | Project is flavored and no `--flavor` was supplied, so the leg dispatched the flavor-agnostic umbrella task (`:module:test` / `:module:connectedAndroidTest`, which run every flavor — slower). Pass `--flavor <name>` to target one. | `candidates:string[]`, `test_type:string` |
 | `gradle_config_applied` | parallel (envelope payload, not `warnings[]` entry) | Project's `gradle.properties` had `org.gradle.parallel=false` so the CLI dropped its own `--parallel` injection to respect user intent. | `parallel_dropped:bool` (on the top-level `gradle_config_applied:{}` field) |
@@ -174,6 +177,7 @@ This lets agents safely read **either** `errors.length > 0` **or** `exit_code !=
 {
   "tool": "auto",
   "missed_lines": null,
+  "modules_contributing": 1,
   "modules_with_kover_plugin": [":core:network", ":feature:auth"],
   "modules_with_jacoco_plugin": [],
   "module_buckets": {
@@ -186,9 +190,11 @@ This lets agents safely read **either** `errors.length > 0` **or** `exit_code !=
 ```
 
 - `tool` — `"auto"` / `"kover"` / `"jacoco"` / `"none"`.
-- `missed_lines` — aggregated count or `null` when coverage couldn't be aggregated.
+- `missed_lines` — aggregated count or `null` when coverage couldn't be aggregated. Always the **complete, unfiltered** project total — `--min-missed-lines` never narrows this field (it only decides the `coverage_threshold_exceeded` gate and the markdown report's per-class detail section).
+- `modules_contributing` — count of modules with real aggregated data. Same unfiltered guarantee as `missed_lines`: a `--min-missed-lines` value that no single class individually crosses does **not** zero this out, and does **not** trigger a false `no_coverage_data` warning.
 - `modules_with_kover_plugin` / `modules_with_jacoco_plugin` — per-module surface so agents see which coverage flavor each module declares.
-- `module_buckets` — per-module accounting on a successful `coverage` / `parallel` run. Each module with a detected coverage plugin lands in exactly one bucket: `with_data` (XML parsed + rows added to aggregation), `no_xml` (XML missing on disk — the most common silent-drop case in CI), `parse_errored` (Python parser exited non-zero), or `skipped_by_user` (filtered out by `--exclude-coverage` / `--coverage-modules`). The sum of the four buckets should equal `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length`; when it doesn't, a `coverage_aggregation_drift` entry is pushed to `warnings[]` with `{detected, accounted, unaccounted}` counts. Buckets are empty on `--dry-run` and `--coverage-tool none` for shape parity.
+- `module_buckets` — per-module accounting on a successful `coverage` / `parallel` run. Each module with a detected coverage plugin lands in exactly one bucket: `with_data` (XML parsed + rows added to aggregation), `no_xml` (XML missing on disk — the most common silent-drop case in CI), `parse_errored` (the coverage-XML parser reported a failure — malformed, unreadable, or oversized XML; see the `coverage_parse_failed` / `coverage_xml_oversized` warning codes for the discriminated reason), or `skipped_by_user` (filtered out by `--exclude-coverage` / `--coverage-modules`). The sum of the four buckets should equal `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length`; when it doesn't, a `coverage_aggregation_drift` entry is pushed to `warnings[]` with `{detected, accounted, unaccounted}` counts. Buckets are empty on `--dry-run` and `--coverage-tool none` for shape parity.
+- Coverage XML parsing is Node-native (`lib/parsers/coverage-xml.js`) — no `python3` (or any interpreter) is required on the host.
 
 ## `parallel.legs[]` shape
 

@@ -30,7 +30,7 @@ That command:
 
 1. Probes the project for modules with a coverage plugin (Kover or JaCoCo) — uses the project model cache, falling back to a fresh probe.
 2. Reads existing `build/reports/kover/**.xml` / `build/reports/jacoco/**.xml`. **No gradle invocation for tests** — only the coverage report generation if needed.
-3. Walks XMLs in `scripts/lib/parse-coverage-xml.py` to merge per-module + total line counts.
+3. Walks XMLs via the bundled Node parser (`lib/parsers/coverage-xml.js`) to merge per-module + total line counts — pure Node, in-process, no Python interpreter required on the host.
 4. Renders the markdown report at `.kmp-test-runner/reports/coverage/latest.md` (or wherever `--output-file` points).
 5. Emits a JSON envelope with the aggregate.
 
@@ -46,7 +46,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags
 | `--coverage-tool <tool>` | `auto` | `auto` / `jacoco` / `kover` / `none`. `auto` picks per-module from the project model. `none` short-circuits the whole workflow to a no-op envelope. |
 | `--coverage-modules <list>` | all modules with a plugin | Comma-separated module names to include in aggregation. Other modules' reports are not read. |
 | `--exclude-coverage <list>` | none | Comma-separated modules to skip from aggregation. Useful for excluding `*-test-fakes` or sample modules. |
-| `--min-missed-lines <N>` | `0` | Fail (`errors[].code: coverage_threshold_exceeded`, exit 1) if aggregated `coverage.missed_lines` exceeds `N`. `0` is "don't gate". |
+| `--min-missed-lines <N>` | `0` | Fail (`errors[].code: coverage_threshold_exceeded`, exit 1) if the aggregated (unfiltered) `coverage.missed_lines` exceeds `N`. `0` is "don't gate". Narrows only the markdown report's per-class "Detailed Class Coverage" section — it never removes data from `coverage.missed_lines` / `modules_contributing` / the JSON envelope, even when the gate fires. |
 | `--output-file <name>` | `coverage-full-report.md` | Markdown report filename inside `.kmp-test-runner/reports/coverage/`. |
 | `--skip-tests` | implicit | Accepted for parity with `parallel --skip-tests` (the `coverage` subcommand sets this internally). Silently consumed. |
 | `--java-home <path>` | none | Override JDK location for this run. Skips auto-select. |
@@ -93,7 +93,8 @@ If the XML doesn't exist (tests never ran, or `--skip-tests` was passed without 
 - **No modules have a coverage plugin**: emits `errors[].code: no_test_modules` (loose match — same code as the test-side variant) with `caused_by_filter: false` and `exit 3`. Suggest the user check whether the project actually uses Kover or JaCoCo at all.
 - **`--coverage-tool kover` but the project has only JaCoCo modules**: forces Kover dispatch on modules that don't apply Kover → cascade of `task_not_found` per module. Recovery: use `--coverage-tool auto` (or `jacoco`).
 - **`--min-missed-lines 0` with any missed lines**: exit 1, `errors[].code: coverage_threshold_exceeded`. `0` means "perfect coverage required" — usually too strict; set realistic thresholds.
-- **74 MB Kover XML / HTML on a 70-module project**: the underlying tasks succeed cleanly but the markdown report can be ~10 K LOC. The `--json` envelope stays compact regardless — the heavy raw artefacts only matter if the agent reads `build/reports/**` directly (which it should NOT — defeats the whole reduction promise). See README "token cost" section for the 77,114× reduction headline.
+- **74 MB Kover XML / HTML on a 70-module project**: the underlying tasks succeed cleanly but the markdown report can be ~10 K LOC. The `--json` envelope stays compact regardless — the heavy raw artefacts only matter if the agent reads `build/reports/**` directly (which it should NOT — defeats the whole reduction promise). See README "token cost" section for the 77,114× reduction headline. (The parser's own size cap defaults to 128 MB — comfortably above this real-world case; see the next bullet for what happens past that cap.)
+- **A module's coverage XML fails to parse, or exceeds the parser's size cap**: the module lands in `module_buckets.parse_errored` and fires a discriminated `coverage_parse_failed` (malformed/unreadable XML) or `coverage_xml_oversized` (over `KMP_COVERAGE_XML_MAX_MB`, default 128 MB) warning — never silently folded into a bare `no_coverage_data`. Other modules' data is unaffected; only the failing module's contribution is excluded from the aggregate.
 - **`--exclude-coverage "*-fakes,sample-*"` combined with `--coverage-modules "core-*"`**: include first (`coverage-modules`), then exclude. Modules matching both lists are excluded.
 - **Re-running after a clean test pass**: `coverage` re-reads the existing XML — fast (~5-15 s for a medium project) since no test tasks fire. If `build/reports/` is empty, the orchestrator triggers `koverXmlReport` / `jacocoTestReport` to regenerate them.
 - **Cross-platform path separators**: report paths in the envelope use the OS native separator. Agents parsing them should not assume POSIX `/`.
@@ -113,6 +114,7 @@ If the XML doesn't exist (tests never ran, or `--skip-tests` was passed without 
   "coverage": {
     "tool": "kover",
     "missed_lines": 16,
+    "modules_contributing": 2,
     "modules_with_kover_plugin": [":core:network", ":feature:auth"],
     "modules_with_jacoco_plugin": []
   },
