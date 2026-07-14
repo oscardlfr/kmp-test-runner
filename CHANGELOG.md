@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `tests/bats/*.bats` and `tests/installer/*.bats` no longer silently drift to CRLF on Windows checkouts
+
+**No behavior change** — this is a `.gitattributes` + test-harness fix only; no `lib/` files
+changed and the CLI's observable behavior is unaffected.
+
+Closes the residual half of audit finding M9 ("bats invalidated by CRLF on Windows
+checkouts") left open after the JAVA_HOME-snapshot half was fixed above. The prior
+`ci: validate supported Node versions and line endings` work added the generic
+`tools/check-line-endings.mjs` guard, but that tool only enforces whatever `.gitattributes`
+already lists — and `tests/bats/*.bats` (26 files) + `tests/installer/*.bats` (1 file) were
+never added to it, unlike their sibling `tests/skill-scripts/*.bats`, which got this exact
+pin when the `.skills/**/*.sh` CRLF bug was fixed. On a Windows checkout with
+`core.autocrlf=true` (the default), `git check-attr` returned `unspecified` for both paths
+and the working-tree files were physically CRLF, even though the committed blob was already
+LF — the same *preventive* gap shape as the earlier `scripts/*.sh` fix, not corrupted
+history.
+
+Fixed by adding `tests/bats/*.bats text eol=lf` and `tests/installer/*.bats text eol=lf` to
+`.gitattributes`. Refreshing the working tree to match required more than
+`git add --renormalize` alone: on this git-for-windows build, both `git checkout --
+<path>` and `git checkout-index -f` skipped rewriting files they considered already
+up to date via stat-cache, silently leaving the physical bytes CRLF — only deleting the
+file first and then checking it out from the index forced a genuine rewrite. New regression
+test in `tests/vitest/check-line-endings.test.js` reads the real `.gitattributes` (rather
+than a synthetic string, unlike every other test in that file) and asserts these two paths —
+plus the pre-existing `tests/skill-scripts/*.bats` sibling — are covered; it fails without
+the `.gitattributes` change and passes with it. Vitest 2378 → 2382 (+4).
+
 ### Fixed — environment snapshot tests no longer depend on host JDK/Android SDK state
 
 **No behavior change** — this is a test-harness fix only. `kmp-test doctor`/`info` still report

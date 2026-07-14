@@ -2,10 +2,14 @@
 // Unit tests for tools/check-line-endings.mjs
 
 import { describe, it, expect } from 'vitest';
-import { writeFileSync, mkdirSync, mkdtempSync } from 'node:fs';
-import { join } from 'node:path';
+import { writeFileSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { hasCRLF, parseLFPatterns, shouldCheckLF, checkFiles } from '../../tools/check-line-endings.mjs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dirname, '..', '..');
 
 // ---------------------------------------------------------------------------
 // hasCRLF
@@ -146,6 +150,34 @@ describe('shouldCheckLF', () => {
 
   it('does not match a random .md file', () => {
     expect(shouldCheckLF('README.md', patterns)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real .gitattributes coverage (regression — M9 "bats invalidated by CRLF on
+// Windows checkouts"). Unlike every test above, which parses a synthetic
+// string, this reads the actual committed .gitattributes: it proves the
+// production config protects these paths, not just that the parser/matcher
+// logic is correct in the abstract. tests/skill-scripts/*.bats already had
+// this coverage; tests/bats/*.bats and tests/installer/*.bats did not.
+
+describe('real .gitattributes coverage (M9 bats/CRLF)', () => {
+  const realPatterns = parseLFPatterns(readFileSync(join(REPO_ROOT, '.gitattributes'), 'utf8'));
+
+  it('covers tests/bats/*.bats', () => {
+    expect(shouldCheckLF('tests/bats/test-doctor.bats', realPatterns)).toBe(true);
+  });
+
+  it('covers tests/installer/*.bats', () => {
+    expect(shouldCheckLF('tests/installer/install.bats', realPatterns)).toBe(true);
+  });
+
+  it('still covers the pre-existing tests/skill-scripts/*.bats sibling', () => {
+    expect(shouldCheckLF('tests/skill-scripts/detect-env.bats', realPatterns)).toBe(true);
+  });
+
+  it('does not over-match the unrelated Pester twin (.ps1)', () => {
+    expect(shouldCheckLF('tests/installer/Install.Tests.ps1', realPatterns)).toBe(false);
   });
 });
 
