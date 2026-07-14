@@ -108,3 +108,13 @@ tests/vitest/check-line-endings.test.js text eol=lf
 # runner.test.js has a multi-line ESM import block (same class of bug).
 lib/runner.js text eol=lf
 tests/vitest/runner.test.js text eol=lf
+
+# M9 residual (v3.2 audit) — "bats invalidated by CRLF on Windows checkouts".
+# tests/skill-scripts/*.bats already got this pin when .skills/**/*.sh was fixed;
+# these two sibling bats homes were missed at the time. Same risk: under Windows
+# git-bash with core.autocrlf=true and no eol=lf override, a fresh checkout's
+# working tree silently drifts to CRLF, producing noisy accidental-rewrite diffs
+# for any future edit and exposing bash-sensitive constructs to the same class of
+# corruption already fixed elsewhere (set -euo pipefail, etc).
+tests/bats/*.bats text eol=lf
+tests/installer/*.bats text eol=lf

@@ -142,6 +142,41 @@
   `node tools/check-line-endings.mjs` all green. `git diff --ignore-space-at-eol -- tests/vitest/__snapshots__/parity.test.js.snap`
   confirmed empty (zero real snapshot diff; the file's dirty `git status` was pre-existing
   autocrlf noise, left untouched).
+- ✅ **M9 residual — `tests/bats`/`tests/installer` LF-pin** — SHIPPED 2026-07-14 (this PR).
+  Closes M9's other half: "bats invalidated by CRLF on Windows checkouts." Note for future
+  sessions: the literal audit-doc **PR-20b** (`ci: validate supported Node versions and line
+  endings`) and **PR-20c** (dev-dep remediation) already shipped as #329/#330, well before
+  PR-20a above — confirmed via `git merge-base --is-ancestor`. PR-20b delivered the Node
+  18/24 CI matrix and the generic `tools/check-line-endings.mjs` guard (pattern-driven
+  purely from `.gitattributes`, "no hardcoded patterns"), but never extended `.gitattributes`
+  coverage to `tests/bats/*.bats` (26 files) or `tests/installer/*.bats` (1 file) — unlike
+  their sibling `tests/skill-scripts/*.bats`, which was already covered from the earlier
+  `.skills/**/*.sh` fix. Root cause: on a Windows checkout with `core.autocrlf=true`,
+  `git check-attr text eol` returned `unspecified` for both paths and the working-tree files
+  were physically CRLF, while `git show HEAD:<path>` proved the committed blob was already
+  LF — a preventive coverage gap, not corrupted history, same shape as the earlier
+  `scripts/*.sh` fix. Fix: two-line `.gitattributes` addition
+  (`tests/bats/*.bats text eol=lf` + `tests/installer/*.bats text eol=lf`). Refreshing the
+  working tree to match required more than `git add --renormalize` alone — on this
+  git-for-windows build, both `git checkout -- <path>` and `git checkout-index -f` silently
+  skipped rewriting files they considered already up to date via stat-cache; only deleting
+  the file first and re-checking it out from the index forced a genuine rewrite (verified
+  via `node tools/check-line-endings.mjs` + `git diff --ignore-space-at-eol` both unstaged
+  and staged, both empty — the 27 `.bats` files end up with **zero** committable diff, only
+  `.gitattributes` + docs + the new test change). New regression test in
+  `tests/vitest/check-line-endings.test.js` reads the **real** `.gitattributes` (every other
+  test in that file uses a synthetic string) and asserts `tests/bats/*.bats` +
+  `tests/installer/*.bats` are covered — fails pre-fix, passes post-fix. Vitest 2378 → 2382
+  (+4). `npm run test:coverage` / `node tools/decouple-audit.mjs` /
+  `node tools/check-line-endings.mjs` all green. Bats wet-check: `test-doctor.bats` (7),
+  `test-json.bats` (7), `test-deprecation-notice.bats` (6) all pass against the renormalized
+  files; `tests/installer/install.bats`'s 8 syntax/safety tests pass, its 17 `E2E:` tests
+  fail identically before and after this change (`install.sh` refuses to run its E2E path on
+  native Windows git-bash — "Unsupported platform: MINGW64" — a pre-existing environment
+  limitation unrelated to line endings; Windows CI exercises the equivalent E2E coverage via
+  `install.ps1`/Pester instead, per the documented test strategy). The Node-18-floor-vs-
+  current-LTS decision (§6 of the v3.2 audit, reserved for the user) remains open and
+  untouched by this PR.
 - ✅ **PR-28c `test(android): close stale xml audit finding`** — SHIPPED 2026-07-14 (this PR,
   final slice of the verify-first trio / v3.2 finding M10). Did NOT reproduce as stated:
   `android-orchestrator.js` has no JUnit-XML read path at all — `parseTestCounts` /
