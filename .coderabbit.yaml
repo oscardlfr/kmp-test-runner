@@ -1,0 +1,10 @@
+# Enable automatic CodeRabbit reviews for develop PRs.
+# The default branch is already included by CodeRabbit.
+reviews:
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    base_branches:
+      - "develop"
