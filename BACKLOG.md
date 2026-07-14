@@ -109,6 +109,31 @@
   project and one private project, Android-relevant changes on the connected S22 Ultra,
   macOS/iOS/manual checks only when needed, no recurring heavy macOS CI, private evidence
   only through anonymized artifacts.
+- ✅ **PR-28b `fix(project): include build-logic sources in model cache key`** — SHIPPED
+  2026-07-14 (this PR, deferred slice of PR-28a / v3.2 finding M10). Reproduced (pinned
+  repro: build a model with a build-logic convention plugin applying `kover`, edit the
+  plugin to apply `jacoco` instead, rebuild — pre-fix `computeCacheKey` stayed unchanged and
+  `buildProjectModel` served the stale `coveragePlugin: kover`) and fixed: `computeCacheKey`
+  (`lib/project/cache.js`) hashed settings/build files + the version catalog but never
+  `build-logic/**/*.kt` convention-plugin Kotlin sources, even though
+  `detectBuildLogicCoverageHints` / `parseBuildLogicPluginDescriptors` derive each module's
+  `coveragePlugin` from those files and `aggregateJdkSignals` derives `jdkRequirement` from
+  them too. Fixed by hashing every `build-logic/**/*.kt` file by relative path + content
+  (path included so rename/add/remove also invalidates the key — a convention plugin's
+  class name comes from its filename), purely additive (a project with no `build-logic/`
+  directory, or none containing `.kt` files, hashes identically to before).
+  `SCHEMA_VERSION` bumped `8 → 9` (same shape as the `7 → 8` toml bump) to force-invalidate
+  pre-fix caches on upgrade. 9 new Vitest cases (Vitest 2365, `npm run test:coverage`
+  94.78%/84.62%/93.97%/94.78% lines/branches/functions/statements, all ≥ configured
+  thresholds), incl. an end-to-end regression that rebuilds the model after the
+  convention-plugin edit and asserts it reflects the new signal instead of a stale cache
+  hit. **Residual gap, tracked, not fixed here**: precompiled-script-plugin
+  `build-logic/**/*.gradle.kts` files (a related but distinct descriptor source in
+  `parseBuildLogicPluginDescriptors`) are not yet hashed — own follow-up, priority TBD.
+  **Scope decision**: `scripts/sh` / `scripts/ps1` gradle-tasks-probe cache-key walkers are
+  NOT updated to match this new input — a JS/shell cache-key mismatch only ever produces a
+  miss (safe, forces a fresh gradle probe), never a stale hit, so cross-implementation
+  parity for this one input is deferred rather than blocking this fix.
 - ✅ **PR-28a `fix(jdk): ignore commented toolchain signals`** — SHIPPED 2026-07-14 (this PR,
   verify-first trio slice of v3.2 finding M10). Fixed: `aggregateJdkSignals`
   (`lib/project/jdk-signals.js`) treated a JDK version number inside a `//`/`/* */` comment
@@ -118,7 +143,8 @@
   has no quote-awareness) — own follow-up, priority TBD. **Deferred — PR-28b**: project-model
   cache fingerprint (`computeCacheKey`, `lib/project/cache.js`) reproduces — doesn't hash
   `build-logic/**/*.kt`, so a convention-plugin edit can serve a stale cached model
-  (`describe` path only); needs a schema bump, own PR. **Deferred — PR-28c**: "Android reads
+  (`describe` path only); needs a schema bump, own PR. ✅ **SHIPPED as PR-28b above.**
+  **Deferred — PR-28c**: "Android reads
   stale XML" did NOT reproduce as stated (`android-orchestrator.js` has no XML-read path at
   all) — needs a closure decision + wet-check (can `parallel`'s `cacheRespected` bypass ever
   fire for AGP connected-test output?) before this M10 sub-finding can be marked resolved or

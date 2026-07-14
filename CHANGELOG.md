@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — project-model cache key now invalidates on build-logic convention-plugin edits
+
+**Observable behavior change.** `computeCacheKey` (`lib/project/cache.js`) hashed
+settings/build files and `gradle/libs.versions.toml`, but never `build-logic/**/*.kt`
+convention-plugin Kotlin sources — even though `detectBuildLogicCoverageHints` /
+`parseBuildLogicPluginDescriptors` derive each module's `coveragePlugin` from those
+files, and `aggregateJdkSignals` derives `jdkRequirement` from them too. Editing a
+convention plugin (e.g. swapping which coverage plugin it applies) left the cache
+key — and therefore the cached model served by `describe` and every test-dispatch
+path — stale until an unrelated `build.gradle(.kts)` happened to change.
+
+Fixed by hashing every `build-logic/**/*.kt` file (by relative path **and** content,
+so add/remove/rename also invalidates the key — a convention plugin's class name
+comes from its filename) into `computeCacheKey`'s input set, purely additive: a
+project with no `build-logic/` directory (or none containing `.kt` files) hashes
+identically to before. `SCHEMA_VERSION` bumped `8 → 9` (same shape as the prior
+`7 → 8` bump when the version-catalog slot was added) to force-invalidate
+pre-fix caches on upgrade.
+
+**Known, deliberately out-of-scope for this fix**: precompiled-script-plugin
+`build-logic/**/*.gradle.kts` files (a related but distinct descriptor source in
+`parseBuildLogicPluginDescriptors`) are not yet hashed — tracked in `BACKLOG.md`
+as PR-28b's residual gap. The `scripts/sh` / `scripts/ps1` gradle-tasks-probe
+cache-key walkers are also not updated in this pass; a cache-key mismatch between
+the JS and shell/PS1 implementations only ever produces a miss (forces a fresh
+gradle probe), never a stale hit, so this is safe to leave scoped.
+
 ### Fixed — JDK toolchain scanner no longer treats commented-out version numbers as live requirements
 
 **Observable behavior change.** `aggregateJdkSignals` (`lib/project/jdk-signals.js:108-140`)
