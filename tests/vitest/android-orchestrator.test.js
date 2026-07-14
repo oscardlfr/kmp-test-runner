@@ -1964,3 +1964,78 @@ describe('runAndroid exit-code contract (task_not_found / unsupported_class_vers
     expect(exitCode).toBe(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR-28c (2026-07-14, M10 closure) — behavioral proof that runAndroid has NO
+// JUnit-XML read path. lib/parsers/junit-xml.js:6-10 already documents this
+// via a comment; these tests turn it into a regression-locked BEHAVIOR that
+// fails if a future change wires stdout-parsing (parseTestCounts /
+// parseTestFailures) to fall back to, or be overridden by, on-disk JUnit XML.
+// Poisoned fixtures use a CURRENT (not backdated) mtime deliberately: passing
+// must depend on stdout being the sole source of truth, not on a staleness
+// guard android-orchestrator.js doesn't have.
+// ---------------------------------------------------------------------------
+describe('runAndroid never reads JUnit XML from disk (PR-28c / M10 closure)', () => {
+  it('PASS run: poisoned on-disk JUnit XML with a different count is ignored — counts come from stdout only', async () => {
+    const dir = makeProject([{ name: 'app' }]);
+    const legacyDir = path.join(dir, 'app', 'build', 'test-results', 'connectedDebugAndroidTest');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(path.join(legacyDir, 'TEST-Poison.xml'),
+      '<testsuite>' + '<testcase/>'.repeat(999) + '</testsuite>');
+    const agpDir = path.join(dir, 'app', 'build', 'outputs', 'androidTest-results', 'connected', 'androidMain');
+    mkdirSync(agpDir, { recursive: true });
+    writeFileSync(path.join(agpDir, 'TEST-Poison.xml'),
+      '<testsuite>' + '<testcase/>'.repeat(999) + '</testsuite>');
+
+    const spawn = makeSpawnStub({
+      gradle: { status: 0, stdout: '> Task :app:connectedDebugAndroidTest\n3 tests completed\nBUILD SUCCESSFUL\n' },
+    });
+    const adbProbe = () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'SM-S908B' }];
+
+    const { envelope, exitCode } = await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe });
+
+    expect(exitCode).toBe(0);
+    expect(envelope.tests.total).toBe(3);
+    expect(envelope.tests.passed).toBe(3);
+    expect(envelope.tests.failed).toBe(0);
+    // The android envelope schema has no XML-derived field at all — a
+    // structural, not just behavioral, confirmation nothing populates one.
+    expect(envelope.tests.individual_total).toBeUndefined();
+  });
+
+  it('FAIL run: poisoned on-disk JUnit XML with a different failure signature does not leak into errors_file testFailures', async () => {
+    const dir = makeProject([{ name: 'app' }]);
+    const agpDir = path.join(dir, 'app', 'build', 'outputs', 'androidTest-results', 'connected', 'androidMain');
+    mkdirSync(agpDir, { recursive: true });
+    writeFileSync(path.join(agpDir, 'TEST-Poison.xml'),
+      '<testsuite name="com.evil.Poisoned" tests="1" failures="1">' +
+      '<testcase name="testHacked" classname="com.evil.Poisoned">' +
+      '<failure type="java.lang.OutOfMemoryError" message="fake heap exhausted"/>' +
+      '</testcase></testsuite>');
+
+    const spawn = makeSpawnStub({
+      gradle: {
+        status: 1,
+        stdout: 'com.foo.RealFailure > testX FAILED\n'
+          + '    java.lang.AssertionError: real assertion message\n'
+          + '5 tests completed, 1 failed\nBUILD FAILED\n',
+      },
+    });
+    const adbProbe = () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'SM-S908B' }];
+
+    const { envelope, exitCode } = await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe });
+
+    expect(exitCode).toBe(1);
+    expect(envelope.tests.total).toBe(5);
+    expect(envelope.tests.failed).toBe(1);
+    const err = envelope.errors.find(e => e.code === 'module_failed' && e.module === 'app');
+    expect(err).toBeDefined();
+    const errBuckets = JSON.parse(readFileSync(err.errors_file, 'utf8'));
+    expect(errBuckets.testFailures).toEqual([
+      { test: 'com.foo.RealFailure.testX', cause: 'java.lang.AssertionError: real assertion message' },
+    ]);
+    const serialized = JSON.stringify(envelope) + JSON.stringify(errBuckets);
+    expect(serialized).not.toContain('Poisoned');
+    expect(serialized).not.toContain('testHacked');
+  });
+});
