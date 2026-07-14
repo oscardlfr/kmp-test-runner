@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<report name="t">
+  <package name="com/example">
+    <sourcefile name="Full.kt">
+      <line nr="10" mi="0" ci="3"/>
+      <line nr="11" mi="2" ci="5"/>
+      <counter type="LINE" missed="0" covered="2"/>
+    </sourcefile>
+  </package>
+</report>

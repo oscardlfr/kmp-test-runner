@@ -39,13 +39,14 @@ Every subcommand emits the same canonical envelope on `--json`. Subcommand-speci
   ],
   "coverage": {
     "tool": "auto",                // | "jacoco" | "kover" | "none"
-    "missed_lines": null,
+    "missed_lines": null,          // always the COMPLETE project total — never narrowed by --min-missed-lines
+    "modules_contributing": 0,     // count of modules with real aggregated data — also always unfiltered
     "modules_with_kover_plugin": [],
     "modules_with_jacoco_plugin": [],
     "module_buckets": {            // per-module accounting; sum must equal detected-plugin count
       "with_data": [],             // XML parsed, rows added to aggregation
       "no_xml": [],                // XML missing on disk (the common silent-drop case)
-      "parse_errored": [],         // Python parser exited non-zero
+      "parse_errored": [],         // coverage-xml.js parser reported errored:true (malformed/missing/oversized XML)
       "skipped_by_user": []        // filtered by --exclude-coverage / --coverage-modules
     }
   },
@@ -100,7 +101,7 @@ Exit codes 124+ are reserved for OS-level signals; the orchestrator never emits 
 | `multiple_adb_devices` | android, parallel(`androidInstrumented`), benchmark | 3 | multiple usable adb devices without `--device <serial>` — pass `--device` to eliminate ambiguity |
 | `flavor_unused` | parallel(`androidInstrumented`/`all`) | 2 | `--flavor <name>` supplied but no discovered module declares `productFlavors {}`; orchestrator early-exits before any gradle dispatch |
 | `isolated_runtime_race` | parallel | 2 | `--isolated` combined with a test-type that hits a shared runtime resource (`ios` simulator, `androidInstrumented` without `--device`, or `all`) |
-| `coverage_threshold_exceeded` | parallel(`--min-missed-lines`), coverage | 1 | aggregated `coverage.missed_lines` exceeds the threshold |
+| `coverage_threshold_exceeded` | parallel(`--min-missed-lines`), coverage | 1 | aggregated (unfiltered) `coverage.missed_lines` exceeds the threshold. `--min-missed-lines` never removes coverage data — it only decides this gate and narrows the *markdown report's* per-class detail section; `coverage.missed_lines` / `modules_contributing` / `module_buckets` always reflect the complete project even when this error fires |
 | `git_error` | changed | 3 | a git command failed — repo unreadable, corrupted, or access denied. `errors[].git_command` carries the invoked subcommand (e.g. `rev-parse --is-inside-work-tree`, `status --porcelain`, `diff --cached --name-only`); `errors[].exit_status` the numeric git exit code; `errors[].stderr_summary` the first 300 chars of stderr with CR/LF collapsed to spaces (omitted when empty). This is a **hard** code — `exit_code` is always 3 |
 | `gradle_timeout` | parallel, benchmark | 3 | the gradle spawn process was killed by the `--timeout` deadline (SIGTERM on POSIX; ETIMEDOUT on Windows). **`parallel`** errors carry `module:string`, `task:string`, `timeout_ms:number`. **`benchmark`** errors additionally carry `platform:string` and `log_path:string`. Never retried — a spawn timeout is an infra failure, not a flaky test |
 | `task_not_found` | any | 3 | gradle task class missing — usually a plugin not applied to the requested module |
@@ -142,6 +143,9 @@ Non-fatal signals. They never change the exit code — an agent can branch on th
 | `coverage_aggregation_skipped` | coverage | `--coverage-tool none` (or the `--no-coverage` alias) disabled the aggregation step |
 | `coverage_aggregation_drift` | coverage, parallel | the four `module_buckets` (`with_data` + `no_xml` + `parse_errored` + `skipped_by_user`) didn't sum to `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length` — defensive guard against silent model drops. Carries `detected`, `accounted`, `unaccounted` |
 | `coverage_xml_disabled` | coverage, parallel | a jacoco module ran its report but emitted HTML/`.exec` only — no XML (Gradle's default `xml.required=false`). `kmp-test parallel` enables jacoco XML automatically; this fires when `--no-coverage-xml-autofix` was passed (or XML is otherwise absent). Carries `modules` |
+| `coverage_parse_failed` | coverage, parallel | a module's coverage XML failed to read or parse (malformed, truncated, or missing content) — the module lands in `module_buckets.parse_errored` and its data is excluded from the aggregate, never silently folded into a bare `no_coverage_data`. Carries `modules` |
+| `coverage_xml_oversized` | coverage, parallel | a module's coverage XML exceeded the parser's size cap (default 128 MB; tunable via `KMP_COVERAGE_XML_MAX_MB`) and was skipped — a size-cap-specific subset of `coverage_parse_failed`, discriminated so a legitimately huge report (e.g. a large monorepo's Kover XML) is distinguishable from a malformed one. Carries `modules` |
+| `coverage_report_write_failed` | coverage, parallel | the coverage markdown report could not be written to disk (full disk, permissions) — the JSON envelope and its `coverage` data are still valid; only the on-disk `.md` file failed. Message carries the short fs error code (e.g. `ENOSPC`/`EACCES`) only, never a resolved path |
 | `gradle_config_applied` | parallel (envelope payload, not a `warnings[]` entry) | the project's `gradle.properties` had `org.gradle.parallel=false`, so the CLI dropped its own `--parallel` injection to respect user intent. Surfaces as a top-level `gradle_config_applied: { parallel_dropped: bool }` field |
 
 Other codes are reserved for orchestrator-internal use; agents should treat unknown codes as opaque (forward to the user verbatim).

@@ -87,7 +87,6 @@ tasks.test {
 tasks.named<ProcessResources>("processResources") {
     from("../scripts/sh")  { into("scripts/sh");  exclude(".gitkeep") }
     from("../scripts/ps1") { into("scripts/ps1"); exclude(".gitkeep") }
-    from("../scripts/lib") { into("scripts/lib"); exclude(".gitkeep") }
     from("../lib")         { into("lib") }
     from("..") { include("package.json") }
 }

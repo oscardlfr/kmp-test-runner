@@ -22,6 +22,13 @@ The `--min-missed-lines <N>` gate fired. Aggregated `coverage.missed_lines` acro
 
 Applies to `parallel` (when `--min-missed-lines` is passed) and `coverage`.
 
+## Related signals
+
+`coverage.missed_lines` (the value this gate compares against `N`) is always the **complete, unfiltered** project total — `--min-missed-lines` never removes coverage data. It only decides (a) whether this error fires, and (b) which classes appear in the markdown report's per-class "Detailed Class Coverage" section. Concretely:
+
+- This error should never co-occur with a contradictory bare `no_coverage_data` warning — if you see both together with `module_buckets.with_data` non-empty, that combination is a bug, not an expected outcome.
+- If `coverage_parse_failed` or `coverage_xml_oversized` also appear in `warnings[]`, the aggregate is *incomplete* — one or more modules' XML couldn't be read, independent of the threshold check. Fix those first; the "real" missed-lines total may be different once every module's XML parses cleanly.
+
 ## Root causes
 
 1. **Real coverage regression**: someone added production code without matching tests. Coverage genuinely dropped. Recovery: write tests for the uncovered code paths.

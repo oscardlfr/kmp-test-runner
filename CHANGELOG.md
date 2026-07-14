@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — coverage aggregation survives `--min-missed-lines` filtering; Python dependency dropped
+
+`lib/orchestrators/coverage-orchestrator.js` had three related integrity bugs. `--min-missed-lines`
+row-filtering fed the same map used for `coverage.modules_contributing` / the markdown report's
+Summary and AI-Optimized sections, so a threshold that no single class individually crossed could
+falsely zero `modules_contributing`, fire a contradictory `no_coverage_data` warning, and skip
+writing the report entirely — even though the aggregate (used correctly by the
+`coverage_threshold_exceeded` gate) showed real coverage. `aggregateClassRows` now computes
+`modules_contributing` / `missed_lines` / the report's Summary sections from the complete,
+unfiltered row set unconditionally; `--min-missed-lines` continues to narrow only the report's
+per-class "Detailed Class Coverage" section and the gate decision.
+
+Aggregation warnings dropped on the full `kmp-test parallel` path (the in-process coverage call
+forwarded only `errors[]`, never `warnings[]`) now survive alongside a
+`coverage_threshold_exceeded` failure. Two new discriminated warnings — `coverage_parse_failed`
+and `coverage_xml_oversized` — surface a per-module coverage-XML parser failure explicitly
+instead of letting it hide inside a bare `no_coverage_data`. A third,
+`coverage_report_write_failed`, guards the markdown-report write path so a disk-full/permissions
+failure can no longer crash the whole run uncaught and lose the JSON envelope.
+
+**Coverage XML parsing is now Node-native.** `lib/parsers/coverage-xml.js` replaces the bundled
+`scripts/lib/parse-coverage-xml.py` (removed) — `coverage-orchestrator.js` parses Kover/JaCoCo
+XML in-process instead of spawning `python3`, so the CLI no longer has any runtime dependency on
+a Python interpreter (Python was never a documented `README.md` requirement, so this closes an
+undocumented gap rather than correcting a stated one). Behavior is byte-for-byte identical for
+well-formed XML (parity suite: `tests/fixtures/coverage-xml/` + `tests/vitest/coverage-xml.test.js`,
+verified against the retired Python parser's real output), but three of its bugs are deliberately
+fixed rather than reproduced: malformed/unreadable XML now surfaces a discriminated parse failure
+instead of silently returning empty rows indistinguishable from legitimate zero-coverage data;
+non-numeric counter/line attributes are defensively coerced instead of crashing; and a size-cap
+guard (`KMP_COVERAGE_XML_MAX_MB`, default 128 MB) bounds memory use instead of an unbounded
+in-memory parse. The Gradle plugin no longer bundles the retired script in its JAR.
+
 ## [0.14.0] — 2026-06-10
 
 ### Added — artifact lifecycle sweep + `kmp-test clean`

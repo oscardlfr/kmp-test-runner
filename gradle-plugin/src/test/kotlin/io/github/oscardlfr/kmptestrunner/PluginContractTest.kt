@@ -22,7 +22,6 @@ class PluginContractTest {
             "/lib/orchestrators/changed-orchestrator.js",
             "/lib/orchestrators/coverage-orchestrator.js",
             "/scripts/sh/run-parallel-coverage-suite.sh",
-            "/scripts/lib/parse-coverage-xml.py",
             "/package.json",
         )
         for (path in required) {

@@ -130,8 +130,12 @@ function makeSpawnStub({ status = 0, stdout = 'BUILD SUCCESSFUL\n', stderr = '',
 }
 
 // Stub for runCoverage (in-process call). Records invocations and returns a
-// canned envelope so the parallel orchestrator can merge it.
-function makeRunCoverageStub({ coverage = null, errors = null, exitCode = 0 } = {}) {
+// canned envelope so the parallel orchestrator can merge it. `warnings`
+// (PR-17) mirrors the pre-existing `errors` param — every existing call site
+// omits it and implicitly gets `[]`, a no-op merge.
+function makeRunCoverageStub({
+  coverage = null, errors = null, warnings = null, exitCode = 0,
+} = {}) {
   const calls = [];
   const fn = async (opts) => {
     calls.push(opts);
@@ -145,6 +149,7 @@ function makeRunCoverageStub({ coverage = null, errors = null, exitCode = 0 } = 
           modules_with_jacoco_plugin: [],
         },
         errors: errors ?? [],
+        warnings: warnings ?? [],
       },
       exitCode,
     };
@@ -1565,6 +1570,43 @@ describe('runParallel', () => {
     expect(envelope.errors.some(e => e.code === 'coverage_threshold_exceeded')).toBe(true);
     expect(envelope.coverage.missed_lines).toBe(317);
     expect(exitCode).toBe(1); // TEST_FAIL
+  });
+
+  // PR-17 Bug 2 — runCoverageInProcess used to forward only errors[], never
+  // warnings[], from the in-process coverage envelope. This proves the two
+  // now survive TOGETHER: a coverage_threshold_exceeded error (the pre-
+  // existing regression guard above) alongside a coverage_parse_failed
+  // warning, both propagated to the parallel envelope in the same run.
+  it('aggregation warnings survive threshold failure via the in-process coverage call', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const stubCoverage = makeRunCoverageStub({
+      coverage: { tool: 'kover', missed_lines: 317, modules_contributing: 1 },
+      errors: [{
+        code: 'coverage_threshold_exceeded',
+        message: 'Coverage threshold exceeded: 317 missed lines > 50',
+        threshold: 50,
+        missed_lines: 317,
+      }],
+      warnings: [{
+        code: 'coverage_parse_failed',
+        modules: ['feature'],
+        message: "Coverage XML parsing failed for 1 module(s); coverage totals for these modules are excluded from the aggregate. Check the module's XML report for malformed or missing content.",
+      }],
+      exitCode: 1,
+    });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--coverage-tool', 'kover', '--min-missed-lines', '50'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.errors.some(e => e.code === 'coverage_threshold_exceeded')).toBe(true);
+    expect(exitCode).toBe(1);
+    const w = envelope.warnings.find(x => x.code === 'coverage_parse_failed');
+    expect(w).toBeTruthy();
+    expect(w.modules).toEqual(['feature']);
   });
 
   it('coverage envelope errors:[] (no gate) leaves exit_code unchanged', async () => {
