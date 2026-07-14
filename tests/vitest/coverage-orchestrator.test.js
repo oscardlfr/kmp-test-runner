@@ -21,7 +21,18 @@
 //   9. --coverage-modules <m> → only m dispatched
 //  10. parseArgs handles all coverage flags
 //  11. expandNoCoverageAlias substitutes correctly
-//  12. Cross-platform spawn shape (no shell-specific assumptions in stub)
+//  12. Parser injection seam — coverage-xml.js parser is invoked in-process
+//      as a plain function `(xmlPath, moduleName)`, no subprocess involved
+//
+// PR-17 additions (coverage-orchestrator.js's own share of the fix — the
+// Node parser module itself is tested independently in coverage-xml.test.js):
+//   - aggregateClassRows / modules_contributing are always unfiltered by
+//     --min-missed-lines; the row-filter narrows only the markdown report's
+//     detail section (see "PR-17 — threshold/aggregation integrity" below)
+//   - coverage_xml_oversized / coverage_parse_failed discriminated warnings
+//   - coverage_report_write_failed is covered in a separate isolated file
+//     (coverage-orchestrator-report-write-failure.test.js) since it needs
+//     its own node:fs mock scoped away from the ~60 tests in this file
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
@@ -73,36 +84,30 @@ function makeProject(modules, opts = {}) {
   return dir;
 }
 
-// Spawn stub for python3 calls (parse-coverage-xml.py). Returns canned rows
-// keyed by module name. Cross-platform: caller passes the same shape regardless
-// of host OS (mac/linux/windows) — orchestrator does NOT shell out via cmd.exe
-// or bash; it calls python3 directly.
-function makeSpawnStub({ rowsByModule = {}, status = 0 } = {}) {
+// Stub for the injected `parseCoverageXml` parser function — matches
+// lib/parsers/coverage-xml.js's contract exactly: `(xmlPath, moduleName) =>
+// {rows, errored, reason, message}`. Returns canned rows keyed by module
+// name. No subprocess is involved (PR-17 replaced the python3 spawn with an
+// in-process Node parser), so the stub is a plain function, not a spawn
+// shim — `status !== 0` models a parser failure the same way the real
+// module's `errored:true` does.
+function makeParseCoverageStub({ rowsByModule = {}, status = 0, reason = null } = {}) {
   const calls = [];
-  const fn = (cmd, args, opts) => {
-    calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null });
-    if (cmd === 'python3') {
-      // args: [parserPath, xmlPath, moduleName]
-      const moduleName = args[2];
-      const rows = rowsByModule[moduleName] ?? [];
-      return {
-        status,
-        stdout: rows.join('\n'),
-        stderr: '',
-        signal: null,
-        error: null,
-      };
+  const fn = (xmlPath, moduleName) => {
+    calls.push({ xmlPath, moduleName });
+    if (status !== 0) {
+      return { rows: [], errored: true, reason: reason || 'parse_failed', message: 'stub failure' };
     }
-    // Default: empty success.
-    return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+    const rows = rowsByModule[moduleName] ?? [];
+    return { rows, errored: false, reason: 'ok', message: null };
   };
   fn.calls = calls;
   return fn;
 }
 
 // Drop a leftover XML at the expected Kover/JaCoCo location so findCoverageXml
-// returns a non-null path. Content doesn't matter — the python3 stub returns
-// canned rows regardless.
+// returns a non-null path. Content doesn't matter — the stub returns canned
+// rows regardless of what's on disk.
 function dropFakeXml(projectRoot, moduleName, tool) {
   const modDir = path.join(projectRoot, ...moduleName.split(':'));
   let xmlDir, xmlFile;
@@ -229,23 +234,27 @@ describe('aggregateClassRows', () => {
     expect(agg.filteredRows[0]).toContain('Cls2');
   });
 
-  // wet-audit-v0.9-part2 BUG-2 — `unfilteredGrand*` totals reflect the project's
-  // full coverage even when a row-filter is in effect. Pre-fix the envelope's
-  // `coverage.missed_lines` reflected the filtered subset, hiding the real gap
-  // from agents and breaking the documented `--min-missed-lines` fail-gate.
-  it('exposes unfiltered totals so the envelope reports project truth', () => {
+  // PR-17 — grand totals / modulesContributing must reflect the project's
+  // full coverage even when a row-filter is in effect. Pre-fix, moduleSummaries
+  // (and everything derived from it) was only updated INSIDE the row-filter
+  // branch, so a threshold that starved every row falsely zeroed
+  // modulesContributing and fired a contradictory no_coverage_data warning
+  // even when the project's real coverage was non-zero. filteredRows remains
+  // the one deliberately-filtered field (markdown detail section only).
+  it('grand totals + modulesContributing are always unfiltered (immune to the --min-missed-lines row filter)', () => {
     const rows = [
       'mod-a|pkg|src.kt|Cls|10|2|12|83.3|3,5',
       'mod-a|pkg|src2.kt|Cls2|5|10|15|33.3|6,7,8,9',
       'mod-b|pkg|src.kt|Cls|0|7|7|0|1,2,3,4,5,6,7',
     ];
     const agg = aggregateClassRows(rows, 5);
-    // post-filter (row-filter narrows markdown report)
+    // post-filter (row-filter narrows the markdown detail section ONLY)
     expect(agg.filteredRows.length).toBeLessThan(rows.length);
-    // pre-filter (gate + envelope use these)
-    expect(agg.unfilteredGrandMissed).toBe(19); // 2 + 10 + 7
-    expect(agg.unfilteredGrandCovered).toBe(15); // 10 + 5 + 0
-    expect(agg.unfilteredGrandTotal).toBe(34);   // 12 + 15 + 7
+    // pre-filter (gate + envelope + Summary/AI-Optimized report sections use these)
+    expect(agg.grandMissed).toBe(19); // 2 + 10 + 7
+    expect(agg.grandCovered).toBe(15); // 10 + 5 + 0
+    expect(agg.grandTotal).toBe(34);   // 12 + 15 + 7
+    expect(agg.modulesContributing).toBe(2); // mod-a, mod-b — both have real data
   });
 });
 
@@ -257,7 +266,7 @@ describe('aggregateClassRows', () => {
 describe('runCoverage — --min-missed-lines fail-gate (BUG-2)', () => {
   function gateBreaches(rows, threshold) {
     const agg = aggregateClassRows(rows, 0);
-    return threshold > 0 && agg.unfilteredGrandMissed > threshold;
+    return threshold > 0 && agg.grandMissed > threshold;
   }
 
   it('fires when unfiltered missed > threshold', () => {
@@ -449,7 +458,7 @@ describe('runCoverage', () => {
   it('Kover-only project: modules_with_kover_plugin populated, modules_with_jacoco_plugin empty', async () => {
     const projectRoot = makeProject([{ name: 'mod-a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'mod-a', 'kover');
-    const spawn = makeSpawnStub({
+    const parseCoverageXml = makeParseCoverageStub({
       rowsByModule: {
         'mod-a': ['mod-a|pkg|Foo.kt|Foo|10|2|12|83.3|3,5'],
       },
@@ -457,7 +466,7 @@ describe('runCoverage', () => {
     const { envelope, exitCode } = await runCoverage({
       projectRoot,
       args: [],
-      spawn,
+      parseCoverageXml,
     });
     expect(exitCode).toBe(0);
     expect(envelope.coverage.modules_with_kover_plugin).toEqual(['mod-a']);
@@ -471,7 +480,7 @@ describe('runCoverage', () => {
   it('JaCoCo-only project: modules_with_jacoco_plugin populated', async () => {
     const projectRoot = makeProject([{ name: 'mod-b', coverage: 'jacoco' }]);
     dropFakeXml(projectRoot, 'mod-b', 'jacoco');
-    const spawn = makeSpawnStub({
+    const parseCoverageXml = makeParseCoverageStub({
       rowsByModule: {
         'mod-b': ['mod-b|pkg|Bar.kt|Bar|5|5|10|50.0|1,2,3,4,5'],
       },
@@ -479,7 +488,7 @@ describe('runCoverage', () => {
     const { envelope } = await runCoverage({
       projectRoot,
       args: [],
-      spawn,
+      parseCoverageXml,
     });
     expect(envelope.coverage.modules_with_jacoco_plugin).toEqual(['mod-b']);
     expect(envelope.coverage.modules_with_kover_plugin).toEqual([]);
@@ -494,7 +503,7 @@ describe('runCoverage', () => {
     ]);
     dropFakeXml(projectRoot, 'k1', 'kover');
     dropFakeXml(projectRoot, 'j1', 'jacoco');
-    const spawn = makeSpawnStub({
+    const parseCoverageXml = makeParseCoverageStub({
       rowsByModule: {
         'k1': ['k1|p|F.kt|F|1|1|2|50|2'],
         'j1': ['j1|p|G.kt|G|2|0|2|100|'],
@@ -503,7 +512,7 @@ describe('runCoverage', () => {
     const { envelope } = await runCoverage({
       projectRoot,
       args: [],
-      spawn,
+      parseCoverageXml,
     });
     expect(envelope.coverage.modules_with_kover_plugin).toEqual(['k1']);
     expect(envelope.coverage.modules_with_jacoco_plugin).toEqual(['j1']);
@@ -513,12 +522,12 @@ describe('runCoverage', () => {
   it('report Duration reflects the parent runStartTime (full parallel run), not just the aggregation step', async () => {
     const projectRoot = makeProject([{ name: 'mod-a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'mod-a', 'kover');
-    const spawn = makeSpawnStub({ rowsByModule: { 'mod-a': ['mod-a|pkg|Foo.kt|Foo|10|2|12|83.3|3,5'] } });
+    const parseCoverageXml = makeParseCoverageStub({ rowsByModule: { 'mod-a': ['mod-a|pkg|Foo.kt|Foo|10|2|12|83.3|3,5'] } });
     const outputFile = path.join(projectRoot, 'report.md');
     await runCoverage({
       projectRoot,
       args: ['--output-file', outputFile],
-      spawn,
+      parseCoverageXml,
       // Simulate a ~95s parent run: tests already executed before this
       // aggregation. Without threading runStartTime the report would show the
       // (sub-second) aggregation time → "0m 0s".
@@ -534,9 +543,9 @@ describe('runCoverage', () => {
   it('report Duration uses the aggregation clock when no parent runStartTime (standalone coverage)', async () => {
     const projectRoot = makeProject([{ name: 'mod-a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'mod-a', 'kover');
-    const spawn = makeSpawnStub({ rowsByModule: { 'mod-a': ['mod-a|pkg|Foo.kt|Foo|10|2|12|83.3|3,5'] } });
+    const parseCoverageXml = makeParseCoverageStub({ rowsByModule: { 'mod-a': ['mod-a|pkg|Foo.kt|Foo|10|2|12|83.3|3,5'] } });
     const outputFile = path.join(projectRoot, 'report.md');
-    await runCoverage({ projectRoot, args: ['--output-file', outputFile], spawn });
+    await runCoverage({ projectRoot, args: ['--output-file', outputFile], parseCoverageXml });
     const report = readFileSync(outputFile, 'utf8');
     // Standalone aggregation measures only its own (sub-minute) work — correct.
     expect(report).toMatch(/\*\*Duration\*\*: 0m \d+s/);
@@ -545,9 +554,9 @@ describe('runCoverage', () => {
   it('report Coverage Tool header shows the resolved tool for --coverage-tool auto (not "(none)")', async () => {
     const projectRoot = makeProject([{ name: 'mod-a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'mod-a', 'kover');
-    const spawn = makeSpawnStub({ rowsByModule: { 'mod-a': ['mod-a|pkg|Foo.kt|Foo|10|2|12|83.3|3,5'] } });
+    const parseCoverageXml = makeParseCoverageStub({ rowsByModule: { 'mod-a': ['mod-a|pkg|Foo.kt|Foo|10|2|12|83.3|3,5'] } });
     const outputFile = path.join(projectRoot, 'report.md');
-    await runCoverage({ projectRoot, args: ['--output-file', outputFile, '--coverage-tool', 'auto'], spawn });
+    await runCoverage({ projectRoot, args: ['--output-file', outputFile, '--coverage-tool', 'auto'], parseCoverageXml });
     const report = readFileSync(outputFile, 'utf8');
     expect(report).toContain('**Coverage Tool**: auto (Kover)');
     expect(report).not.toContain('**Coverage Tool**: (none)');
@@ -557,8 +566,8 @@ describe('runCoverage', () => {
     const projectRoot = makeProject([{ name: 'j-html', coverage: 'jacoco' }]);
     // jacocoTestReport ran but emitted HTML only (Gradle default xml.required=false).
     mkdirSync(path.join(projectRoot, 'j-html', 'build', 'reports', 'jacoco', 'test', 'html'), { recursive: true });
-    const spawn = makeSpawnStub();
-    const { envelope, exitCode } = await runCoverage({ projectRoot, args: [], spawn });
+    const parseCoverageXml = makeParseCoverageStub();
+    const { envelope, exitCode } = await runCoverage({ projectRoot, args: [], parseCoverageXml });
     expect(exitCode).toBe(0);
     expect(envelope.coverage.module_buckets.no_xml).toContain('j-html');
     const w = envelope.warnings.find((x) => x.code === 'coverage_xml_disabled');
@@ -571,15 +580,15 @@ describe('runCoverage', () => {
     const execDir = path.join(projectRoot, 'j-exec', 'build', 'jacoco');
     mkdirSync(execDir, { recursive: true });
     writeFileSync(path.join(execDir, 'test.exec'), 'x');
-    const spawn = makeSpawnStub();
-    const { envelope } = await runCoverage({ projectRoot, args: [], spawn });
+    const parseCoverageXml = makeParseCoverageStub();
+    const { envelope } = await runCoverage({ projectRoot, args: [], parseCoverageXml });
     expect(envelope.warnings.find((x) => x.code === 'coverage_xml_disabled')?.modules).toContain('j-exec');
   });
 
   it('jacoco module with no report artifacts at all → no_xml without coverage_xml_disabled', async () => {
     const projectRoot = makeProject([{ name: 'j-bare', coverage: 'jacoco' }]);
-    const spawn = makeSpawnStub();
-    const { envelope } = await runCoverage({ projectRoot, args: [], spawn });
+    const parseCoverageXml = makeParseCoverageStub();
+    const { envelope } = await runCoverage({ projectRoot, args: [], parseCoverageXml });
     expect(envelope.coverage.module_buckets.no_xml).toContain('j-bare');
     expect(envelope.warnings.find((x) => x.code === 'coverage_xml_disabled')).toBeFalsy();
   });
@@ -588,46 +597,46 @@ describe('runCoverage', () => {
     const projectRoot = makeProject([{ name: 'k-html', coverage: 'kover' }]);
     // Even with a jacoco-style HTML dir present, a kover-classified module is exempt.
     mkdirSync(path.join(projectRoot, 'k-html', 'build', 'reports', 'jacoco', 'test', 'html'), { recursive: true });
-    const spawn = makeSpawnStub();
-    const { envelope } = await runCoverage({ projectRoot, args: [], spawn });
+    const parseCoverageXml = makeParseCoverageStub();
+    const { envelope } = await runCoverage({ projectRoot, args: [], parseCoverageXml });
     expect(envelope.warnings.find((x) => x.code === 'coverage_xml_disabled')).toBeFalsy();
   });
 
-  it('--coverage-tool none → coverage_aggregation_skipped warning, exit 0, no spawn', async () => {
+  it('--coverage-tool none → coverage_aggregation_skipped warning, exit 0, no parser calls', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
-    const spawn = makeSpawnStub();
+    const parseCoverageXml = makeParseCoverageStub();
     const { envelope, exitCode } = await runCoverage({
       projectRoot,
       args: ['--coverage-tool', 'none'],
-      spawn,
+      parseCoverageXml,
     });
     expect(exitCode).toBe(0);
     expect(envelope.warnings).toHaveLength(1);
     expect(envelope.warnings[0].code).toBe('coverage_aggregation_skipped');
     expect(envelope.coverage.tool).toBe('none');
-    expect(spawn.calls).toHaveLength(0);
+    expect(parseCoverageXml.calls).toHaveLength(0);
   });
 
   it('--no-coverage alias → same effect as --coverage-tool none', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
-    const spawn = makeSpawnStub();
+    const parseCoverageXml = makeParseCoverageStub();
     const { envelope, exitCode } = await runCoverage({
       projectRoot,
       args: ['--no-coverage'],
-      spawn,
+      parseCoverageXml,
     });
     expect(exitCode).toBe(0);
     expect(envelope.warnings[0].code).toBe('coverage_aggregation_skipped');
-    expect(spawn.calls).toHaveLength(0);
+    expect(parseCoverageXml.calls).toHaveLength(0);
   });
 
   it('no coverage plugins detected → no_coverage_data warning', async () => {
     const projectRoot = makeProject([{ name: 'plain' }]); // no kover, no jacoco
-    const spawn = makeSpawnStub();
+    const parseCoverageXml = makeParseCoverageStub();
     const { envelope, exitCode } = await runCoverage({
       projectRoot,
       args: [],
-      spawn,
+      parseCoverageXml,
     });
     expect(exitCode).toBe(0);
     expect(envelope.coverage.modules_contributing).toBe(0);
@@ -638,17 +647,17 @@ describe('runCoverage', () => {
 
   it('--dry-run → dry_run:true plus plan section, no fs writes for the report', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
-    const spawn = makeSpawnStub();
+    const parseCoverageXml = makeParseCoverageStub();
     const { envelope, exitCode } = await runCoverage({
       projectRoot,
       args: ['--dry-run'],
-      spawn,
+      parseCoverageXml,
     });
     expect(exitCode).toBe(0);
     expect(envelope.dry_run).toBe(true);
     expect(envelope.plan).toBeTruthy();
     expect(envelope.plan.coverage_tool).toBe('auto');
-    expect(spawn.calls).toHaveLength(0);
+    expect(parseCoverageXml.calls).toHaveLength(0);
     // No report files written
     expect(existsSync(path.join(projectRoot, 'coverage-full-report.md'))).toBe(false);
   });
@@ -656,13 +665,13 @@ describe('runCoverage', () => {
   it('writes Markdown report under .kmp-test-runner/reports/coverage/ with versioned + latest alias (v0.8.0)', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'a', 'kover');
-    const spawn = makeSpawnStub({
+    const parseCoverageXml = makeParseCoverageStub({
       rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
     });
     const { envelope } = await runCoverage({
       projectRoot,
       args: ['--output-file', 'coverage-full-report.md'],
-      spawn,
+      parseCoverageXml,
       runId: 'TEST-RUN-ID',
     });
     const reportsDir = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage');
@@ -674,13 +683,13 @@ describe('runCoverage', () => {
   it('clean break — no coverage-full-report.md or coverage-full-report-<runId>.md written at project root (v0.8.0)', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'a', 'kover');
-    const spawn = makeSpawnStub({
+    const parseCoverageXml = makeParseCoverageStub({
       rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
     });
     await runCoverage({
       projectRoot,
       args: ['--output-file', 'coverage-full-report.md'],
-      spawn,
+      parseCoverageXml,
       runId: 'TEST-RUN-ID',
     });
     expect(existsSync(path.join(projectRoot, 'coverage-full-report.md'))).toBe(false);
@@ -695,17 +704,17 @@ describe('runCoverage', () => {
   // `coverage` invocation, so this seam is where the header is decided.
   // (The dispatcher env injection + runner.js allowlist mapping themselves
   // are wet-validated — a bin-level CI e2e would be the suite's first
-  // python3-dependent test, brittle for a header string.)
+  // real-Gradle-dependent test, brittle for a header string.)
   it('runCoverage(originatingSubcommand:parallel) → latest.md header "No (--skip-tests)"', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'a', 'kover');
-    const spawn = makeSpawnStub({
+    const parseCoverageXml = makeParseCoverageStub({
       rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
     });
     await runCoverage({
       projectRoot,
       args: [],
-      spawn,
+      parseCoverageXml,
       runId: 'HDR-PARALLEL',
       testsRan: false,
       originatingSubcommand: 'parallel',
@@ -718,10 +727,10 @@ describe('runCoverage', () => {
   it('runCoverage() defaults → latest.md header "No (coverage subcommand)"', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'a', 'kover');
-    const spawn = makeSpawnStub({
+    const parseCoverageXml = makeParseCoverageStub({
       rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
     });
-    await runCoverage({ projectRoot, args: [], spawn, runId: 'HDR-DEFAULT' });
+    await runCoverage({ projectRoot, args: [], parseCoverageXml, runId: 'HDR-DEFAULT' });
     const md = readFileSync(
       path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'latest.md'), 'utf8');
     expect(md).toContain('> **Tests Run**: No (coverage subcommand)');
@@ -730,14 +739,14 @@ describe('runCoverage', () => {
   it('two coverage runs in same project produce two <runId>.md files + single latest.md overwrite', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'a', 'kover');
-    const spawnA = makeSpawnStub({
+    const parseCoverageXmlA = makeParseCoverageStub({
       rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
     });
-    await runCoverage({ projectRoot, args: [], spawn: spawnA, runId: 'RUN-A' });
-    const spawnB = makeSpawnStub({
+    await runCoverage({ projectRoot, args: [], parseCoverageXml: parseCoverageXmlA, runId: 'RUN-A' });
+    const parseCoverageXmlB = makeParseCoverageStub({
       rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|8|2|10|80.0|7,9'] },
     });
-    await runCoverage({ projectRoot, args: [], spawn: spawnB, runId: 'RUN-B' });
+    await runCoverage({ projectRoot, args: [], parseCoverageXml: parseCoverageXmlB, runId: 'RUN-B' });
     const reportsDir = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage');
     expect(existsSync(path.join(reportsDir, 'RUN-A.md'))).toBe(true);
     expect(existsSync(path.join(reportsDir, 'RUN-B.md'))).toBe(true);
@@ -758,13 +767,13 @@ describe('runCoverage', () => {
     it('relative path → written under projectRoot, no default-tree alias', async () => {
       const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
       dropFakeXml(projectRoot, 'a', 'kover');
-      const spawn = makeSpawnStub({
+      const parseCoverageXml = makeParseCoverageStub({
         rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
       });
       await runCoverage({
         projectRoot,
         args: ['--output-file', 'my-report.md'],
-        spawn,
+        parseCoverageXml,
         runId: 'A2-REL',
       });
       // User's chosen path written at projectRoot.
@@ -783,14 +792,14 @@ describe('runCoverage', () => {
       // Use a tmp file path OUTSIDE the projectRoot to prove absolute is honoured.
       const absDir = mkdtempSync(path.join(tmpdir(), 'kmp-a2-abs-'));
       const absPath = path.join(absDir, 'absolute-report.md');
-      const spawn = makeSpawnStub({
+      const parseCoverageXml = makeParseCoverageStub({
         rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
       });
       try {
         await runCoverage({
           projectRoot,
           args: ['--output-file', absPath],
-          spawn,
+          parseCoverageXml,
           runId: 'A2-ABS',
         });
         expect(existsSync(absPath)).toBe(true);
@@ -803,13 +812,13 @@ describe('runCoverage', () => {
     it('relative path with nested dirs → parent dir auto-created', async () => {
       const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
       dropFakeXml(projectRoot, 'a', 'kover');
-      const spawn = makeSpawnStub({
+      const parseCoverageXml = makeParseCoverageStub({
         rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
       });
       await runCoverage({
         projectRoot,
         args: ['--output-file', 'nested/dir/report.md'],
-        spawn,
+        parseCoverageXml,
         runId: 'A2-NEST',
       });
       expect(existsSync(path.join(projectRoot, 'nested', 'dir', 'report.md'))).toBe(true);
@@ -818,11 +827,11 @@ describe('runCoverage', () => {
     it('default (no flag) → falls back to default tree + latest.md (regression guard)', async () => {
       const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
       dropFakeXml(projectRoot, 'a', 'kover');
-      const spawn = makeSpawnStub({
+      const parseCoverageXml = makeParseCoverageStub({
         rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
       });
       const { envelope } = await runCoverage({
-        projectRoot, args: [], spawn, runId: 'A2-DEFAULT',
+        projectRoot, args: [], parseCoverageXml, runId: 'A2-DEFAULT',
       });
       const reportsDir = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage');
       expect(existsSync(path.join(reportsDir, 'A2-DEFAULT.md'))).toBe(true);
@@ -833,13 +842,13 @@ describe('runCoverage', () => {
     it('explicit default literal coverage-full-report.md → treated as default (back-compat sentinel)', async () => {
       const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
       dropFakeXml(projectRoot, 'a', 'kover');
-      const spawn = makeSpawnStub({
+      const parseCoverageXml = makeParseCoverageStub({
         rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
       });
       await runCoverage({
         projectRoot,
         args: ['--output-file', 'coverage-full-report.md'],
-        spawn,
+        parseCoverageXml,
         runId: 'A2-LITERAL',
       });
       // Default tree write fires (sentinel preserved).
@@ -860,10 +869,10 @@ describe('runCoverage', () => {
     it('defaults (standalone coverage subcommand) → "No (coverage subcommand)"', async () => {
       const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
       dropFakeXml(projectRoot, 'a', 'kover');
-      const spawn = makeSpawnStub({
+      const parseCoverageXml = makeParseCoverageStub({
         rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
       });
-      await runCoverage({ projectRoot, args: [], spawn, runId: 'A3-DEFAULTS' });
+      await runCoverage({ projectRoot, args: [], parseCoverageXml, runId: 'A3-DEFAULTS' });
       const reportPath = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'A3-DEFAULTS.md');
       const content = readFileSync(reportPath, 'utf8');
       expect(content).toContain('> **Tests Run**: No (coverage subcommand)');
@@ -874,11 +883,11 @@ describe('runCoverage', () => {
     it('originatingSubcommand=parallel + testsRan=false → "No (--skip-tests)"', async () => {
       const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
       dropFakeXml(projectRoot, 'a', 'kover');
-      const spawn = makeSpawnStub({
+      const parseCoverageXml = makeParseCoverageStub({
         rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
       });
       await runCoverage({
-        projectRoot, args: [], spawn, runId: 'A3-PARALLEL-SKIP',
+        projectRoot, args: [], parseCoverageXml, runId: 'A3-PARALLEL-SKIP',
         testsRan: false, originatingSubcommand: 'parallel',
       });
       const reportPath = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'A3-PARALLEL-SKIP.md');
@@ -890,11 +899,11 @@ describe('runCoverage', () => {
     it('originatingSubcommand=parallel + testsRan=true → "Yes (via parallel)"', async () => {
       const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
       dropFakeXml(projectRoot, 'a', 'kover');
-      const spawn = makeSpawnStub({
+      const parseCoverageXml = makeParseCoverageStub({
         rowsByModule: { 'a': ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
       });
       await runCoverage({
-        projectRoot, args: [], spawn, runId: 'A3-PARALLEL-FULL',
+        projectRoot, args: [], parseCoverageXml, runId: 'A3-PARALLEL-FULL',
         testsRan: true, originatingSubcommand: 'parallel',
       });
       const reportPath = path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'A3-PARALLEL-FULL.md');
@@ -913,53 +922,48 @@ describe('runCoverage', () => {
     ]);
     dropFakeXml(projectRoot, 'a', 'kover');
     dropFakeXml(projectRoot, 'b', 'kover');
-    const spawn = makeSpawnStub({
+    const parseCoverageXml = makeParseCoverageStub({
       rowsByModule: { 'a': ['a|p|F.kt|F|1|1|2|50|2'] },
     });
     const { envelope } = await runCoverage({
       projectRoot,
       args: ['--exclude-coverage', 'b'],
-      spawn,
+      parseCoverageXml,
     });
     // Project-shape signal preserves both modules.
     expect(envelope.coverage.modules_with_kover_plugin).toEqual(['a', 'b']);
     // Only 'a' actually contributed XML → modules_contributing reflects it.
     expect(envelope.coverage.modules_contributing).toBe(1);
-    // Python parser was only invoked for 'a'.
-    const pythonCalls = spawn.calls.filter(c => c.cmd === 'python3');
-    expect(pythonCalls.map(c => c.args[2])).toEqual(['a']);
+    // Parser was only invoked for 'a'.
+    expect(parseCoverageXml.calls.map((c) => c.moduleName)).toEqual(['a']);
   });
 
-  it('cross-platform spawn shape: invokes python3 directly (no shell wrapper)', async () => {
+  it('parser is invoked in-process with (xmlPath, moduleName) — no subprocess involved', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
-    dropFakeXml(projectRoot, 'a', 'kover');
-    const spawn = makeSpawnStub({
+    const xmlPath = dropFakeXml(projectRoot, 'a', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({
       rowsByModule: { 'a': ['a|p|F.kt|F|1|0|1|100|'] },
     });
-    await runCoverage({ projectRoot, args: [], spawn });
-    const pythonCalls = spawn.calls.filter(c => c.cmd === 'python3');
-    expect(pythonCalls).toHaveLength(1);
-    // No bash/cmd/powershell intermediary in the cmd field — parser is invoked
-    // directly with [parserPath, xmlPath, moduleName].
-    expect(pythonCalls[0].cmd).toBe('python3');
-    expect(pythonCalls[0].args).toHaveLength(3);
-    expect(pythonCalls[0].args[2]).toBe('a');
+    await runCoverage({ projectRoot, args: [], parseCoverageXml });
+    expect(parseCoverageXml.calls).toHaveLength(1);
+    expect(parseCoverageXml.calls[0].xmlPath).toBe(xmlPath);
+    expect(parseCoverageXml.calls[0].moduleName).toBe('a');
   });
 
   // v0.9 step 4 — coverage silently ignores --isolated. Coverage doesn't
-  // spawn gradle (Python XML parser only), so the cache-dir flag has no
-  // surface to attach to. The orchestrator must not error out and must
-  // not surface an `isolated:{}` envelope field (would be misleading).
+  // spawn gradle (it parses leftover XML in-process only), so the cache-dir
+  // flag has no surface to attach to. The orchestrator must not error out
+  // and must not surface an `isolated:{}` envelope field (would be misleading).
   it('--isolated is silently ignored (no envelope field, no error)', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'a', 'kover');
-    const spawn = makeSpawnStub({
+    const parseCoverageXml = makeParseCoverageStub({
       rowsByModule: { 'a': ['a|p|F.kt|F|1|0|1|100|'] },
     });
     const { envelope, exitCode } = await runCoverage({
       projectRoot,
       args: ['--isolated', '--isolated-cache-dir', '/tmp/x', '--isolated-no-lock'],
-      spawn,
+      parseCoverageXml,
     });
     expect(exitCode).toBe(0);
     expect(envelope.errors).toEqual([]);
@@ -980,13 +984,13 @@ describe('PR 3.5 A4 — coverage.module_buckets accounting', () => {
     dropFakeXml(projectRoot, 'a', 'kover');
     // intentionally NO dropFakeXml for b → noXml bucket
     dropFakeXml(projectRoot, 'c', 'kover');
-    const spawn = makeSpawnStub({
+    const parseCoverageXml = makeParseCoverageStub({
       rowsByModule: { 'a': ['a|p|F.kt|F|1|0|1|100|'] },
     });
     const { envelope } = await runCoverage({
       projectRoot,
       args: ['--exclude-coverage', 'c'],
-      spawn,
+      parseCoverageXml,
     });
     expect(envelope.coverage.module_buckets).toEqual({
       with_data: ['a'],
@@ -997,18 +1001,19 @@ describe('PR 3.5 A4 — coverage.module_buckets accounting', () => {
     // 3 detected + 3 accounted → no drift warning.
     const drift = (envelope.warnings || []).find(w => w.code === 'coverage_aggregation_drift');
     expect(drift).toBeUndefined();
-    // c was excluded so the python parser never gets called for it.
-    const pythonCalls = spawn.calls.filter(c => c.cmd === 'python3');
-    expect(pythonCalls.map(c => c.args[2]).sort()).toEqual(['a']);
+    // c was excluded so the parser never gets called for it.
+    expect(parseCoverageXml.calls.map((c) => c.moduleName).sort()).toEqual(['a']);
   });
 
-  it('parse_errored bucket fires when python3 returns non-zero status', async () => {
+  it('parse_errored bucket fires when the parser reports errored:true, with a discriminated warning', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'a', 'kover');
-    // Parser exits non-zero → orchestrator must distinguish empty rows from
-    // a parser failure and land the module in parse_errored, not with_data.
-    const spawn = makeSpawnStub({ rowsByModule: { 'a': [] }, status: 1 });
-    const { envelope } = await runCoverage({ projectRoot, args: [], spawn });
+    // Parser reports a failure → orchestrator must distinguish empty rows from
+    // a parser failure and land the module in parse_errored, not with_data,
+    // AND surface a discriminated coverage_parse_failed warning (PR-17 —
+    // never silently indistinguishable from no_coverage_data).
+    const parseCoverageXml = makeParseCoverageStub({ rowsByModule: { 'a': [] }, status: 1 });
+    const { envelope } = await runCoverage({ projectRoot, args: [], parseCoverageXml });
     expect(envelope.coverage.module_buckets.parse_errored).toEqual(['a']);
     expect(envelope.coverage.module_buckets.with_data).toEqual([]);
     expect(envelope.coverage.module_buckets.no_xml).toEqual([]);
@@ -1016,15 +1021,18 @@ describe('PR 3.5 A4 — coverage.module_buckets accounting', () => {
     // 1 detected + 1 accounted → no drift warning.
     const drift = (envelope.warnings || []).find(w => w.code === 'coverage_aggregation_drift');
     expect(drift).toBeUndefined();
+    const w = envelope.warnings.find((x) => x.code === 'coverage_parse_failed');
+    expect(w).toBeTruthy();
+    expect(w.modules).toEqual(['a']);
   });
 
   it('--dry-run envelope carries empty module_buckets shape (parity)', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
-    const spawn = makeSpawnStub();
+    const parseCoverageXml = makeParseCoverageStub();
     const { envelope, exitCode } = await runCoverage({
       projectRoot,
       args: ['--dry-run'],
-      spawn,
+      parseCoverageXml,
     });
     expect(exitCode).toBe(0);
     expect(envelope.dry_run).toBe(true);
@@ -1036,5 +1044,70 @@ describe('PR 3.5 A4 — coverage.module_buckets accounting', () => {
       parse_errored: [],
       skipped_by_user: [],
     });
+  });
+});
+
+// PR-17 — decouple --min-missed-lines threshold filtering from aggregation
+// (Bug 1), and discriminate parser failures (Bug 3's aggregation-side
+// consumer). Bug 2 (warnings dropped on the full `parallel` path) is covered
+// in parallel-orchestrator.test.js since the drop happened one layer up.
+describe('PR-17 — threshold/aggregation integrity', () => {
+  it('threshold fail (aggregate) with per-row values all below the row-filter still reports full data', async () => {
+    // Two classes each missing only 10 lines (below --min-missed-lines 15's
+    // row-filter) but summing to 20 (above the gate) — the exact scenario
+    // that used to falsely zero modulesContributing, fire a contradictory
+    // no_coverage_data warning, and skip writing the report entirely.
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'a', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({
+      rowsByModule: {
+        a: [
+          'a|pkg|One.kt|One|0|10|10|0|1-10',
+          'a|pkg|Two.kt|Two|0|10|10|0|1-10',
+        ],
+      },
+    });
+    const outputFile = path.join(projectRoot, 'report.md');
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--output-file', outputFile, '--min-missed-lines', '15'],
+      parseCoverageXml,
+    });
+    expect(exitCode).toBe(1);
+    expect(envelope.errors.find((e) => e.code === 'coverage_threshold_exceeded')).toBeTruthy();
+    expect(envelope.coverage.missed_lines).toBe(20);
+    expect(envelope.coverage.modules_contributing).toBe(1);
+    expect(envelope.warnings.find((w) => w.code === 'no_coverage_data')).toBeFalsy();
+    // The markdown report IS still written, with the unfiltered TOTAL.
+    expect(existsSync(outputFile)).toBe(true);
+    const report = readFileSync(outputFile, 'utf8');
+    expect(report).toContain('MISSED_LINES: 20');
+    // Detailed Class Coverage is correctly narrowed to empty — no single
+    // class individually meets the 15-missed-line bar — proving the
+    // row-filter still does its (intentionally separate) job.
+    expect(report).not.toContain('### a');
+  });
+
+  it('discriminates coverage_xml_oversized from coverage_parse_failed across different modules', async () => {
+    const projectRoot = makeProject([
+      { name: 'big', coverage: 'kover' },
+      { name: 'bad', coverage: 'kover' },
+    ]);
+    dropFakeXml(projectRoot, 'big', 'kover');
+    dropFakeXml(projectRoot, 'bad', 'kover');
+    const parseCoverageXml = (xmlPath, moduleName) => {
+      if (moduleName === 'big') {
+        return { rows: [], errored: true, reason: 'oversized', message: 'too big' };
+      }
+      return { rows: [], errored: true, reason: 'parse_failed', message: 'malformed' };
+    };
+    const { envelope } = await runCoverage({ projectRoot, args: [], parseCoverageXml });
+    expect(envelope.coverage.module_buckets.parse_errored.slice().sort()).toEqual(['bad', 'big']);
+    const oversized = envelope.warnings.find((w) => w.code === 'coverage_xml_oversized');
+    expect(oversized).toBeTruthy();
+    expect(oversized.modules).toEqual(['big']);
+    const parseFailed = envelope.warnings.find((w) => w.code === 'coverage_parse_failed');
+    expect(parseFailed).toBeTruthy();
+    expect(parseFailed.modules).toEqual(['bad']);
   });
 });
