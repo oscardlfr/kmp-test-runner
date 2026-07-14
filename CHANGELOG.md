@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — CodeRabbit now auto-reviews PRs targeting `develop`
+
+**No CLI/runtime behavior change** -- config-only, via a new root `.coderabbit.yaml`.
+
+CodeRabbit only auto-reviews a repo's default branch (`main`) unless
+`reviews.auto_review.base_branches` lists others, so PRs against `develop` were
+reporting "Review skipped". Added `.coderabbit.yaml` adding `"develop"` to
+`base_branches` (no catch-all `".*"`), plus `enabled`/`drafts`/
+`auto_incremental_review`/`review_status` set explicitly. Guarded by a new
+`tests/vitest/coderabbit-config.test.js`, covered by the existing required `build`
+job -- no new CI job.
+
 ### Fixed — `tests/bats/*.bats` and `tests/installer/*.bats` no longer silently drift to CRLF on Windows checkouts
 
 **No behavior change** — this is a `.gitattributes` + test-harness fix only; no `lib/` files
