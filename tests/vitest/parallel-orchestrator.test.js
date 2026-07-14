@@ -2749,6 +2749,139 @@ describe('runParallel', () => {
     expect(envelope.tests.individual_total).toBe(0);
   });
 
+  // ---------------------------------------------------------------------------
+  // PR-28c (2026-07-14, M10 closure) — AGP-directory analogue of the F3 fix
+  // above. forEachJunitXml unions the legacy build/test-results/<task>/ dir
+  // AND AGP's build/outputs/androidTest-results/connected/<sourceSet>/ dir
+  // under the SAME sinceMs gate (junit-xml.js:93-159) — nothing branches on
+  // test type. These tests prove that shape-agnostic claim through a real
+  // androidInstrumented dispatch, closing the untested intersection
+  // BACKLOG.md flagged (AGP dir x stale mtime x cacheRespected x real
+  // dispatch).
+  // ---------------------------------------------------------------------------
+  // AGP's connected-test output isn't keyed by task short-name —
+  // forEachJunitXml walks every subdirectory of
+  // build/outputs/androidTest-results/connected/ regardless of which task
+  // dispatched it (junit-xml.js:124-133), unlike the legacy
+  // build/test-results/<taskShort>/ path — so this helper takes a sourceSet
+  // dir name instead of a taskShort.
+  function writeStaleAgpJunitXml(projectRoot, modName, sourceSetDir, fileBase, testcaseCount, ageSec = 60) {
+    const agpDir = path.join(
+      projectRoot, modName, 'build', 'outputs', 'androidTest-results', 'connected', sourceSetDir,
+    );
+    mkdirSync(agpDir, { recursive: true });
+    const xml = '<testsuite>' + '<testcase/>'.repeat(testcaseCount) + '</testsuite>';
+    const filePath = path.join(agpDir, `TEST-${fileBase}.xml`);
+    writeFileSync(filePath, xml);
+    const past = Math.floor(Date.now() / 1000) - ageSec;
+    utimesSync(filePath, past, past);
+  }
+
+  // Reuses the exact `app` + com.android.application + androidInstrumentedTest
+  // shape already proven (below) to dispatch :app:connectedDebugAndroidTest.
+  function androidInstrumentedApp() {
+    return {
+      name: 'app',
+      sourceSets: ['androidInstrumentedTest'],
+      build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n',
+    };
+  }
+
+  it('F3 fix (AGP shape): UP-TO-DATE androidInstrumented task counts existing AGP TEST-*.xml without mtime guard', async () => {
+    const dir = makeProject([androidInstrumentedApp()]);
+    writeStaleAgpJunitXml(dir, 'app', 'androidMain', 'com.foo.Bar', 5);
+    writeStaleAgpJunitXml(dir, 'app', 'androidMain', 'com.foo.Baz', 3);
+    const spawn = makeSpawnStub({ stdout: '> Task :app:connectedDebugAndroidTest UP-TO-DATE\nBUILD SUCCESSFUL in 1s\n' });
+    const adbProbe = () => [{ serial: 'PROBED-X1', type: 'physical', model: 'TestDevice' }];
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(envelope.parallel.legs[0].execution.up_to_date).toBe(1);
+    expect(envelope.tests.individual_total).toBe(8);
+  });
+
+  it('F3 fix (AGP shape): FROM-CACHE androidInstrumented task counts existing AGP TEST-*.xml without mtime guard', async () => {
+    const dir = makeProject([androidInstrumentedApp()]);
+    writeStaleAgpJunitXml(dir, 'app', 'androidMain', 'com.foo.Cached', 7);
+    const spawn = makeSpawnStub({ stdout: '> Task :app:connectedDebugAndroidTest FROM-CACHE\nBUILD SUCCESSFUL in 1s\n' });
+    const adbProbe = () => [{ serial: 'PROBED-X1', type: 'physical', model: 'TestDevice' }];
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(envelope.parallel.legs[0].execution.from_cache).toBe(1);
+    expect(envelope.tests.individual_total).toBe(7);
+  });
+
+  it('F3 fix (AGP shape): fresh androidInstrumented task still discards stale AGP TEST-*.xml (regression guard preserved)', async () => {
+    // Negative control mirroring the JVM-shape test above: proves the guard
+    // isn't globally disabled for the Android/AGP directory shape.
+    const dir = makeProject([androidInstrumentedApp()]);
+    writeStaleAgpJunitXml(dir, 'app', 'androidMain', 'com.foo.Wrapper', 99);
+    const spawn = makeSpawnStub({ stdout: '> Task :app:connectedDebugAndroidTest\nBUILD SUCCESSFUL in 5s\n' });
+    const adbProbe = () => [{ serial: 'PROBED-X1', type: 'physical', model: 'TestDevice' }];
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(envelope.parallel.legs[0].execution.fresh).toBe(1);
+    expect(envelope.tests.individual_total).toBe(0);
+  });
+
+  it('androidInstrumented fresh failure populates modules[].test_failures[] from the AGP directory end-to-end', async () => {
+    // Closes a related-but-distinct gap: junitTestFailuresFor's AGP walk was
+    // previously only unit-tested directly, never through a real runParallel
+    // dispatch. execMode is 'fresh' (not cache-respected) here — a task can't
+    // be both cache-respected (didn't re-execute) and newly FAILED, so this
+    // models the actually-reachable "fresh + failed" combination, not a
+    // fabricated one.
+    const dir = makeProject([androidInstrumentedApp()]);
+    const agpDir = path.join(dir, 'app', 'build', 'outputs', 'androidTest-results', 'connected', 'androidMain');
+    mkdirSync(agpDir, { recursive: true });
+    const xmlPath = path.join(agpDir, 'TEST-StressTest.xml');
+    writeFileSync(xmlPath,
+      '<testsuite name="com.foo.StressTest" tests="1" failures="1">' +
+      '<testcase name="oomFails" classname="com.foo.StressTest" time="1.0">' +
+      '<failure type="java.lang.OutOfMemoryError" message="heap exhausted"/>' +
+      '</testcase></testsuite>');
+    // Stale-XML guard filters by mtime < state.runStartMs (captured inside
+    // runParallel, AFTER this fixture is written) — bump mtime to the future
+    // so the file passes regardless of when runParallel actually starts.
+    // Mirrors the identical pattern at the "OBS-A negative" test above.
+    const future = new Date(Date.now() + 60_000);
+    utimesSync(xmlPath, future, future);
+    const spawn = makeSpawnStub({
+      failTasks: [':app:connectedDebugAndroidTest'],
+      stdout: '> Task :app:connectedDebugAndroidTest\n',
+    });
+    const adbProbe = () => [{ serial: 'PROBED-X1', type: 'physical', model: 'TestDevice' }];
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const appModule = envelope.modules.find(m => m.name === 'app');
+    expect(appModule.test_failures).toEqual([
+      { test: 'com.foo.StressTest.oomFails', cause: 'heap exhausted', type: 'java.lang.OutOfMemoryError' },
+    ]);
+  });
+
   // L6 (2026-06-09 audit) — cascade-retry diagnostic arrays are bounded at
   // push time. Below the caps the emitted text is byte-identical to the old
   // collect-all-then-slice shape; above them a suppressed-count line points

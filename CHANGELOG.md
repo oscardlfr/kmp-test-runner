@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Verified — "Android reads stale XML" (M10) does not reproduce for `android`; closed with regression tests, not a code fix
+
+**No behavior change.** `kmp-test android` (`lib/orchestrators/android-orchestrator.js`) has no
+JUnit-XML read path at all — test counts and failures come exclusively from regex parsing of
+gradle's own stdout (`parseTestCounts`, `parseTestFailures`); `lib/parsers/junit-xml.js` is never
+imported. The only place JUnit XML is read for Android-shaped output is `parallel --test-type
+androidInstrumented`, via the same freshness-guarded walk already used for JVM/common legs,
+including the F3 (2026-05-03) `cacheRespected` bypass for gradle's own UP-TO-DATE/FROM-CACHE
+verdicts — both apply identically regardless of directory shape (legacy
+`build/test-results/<task>/` or AGP's `build/outputs/androidTest-results/connected/<sourceSet>/`);
+no code branches on test type anywhere in the chain.
+
+The real gap found was test coverage, not behavior: the JVM/common shape already had F3
+regression tests and the AGP directory already had path-discovery tests, but nothing proved the
+intersection — AGP directory × stale mtime × cache-respected × a real `androidInstrumented`
+dispatch. New tests in `tests/vitest/parallel-orchestrator.test.js` close that gap; two new tests
+in `tests/vitest/android-orchestrator.test.js` turn the "no XML-read path" claim into a
+regression-locked behavioral proof (a poisoned on-disk JUnit XML has zero effect on the envelope
+in both a pass and a fail run).
+
+**Wet-check status: confirmed unreachable.** A real KMP `androidLibrary { withDeviceTestBuilder }`
+module's connected-test task, dispatched twice in a row against a physical device with no source
+changes between runs, never showed `UP-TO-DATE`/`FROM-CACHE` on either run — even though every
+upstream compile/bundle/dex/package task correctly did on the second run. Gradle does not treat
+on-device instrumentation as incrementally cacheable, so the `cacheRespected` bypass — while real,
+correct, and shape-agnostic in code — cannot fire in practice for this task type. It stays in
+place as harmless defense-in-depth. See `BACKLOG.md` for the full evidence record.
+
 ### Fixed — project-model cache key now invalidates on build-logic convention-plugin edits
 
 **Observable behavior change.** `computeCacheKey` (`lib/project/cache.js`) hashed

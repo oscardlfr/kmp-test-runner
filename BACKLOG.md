@@ -109,6 +109,49 @@
   project and one private project, Android-relevant changes on the connected S22 Ultra,
   macOS/iOS/manual checks only when needed, no recurring heavy macOS CI, private evidence
   only through anonymized artifacts.
+- ✅ **PR-28c `test(android): close stale xml audit finding`** — SHIPPED 2026-07-14 (this PR,
+  final slice of the verify-first trio / v3.2 finding M10). Did NOT reproduce as stated:
+  `android-orchestrator.js` has no JUnit-XML read path at all — `parseTestCounts` /
+  `parseTestFailures` derive every count and failure exclusively from regex parsing of gradle's
+  own stdout; `lib/parsers/junit-xml.js` is never imported (confirmed by a full-file read, not
+  just the module's own header comment). The only place JUnit XML is read for Android-shaped
+  output is `parallel --test-type androidInstrumented`, via the same `forEachJunitXml` /
+  `recordLegResults` machinery already used (and already regression-tested) for JVM/common legs,
+  including the F3 (2026-05-03) `cacheRespected` bypass — by inspection this is 100%
+  shape-agnostic: `classifyTaskExecutionMode` applies one shared regex to every task string, and
+  `forEachJunitXml` unions the legacy dir AND AGP's connected-test dir under the identical
+  `sinceMs` gate, with no branch anywhere conditioning either on test type. The one real gap: this
+  intersection (AGP dir × stale mtime × cache-respected × a REAL `androidInstrumented` dispatch)
+  was untested. Closed with tests only, no production code changed: 3 new regression tests in
+  `tests/vitest/parallel-orchestrator.test.js` mirror the JVM F3 tests against the AGP directory
+  through a real `androidInstrumented` dispatch, plus 1 bonus end-to-end test proving
+  `test_failures[]` populates from the AGP directory through a real dispatch (deliberately did NOT
+  fabricate a "cache-respected AND failed" fixture — gradle cannot mark a task both
+  UP-TO-DATE/FROM-CACHE and newly FAILED at once, so that combination isn't a reachable state).
+  2 new tests in `tests/vitest/android-orchestrator.test.js` turn "no XML-read path" into a
+  regression-locked behavioral proof: a poisoned on-disk JUnit XML (different count AND a
+  different failure signature than the mocked gradle stdout) is planted in both directory shapes
+  and shown to have zero effect on the envelope in both a PASS run and a FAIL run. Vitest 2365 →
+  2371 (+6). `npm run test:coverage` / `node tools/decouple-audit.mjs` /
+  `node tools/check-line-endings.mjs` all green.
+  **Wet-check: CONFIRMED UNREACHABLE.** Dispatched a real KMP `androidLibrary {
+  withDeviceTestBuilder }` module's `connectedAndroidDeviceTest` task (27 real on-device tests)
+  twice in a row via raw `gradlew`, no source changes between runs, against a connected physical
+  device (`<DEVICE_SERIAL>`, Samsung S22 Ultra). On the second run every upstream
+  compile/bundle/dex/package task correctly showed `UP-TO-DATE` — but the connected-test task
+  itself showed no caching suffix on either run and fully re-executed all 27 tests on-device both
+  times. A third invocation through `kmp-test parallel --test-type androidInstrumented` confirmed
+  the tool's own telemetry matches raw gradle exactly (`execution:{fresh:1,up_to_date:0,
+  from_cache:0}`, `tests.individual_total:27` correctly reflecting the fresh XML from that run —
+  itself a live end-to-end proof the freshness-gated walk works correctly on a real device). The
+  `cacheRespected` bypass is real, correct, and shape-agnostic in code, but **unreachable in
+  practice** for connected/instrumented Android test tasks: Gradle does not treat on-device
+  instrumentation runs as incrementally cacheable, so the UP-TO-DATE/FROM-CACHE verdict this
+  bypass keys off of never fires for this task type. It remains in place as harmless
+  defense-in-depth (mirrors the JVM shape's real F3 incident precedent — removing
+  un-reproduced-as-harmful code would itself be speculative, not a reproduced-defect fix).
+  **M10 ("verify-first trio") is now fully closed**: PR-28a (JDK comment false-positives), PR-28b
+  (project-model cache fingerprint), PR-28c (this entry) all shipped.
 - ✅ **PR-28b `fix(project): include build-logic sources in model cache key`** — SHIPPED
   2026-07-14 (this PR, deferred slice of PR-28a / v3.2 finding M10). Reproduced (pinned
   repro: build a model with a build-logic convention plugin applying `kover`, edit the
@@ -148,7 +191,7 @@
   stale XML" did NOT reproduce as stated (`android-orchestrator.js` has no XML-read path at
   all) — needs a closure decision + wet-check (can `parallel`'s `cacheRespected` bypass ever
   fire for AGP connected-test output?) before this M10 sub-finding can be marked resolved or
-  given a scoped test. **Incidental findings, compact follow-ups**: `detectAgpVersion` (same
+  given a scoped test. ✅ **SHIPPED as PR-28c above.** **Incidental findings, compact follow-ups**: `detectAgpVersion` (same
   file) has a different comment-blindness shape; `scripts/sh/lib/jdk-check.sh` /
   `scripts/ps1/lib/Jdk-Check.ps1` carry a dead-code duplicate of the pre-fix scanner;
   `describe-orchestrator.js` reads a non-existent `jdkRequirement.agp` field (always null).
