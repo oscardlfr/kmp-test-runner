@@ -3018,3 +3018,146 @@ describe('Groovy DSL — Tier 3 (JDK signals + build-logic)', () => {
     expect(ids).toContain('jacoco');
   });
 });
+
+// ------------------------------------------------------------------
+// computeCacheKey — build-logic/**/*.kt fingerprint (PR-28b)
+//
+// Audit v3.2 finding M10 (deferred slice of PR-28a, BACKLOG.md): the model
+// derives coveragePlugin (detectBuildLogicCoverageHints /
+// parseBuildLogicPluginDescriptors) and jdkRequirement (aggregateJdkSignals)
+// from build-logic/**/*.kt convention-plugin sources, but pre-fix
+// computeCacheKey never hashed those files — editing a convention plugin's
+// Kotlin source left the cache key (and the served model) stale until an
+// unrelated build.gradle(.kts) happened to change.
+//
+// Scope note: only build-logic/**/*.kt is hashed (matches the audit
+// finding). Precompiled-script-plugin build-logic/**/*.gradle.kts files are
+// a related, still-open gap (BACKLOG.md). The sh/ps1 gradle-tasks-probe
+// cache-key walkers are not updated in this pass — see the SCHEMA_VERSION
+// 8→9 comment in lib/project/cache.js for why a cross-implementation key
+// mismatch is safe (miss-only, never a stale hit).
+// ------------------------------------------------------------------
+describe('computeCacheKey — build-logic/**/*.kt fingerprint (PR-28b)', () => {
+  function convDir(dir) {
+    const p = path.join(dir, 'build-logic', 'src', 'main', 'kotlin');
+    mkdirSync(p, { recursive: true });
+    return p;
+  }
+
+  it('changes when a build-logic/**/*.kt convention source changes', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const conv = convDir(dir);
+    writeFileSync(path.join(conv, 'FooConventionPlugin.kt'), 'apply("org.jetbrains.kotlinx.kover")\n');
+    const k1 = computeCacheKey(dir);
+    writeFileSync(path.join(conv, 'FooConventionPlugin.kt'), 'apply("jacoco")\n');
+    const k2 = computeCacheKey(dir);
+    expect(k2).not.toBe(k1);
+  });
+
+  it('changes when a new relevant build-logic/**/*.kt file is added', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const conv = convDir(dir);
+    writeFileSync(path.join(conv, 'FooConventionPlugin.kt'), 'apply("jacoco")\n');
+    const k1 = computeCacheKey(dir);
+    writeFileSync(path.join(conv, 'BarConventionPlugin.kt'), 'apply("org.jetbrains.kotlinx.kover")\n');
+    const k2 = computeCacheKey(dir);
+    expect(k2).not.toBe(k1);
+  });
+
+  it('changes when a relevant build-logic/**/*.kt file is removed', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const conv = convDir(dir);
+    writeFileSync(path.join(conv, 'FooConventionPlugin.kt'), 'apply("jacoco")\n');
+    writeFileSync(path.join(conv, 'BarConventionPlugin.kt'), 'apply("org.jetbrains.kotlinx.kover")\n');
+    const k1 = computeCacheKey(dir);
+    rmSync(path.join(conv, 'BarConventionPlugin.kt'));
+    const k2 = computeCacheKey(dir);
+    expect(k2).not.toBe(k1);
+  });
+
+  it('changes when a relevant build-logic/**/*.kt file is renamed (same content, different path)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const conv = convDir(dir);
+    writeFileSync(path.join(conv, 'FooConventionPlugin.kt'), 'apply("jacoco")\n');
+    const k1 = computeCacheKey(dir);
+    rmSync(path.join(conv, 'FooConventionPlugin.kt'));
+    writeFileSync(path.join(conv, 'RenamedConventionPlugin.kt'), 'apply("jacoco")\n');
+    const k2 = computeCacheKey(dir);
+    expect(k2).not.toBe(k1);
+  });
+
+  it('ignores generated output under build-logic/**/build/', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const conv = convDir(dir);
+    writeFileSync(path.join(conv, 'FooConventionPlugin.kt'), 'apply("jacoco")\n');
+    const k1 = computeCacheKey(dir);
+    const genDir = path.join(dir, 'build-logic', 'build', 'generated', 'kotlin');
+    mkdirSync(genDir, { recursive: true });
+    writeFileSync(path.join(genDir, 'Generated.kt'), 'apply("org.jetbrains.kotlinx.kover")\n');
+    const k2 = computeCacheKey(dir);
+    expect(k2).toBe(k1);
+  });
+
+  it('ignores scratch output under build-logic/**/.gradle/', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const conv = convDir(dir);
+    writeFileSync(path.join(conv, 'FooConventionPlugin.kt'), 'apply("jacoco")\n');
+    const k1 = computeCacheKey(dir);
+    const gradleDir = path.join(dir, 'build-logic', '.gradle', 'noise');
+    mkdirSync(gradleDir, { recursive: true });
+    writeFileSync(path.join(gradleDir, 'Noise.kt'), 'apply("org.jetbrains.kotlinx.kover")\n');
+    const k2 = computeCacheKey(dir);
+    expect(k2).toBe(k1);
+  });
+
+  it('ignores non-.kt files under build-logic/ (e.g. a README)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const conv = convDir(dir);
+    writeFileSync(path.join(conv, 'FooConventionPlugin.kt'), 'apply("jacoco")\n');
+    const k1 = computeCacheKey(dir);
+    writeFileSync(path.join(dir, 'build-logic', 'README.md'), '# notes\n');
+    const k2 = computeCacheKey(dir);
+    expect(k2).toBe(k1);
+  });
+
+  it('a project with no build-logic/ directory hashes identically to before (purely additive)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"\ninclude \':app\'\n');
+    writeFileSync(path.join(dir, 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
+    const before = computeCacheKey(dir);
+    // Adding an EMPTY build-logic/ dir (no .kt files) must not change the key.
+    mkdirSync(path.join(dir, 'build-logic'), { recursive: true });
+    expect(computeCacheKey(dir)).toBe(before);
+  });
+
+  // End-to-end regression: the actual bug. Pre-fix, editing the convention
+  // plugin's applied coverage plugin left buildProjectModel serving the
+  // stale cached model (unchanged cacheKey → cache hit → stale coveragePlugin).
+  it('buildProjectModel reflects an edited build-logic convention plugin instead of serving a stale cache', () => {
+    const dir = makeProject();
+    const conv = convDir(dir);
+    writeFileSync(path.join(conv, 'FooConventionPlugin.kt'), 'apply("org.jetbrains.kotlinx.kover")\n');
+    const modDir = path.join(dir, 'core-foo');
+    mkdirSync(modDir, { recursive: true });
+    writeFileSync(path.join(modDir, 'build.gradle.kts'), 'plugins { kotlin("multiplatform") }\n');
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":core-foo")\n');
+
+    const before = buildProjectModel(dir, { skipProbe: true });
+    expect(before.modules[':core-foo'].coveragePlugin).toBe('kover');
+
+    // Edit the convention plugin to apply jacoco instead of kover — a
+    // model-relevant signal change with NO build.gradle(.kts) touched.
+    writeFileSync(path.join(conv, 'FooConventionPlugin.kt'), 'apply("jacoco")\n');
+
+    const after = buildProjectModel(dir, { skipProbe: true });
+    expect(after.cacheKey).not.toBe(before.cacheKey);
+    expect(after.modules[':core-foo'].coveragePlugin).toBe('jacoco');
+  });
+});
