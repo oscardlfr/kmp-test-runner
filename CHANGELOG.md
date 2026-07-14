@@ -25,6 +25,17 @@ subprocess spawned during dispatch setup — on Windows, `pickWindowsShell()` st
 availability before the dry-run short-circuit runs; that pre-existing, unrelated spawn is out of
 scope for this fix. Additive — no `schema_version` bump; envelope shape unchanged.
 
+**Known trade-off on a cold cache**: dry-run's module preview (`plan.modules[]` / `plan.skipped[]`)
+now comes from static analysis only, with no gradle task-graph probe to fall back on. For a module
+whose flavor is applied by a build-logic convention (not its own `build.gradle.kts`), `has_flavor`/
+`flavors` report the unprobed static view instead of the probe-recovered one. More significantly,
+a module whose *only* unit-test source sets are flavor-named (e.g. `src/testDemo/`, with no bare
+`src/test/`) can be reclassified into `plan.skipped[]` with reason `"no test source set"` on a
+cold-cache dry-run, even though a real run (or a dry-run against a warm cache from a prior real
+run, which still reads the pre-existing task-probe cache) would find and dispatch it correctly.
+This is a bounded, cache-state-dependent consequence of removing the gradle probe, not a
+regression in the real dispatch path.
+
 ### Fixed — coverage aggregation survives `--min-missed-lines` filtering; Python dependency dropped
 
 `lib/orchestrators/coverage-orchestrator.js` had three related integrity bugs. `--min-missed-lines`
