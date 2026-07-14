@@ -1699,15 +1699,23 @@ describe('main() — Phase 4 step 7 (eager ProjectModel build before spawn)', ()
     });
   });
 
-  // wet-audit-v0.9-part2 OBS-2 — `--dry-run --json` now invokes
-  // buildProjectModel to resolve `plan.modules[]`. The pre-OBS-2 contract
-  // ("dry-run never triggers eager model build, kept instant") was
-  // deliberately replaced: the new feature trades cold-start instant-ness
-  // for a richer envelope that previews which modules would dispatch.
-  // First invocation writes the model cache; subsequent dry-runs against
-  // the same project are fast (cache hit). Wet runs after a dry-run reuse
-  // the same cache.
-  it('--dry-run triggers project-model build for plan.modules[] (OBS-2)', () => {
+  // wet-audit-v0.9-part2 OBS-2 — `--dry-run --json` invokes buildProjectModel
+  // to resolve `plan.modules[]` (module-preview feature; see the OBS-2 test
+  // in the --dry-run describe block for the plan.modules[] assertion
+  // itself). The comment that used to live here documented the cache write
+  // below as a deliberate tradeoff ("trades cold-start instant-ness for a
+  // richer envelope... first invocation writes the model cache"). That was
+  // an unintentional side effect, not a real tradeoff: on a cold cache,
+  // resolveDryRunModules called buildProjectModel(projectRoot) with no
+  // options, which spawned a real `gradlew tasks --all --quiet` probe and
+  // wrote .kmp-test-runner/cache/{tasks,model}-<sha>.{txt,json} — exactly
+  // the side effect --dry-run promises not to have. Fixed by threading
+  // { useCache: false, skipProbe: true } through resolveDryRunModules
+  // (lib/parsers/script-output.js); the module-preview feature itself is
+  // unaffected (still resolves plan.modules[] via static analysis, or a
+  // pre-existing tasks cache if one happens to already exist) — it just
+  // never creates the cache itself.
+  it('--dry-run does NOT write the project-model cache (no eager model build on dry-run)', () => {
     spawnMock.mockReturnValue({ status: 0, stdout: '', stderr: '' });
     const captured = [];
     const origWrite = process.stdout.write.bind(process.stdout);
@@ -1720,10 +1728,8 @@ describe('main() — Phase 4 step 7 (eager ProjectModel build before spawn)', ()
         process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--project-root', dir];
         const code = main();
         expect(code).toBe(EXIT.SUCCESS);
-        // Model cache MUST exist after dry-run (used to populate plan.modules).
-        const cacheDir = path.join(dir, '.kmp-test-runner', 'cache');
-        const files = readdirSync(cacheDir).filter(f => f.startsWith('model-'));
-        expect(files.length).toBeGreaterThan(0);
+        // No model cache — dry-run must never write under .kmp-test-runner/.
+        expect(existsSync(path.join(dir, '.kmp-test-runner'))).toBe(false);
       });
     } finally {
       process.stdout.write = origWrite;
@@ -2046,6 +2052,43 @@ describe('main() — --dry-run', () => {
     }
     // Non-fatal if no JSON emitted; just ensures resolveDryRunModules() didn't crash.
     expect(captured.length).toBeGreaterThanOrEqual(0);
+  });
+
+  // Fix-validating test: resolveDryRunModules (lib/parsers/script-output.js)
+  // used to call buildProjectModel(projectRoot) with no options, so a cold
+  // cache spawned a real `gradlew tasks --all --quiet` probe and wrote
+  // .kmp-test-runner/cache/{tasks,model}-<sha>.{txt,json} even on --dry-run.
+  // withFakeGradleProject gives a fresh temp dir every call — guaranteed
+  // cold cache. Detect the probe spawn by its distinctive 3-token argv
+  // signature rather than "zero spawns total": pickWindowsShell() still
+  // legitimately probes `pwsh` on Windows before this short-circuit, and
+  // that is an unrelated, pre-existing, out-of-scope spawn (see BACKLOG).
+  it('--dry-run --json on a cold cache never spawns the gradle tasks probe and creates no .kmp-test-runner/ (H8)', () => {
+    const captured = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { captured.push(String(chunk)); return true; };
+    let kmpTestRunnerDirExisted = null;
+    try {
+      withFakeGradleProject(dir => {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--dry-run', '--json', '--project-root', dir];
+        expect(main()).toBe(EXIT.SUCCESS);
+        // Must check INSIDE the callback — withFakeGradleProject rmSync's the
+        // whole fixture dir in its own finally block once this returns, which
+        // would make an outside check trivially/tautologically false.
+        kmpTestRunnerDirExisted = existsSync(path.join(dir, '.kmp-test-runner'));
+      });
+    } finally {
+      process.stdout.write = origWrite;
+    }
+    const json = JSON.parse(captured.join('').trim());
+    expect(json.dry_run).toBe(true);
+    const probeCalls = spawnMock.mock.calls.filter((call) => {
+      const [cmd, args] = call;
+      const flat = [cmd, ...(Array.isArray(args) ? args : [])].join(' ').toLowerCase();
+      return flat.includes('tasks') && flat.includes('--all') && flat.includes('--quiet');
+    });
+    expect(probeCalls.length).toBe(0);
+    expect(kmpTestRunnerDirExisted).toBe(false);
   });
 });
 

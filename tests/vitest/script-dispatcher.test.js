@@ -97,6 +97,10 @@ describe('v0.10 #2 — dispatcher dry-run surfaces gradle_config_applied for par
     }
     expect(envelope.dry_run).toBe(true);
     expect(envelope.gradle_config_applied).toEqual({ parallel_dropped: true });
+    // Real end-to-end subprocess spawn against a cold-cache fixture (its
+    // stub gradlew genuinely gets invoked if resolveDryRunModules regresses
+    // to a bare buildProjectModel(projectRoot) call — see script-output.js).
+    expect(existsSync(path.join(fixtureRoot, '.kmp-test-runner'))).toBe(false);
   });
 
   it('parallel --dry-run --json with project parallel=true → gradle_config_applied ABSENT', () => {
@@ -110,6 +114,22 @@ describe('v0.10 #2 — dispatcher dry-run surfaces gradle_config_applied for par
     }
     expect(envelope.dry_run).toBe(true);
     expect('gradle_config_applied' in envelope).toBe(false);
+  });
+
+  // resolveDryRunModules (lib/parsers/script-output.js) is shared between
+  // `parallel` and `changed` — the same cold-cache fix applies to both.
+  // Proves the shared-fix claim with its own cheap regression test rather
+  // than asserting it unproven in the PR body/CHANGELOG.
+  it('changed --dry-run --json on a cold cache creates no .kmp-test-runner/', () => {
+    fixtureRoot = makeFixtureProject();
+    const { envelope, stdout, exitCode } = runSubcommand('changed', [
+      '--project-root', fixtureRoot, '--dry-run', '--json',
+    ], { cwd: fixtureRoot });
+    if (!envelope) {
+      throw new Error(`No envelope (exit ${exitCode}): ${stdout.slice(0, 600)}`);
+    }
+    expect(envelope.dry_run).toBe(true);
+    expect(existsSync(path.join(fixtureRoot, '.kmp-test-runner'))).toBe(false);
   });
 });
 
