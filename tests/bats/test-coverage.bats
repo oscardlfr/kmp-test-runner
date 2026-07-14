@@ -41,34 +41,10 @@ teardown() {
     ! grep -qE '^\s*get_coverage_gradle_task\(\)' scripts/sh/lib/coverage-detect.sh
 }
 
-# parse-coverage-xml.py smoke: a 100%-covered sourcefile must list no missed
-# lines, and only fully-uncovered lines (ci==0) are reported — never partials
-# (mi>0 AND ci>0). python3 is preinstalled on the ubuntu/macOS bats runners.
-@test "parse-coverage-xml.py: 100% sourcefile shows no lines; partials excluded" {
-    if ! command -v python3 >/dev/null 2>&1; then skip "python3 not available"; fi
-    cat > "$WORK_DIR/cov.xml" << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<report name="t">
-  <package name="com/example">
-    <sourcefile name="Full.kt">
-      <line nr="10" mi="0" ci="3"/>
-      <line nr="11" mi="2" ci="5"/>
-      <counter type="LINE" missed="0" covered="2"/>
-    </sourcefile>
-    <sourcefile name="Partial.kt">
-      <line nr="20" mi="0" ci="4"/>
-      <line nr="21" mi="3" ci="2"/>
-      <line nr="22" mi="4" ci="0"/>
-      <counter type="LINE" missed="1" covered="2"/>
-    </sourcefile>
-  </package>
-</report>
-EOF
-    run python3 scripts/lib/parse-coverage-xml.py "$WORK_DIR/cov.xml" ":app"
-    [ "$status" -eq 0 ]
-    # Full.kt at 100% ends with an empty missed-lines field (trailing pipe).
-    [[ "$output" == *"Full.kt|Full|2|0|2|100.0|"* ]]
-    # Partial.kt reports only the fully-missed line 22, not the partial 21.
-    [[ "$output" == *"Partial.kt|Partial|2|1|3|66.7|22"* ]]
-    [[ "$output" != *"|21,22"* ]]
-}
+# PR-17: the parse-coverage-xml.py smoke test that used to live here was
+# retired along with the script itself — coverage XML parsing is now a
+# Node-native, in-process module (lib/parsers/coverage-xml.js) with no
+# python3 dependency. Its parity/edge-case coverage lives in
+# tests/vitest/coverage-xml.test.js, which runs cross-platform in CI
+# (including windows-latest) unconditionally, superseding this Linux/macOS-
+# only, python3-availability-gated smoke test.
