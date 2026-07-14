@@ -43,6 +43,7 @@
 - `tests/unit/` (vitest) + `tests/bats/` + `tests/pester/` + `tests/installer/` (E2E install/uninstall; Linux+Windows matrix)
 - `.github/workflows/` — `ci.yml` (8 jobs: build x2, secrets-scan, gradle-plugin-test, installer-e2e x2, decouple-audit, bundle-size), `commit-lint.yml` (Conventional Commits enforcement on PR titles, squash-merge mode), `publish-release.yml` (tag `v*` trigger), `publish-npm.yml` (auto on push to `main` + `workflow_dispatch` fallback) + `publish-gradle.yml` (workflow_dispatch)
 - `BACKLOG.md` — current and queued tasks; check this first
+- `.coderabbit.yaml` — CodeRabbit review config; `auto_review.base_branches` adds `develop` so PRs get auto-reviewed (guarded by `tests/vitest/coderabbit-config.test.js`)
 
 ## CRITICAL — Gitflow with develop + auto-publish on main
 
