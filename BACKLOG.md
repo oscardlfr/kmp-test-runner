@@ -109,6 +109,23 @@
   project and one private project, Android-relevant changes on the connected S22 Ultra,
   macOS/iOS/manual checks only when needed, no recurring heavy macOS CI, private evidence
   only through anonymized artifacts.
+- ✅ **PR-28a `fix(jdk): ignore commented toolchain signals`** — SHIPPED 2026-07-14 (this PR,
+  verify-first trio slice of v3.2 finding M10). Fixed: `aggregateJdkSignals`
+  (`lib/project/jdk-signals.js`) treated a JDK version number inside a `//`/`/* */` comment
+  as a live requirement, which could false-block a run (`jdk_mismatch`) even when the host
+  JDK was already correct — fixed via `stripGradleComments`. **Residual gap, tracked, not
+  fixed here**: string-literal false positives in the same scanner (`stripGradleComments`
+  has no quote-awareness) — own follow-up, priority TBD. **Deferred — PR-28b**: project-model
+  cache fingerprint (`computeCacheKey`, `lib/project/cache.js`) reproduces — doesn't hash
+  `build-logic/**/*.kt`, so a convention-plugin edit can serve a stale cached model
+  (`describe` path only); needs a schema bump, own PR. **Deferred — PR-28c**: "Android reads
+  stale XML" did NOT reproduce as stated (`android-orchestrator.js` has no XML-read path at
+  all) — needs a closure decision + wet-check (can `parallel`'s `cacheRespected` bypass ever
+  fire for AGP connected-test output?) before this M10 sub-finding can be marked resolved or
+  given a scoped test. **Incidental findings, compact follow-ups**: `detectAgpVersion` (same
+  file) has a different comment-blindness shape; `scripts/sh/lib/jdk-check.sh` /
+  `scripts/ps1/lib/Jdk-Check.ps1` carry a dead-code duplicate of the pre-fix scanner;
+  `describe-orchestrator.js` reads a non-existent `jdkRequirement.agp` field (always null).
 - ✅ **PR-27 `fix(envelope): honor published exit-code contract`** — SHIPPED 2026-07-14 (this PR).
   v3.1/v3.2 finding (DECIDED, recommendation inverted from an earlier round): `task_not_found` and
   `unsupported_class_version` are environment/toolchain problems, not test assertions — the

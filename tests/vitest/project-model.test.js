@@ -287,6 +287,52 @@ describe('aggregateJdkSignals', () => {
     expect(r.signals[0].file).toBe('a/b/build.gradle.kts');
   });
 
+  // Audit v3.2 M10 (verify-first trio) / PR-28a. Comment-only fix: stripGradleComments has
+  // no string-literal awareness, so a version number inside a string literal is a separate,
+  // still-open gap (tracked in BACKLOG.md), not covered by these cases.
+  describe('commented-out signal stripping (PR-28a)', () => {
+    it('ignores a version number inside a // line comment', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin {\n  // TODO: bump to jvmToolchain(21)\n  jvmToolchain(17)\n}');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.signals.some(s => s.version === 21)).toBe(false);
+    });
+
+    it('ignores a version number inside a /* */ block comment', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin {\n  /* jvmToolchain(21) considered, not yet adopted */\n  jvmToolchain(17)\n}');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.signals.some(s => s.version === 21)).toBe(false);
+    });
+
+    it('a file with only a commented-out signal yields no live signal', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        '// jvmToolchain(21) — disabled until Compose supports it\nplugins { kotlin("jvm") }');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBeNull();
+      expect(r.signals).toEqual([]);
+    });
+
+    it('still takes the MAX across multiple live signals after stripping (no over-strip regression)', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        '// legacy note: used to require jvmToolchain(11)\nkotlin { jvmToolchain(17) }');
+      mkdirSync(path.join(dir, 'm'), { recursive: true });
+      writeFileSync(path.join(dir, 'm', 'build.gradle.kts'),
+        '/* historical: JvmTarget.JVM_11 */\ncompilerOptions { jvmTarget.set(JvmTarget.JVM_21) }');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(21);
+      expect(r.signals.find(s => s.type === 'jvmToolchain' && s.version === 17)).toBeTruthy();
+      expect(r.signals.find(s => s.type === 'JvmTarget' && s.version === 21)).toBeTruthy();
+      expect(r.signals.some(s => s.version === 11)).toBe(false);
+    });
+  });
+
   // 2026-05-03 wide-smoke regression guard. AGP version → required runtime JDK
   // joins the signal pool. Without this, projects with `jvmTarget=11` AND
   // AGP 8.x picked JDK 11; gradle aborted with "Android Gradle plugin

@@ -3018,6 +3018,26 @@ describe('main() — JDK gate integration', () => {
     });
   });
 
+  // Audit v3.2 M10 / PR-28a: a commented-out higher version must not inflate the detected
+  // requirement and false-block a run whose live jvmToolchain already matches the host JDK.
+  it('misleading higher-version comment next to a correct live jvmToolchain does not fire the gate (PR-28a)', () => {
+    withFakeGradleProject(dir => {
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin {\n' +
+        '  // TODO: bump to jvmToolchain(21) once Compose Multiplatform supports it\n' +
+        '  jvmToolchain(17)\n' +
+        '}\n');
+      mockJavaVersion(17); // host matches the LIVE (uncommented) requirement
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--no-jdk-autoselect', '--project-root', dir];
+      const code = main();
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();       // gate did not block dispatch
+      expect(code).not.toBe(EXIT.ENV_ERROR); // pre-fix: this was ENV_ERROR
+    });
+  });
+
   it('--json + --no-jdk-autoselect on mismatch → emits jdk_mismatch code with versions in errors[0]', () => {
     // v0.8.0 fix-PR-B: host=11 < jvmToolchain(17) → mismatch fires (host > floor preserves now).
     withFakeKmpProject(17, dir => {

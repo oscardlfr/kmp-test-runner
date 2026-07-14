@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — JDK toolchain scanner no longer treats commented-out version numbers as live requirements
+
+**Observable behavior change.** `aggregateJdkSignals` (`lib/project/jdk-signals.js:108-140`)
+matched the `jvmToolchain(N)` / `JvmTarget.JVM_N` / `JavaVersion.VERSION_N` patterns against
+each build script's raw file content, with no comment stripping, then took the MAX
+across all matches. A comment like `// TODO: bump to jvmToolchain(21)` sitting next to a
+real `jvmToolchain(17)` call inflated the detected requirement to 21. Every consumer of
+this one canonical function — the `jdk_mismatch` hard-block gate in
+`lib/runners/script-dispatcher.js`, `findRequiredJdkVersion`, `describe`'s
+`jdk_requirement.min`, and `doctor`'s JDK guidance — inherited the inflated value, so a
+host whose JDK exactly matched the project's real requirement could still hit a
+false-positive `jdk_mismatch` block (exit `3`) or an unnecessary auto-select switch.
+**Projects with version-number-shaped text in a `//` or `/* */` comment near a toolchain
+declaration may now see a LOWER (correct) required-JDK value** — never higher, since
+stripping comments can only remove phantom signals, not add real ones.
+
+Fixed by stripping comments via `stripGradleComments` (`lib/project/kotlin-dsl.js`) before
+the signal-detection scan — the same helper already used in this codebase for the
+identical comment-false-positive problem in plugin/coverage detection. No `schema_version`
+bump — envelope and `describe` shapes are unchanged; only an existing field's value is
+corrected. **Known residual gap, not addressed here**: a JDK-version-shaped number inside a
+string literal (not a comment) still produces a false positive — `stripGradleComments` has
+no string-literal awareness. Tracked in `BACKLOG.md`.
+
 ### Fixed — `task_not_found` / `unsupported_class_version` now exit `3` (`ENV_ERROR`), not `1` (`TEST_FAIL`)
 
 **Observable behavior change.** `docs/envelope-contract.md` and the CLI reference skill have always
