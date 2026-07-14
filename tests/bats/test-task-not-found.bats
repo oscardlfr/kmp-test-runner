@@ -229,7 +229,10 @@ teardown_ws1() {
     [[ "$(uname)" == "Darwin" ]] || skip "--test-type ios requires macOS host"
     setup_ws1
     run bash "$PARALLEL" --project-root "$WORK_DIR" --module-filter "*" --test-type ios
-    [ "$status" -eq 1 ]
+    # task_not_found is an environment/toolchain problem (gradle couldn't
+    # locate the task), not a test assertion — exit 3 (ENV_ERROR), matching
+    # the published exit-code contract.
+    [ "$status" -eq 3 ]
     # Both modules must be flagged failed even though gradle only named
     # :edge-case in its error — gradle aborted before running anything, so
     # :also-doomed didn't run either.
@@ -254,15 +257,16 @@ teardown_ws1() {
     teardown_ws1
 }
 
-@test "WS-1 + WS-5: JSON envelope has exit_code = 1 AND errors[].code = 'task_not_found'" {
+@test "WS-1 + WS-5: JSON envelope has exit_code = 3 AND errors[].code = 'task_not_found'" {
     [[ "$(uname)" == "Darwin" ]] || skip "--test-type ios requires macOS host"
     setup_ws1
     run node bin/kmp-test.js --json parallel --project-root "$WORK_DIR" --module-filter "*" --test-type ios
     first_line=$(echo "$output" | grep -m1 '^{' || true)
     [ -n "$first_line" ]
-    # Pre-fix: exit_code:0 + errors[].code:"task_not_found" — WS-5 violation.
-    [[ "$first_line" == *'"exit_code":1'* ]]
+    # task_not_found is an environment/toolchain problem (not a test
+    # assertion) — exit_code:3 (ENV_ERROR), matching the published contract.
+    [[ "$first_line" == *'"exit_code":3'* ]]
     [[ "$first_line" == *'"code":"task_not_found"'* ]]
-    [ "$status" -eq 1 ]
+    [ "$status" -eq 3 ]
     teardown_ws1
 }

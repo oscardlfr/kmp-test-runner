@@ -1370,3 +1370,78 @@ describe('runBenchmark orchestrator exit_code consistency', () => {
     )).toBe(envelope.exit_code);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Exit-code contract: task_not_found / unsupported_class_version are
+// environment/toolchain problems, not test assertions — ENV_ERROR (3), not
+// TEST_FAIL (1), even though they're discovered alongside a module_failed
+// entry for the same module.
+// ---------------------------------------------------------------------------
+describe('runBenchmark exit-code contract (task_not_found / unsupported_class_version)', () => {
+  it('task_not_found discriminator promotes exitCode to 3, not 1', async () => {
+    const dir = copyFixture();
+    const spawn = () => ({
+      status: 1,
+      stdout: 'Cannot locate tasks that match \':bench-jvm:desktopSmokeBenchmark\' as task was not found.\nBUILD FAILED\n',
+      stderr: '', signal: null, error: null,
+    });
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.errors.some(e => e.code === 'module_failed')).toBe(true);
+    expect(envelope.errors.some(e => e.code === 'task_not_found')).toBe(true);
+    expect(exitCode).toBe(3);
+  });
+
+  it('unsupported_class_version discriminator promotes exitCode to 3, not 1', async () => {
+    const dir = copyFixture();
+    const spawn = () => ({
+      status: 1,
+      stdout: 'BUILD FAILED\njava.lang.UnsupportedClassVersionError: Foo has been compiled by a more recent version of the Java Runtime\n',
+      stderr: '', signal: null, error: null,
+    });
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'jvm', '--config', 'smoke'],
+      spawn,
+      adbProbe: () => [],
+    });
+    expect(envelope.errors.some(e => e.code === 'module_failed')).toBe(true);
+    expect(envelope.errors.some(e => e.code === 'unsupported_class_version')).toBe(true);
+    expect(exitCode).toBe(3);
+  });
+
+  it('priority: a plain module_failed alongside a task_not_found discriminator → ENV_ERROR (3) wins, not TEST_FAIL', async () => {
+    // Two failing legs: bench-jvm fails with a plain gradle error (no
+    // discriminator match), bench-android fails with a task_not_found match.
+    // Discriminators scan the COMBINED stdout/stderr across every leg, so a
+    // single task_not_found entry must still win priority over the run's own
+    // module_failed entries.
+    const dir = copyFixture();
+    const adbProbe = () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'SM-S908B' }];
+    let callIdx = 0;
+    const spawn = () => {
+      const idx = callIdx++;
+      if (idx === 0) {
+        return { status: 1, stdout: 'BUILD FAILED\n', stderr: '', signal: null, error: null };
+      }
+      return {
+        status: 1,
+        stdout: 'Cannot locate tasks that match \':bench-android:connectedBenchmark\' as task was not found.\nBUILD FAILED\n',
+        stderr: '', signal: null, error: null,
+      };
+    };
+    const { envelope, exitCode } = await runBenchmark({
+      projectRoot: dir,
+      args: ['--platform', 'all', '--config', 'smoke'],
+      spawn,
+      adbProbe,
+    });
+    expect(envelope.errors.filter(e => e.code === 'module_failed').length).toBeGreaterThanOrEqual(1);
+    expect(envelope.errors.some(e => e.code === 'task_not_found')).toBe(true);
+    expect(exitCode).toBe(3);
+  });
+});

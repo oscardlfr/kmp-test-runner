@@ -2237,7 +2237,7 @@ describe('runParallel', () => {
     ]);
     const spawn = makeSpawnStub({ resolutionFail: true });
     const stubCoverage = makeRunCoverageStub();
-    const { envelope } = await runParallel({
+    const { envelope, exitCode } = await runParallel({
       projectRoot: dir,
       args: ['--test-type', 'common'],
       spawn,
@@ -2247,6 +2247,31 @@ describe('runParallel', () => {
     expect(envelope.tests.failed).toBeGreaterThan(0);
     // applyErrorCodeDiscriminators picks up "Cannot locate tasks" → task_not_found
     expect(envelope.errors.some(e => e.code === 'task_not_found')).toBe(true);
+    // task_not_found is an environment/toolchain problem (not a test assertion)
+    // → ENV_ERROR (3), taking priority over the generic module_failed/TEST_FAIL
+    // default it's discovered alongside.
+    expect(exitCode).toBe(3);
+  });
+
+  it('unsupported_class_version discriminator promotes exit to ENV_ERROR (3), not TEST_FAIL', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeSpawnStub({
+      failTasks: [':core:jvmTest'],
+      stdout: 'BUILD FAILED\njava.lang.UnsupportedClassVersionError: Foo has been compiled by a more recent version of the Java Runtime\n',
+    });
+    const stubCoverage = makeRunCoverageStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(envelope.errors.some(e => e.code === 'module_failed')).toBe(true);
+    expect(envelope.errors.some(e => e.code === 'unsupported_class_version')).toBe(true);
+    expect(exitCode).toBe(3);
   });
 
   it('--no-coverage → coverage.tool="none" + warning, runCoverage NOT called', async () => {

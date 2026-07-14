@@ -510,7 +510,11 @@ describe('runChanged error code discrimination', () => {
     });
     // Sub-entry 5: discriminators (task_not_found etc.) live in
     // runParallel + applyErrorCodeDiscriminators. The changed-orchestrator
-    // simply forwards whatever errors[] runParallel returns.
+    // simply forwards whatever errors[]/exitCode runParallel returns — this
+    // stub hardcodes exitCode directly (3, matching the real
+    // classifyExitCode result for task_not_found) rather than deriving it,
+    // so this test is intentionally immune to the exit-code classifier
+    // refactor: it only proves error-code passthrough, not classification.
     const runParallelInjection = async () => ({
       envelope: {
         tests: { total: 1, passed: 0, failed: 1, skipped: 0 },
@@ -519,7 +523,7 @@ describe('runChanged error code discrimination', () => {
         errors: [{ code: 'task_not_found', message: "Cannot locate tasks that match ':mod:nonexistentTask'" }],
         warnings: [],
       },
-      exitCode: 1,
+      exitCode: 3,
     });
 
     const { envelope } = await runChanged({

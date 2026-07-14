@@ -7,7 +7,7 @@ The `kmp-test` CLI uses 4 semantic exit codes. Agents should branch on `envelope
 | `0` | `EXIT.SUCCESS` | All tests passed. The dispatch ran without failure. |
 | `1` | `EXIT.TEST_FAIL` | The dispatch ran, but at least one test failed OR a hard `errors[]` entry promoted via WS-5. |
 | `2` | `EXIT.CONFIG_ERROR` | Bad CLI usage — unknown subcommand, missing required argument, invalid flag value, `unknown_flag`, `flavor_unused`, `isolated_runtime_race`, or `no_test_modules` with `caused_by_filter:true`. |
-| `3` | `EXIT.ENV_ERROR` | Environment problem — missing `gradlew` / JDK / `pwsh` / `bash` / project root, `task_not_found`, `unsupported_class_version`, `instrumented_setup_failed`, `device_offline`, `device_unauthorized`, `multiple_adb_devices`, `lock_held`, `gradle_timeout`, or `no_test_modules` with `caused_by_filter:false`. (PR-27 will align the full error-code → exit-code table.) |
+| `3` | `EXIT.ENV_ERROR` | Environment problem — missing `gradlew` / JDK / `pwsh` / `bash` / project root, `task_not_found`, `unsupported_class_version`, `instrumented_setup_failed`, `device_offline`, `device_unauthorized`, `multiple_adb_devices`, `lock_held`, `gradle_timeout`, or `no_test_modules` with `caused_by_filter:false`. |
 
 Exit codes `124+` are reserved for OS-level signals; the orchestrator never emits them directly.
 

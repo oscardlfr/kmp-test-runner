@@ -1910,3 +1910,57 @@ describe('runAndroid spawn maxBuffer + spawn_error', () => {
     expect(err.message).toContain('KMP_GRADLE_MAXBUFFER_MB');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Exit-code contract: task_not_found / unsupported_class_version are
+// environment/toolchain problems, not test assertions — ENV_ERROR (3), not
+// TEST_FAIL (1), even though android-orchestrator discovers them alongside a
+// module_failed entry for the same module.
+// ---------------------------------------------------------------------------
+describe('runAndroid exit-code contract (task_not_found / unsupported_class_version)', () => {
+  it('plain module_failed (no discriminator match) → exitCode 1 (regression proof)', async () => {
+    const dir = makeProject([{ name: 'app' }]);
+    const spawn = makeSpawnStub({ gradle: { status: 1 } });
+    const adbProbe = () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'SM-S908B' }];
+
+    const { envelope, exitCode } = await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe });
+
+    expect(envelope.errors.some(e => e.code === 'module_failed')).toBe(true);
+    expect(envelope.errors.some(e => e.code === 'task_not_found' || e.code === 'unsupported_class_version')).toBe(false);
+    expect(exitCode).toBe(1);
+  });
+
+  it('task_not_found discriminator promotes exitCode to 3, not 1', async () => {
+    const dir = makeProject([{ name: 'app' }]);
+    const spawn = makeSpawnStub({
+      gradle: {
+        status: 1,
+        stdout: 'Cannot locate tasks that match \':app:connectedDebugAndroidTest\' as task was not found.\nBUILD FAILED\n',
+      },
+    });
+    const adbProbe = () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'SM-S908B' }];
+
+    const { envelope, exitCode } = await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe });
+
+    expect(envelope.errors.some(e => e.code === 'module_failed')).toBe(true);
+    expect(envelope.errors.some(e => e.code === 'task_not_found')).toBe(true);
+    expect(exitCode).toBe(3);
+  });
+
+  it('unsupported_class_version discriminator promotes exitCode to 3, not 1', async () => {
+    const dir = makeProject([{ name: 'app' }]);
+    const spawn = makeSpawnStub({
+      gradle: {
+        status: 1,
+        stdout: 'BUILD FAILED\njava.lang.UnsupportedClassVersionError: Foo has been compiled by a more recent version of the Java Runtime\n',
+      },
+    });
+    const adbProbe = () => [{ serial: 'DEVICE_SERIAL_FAKE', type: 'physical', model: 'SM-S908B' }];
+
+    const { envelope, exitCode } = await runAndroid({ projectRoot: dir, args: [], spawn, adbProbe });
+
+    expect(envelope.errors.some(e => e.code === 'module_failed')).toBe(true);
+    expect(envelope.errors.some(e => e.code === 'unsupported_class_version')).toBe(true);
+    expect(exitCode).toBe(3);
+  });
+});

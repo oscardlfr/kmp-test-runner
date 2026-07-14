@@ -246,7 +246,7 @@ Describe 'parallel.ps1: WS-1 reactive defense (gradle aborts at task-graph resol
         New-Ws1Fixture -Path $script:WorkDir
     }
 
-    It 'marks ALL testable modules FAIL when gradle says Cannot locate (exit 1)' {
+    It 'marks ALL testable modules FAIL when gradle says Cannot locate (exit 3)' {
         if (-not $IsMacOS) { Set-ItResult -Skipped -Because 'iOS dispatch requires macOS host' }
         $wrapper = $script:Wrapper
         $work    = $script:WorkDir
@@ -255,7 +255,9 @@ Describe 'parallel.ps1: WS-1 reactive defense (gradle aborts at task-graph resol
                 -ProjectRoot $work -ModuleFilter '*' -TestType 'ios' `
                 -IgnoreJdkMismatch -CoverageTool 'none' 2>&1) -join "`n"
         }
-        $LASTEXITCODE | Should -Be 1
+        # task_not_found is an environment/toolchain problem (not a test
+        # assertion) — exit 3 (ENV_ERROR), matching the published contract.
+        $LASTEXITCODE | Should -Be 3
         # Both modules must be FAIL even though gradle only named :edge-case.
         $output       | Should -Match '\[FAIL\]\s+edge-case'
         $output       | Should -Match '\[FAIL\]\s+also-doomed'
@@ -283,7 +285,7 @@ Describe 'kmp-test --json parallel: WS-1 reactive surfaces task_not_found (Windo
         New-Ws1Fixture -Path $script:WorkDir
     }
 
-    It 'JSON envelope: exit_code = 1 AND errors[].code = "task_not_found"' {
+    It 'JSON envelope: exit_code = 3 AND errors[].code = "task_not_found"' {
         if (-not $IsMacOS) { Set-ItResult -Skipped -Because 'iOS dispatch requires macOS host' }
         $cli  = $script:Cli
         $work = $script:WorkDir
@@ -294,8 +296,10 @@ Describe 'kmp-test --json parallel: WS-1 reactive surfaces task_not_found (Windo
         }
         $firstLine = ($output -split "`n" | Where-Object { $_ -match '^\{' } | Select-Object -First 1)
         $firstLine | Should -Not -BeNullOrEmpty
-        $firstLine    | Should -Match '"exit_code":1'
+        # task_not_found is an environment/toolchain problem (not a test
+        # assertion) — exit_code:3 (ENV_ERROR), matching the published contract.
+        $firstLine    | Should -Match '"exit_code":3'
         $firstLine    | Should -Match '"code":"task_not_found"'
-        $LASTEXITCODE | Should -Be 1
+        $LASTEXITCODE | Should -Be 3
     }
 }

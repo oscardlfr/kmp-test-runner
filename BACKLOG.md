@@ -109,6 +109,34 @@
   project and one private project, Android-relevant changes on the connected S22 Ultra,
   macOS/iOS/manual checks only when needed, no recurring heavy macOS CI, private evidence
   only through anonymized artifacts.
+- ✅ **PR-27 `fix(envelope): honor published exit-code contract`** — SHIPPED 2026-07-14 (this PR).
+  v3.1/v3.2 finding (DECIDED, recommendation inverted from an earlier round): `task_not_found` and
+  `unsupported_class_version` are environment/toolchain problems, not test assertions — the
+  published contract has always said exit `3` (`ENV_ERROR`) for both, but `parallel`'s
+  `decideExitCode`, `android`'s flat error-count ternary, and `benchmark`'s if/else chain all
+  independently resolved them to `1` (`TEST_FAIL`). The audit's own text named only
+  `result-rollup.js` as the fix site; investigation found the identical bug duplicated in
+  `android-orchestrator.js` and `benchmark-orchestrator.js` too — all three fixed via one new
+  shared helper, `classifyExitCode` (`lib/envelope/exit-codes.js`), which
+  `enforceErrorsExitCodeInvariant`'s dispatcher-level promotion also now targets instead of
+  blindly promoting to `1`. `gradle_timeout` (the third code the audit named) was already
+  correctly `3` — untouched, just regression-tested. A flawed first-draft version of the
+  classifier (an allowlist rather than a catch-all) was caught in review before merge — it would
+  have silently regressed `android`'s `spawn_error` case from non-zero back to `0`; the shipped
+  version is fail-closed instead. Observable behavior change, documented in `CHANGELOG.md`: any
+  consumer branching on exit code for these two specific conditions must update from `1` to `3`.
+  Deferred (not fixed here, to keep this PR scoped to the exit-code contract itself): `no_project`'s
+  doc-says-3/code-returns-2 drift (`describe` subcommand, docs need updating — code is the
+  deliberate, tested v0.9 "F-1" fix); four hard error codes (`jdk_mismatch`, `lock_write_error`,
+  `platform_unsupported`, `project_model_failed`) undocumented in both canonical docs;
+  `envelope-schema.md`'s cross-tool-comparison table claiming "6 codes" for warnings when its own
+  table lists 19; `no_test_modules`'s "Subcommand" column omitting `android`/`benchmark` (both emit
+  it); `android`/`benchmark`'s `no_test_modules` not supporting the `caused_by_filter` split
+  `parallel`/`changed` have (always hardcoded `ENV_ERROR`); `gradle_timeout`'s absence from both
+  docs' soft-codes tables (it's in code's `SOFT_ERROR_CODES`, a wording/classification nuance, not
+  a contract violation); `input-validation.test.js`'s CONFIG_ERROR cases not uniformly asserting
+  `envelope.exit_code === result.exitCode` the way `describe-orchestrator.test.js`'s F-1 regression
+  test does.
 - ✅ **PR-18 `fix(parallel): make dry-run side-effect free`** — SHIPPED 2026-07-14 (this PR). v3.2
   finding H8: `resolveDryRunModules` (`lib/parsers/script-output.js`, the dispatcher-level
   `--dry-run` short-circuit shared by `parallel` and `changed`) called
