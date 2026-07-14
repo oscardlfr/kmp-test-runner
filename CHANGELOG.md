@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `parallel`/`changed` `--dry-run` no longer probes gradle or writes cache on a cold cache
+
+`resolveDryRunModules` (`lib/parsers/script-output.js`, the dispatcher-level `--dry-run`
+short-circuit shared by `parallel` and `changed`) called `buildProjectModel(projectRoot)` with no
+options. On a cold project-model cache — every fresh checkout, every CI run, or any time a tracked
+gradle file changes — this spawned a real `gradlew tasks --all --quiet` probe and unconditionally
+wrote `.kmp-test-runner/cache/{tasks,model}-<sha>.{txt,json}`, contradicting the documented dry-run
+contract. Fixed by passing `{ useCache: false, skipProbe: true }` — the same no-cache/no-probe
+combination `describe --skip-probe` already uses; `skipProbe` alone isn't sufficient, since
+`buildProjectModel`'s cache write is gated on `useCache`, not `skipProbe`.
+
+After this fix, `parallel --dry-run` and `changed --dry-run` (same shared helper) are guaranteed to
+make no Gradle task-probe spawn, make no ADB/device call, make no filesystem writes under
+`.kmp-test-runner/`, and create no `.kmp-test-runner/` directory. This does not extend to every
+subprocess spawned during dispatch setup — on Windows, `pickWindowsShell()` still probes `pwsh`
+availability before the dry-run short-circuit runs; that pre-existing, unrelated spawn is out of
+scope for this fix. Additive — no `schema_version` bump; envelope shape unchanged.
+
+**Known trade-off on a cold cache**: dry-run's module preview (`plan.modules[]` / `plan.skipped[]`)
+now comes from static analysis only, with no gradle task-graph probe to fall back on. For a module
+whose flavor is applied by a build-logic convention (not its own `build.gradle.kts`), `has_flavor`/
+`flavors` report the unprobed static view instead of the probe-recovered one. More significantly,
+a module whose *only* unit-test source sets are flavor-named (e.g. `src/testDemo/`, with no bare
+`src/test/`) can be reclassified into `plan.skipped[]` with reason `"no test source set"` on a
+cold-cache dry-run, even though a real run (or a dry-run against a warm cache from a prior real
+run, which still reads the pre-existing task-probe cache) would find and dispatch it correctly.
+This is a bounded, cache-state-dependent consequence of removing the gradle probe, not a
+regression in the real dispatch path.
+
 ### Fixed — coverage aggregation survives `--min-missed-lines` filtering; Python dependency dropped
 
 `lib/orchestrators/coverage-orchestrator.js` had three related integrity bugs. `--min-missed-lines`

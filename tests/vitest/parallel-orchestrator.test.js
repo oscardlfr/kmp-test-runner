@@ -1447,6 +1447,119 @@ describe('runParallel', () => {
     expect(envelope.plan.legs).not.toContain('androidInstrumented');
   });
 
+  // ---------------------------------------------------------------------
+  // Side-effect-purity regression locks (dry-run must never spawn gradle,
+  // probe adb, dispatch coverage/benchmark, or touch .kmp-test-runner/).
+  // These characterize behavior already correct in runParallel's own
+  // dry-run short-circuit (line 335) — the actual reachable bug for the
+  // real CLI lives one layer up, in the dispatcher's resolveDryRunModules
+  // (lib/parsers/script-output.js), covered separately in cli.test.js and
+  // script-dispatcher.test.js.
+  // ---------------------------------------------------------------------
+  it('--dry-run --fresh-daemon does not spawn gradle at all (no gradlew --stop)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain'] }]);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--dry-run', '--test-type', 'common', '--fresh-daemon'],
+      spawn,
+      log: () => {},
+    });
+    expect(envelope.dry_run).toBe(true);
+    expect(exitCode).toBe(0);
+    expect(spawn.calls.length).toBe(0);
+  });
+
+  it('--dry-run --test-type androidInstrumented never invokes adbProbe', async () => {
+    const dir = makeProject([{ name: 'core' }]);
+    let adbCalls = 0;
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--dry-run', '--test-type', 'androidInstrumented'],
+      spawn: makeSpawnStub(),
+      adbProbe: () => { adbCalls++; return []; },
+      log: () => {},
+    });
+    expect(envelope.dry_run).toBe(true);
+    expect(exitCode).toBe(0);
+    expect(adbCalls).toBe(0);
+  });
+
+  it('--dry-run does not call runCoverage', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    let coverageCalls = 0;
+    const stubCoverage = async () => { coverageCalls++; return { envelope: {}, exitCode: 0 }; };
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--dry-run', '--test-type', 'common', '--coverage-tool', 'kover'],
+      spawn: makeSpawnStub(),
+      runCoverageInjection: stubCoverage,
+      log: () => {},
+    });
+    expect(envelope.dry_run).toBe(true);
+    expect(coverageCalls).toBe(0);
+  });
+
+  it('--dry-run --benchmark does not call runBenchmark', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    let benchCalls = 0;
+    const stubBenchmark = async () => { benchCalls++; return { envelope: {}, exitCode: 0 }; };
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--dry-run', '--test-type', 'common', '--benchmark'],
+      spawn: makeSpawnStub(),
+      runBenchmarkInjection: stubBenchmark,
+      log: () => {},
+    });
+    expect(envelope.dry_run).toBe(true);
+    expect(benchCalls).toBe(0);
+  });
+
+  it('--dry-run --isolated leaves the whole .kmp-test-runner tree absent, not just cache_dir', async () => {
+    const dir = makeProject([{ name: 'core' }]);
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--dry-run', '--isolated'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.isolated.enabled).toBe(true);
+    expect(existsSync(path.join(dir, '.kmp-test-runner'))).toBe(false);
+  });
+
+  it('--dry-run envelope carries the full expected key set', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--dry-run', '--test-type', 'common'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+    });
+    for (const key of [
+      'tool', 'schema_version', 'subcommand', 'version', 'project_root',
+      'exit_code', 'duration_ms', 'dry_run', 'tests', 'modules', 'skipped',
+      'coverage', 'errors', 'warnings', 'plan', 'isolated',
+    ]) {
+      expect(envelope).toHaveProperty(key);
+    }
+    expect(envelope.subcommand).toBe('parallel');
+    expect(envelope.dry_run).toBe(true);
+  });
+
+  it('--dry-run on a cold-cache project leaves zero .kmp-test-runner artifacts on disk (filesystem sentinel)', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--dry-run', '--test-type', 'common'],
+      spawn,
+      log: () => {},
+    });
+    expect(spawn.calls.length).toBe(0);
+    expect(existsSync(path.join(dir, '.kmp-test-runner'))).toBe(false);
+  });
+
   it('--test-type ios on Linux/Windows → platform_unsupported, exit 3', async () => {
     if (process.platform === 'darwin') return; // no-op on macOS
     const dir = makeProject([{ name: 'shared' }]);

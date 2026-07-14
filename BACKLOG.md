@@ -109,6 +109,35 @@
   project and one private project, Android-relevant changes on the connected S22 Ultra,
   macOS/iOS/manual checks only when needed, no recurring heavy macOS CI, private evidence
   only through anonymized artifacts.
+- ✅ **PR-18 `fix(parallel): make dry-run side-effect free`** — SHIPPED 2026-07-14 (this PR). v3.2
+  finding H8: `resolveDryRunModules` (`lib/parsers/script-output.js`, the dispatcher-level
+  `--dry-run` short-circuit shared by `parallel` and `changed`) called
+  `buildProjectModel(projectRoot)` with no options — on a cold cache this spawned a real `gradlew
+  tasks --all --quiet` probe and unconditionally wrote `.kmp-test-runner/cache/{tasks,model}-<sha>.
+  {txt,json}`, contradicting the documented dry-run contract. Fixed with the one-line
+  `{ useCache: false, skipProbe: true }` (same combination `describe --skip-probe` already uses —
+  `skipProbe` alone doesn't stop the cache write, which is gated on `useCache`). Investigation
+  found `runParallel`'s own internal dry-run branch (`parallel-orchestrator.js:335`) already
+  correctly side-effect-free (fresh-daemon/ADB/coverage/benchmark/isolated-dir all properly
+  gated) — it's just unreachable dead code from the real CLI, since the dispatcher short-circuits
+  before ever invoking it. 10 new/extended regression tests across 3 files prove: no gradle
+  task-probe spawn, no ADB probe, no coverage/benchmark dispatch, no isolated-dir mkdir, and no
+  `.kmp-test-runner/` creation at all — including a real end-to-end subprocess test and a
+  `changed --dry-run` case (same shared helper, same fix). Discovered but explicitly deferred
+  (not fixed here): `pickWindowsShell()` still probes `pwsh` availability on Windows before the
+  dry-run short-circuit — unrelated to gradle/adb/`.kmp-test-runner`, and fixing it would require
+  reordering `script-dispatcher.js`'s sequencing, which its own header comment locks against
+  ("17 Pester contract tests + parity snapshots key on this exact order"). **Trade-off surfaced
+  by CI, not just predicted**: `build (ubuntu-latest)` caught 2 bats fixtures
+  (`test-convention-flavors.bats`, `test-flavored-unit-only.bats`) that asserted the *old*
+  probe-backed accuracy of `parallel --dry-run`'s module preview on a cold cache. Without the
+  probe, a convention-applied-flavor module reports `has_flavor:false` on dry-run instead of the
+  probed `true` (module presence in `plan.modules[]` unaffected); more significantly, a module
+  whose only unit-test source sets are flavor-named (no bare `src/test/`) is now genuinely
+  reclassified into `plan.skipped[]` with reason `"no test source set"` on a cold-cache dry-run —
+  an honest static-only view, not a real-dispatch regression (a warm cache, or the real run
+  itself, is unaffected). Both fixtures updated to assert the new, correct-by-necessity contract;
+  see the CHANGELOG `[Unreleased]` entry's "Known trade-off" paragraph for the full write-up.
 - ✅ **PRE-RELEASE — Opus 4.8 (`claude-opus-4-8`) token-cost refresh** — DONE 2026-06-07 (this PR). Finding: **`claude-opus-4-8` shares `claude-opus-4-7`'s tokenizer.** The cross-model re-measure showed a *constant* −5-token delta per `count_tokens` request regardless of input size (a 321-token and a 2.38 M-token capture both differ by exactly 5; chunked captures differ by ~5×chunks), i.e. `count_tokens` request scaffolding — not content tokenization. Confirmed across all four features incl. the 36 M-token coverage cell (re-measuring `claude-opus-4-7` reproduced 36,571,879 ≈ the committed 36,571,927, within chunk-boundary tolerance → captures byte-identical); cl100k / sonnet / haiku all reproduced exactly. **Refreshed** the opus column to the freshly-measured 4.8 numbers across the 4 README drill-down tables + `docs/token-cost-measurement.md` + the 4 committed `tools/runs/cross-model-results-{parallel,coverage,changed,benchmark}.txt`; recomputed within-project A:C (parallel 336× unchanged, changed 214×→217×, benchmark 145×→147×, coverage 29,952×→30,075×) and relabeled the tokenizer note + `--anthropic-models` examples + tool usage comments. **Bonus (user-requested):** replaced the render-broken `█` ASCII bars (GitHub renders them as barcode-noise) with clean numeric tables across README + docs. Out of scope: `cross-model-results-{info,describe}.txt` stay `claude-opus-4-7` (auxiliary, not README-referenced, captures absent so not re-measurable) and the CHANGELOG bars are frozen history. NOT a release — the version bump + tag + publish is the next `develop→main` session.
 - ✅ **README / tools-usage audit** — DONE 2026-06-06 (this PR). Docs: new "Choosing a test type" decision table + "Compose UI tests are instrumented" callout, per-value `--test-type` guidance, clarified `android` subcommand + Gradle-plugin `testType` docs, an "instrumented-only flags" grouping note, and a warning-code catalogue in `docs/envelope-contract.md`. **Discoverability hint shipped too**: the unit/auto leg now emits `warnings[].code: "instrumented_only_skipped"` (+ actionable `[SKIP]` / `skipped[].reason`) pointing at `--test-type androidInstrumented`, suppressed under `--test-type all`; `parallel`/`changed`/`android` `--help` updated. (Original context: a UI teammate added the Gradle plugin to a Compose-UI-only project and saw "no reports" because auto-detect ran the unit leg and silently skipped instrumented-only modules.)
 - ✅ **`--capture-on-fail` on `parallel --test-type androidInstrumented`** — DONE 2026-06-07 (this PR). Wired the shared `lib/orchestrators/android-capture.js` helper into `parallel/result-rollup.js`'s `module_failed` branch via an injected `capture` callback (built in `parallel-orchestrator.js`, gated to `testType === 'androidInstrumented'` in `cascade-retry.js` so the pure rollup module keeps its no-`child_process` invariant). Reuses `resolvedDeviceSerial` + the `.kmp-test-runner/logs/android/<runId>/` dir; captures once per still-failed module on the final-failure state (post `--auto-retry`/cascade), namespaced per module. `--capture-on-fail` / `--capture-dir` now parse in `parallel` (dispatch.js), pass through the `.sh` wrapper verbatim + the `.ps1` wrapper's new `-CaptureOnFail`/`-CaptureDir` params, and propagate through `ParallelTestsTask`. Fires for both `--test-type androidInstrumented` and the instrumented leg of `--test-type all`. Additive on `errors[]` — no `schema_version` bump. Emulators are first-class. Wet-validated on a physical S22 Ultra. Deferred from the android-subcommand PR (#278) to keep it focused.

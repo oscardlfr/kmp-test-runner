@@ -59,9 +59,24 @@ teardown() {
     [[ "$output" == *"unit=test has_flavor=true"* ]]
 }
 
-@test "flavored-unit-only: parallel --dry-run plan keeps :app (has_flavor true, not skipped)" {
+# fix(parallel): make dry-run side-effect free — resolveDryRunModules now
+# forces { useCache: false, skipProbe: true } so a cold cache can never
+# trigger a gradle probe spawn or a cache write. That closes the H8 side-
+# effect bug, but it also means dry-run's module preview is STATIC-ONLY on a
+# cold cache — same blind spot as the "static scan is blind" test above.
+# Unlike convention-flavors (whose modules keep an ordinary src/test/ tree
+# and just lose their flavor labels), :app HERE has no test source set the
+# static walker recognizes at all (only src/testDemo/ + src/testProd/), so it
+# is now genuinely reclassified into skipped[] with reason "no test source
+# set" on a cold-cache dry-run — an honest reflection of what static analysis
+# alone can see, even though a real run (or a dry-run against a warm cache
+# from a prior real run) would still find and dispatch it correctly. This is
+# an accepted, bounded trade-off of the no-gradle-probe dry-run contract, not
+# a regression in the real dispatch path (unaffected — see the "probe
+# recovers..." test above and the runParallel integration tests).
+@test "flavored-unit-only: parallel --dry-run on a cold cache reclassifies :app as skipped (static-only blind spot)" {
     run node bin/kmp-test.js parallel --project-root "$FIXTURE" --test-type androidUnit --module-filter :app --dry-run --json
     [ "$status" -eq 0 ]
-    [[ "$output" == *'"has_flavor":true'* ]]
-    [[ "$output" == *'"flavors":["demo","prod"]'* ]]
+    [[ "$output" == *'"module":"app"'* ]]
+    [[ "$output" == *'"reason":"no test source set"'* ]]
 }
