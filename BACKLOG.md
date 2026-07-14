@@ -109,6 +109,39 @@
   project and one private project, Android-relevant changes on the connected S22 Ultra,
   macOS/iOS/manual checks only when needed, no recurring heavy macOS CI, private evidence
   only through anonymized artifacts.
+- ✅ **PR-20a `test(env): make environment snapshots hermetic`** — SHIPPED 2026-07-14 (this PR,
+  closes v3.2 finding M9's JAVA_HOME-dependent-snapshot half; the CRLF/bats half is PR-20b,
+  separate, not touched here). Root cause: `lib/jdk-catalogue.js`'s `discoverInstalledJdks()`
+  (called with no options from both `lib/commands/doctor.js` and
+  `lib/orchestrators/info-orchestrator.js`) scans hardcoded absolute per-platform paths (e.g.
+  `C:\Program Files\Eclipse Adoptium`, `/usr/lib/jvm`) that no env var can influence, so
+  `info.jdk_catalogue` came back empty or populated purely based on what's really installed on
+  whatever machine ran the test — hence "1922/1923 locally". `info.android_sdk`/`info.jdk` had the
+  same null-vs-object divergence. `tests/vitest/_parity-helpers.js`'s existing normalizer already
+  collapsed leaf *values* to type placeholders for `checks`/`info`/`gradle_config`
+  (`HOST_ENV_KEY` → `schemaOf`) but reflected whatever *shape* (null vs object, `[]` vs
+  populated) the live run happened to produce for these three fields — the gap this PR closes.
+  Fix: generalized the existing `java_home`-only `NULLABLE_STRING_SCHEMA_FIELDS` precedent into
+  `FIXED_SCHEMA_OVERRIDES`, a fixed contract shape for `jdk`/`jdk_catalogue`/`android_sdk`
+  returned unconditionally regardless of the live value (values chosen to match what was already
+  committed, so the `.snap` file needed zero changes). Snapshot-producing subprocesses
+  (`runSubcommand`) now build their env via a new `makeHermeticEnv()` instead of inheriting full
+  `process.env` — real `PATH` preserved (case-insensitive lookup, since Windows can store it as
+  `Path` rather than `PATH`; naively assuming the literal key would silently drop PATH resolution
+  on such a host and falsely flip `doctor`'s `exit_code` from 0→1) so `java`/`pwsh`/`bash`/`adb`
+  still resolve normally; `HOME`/`USERPROFILE`/`LOCALAPPDATA`/`TMP`/`TEMP`/`CI` sandboxed;
+  `JAVA_HOME`/`ANDROID_HOME`/`ANDROID_SDK_ROOT` omitted. `FIXED_SCHEMA_OVERRIDES` only affects the
+  snapshot-side normalizer — a raw (non-normalized) envelope from `runSubcommand` still carries
+  the real live shape; no production `lib/` code changed. 7 new tests in
+  `tests/vitest/parity.test.js`, including a host-independent proof (hand-built "not found" vs
+  "found" `info` blocks normalize identically) verified to fail without the fix and pass with it
+  — the initial design (mutating real `process.env.ANDROID_HOME` around a real subprocess run)
+  turned out to NOT discriminate on a dev machine that already has a real Android SDK detected, so
+  it was replaced with the synthetic-envelope version instead of left as a non-gated assertion.
+  Vitest 2371 → 2378 (+7). `npm run test:coverage` / `node tools/decouple-audit.mjs` /
+  `node tools/check-line-endings.mjs` all green. `git diff --ignore-space-at-eol -- tests/vitest/__snapshots__/parity.test.js.snap`
+  confirmed empty (zero real snapshot diff; the file's dirty `git status` was pre-existing
+  autocrlf noise, left untouched).
 - ✅ **PR-28c `test(android): close stale xml audit finding`** — SHIPPED 2026-07-14 (this PR,
   final slice of the verify-first trio / v3.2 finding M10). Did NOT reproduce as stated:
   `android-orchestrator.js` has no JUnit-XML read path at all — `parseTestCounts` /
