@@ -1110,4 +1110,25 @@ describe('PR-17 — threshold/aggregation integrity', () => {
     expect(parseFailed).toBeTruthy();
     expect(parseFailed.modules).toEqual(['bad']);
   });
+
+  it('threads the injected env through to the real parser — KMP_COVERAGE_XML_MAX_MB is honored', async () => {
+    // Exercises the DEFAULT (non-injected) parseCoverageXml -- i.e. the real
+    // lib/parsers/coverage-xml.js -- to prove runCoverage's own `env` param
+    // reaches it, not just process.env. A 1 MB cap (the smallest valid
+    // KMP_COVERAGE_XML_MAX_MB value) requires real oversized content; the
+    // ~1.5 MB padding is comfortably under the 128 MB default, so this only
+    // trips if the injected env actually wins.
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    const xmlPath = dropFakeXml(projectRoot, 'a', 'kover');
+    writeFileSync(xmlPath, `<report>${'y'.repeat(1_500_000)}</report>`, 'utf8');
+    const { envelope } = await runCoverage({
+      projectRoot,
+      args: [],
+      env: { ...process.env, KMP_COVERAGE_XML_MAX_MB: '1' },
+    });
+    expect(envelope.coverage.module_buckets.parse_errored).toEqual(['a']);
+    const w = envelope.warnings.find((x) => x.code === 'coverage_xml_oversized');
+    expect(w).toBeTruthy();
+    expect(w.modules).toEqual(['a']);
+  });
 });
