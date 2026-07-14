@@ -38,6 +38,9 @@ import {
   parseScriptOutput,
   buildJsonReport,
   enforceErrorsExitCodeInvariant,
+  classifyExitCode,
+  CONFIG_ERROR_CODES,
+  ENV_ERROR_CODES,
   buildDryRunReport,
   envErrorJson,
   translateFlagForPowerShell,
@@ -517,7 +520,7 @@ describe('buildJsonReport', () => {
 // CLI side too (covers any future regression on the wrapper side).
 describe('enforceErrorsExitCodeInvariant (WS-5)', () => {
   it('promotes scriptStatus 0 to TEST_FAIL (1) when errors[] is non-empty', () => {
-    const parsed = { errors: [{ code: 'task_not_found', message: 'Cannot locate tasks ...' }] };
+    const parsed = { errors: [{ code: 'module_failed', message: 'FAILED' }] };
     expect(enforceErrorsExitCodeInvariant(0, parsed)).toBe(1);
   });
 
@@ -530,6 +533,17 @@ describe('enforceErrorsExitCodeInvariant (WS-5)', () => {
     expect(enforceErrorsExitCodeInvariant(3, parsed)).toBe(3);
     expect(enforceErrorsExitCodeInvariant(2, parsed)).toBe(2);
     expect(enforceErrorsExitCodeInvariant(1, parsed)).toBe(1);
+  });
+
+  it('promotes an uncoded hard error (no code field at all) to TEST_FAIL (1)', () => {
+    // classifyExitCode's TEST_FAIL branch is a catch-all (list.length > 0),
+    // not an allowlist of known codes — a completely uncoded error object
+    // still forces promotion. Exercises the floor in
+    // enforceErrorsExitCodeInvariant directly (classifyExitCode itself can't
+    // return SUCCESS when hardErrors is non-empty, but the floor guards
+    // against a future classifyExitCode change reintroducing that gap).
+    const parsed = { errors: [{ message: 'mystery failure' }] };
+    expect(enforceErrorsExitCodeInvariant(0, parsed)).toBe(1);
   });
 
   it('handles missing errors field defensively (treated as empty)', () => {
@@ -573,20 +587,99 @@ describe('enforceErrorsExitCodeInvariant (WS-5)', () => {
     expect(enforceErrorsExitCodeInvariant(0, parsed)).toBe(1);
   });
 
-  it('promotes when no_summary coexists with a hard discriminator', () => {
+  it('promotes when no_summary coexists with a hard discriminator (corrected: task_not_found is ENV_ERROR)', () => {
     // Mixed-bag case: parse-gap fallback fires AND a real discriminator
-    // (task_not_found) is present. The hard error wins → promotion.
+    // (task_not_found) is present. The hard error wins → promotion, now to
+    // its documented code (3) rather than a blind TEST_FAIL (1) — matching
+    // the published contract (task_not_found is an environment/toolchain
+    // problem, not a test assertion).
     const parsed = { errors: [
       { code: 'no_summary', message: '...' },
       { code: 'task_not_found', message: 'Cannot locate ...' },
     ] };
-    expect(enforceErrorsExitCodeInvariant(0, parsed)).toBe(1);
+    expect(enforceErrorsExitCodeInvariant(0, parsed)).toBe(3);
   });
 
-  it('promotes when ANY discriminator is in errors[] (not just task_not_found)', () => {
-    for (const code of ['task_not_found', 'unsupported_class_version', 'instrumented_setup_failed', 'no_test_modules']) {
-      expect(enforceErrorsExitCodeInvariant(0, { errors: [{ code }] })).toBe(1);
+  it('promotes each discriminator to its documented exit code (corrected contract)', () => {
+    // Previously asserted a blind promotion to 1 (TEST_FAIL) for all four.
+    // task_not_found / unsupported_class_version / instrumented_setup_failed
+    // are environment/toolchain problems (ENV_ERROR); a bare no_test_modules
+    // (no caused_by_filter field) defaults to the "project genuinely has no
+    // test modules" case, also ENV_ERROR.
+    const cases = [
+      ['task_not_found', EXIT.ENV_ERROR],
+      ['unsupported_class_version', EXIT.ENV_ERROR],
+      ['instrumented_setup_failed', EXIT.ENV_ERROR],
+      ['no_test_modules', EXIT.ENV_ERROR],
+    ];
+    for (const [code, expected] of cases) {
+      expect(enforceErrorsExitCodeInvariant(0, { errors: [{ code }] })).toBe(expected);
     }
+  });
+});
+
+describe('classifyExitCode (central exit-code contract mapping)', () => {
+  it('returns SUCCESS for empty/undefined errors and no test failures', () => {
+    expect(classifyExitCode([])).toBe(EXIT.SUCCESS);
+    expect(classifyExitCode(undefined)).toBe(EXIT.SUCCESS);
+    expect(classifyExitCode([], { testsFailed: 0 })).toBe(EXIT.SUCCESS);
+  });
+
+  it('returns CONFIG_ERROR for every CONFIG_ERROR_CODES member (real Set membership, not a hardcoded list)', () => {
+    for (const code of [...CONFIG_ERROR_CODES]) {
+      expect(classifyExitCode([{ code }])).toBe(EXIT.CONFIG_ERROR);
+    }
+  });
+
+  it('returns ENV_ERROR for every ENV_ERROR_CODES member (real Set membership, not a hardcoded list)', () => {
+    for (const code of [...ENV_ERROR_CODES]) {
+      expect(classifyExitCode([{ code }])).toBe(EXIT.ENV_ERROR);
+    }
+  });
+
+  it('no_test_modules: caused_by_filter true → CONFIG_ERROR, false/absent → ENV_ERROR', () => {
+    expect(classifyExitCode([{ code: 'no_test_modules', caused_by_filter: true }])).toBe(EXIT.CONFIG_ERROR);
+    expect(classifyExitCode([{ code: 'no_test_modules', caused_by_filter: false }])).toBe(EXIT.ENV_ERROR);
+    expect(classifyExitCode([{ code: 'no_test_modules' }])).toBe(EXIT.ENV_ERROR);
+  });
+
+  it('returns TEST_FAIL for module_failed and coverage_threshold_exceeded', () => {
+    expect(classifyExitCode([{ code: 'module_failed' }])).toBe(EXIT.TEST_FAIL);
+    expect(classifyExitCode([{ code: 'coverage_threshold_exceeded' }])).toBe(EXIT.TEST_FAIL);
+  });
+
+  it('returns TEST_FAIL for testsFailed > 0 alone, with no errors present', () => {
+    expect(classifyExitCode([], { testsFailed: 1 })).toBe(EXIT.TEST_FAIL);
+  });
+
+  it('is fail-closed (catch-all), not an allowlist: an unclassified/unknown hard code still returns TEST_FAIL', () => {
+    // Regression guard for the flaw caught in review: the first draft's
+    // TEST_FAIL branch only matched literal 'module_failed' /
+    // 'coverage_threshold_exceeded', so any other code (e.g. spawn_error)
+    // fell through to SUCCESS despite errors[] being non-empty. android
+    // discriminates spawn-layer failures as 'spawn_error' — this must never
+    // silently resolve to exit 0.
+    expect(classifyExitCode([{ code: 'spawn_error' }])).toBe(EXIT.TEST_FAIL);
+    expect(classifyExitCode([{ code: 'some_future_unclassified_code' }])).toBe(EXIT.TEST_FAIL);
+  });
+
+  it('priority order: an ENV_ERROR_CODES code coexisting with module_failed → ENV_ERROR wins', () => {
+    // The core regression shape this fix targets: a discriminator like
+    // task_not_found is pushed additively alongside the module_failed entry
+    // for the same failure, never replacing it — ENV must still win.
+    const errors = [
+      { code: 'module_failed', module: ':app' },
+      { code: 'task_not_found', message: 'Cannot locate tasks that match ...' },
+    ];
+    expect(classifyExitCode(errors, { testsFailed: 1 })).toBe(EXIT.ENV_ERROR);
+  });
+
+  it('priority order: CONFIG_ERROR wins over ENV_ERROR when both are present', () => {
+    const errors = [
+      { code: 'instrumented_setup_failed' },
+      { code: 'flavor_unused' },
+    ];
+    expect(classifyExitCode(errors)).toBe(EXIT.CONFIG_ERROR);
   });
 });
 

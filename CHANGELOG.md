@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `task_not_found` / `unsupported_class_version` now exit `3` (`ENV_ERROR`), not `1` (`TEST_FAIL`)
+
+**Observable behavior change.** `docs/envelope-contract.md` and the CLI reference skill have always
+documented `task_not_found` (gradle can't locate the requested task) and `unsupported_class_version`
+(JDK/toolchain mismatch) as environment problems that exit `3` — the code disagreed, resolving both
+to `1` in `parallel`, `android`, and `benchmark` (`changed` inherited the same bug via its delegation
+to `parallel`). Both codes represent an environment/toolchain problem, not a failing test assertion,
+and are now classified accordingly, taking priority over the generic `module_failed`/`TEST_FAIL`
+default they're discovered alongside. **Any agent or script branching on exit code for these two
+specific conditions must update from `1` to `3`.** `gradle_timeout` (the third code in this family)
+was already correctly classified as `3` — unaffected.
+
+Introduces `classifyExitCode` (`lib/envelope/exit-codes.js`) as the one central mapping from a
+discriminated `errors[]` array to the documented exit code, replacing three independently-drifting
+implementations (`parallel`'s `decideExitCode`, `android`'s flat error-count ternary, `benchmark`'s
+ad hoc if/else chain). `enforceErrorsExitCodeInvariant`'s dispatcher-level promotion also now
+targets the correct documented code instead of blindly promoting to `1`. No `schema_version` bump —
+the envelope shape and the published contract are unchanged; only the code's adherence to that
+already-published contract is corrected.
+
 ### Fixed — `parallel`/`changed` `--dry-run` no longer probes gradle or writes cache on a cold cache
 
 `resolveDryRunModules` (`lib/parsers/script-output.js`, the dispatcher-level `--dry-run`

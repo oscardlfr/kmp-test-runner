@@ -59,6 +59,22 @@ describe('resolveDispatchExitCode — json/text parity', () => {
     expect(jsonResult).toBe(textResult);
   });
 
+  it('task_not_found (hard — environment problem, exit 3): both modes return 3', () => {
+    // task_not_found is an environment/toolchain problem, not a test
+    // assertion — the orchestrator now resolves it to ENV_ERROR (3), not
+    // TEST_FAIL (1). Proves the dispatcher's JSON/text parity holds for the
+    // corrected classification, same as it already does for module_failed.
+    const env = makeEnvelope({
+      exitCode: 3,
+      errors: [{ code: 'task_not_found', message: 'Cannot locate tasks that match ...' }],
+    });
+    const jsonResult = resolveDispatchExitCode(wrapEnvelope(env), 99);
+    const textResult = resolveDispatchExitCode('', 3);
+    expect(jsonResult).toBe(3);
+    expect(textResult).toBe(3);
+    expect(jsonResult).toBe(textResult);
+  });
+
   it('gradle_timeout (hard — zero passes, exit 3): both modes return 3', () => {
     // All modules timed out — orchestrator exits 3 (not a soft case).
     const env = makeEnvelope({
