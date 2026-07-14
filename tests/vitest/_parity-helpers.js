@@ -10,7 +10,7 @@
 //   5. Drive `node bin/kmp-test.js <sub> --json …` and parse the envelope.
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -179,18 +179,33 @@ export function parseReadmeFlagTable(readmePath) {
 // heterogeneous arrays keep per-position shapes. Used inside HOST_ENV_KEY
 // fields to lock the schema without locking the values.
 //
-// Nullable-string fields: within HOST_ENV_KEY blocks some fields are legitimately
-// null on machines that don't have the tool installed (e.g. java_home when
-// JAVA_HOME is unset on a Linux CI runner) but are strings when the tool is
-// present. schemaOf normalises these to '<string?>' so the snapshot stays
-// hermetic regardless of the runner's environment.
-const NULLABLE_STRING_SCHEMA_FIELDS = new Set(['java_home']);
+// Fields whose PRESENCE (not just value) is inherently host-dependent — jdk /
+// android_sdk are null when the feature isn't found on this machine, an
+// object when it is; jdk_catalogue's real length depends on how many extra
+// JDKs happen to be installed under hardcoded per-platform locations (see
+// lib/jdk-catalogue.js WIN/MACOS/LINUX_CANDIDATE_DIRS) that are NOT derived
+// from any env var this test controls. Reflecting the LIVE value here would
+// make the snapshot a fingerprint of whatever machine happens to run the
+// test (audit v3.2 finding M9 — PR-20a). Lock a fixed CONTRACT shape instead
+// of the live value so the snapshot is identical whether or not this host
+// happens to have a JDK/Android SDK installed.
+//
+// Snapshot-layer normalisation only — this does NOT change what a real
+// `kmp-test doctor`/`info` invocation emits. A raw (non-normalized) envelope
+// from runSubcommand() still carries this machine's real jdk/jdk_catalogue/
+// android_sdk shape; only the copy fed through normalizeEnvelopeForSnapshot
+// is pinned to this fixed contract.
+const FIXED_SCHEMA_OVERRIDES = Object.freeze({
+  jdk: { version: '<string>', java_home: '<string?>', note: '<string>' },
+  jdk_catalogue: [{ major: '<number>', vendor: '<string>' }],
+  android_sdk: { path: '<string>', source: '<string>' },
+});
 
 function schemaOf(v, key) {
-  // Nullable-string normalisation: field is null when tool not present, string
-  // when present. Collapse both to '<string?>' so the snapshot is hermetic.
-  if (key !== undefined && NULLABLE_STRING_SCHEMA_FIELDS.has(key)) {
-    if (v === null || typeof v === 'string') return '<string?>';
+  // Fixed-contract normalisation: same schema every run, regardless of
+  // whether this host's real value happens to be null/empty or populated.
+  if (key !== undefined && Object.prototype.hasOwnProperty.call(FIXED_SCHEMA_OVERRIDES, key)) {
+    return FIXED_SCHEMA_OVERRIDES[key];
   }
   if (v === null) return '<null>';
   if (v === undefined) return '<undefined>';
@@ -315,11 +330,100 @@ export function makeFixtureProject() {
   return root;
 }
 
+// ---------------------------------------------------------------------------
+// Hermetic subprocess env (PR-20a) — snapshot-producing subprocesses must not
+// inherit host identity/temp paths, or the snapshot becomes a fingerprint of
+// whatever machine runs the test (audit v3.2 finding M9). PATH is preserved
+// (not stubbed) so java/pwsh/bash/adb keep resolving normally — doctor/info's
+// "tool found" branches stay covered and exit_code stays deterministic; the
+// actual known bug (jdk_catalogue's hardcoded absolute-path scan) isn't
+// PATH-driven anyway, and is closed by FIXED_SCHEMA_OVERRIDES above instead.
+// ---------------------------------------------------------------------------
+
+// Windows env var names are case-insensitive at the OS level, but a plain
+// process.env['PATH'] is a case-sensitive JS property lookup — on a machine
+// where the underlying key is stored as `Path` (common on Windows) a literal
+// 'PATH' lookup would silently miss it, produce a PATH-less child env, and
+// break java/pwsh/bash resolution downstream. Takes a plain env-like object
+// (rather than reading process.env directly) so the casing behavior is
+// independently testable against a constructed object.
+export function findCaseInsensitiveEnvValue(envSource, name) {
+  const target = name.toLowerCase();
+  const key = Object.keys(envSource).find(k => k.toLowerCase() === target);
+  return key !== undefined ? envSource[key] : undefined;
+}
+
+// OS-required plumbing vars, passed through as-is (not identity-bearing —
+// needed for the child process / its own java|pwsh|bash|adb spawns to work).
+const WIN_PASSTHROUGH_KEYS = ['SystemRoot', 'windir', 'ComSpec', 'PATHEXT'];
+const POSIX_PASSTHROUGH_KEYS = ['SHELL', 'LANG', 'LC_ALL'];
+
+let hermeticSandboxDir = null;
+
+// Lazily create one sandbox dir for the whole test run (mirrors the
+// makeFixtureProject() idiom above). Pre-creates the subdirs every override
+// in makeHermeticEnv() points at, so nothing downstream has to handle
+// "doesn't exist yet".
+export function ensureHermeticSandbox() {
+  if (!hermeticSandboxDir) {
+    hermeticSandboxDir = mkdtempSync(path.join(tmpdir(), 'kmp-hermetic-'));
+    mkdirSync(path.join(hermeticSandboxDir, 'AppData', 'Local'), { recursive: true });
+    mkdirSync(path.join(hermeticSandboxDir, 'tmp'), { recursive: true });
+  }
+  return hermeticSandboxDir;
+}
+
+// Minimal, deterministic env for snapshot-producing subprocesses. Overrides
+// every var that carries host identity or a temp-path fingerprint; preserves
+// PATH and the OS-required spawn plumbing vars as-is; drops everything else
+// in process.env (custom tool configs, proxy vars, etc.) that has no
+// business influencing a kmp-test envelope.
+export function makeHermeticEnv() {
+  const sandbox = ensureHermeticSandbox();
+  const isWin = process.platform === 'win32';
+  const env = {};
+
+  for (const k of (isWin ? WIN_PASSTHROUGH_KEYS : POSIX_PASSTHROUGH_KEYS)) {
+    if (process.env[k] !== undefined) env[k] = process.env[k];
+  }
+  const realPath = findCaseInsensitiveEnvValue(process.env, 'PATH');
+  if (realPath !== undefined) env.PATH = realPath;
+
+  env.HOME = sandbox;
+  env.USERPROFILE = sandbox;
+  env.LOCALAPPDATA = path.join(sandbox, 'AppData', 'Local');
+  env.TMPDIR = path.join(sandbox, 'tmp');
+  env.TMP = path.join(sandbox, 'tmp');
+  env.TEMP = path.join(sandbox, 'tmp');
+  env.CI = 'true';
+  // JAVA_HOME / ANDROID_HOME / ANDROID_SDK_ROOT deliberately omitted — real
+  // values only leak through here (info.jdk's java_home) or the hardcoded
+  // CANDIDATE_DIRS scan (jdk_catalogue, android_sdk), and the latter is
+  // immune to env vars anyway; both are closed by FIXED_SCHEMA_OVERRIDES.
+
+  return env;
+}
+
+// Removes the sandbox dir created by ensureHermeticSandbox(), if any. Guards
+// against ever widening scope beyond the tmp sandbox via path.relative
+// (startsWith on resolved strings is a well-known false-positive trap on
+// sibling paths, e.g. "/tmp/foo-secret".startsWith("/tmp/foo")).
+export function cleanupHermeticSandbox() {
+  if (!hermeticSandboxDir) return;
+  const dir = hermeticSandboxDir;
+  const rel = path.relative(path.resolve(tmpdir()), path.resolve(dir));
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`refusing to remove path outside the tmp sandbox: ${dir}`);
+  }
+  try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  hermeticSandboxDir = null;
+}
+
 // Spawn `node bin/kmp-test.js <subcommand> <...args>` and parse the JSON
 // envelope from stdout. Returns { stdout, stderr, exitCode, envelope }.
 // On parse failure envelope is null and stdout is preserved verbatim.
 export function runSubcommand(subcommand, args = [], opts = {}) {
-  const env = { ...process.env, ...(opts.env || {}) };
+  const env = { ...makeHermeticEnv(), ...(opts.env || {}) };
   const result = spawnSync(process.execPath, [BIN_PATH, subcommand, ...args], {
     encoding: 'utf8',
     env,

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — environment snapshot tests no longer depend on host JDK/Android SDK state
+
+**No behavior change** — this is a test-harness fix only. `kmp-test doctor`/`info` still report
+each machine's real JDK/Android SDK state exactly as before; only the test-side snapshot
+normalizer and the snapshot-producing subprocess env changed.
+
+`tests/vitest/parity.test.js`'s `doctor --json` / `info --json --no-adb` envelope snapshots
+surfaced real host-diagnostic data: `lib/jdk-catalogue.js`'s `discoverInstalledJdks()` scans
+hardcoded absolute per-platform paths (e.g. `C:\Program Files\Eclipse Adoptium`, `/usr/lib/jvm`)
+that aren't derived from any env var, so whether `info.jdk_catalogue` came back empty or
+populated depended on what's really installed on whatever machine ran the test (audit v3.2
+finding M9 — "JAVA_HOME-dependent snapshot, 1922/1923 locally"). `info.android_sdk`/`info.jdk`
+had the same null-vs-object divergence depending on host reality.
+
+Closed at the test layer in `tests/vitest/_parity-helpers.js`: the snapshot normalizer now locks
+a fixed contract shape for these three fields regardless of the live value
+(`FIXED_SCHEMA_OVERRIDES`, generalizing the existing `java_home` nullable-string precedent), and
+snapshot-producing subprocesses now run under a deterministic, sandboxed env (`makeHermeticEnv()`)
+instead of inheriting the full real `process.env` — the real `PATH` is preserved (resolved
+case-insensitively, since Windows can store it as `Path`) so `java`/`pwsh`/`bash`/`adb` still
+resolve normally, but `HOME`/`USERPROFILE`/`LOCALAPPDATA`/`TMP`/`JAVA_HOME`/`ANDROID_HOME` no
+longer leak host identity into the subprocess. 7 new Vitest tests lock this in, including a
+host-independent proof that a "not found" vs. "found" JDK/Android SDK state normalizes
+identically. Vitest 2371 → 2378 (+7, one pre-existing skip unaffected).
+
 ### Verified — "Android reads stale XML" (M10) does not reproduce for `android`; closed with regression tests, not a code fix
 
 **No behavior change.** `kmp-test android` (`lib/orchestrators/android-orchestrator.js`) has no

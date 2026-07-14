@@ -17,6 +17,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,6 +34,9 @@ import {
   runSubcommand,
   getDocumentedFlagsForSubcommand,
   getParsedFlagsForSubcommand,
+  findCaseInsensitiveEnvValue,
+  makeHermeticEnv,
+  cleanupHermeticSandbox,
 } from './_parity-helpers.js';
 
 import { resolveTasksFor } from '../../lib/project-model.js';
@@ -227,6 +231,7 @@ describe('parity / envelope JSON schema snapshot', () => {
     if (fixtureRoot) {
       try { rmSync(fixtureRoot, { recursive: true, force: true }); } catch { /* ignore */ }
     }
+    cleanupHermeticSandbox();
   });
 
   // Each entry: { sub, args, env? } — driven via spawnSync of node bin/kmp-test.js.
@@ -331,6 +336,122 @@ describe('parity / envelope JSON schema snapshot', () => {
         '--dry-run', '--json', '--isolated', '--isolated-no-lock'];
       const { envelope } = runSubcommand('parallel', fullArgs, { cwd: fixtureRoot });
       expect(envelope.isolated.locked).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Hermetic env tests (PR-20a, audit v3.2 finding M9) — the JAVA_HOME-
+  // dependent snapshot fix. `doctor --json` / `info --json --no-adb` surface
+  // real host JDK/Android-SDK diagnostics; these tests prove the subprocess
+  // env is deterministic and the snapshot no longer fingerprints whatever
+  // machine runs it, without weakening the normalizer's ability to catch
+  // real command-shape regressions.
+  // -------------------------------------------------------------------------
+  describe('parity / hermetic env snapshots (PR-20a)', () => {
+    it('findCaseInsensitiveEnvValue resolves PATH regardless of stored casing', () => {
+      // Windows env var names are case-insensitive at the OS level; a naive
+      // literal 'PATH' lookup would miss a host that stores it as `Path`.
+      expect(findCaseInsensitiveEnvValue({ PATH: 'x' }, 'PATH')).toBe('x');
+      expect(findCaseInsensitiveEnvValue({ Path: 'x' }, 'PATH')).toBe('x');
+      expect(findCaseInsensitiveEnvValue({ path: 'x' }, 'PATH')).toBe('x');
+      expect(findCaseInsensitiveEnvValue({ OTHER: 'x' }, 'PATH')).toBeUndefined();
+    });
+
+    it('makeHermeticEnv() sandboxes identity/temp vars, omits JDK/Android vars, preserves PATH', () => {
+      const env = makeHermeticEnv();
+
+      if (process.env.HOME) expect(env.HOME).not.toBe(process.env.HOME);
+      if (process.env.USERPROFILE) expect(env.USERPROFILE).not.toBe(process.env.USERPROFILE);
+      expect(env.HOME).toBe(env.USERPROFILE);
+      expect(env.JAVA_HOME).toBeUndefined();
+      expect(env.ANDROID_HOME).toBeUndefined();
+      expect(env.ANDROID_SDK_ROOT).toBeUndefined();
+      expect(env.CI).toBe('true');
+
+      // PATH is preserved via the case-insensitive contract, not a raw
+      // process.env.PATH read (which would just re-assume today's casing).
+      expect(env.PATH).toBe(findCaseInsensitiveEnvValue(process.env, 'PATH'));
+      const pathKeys = Object.keys(env).filter(k => k.toLowerCase() === 'path');
+      expect(pathKeys.length).toBeLessThanOrEqual(1);
+    });
+
+    it('jdk / jdk_catalogue / android_sdk normalize identically whether or not the host found them', () => {
+      // The actual bug: whether a host's real jdk/android_sdk resolve to
+      // null or a populated object (and jdk_catalogue's real length) depends
+      // on machine-specific reality (installed JDKs, ANDROID_HOME, Android
+      // Studio presence) that a subprocess-env mutation can't reliably force
+      // in both directions on an arbitrary host — so this asserts the actual
+      // contract directly against hand-built "not found" vs "found" info
+      // blocks, rather than depending on this machine's real state.
+      const notFound = { info: { jdk: null, jdk_catalogue: [], android_sdk: null } };
+      const found = {
+        info: {
+          jdk: { version: '17.0.9', java_home: 'C:\\jdk-17', note: '>=17 recommended' },
+          jdk_catalogue: [
+            { major: 21, vendor: 'Eclipse Adoptium' },
+            { major: 11, vendor: 'Microsoft' },
+          ],
+          android_sdk: { path: 'C:\\Android\\Sdk', source: 'env' },
+        },
+      };
+      expect(normalizeEnvelopeForSnapshot(notFound, null))
+        .toEqual(normalizeEnvelopeForSnapshot(found, null));
+    });
+
+    it('no private home dir, LOCALAPPDATA, or the real PATH value leaks into the snapshot', () => {
+      const { envelope } = runSubcommand('info',
+        ['--project-root', fixtureRoot, '--json', '--no-adb'], { cwd: fixtureRoot });
+      const text = JSON.stringify(normalizeEnvelopeForSnapshot(envelope, fixtureRoot));
+
+      const realHome = homedir();
+      const realPath = findCaseInsensitiveEnvValue(process.env, 'PATH');
+      if (realHome) expect(text.includes(realHome)).toBe(false);
+      if (process.env.USERPROFILE) expect(text.includes(process.env.USERPROFILE)).toBe(false);
+      if (process.env.LOCALAPPDATA) expect(text.includes(process.env.LOCALAPPDATA)).toBe(false);
+      if (realPath) expect(text.includes(realPath)).toBe(false);
+    });
+
+    it('normalizes the project root in both its native and forward-slash forms', () => {
+      // Must derive both variants from a REAL path.resolve()'d root for
+      // *this* platform — a hardcoded Windows-style literal (`C:\Users\...`)
+      // fed through path.resolve() on Linux/macOS isn't recognized as
+      // absolute at all (no drive letter / backslash awareness) and gets
+      // silently mangled (CWD-prefixed) before normalizeEnvelopeForSnapshot
+      // ever sees it, which is exactly what broke this test on
+      // `build (ubuntu-latest)` in this PR's first CI run.
+      const root = path.resolve(path.join(tmpdir(), 'kmp-parity-normalize-test'));
+      const rootForwardSlashes = root.replace(/\\/g, '/');
+      const fake = {
+        project_root: root,
+        note_native: `see ${root}${path.sep}mod${path.sep}build`,
+        note_forward_slashes: `see ${rootForwardSlashes}/mod/build`,
+      };
+      const normalized = normalizeEnvelopeForSnapshot(fake, root);
+      expect(normalized.project_root).toBe('<PROJECT_ROOT>');
+      expect(normalized.note_native).toBe(`see <PROJECT_ROOT>${path.sep}mod${path.sep}build`);
+      expect(normalized.note_forward_slashes).toBe('see <PROJECT_ROOT>/mod/build');
+    });
+
+    it('still catches a real command-shape regression outside the fixed-schema fields', () => {
+      // `checks[]` stays dynamically schema'd (not one of the hardcoded
+      // overrides) — dropping a field must still surface as a diff, proving
+      // FIXED_SCHEMA_OVERRIDES didn't make the whole normalizer over-generic.
+      const full = { checks: [{ name: 'JDK', status: 'OK', value: '17', message: 'ok' }] };
+      const droppedField = { checks: [{ name: 'JDK', status: 'OK' }] };
+      expect(normalizeEnvelopeForSnapshot(full, null))
+        .not.toEqual(normalizeEnvelopeForSnapshot(droppedField, null));
+    });
+
+    it('FIXED_SCHEMA_OVERRIDES is a snapshot-layer concern only — the real envelope is untouched', () => {
+      const { envelope } = runSubcommand('info',
+        ['--project-root', fixtureRoot, '--json', '--no-adb'], { cwd: fixtureRoot });
+      expect(envelope).toBeTruthy();
+      // Raw envelope (pre-normalization) still carries this machine's real
+      // live shape — an array (whatever its real length) and a real
+      // null-or-object, never the placeholder strings.
+      expect(Array.isArray(envelope.info.jdk_catalogue)).toBe(true);
+      expect(envelope.info.android_sdk === null || typeof envelope.info.android_sdk === 'object').toBe(true);
+      expect(envelope.info.jdk === null || typeof envelope.info.jdk === 'object').toBe(true);
     });
   });
 });
