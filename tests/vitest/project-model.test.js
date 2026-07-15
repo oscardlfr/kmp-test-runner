@@ -451,6 +451,23 @@ describe('aggregateJdkSignals', () => {
       const applied = extractAppliedPluginsFromConventionSource('plugins { id("org.jetbrains.kotlinx.kover") }');
       expect(applied).toContain('org.jetbrains.kotlinx.kover');
     });
+
+    // KNOWN, DOCUMENTED GAP — not a false claim of coverage. Groovy slashy-string literals
+    // (`/.../`) are deliberately NOT recognized by stripGradleSource (see the design note in
+    // kotlin-dsl.js): a bare `/` is ambiguous between "string open" and "division operator"
+    // without real expression-context tracking, and a naive heuristic risks the worse failure
+    // mode of treating a real division as a string open and swallowing real code. This test
+    // locks in the CURRENT (imperfect) behavior so a silent regression or an accidental future
+    // fix is visible here rather than discovered by surprise — if this starts failing, update
+    // this test AND the residual-gap notes in kotlin-dsl.js/BACKLOG.md/CHANGELOG.md together.
+    it('KNOWN GAP: a JDK signal inside a Groovy slashy string is NOT ignored (deliberately out of scope)', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle'),
+        'def note = /jvmToolchain(21)/\nkotlin { jvmToolchain(17) }\n');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(21);
+      expect(r.signals.some(s => s.version === 21)).toBe(true);
+    });
   });
 
   // 2026-05-03 wide-smoke regression guard. AGP version → required runtime JDK

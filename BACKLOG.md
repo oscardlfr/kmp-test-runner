@@ -151,7 +151,14 @@
   `scripts/ps1/lib/Jdk-Check.ps1` dead-code duplicates; `describe-orchestrator.js`'s non-existent
   `jdkRequirement.agp` field read; no new JDK signal patterns added (e.g. `JavaLanguageVersion.of`
   was never matched by `JDK_PATTERNS` before this PR either — out of scope, a coverage addition
-  not a false-positive fix).
+  not a false-positive fix). **Second residual, caught in post-CI review**: the lexer recognizes
+  `'...'`/`"..."`/Kotlin `"""..."""` but NOT Groovy slashy (`/.../`) or dollar-slashy (`$/.../$`)
+  string literals — a JDK-signal-shaped substring inside one (e.g. `def note = /jvmToolchain(21)/`
+  in a `.gradle` file) can still false-positive. Deliberately not supported: a bare `/` is
+  genuinely ambiguous between string-open and division without real expression-context tracking,
+  and a naive heuristic risks the worse failure mode of eating real code between an actual
+  division and the next unrelated `/`. Locked in with a regression test asserting the current
+  (documented) behavior — own follow-up if ever prioritized, priority TBD.
 - ✅ **PR-20a `test(env): make environment snapshots hermetic`** — SHIPPED 2026-07-14 (this PR,
   closes v3.2 finding M9's JAVA_HOME-dependent-snapshot half; the CRLF/bats half is PR-20b,
   separate, not touched here). Root cause: `lib/jdk-catalogue.js`'s `discoverInstalledJdks()`

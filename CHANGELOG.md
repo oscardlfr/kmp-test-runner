@@ -52,6 +52,16 @@ commented-out `# [versions]` example header ahead of the real section could make
 wrong occurrence) — a section-header-matching bug, not a key-value-comment bug, tracked in
 `BACKLOG.md` and not addressed here.
 
+**Second known residual, also explicitly scoped**: `stripGradleComments`/`stripGradleCommentsAndStrings`
+recognize `'...'`, `"..."`, and Kotlin `"""..."""` string literals, but NOT Groovy slashy (`/.../`)
+or dollar-slashy (`$/.../$`) literals. Since `aggregateJdkSignals` also walks `.gradle` (Groovy DSL)
+files, a JDK-signal-shaped substring inside a slashy string (e.g. `def note = /jvmToolchain(21)/`)
+can still produce a false positive. Deliberately not supported: unlike a quote character, a bare `/`
+is genuinely ambiguous between "string literal start" and "division operator" without real
+expression-context tracking, and a naive heuristic risks a worse failure mode — mistaking a real
+division for a string open and swallowing real code up to the next unrelated `/` in the file. A
+regression test locks in the current (documented, imperfect) behavior. Tracked in `BACKLOG.md`.
+
 ### Added — CodeRabbit now auto-reviews PRs targeting `develop`
 
 **No CLI/runtime behavior change** -- config-only, via a new root `.coderabbit.yaml`.
