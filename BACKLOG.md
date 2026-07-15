@@ -112,6 +112,62 @@
   dedicated manual macOS validation phase that validates the accumulated audit train
   consistently on the available macOS machine / `macos-validation.yml` workflow_dispatch
   jobs; document sanitized public + private evidence, then do the final docs closeout.
+- ✅ **PR-28g `refactor(jdk): remove dead shell scanners`** — SHIPPED 2026-07-15 (this PR, closes
+  PR-28a's own deferred note below — the `scripts/sh/lib/jdk-check.sh` /
+  `scripts/ps1/lib/Jdk-Check.ps1` dead-code duplicates flagged alongside PR-28f). Re-confirmed zero
+  live callers of either lib anywhere outside their own two dedicated test suites: a repo-wide grep
+  for both filenames plus all 4 exported functions (`gate_jdk_mismatch`, `_jdk_hint`,
+  `Invoke-JdkMismatchGate`, `Get-JdkMismatchHint`) against tracked files returns hits only in this
+  BACKLOG/CHANGELOG pair (doc prose describing the deletion) plus historical CHANGELOG version
+  sections; the 4 top-level `scripts/sh`/`scripts/ps1` wrapper scripts are confirmed thin
+  `exec node lib/runner.js <subcommand> "$@"` dispatchers with zero `source`/dot-source statements
+  of any `scripts/*/lib/*` file. Deleted both dead libs plus their two dedicated isolated test
+  suites — `tests/bats/test-jdk-gate.bats` and `tests/pester/Jdk-Gate.Tests.ps1` — confirmed the
+  other 25 bats files and 21 Pester files reference neither lib. **Coverage-layer tradeoff, called
+  out rather than silently dropped**: both deleted suites also carried a handful of end-to-end
+  cases spawning the real production wrapper scripts (asserting exit code 3 on a JDK mismatch) —
+  since the wrappers are thin dispatchers into `lib/runner.js`, those cases exercised the live JS
+  gate through a real process boundary, not the dead shell code. That specific process-boundary
+  layer is gone; the underlying JDK-mismatch stderr text + exit code stays covered in-process by
+  `tests/vitest/cli.test.js`'s `preflightJdkCheck` suite, already the documented safety net per a
+  comment inside the deleted `Jdk-Gate.Tests.ps1` itself. Also fixed a small directly-caused
+  residual: `lib/runner.js:133`'s comment named `test-jdk-gate` by filename as an example of
+  direct-wrapper-invocation callers bypassing `cli.js` — updated to a non-file-specific example
+  (comment-only, no functional change; the underlying pattern still holds via 3 surviving bats
+  files that spawn wrappers directly). `npx bats tests/bats/ tests/installer/ tests/skill-scripts/`
+  — rigorously re-verified after review pushback flagged the first pass (a single worktree
+  spot-check) as insufficient: `develop`@`7876db1` (this PR's own base commit) scores 217 passed /
+  20 failed / 237 total in this environment; this branch scores 205 passed / 18 failed / 223 total
+  (26 → 25 files, exactly −14 tests as expected from deleting `test-jdk-gate.bats`). An exact
+  test-*name* diff (`comm` on sorted, line-number-stripped failure lists — not just counts) between
+  the two runs shows **zero failures present on this branch that were not already failing on
+  `develop`**: this branch's 18 failing names are a strict subset of `develop`'s 20. The 2 that
+  disappear — `parallel.sh: BLOCKs with exit 3 when JDK mismatches jvmToolchain (default)` and
+  `changed.sh: BLOCKs with exit 3 when JDK mismatches jvmToolchain (default)` — were E2E cases
+  *inside* `test-jdk-gate.bats` itself, already failing on `develop` before this PR, and cease to
+  exist (not "start passing") because their file is deleted: net effect is 2 fewer failing tests,
+  zero new ones. Root cause of the remaining 18 (identical on both branches): 17 are
+  `tests/installer/install.bats` E2E cases hitting `scripts/install.sh`'s explicit Linux/Darwin-only
+  platform gate (`scripts/install.sh:70-77`) — `uname -s` on this Windows Git-Bash host reports
+  `MINGW64_NT-10.0-22631`, confirmed directly, not inferred from the error text — deterministic,
+  environment-specific, unrelated to any code change; native Windows uses the PowerShell installer
+  instead (Pester, 200/200 pass). The 18th, `test-task-not-found.bats:179`'s `UX-1: --test-type
+  common` gradle-dispatch case, independently reproduces on an isolated `git worktree` checkout of
+  the pre-PR-28g baseline commit. **Separately, for full transparency**: an external review pass
+  ("Codex") reported a *different* clean-`develop` result (237 total, only 2 failures, both in
+  `test-root-convention-jacoco.bats`) — those 2 specific tests were run 3× in this environment on
+  both `develop` and this branch and passed cleanly every time; the discrepancy could not be
+  reproduced here and did not correlate with anything in this PR's diff (that test file is untouched
+  by PR-28g) — most likely an environment difference (OS/JDK/network) between review environments,
+  flagged for visibility rather than treated as a PR-28g blocker.
+  `Invoke-Pester -Path tests/pester/,tests/installer/,tests/skill-scripts/ -CI` (22 → 21 files) —
+  200 passed, 0 failed, 6 skipped (macOS-only iOS cases). `npm run test:coverage` — 2416 passed, 1
+  skipped, unchanged from baseline. `node tools/decouple-audit.mjs` / `node
+  tools/check-line-endings.mjs` both clean. `npm run shellcheck` NOT run — `shellcheck` isn't on
+  this machine's local PATH; an optional, non-blocking addition on top of the task's required
+  gates, not itself a required gate for this change. **No wet validation**:
+  nothing calls these paths today — pre-approved by the deferred note below ("no wet/live
+  validation needed since nothing calls these paths today").
 - ✅ **PR-28f `fix(describe): use current jdk requirement shape`** — SHIPPED 2026-07-15
   (this PR, closes PR-28a's and PR-28d's own residual note below —
   `describe-orchestrator.js`'s non-existent `jdkRequirement.agp` field read). Reproduced:
@@ -146,7 +202,8 @@
   — `scripts/sh/lib/jdk-check.sh` / `scripts/ps1/lib/Jdk-Check.ps1` dead-code duplicates —
   is a different runtime surface and validation gate (shell/PowerShell + bats/pester vs. JS
   + vitest) and is NOT touched here; confirmed dead code (investigated alongside this fix)
-  and tracked as **Deferred — PR-28g** in PR-28a's entry below, own PR.
+  and tracked as **Deferred — PR-28g** in PR-28a's entry below, own PR. ✅ **SHIPPED as
+  PR-28g above.**
 - ✅ **PR-28e `fix(project): include precompiled build-logic scripts in cache key`** — SHIPPED
   2026-07-15 (this PR, closes PR-28b's own residual gap below). Reproduced (pinned repro:
   build a model with a build-logic precompiled-script plugin
@@ -233,7 +290,8 @@
   misleading comment at `lib/project-model.js:81-82` claiming `detectAgpVersion`/`agpRequiredJdk`
   are re-exported when only `aggregateJdkSignals` is; `scripts/sh/lib/jdk-check.sh` /
   `scripts/ps1/lib/Jdk-Check.ps1` dead-code duplicates (tracked as **Deferred — PR-28g**, see
-  PR-28a's entry below); `describe-orchestrator.js`'s non-existent `jdkRequirement.agp` field
+  PR-28a's entry below) ✅ **SHIPPED as PR-28g above.**; `describe-orchestrator.js`'s non-existent
+  `jdkRequirement.agp` field
   read ✅ **SHIPPED as PR-28f above.**; no new JDK signal patterns added (e.g. `JavaLanguageVersion.of`
   was never matched by `JDK_PATTERNS` before this PR either — out of scope, a coverage addition
   not a false-positive fix). **Second residual, caught in post-CI review**: the lexer recognizes
@@ -415,7 +473,8 @@
   the bats/pester CI jobs retain other test files after deletion; `decouple-audit` +
   `check-line-endings`; no wet/live validation needed since nothing calls these paths today.
   Priority TBD, own PR — different runtime surface + validation gate than PR-28f (shell/PowerShell
-  + bats/pester vs. JS + vitest), deliberately not bundled together.
+  + bats/pester vs. JS + vitest), deliberately not bundled together. ✅ **SHIPPED as PR-28g
+  above.**
 - ✅ **PR-27 `fix(envelope): honor published exit-code contract`** — SHIPPED 2026-07-14 (this PR).
   v3.1/v3.2 finding (DECIDED, recommendation inverted from an earlier round): `task_not_found` and
   `unsupported_class_version` are environment/toolchain problems, not test assertions — the
