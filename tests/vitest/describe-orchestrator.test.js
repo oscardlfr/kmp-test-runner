@@ -121,6 +121,32 @@ describe('runDescribe envelope shape', () => {
   });
 });
 
+describe('runDescribe — jdk_requirement.agp reflects the real AGP version', () => {
+  // detectAgpVersion only scans gradle/libs.versions.toml, root build.gradle.kts/
+  // build.gradle, settings.gradle.kts, buildSrc/build.gradle.kts, build-logic/
+  // build.gradle.kts — never a module's build.gradle.kts. The signal must be
+  // written to the temp dir's root, not through makeProject's per-module `build`.
+  it('describe --json exposes the detected AGP version, not null', () => {
+    const dir = makeProject([{ name: 'app' }]);
+    writeFileSync(
+      path.join(dir, 'build.gradle.kts'),
+      'plugins {\n  id("com.android.application") version "8.5.0" apply false\n}\n');
+    const { envelope } = runDescribe({ projectRoot: dir, args: ['--skip-probe', '--no-cache'] });
+    expect(envelope.describe.jdk_requirement.agp).toBe('8.5.0');
+  });
+
+  it('text mode prints the detected AGP version, not agp=n/a', () => {
+    const dir = makeProject([{ name: 'app' }]);
+    writeFileSync(
+      path.join(dir, 'build.gradle.kts'),
+      'plugins {\n  id("com.android.application") version "8.5.0" apply false\n}\n');
+    const { envelope } = runDescribe({ projectRoot: dir, args: ['--skip-probe', '--no-cache'] });
+    const text = formatDescribeText(envelope);
+    expect(text).toContain('agp=8.5.0');
+    expect(text).not.toContain('agp=n/a');
+  });
+});
+
 describe('runDescribe --module-filter', () => {
   it('filters modules by regex', () => {
     const dir = makeProject([

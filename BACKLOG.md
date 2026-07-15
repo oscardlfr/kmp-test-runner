@@ -112,6 +112,41 @@
   dedicated manual macOS validation phase that validates the accumulated audit train
   consistently on the available macOS machine / `macos-validation.yml` workflow_dispatch
   jobs; document sanitized public + private evidence, then do the final docs closeout.
+- ✅ **PR-28f `fix(describe): use current jdk requirement shape`** — SHIPPED 2026-07-15
+  (this PR, closes PR-28a's and PR-28d's own residual note below —
+  `describe-orchestrator.js`'s non-existent `jdkRequirement.agp` field read). Reproduced:
+  `aggregateJdkSignals()` (`lib/project/jdk-signals.js:193`) has always returned `{min,
+  signals, agpVersion, agpIsBinding}` — no `.agp` key, ever (locked by an existing test,
+  `tests/vitest/project-model.test.js:2499`) — but `describe-orchestrator.js:335` read
+  `model.jdkRequirement.agp ?? null`, which resolves to `undefined` → `null`
+  unconditionally. Observable impact: `kmp-test describe --json`'s
+  `describe.jdk_requirement.agp` was always `null`, and text mode
+  (`describe-orchestrator.js:373`) always printed `agp=n/a`, even on real AGP projects with
+  a detected version. Fixed by reading `agpVersion` instead. The output JSON key name
+  (`agp`) is unchanged — only the internal source field being read was wrong — so no
+  schema/cache-key bump. The existing describe-envelope test only asserted
+  `toHaveProperty('jdk_requirement')`, never a value, and its fixtures had zero AGP signal,
+  so `.agp` (buggy) and `.agpVersion` (correct) both resolved to `null` there — masking the
+  bug. 2 new regression tests (JSON + text mode) use a root-level `plugins {
+  id("com.android.application") version "8.5.0" apply false }` fixture — `detectAgpVersion`
+  only scans `gradle/libs.versions.toml`, root `build.gradle.kts`/`build.gradle`,
+  `settings.gradle.kts`, `buildSrc/build.gradle.kts`, `build-logic/build.gradle.kts`, never
+  a module's `build.gradle.kts`, so the signal must be written to the fixture's root, not
+  through a module's `build` field (caught in plan review — the original draft used a
+  module-level fixture, which wouldn't have exercised the fix at all). Both confirmed to
+  fail on pre-fix code, pass post-fix. 2 new Vitest cases (vitest 2414 → 2416),
+  `npm run test:coverage` / `node tools/decouple-audit.mjs` /
+  `node tools/check-line-endings.mjs` all green. **Wet validation**: `kmp-test describe --json
+  --skip-probe --no-cache` against public `DroidconKotlin` correctly resolved `agp: "8.13.1"`
+  (its catalog uses the `android-gradle-plugin` key alias, not `agp` — a plan-time static grep
+  for the literal `agp =` key missed it, caught by actually running the CLI instead of trusting
+  the manual check) and against a private AGP-catalog project correctly resolved its real
+  catalog version — both a stronger live proof than the originally-planned "public
+  no-regression only", not just the synthetic fixture. The sibling residual named alongside this one
+  — `scripts/sh/lib/jdk-check.sh` / `scripts/ps1/lib/Jdk-Check.ps1` dead-code duplicates —
+  is a different runtime surface and validation gate (shell/PowerShell + bats/pester vs. JS
+  + vitest) and is NOT touched here; confirmed dead code (investigated alongside this fix)
+  and tracked as **Deferred — PR-28g** in PR-28a's entry below, own PR.
 - ✅ **PR-28e `fix(project): include precompiled build-logic scripts in cache key`** — SHIPPED
   2026-07-15 (this PR, closes PR-28b's own residual gap below). Reproduced (pinned repro:
   build a model with a build-logic precompiled-script plugin
@@ -197,8 +232,9 @@
   own follow-up, priority TBD. Also explicitly out of scope, not touched: the pre-existing
   misleading comment at `lib/project-model.js:81-82` claiming `detectAgpVersion`/`agpRequiredJdk`
   are re-exported when only `aggregateJdkSignals` is; `scripts/sh/lib/jdk-check.sh` /
-  `scripts/ps1/lib/Jdk-Check.ps1` dead-code duplicates; `describe-orchestrator.js`'s non-existent
-  `jdkRequirement.agp` field read; no new JDK signal patterns added (e.g. `JavaLanguageVersion.of`
+  `scripts/ps1/lib/Jdk-Check.ps1` dead-code duplicates (tracked as **Deferred — PR-28g**, see
+  PR-28a's entry below); `describe-orchestrator.js`'s non-existent `jdkRequirement.agp` field
+  read ✅ **SHIPPED as PR-28f above.**; no new JDK signal patterns added (e.g. `JavaLanguageVersion.of`
   was never matched by `JDK_PATTERNS` before this PR either — out of scope, a coverage addition
   not a false-positive fix). **Second residual, caught in post-CI review**: the lexer recognizes
   `'...'`/`"..."`/Kotlin `"""..."""` but NOT Groovy slashy (`/.../`) or dollar-slashy (`$/.../$`)
@@ -364,9 +400,22 @@
   file) had comment-blindness on its 2 build-file regex matches ✅ **SHIPPED as PR-28d above**
   (its `libs.versions.toml` catalog-probe branch is a distinct, separate, low-probability
   residual — see PR-28d's own note above; not the same bug shape, not silently left open);
-  `scripts/sh/lib/jdk-check.sh` /
-  `scripts/ps1/lib/Jdk-Check.ps1` carry a dead-code duplicate of the pre-fix scanner;
-  `describe-orchestrator.js` reads a non-existent `jdkRequirement.agp` field (always null).
+  `describe-orchestrator.js` read a non-existent `jdkRequirement.agp` field (always null)
+  ✅ **SHIPPED as PR-28f above.**
+  **Deferred — PR-28g**: `scripts/sh/lib/jdk-check.sh` / `scripts/ps1/lib/Jdk-Check.ps1` carry a
+  dead-code duplicate of the pre-fix scanner. Investigated alongside PR-28f: confirmed zero
+  callers anywhere in the live CLI or Gradle-plugin dispatch chains (the JDK gate runs entirely
+  through `lib/project/jdk-preflight.js` → `jdk-signals.js` since the v0.8.0 orchestration
+  migration) — the only remaining callers are their own isolated unit-style test suites
+  (`tests/bats/test-jdk-gate.bats`, `tests/pester/Jdk-Gate.Tests.ps1`), which source/dot-source
+  the libs directly and would keep passing unchanged even after deletion. Their legacy walkers
+  are also naive regex with no comment/quote-stripping, unlike the canonical JS scanner
+  (`stripGradleCommentsAndStrings`, PR-28a/28d) — confirmed drift, not just staleness. Scope for
+  that future PR: delete both dead lib files + their two dedicated isolated test suites; confirm
+  the bats/pester CI jobs retain other test files after deletion; `decouple-audit` +
+  `check-line-endings`; no wet/live validation needed since nothing calls these paths today.
+  Priority TBD, own PR — different runtime surface + validation gate than PR-28f (shell/PowerShell
+  + bats/pester vs. JS + vitest), deliberately not bundled together.
 - ✅ **PR-27 `fix(envelope): honor published exit-code contract`** — SHIPPED 2026-07-14 (this PR).
   v3.1/v3.2 finding (DECIDED, recommendation inverted from an earlier round): `task_not_found` and
   `unsupported_class_version` are environment/toolchain problems, not test assertions — the
