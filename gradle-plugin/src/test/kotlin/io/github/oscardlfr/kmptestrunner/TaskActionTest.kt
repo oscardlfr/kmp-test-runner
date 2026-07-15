@@ -84,7 +84,10 @@ class TaskActionTest {
     // Minimal project helper
     // -------------------------------------------------------------------------
 
-    private fun writeMinimalProject() {
+    // extraBuildScript appends to build.gradle.kts, e.g. a `kmpTestRunner { }`
+    // extension-configuration block a specific test needs beyond the bare
+    // `plugins {}` block every other test uses.
+    private fun writeMinimalProject(extraBuildScript: String = "") {
         val testMavenRepo = System.getProperty("test.maven.repo")
             ?: error("test.maven.repo system property not set")
         val pluginVersion = System.getProperty("plugin.version")
@@ -105,6 +108,7 @@ class TaskActionTest {
             plugins {
                 id("io.github.oscardlfr.kmp-test-runner") version "$pluginVersion"
             }
+            $extraBuildScript
             """.trimIndent()
         )
     }
@@ -170,6 +174,15 @@ class TaskActionTest {
             Arguments.of("benchmarkTests", "benchmark"),
             Arguments.of("coverageTask",   "coverage"),
         )
+
+        // The 4 tasks whose smoke-test failure trigger is uniform: a project
+        // with zero testable modules is a real, task-specific error for all
+        // four (see each task's own error text). coverageTask is excluded —
+        // it treats zero contributing modules as a legitimate no-op success,
+        // so its smoke test needs a different fixture; see its own @Test.
+        @JvmStatic
+        fun uniformSmokeTestTasks(): Stream<String> =
+            Stream.of("benchmarkTests", "parallelTests", "changedTests", "androidTests")
     }
 
     // -------------------------------------------------------------------------
@@ -199,22 +212,66 @@ class TaskActionTest {
     }
 
     // -------------------------------------------------------------------------
-    // Cross-platform smoke (real node, task expected to fail)
+    // Cross-platform smoke (real node, task expected to fail). Each proves the
+    // ExecOperations-based runner spawn (RuntimeExtractor.runNodeRunner)
+    // correctly propagates a real non-zero runner exit code into a Gradle
+    // TaskOutcome.FAILED — closing a false-green gap where these tasks could
+    // report BUILD SUCCESSFUL with zero output regardless of what the spawned
+    // runner actually returned (traced to lib/runner.js's own entrypoint
+    // guard, not to the process-spawning API — see isRunnerEntrypoint).
     // -------------------------------------------------------------------------
 
-    @Test
-    fun `benchmarkTests TaskAction fires and reports runner error (smoke)`() {
+    @ParameterizedTest
+    @MethodSource("uniformSmokeTestTasks")
+    fun `TaskAction fires and reports runner error (smoke)`(taskName: String) {
         writeMinimalProject()
 
         val result = GradleRunner.create()
             .withProjectDir(projectDir)
             .withTestKitDir(testKitDir)
-            .withArguments("benchmarkTests")
+            .withArguments(taskName)
             .withGradleVersion("7.6.1")
             .buildAndFail()
 
-        assertEquals(TaskOutcome.FAILED, result.task(":benchmarkTests")?.outcome)
-        assertTrue("[benchmarkTests]" in result.output,
+        assertEquals(TaskOutcome.FAILED, result.task(":$taskName")?.outcome)
+        assertTrue("[$taskName]" in result.output,
+            "Expected task error prefix in output:\n${result.output}")
+    }
+
+    // coverageTask treats zero contributing modules as a legitimate no-op
+    // success (nothing to aggregate), so the shared zero-module fixture above
+    // can't exercise its failure path. An invalid `coverageTool` extension
+    // value forces a real CLI-level rejection (exit 2) instead.
+    //
+    // Gradle version: 9.1.0, not 7.6.1 like the other 4 smoke tests. The
+    // `kmpTestRunner { ... }` extension-configuration block this needs (to
+    // set the bad coverageTool) makes Gradle's Kotlin DSL script compiler do
+    // real work beyond the bare `plugins {}` block the other fixtures use —
+    // Gradle 7.6.1's bundled DSL compiler hits a real (separate, unrelated)
+    // protobuf/JDK-23 incompatibility on that heavier compilation path
+    // (`InvalidProtocolBufferException: Protocol message contained an
+    // invalid tag`), independent of the entrypoint-guard fix under test here.
+    // The pre-existing parameterized shim tests above already cover
+    // coverageTask's success path under both 7.6.1 and 9.1.0.
+    @Test
+    fun `coverageTask TaskAction fires and reports runner error (smoke)`() {
+        writeMinimalProject(
+            """
+            kmpTestRunner {
+                coverageTool = "not-a-real-tool"
+            }
+            """.trimIndent()
+        )
+
+        val result = GradleRunner.create()
+            .withProjectDir(projectDir)
+            .withTestKitDir(testKitDir)
+            .withArguments("coverageTask")
+            .withGradleVersion("9.1.0")
+            .buildAndFail()
+
+        assertEquals(TaskOutcome.FAILED, result.task(":coverageTask")?.outcome)
+        assertTrue("[coverageTask]" in result.output,
             "Expected task error prefix in output:\n${result.output}")
     }
 }
