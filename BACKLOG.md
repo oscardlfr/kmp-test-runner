@@ -135,10 +135,31 @@
   direct-wrapper-invocation callers bypassing `cli.js` — updated to a non-file-specific example
   (comment-only, no functional change; the underlying pattern still holds via 3 surviving bats
   files that spawn wrappers directly). `npx bats tests/bats/ tests/installer/ tests/skill-scripts/`
-  (26 → 25 files) — 205 passed, 18 pre-existing failures unrelated to this PR (17 are the known
-  Windows-Git-Bash installer-E2E "Unsupported platform" cases; 1 is
-  `test-task-not-found.bats:179`'s gradle-dispatch test, independently verified to also fail on
-  the pre-PR-28g baseline commit via an isolated `git worktree` check — not a regression).
+  — rigorously re-verified after review pushback flagged the first pass (a single worktree
+  spot-check) as insufficient: `develop`@`7876db1` (this PR's own base commit) scores 217 passed /
+  20 failed / 237 total in this environment; this branch scores 205 passed / 18 failed / 223 total
+  (26 → 25 files, exactly −14 tests as expected from deleting `test-jdk-gate.bats`). An exact
+  test-*name* diff (`comm` on sorted, line-number-stripped failure lists — not just counts) between
+  the two runs shows **zero failures present on this branch that were not already failing on
+  `develop`**: this branch's 18 failing names are a strict subset of `develop`'s 20. The 2 that
+  disappear — `parallel.sh: BLOCKs with exit 3 when JDK mismatches jvmToolchain (default)` and
+  `changed.sh: BLOCKs with exit 3 when JDK mismatches jvmToolchain (default)` — were E2E cases
+  *inside* `test-jdk-gate.bats` itself, already failing on `develop` before this PR, and cease to
+  exist (not "start passing") because their file is deleted: net effect is 2 fewer failing tests,
+  zero new ones. Root cause of the remaining 18 (identical on both branches): 17 are
+  `tests/installer/install.bats` E2E cases hitting `scripts/install.sh`'s explicit Linux/Darwin-only
+  platform gate (`scripts/install.sh:70-77`) — `uname -s` on this Windows Git-Bash host reports
+  `MINGW64_NT-10.0-22631`, confirmed directly, not inferred from the error text — deterministic,
+  environment-specific, unrelated to any code change; native Windows uses the PowerShell installer
+  instead (Pester, 200/200 pass). The 18th, `test-task-not-found.bats:179`'s `UX-1: --test-type
+  common` gradle-dispatch case, independently reproduces on an isolated `git worktree` checkout of
+  the pre-PR-28g baseline commit. **Separately, for full transparency**: an external review pass
+  ("Codex") reported a *different* clean-`develop` result (237 total, only 2 failures, both in
+  `test-root-convention-jacoco.bats`) — those 2 specific tests were run 3× in this environment on
+  both `develop` and this branch and passed cleanly every time; the discrepancy could not be
+  reproduced here and did not correlate with anything in this PR's diff (that test file is untouched
+  by PR-28g) — most likely an environment difference (OS/JDK/network) between review environments,
+  flagged for visibility rather than treated as a PR-28g blocker.
   `Invoke-Pester -Path tests/pester/,tests/installer/,tests/skill-scripts/ -CI` (22 → 21 files) —
   200 passed, 0 failed, 6 skipped (macOS-only iOS cases). `npm run test:coverage` — 2416 passed, 1
   skipped, unchanged from baseline. `node tools/decouple-audit.mjs` / `node
