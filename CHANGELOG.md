@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed — dead-code JDK toolchain scanners in `scripts/sh/lib/` and `scripts/ps1/lib/`
+
+**No behavior change.** The JDK pre-flight gate has run entirely through
+`lib/project/jdk-preflight.js` (`preflightJdkCheck`) → `lib/project/jdk-signals.js`
+(`aggregateJdkSignals`) → `lib/project-model.js` since the v0.8.0 bash/ps1 → Node
+orchestration migration. `scripts/sh/lib/jdk-check.sh` and `scripts/ps1/lib/Jdk-Check.ps1`
+carried a dead-code duplicate of the pre-fix (pre-PR-28a/28d) scanner — no comment/quote-
+stripping, narrower exclusion list than the canonical JS walker. Confirmed zero callers
+anywhere in the live CLI, the 4 top-level wrapper scripts (thin `exec node lib/runner.js
+<subcommand> "$@"` dispatchers since v0.8.0), or the Gradle-plugin dispatch chain — the
+only remaining callers were the libs' own dedicated test suites.
+
+Deleted both dead libs and their two dedicated test suites (`tests/bats/test-jdk-gate.bats`,
+`tests/pester/Jdk-Gate.Tests.ps1`). Each suite also carried a few end-to-end cases spawning
+the real production wrappers as a process-boundary check on the live JS gate; that specific
+layer goes away with the files, but the underlying JDK-mismatch behavior (stderr text + exit
+code 3) stays covered in-process by `tests/vitest/cli.test.js`'s `preflightJdkCheck` suite —
+already the documented safety net per a comment inside the deleted `Jdk-Gate.Tests.ps1`
+itself. Also updated a stale filename reference in a `lib/runner.js` comment (the deleted
+bats file was named as an example of direct-wrapper-invocation callers) — comment-only, no
+functional change. Vitest count unchanged. See `BACKLOG.md` ("Deferred — PR-28g", now
+shipped) for the full investigation record.
+
 ### Fixed — `describe`'s JDK requirement block now reports the real AGP version instead of always null
 
 **Observable behavior change.** `describe-orchestrator.js` built its `jdk_requirement`
