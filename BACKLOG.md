@@ -112,17 +112,19 @@
   dedicated manual macOS validation phase that validates the accumulated audit train
   consistently on the available macOS machine / `macos-validation.yml` workflow_dispatch
   jobs; document sanitized public + private evidence, then do the final docs closeout.
-- **Vulnerable entrypoint-guard pattern in 4 tools/*.mjs scripts (2 of them required CI checks)** —
-  surfaced 2026-07-15 during code review of the macOS-validation-session fix for
-  `lib/runner.js`'s own entrypoint guard (see PR fixing the Gradle-plugin false-green
-  bug: `path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)` mismatched
-  when the Gradle plugin's RuntimeExtractor extracted `runner.js` into a JVM temp dir
-  under macOS's `/var/folders/...` — a symlink to `/private/var/folders/...` — because
+- **Vulnerable entrypoint-guard pattern in 5 Node tool entrypoint guards (2 of them
+  required CI checks)** — surfaced 2026-07-15 during code review of the
+  macOS-validation-session fix for `lib/runner.js`'s own entrypoint guard (see PR
+  fixing the Gradle-plugin false-green bug:
+  `path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)` mismatched when
+  the Gradle plugin's RuntimeExtractor extracted `runner.js` into a JVM temp dir under
+  macOS's `/var/folders/...` — a symlink to `/private/var/folders/...` — because
   `process.argv[1]` keeps the caller's literal unresolved path while Node's ESM loader
   canonicalizes `import.meta.url`; `main()` silently never ran, exit 0, zero output, no
   error). `lib/runner.js` now uses a realpath-aware `isRunnerEntrypoint()` helper
   (exported, unit-tested). The **same raw-string comparison pattern, unfixed**, is
-  confirmed present in 4 other files, none of which currently reuse the new helper:
+  confirmed present in 5 other files (package.json has `"type": "module"`, so all run
+  as ESM), none of which currently reuse the new helper:
   - `tools/decouple-audit.mjs:300` — `process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])`.
     **Required CI check** (`decouple-audit` job, `ci.yml`) — the repo's privacy gate.
   - `tools/check-line-endings.mjs:193` — `process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)`.
@@ -133,6 +135,8 @@
   - `tools/macos-validation-gate.mjs:853` — `import.meta.url === \`file://${process.argv[1]}\``
     (weakest of all: naive template-string comparison, no normalization whatsoever).
     Ironically the tool most likely to actually hit this on a macOS run.
+  - `tools/measure-token-cost.js:1203` — `process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])`.
+    Same shape as decouple-audit.mjs; not CI-wired, dev-only token-cost measurement tool.
 
   These scripts run directly from the checked-out repo (`node tools/xxx.mjs`), not
   through a temp-dir-extraction step like the Gradle plugin — so the trigger conditions
@@ -143,8 +147,8 @@
   process exits 0 with no error, and CI reports the step as passing having checked
   nothing. For `decouple-audit` specifically this is a silent privacy-gate bypass.
   **Fix shape**: extract `isRunnerEntrypoint` (or an equivalent) into a tiny shared
-  module (`tools/lib/is-entrypoint.mjs` or similar) both `lib/runner.js` and all 4
-  `tools/*.mjs` scripts import, rather than four more independent copies of the
+  module (`tools/lib/is-entrypoint.mjs` or similar) both `lib/runner.js` and all 5
+  affected tool scripts import, rather than five more independent copies of the
   comparison. Own session — not scoped into the fix PR that surfaced it (kept that PR
   focused per user direction).
 - ✅ **PR-28g `refactor(jdk): remove dead shell scanners`** — SHIPPED 2026-07-15 (this PR, closes
