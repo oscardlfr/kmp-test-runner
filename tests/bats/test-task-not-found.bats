@@ -148,7 +148,7 @@ teardown_ux1() {
     # Both the UX-1 reason wording and the canonical [SKIP] format must
     # round-trip through parseSkippedModules into skipped[].
     [[ "$first_line" == *'"module":"android-only"'* ]]
-    [[ "$first_line" == *'"reason":"no ios target"'* ]]
+    [[ "$first_line" == *'"reason":"no ios target (--test-type=ios)"'* ]]
     teardown_ux1
 }
 
