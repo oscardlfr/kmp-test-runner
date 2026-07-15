@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `describe`'s JDK requirement block now reports the real AGP version instead of always null
+
+**Observable behavior change.** `describe-orchestrator.js` built its `jdk_requirement`
+block by reading `model.jdkRequirement.agp` — a field that has never existed on
+`aggregateJdkSignals`'s return shape (`{min, signals, agpVersion, agpIsBinding}`). The
+read silently resolved to `undefined` → `null` every time, so `kmp-test describe
+--json`'s `describe.jdk_requirement.agp` was always `null`, and text mode always printed
+`agp=n/a`, even on real AGP projects with a detected version. Fixed by reading
+`agpVersion` instead. The output JSON key name (`agp`) is unchanged — only the internal
+source field being read was wrong — so no schema/cache-key bump.
+
 ### Fixed — project-model cache key now invalidates on precompiled build-logic script-plugin edits
 
 **Observable behavior change.** `computeCacheKey` (`lib/project/cache.js`) hashed
