@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — project-model cache key now invalidates on precompiled build-logic script-plugin edits
+
+**Observable behavior change.** `computeCacheKey` (`lib/project/cache.js`) hashed
+`build-logic/**/*.kt` convention-plugin Kotlin sources, but never
+`build-logic/**/*.gradle.kts` or `build-logic/**/*.gradle` precompiled script-plugin
+sources — even though `parseBuildLogicPluginDescriptors` already parses both file
+types as descriptor sources feeding each module's `coveragePlugin`, `appliedPlugins`,
+and `type`, and `aggregateJdkSignals` already reads `.gradle.kts`/`.gradle` content
+anywhere in the project, including `build-logic/`, for `jdkRequirement`. Editing a
+precompiled script plugin's applied-plugin id or JDK toolchain call left the cache
+key — and therefore the cached model served by `describe` and every test-dispatch
+path — stale until an unrelated `build.gradle(.kts)` happened to change.
+
+Fixed by hashing every `build-logic/**/*.gradle.kts` and `build-logic/**/*.gradle`
+file (by relative path **and** content, so add/remove/rename also invalidates the
+key — a precompiled script plugin's id comes from its filename) into
+`computeCacheKey`'s input set, purely additive: a project with no `build-logic/`
+directory (or none containing a matching file) hashes identically to before.
+`SCHEMA_VERSION` bumped `9 → 10` (same shape as the prior `8 → 9` bump, which added
+`build-logic/**/*.kt` sources).
+
+**Known, deliberately out-of-scope for this fix**: the `scripts/sh` / `scripts/ps1`
+gradle-tasks-probe cache-key walkers are not updated in this pass. This fix targets
+the JS project-model cache only — sh/ps1 never read or write `model-*.json`, so a
+JS/shell key mismatch can only cause a safe miss in their own probe cache, never a
+stale hit in the JS model.
+
 ### Fixed — JDK/AGP toolchain scanner no longer treats a signal-shaped string literal or a commented-out declaration as live
 
 **Observable behavior change.** `aggregateJdkSignals` (`lib/project/jdk-signals.js`) fixed the

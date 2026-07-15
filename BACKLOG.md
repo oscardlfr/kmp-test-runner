@@ -108,7 +108,56 @@
   implementation PR: wet validation on Windows against at least one official workspace
   project and one private project, Android-relevant changes on the connected S22 Ultra,
   macOS/iOS/manual checks only when needed, no recurring heavy macOS CI, private evidence
-  only through anonymized artifacts.
+  only through anonymized artifacts. Before the final documentation/alignment PR, run a
+  dedicated manual macOS validation phase that validates the accumulated audit train
+  consistently on the available macOS machine / `macos-validation.yml` workflow_dispatch
+  jobs; document sanitized public + private evidence, then do the final docs closeout.
+- ✅ **PR-28e `fix(project): include precompiled build-logic scripts in cache key`** — SHIPPED
+  2026-07-15 (this PR, closes PR-28b's own residual gap below). Reproduced (pinned repro:
+  build a model with a build-logic precompiled-script plugin
+  (`build-logic/convention/src/main/kotlin/<id>.gradle.kts`) applying `kover`, edit the
+  script to apply `jacoco` instead, rebuild — pre-fix `computeCacheKey` stayed unchanged and
+  `buildProjectModel` served the stale `coveragePlugin: kover`) and fixed: `computeCacheKey`
+  (`lib/project/cache.js`) hashed `build-logic/**/*.kt` sources (PR-28b) but never
+  `build-logic/**/*.gradle.kts` / `build-logic/**/*.gradle` precompiled script-plugin
+  sources, even though `parseBuildLogicPluginDescriptors`
+  (`lib/project/kotlin-dsl.js`) already parses BOTH file types as descriptor sources
+  feeding `coveragePlugin`/`appliedPlugins`/module `type`, and `aggregateJdkSignals`
+  (`lib/project/jdk-signals.js`) reads `.gradle.kts`/`.gradle` content anywhere in the
+  project (including build-logic/) for `jdkRequirement`. Fixed by generalizing the
+  private `collectBuildLogicKotlinFiles` walker into `collectBuildLogicSourceFiles`,
+  now matching `.kt` + `.gradle.kts` + `.gradle` in one tree walk (same depth cap and
+  exclusion set as before), hashed by relative path + content — deliberately NOT
+  path-restricted to `src/main/kotlin/`/`src/main/groovy/` (unlike
+  `parseBuildLogicPluginDescriptors`'s own precise regex): broader/simpler matching
+  that over-invalidates rather than under-invalidates, the same simplification PR-28b
+  already made for `.kt`. One accepted side effect: a
+  `build-logic/<module>/build.gradle.kts` registration file is now hashed twice (once
+  content-only via the pre-existing `collectBuildFiles`, once path+content via this
+  walk) — redundant, not incorrect, locked in with a regression test. `SCHEMA_VERSION`
+  bumped `9 → 10` (same shape as the `8 → 9` bump) to force-invalidate pre-fix caches
+  on upgrade. 9 new Vitest cases (Vitest 2405 → 2414), `npm run test:coverage`
+  94.85%/84.79%/94.01%/94.85% lines/branches/functions/statements (all ≥ configured
+  thresholds), incl. a Kotlin AND a Groovy precompiled-script-plugin case and an
+  end-to-end regression proving `buildProjectModel` reflects an edited
+  precompiled-script plugin's applied coverage tool instead of serving a stale cache.
+  `node tools/decouple-audit.mjs` (423 files, 3 public rules) and
+  `node tools/check-line-endings.mjs` (74 LF-required files) both clean.
+  **Scope decision**: `scripts/sh` / `scripts/ps1` gradle-tasks-probe cache-key walkers
+  are out of scope architecturally, not by a snapshot of what they currently hash —
+  they never read or write `model-*.json`, so a JS/shell key mismatch can only cause a
+  safe miss in their own probe cache, never a stale hit in the JS model. **Wet
+  validation**: no-regression checks against one official public project
+  (`Kotlin/kmp-production-sample`, 3 modules, no `build-logic/`) and one private
+  project (aliased "private-kmp-lib", 74 modules, real `.kt` build-logic convention
+  plugins) — both `describe --json --skip-probe` cold→warm runs produced an identical
+  `cache_key` and correct module data, confirming no regression. New-behavior proof:
+  the required model-level `buildProjectModel(..., {skipProbe:true})` regression test
+  (above), plus a best-effort CLI-level synthetic fixture (stub `gradlew` that exits
+  immediately, no network/real Gradle) run through the real `describe` binary —
+  cold/warm cache_key stable, then changed correctly after editing the
+  precompiled-script-plugin, with `coveragePlugin` flipping `kover → jacoco` in the
+  live envelope.
 - ✅ **PR-28d `fix(project): ignore quoted scanner signals`** — SHIPPED 2026-07-15 (this PR,
   follow-up to PR-28a's residual gap + an incidental finding surfaced alongside it). Reproduced
   two related bugs, both traced to `stripGradleComments` (`lib/project/kotlin-dsl.js`) having no
@@ -291,6 +340,7 @@
   hit. **Residual gap, tracked, not fixed here**: precompiled-script-plugin
   `build-logic/**/*.gradle.kts` files (a related but distinct descriptor source in
   `parseBuildLogicPluginDescriptors`) are not yet hashed — own follow-up, priority TBD.
+  ✅ **SHIPPED as PR-28e above.**
   **Scope decision**: `scripts/sh` / `scripts/ps1` gradle-tasks-probe cache-key walkers are
   NOT updated to match this new input — a JS/shell cache-key mismatch only ever produces a
   miss (safe, forces a fresh gradle probe), never a stale hit, so cross-implementation

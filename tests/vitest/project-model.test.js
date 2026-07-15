@@ -3331,3 +3331,181 @@ describe('computeCacheKey — build-logic/**/*.kt fingerprint (PR-28b)', () => {
     expect(after.modules[':core-foo'].coveragePlugin).toBe('jacoco');
   });
 });
+
+// ------------------------------------------------------------------
+// computeCacheKey — build-logic/**/*.gradle.kts and *.gradle precompiled
+// script-plugin fingerprint (PR-28e)
+//
+// Closes the residual gap left open by the PR-28b block above:
+// parseBuildLogicPluginDescriptors already parses BOTH
+// build-logic/**/*.gradle.kts (Kotlin precompiled-script plugins, under
+// src/main/kotlin/) and build-logic/**/*.gradle (Groovy precompiled-script
+// plugins, under src/main/groovy/) as descriptor sources feeding
+// coveragePlugin/appliedPlugins/module `type`, and aggregateJdkSignals
+// reads .gradle.kts/.gradle content anywhere in the project (including
+// build-logic/) for jdkRequirement — but pre-fix computeCacheKey only
+// hashed build-logic/**/*.kt, not these sibling file types. Editing a
+// precompiled script plugin's applied-plugin id or JDK toolchain call left
+// the cache key (and the served model) stale until an unrelated
+// build.gradle(.kts) happened to change — same bug shape as PR-28b, for
+// the sibling file type.
+//
+// Scope note: the sh/ps1 gradle-tasks-probe cache-key walkers are not
+// updated in this pass. This fix targets the JS project-model cache only —
+// sh/ps1 never read or write model-*.json, so a JS/shell key mismatch can
+// only cause a safe miss in their own probe cache, never a stale hit in
+// the JS model. See the SCHEMA_VERSION 9→10 comment in lib/project/cache.js.
+// ------------------------------------------------------------------
+describe('computeCacheKey — build-logic/**/*.gradle.kts and *.gradle fingerprint (PR-28e)', () => {
+  function kotlinScriptDir(dir) {
+    const p = path.join(dir, 'build-logic', 'convention', 'src', 'main', 'kotlin');
+    mkdirSync(p, { recursive: true });
+    return p;
+  }
+  function groovyScriptDir(dir) {
+    const p = path.join(dir, 'build-logic', 'convention', 'src', 'main', 'groovy');
+    mkdirSync(p, { recursive: true });
+    return p;
+  }
+
+  it('changes when a build-logic/**/*.gradle.kts precompiled-script-plugin source changes', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const scripts = kotlinScriptDir(dir);
+    writeFileSync(path.join(scripts, 'myproj.foo.gradle.kts'), 'apply { plugin("org.jetbrains.kotlinx.kover") }\n');
+    const k1 = computeCacheKey(dir);
+    writeFileSync(path.join(scripts, 'myproj.foo.gradle.kts'), 'apply { plugin("jacoco") }\n');
+    const k2 = computeCacheKey(dir);
+    expect(k2).not.toBe(k1);
+  });
+
+  it('changes when a build-logic/**/*.gradle Groovy precompiled-script-plugin source changes', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const scripts = groovyScriptDir(dir);
+    writeFileSync(path.join(scripts, 'myproj.bar.gradle'), "apply plugin: 'org.jetbrains.kotlinx.kover'\n");
+    const k1 = computeCacheKey(dir);
+    writeFileSync(path.join(scripts, 'myproj.bar.gradle'), "apply plugin: 'jacoco'\n");
+    const k2 = computeCacheKey(dir);
+    expect(k2).not.toBe(k1);
+  });
+
+  it('changes when a new relevant build-logic/**/*.gradle.kts file is added', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const scripts = kotlinScriptDir(dir);
+    writeFileSync(path.join(scripts, 'myproj.foo.gradle.kts'), 'apply { plugin("jacoco") }\n');
+    const k1 = computeCacheKey(dir);
+    writeFileSync(path.join(scripts, 'myproj.bar.gradle.kts'), 'apply { plugin("org.jetbrains.kotlinx.kover") }\n');
+    const k2 = computeCacheKey(dir);
+    expect(k2).not.toBe(k1);
+  });
+
+  it('changes when a relevant build-logic/**/*.gradle.kts file is removed', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const scripts = kotlinScriptDir(dir);
+    writeFileSync(path.join(scripts, 'myproj.foo.gradle.kts'), 'apply { plugin("jacoco") }\n');
+    writeFileSync(path.join(scripts, 'myproj.bar.gradle.kts'), 'apply { plugin("org.jetbrains.kotlinx.kover") }\n');
+    const k1 = computeCacheKey(dir);
+    rmSync(path.join(scripts, 'myproj.bar.gradle.kts'));
+    const k2 = computeCacheKey(dir);
+    expect(k2).not.toBe(k1);
+  });
+
+  it('changes when a relevant build-logic/**/*.gradle.kts file is renamed (same content, different path — the plugin id changes with the filename)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const scripts = kotlinScriptDir(dir);
+    writeFileSync(path.join(scripts, 'myproj.foo.gradle.kts'), 'apply { plugin("jacoco") }\n');
+    const k1 = computeCacheKey(dir);
+    rmSync(path.join(scripts, 'myproj.foo.gradle.kts'));
+    writeFileSync(path.join(scripts, 'myproj.renamed.gradle.kts'), 'apply { plugin("jacoco") }\n');
+    const k2 = computeCacheKey(dir);
+    expect(k2).not.toBe(k1);
+  });
+
+  it('ignores build-logic/**/*.gradle.kts and *.gradle files under excluded build/ and .gradle/ dirs', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const scripts = kotlinScriptDir(dir);
+    writeFileSync(path.join(scripts, 'myproj.foo.gradle.kts'), 'apply { plugin("jacoco") }\n');
+    const k1 = computeCacheKey(dir);
+    const genDir = path.join(dir, 'build-logic', 'build', 'generated');
+    mkdirSync(genDir, { recursive: true });
+    writeFileSync(path.join(genDir, 'myproj.generated.gradle.kts'), 'apply { plugin("org.jetbrains.kotlinx.kover") }\n');
+    const gradleNoise = path.join(dir, 'build-logic', '.gradle', 'noise');
+    mkdirSync(gradleNoise, { recursive: true });
+    writeFileSync(path.join(gradleNoise, 'noise.gradle'), "apply plugin: 'org.jetbrains.kotlinx.kover'\n");
+    const k2 = computeCacheKey(dir);
+    expect(k2).toBe(k1);
+  });
+
+  // Purely additive, tested as a directory-state comparison within the
+  // current code (not a comparison against a hardcoded pre-fix constant,
+  // which would be fragile): computeCacheKey must return the same value
+  // whether build-logic/ is absent or present-but-empty, proving the new
+  // collector is a no-op with nothing to collect. Mirrors the PR-28b
+  // block's identical test above.
+  it('a project with no build-logic/ directory hashes identically to an empty build-logic/ directory (purely additive)', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"\ninclude \':app\'\n');
+    writeFileSync(path.join(dir, 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
+    const before = computeCacheKey(dir);
+    mkdirSync(path.join(dir, 'build-logic'), { recursive: true });
+    expect(computeCacheKey(dir)).toBe(before);
+  });
+
+  // Design decision: the walk matches ANY build-logic/**/*.gradle.kts or
+  // *.gradle file, not just ones under src/main/kotlin//src/main/groovy —
+  // so it re-collects build-logic/<module>/build.gradle.kts (already
+  // hashed content-only by collectBuildFiles above). That file's content
+  // is hashed TWICE into the concatenated SHA1 input (once content-only,
+  // once path+content). This regression test locks in that the
+  // duplication is harmless: the key still correctly invalidates when the
+  // file's content changes.
+  it('build-logic/<module>/build.gradle.kts (already covered by collectBuildFiles) is redundantly re-hashed by the build-logic walk, but still invalidates correctly', () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "x"');
+    const convModuleDir = path.join(dir, 'build-logic', 'convention');
+    mkdirSync(convModuleDir, { recursive: true });
+    writeFileSync(path.join(convModuleDir, 'build.gradle.kts'),
+      'gradlePlugin {\n  plugins {\n    register("foo") {\n      id = "com.example.foo"\n      implementationClass = "FooConventionPlugin"\n    }\n  }\n}\n');
+    const k1 = computeCacheKey(dir);
+    writeFileSync(path.join(convModuleDir, 'build.gradle.kts'),
+      'gradlePlugin {\n  plugins {\n    register("foo") {\n      id = "com.example.bar"\n      implementationClass = "FooConventionPlugin"\n    }\n  }\n}\n');
+    const k2 = computeCacheKey(dir);
+    expect(k2).not.toBe(k1);
+  });
+
+  // End-to-end regression: the actual bug PR-28e closes. Pre-fix, editing a
+  // precompiled-script-plugin's applied coverage plugin left
+  // buildProjectModel serving the stale cached model (unchanged cacheKey →
+  // cache hit → stale coveragePlugin). Unlike the PR-28b .kt end-to-end
+  // test above (which relies on the v0.6.0 broad-inheritance fallback,
+  // since a bare .kt Plugin<Project> file isn't itself a descriptor), this
+  // one exercises the actual parseBuildLogicPluginDescriptors
+  // descriptor-array + per-module applied-id-match path: the module
+  // explicitly applies id("myproj.coverage"), matching the precompiled
+  // script's filename-derived plugin id.
+  it('buildProjectModel reflects an edited precompiled-script-plugin instead of serving a stale cache', () => {
+    const dir = makeProject();
+    const scripts = kotlinScriptDir(dir);
+    writeFileSync(path.join(scripts, 'myproj.coverage.gradle.kts'), 'apply { plugin("org.jetbrains.kotlinx.kover") }\n');
+    const modDir = path.join(dir, 'core-foo');
+    mkdirSync(modDir, { recursive: true });
+    writeFileSync(path.join(modDir, 'build.gradle.kts'), 'plugins {\n    id("myproj.coverage")\n    kotlin("multiplatform")\n}\n');
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'include(":core-foo")\n');
+
+    const before = buildProjectModel(dir, { skipProbe: true });
+    expect(before.modules[':core-foo'].coveragePlugin).toBe('kover');
+
+    // Edit the precompiled-script-plugin to apply jacoco instead of kover —
+    // a model-relevant signal change with NO build.gradle(.kts) touched.
+    writeFileSync(path.join(scripts, 'myproj.coverage.gradle.kts'), 'apply { plugin("jacoco") }\n');
+
+    const after = buildProjectModel(dir, { skipProbe: true });
+    expect(after.cacheKey).not.toBe(before.cacheKey);
+    expect(after.modules[':core-foo'].coveragePlugin).toBe('jacoco');
+  });
+});

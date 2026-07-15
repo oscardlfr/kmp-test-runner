@@ -1787,7 +1787,9 @@ describe('main() — Phase 4 step 7 (eager ProjectModel build before spawn)', ()
       // Hardcoded on purpose — forces a conscious edit on every SCHEMA bump.
       // 7 → 8: gradle/libs.versions.toml joined the cache-key input set.
       // 8 → 9 (PR-28b): build-logic/**/*.kt joined the cache-key input set.
-      expect(model.schemaVersion).toBe(9);
+      // 9 → 10 (PR-28e): build-logic/**/*.gradle.kts and *.gradle joined
+      // the cache-key input set.
+      expect(model.schemaVersion).toBe(10);
       expect(model.settingsIncludes).toEqual([':m']);
       expect(model.modules[':m'].type).toBe('jvm');
     });
