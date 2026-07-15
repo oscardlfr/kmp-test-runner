@@ -1,21 +1,13 @@
 // SPDX-License-Identifier: MIT
 package io.github.oscardlfr.kmptestrunner.tasks
 
-import io.github.oscardlfr.kmptestrunner.KmpTestRunnerExtension
 import io.github.oscardlfr.kmptestrunner.RuntimeExtractor
 import io.github.oscardlfr.kmptestrunner.buildNodeCommand
-import org.gradle.api.DefaultTask
-import org.gradle.api.tasks.Internal
+import io.github.oscardlfr.kmptestrunner.runNodeRunner
 import org.gradle.api.tasks.TaskAction
 import java.nio.file.Files
 
-open class BenchmarkTestsTask : DefaultTask() {
-    @get:Internal
-    lateinit var extension: KmpTestRunnerExtension
-
-    @get:Internal
-    var defaultProjectRoot: String = ""
-
+abstract class BenchmarkTestsTask : NodeRunnerTask() {
     @TaskAction
     fun run() {
         val effectiveRoot = extension.projectRoot.ifEmpty { defaultProjectRoot }
@@ -25,15 +17,8 @@ open class BenchmarkTestsTask : DefaultTask() {
             val runnerPath = tempDir.resolve("lib/runner.js").toString()
             val cmd = buildNodeCommand(runnerPath, "benchmark",
                 "--project-root", effectiveRoot
-            ).toMutableList()
-            val pb = ProcessBuilder(cmd).redirectErrorStream(true)
-            if (extension.sharedProjectName.isNotEmpty()) {
-                pb.environment()["SHARED_PROJECT_NAME"] = extension.sharedProjectName
-            }
-            val proc = pb.start()
-            proc.inputStream.transferTo(System.out)
-            val rc = proc.waitFor()
-            if (rc != 0) error("[benchmarkTests] runner exited with code $rc")
+            )
+            runNodeRunner(execOperations, "benchmarkTests", cmd, effectiveRoot, extension.sharedProjectName)
         } finally {
             RuntimeExtractor.cleanup(tempDir)
         }

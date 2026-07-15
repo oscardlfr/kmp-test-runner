@@ -10,8 +10,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
-import { extractJavaHome, applyJavaHomeToEnv } from '../../lib/runner.js';
+import { extractJavaHome, applyJavaHomeToEnv, isRunnerEntrypoint } from '../../lib/runner.js';
 
 // ---------------------------------------------------------------------------
 // Process-env save/restore so tests are isolated
@@ -148,5 +150,72 @@ describe('applyJavaHomeToEnv ordering (JAVA_HOME visible to subsequent process.e
     expect(process.env.JAVA_HOME).toBe(os.tmpdir());
     expect(cleanedArgs).toEqual(['--variant', 'debug']);
     expect(cleanedArgs).not.toContain('--java-home');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isRunnerEntrypoint — regression coverage for the Gradle-plugin false-green
+// bug (2026-07-15 macOS validation): the Gradle plugin's RuntimeExtractor
+// extracts runner.js to a JVM temp dir, which on macOS resolves under
+// /var/folders/... — a symlink to /private/var/folders/.... process.argv[1]
+// keeps the literal (unresolved) form the caller passed, while Node's ESM
+// loader canonicalizes import.meta.url through that symlink. The raw-string
+// guard this replaced mismatched on the identical file, so `main()` silently
+// never ran: exit 0, zero output, no error — Gradle saw a false
+// BUILD SUCCESSFUL for every one of the 5 gradle-plugin tasks regardless of
+// what the runner itself would have reported.
+// ---------------------------------------------------------------------------
+describe('isRunnerEntrypoint', () => {
+  const itUnlessWindows = process.platform === 'win32' ? it.skip : it;
+
+  it('matches when argv[1] and the module URL are the identical literal path', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kmp-entrypoint-'));
+    const file = path.join(dir, 'runner.js');
+    fs.writeFileSync(file, '// fixture');
+    try {
+      expect(isRunnerEntrypoint(file, pathToFileURL(file).href)).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  itUnlessWindows('matches when argv[1] traverses a symlink but the module URL resolves the real path (the macOS /var vs /private/var shape)', () => {
+    const realDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kmp-entrypoint-real-'));
+    const linkDir = path.join(os.tmpdir(), `kmp-entrypoint-link-${process.pid}-${Date.now()}`);
+    fs.symlinkSync(realDir, linkDir, 'dir');
+    const realFile = path.join(realDir, 'runner.js');
+    const viaSymlinkFile = path.join(linkDir, 'runner.js');
+    fs.writeFileSync(realFile, '// fixture');
+    try {
+      // argv[1] as the caller would pass it: through the symlinked path.
+      // import.meta.url as Node's ESM loader would report it: canonicalized.
+      expect(isRunnerEntrypoint(viaSymlinkFile, pathToFileURL(realFile).href)).toBe(true);
+      // Also holds symmetrically (argv canonical, module via symlink).
+      expect(isRunnerEntrypoint(realFile, pathToFileURL(viaSymlinkFile).href)).toBe(true);
+    } finally {
+      fs.rmSync(linkDir, { force: true });
+      fs.rmSync(realDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not match genuinely different files', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kmp-entrypoint-'));
+    const fileA = path.join(dir, 'a.js');
+    const fileB = path.join(dir, 'b.js');
+    fs.writeFileSync(fileA, '// a');
+    fs.writeFileSync(fileB, '// b');
+    try {
+      expect(isRunnerEntrypoint(fileA, pathToFileURL(fileB).href)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false when argv[1] is absent (imported as a module, not run directly)', () => {
+    // '' (not undefined): isRunnerEntrypoint's argv1 parameter has a default
+    // of process.argv[1], which only activates on undefined — passing
+    // undefined here would silently substitute the real (truthy) test-runner
+    // argv[1] and never exercise the `if (!argv1) return false` guard at all.
+    expect(isRunnerEntrypoint('', pathToFileURL(path.join(os.tmpdir(), 'runner.js')).href)).toBe(false);
   });
 });

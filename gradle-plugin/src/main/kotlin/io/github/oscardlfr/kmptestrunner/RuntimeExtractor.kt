@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 package io.github.oscardlfr.kmptestrunner
 
+import org.gradle.process.ExecOperations
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
@@ -81,4 +82,47 @@ internal fun buildNodeCommand(runnerPath: String, vararg extra: String): List<St
         launcher.split(" ") + listOf(runnerPath, *extra)
     else
         listOf("node", runnerPath, *extra)
+}
+
+/**
+ * Spawns the bundled runner via Gradle's injected [ExecOperations] — the
+ * Gradle-recommended replacement for raw `java.lang.ProcessBuilder`/
+ * `Project.exec` inside tasks (process lifecycle stays visible to Gradle,
+ * and it's the configuration-cache-compatible path). Not a correctness fix
+ * on its own: a prior false-green bug where these tasks reported
+ * BUILD SUCCESSFUL regardless of the runner's real exit code was traced to
+ * `lib/runner.js`'s own entrypoint guard, not to the process-spawning API —
+ * see `isRunnerEntrypoint` in that file.
+ *
+ * `standardOutput`/`errorOutput` are wired straight to [System.out] — Gradle
+ * pumps both streams live as the child writes them (matching the previous
+ * `redirectErrorStream(true)` + streaming `transferTo` behavior: real-time
+ * console output, no end-of-run buffering, no UTF-8 round-trip through an
+ * intermediate buffer). `workingDir` pins to `effectiveRoot`; `--project-root`
+ * is always passed explicitly, but leaving the child's cwd otherwise
+ * undefined has no upside.
+ *
+ * Non-zero exit throws `"[$taskName] runner exited with code $rc"` (never
+ * left to ExecOperations' own default failure handling, so the existing
+ * per-task error-message contract is unchanged).
+ */
+internal fun runNodeRunner(
+    execOperations: ExecOperations,
+    taskName: String,
+    cmd: List<String>,
+    projectRoot: String,
+    sharedProjectName: String,
+) {
+    val result = execOperations.exec { spec ->
+        spec.commandLine(cmd)
+        spec.workingDir(File(projectRoot))
+        spec.isIgnoreExitValue = true
+        spec.standardOutput = System.out
+        spec.errorOutput = System.out
+        if (sharedProjectName.isNotEmpty()) {
+            spec.environment("SHARED_PROJECT_NAME", sharedProjectName)
+        }
+    }
+    val rc = result.exitValue
+    if (rc != 0) error("[$taskName] runner exited with code $rc")
 }
