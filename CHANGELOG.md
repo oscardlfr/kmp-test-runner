@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — JDK/AGP toolchain scanner no longer treats a signal-shaped string literal or a commented-out declaration as live
+
+**Observable behavior change.** `aggregateJdkSignals` (`lib/project/jdk-signals.js`) fixed the
+comment-false-positive bug in PR-28a via `stripGradleComments`, but that helper had no
+string-literal awareness — a JDK-signal-shaped substring INSIDE a string literal (e.g.
+`println("jvmToolchain(21)")`, a log line, a doc string) is not a comment at all, so it survived
+stripping untouched and was then wrongly matched by the `jvmToolchain` / `JvmTarget.JVM_N` /
+`JavaVersion.VERSION_N` signal regexes as a live declaration. Separately, and more seriously:
+`detectAgpVersion` (same file) never stripped comments at all before its two regex matches, so a
+commented-out AGP declaration positioned textually BEFORE a live one — a common pattern while
+bumping AGP ("keep the old pin around, commented, for reference") — won outright, because
+`String.prototype.match` (no `/g` flag) returns the first match in source order. Reproduced: a
+project with `// classpath("com.android.tools.build:gradle:4.2.0")` above a live
+`classpath("com.android.tools.build:gradle:8.2.1")` resolved `agpVersion: "4.2.0"` and a
+required-JDK floor of **8** instead of the correct **17** — a false NEGATIVE that could let a run
+proceed on an insufficient JDK and fail deep inside the Gradle daemon instead of at the
+`jdk_mismatch` preflight gate.
+
+Fixed both by rewriting `stripGradleComments` (`lib/project/kotlin-dsl.js`) as a single-pass,
+quote-aware scanner (line comment / block comment / single-quoted / double-quoted / Kotlin
+triple-quoted raw-string states) that leaves string-literal content byte-for-byte untouched — a
+pure bug fix for `stripGradleComments`'s 5 existing call sites across `project-model.js`,
+`analyze-module.js`, and 2 self-uses in `kotlin-dsl.js` itself, all of which detect plugin ids /
+coverage-tool names / class names that legitimately live inside string literals and never contain
+`//`/`/* */`-shaped text in practice. A new sibling export, `stripGradleCommentsAndStrings`, adds
+a second mode that also blanks string-literal CONTENT with equal-length spaces (keeping the quote
+delimiters, so code on either side of a blanked string can never become falsely adjacent);
+`aggregateJdkSignals`'s build-script walk is the ONLY caller switched to this stricter mode, since
+a real JDK-toolchain signal is always Kotlin/Groovy DSL code, never a legitimate string literal.
+`detectAgpVersion` now strips comments (preserve-string mode) from each build-file candidate
+before its plugins-DSL and buildscript-classpath regex matches. An unterminated `/* comment` (no
+closing `*/`) is swallowed to EOF rather than left in the scanned text, so a malformed/truncated
+file can't leak a phantom signal from inside it. No `schema_version` bump — shapes are unchanged;
+only existing field values are corrected.
+
+**Known residual, explicitly distinct from the bug fixed above — not the same defect left open**:
+`detectAgpVersion`'s `gradle/libs.versions.toml` catalog probe is unchanged. The direct analogue
+of the fixed bug (a commented-out `key = "value"` line) is already a non-issue there today — TOML
+comments start with `#`, and the probe's regex requires the key to be the first non-whitespace
+token on the line, which a leading `#` cannot satisfy. There IS a separate, low-probability issue
+in the `[versions]` section-boundary regex (no comment-awareness of its own, so a stray
+commented-out `# [versions]` example header ahead of the real section could make it latch onto the
+wrong occurrence) — a section-header-matching bug, not a key-value-comment bug, tracked in
+`BACKLOG.md` and not addressed here.
+
+**Second known residual, also explicitly scoped**: `stripGradleComments`/`stripGradleCommentsAndStrings`
+recognize `'...'`, `"..."`, and Kotlin `"""..."""` string literals, but NOT Groovy slashy (`/.../`)
+or dollar-slashy (`$/.../$`) literals. Since `aggregateJdkSignals` also walks `.gradle` (Groovy DSL)
+files, a JDK-signal-shaped substring inside a slashy string (e.g. `def note = /jvmToolchain(21)/`)
+can still produce a false positive. Deliberately not supported: unlike a quote character, a bare `/`
+is genuinely ambiguous between "string literal start" and "division operator" without real
+expression-context tracking, and a naive heuristic risks a worse failure mode — mistaking a real
+division for a string open and swallowing real code up to the next unrelated `/` in the file. A
+regression test locks in the current (documented, imperfect) behavior. Tracked in `BACKLOG.md`.
+
 ### Added — CodeRabbit now auto-reviews PRs targeting `develop`
 
 **No CLI/runtime behavior change** -- config-only, via a new root `.coderabbit.yaml`.

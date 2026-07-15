@@ -109,6 +109,56 @@
   project and one private project, Android-relevant changes on the connected S22 Ultra,
   macOS/iOS/manual checks only when needed, no recurring heavy macOS CI, private evidence
   only through anonymized artifacts.
+- ✅ **PR-28d `fix(project): ignore quoted scanner signals`** — SHIPPED 2026-07-15 (this PR,
+  follow-up to PR-28a's residual gap + an incidental finding surfaced alongside it). Reproduced
+  two related bugs, both traced to `stripGradleComments` (`lib/project/kotlin-dsl.js`) having no
+  string-literal awareness: (1) a JDK-signal-shaped substring inside a string literal (e.g.
+  `println("jvmToolchain(21)")`) was not a comment, so it survived stripping untouched and
+  `aggregateJdkSignals`'s JDK_PATTERNS regexes then wrongly matched it as a live requirement; (2)
+  `detectAgpVersion` (same file) never stripped comments at all, so a commented-out AGP
+  declaration positioned before a live one won outright (pinned repro:
+  `// classpath(...gradle:4.2.0")` above a live `classpath(...gradle:8.2.1")` resolved
+  `agpVersion: "4.2.0"` → required-JDK floor **8** instead of the correct **17**, a false
+  negative that could let a run proceed on an insufficient JDK). Fixed by rewriting
+  `stripGradleComments` as a single-pass quote-aware scanner (line/block comment +
+  single/double/triple-quoted-string states) that leaves string content byte-for-byte untouched
+  — zero behavior change for its 5 existing call sites (plugin-id / coverage-tool / class-name
+  detection in `project-model.js`, `analyze-module.js`, `kotlin-dsl.js` self-uses; 2 explicit
+  non-regression tests added, not just full-suite-stayed-green: a plugin id inside a string
+  literal still resolves, and a `//` inside a same-line URL string no longer eats real trailing
+  code), since none of those names legitimately contain `//`/`/* */`-shaped text. New sibling
+  export `stripGradleCommentsAndStrings` additionally blanks string CONTENT with equal-length
+  spaces (keeps quote delimiters); `aggregateJdkSignals`'s build-script walk is the only caller
+  switched to it. `detectAgpVersion` now strips comments before its 2 build-file regex matches
+  (its `libs.versions.toml` catalog probe is untouched — see residual note below). An
+  unterminated `/* comment` is swallowed to EOF rather than left in the scanned text, so a
+  malformed file can't leak a phantom signal — an early design draft got this backwards (copied
+  the unterminated tail back "for byte-parity with the old regex"), caught in plan review before
+  implementation; regression test locks the fixed behavior. 14 new Vitest cases (vitest 2390 →
+  2404), `npm run test:coverage` / `node tools/decouple-audit.mjs` /
+  `node tools/check-line-endings.mjs` all green. **Residual, explicitly NOT the same bug shape as
+  the fixes above — do not conflate**: `detectAgpVersion`'s `gradle/libs.versions.toml` catalog
+  probe is unchanged. The direct analogue of the fixed bug (a commented-out `key = "value"` line)
+  is already a non-issue there today — TOML comments use `#`, and the probe's regex requires the
+  key to be the first non-whitespace token on the line, which a leading `#` can't satisfy. The
+  actual remaining gap is different and lower-probability: the `[versions]` section-boundary
+  regex has no comment-awareness of its own, so a stray commented-out `# [versions]` example
+  header ahead of the real section could make it latch onto the wrong occurrence — a
+  section-header-matching bug, not a key-value-comment bug. Needs its own quote-aware TOML lexer,
+  own follow-up, priority TBD. Also explicitly out of scope, not touched: the pre-existing
+  misleading comment at `lib/project-model.js:81-82` claiming `detectAgpVersion`/`agpRequiredJdk`
+  are re-exported when only `aggregateJdkSignals` is; `scripts/sh/lib/jdk-check.sh` /
+  `scripts/ps1/lib/Jdk-Check.ps1` dead-code duplicates; `describe-orchestrator.js`'s non-existent
+  `jdkRequirement.agp` field read; no new JDK signal patterns added (e.g. `JavaLanguageVersion.of`
+  was never matched by `JDK_PATTERNS` before this PR either — out of scope, a coverage addition
+  not a false-positive fix). **Second residual, caught in post-CI review**: the lexer recognizes
+  `'...'`/`"..."`/Kotlin `"""..."""` but NOT Groovy slashy (`/.../`) or dollar-slashy (`$/.../$`)
+  string literals — a JDK-signal-shaped substring inside one (e.g. `def note = /jvmToolchain(21)/`
+  in a `.gradle` file) can still false-positive. Deliberately not supported: a bare `/` is
+  genuinely ambiguous between string-open and division without real expression-context tracking,
+  and a naive heuristic risks the worse failure mode of eating real code between an actual
+  division and the next unrelated `/`. Locked in with a regression test asserting the current
+  (documented) behavior — own follow-up if ever prioritized, priority TBD.
 - ✅ **PR-20a `test(env): make environment snapshots hermetic`** — SHIPPED 2026-07-14 (this PR,
   closes v3.2 finding M9's JAVA_HOME-dependent-snapshot half; the CRLF/bats half is PR-20b,
   separate, not touched here). Root cause: `lib/jdk-catalogue.js`'s `discoverInstalledJdks()`
@@ -251,7 +301,8 @@
   as a live requirement, which could false-block a run (`jdk_mismatch`) even when the host
   JDK was already correct — fixed via `stripGradleComments`. **Residual gap, tracked, not
   fixed here**: string-literal false positives in the same scanner (`stripGradleComments`
-  has no quote-awareness) — own follow-up, priority TBD. **Deferred — PR-28b**: project-model
+  has no quote-awareness) — own follow-up, priority TBD. ✅ **SHIPPED as PR-28d above.**
+  **Deferred — PR-28b**: project-model
   cache fingerprint (`computeCacheKey`, `lib/project/cache.js`) reproduces — doesn't hash
   `build-logic/**/*.kt`, so a convention-plugin edit can serve a stale cached model
   (`describe` path only); needs a schema bump, own PR. ✅ **SHIPPED as PR-28b above.**
@@ -260,7 +311,10 @@
   all) — needs a closure decision + wet-check (can `parallel`'s `cacheRespected` bypass ever
   fire for AGP connected-test output?) before this M10 sub-finding can be marked resolved or
   given a scoped test. ✅ **SHIPPED as PR-28c above.** **Incidental findings, compact follow-ups**: `detectAgpVersion` (same
-  file) has a different comment-blindness shape; `scripts/sh/lib/jdk-check.sh` /
+  file) had comment-blindness on its 2 build-file regex matches ✅ **SHIPPED as PR-28d above**
+  (its `libs.versions.toml` catalog-probe branch is a distinct, separate, low-probability
+  residual — see PR-28d's own note above; not the same bug shape, not silently left open);
+  `scripts/sh/lib/jdk-check.sh` /
   `scripts/ps1/lib/Jdk-Check.ps1` carry a dead-code duplicate of the pre-fix scanner;
   `describe-orchestrator.js` reads a non-existent `jdkRequirement.agp` field (always null).
 - ✅ **PR-27 `fix(envelope): honor published exit-code contract`** — SHIPPED 2026-07-14 (this PR).
