@@ -135,9 +135,16 @@
   direct-wrapper-invocation callers bypassing `cli.js` — updated to a non-file-specific example
   (comment-only, no functional change; the underlying pattern still holds via 3 surviving bats
   files that spawn wrappers directly). `npx bats tests/bats/ tests/installer/ tests/skill-scripts/`
-  (26 → 25 files), `Invoke-Pester -Path tests/pester/,tests/installer/,tests/skill-scripts/ -CI`
-  (22 → 21 files), `npm run test:coverage`, `node tools/decouple-audit.mjs`,
-  `node tools/check-line-endings.mjs`, and `npm run shellcheck` all green. **No wet validation**:
+  (26 → 25 files) — 205 passed, 18 pre-existing failures unrelated to this PR (17 are the known
+  Windows-Git-Bash installer-E2E "Unsupported platform" cases; 1 is
+  `test-task-not-found.bats:179`'s gradle-dispatch test, independently verified to also fail on
+  the pre-PR-28g baseline commit via an isolated `git worktree` check — not a regression).
+  `Invoke-Pester -Path tests/pester/,tests/installer/,tests/skill-scripts/ -CI` (22 → 21 files) —
+  200 passed, 0 failed, 6 skipped (macOS-only iOS cases). `npm run test:coverage` — 2416 passed, 1
+  skipped, unchanged from baseline. `node tools/decouple-audit.mjs` / `node
+  tools/check-line-endings.mjs` both clean. `npm run shellcheck` NOT run — `shellcheck` isn't on
+  this machine's local PATH; an optional, non-blocking addition on top of the task's required
+  gates, not itself a required gate for this change. **No wet validation**:
   nothing calls these paths today — pre-approved by the deferred note below ("no wet/live
   validation needed since nothing calls these paths today"). **Housekeeping note**: this session's
   working tree carried an unrelated, pre-existing local edit to this file (a parked "Node floor
