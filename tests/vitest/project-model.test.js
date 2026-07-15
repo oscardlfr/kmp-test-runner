@@ -26,7 +26,7 @@ import {
   parseVersionCatalog,
   parseBuildLogicPluginDescriptors,
 } from '../../lib/project-model.js';
-import { extractAppliedPluginsFromConventionSource } from '../../lib/project/kotlin-dsl.js';
+import { extractAppliedPluginsFromConventionSource, stripGradleComments } from '../../lib/project/kotlin-dsl.js';
 
 let workDir;
 
@@ -287,9 +287,9 @@ describe('aggregateJdkSignals', () => {
     expect(r.signals[0].file).toBe('a/b/build.gradle.kts');
   });
 
-  // Audit v3.2 M10 (verify-first trio) / PR-28a. Comment-only fix: stripGradleComments has
-  // no string-literal awareness, so a version number inside a string literal is a separate,
-  // still-open gap (tracked in BACKLOG.md), not covered by these cases.
+  // Audit v3.2 M10 (verify-first trio) / PR-28a. Comment-only fix: stripGradleComments (at the
+  // time) had no string-literal awareness, so a version number inside a string literal was a
+  // separate gap — closed by PR-28d below, which also fixed detectAgpVersion's comment-blindness.
   describe('commented-out signal stripping (PR-28a)', () => {
     it('ignores a version number inside a // line comment', () => {
       const dir = makeProject();
@@ -330,6 +330,126 @@ describe('aggregateJdkSignals', () => {
       expect(r.signals.find(s => s.type === 'jvmToolchain' && s.version === 17)).toBeTruthy();
       expect(r.signals.find(s => s.type === 'JvmTarget' && s.version === 21)).toBeTruthy();
       expect(r.signals.some(s => s.version === 11)).toBe(false);
+    });
+  });
+
+  // PR-28d — companion to PR-28a's residual gap (BACKLOG.md): stripGradleComments gained
+  // quote-awareness, so a comment is never mistaken for code inside a string AND (the fix this
+  // block covers) a JDK-signal-shaped substring INSIDE a string literal is never mistaken for a
+  // live code declaration. aggregateJdkSignals' build-script walk uses the new
+  // stripGradleCommentsAndStrings (blank-string-content) mode specifically so this holds; every
+  // other stripGradleComments caller keeps using the byte-for-byte-preserving mode.
+  describe('string-literal false-positive stripping (PR-28d)', () => {
+    it('ignores a JDK signal inside a double-quoted string', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'println("jvmToolchain(21)")\nkotlin { jvmToolchain(17) }');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.signals.some(s => s.version === 21)).toBe(false);
+    });
+
+    it('ignores a JDK signal inside a single-quoted (Groovy) string', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle'),
+        "println('jvmToolchain(21)')\nkotlin { jvmToolchain(17) }");
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.signals.some(s => s.version === 21)).toBe(false);
+    });
+
+    // Deliberately includes a nested, unpaired `"` (the inches mark in `6"`) INSIDE the
+    // triple-quoted content, positioned before the phantom signal. A scanner that checks
+    // single-quote pairing before triple-quote desyncs on this embedded `"` — it can both leak
+    // the phantom jvmToolchain(21) as if it were live code AND lose the real jvmToolchain(17)
+    // as if it were unterminated string content. This is the test that actually proves
+    // triple-quote-first ordering matters, not just "happens to pass."
+    it('ignores a JDK signal inside a triple-quoted Kotlin raw string containing a nested quote', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'val migrationNote = """\n' +
+        '  The 2024 audit measured a 6" clearance gap; before that we pinned jvmToolchain(21) via a workaround.\n' +
+        '"""\n' +
+        'kotlin { jvmToolchain(17) }\n');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.signals.some(s => s.version === 21)).toBe(false);
+    });
+
+    it('still detects a real JDK signal with no string literals nearby (unaffected baseline)', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'), 'kotlin { jvmToolchain(17) }');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.signals).toEqual([{ file: 'build.gradle.kts', type: 'jvmToolchain', version: 17 }]);
+    });
+
+    it('mixed file: a real signal and a string-literal fake signal coexist; the real one wins', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin { jvmToolchain(17) }\nval doc = "example config: jvmToolchain(99)"\n');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.signals.some(s => s.version === 99)).toBe(false);
+      expect(r.signals.find(s => s.type === 'jvmToolchain' && s.version === 17)).toBeTruthy();
+    });
+
+    it('an escaped quote inside a string does not swallow real code that follows on the same line', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'val label = "app\\"name"\nkotlin { jvmToolchain(17) }\n');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+    });
+
+    // Catches a real bug found during design review: an early draft copied an unterminated
+    // block comment's tail back into the scanned output (to byte-match the old regex's
+    // incidental behavior), which would have leaked this phantom jvmToolchain(21) as if it
+    // were live code. Assert both halves — not just "doesn't crash."
+    it('an unterminated block comment swallows the rest of the file and does not leak a phantom signal after it', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin { jvmToolchain(17) }\n/* jvmToolchain(21)');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+      expect(r.signals.some(s => s.version === 21)).toBe(false);
+    });
+
+    it('an unterminated triple-quoted string does not crash; the real signal before it is still found', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin { jvmToolchain(17) }\nval note = """unterminated raw string with no closing triple-quote\nval x = 1');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+    });
+
+    it('an unterminated double-quoted string does not crash; the real signal before it is still found', () => {
+      const dir = makeProject();
+      writeFileSync(path.join(dir, 'build.gradle.kts'),
+        'kotlin { jvmToolchain(17) }\nval note = "unterminated\nval x = 1');
+      const r = aggregateJdkSignals(dir);
+      expect(r.min).toBe(17);
+    });
+
+    it('stripGradleComments preserves string-literal content byte-for-byte (the core invariant this fix relies on)', () => {
+      const src = 'val note = "a // fake comment and a jvmToolchain(21) fake signal, both inside quotes"\nkotlin { jvmToolchain(17) }';
+      expect(stripGradleComments(src)).toBe(src);
+    });
+
+    // Non-regression, explicit — not just "the full suite stayed green". Locks in the two
+    // delicate properties the whole design depends on: (1) a // inside a URL string no longer
+    // eats real trailing code on the same line (fixes the previously-documented limitation as
+    // a side effect of the quote-aware rewrite), and (2) plugin ids declared inside string
+    // literals still survive preserve-mode stripping, which is what the other 4
+    // stripGradleComments callers depend on.
+    it('does not over-strip: a // inside a same-line URL string no longer eats real code that follows', () => {
+      const src = 'val docsUrl = "https://example.com"; kotlin { jvmToolchain(17) }';
+      expect(stripGradleComments(src)).toContain('jvmToolchain(17)');
+    });
+
+    it('non-regression: extractAppliedPluginsFromConventionSource still detects a plugin id declared inside a string literal', () => {
+      const applied = extractAppliedPluginsFromConventionSource('plugins { id("org.jetbrains.kotlinx.kover") }');
+      expect(applied).toContain('org.jetbrains.kotlinx.kover');
     });
   });
 
@@ -489,6 +609,39 @@ describe('aggregateJdkSignals', () => {
         expect(r.min).toBe(17);
         expect(r.agpVersion).toBeNull();
         expect(r.agpIsBinding).toBe(false);
+      });
+    });
+
+    // PR-28d — detectAgpVersion never stripped comments before its 2 regex matches, so a
+    // commented-out declaration positioned textually BEFORE a live one won outright
+    // (String.prototype.match with no /g flag returns the first match in source order).
+    // Deliberately uses AGP majors that land in DIFFERENT agpRequiredJdk buckets (4.x -> 8,
+    // 8.x -> 17) so a regression shows up as a wrong `min`, not just a wrong `agpVersion` string.
+    describe('commented-out AGP declaration stripping (PR-28d)', () => {
+      it('commented-out plugins-DSL AGP declaration is ignored; the live one wins', () => {
+        const dir = makeProject();
+        writeFileSync(path.join(dir, 'build.gradle.kts'),
+          '// id("com.android.application") version "4.2.0"\n' +
+          'plugins {\n' +
+          '  id("com.android.application") version "8.5.0" apply false\n' +
+          '}');
+        const r = aggregateJdkSignals(dir);
+        expect(r.agpVersion).toBe('8.5.0');
+        expect(r.min).toBe(17);
+      });
+
+      it('commented-out buildscript classpath AGP declaration is ignored; the live one wins', () => {
+        const dir = makeProject();
+        writeFileSync(path.join(dir, 'build.gradle.kts'),
+          '// classpath("com.android.tools.build:gradle:4.2.0")\n' +
+          'buildscript {\n' +
+          '  dependencies {\n' +
+          '    classpath("com.android.tools.build:gradle:8.2.1")\n' +
+          '  }\n' +
+          '}');
+        const r = aggregateJdkSignals(dir);
+        expect(r.agpVersion).toBe('8.2.1');
+        expect(r.min).toBe(17);
       });
     });
   });
