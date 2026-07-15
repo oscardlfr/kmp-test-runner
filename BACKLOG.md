@@ -167,11 +167,7 @@
   this machine's local PATH; an optional, non-blocking addition on top of the task's required
   gates, not itself a required gate for this change. **No wet validation**:
   nothing calls these paths today — pre-approved by the deferred note below ("no wet/live
-  validation needed since nothing calls these paths today"). **Housekeeping note**: this session's
-  working tree carried an unrelated, pre-existing local edit to this file (a parked "Node floor
-  uplift" backlog item) — isolated via `git stash` before any PR-28g edits and left stashed
-  (not popped) so it doesn't ride along in this PR's commit or create merge friction; restore it
-  after this PR lands.
+  validation needed since nothing calls these paths today").
 - ✅ **PR-28f `fix(describe): use current jdk requirement shape`** — SHIPPED 2026-07-15
   (this PR, closes PR-28a's and PR-28d's own residual note below —
   `describe-orchestrator.js`'s non-existent `jdkRequirement.agp` field read). Reproduced:
