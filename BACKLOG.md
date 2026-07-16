@@ -117,6 +117,19 @@
   unavailable, and no runnable selected Android instrumented surface. Backlog
   candidate recorded below: invalid `--java-home` should fail earlier with a typed
   config/env error.
+- ✅ **Token-cost measurement registry** — SHIPPED (this PR). `tools/measurement-registry.mjs`
+  (`validate`/`export-csv`/`summarize`) + `tools/runs/measurement-registry.jsonl`, 48 backfilled
+  rows (2026-05-18 OSS aggregate, 2026-05-19 `private-large-A` cross-model evidence, PR #363's
+  2026-07-16 NowInAndroid + KaMPKit smokes) + 27 rows from a Windows validation wave. See
+  `tools/runs/token-cost-validation-windows-2026-07-16.md`. Follow-ups, not yet scheduled:
+  (a) wire `validate` into CI as a lightweight gate once the registry sees regular updates —
+  not done yet since it's a brand-new, low-traffic file; (b) next `private-large-A` refresh is
+  due whenever `coverage`'s envelope/output shape changes, not on a fixed schedule (this wave's
+  re-measurement was a deliberate NO-GO, not a gap); (c) the `private-large-A` per-feature
+  drill-down table in `docs/token-cost-measurement.md` also covers `parallel`/`changed`/`benchmark`
+  (not just `coverage`) — only `coverage` was backfilled into the registry per explicit task scope;
+  extend to the other three features in a future session if useful; (d) extend `summarize` only if
+  a second real consumer/view emerges — deliberately kept to two fixed views for now.
 - **`--java-home <invalid-path>` should fail earlier with a typed config/env error
   (BACKLOG CANDIDATE - found during manual macOS validation 2026-07-16).** Real
   execution against both a public project and a tiny real-wrapper fixture exited nonzero
@@ -149,6 +162,7 @@
     Ironically the tool most likely to actually hit this on a macOS run.
   - `tools/measure-token-cost.js:1203` — `process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])`.
     Same shape as decouple-audit.mjs; not CI-wired, dev-only token-cost measurement tool.
+  - `tools/measurement-registry.mjs` (added by the token-cost-measurement-registry PR) — same shape again, same rationale for not fixing in isolation here: not CI-wired, dev-only, never reached through the Gradle-plugin temp-dir-extraction path. Now 6 files, not 5.
 
   These scripts run directly from the checked-out repo (`node tools/xxx.mjs`), not
   through a temp-dir-extraction step like the Gradle plugin — so the trigger conditions
