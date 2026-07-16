@@ -479,6 +479,8 @@ The plugin re-uses the same `.skills/kmp-test-runner/` skill content — no dupl
 
 `kmp-test` is built to be cheap to call from AI coding agents. The `--json` flag is the lever: it replaces verbose, multi-step Gradle orchestration with a single command and a single structured response.
 
+The published token-cost measurements explain the command-output side of that claim. A broader agentic benchmark should also compare end-to-end task success, time to first useful signal, tool calls, context consumed, human intervention, and verification quality. The methodology for that future benchmark lives in [`docs/agentic-usage-measurement.md`](docs/agentic-usage-measurement.md); no agentic benchmark results are published yet.
+
 ### Three ways an agent can run a KMP test suite
 
 | Approach | What the agent does | What it consumes |
@@ -522,7 +524,7 @@ BUILD SUCCESSFUL
 {"tool":"kmp-test","subcommand":"parallel","version":"0.10.1","project_root":"/abs/path","exit_code":0,"duration_ms":83000,"tests":{"total":42,"passed":42,"failed":0,"skipped":0},"modules":["core-foo","core-bar"],"coverage":{"tool":"kover","missed_lines":16,"modules_with_kover_plugin":["core-foo","core-bar"],"modules_with_jacoco_plugin":[]},"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true},"skipped":[],"errors":[],"warnings":[]}
 ```
 
-That's ~300 bytes — roughly **80–200 tokens** vs. tens of thousands for the 🔻 baseline (A). For an agent running tests on every iteration of a coding loop, the difference compounds quickly. The full per-tokenizer table is at the [top of this README](#why-this-exists--token-cost-per-agent-test-run-iteration); methodology and the captured run output are in [`docs/token-cost-measurement.md`](docs/token-cost-measurement.md).
+That's ~300 bytes — roughly **80–200 tokens** vs. tens of thousands for the 🔻 baseline (A). For an agent running tests on every iteration of a coding loop, the difference compounds quickly. The summary table is at the [top of this README](#why-this-exists--cheaper-agent-test-loops); methodology and the captured evidence are in [`docs/token-cost-measurement.md`](docs/token-cost-measurement.md).
 
 ### Why this gap matters
 
