@@ -7,17 +7,25 @@ here so the README can stay short and timeless.
 
 ## Measurement status
 
-The current README numbers reuse committed evidence rather than a fresh
-expensive measurement matrix.
+The current README numbers reuse committed evidence rather than a fresh full
+measurement matrix. A 2026-07-16 validation pass confirmed that the published
+headline rows still trace to committed evidence, then added fresh public-project
+`parallel` smoke measurements with the current CLI/tooling:
+[`token-cost-validation-2026-07-16.md`](../tools/runs/token-cost-validation-2026-07-16.md).
 
 - OSS size-bucket evidence: [`tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md`](../tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md)
 - Cross-model feature evidence: [`tools/runs/cross-model-results-parallel.txt`](../tools/runs/cross-model-results-parallel.txt), [`tools/runs/cross-model-results-coverage.txt`](../tools/runs/cross-model-results-coverage.txt), [`tools/runs/cross-model-results-changed.txt`](../tools/runs/cross-model-results-changed.txt), [`tools/runs/cross-model-results-benchmark.txt`](../tools/runs/cross-model-results-benchmark.txt)
 
 Recent audit-train work on `develop` changed edge-case diagnostics, warnings,
 cache invalidation, and dry-run/error behavior. Those changes do not materially
-change the successful `parallel` and `coverage` JSON-envelope size used by the
-published ratios, so this docs wave does not re-run Gradle matrices or call
-token-count APIs.
+change the successful `parallel` and `coverage` command-output shapes used by
+the published ratios. The validation wave therefore did not re-run the full
+six-project Gradle matrix. It ran a current NowInAndroid large-project
+`parallel` smoke plus a KaMPKit app-module small smoke using offline
+`cl100k_base`, then ran Anthropic `messages.countTokens` on the public
+NowInAndroid captures with `claude-opus-4-8`, `claude-sonnet-4-6`, and
+`claude-haiku-4-5`. OpenAI token-count API was not run because this repo has no
+supported OpenAI token-count API path.
 
 ## Approaches
 
@@ -53,6 +61,21 @@ The committed aggregate reports medians, ranges, and per-project raw numbers:
 That run fixed an earlier one-level module-walker undercount by recursing into
 grouping directories. As a result, NowInAndroid was measured as 36 modules
 instead of 5, and Confetti as 16 instead of 13.
+
+Use the aggregate's `parallel` section for the README's OSS bucket rows. Its
+older manually augmented `coverage` note is historical context only; the
+published coverage headline below uses the same-project `private-large-A`
+values from `cross-model-results-coverage.txt`.
+
+The 2026-07-16 current-CLI smoke did not change the headline rows. The
+NowInAndroid warmed rerun measured 234,046 raw `cl100k_base` tokens versus 2,013
+JSON tokens, or 116.3x, close to the committed headline row of 226,291 versus
+1,839, or 123.1x. Anthropic counts on the same public captures produced A:C
+ratios of 123.3x for `claude-opus-4-8` and 133.0x for both
+`claude-sonnet-4-6` and `claude-haiku-4-5`; no chunking was needed. The KaMPKit
+smoke covered only the `app` module because the current shared KMP module does
+not expose the generic `:shared:test` task shape; it is therefore a tooling
+smoke, not a replacement small-bucket sample.
 
 ### Anonymized configured reference
 
