@@ -453,6 +453,35 @@ after PR-12/14/25 (same files). *M/L* *(M7)*
   before every push, docs/envelope-contract + skill catalogue updated in-PR for any
   envelope-visible change (additive; `schema_version` stays 2).
 
+### Manual macOS validation closure - 2026-07-16
+
+Completed on `develop` at `ce3b7e614e68252c3be97d724018c1c84cdfd1ca` after the
+Matrix A fixes had landed. Evidence was recorded with public/private aliases only: no
+private project names, private module names, local paths, device identifiers, serials, or
+raw logs.
+
+- **Only fix required during resumed validation:** PR #360, a test-helper-only fix for
+  `isStopCall()` so the Vitest helper recognizes `gradlew --stop --console=plain` as the
+  daemon-stop call produced by non-TTY `spawnGradle()` execution.
+- **Sanity gates after PR #360 merge:** `npm run test:coverage`, decouple audit, line
+  endings check, focused Bats task-not-found suite, and Gradle plugin tests all passed.
+- **Matrix B:** system `/bin/bash` 3.2 syntax checks passed; scratch installer/uninstaller
+  cycles passed for zsh/bash/fish rc-file behavior; JDK discovery and `doctor`/`describe`
+  JSON paths passed; tiny real-wrapper iOS and macOS legs passed.
+- **Matrix C:** public KMP alias and private KMP alias both passed doctor, cold/warm
+  describe, dry-run, wet `parallel --json --no-coverage`, changed dry-run, coverage
+  skip-tests, and supported iOS/macOS legs. Selected Android instrumented surfaces were
+  legitimate no-op skips rather than runnable instrumented test modules.
+- **Matrix D:** controlled JSON error paths all emitted exactly one parseable JSON object
+  on stdout. Validated discriminators included `no_test_modules`, `unknown_flag`,
+  `invalid_flag_value`, `no_gradlew`, and `gradle_timeout`.
+- **Classification:** blocker regressions = none; pre-existing project failures = none.
+  Environment limitations: `pwsh` unavailable, `shellcheck` unavailable, no runnable
+  selected Android instrumented surface.
+- **Backlog candidate:** invalid `--java-home` on real execution exits nonzero and keeps
+  stdout JSON clean, but currently surfaces as generic `module_failed`; it should fail
+  earlier with a typed config/env error in a future PR.
+
 ## 5. Quick wins (<30 min each, batchable)
 
 - `chore(lib)`: drop `SCHEMA_VERSION_CONST`; resolve test-only `resolveScript`; memoize

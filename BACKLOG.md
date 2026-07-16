@@ -108,10 +108,22 @@
   implementation PR: wet validation on Windows against at least one official workspace
   project and one private project, Android-relevant changes on the connected S22 Ultra,
   macOS/iOS/manual checks only when needed, no recurring heavy macOS CI, private evidence
-  only through anonymized artifacts. Before the final documentation/alignment PR, run a
-  dedicated manual macOS validation phase that validates the accumulated audit train
-  consistently on the available macOS machine / `macos-validation.yml` workflow_dispatch
-  jobs; document sanitized public + private evidence, then do the final docs closeout.
+  only through anonymized artifacts. **Manual macOS validation phase completed
+  2026-07-16 on `develop` at `ce3b7e614e68252c3be97d724018c1c84cdfd1ca`.**
+  Scope: Matrix B/C/D end-to-end on the macOS host, with sanitized public + private
+  aliased evidence. PR #360 was the only fix required during the resumed pass (stale
+  Vitest helper for `--fresh-daemon` + injected `--console=plain`). Blocker
+  regressions: none. Limitations recorded: `pwsh` unavailable, `shellcheck`
+  unavailable, and no runnable selected Android instrumented surface. Backlog
+  candidate recorded below: invalid `--java-home` should fail earlier with a typed
+  config/env error.
+- **`--java-home <invalid-path>` should fail earlier with a typed config/env error
+  (BACKLOG CANDIDATE - found during manual macOS validation 2026-07-16).** Real
+  execution against both a public project and a tiny real-wrapper fixture exited nonzero
+  and preserved the JSON contract (stdout was exactly one parseable JSON object), but
+  surfaced the failure as generic `errors[].code = "module_failed"` instead of a typed
+  config/environment error. Not a blocker for the validation phase because JSON was clean,
+  exit code was nonzero, and the current docs/help do not promise early path validation.
 - **Vulnerable entrypoint-guard pattern in 5 Node tool entrypoint guards (2 of them
   required CI checks)** — surfaced 2026-07-15 during code review of the
   macOS-validation-session fix for `lib/runner.js`'s own entrypoint guard (see PR
