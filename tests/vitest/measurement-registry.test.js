@@ -260,6 +260,14 @@ describe('validateRow — value shape', () => {
     expect(validateRow(validRow({ raw_capture_location: 'tools/runs/parallel/A-run1.txt' })).errors).toEqual([]);
   });
 
+  it('rejects POSIX-rooted and UNC absolute paths too, not just drive-letter/home paths', () => {
+    expect(validateRow(validRow({ raw_capture_location: '/tmp/foo' })).errors.length).toBeGreaterThan(0);
+    expect(validateRow(validRow({ raw_capture_location: '/private/var/folders/foo' })).errors.length).toBeGreaterThan(0);
+    expect(validateRow(validRow({ raw_capture_location: '\\\\server\\share\\foo' })).errors.length).toBeGreaterThan(0);
+    expect(validateRow(validRow({ raw_capture_location: 'tools/runs/foo' })).errors).toEqual([]);
+    expect(validateRow(validRow({ raw_capture_location: 'not-recorded' })).errors).toEqual([]);
+  });
+
   it('rejects a release_context missing patch or with no version shape', () => {
     expect(validateRow(validRow({ release_context: 'v0.10' })).errors.length).toBeGreaterThan(0);
     expect(validateRow(validRow({ release_context: 'develop' })).errors.length).toBeGreaterThan(0);

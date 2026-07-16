@@ -75,8 +75,13 @@ export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const CHUNKING_RE = /^none$|^chunked:\d+@~[\d.]+(KiB|MiB|GiB)$/;
 export const RELEASE_CONTEXT_RE = /^v\d+\.\d+\.\d+$|^unreleased \(post-v\d+\.\d+\.\d+\)$/;
 // Guards raw_capture_location against an absolute local path leaking into a
-// committed row — defense-in-depth ahead of tools/decouple-audit.mjs.
-export const ABS_PATH_RE = /^[A-Za-z]:[\\/]|^\/(home|Users)\//;
+// committed row — defense-in-depth ahead of tools/decouple-audit.mjs. Matches
+// ANY absolute path shape (drive-letter, UNC, or POSIX-rooted), not just
+// user-home paths — the field's contract is "repo-relative, not absolute",
+// so /tmp/..., /var/folders/... (the exact shape behind a real historical
+// entrypoint-guard bug in this repo — see BACKLOG.md), /opt/..., etc. must
+// all be rejected too, not just /home/... and /Users/....
+export const ABS_PATH_RE = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/;
 
 // Fields that must be identical across every row sharing a run_id — only
 // approach/tokenizer/token_count/bytes/chunking/command_shape/notes may vary
