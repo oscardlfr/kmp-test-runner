@@ -3381,6 +3381,46 @@ describe('cascade-isolation retry path (PR5)', () => {
     expect(envelope.tests.failed).toBe(0);
   });
 
+  it('isolated task-resolution failure keeps suffix on culprit only', async () => {
+    const dir = makeProject([
+      { name: 'a', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'b', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const spawn = makeCascadeSpawn({
+      oneShotStdout: 'FAILURE: Build failed.\nBUILD FAILED in 1s\n',
+      perModule: {
+        ':a:jvmTest': {
+          status: 1,
+          stdout: 'Cannot locate tasks that match \':a:jvmTest\' as task \'jvmTest\' not found in project \':a\'.\n'
+            + 'BUILD FAILED in 1s\n',
+        },
+        ':b:jvmTest': {
+          status: 0,
+          stdout: '> Task :b:jvmTest\nBUILD SUCCESSFUL in 1s\n',
+        },
+      },
+    });
+    const lines = [];
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common'],
+      spawn,
+      log: (l) => lines.push(l),
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const leg = envelope.parallel.legs[0];
+    expect(leg.cascade_detected).toBe(true);
+    expect(leg.retry_fired).toBe(true);
+    expect(exitCode).toBe(3);
+    expect(envelope.errors.some(e => e.code === 'task_not_found')).toBe(true);
+    expect(envelope.tests.failed).toBe(1);
+    expect(envelope.tests.passed).toBe(1);
+    expect(lines).toContain('  [FAIL] a (task not found / build aborted at resolution)');
+    expect(lines).toContain('  [PASS] b');
+    expect(lines.some(l => l.includes('[FAIL] b'))).toBe(false);
+    expect(envelope.errors.some(e => e.code === 'module_failed' && e.module === 'b')).toBe(false);
+  });
+
   // Test 2 — Single-task cascade (nav3-recipes shape): 1 module, leg fails,
   // no task evidence. PR5 drops the `taskList.length > 1` requirement so the
   // retry now fires for single-task cascades too — surfaces the per-module
