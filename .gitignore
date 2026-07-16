@@ -31,6 +31,10 @@ tools/.measurement-projects.json
 # PR-00: local private-pattern config for the wet-evidence generator.
 # Real configs live outside the repo; tests use OS temp files.
 tools/.private-patterns.json
+# Derived from measurement-registry.jsonl via `export-csv` — regenerable,
+# never a second source of truth. The .jsonl itself IS tracked (it's the
+# whole point of the registry) — only this derived artefact is ignored.
+tools/runs/measurement-registry.csv
 .gradle/
 build/
 .idea/
