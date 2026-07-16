@@ -224,6 +224,30 @@ For multi-account workflows, the tool can fall back from `ANTHROPIC_API_KEY` to
 `ANTHROPIC_API_KEY_FALLBACK` on authentication failure. That is an operational
 escape hatch, not a reason to run API-backed measurement casually.
 
+## Measurement registry
+
+Every token-count measurement referenced on this page is also recorded as an
+append-only row in
+[`tools/runs/measurement-registry.jsonl`](../tools/runs/measurement-registry.jsonl).
+Each row is one (approach, tokenizer) observation tagged with its measurement
+kind (`full-matrix`, `smoke`, `trace-validation`, `private-reference`), cache
+state, platform, and privacy status. This page stays the narrative and
+methodology reference; the registry is the queryable ledger its numbers trace
+back to.
+
+```bash
+node tools/measurement-registry.mjs validate     # schema + privacy + A:C sanity checks
+node tools/measurement-registry.mjs export-csv   # regenerates the derived, gitignored .csv
+node tools/measurement-registry.mjs summarize    # totals, or --feature <name> for a pivoted table
+```
+
+A Windows validation wave backfilled the registry with every evidence source
+already referenced on this page, then added fresh Windows measurements for
+public `NowInAndroid`/`KaMPKit` smokes:
+[`token-cost-validation-windows-2026-07-16.md`](../tools/runs/token-cost-validation-windows-2026-07-16.md).
+The private-reference re-measurement was a deliberate NO-GO that wave — see
+that document for the reasoning.
+
 ## Captured outputs
 
 Committed summary evidence lives under `tools/runs/`:
@@ -236,6 +260,9 @@ tools/runs/
   cross-model-results-coverage.txt
   cross-model-results-changed.txt
   cross-model-results-benchmark.txt
+  measurement-registry.jsonl
+  token-cost-validation-2026-07-16.md
+  token-cost-validation-windows-2026-07-16.md
 ```
 
 Per-project raw captures are intentionally not committed for the multi-project

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — token-cost measurement registry (`tools/measurement-registry.mjs`)
+
+**No behavior change** — dev-tooling only; `tools/` is excluded from the npm
+package, so nothing shipped to end users changes. New append-only JSONL
+registry (`tools/runs/measurement-registry.jsonl`) formalizes every token-count
+measurement this project has published as structured, schema-checked rows —
+`validate` (required fields, controlled vocabulary, privacy invariants, and a
+non-blocking A:C arithmetic sanity check that catches hand-transcription
+slips), `export-csv` (regenerates a gitignored derived `.csv`, refuses to write
+on any validation failure), and `summarize` (totals, or a per-feature pivoted
+A/B/C table). New test file `tests/vitest/measurement-registry.test.js`
+(60 tests). Backfilled with 48 rows from the three evidence sources already
+referenced in `docs/token-cost-measurement.md` (2026-05-18 OSS aggregate,
+2026-05-19 `private-large-A` cross-model evidence, 2026-07-16 PR #363
+NowInAndroid + KaMPKit smokes), plus 27 rows from a Windows validation wave —
+fresh NowInAndroid + KaMPKit measurements and a live Anthropic API key
+validation (see `tools/runs/token-cost-validation-windows-2026-07-16.md`). The
+Windows NowInAndroid numbers land within noise of the existing PR #363
+evidence; the `private-large-A` re-measurement was a deliberate privacy/cost
+NO-GO this wave, not an oversight. No README headline values changed.
+
 ### Changed — token-cost evidence validated with current CLI smoke measurements
 
 **No behavior change** — docs/evidence only. Added a 2026-07-16 validation note
