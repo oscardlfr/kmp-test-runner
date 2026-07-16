@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — token-cost evidence validated with current CLI smoke measurements
+
+**No behavior change** — docs/evidence only. Added a 2026-07-16 validation note
+under `tools/runs/` confirming that the README token-cost headline rows still
+trace to committed evidence: the OSS `parallel` rows come from the
+2026-05-18 aggregate, and the `coverage` outlier uses the same-project
+`private-large-A` values from `cross-model-results-coverage.txt`. Also ran fresh
+offline `cl100k_base` public-project smoke measurements with the current CLI:
+NowInAndroid `parallel` large (36 modules, warmed rerun A=234,046 / C=2,013 =
+116.3x, supporting the existing 123.1x headline) and KaMPKit `app` module
+(small-sample tooling smoke only). Anthropic `messages.countTokens` also ran on
+the public NowInAndroid captures with the prior model set: `claude-opus-4-8`
+reported 123.3x A:C, while `claude-sonnet-4-6` and `claude-haiku-4-5` reported
+133.0x; no chunking was needed. No README headline values changed. No fresh full
+Gradle matrix, private raw capture, OpenAI token-count API, or agentic
+end-to-end benchmark was run in this wave.
+
 ### Changed — README token-cost methodology streamlined
 
 **No behavior change** — docs-only. Shortened the README's token-cost section to
