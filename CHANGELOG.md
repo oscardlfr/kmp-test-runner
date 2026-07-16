@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — README token-cost methodology streamlined
+
+**No behavior change** — docs-only. Shortened the README's token-cost section to
+a compact value proposition, one evidence table, and the coverage outlier
+summary; moved the detailed A/B/C methodology, sample provenance, tokenizer
+notes, chunking behavior, reproduction commands, and privacy caveats into
+`docs/token-cost-measurement.md`. Added
+`docs/agentic-usage-measurement.md` as the methodology for a future end-to-end
+agent benchmark covering task success, time to first useful signal, tool calls,
+context consumed, human intervention, and verification quality. Reused the
+committed 2026-05-18 aggregate and cross-model evidence rather than re-running
+an expensive measurement matrix.
+
 ### Removed — dead-code JDK toolchain scanners in `scripts/sh/lib/` and `scripts/ps1/lib/`
 
 **No behavior change.** The JDK pre-flight gate has run entirely through
