@@ -78,6 +78,15 @@ node tools/measure-token-cost.js --project <path> --feature parallel
 ```
 Honours `ANTHROPIC_API_KEY` + `ANTHROPIC_API_KEY_FALLBACK` + `--anthropic-api-key`.
 
+### `measurement-registry.mjs`
+Append-only token-cost measurement registry — `tools/runs/measurement-registry.jsonl` is the queryable, schema-checked ledger every `measure-token-cost.js` result (past and future) gets recorded into.
+```
+node tools/measurement-registry.mjs validate     # schema + privacy + A:C sanity checks
+node tools/measurement-registry.mjs export-csv   # regenerates the derived, gitignored .csv
+node tools/measurement-registry.mjs summarize    # totals, or --feature <name> for a pivoted table
+```
+See [`docs/token-cost-measurement.md`](../docs/token-cost-measurement.md#measurement-registry) for the schema.
+
 ### `sync-versions.js`
 Keeps `package.json#version` in lockstep with the hardcoded version pins across `gradle-plugin/build.gradle.kts`, `README.md`, `CLAUDE.md`, and `.claude-plugin/plugin.json` (Claude Code plugin manifest). Wired into CI's `secrets-scan` job as a pre-flight.
 ```
@@ -94,3 +103,5 @@ node tools/validate-plugin.mjs         # exit 0 on pass, 1 on validation failure
 ## Output directory
 
 All scripts that emit per-project artefacts write under `tools/runs/` or `.smoke/<pass>/` in the repo root. Both are gitignored. Don't `git add` artefacts.
+
+One deliberate exception: `tools/runs/measurement-registry.jsonl` IS tracked — it's the whole point of the registry, an append-only structured ledger, not a regenerable per-project capture. Its derived `.csv` (via `export-csv`) stays gitignored like everything else here.

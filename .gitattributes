@@ -103,6 +103,11 @@ tests/vitest/workflow-static.test.js text eol=lf
 tools/check-line-endings.mjs text eol=lf
 tests/vitest/check-line-endings.test.js text eol=lf
 
+# Token-cost measurement registry tool + test — same vitest 2.1.x CRLF parser
+# protection as the other .mjs / test file pairs above.
+tools/measurement-registry.mjs text eol=lf
+tests/vitest/measurement-registry.test.js text eol=lf
+
 # PR-12 runner helpers -- runner.js has CRLF + em-dash in its header comment,
 # which triggers the vitest 2.1.x CRLF+non-ASCII parse bug when tests import it.
 # runner.test.js has a multi-line ESM import block (same class of bug).
