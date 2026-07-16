@@ -67,6 +67,6 @@ export function effectiveGradleArgs(call) {
 
 export function isStopCall(call) {
   if (!isGradleCall(call)) return false;
-  const args = effectiveGradleArgs(call);
+  const args = effectiveGradleArgs(call).filter(a => !/^--console(=|$)/.test(String(a)));
   return args.length === 1 && args[0] === '--stop';
 }
