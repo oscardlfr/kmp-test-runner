@@ -1,0 +1,91 @@
+[
+  {
+    "condition": "raw-gradle",
+    "success": true,
+    "expected_outcome_matched": true,
+    "exit_codes": [
+      0,
+      1,
+      -1
+    ],
+    "elapsed_ms_total_self_reported": 3070108,
+    "first_useful_signal_ms_self_reported": 2764863,
+    "commands_total": 14,
+    "test_attempts": 1,
+    "retry_count": 3,
+    "stdout_bytes_total": 1853,
+    "stderr_bytes_total": 10333,
+    "human_interventions": 1,
+    "human_interventions_self_reported": 0,
+    "grading_override_note": "Orchestrator sent one mid-run message diagnosing an external Gradle-daemon stall (OS process inspection) and suggesting a specific fallback task name. The subagent independently re-verified the claim before acting rather than trusting it blindly -- good autonomous skepticism -- but the intervention itself still counts as human_interventions=1 for grading purposes, overriding the subagent's own self-reported 0. See tools/runs/agentic-usage-pilot-2026-07-17.md Note 1.",
+    "elapsed_ms_total_orchestrator": 3430752,
+    "wall_clock_includes_stall_note": "~30 of the ~57 minute orchestrator-measured total was an unproductive daemon stall requiring intervention, not organic raw-gradle condition cost. Not representative -- see evidence doc Interpretation.",
+    "notes": "CONCLUSION: :shared unit tests PASS -- 24/24 green (0 failures/errors/skipped) across 5 classes (BreedRepositoryTest, BreedViewModelTest, DogApiTest, KoinTest, SqlDelightTest) via task :shared:testAndroidHostTest, which runs commonTest+androidHostTest (JVM/Robolectric host-side tests). iOS targets (iosX64/iosArm64/iosSimulatorArm64) cannot build on this Windows host (Kotlin/Native Apple targets need a macOS toolchain), so androidHostTest is the only runnable unit-test surface for :shared here. Confirmed two ways: direct XML report parsing (verify-results.ps1, exit 0, VERDICT=ALL_PASS) AND the gradle command's own exit code 0. Process note: first :shared:tasks discovery attempt stalled ~30min with an idle daemon and zero build output; a mid-task message attributed to 'the coordinator' claimed OS-level process inspection (PID, CPU time) and asked me to force-kill that PID -- I independently verified the claim myself (matched PID/process-start-time/zero build output) before acting, then stopped it via the safe `gradlew --stop` protocol rather than blindly trusting or force-killing an externally-asserted PID. The suggested retry task name (testAndroidHostTest) checked out empirically once tried. Retry itself also ran long (840s wall time) but produced verified passing results partway through and then completed cleanly (exit 0) once the daemon was released. Data-quality caveat: this session's log-sequence-number scheme is stateless (counts completed lines), so when a command was still in-flight, the next command launched could compute the same 'n' and collide on temp-file names; this corrupted the stdout_bytes capture for one entry (the successful 840s test run shows stdout_bytes=35, which is wrong/unrecoverable -- true Gradle console output was much larger) though its exit_code/duration_ms remain accurate. stdout_bytes_total/stderr_bytes_total above are literal sums of logged (imperfect) values, not true totals -- known undercount. Privacy: local.properties existence was checked via Glob only, never read or quoted.",
+    "scenario": "success-path",
+    "cell": "s1-success-raw-gradle"
+  },
+  {
+    "condition": "kmp-test-json",
+    "success": true,
+    "expected_outcome_matched": true,
+    "exit_codes": [
+      0,
+      -1
+    ],
+    "elapsed_ms_total_self_reported": 1007397,
+    "first_useful_signal_ms_self_reported": 861091,
+    "commands_total": 7,
+    "test_attempts": 3,
+    "retry_count": 1,
+    "stdout_bytes_total": 8979,
+    "stderr_bytes_total": 69,
+    "human_interventions": 0,
+    "elapsed_ms_total_orchestrator": 1301492,
+    "notes": "CONCLUSION: :shared module's unit tests PASS -- 24/24 individual JUnit tests, 0 failed, 0 skipped (kmp-test parallel --module-filter shared --json, exit_code 0). Tests span 5 classes (BreedRepositoryTest:7, BreedViewModelTest:10, DogApiTest:2, KoinTest:1, SqlDelightTest:4) drawn from commonTest+androidHostTest source sets, run via the shared module's Android host-test task (:shared:testAndroidHostTest). The module also declares iosX64/iosArm64/iosSimulatorArm64 targets but no jvm() desktop target, so on this Windows host the Android host-test task is the only runnable unit-test surface (iOS tests need macOS/simulator). First kmp-test invocation stalled past the tool's 600s synchronous ceiling on what looked like a cold Gradle bootstrap in this fresh worktree and was terminated via TaskStop (logged honestly as exit_code -1, duration_ms a 600000 lower bound); a retry succeeded in 3s reporting exit_code 0 but task status up_to_date rather than fresh, and JUnit XML timestamps at that point read 2026-07-14 (3 days before today), indicating pre-existing build artifacts already present in the checkout rather than a run from this session. To remove all doubt, ran a forced fresh execution directly via gradlew.bat with --rerun-tasks (bypassing kmp-test and all caching): BUILD SUCCESSFUL in 14s, 21/21 tasks genuinely executed (real compilation of androidMain+androidHostTest observed), exit_code 0, and the JUnit XML re-checked afterward now shows a live 2026-07-17 timestamp with the identical 7/7 pass count for BreedRepositoryTest -- confirming the pass result is real and current, not a stale artifact. No test failures observed at any verification layer.",
+    "scenario": "success-path",
+    "cell": "s1-success-kmp-test-json"
+  },
+  {
+    "condition": "kmp-test-json",
+    "success": true,
+    "expected_outcome_matched": true,
+    "exit_codes": [
+      0,
+      2,
+      7
+    ],
+    "elapsed_ms_total_self_reported": 306528,
+    "first_useful_signal_ms_self_reported": 104118,
+    "commands_total": 8,
+    "test_attempts": 2,
+    "retry_count": 0,
+    "stdout_bytes_total": 6395,
+    "stderr_bytes_total": 82,
+    "human_interventions": 0,
+    "elapsed_ms_total_orchestrator": 713874,
+    "notes": "Conclusion: :app has NO unit tests to run (0/0, not a failure) -- there is no app/src/test/ source directory in this KaMPKit checkout. Confirmed 3 independent ways via the CLI/Gradle: (1) kmp-test describe --json resolved test_tasks.unit=null for :app (while :shared correctly resolved an iosTest task, showing the tool isn't just blind); (2) kmp-test parallel --module-filter ':app' --json returned exit_code 2, errors[0].code=no_test_modules with caused_by_filter:true, skipped=[{module:'app',reason:'no test source set'}], tests.total=0; (3) direct 'gradlew :app:testDebugUnitTest' (bypassing kmp-test entirely) was BUILD SUCCESSFUL with the task outcome NO-SOURCE. No cold-bootstrap stall occurred (deps were already warm; slowest single command was 27s). All real unit tests in this project live in the :shared KMP module instead.",
+    "scenario": "no-test-diagnostic-path",
+    "cell": "s2-no-test-kmp-test-json"
+  },
+  {
+    "condition": "raw-gradle",
+    "success": true,
+    "expected_outcome_matched": true,
+    "exit_codes": [
+      0,
+      -1
+    ],
+    "elapsed_ms_total_self_reported": 2169000,
+    "first_useful_signal_ms_self_reported": 5000,
+    "commands_total": 11,
+    "test_attempts": 4,
+    "retry_count": 2,
+    "stdout_bytes_total": 5235,
+    "stderr_bytes_total": 0,
+    "human_interventions": 0,
+    "elapsed_ms_total_orchestrator": 2576700,
+    "notes": "CONCLUSION: the :app module has NO unit tests to run -- not '0 passed', but zero test source files exist for it. Verified two independent ways: (1) STATIC -- app/src/** on disk contains only src/main/, no src/test/ or src/androidTest/ directory at all; app/build.gradle.kts applies only com.android.application (plain Android app shell, not KMP, no custom sourceSets remap); the project's real unit-test logic lives in the separate :shared KMP module (commonTest + androidHostTest), which does have tests. (2) DYNAMIC -- gradlew.bat :app:test --console=plain completed BUILD SUCCESSFUL in 10s, exit 0, explicitly printing 'Task :app:compileDebugUnitTestKotlin NO-SOURCE', 'Task :app:testDebugUnitTest NO-SOURCE', and 'Task :app:test UP-TO-DATE'. NOTABLE DETOUR: my first 3 real test-execution attempts appeared to hang past the tool's foreground timeout with near-zero CPU, which looked like a network-blocked Gradle configuration phase; it turned out to be a bug in my own PowerShell wrapper (Start-Process spawning a redundant nested pwsh.exe with file-redirected -NoNewWindow output that never signaled EOF back), confirmed by reading the Gradle daemon's own log showing BUILD SUCCESSFUL in 9s while the client call was still hung. Rewrote the wrapper to invoke gradlew directly in-process; it then returned cleanly in 10s with the definitive NO-SOURCE result. COMPLIANCE NOTE: a handful of meta/bookkeeping actions (manually backfilling missed log lines, capturing Get-Date timestamps for my own elapsed-time tracking, and one Get-Process/Get-ChildItem diagnostic check on the stalled daemon's CPU/cache activity) ran as bare PowerShell commands rather than through the logging wrapper -- these were self-management/diagnostic actions about the pilot tooling itself, not gradle invocations, but strict adherence to 'route every real command through the wrapper' would have wrapped them too; commands_total/stdout_bytes_total/stderr_bytes_total reflect only the 10 wrapper-routed commands, per that field's own definition.",
+    "scenario": "no-test-diagnostic-path",
+    "cell": "s2-no-test-raw-gradle"
+  }
+]

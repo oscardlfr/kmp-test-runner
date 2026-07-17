@@ -1,0 +1,8 @@
+{"n":1,"cmd":"Get-Date -Format o","exit_code":0,"duration_ms":24,"stdout_bytes":35,"stderr_bytes":0}
+{"n":2,"cmd":"cmd /c \"echo out-line & echo err-line 1>&2 & exit 7\"","exit_code":7,"duration_ms":73,"stdout_bytes":11,"stderr_bytes":12}
+{"n":3,"cmd":"node \"$KMP_WORKSPACE/kmp-test-runner/bin/kmp-test.js\" describe --project-root \"$KMP_WORKSPACE/agentic-pilot-cells/s2-kmp-test-json\" --skip-probe --json","exit_code":0,"duration_ms":117,"stdout_bytes":1367,"stderr_bytes":0}
+{"n":4,"cmd":"Get-Date -Format o","exit_code":0,"duration_ms":16,"stdout_bytes":35,"stderr_bytes":0}
+{"n":5,"cmd":"node \"$KMP_WORKSPACE/kmp-test-runner/bin/kmp-test.js\" parallel --project-root \"$KMP_WORKSPACE/agentic-pilot-cells/s2-kmp-test-json\" --module-filter \":app\" --json","exit_code":2,"duration_ms":10469,"stdout_bytes":789,"stderr_bytes":70}
+{"n":6,"cmd":"& \"$KMP_WORKSPACE/agentic-pilot-cells/s2-kmp-test-json/gradlew.bat\" -p \"$KMP_WORKSPACE/agentic-pilot-cells/s2-kmp-test-json\" :app:testDebugUnitTest --console=plain","exit_code":0,"duration_ms":27287,"stdout_bytes":4088,"stderr_bytes":0}
+{"n":7,"cmd":"Get-Date -Format o","exit_code":0,"duration_ms":17,"stdout_bytes":35,"stderr_bytes":0}
+{"n":8,"cmd":"Get-Date -Format o","exit_code":0,"duration_ms":16,"stdout_bytes":35,"stderr_bytes":0}

@@ -349,16 +349,30 @@ and the raw evidence has been checked for privacy.
 
 ## Current status
 
-- This document is a methodology and design proposal only. No agentic-usage
-  measurements, pilot runs, or registry rows have been executed or committed
-  as part of this PR — the Reporting format table above is still `TBD`
-  placeholders.
+- **A public pilot exists.** [`tools/runs/agentic-usage-pilot-2026-07-17.md`](../tools/runs/agentic-usage-pilot-2026-07-17.md)
+  ran the first small comparative pilot against this methodology — one public
+  project ([`touchlab/KaMPKit`](https://github.com/touchlab/KaMPKit)), two
+  scenarios, two conditions, n=1 per cell — with sanitized command logs
+  committed under [`tools/runs/agentic-usage-pilot-2026-07-17/`](../tools/runs/agentic-usage-pilot-2026-07-17/).
+  This is preliminary, disclosed, exploratory evidence, not a statistically
+  powered measurement wave: n=1 per cell, single-rater non-blind grading, and
+  a confirmed instrumentation-bug confound (see that document's
+  Interpretation section) all mean its numbers should not be read as clean
+  condition effects. The Reporting format table above remains `TBD`
+  placeholders — that table is this document's own future-format sketch, and
+  the pilot's actual results live in the pilot document instead of being
+  transcribed into this table.
 - The `tools/runs/agentic-usage-registry.jsonl` schema sketched under
-  Registry relationship is a proposal, not an implementation; no such file
-  exists in this repo yet.
+  Registry relationship is still a proposal, not an implementation; no such
+  file exists in this repo. The pilot above deliberately did not implement
+  it either, consistent with the Registry relationship section's own
+  recommendation to treat that as separate future work.
 - Nothing in [`README.md`](../README.md) currently depends on any number in
-  this document — it only links here and states that no agentic benchmark
-  results are published yet.
+  this document or in the pilot — it only links here and states that no
+  agentic benchmark results are published yet. That sentence is now stale in
+  the narrow sense that a pilot exists, but the pilot's own Interpretation
+  section explains why its evidence is not yet solid enough to promote to a
+  README headline.
 - Future docs-alignment or measurement work should reference this document
   rather than re-deriving the methodology inline. If the methodology
   changes, update it here first, then update whatever links to it.

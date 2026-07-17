@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — public agentic usage pilot (`tools/runs/agentic-usage-pilot-2026-07-17.md`)
+
+**No behavior change** — docs/evidence only; no `lib/`, `bin/`, or `tools/*.mjs` code
+changes. First pilot run against the methodology in
+[`docs/agentic-usage-measurement.md`](docs/agentic-usage-measurement.md), which
+measures the end-to-end agent workflow cost of using `kmp-test --json` vs. driving
+Gradle directly — distinct from the existing token-cost A/B/C measurement, which
+compares a single command's output size. Two scenarios (a real test-pass path and a
+no-test diagnostic path) against `touchlab/KaMPKit` (public, commit `b3a7784`), each
+run under two conditions (`raw-gradle` and `kmp-test-json` — deliberately not called
+"baseline," since neither is a blind/unaided agent), n=1 per cell, isolated in separate
+`git worktree`s. All 4 cells reached the correct diagnosis. The pilot's most confident
+finding is about verification and recovery behavior, not speed: a disclosed confound
+(two independent hand-rolled logging-wrapper bugs, both landing in the `raw-gradle`
+cells and neither in the `kmp-test-json` cells) makes the wall-clock and command-count
+numbers unsafe to read as clean condition effects, so the evidence doc explicitly does
+not draw a speed-ratio conclusion. `docs/agentic-usage-measurement.md`'s "Current
+status" section now links this pilot instead of stating no pilot has run; its Scenario
+matrix, Conditions table, and Reporting format template are otherwise unchanged. No
+README headline values changed — this is preliminary, single-rater, n=1 evidence, not
+promoted to a marketing claim.
+
 ### Added — token-cost measurement registry (`tools/measurement-registry.mjs`)
 
 **No behavior change** — dev-tooling only; `tools/` is excluded from the npm
