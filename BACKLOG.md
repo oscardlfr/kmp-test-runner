@@ -117,7 +117,7 @@
   unavailable, and no runnable selected Android instrumented surface. Backlog
   candidate recorded below: invalid `--java-home` should fail earlier with a typed
   config/env error.
-- ✅ **Token-cost measurement registry** — SHIPPED. `tools/measurement-registry.mjs`
+- ✅ **Token-cost measurement registry** — SHIPPED (PR #364). `tools/measurement-registry.mjs`
   (`validate`/`export-csv`/`summarize`) + `tools/runs/measurement-registry.jsonl`, 48 backfilled
   rows (2026-05-18 OSS aggregate, 2026-05-19 `private-large-A` cross-model evidence, PR #363's
   2026-07-16 NowInAndroid + KaMPKit smokes) + 27 rows from a Windows validation wave. See
@@ -126,7 +126,7 @@
   not done yet since it's a brand-new, low-traffic file; (d) extend `summarize` only if
   a second real consumer/view emerges — deliberately kept to two fixed views for now.
 - ✅ **Registry gap closed — `info`/`describe`/`changed`/`benchmark` backfilled + KaMPKit data
-  integrity fix** — SHIPPED (follow-up PR, 2026-07-17). Closed the above item's (c): all four
+  integrity fix** — SHIPPED (PR #365, 2026-07-17). Closed the above item's (c): all four
   remaining features' `private-large-A` evidence backfilled into the registry (40 rows, zero new
   API calls — pure transcription of already-committed `cross-model-results-*.txt`; `info`/`describe`
   honestly retain their stale `claude-opus-4-7` tokenizer label, never refreshed). Also found and
@@ -138,6 +138,11 @@
   `cl100k_base` only — Anthropic cross-model counts intentionally skipped). See
   `tools/runs/token-cost-validation-windows-2026-07-17.md`. Registry now covers all 6 features
   (118 rows, 18 run_ids). No README headline values changed.
+- **Measurement registry row validity/status** — consider adding an explicit row-level
+  `validity`/`status` field before the registry feeds dashboards or automated analytics.
+  Current KaMPKit 2026-07-16 rows are correctly annotated as failed/superseded in `notes`,
+  but still use `measurement_kind:"smoke"`; a machine-readable status would avoid accidental
+  inclusion in aggregate views.
 - **`private-large-A` cross-model refresh to `claude-sonnet-5`** — deliberately NOT done in the
   above PR. The registry's committed cross-model evidence still uses `claude-sonnet-4-6`, superseded
   by `claude-sonnet-5`. Refreshing it means re-sending `private-large-A`'s existing local captures
