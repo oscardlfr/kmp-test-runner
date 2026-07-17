@@ -163,10 +163,17 @@ jobs:
         run: node tools/sync-versions.js --check
       - name: Validate required-checks manifest (schema)
         run: node tools/validate-required-checks.mjs --schema-only
+      - name: Mint required-checks-drift (GitHub App) token
+        id: required-checks-app-token
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
+        with:
+          app-id: ${{ secrets.REQUIRED_CHECKS_APP_ID }}
+          private-key: ${{ secrets.REQUIRED_CHECKS_APP_PRIVATE_KEY }}
       - name: Validate required-checks manifest vs branch protection (drift)
         if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.required-checks-app-token.outputs.token }}
         run: node tools/validate-required-checks.mjs --check-drift
       - name: TruffleHog OSS
         uses: trufflesecurity/trufflehog@27b0417c16317ca9a472a9a8092acce143b49c55  # v3.95.9
