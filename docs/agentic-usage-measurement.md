@@ -362,17 +362,35 @@ and the raw evidence has been checked for privacy.
   placeholders — that table is this document's own future-format sketch, and
   the pilot's actual results live in the pilot document instead of being
   transcribed into this table.
+- **A v2 benchmark exists, with cleaner controls.**
+  [`tools/runs/agentic-usage-benchmark-v2-2026-07-17.md`](../tools/runs/agentic-usage-benchmark-v2-2026-07-17.md)
+  is the direct follow-up the v1 pilot's own Interpretation section
+  recommended: one shared, self-tested logging harness used identically by
+  every cell (closing v1's hand-rolled-wrapper confound), plus required
+  coverage of [`android/nowinandroid`](https://github.com/android/nowinandroid)
+  (Google's official Android reference app) alongside KaMPKit, three
+  scenarios, n=2-3 per cell (up from v1's n=1), sanitized logs committed
+  under [`tools/runs/agentic-usage-benchmark-v2-2026-07-17/`](../tools/runs/agentic-usage-benchmark-v2-2026-07-17/).
+  This closes v1's specific confound and adds an official-project scenario,
+  but it is still not a statistically powered sample and still cannot
+  produce a true with/without-`kmp-test`-access comparison (see that
+  document's Terminology section) — both limitations carry forward from v1
+  unchanged. Its own honest reading, stated plainly in its Interpretation
+  section, is that raw Gradle execution time did *not* favor
+  `kmp-test-json` in this data; the measured advantage is in avoiding
+  Gradle task-name discovery, not speed or command count.
 - The `tools/runs/agentic-usage-registry.jsonl` schema sketched under
   Registry relationship is still a proposal, not an implementation; no such
-  file exists in this repo. The pilot above deliberately did not implement
-  it either, consistent with the Registry relationship section's own
+  file exists in this repo. Neither the pilot nor the v2 benchmark
+  implemented it, consistent with the Registry relationship section's own
   recommendation to treat that as separate future work.
 - Nothing in [`README.md`](../README.md) currently depends on any number in
-  this document or in the pilot — it only links here and states that no
-  agentic benchmark results are published yet. That sentence is now stale in
-  the narrow sense that a pilot exists, but the pilot's own Interpretation
-  section explains why its evidence is not yet solid enough to promote to a
-  README headline.
+  this document, the pilot, or the v2 benchmark — it only links here and
+  states that no agentic benchmark results are published yet. That sentence
+  is now stale in the narrow sense that two rounds of evidence exist, but
+  neither round's own Interpretation section claims its evidence is solid
+  enough to promote to a README headline yet; that stays a deliberate,
+  explicit deferral, not an oversight.
 - Future docs-alignment or measurement work should reference this document
   rather than re-deriving the methodology inline. If the methodology
   changes, update it here first, then update whatever links to it.

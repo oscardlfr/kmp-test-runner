@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — public agentic usage benchmark v2 (`tools/runs/agentic-usage-benchmark-v2-2026-07-17.md`)
+
+**No behavior change** — docs/evidence only; no `lib/`, `bin/`, `.skills/`, or `tools/*.mjs`-at-top-level
+code changes (the new `harness.mjs` is measurement-local evidence tooling committed inside the run
+directory, not shipped tooling). Direct follow-up to the agentic usage pilot below, closing the
+confound its own Interpretation section identified: every command in every cell now routes through
+one shared, self-tested Node harness instead of a hand-rolled per-subagent wrapper. Adds
+[`android/nowinandroid`](https://github.com/android/nowinandroid) (Google's official Android
+reference app) as a required official-project scenario alongside continued
+[`touchlab/KaMPKit`](https://github.com/touchlab/KaMPKit) coverage (same commit as the pilot), three
+scenarios total, n=2 (NowInAndroid, bounded per this wave's own brief) or n=3 (KaMPKit) per cell —
+up from the pilot's n=1. All 6 cells reached the correct diagnosis. Read plainly rather than spun:
+this wave's own data does not support a "`kmp-test-json` is faster" claim (raw Gradle execution
+time, isolated from `kmp-test`'s own wrapper overhead, favored `raw-gradle-no-kmp` in this sample);
+the measured advantage is `kmp-test-json` avoiding Gradle task-name discovery entirely, observed
+consistently across both projects' differing task-naming conventions. Also surfaced a disclosed,
+not-yet-fixed finding: `kmp-test describe` reports `test_tasks.unit: null` for KaMPKit's `:shared`
+module (reads as "no tests"), while `kmp-test parallel` correctly runs 24 real passing tests there —
+recorded as a candidate product-bug follow-up, not fixed in this PR to keep measurement and
+intervention separate. `docs/agentic-usage-measurement.md`'s "Current status" section now links this
+benchmark alongside the pilot; README promotion remains explicitly deferred pending stronger
+evidence and maintainer approval, unchanged from the pilot's own stance.
+
 ### Added — public agentic usage pilot (`tools/runs/agentic-usage-pilot-2026-07-17.md`)
 
 **No behavior change** — docs/evidence only; no `lib/`, `bin/`, or `tools/*.mjs` code
