@@ -163,6 +163,26 @@ the same gradle task. `dispatch.js` gets one small additive guard excluding
 `jsTest`/`wasmJsTest` exclusion for the same reason), restoring `common`/`desktop`/`all`
 to their exact pre-fix behavior.
 
+**Closed the same gap for every other accepted `--test-type` alias.** `TEST_TYPE_VALUES`
+also accepts `jvm`, `android`, and `wasm` — three undocumented legacy values with no case
+of their own in `pickGradleTaskFor`'s `switch`, so they too fell through to `default` and
+would have started dispatching `testAndroidHostTest` for a kmpAndroidLibrary host-test-only
+module. `jvm` now shares the `common`/`desktop` case body (same JVM-side chain, same
+exclusion — an existing `--isolated --test-type jvm` test and internal comments already
+treated it as that family). `android` now shares the `androidUnit` case body — for every
+module shape, `default`'s own fallback already produced the identical result, so this makes
+explicit what was previously an unexamined coincidence. `wasm` is added alongside the
+existing `wasmJs` case (kept, not renamed — an existing unit test calls `pickGradleTaskFor`
+with the literal `'wasmJs'` string directly), since `wasm` is the value the CLI actually
+accepts and `wasmJs` was otherwise unreachable from any real invocation path. A new audit
+test iterates every `TEST_TYPE_VALUES` entry against a kmpAndroidLibrary host-test-only
+module and asserts only `android`/`androidUnit` ever dispatch `testAndroidHostTest` — a
+forward-looking guard against a future alias repeating this gap. Two new orchestrator-level
+tests (`runParallel`, `runChanged`) prove the guard holds through the full discovery →
+probe → dispatch pipeline, not just at the `pickGradleTaskFor` unit level — `changed`
+delegates to `runParallel` verbatim (`--test-type` forwarded unchanged), so it inherits the
+same guarantee for real.
+
 ### Fixed — `describe`'s JDK requirement block now reports the real AGP version instead of always null
 
 **Observable behavior change.** `describe-orchestrator.js` built its `jdk_requirement`

@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { runChanged } from '../../lib/orchestrators/changed-orchestrator.js';
+import { computeCacheKey, CACHE_DIR_NAME } from '../../lib/project-model.js';
 
 const SOURCE_SETS = [
   'test', 'commonTest', 'jvmTest', 'desktopTest',
@@ -943,5 +944,54 @@ describe('runChanged --max-failures forwarding', () => {
 
     expect(parallelCalls.length).toBe(1);
     expect(parallelCalls[0].args.indexOf('--max-failures')).toBe(-1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runChanged delegates to runParallel verbatim (buildParallelArgs forwards
+// --test-type unchanged), so it inherits pickGradleTaskFor's
+// testAndroidHostTest exclusion for real — not just by architecture. This
+// exercises the actual shared pipeline, not a runParallelInjection stub.
+// ---------------------------------------------------------------------------
+describe('runChanged — --test-type jvm never dispatches testAndroidHostTest', () => {
+  it('changed kmpAndroidLibrary host-test-only module is skipped under --test-type jvm; no gradle call ever mentions testAndroidHostTest', async () => {
+    const dir = makeProject(['shared'], {
+      moduleBuild: {
+        shared: `plugins {
+  kotlin("multiplatform")
+  id("com.android.kotlin.multiplatform.library")
+}
+kotlin {
+  androidLibrary {
+    namespace = "com.x"
+    withHostTestBuilder { }
+  }
+}
+`,
+      },
+    });
+    mkdirSync(path.join(dir, 'shared', 'src', 'commonMain', 'kotlin'), { recursive: true });
+
+    const cacheKey = computeCacheKey(dir);
+    const cacheDir = path.join(dir, CACHE_DIR_NAME);
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      path.join(cacheDir, `tasks-${cacheKey}.txt`),
+      'shared:testAndroidHostTest - Run unit tests for the androidMain build.\n'
+    );
+
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['shared/src/commonMain/kotlin/Model.kt']) },
+    });
+
+    const { envelope } = await runChanged({
+      projectRoot: dir,
+      args: ['--test-type', 'jvm', '--no-coverage'],
+      spawn,
+    });
+
+    expect(envelope.changed.detected_modules).toEqual(['shared']);
+    const dispatchedArgs = spawn.calls.flatMap(c => c.args);
+    expect(dispatchedArgs.some(a => String(a).includes('testAndroidHostTest'))).toBe(false);
   });
 });

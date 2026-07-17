@@ -68,6 +68,8 @@ import {
   canonicalModuleEntry,
   buildCoverageReportTasks,
 } from '../../lib/orchestrators/parallel-orchestrator.js';
+import { computeCacheKey, CACHE_DIR_NAME } from '../../lib/project-model.js';
+import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
 
 let workDir;
 afterEach(() => {
@@ -449,6 +451,80 @@ describe('pickGradleTaskFor', () => {
       .toBe(':shared:testAndroidHostTest');
     expect(pickGradleTaskFor({ ...base, resolved: { unitTestTask: 'testAndroidHostTest' } }, undefined).task)
       .toBe(':shared:testAndroidHostTest');
+  });
+
+  // --test-type alias audit: TEST_TYPE_VALUES accepts 'jvm', 'android', and
+  // 'wasm' but pickGradleTaskFor previously had no case for any of them — they
+  // fell into default, which (post the fallback above) dispatches
+  // testAndroidHostTest for a kmpAndroidLibrary host-test-only module even
+  // under test-types that have nothing to do with androidUnit. Each of these
+  // now has an explicit case (see dispatch.js).
+  it('--test-type jvm excludes testAndroidHostTest — same JVM-side chain as common/desktop', () => {
+    const mod = {
+      name: 'shared', type: 'kmp', androidDsl: null,
+      androidDslVariant: 'kmpAndroidLibrary',
+      sourceSets: { androidUnitTest: true, commonTest: true },
+      resolved: { unitTestTask: 'testAndroidHostTest' },
+    };
+    expect(pickGradleTaskFor(mod, 'jvm').task).toBeNull();
+    expect(pickGradleTaskFor(mod, 'jvm').reason).toMatch(/no jvm target/);
+  });
+
+  it('--test-type android aliases to androidUnit exactly, for every module shape', () => {
+    const kmpHostTestMod = {
+      name: 'shared', type: 'kmp', androidDsl: null,
+      androidDslVariant: 'kmpAndroidLibrary',
+      sourceSets: { androidUnitTest: true, commonTest: true },
+      resolved: { unitTestTask: 'testAndroidHostTest' },
+    };
+    expect(pickGradleTaskFor(kmpHostTestMod, 'android'))
+      .toEqual(pickGradleTaskFor(kmpHostTestMod, 'androidUnit'));
+
+    const kmpNoOptInMod = { ...kmpHostTestMod, sourceSets: { androidUnitTest: false } };
+    expect(pickGradleTaskFor(kmpNoOptInMod, 'android'))
+      .toEqual(pickGradleTaskFor(kmpNoOptInMod, 'androidUnit'));
+
+    const plainAndroidMod = {
+      name: 'app', type: 'android', androidDsl: null, androidDslVariant: null,
+      sourceSets: { test: true },
+      resolved: { unitTestTask: null },
+    };
+    expect(pickGradleTaskFor(plainAndroidMod, 'android'))
+      .toEqual(pickGradleTaskFor(plainAndroidMod, 'androidUnit'));
+  });
+
+  it('--test-type wasm resolves via webTestTask (added alongside the existing wasmJs case)', () => {
+    const mod = { name: 'web', type: 'kmp', resolved: { webTestTask: 'wasmJsTest' } };
+    expect(pickGradleTaskFor(mod, 'wasm').task).toBe(':web:wasmJsTest');
+    expect(pickGradleTaskFor(mod, 'wasm').reason).toBe('');
+
+    const noWebMod = { name: 'app', type: 'android', resolved: { webTestTask: null } };
+    expect(pickGradleTaskFor(noWebMod, 'wasm').task).toBeNull();
+    expect(pickGradleTaskFor(noWebMod, 'wasm').reason).toMatch(/no wasm\(\) target/);
+  });
+
+  it('audit: every accepted TEST_TYPE_VALUES entry either dispatches testAndroidHostTest via the androidUnit leg or explicitly excludes it', () => {
+    // Forward-looking guard: if a future value is ever added to
+    // TEST_TYPE_VALUES without a matching pickGradleTaskFor case, it falls
+    // through to default — exactly the bug class this PR closes for
+    // common/desktop/jvm/wasm. Locks the FULL accepted set, not just the
+    // values fixed here.
+    const mod = {
+      name: 'shared', type: 'kmp', androidDsl: null,
+      androidDslVariant: 'kmpAndroidLibrary',
+      sourceSets: { androidUnitTest: true, commonTest: true },
+      resolved: { unitTestTask: 'testAndroidHostTest' },
+    };
+    const EXPECTED_TO_DISPATCH = new Set(['android', 'androidUnit']);
+    for (const testType of TEST_TYPE_VALUES) {
+      if (testType === 'all') continue; // expands via legsForAll(); never reaches pickGradleTaskFor directly
+      const { task } = pickGradleTaskFor(mod, testType);
+      if (EXPECTED_TO_DISPATCH.has(testType)) {
+        expect(task, `--test-type ${testType} should dispatch testAndroidHostTest`).toBe(':shared:testAndroidHostTest');
+      } else {
+        expect(task, `--test-type ${testType} should NOT dispatch testAndroidHostTest`).not.toBe(':shared:testAndroidHostTest');
+      }
+    }
   });
 
   it('--test-type ios uses iosTestTask candidate', () => {
@@ -5442,5 +5518,54 @@ describe('pickGradleTaskFor — JS/Wasm guard for common/desktop (Part A)', () =
   it('non-regression: --test-type common with unitTestTask=jvmTest → dispatches jvmTest', () => {
     const r = pickGradleTaskFor(jvmModule, 'common');
     expect(r.task).toBe(':shared:jvmTest');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Orchestrator-level: runParallel never dispatches testAndroidHostTest for a
+// non-androidUnit --test-type, on a real project (not a hand-built mod
+// object). Complements the pickGradleTaskFor()-level audit above by proving
+// the guard holds through the full discovery → probe → dispatch pipeline.
+// ---------------------------------------------------------------------------
+describe('runParallel — --test-type jvm never dispatches testAndroidHostTest', () => {
+  it('kmpAndroidLibrary host-test-only module is skipped under --test-type jvm; no gradle call ever mentions testAndroidHostTest', async () => {
+    const dir = makeProject([{
+      name: 'shared',
+      build: `plugins {
+  kotlin("multiplatform")
+  id("com.android.kotlin.multiplatform.library")
+}
+kotlin {
+  androidLibrary {
+    namespace = "com.x"
+    withHostTestBuilder { }
+  }
+}
+`,
+    }]);
+
+    // Pre-seed the tasks-<sha>.txt probe cache so resolveTasksFor's probed
+    // branch (and therefore the testAndroidHostTest fallback) is actually
+    // live for this module — mirrors describe-orchestrator.test.js's pattern.
+    const cacheKey = computeCacheKey(dir);
+    const cacheDir = path.join(dir, CACHE_DIR_NAME);
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      path.join(cacheDir, `tasks-${cacheKey}.txt`),
+      'shared:testAndroidHostTest - Run unit tests for the androidMain build.\n'
+    );
+
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'jvm', '--module-filter', 'shared', '--no-coverage'],
+      spawn,
+      log: () => {},
+    });
+
+    const dispatchedArgs = spawn.calls.flatMap(c => c.args);
+    expect(dispatchedArgs.some(a => String(a).includes('testAndroidHostTest'))).toBe(false);
+    expect(exitCode).toBe(0);
+    expect(envelope.skipped.some(s => s.module === 'shared')).toBe(true);
   });
 });
