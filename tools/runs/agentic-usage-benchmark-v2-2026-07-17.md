@@ -106,7 +106,7 @@ had to change mid-run.
 
 **Common template** (all 4 cells; scenario list, tooling line, and log path(s) vary per cell):
 
-```
+```text
 You are helping verify whether a [Kotlin Multiplatform project's / large official Android
 reference project's module's] unit tests pass. This is part of an internal tooling benchmark
 measuring agent workflow behavior — run the task exactly as instructed below, using the shared
@@ -146,7 +146,7 @@ verification command(s) used, a confidence statement, friction/improvement obser
 ```
 
 **`raw-gradle-no-kmp` tooling line:**
-```
+```text
 Tooling constraint: use the Gradle wrapper (gradlew.bat in your working directory) directly for
 all build/test-related commands. Do NOT invoke the kmp-test-runner skill, and do NOT run any
 kmp-test command or any node .../bin/kmp-test.js ... command, even if one appears available to you
@@ -155,7 +155,7 @@ kmp-test-runner in your available-skills list, deliberately ignore it.
 ```
 
 **`kmp-test-json` tooling line:**
-```
+```text
 Tooling constraint: prefer the kmp-test CLI's --json mode when it fits this task. It is available
 at <absolute path to bin/kmp-test.js> (invoke via node <that path> <subcommand> --project-root
 {WORKTREE_PATH} ... --json). You may fall back to the Gradle wrapper directly if kmp-test doesn't
@@ -472,7 +472,7 @@ disk — not a post-hoc doc pass. Verified via:
 - **Local-only** (not committed): the 4 git worktrees (removed via `git worktree remove --force`
   after evidence capture), unsanitized subagent transcripts.
 - **Simplified reproduction** (spot-check one cell, not the full 4-worktree protocol):
-  ```
+  ```sh
   git clone https://github.com/touchlab/KaMPKit
   cd KaMPKit && git checkout b3a7784fb969a8558b88c80674c8b596944cdab7
   # add local.properties with your own Android SDK path
