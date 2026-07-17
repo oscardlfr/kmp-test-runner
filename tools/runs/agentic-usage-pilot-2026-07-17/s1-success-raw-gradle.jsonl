@@ -1,0 +1,15 @@
+{"n":1,"cmd":"Write-Output test","exit_code":0,"duration_ms":1020,"stdout_bytes":6,"stderr_bytes":630}
+{"n":2,"cmd":"Get-Date -Format o","exit_code":0,"duration_ms":1024,"stdout_bytes":35,"stderr_bytes":630}
+{"n":3,"cmd":"Get-Date -Format o","exit_code":0,"duration_ms":1029,"stdout_bytes":35,"stderr_bytes":630}
+{"n":4,"cmd":"Get-CimInstance Win32_Process | Where-Object { .Name -match 'java|powershell|gradle' } | Select-Object ProcessId, ParentProcessId, Name, CreationDate, @{N='CmdSnip';E={ .CommandLine.Substring(0,[Math]::Min(80,.CommandLine.Length)) }} | Format-Table -AutoSize | Out-String -Width 300","exit_code":1,"duration_ms":1023,"stdout_bytes":0,"stderr_bytes":3865}
+{"n":5,"cmd":"Get-Process | Where-Object { $_.ProcessName -match \"java|powershell|gradle\" } | Select-Object Id, ProcessName, StartTime | Format-Table -AutoSize | Out-String -Width 200","exit_code":0,"duration_ms":1027,"stdout_bytes":242,"stderr_bytes":630}
+{"n":6,"cmd":".\\gradlew.bat --stop --console=plain","exit_code":0,"duration_ms":1024,"stdout_bytes":38,"stderr_bytes":399}
+{"n":7,"cmd":"Get-Process -Id 19856 -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, StartTime | Format-Table -AutoSize | Out-String","exit_code":1,"duration_ms":1021,"stdout_bytes":2,"stderr_bytes":630}
+{"n":8,"cmd":".\\gradlew.bat :shared:tasks --console=plain","exit_code":-1,"duration_ms":1900000,"stdout_bytes":0,"stderr_bytes":0}
+{"n":9,"cmd":"Get-Date -Format o","exit_code":0,"duration_ms":1021,"stdout_bytes":35,"stderr_bytes":630}
+{"n":10,"cmd":"Get-ChildItem -Path \"shared\\build\\test-results\\testAndroidHostTest\" -Filter *.xml | Select-Object Name, LastWriteTime | Format-Table -AutoSize | Out-String -Width 200","exit_code":0,"duration_ms":1034,"stdout_bytes":498,"stderr_bytes":630}
+{"n":11,"cmd":"Get-Process | Where-Object { $_.ProcessName -match \"java|powershell\" } | Select-Object Id, ProcessName, StartTime, CPU | Format-Table -AutoSize | Out-String -Width 200","exit_code":0,"duration_ms":1038,"stdout_bytes":296,"stderr_bytes":630}
+{"n":12,"cmd":".\\verify-results.ps1","exit_code":0,"duration_ms":1026,"stdout_bytes":593,"stderr_bytes":630}
+{"n":14,"cmd":".\\gradlew.bat :shared:testAndroidHostTest --console=plain","exit_code":0,"duration_ms":840033,"stdout_bytes":35,"stderr_bytes":0}
+{"n":13,"cmd":".\\gradlew.bat --stop --console=plain","exit_code":0,"duration_ms":1027,"stdout_bytes":38,"stderr_bytes":399}
+{"n":15,"cmd":"Get-Date -Format o","exit_code":0,"duration_ms":1027,"stdout_bytes":35,"stderr_bytes":630}
