@@ -1,0 +1,3 @@
+{"n":1,"cmd":"./gradlew.bat :core:common:test --console=plain","exit_code":0,"duration_ms":15435,"stdout_bytes":1275,"stderr_bytes":0}
+{"n":2,"cmd":"./gradlew.bat :core:common:test --rerun-tasks --console=plain","exit_code":0,"duration_ms":3791,"stdout_bytes":695,"stderr_bytes":0}
+{"n":3,"cmd":"node -e const fs=require('fs');const f='core/common/build/test-results/test/TEST-com.google.samples.apps.nowinandroid.core.common.result.ResultKtTest.xml';console.log(fs.readFileSync(f,'utf8').match(/<testsuite[^>]*>/)[0]);","exit_code":0,"duration_ms":28,"stdout_bytes":211,"stderr_bytes":0,"note":"verify junit xml testsuite counts"}

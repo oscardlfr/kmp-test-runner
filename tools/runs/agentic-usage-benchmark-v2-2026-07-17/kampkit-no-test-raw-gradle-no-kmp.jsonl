@@ -1,0 +1,4 @@
+{"n":1,"cmd":"./gradlew.bat :app:tasks --console=plain","exit_code":0,"duration_ms":1486,"stdout_bytes":4640,"stderr_bytes":0}
+{"n":2,"cmd":"./gradlew.bat :app:testDebugUnitTest --console=plain","exit_code":0,"duration_ms":2388,"stdout_bytes":4208,"stderr_bytes":0}
+{"n":3,"cmd":"./gradlew.bat :app:testDebugUnitTest --rerun-tasks --console=plain","exit_code":0,"duration_ms":6696,"stdout_bytes":4433,"stderr_bytes":0}
+{"n":4,"cmd":"./gradlew.bat :app:test --console=plain","exit_code":0,"duration_ms":1648,"stdout_bytes":4289,"stderr_bytes":0}

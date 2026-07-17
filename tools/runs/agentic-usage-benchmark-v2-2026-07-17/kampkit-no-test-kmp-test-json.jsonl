@@ -1,0 +1,5 @@
+{"n":1,"cmd":"node <USER_PATH> parallel --project-root <USER_PATH> --module-filter app --json","exit_code":2,"duration_ms":894,"stdout_bytes":676,"stderr_bytes":69}
+{"n":2,"cmd":"node <USER_PATH> parallel --project-root <USER_PATH> --module-filter app --json","exit_code":2,"duration_ms":896,"stdout_bytes":676,"stderr_bytes":69,"note":"attempt2"}
+{"n":3,"cmd":"node <USER_PATH> parallel --project-root <USER_PATH> --module-filter app --json","exit_code":2,"duration_ms":866,"stdout_bytes":676,"stderr_bytes":69,"note":"attempt3"}
+{"n":4,"cmd":"node <USER_PATH> parallel --project-root <USER_PATH> --module-filter app --include-untested --json","exit_code":0,"duration_ms":891,"stdout_bytes":1165,"stderr_bytes":69,"note":"verify force-include untested app"}
+{"n":5,"cmd":"node <USER_PATH> describe --project-root <USER_PATH> --module-filter app --json","exit_code":0,"duration_ms":70,"stdout_bytes":960,"stderr_bytes":0,"note":"verify describe static-model app"}

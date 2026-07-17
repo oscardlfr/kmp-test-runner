@@ -1,0 +1,4 @@
+{"n":1,"cmd":"node <USER_PATH> describe --project-root <USER_PATH> --json","exit_code":0,"duration_ms":79,"stdout_bytes":1312,"stderr_bytes":0}
+{"n":2,"cmd":"node <USER_PATH> parallel --project-root <USER_PATH> --module-filter shared --json","exit_code":0,"duration_ms":2965,"stdout_bytes":1266,"stderr_bytes":69}
+{"n":3,"cmd":"node <USER_PATH> parallel --project-root <USER_PATH> --module-filter shared --gradle-args --rerun-tasks --json","exit_code":0,"duration_ms":14526,"stdout_bytes":1267,"stderr_bytes":69,"note":"attempt2 forced rerun"}
+{"n":4,"cmd":"node <USER_PATH> parallel --project-root <USER_PATH> --module-filter shared --gradle-args --rerun-tasks --json","exit_code":0,"duration_ms":9489,"stdout_bytes":1266,"stderr_bytes":69,"note":"attempt3 forced rerun"}
