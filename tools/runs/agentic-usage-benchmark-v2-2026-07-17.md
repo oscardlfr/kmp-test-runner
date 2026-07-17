@@ -22,8 +22,9 @@ reference app, required by this wave's brief and not attempted in v1).
   reduce repetitions and label that row clearly"), based on a calibration probe (see Methodology).
 - **Results**: all 6 cells reached the correct diagnosis (`success: true,
   expected_outcome_matched: true`). Unlike v1, there is **no hand-rolled-wrapper confound** — every
-  command in every cell (24 commands total) was routed through one shared, self-tested Node harness
-  (`harness.mjs`, committed in this run's directory), verified against every subagent's own report.
+  command in every cell (23 commands total: 4+5+4+4+3+3 across the 6 cells) was routed through one
+  shared, self-tested Node harness (`harness.mjs`, committed in this run's directory), verified
+  against every subagent's own report.
 - **What's genuinely new here, read plainly**: raw Gradle execution time (isolated from kmp-test's
   own wrapper overhead) was **not** faster with `kmp-test-json` in this data — see Interpretation.
   The measured advantage of `kmp-test-json` in this wave is in avoiding Gradle task-name discovery
@@ -63,7 +64,9 @@ addressed directly:
    **Fix in v2**: one pre-built, self-tested Node harness (`harness.mjs`), identical for every cell,
    committed in this run's directory so the exact logging mechanism is auditable in the PR diff.
    Every subagent was instructed to route every real command through it and never hand-roll timing.
-   Zero wrapper bugs occurred in this wave.
+   **Zero wrapper bugs occurred in any graded cell** — but this precise claim needs its own honest
+   caveat, not a blanket "zero bugs": see "Harness bugs found and fixed before any graded cell ran"
+   below.
 2. **Missing coverage**: v1 used a single project (KaMPKit) and never attempted an official,
    large, multi-module reference project. **Fix in v2**: NowInAndroid (Google's official Android
    sample, 30+ modules) is now covered, bounded to a single small module per this wave's own
@@ -232,6 +235,34 @@ one-time setup. Removed via `git worktree remove --force` after evidence capture
 **sequentially, never concurrently** — same reasoning as v1: concurrent Gradle builds, even in
 separate worktrees, would contend for CPU/IO and bias timing. Order: `kampkit-kmp-test-json` →
 `kampkit-raw-gradle-no-kmp` → `nowinandroid-kmp-test-json` → `nowinandroid-raw-gradle-no-kmp`.
+
+### Harness bugs found and fixed before any graded cell ran
+
+The harness's own self-test (trivial `node -e` success/failure/redaction commands, all passing)
+did **not** exercise the `.bat`-file spawn path at all, since that codepath was added afterward.
+Real bugs surfaced once the harness was pointed at actual `gradlew.bat` invocations during the
+NowInAndroid calibration probe (`calibration-probe.jsonl`, lines `n=2` and `n=3`, both
+`exit_code:1`) — logged there rather than hidden, exactly like everything else in this document:
+
+1. Windows dynamic `import()` rejected a raw filesystem path for `tools/lib/redact.mjs`
+   (`ERR_UNSUPPORTED_ESM_URL_SCHEME`) — needed `pathToFileURL()`. Caught by the harness's own
+   self-test, before any calibration or graded command ran; no JSONL line exists for this crash
+   since it happened before the harness could even start logging.
+2. Node's `spawn()` with `shell:false` cannot directly execute `.bat` files on Windows
+   (`EINVAL`) — a documented Node/Windows limitation. The first fix attempt (`shell:true`) traded
+   this for a different failure: Node's own `DEP0190` deprecation warning (unescaped argument
+   concatenation) plus a functional failure to resolve `gradlew.bat` at all (`calibration-probe.jsonl`
+   `n=2`). A second attempt (explicit `cmd.exe /c` with an argv array) also failed to resolve the
+   file under this Git Bash environment (`n=3`, `"retry after cmd.exe fix"`). The fix that actually
+   worked: route through `bash -c` with each argument POSIX-quoted explicitly — this repo's own
+   shell environment already runs `.bat` files correctly via its MSYS layer, confirmed directly
+   before relying on it (`calibration-probe.jsonl` `n=4`, a `gradlew.bat --version` smoke test).
+
+Both bugs were fixed, and the fix was verified working (smoke test, then a real calibration run),
+**before the first real subagent was ever dispatched** — none of the 6 graded cells' 23 commands
+hit either bug. This is disclosed in full because the whole point of this wave is closing v1's
+wrapper-confound finding, and an unqualified "zero bugs" claim would not survive a reader checking
+`calibration-probe.jsonl` against it, which is exactly what caught this during review.
 
 ### One dispatch-level infrastructure failure, disclosed
 
