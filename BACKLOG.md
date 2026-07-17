@@ -117,19 +117,38 @@
   unavailable, and no runnable selected Android instrumented surface. Backlog
   candidate recorded below: invalid `--java-home` should fail earlier with a typed
   config/env error.
-- ✅ **Token-cost measurement registry** — SHIPPED (this PR). `tools/measurement-registry.mjs`
+- ✅ **Token-cost measurement registry** — SHIPPED. `tools/measurement-registry.mjs`
   (`validate`/`export-csv`/`summarize`) + `tools/runs/measurement-registry.jsonl`, 48 backfilled
   rows (2026-05-18 OSS aggregate, 2026-05-19 `private-large-A` cross-model evidence, PR #363's
   2026-07-16 NowInAndroid + KaMPKit smokes) + 27 rows from a Windows validation wave. See
   `tools/runs/token-cost-validation-windows-2026-07-16.md`. Follow-ups, not yet scheduled:
   (a) wire `validate` into CI as a lightweight gate once the registry sees regular updates —
-  not done yet since it's a brand-new, low-traffic file; (b) next `private-large-A` refresh is
-  due whenever `coverage`'s envelope/output shape changes, not on a fixed schedule (this wave's
-  re-measurement was a deliberate NO-GO, not a gap); (c) the `private-large-A` per-feature
-  drill-down table in `docs/token-cost-measurement.md` also covers `parallel`/`changed`/`benchmark`
-  (not just `coverage`) — only `coverage` was backfilled into the registry per explicit task scope;
-  extend to the other three features in a future session if useful; (d) extend `summarize` only if
+  not done yet since it's a brand-new, low-traffic file; (d) extend `summarize` only if
   a second real consumer/view emerges — deliberately kept to two fixed views for now.
+- ✅ **Registry gap closed — `info`/`describe`/`changed`/`benchmark` backfilled + KaMPKit data
+  integrity fix** — SHIPPED (follow-up PR, 2026-07-17). Closed the above item's (c): all four
+  remaining features' `private-large-A` evidence backfilled into the registry (40 rows, zero new
+  API calls — pure transcription of already-committed `cross-model-results-*.txt`; `info`/`describe`
+  honestly retain their stale `claude-opus-4-7` tokenizer label, never refreshed). Also found and
+  fixed a mischaracterized row: the 2026-07-16 Windows KaMPKit small-bucket capture had actually
+  recorded a Gradle Android-SDK-configuration failure (0 tests, missing `local.properties` in the
+  local clone), not a "cold build + dependency updates" as originally logged. Fixed the local SDK
+  config, re-ran against the `shared` module (the historical `app`-module convention is stale —
+  `app` has no test source at the current commit) and got a real measurement (91.4x A:C,
+  `cl100k_base` only — Anthropic cross-model counts intentionally skipped). See
+  `tools/runs/token-cost-validation-windows-2026-07-17.md`. Registry now covers all 6 features
+  (118 rows, 18 run_ids). No README headline values changed.
+- **`private-large-A` cross-model refresh to `claude-sonnet-5`** — deliberately NOT done in the
+  above PR. The registry's committed cross-model evidence still uses `claude-sonnet-4-6`, superseded
+  by `claude-sonnet-5`. Refreshing it means re-sending `private-large-A`'s existing local captures
+  to Anthropic again — same category of action taken in prior sessions, but requires its own
+  separate, explicitly-approved session with a privacy checklist, per maintainer direction
+  (2026-07-17). Note: the `parallel` feature's local raw captures
+  (`tools/runs/parallel/{A,B,C}-run1.txt`) were accidentally overwritten during the 2026-07-17
+  session (gitignored, never committed — no published evidence affected) and were not
+  reconstructed; that future session will need to regenerate `parallel`'s captures via a fresh
+  measurement pass rather than a cheap re-tokenize of existing files. Not scheduled to any
+  milestone — user's call on timing.
 - **`--java-home <invalid-path>` should fail earlier with a typed config/env error
   (BACKLOG CANDIDATE - found during manual macOS validation 2026-07-16).** Real
   execution against both a public project and a tiny real-wrapper fixture exited nonzero

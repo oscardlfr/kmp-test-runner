@@ -248,6 +248,16 @@ public `NowInAndroid`/`KaMPKit` smokes:
 The private-reference re-measurement was a deliberate NO-GO that wave — see
 that document for the reasoning.
 
+A follow-up Windows session backfilled the registry's remaining feature gap
+(`info`/`describe`/`changed`/`benchmark`, all from evidence already committed
+above — zero new API calls) and corrected one mischaracterized row (a
+2026-07-16 KaMPKit capture that had actually recorded a Gradle Android-SDK
+failure, not a real measurement):
+[`token-cost-validation-windows-2026-07-17.md`](../tools/runs/token-cost-validation-windows-2026-07-17.md).
+The registry now covers all 6 features. `private-large-A` remains
+un-re-measured; its `claude-sonnet-5` cross-model refresh is tracked in
+BACKLOG.md as a separate, explicitly-approved future task.
+
 ## Captured outputs
 
 Committed summary evidence lives under `tools/runs/`:
@@ -260,9 +270,12 @@ tools/runs/
   cross-model-results-coverage.txt
   cross-model-results-changed.txt
   cross-model-results-benchmark.txt
+  cross-model-results-info.txt
+  cross-model-results-describe.txt
   measurement-registry.jsonl
   token-cost-validation-2026-07-16.md
   token-cost-validation-windows-2026-07-16.md
+  token-cost-validation-windows-2026-07-17.md
 ```
 
 Per-project raw captures are intentionally not committed for the multi-project

@@ -100,3 +100,10 @@ Materially different from PR #363's KaMPKit smoke (cl100k_base A=1,054/B=91/C=20
 ## Measurement decision
 
 Existing evidence remains release-valid for the current README headline table. The fresh Windows NowInAndroid measurements land within noise of PR #363's own session on different hardware/platform, supporting cross-platform consistency of the current CLI/tooling. **No README headline values changed.**
+
+## Correction (2026-07-17)
+
+Two corrections to this document, made in a follow-up session:
+
+1. **The KaMPKit `app` module row above (line ~82) did not measure real test output.** The registry rows for `2026-07-16-parallel-kampkit-windows-smoke-cold-01` were later found to reflect a Gradle Android-SDK-configuration failure (`local.properties` missing in the local clone — Gradle could not resolve `:app:testDebugUnitTest`'s dependencies), not a cold build with dependency updates as stated above. `tests.total` was 0. See [`token-cost-validation-windows-2026-07-17.md`](token-cost-validation-windows-2026-07-17.md) for the root cause and a corrected re-run.
+2. **The shared-path safety note above (line ~38-40) was correct and was still violated in the follow-up session** — a bare `--project-root` invocation overwrote the `private-large-A` `parallel` captures this document confirms were present (~5.3 MB/70 KB/15 KB) before that session began. See the same follow-up document for the full account.
