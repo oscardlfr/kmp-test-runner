@@ -45,6 +45,24 @@ and `kmp-test-json` corresponds to its "`kmp-test` skill" column. The methodolog
 document's own Conditions table is left verbatim — this section exists to bridge
 terminology, not to rename the source document.
 
+**A further, more precise limitation, worth stating explicitly: this pilot does not
+measure "agent without access to `kmp-test`" vs "agent with access to `kmp-test`."**
+The `raw-gradle` condition's agent runs in an environment where the `kmp-test-runner`
+skill genuinely *is* available (confirmed via a throwaway pre-check — see Methodology),
+and is given an explicit prompt instruction not to use it. That is a meaningfully
+different, weaker condition than an agent that has no access to the tool at all and so
+never considers it. This pilot cannot and does not claim to show what an agent would do
+if `kmp-test` simply didn't exist in its environment — only what an agent does when
+told not to reach for a tool it can see. A future wave aiming for a genuine
+"without vs. with" comparison would need a real no-access condition (the skill/tool
+genuinely absent or uninstalled, not merely prohibited by instruction), independent
+sessions per condition, symmetric prompts, the same pre-validated logging wrapper for
+every cell, and ideally repeated trials — none of which this pilot attempts. Until
+that exists, no README claim should describe agents as being faster or better "with
+`kmp-test`" in a with/without sense — this pilot only supports the narrower claim that
+this document already makes throughout: a `raw-gradle`-vs-`kmp-test-json` comparison
+under instructed conditions, not a with/without-access benchmark.
+
 ## What this pilot does NOT measure
 
 Stated explicitly so the results below aren't over-read:
@@ -138,9 +156,10 @@ source anywhere under `app/`. `:shared` has real tests — `androidHostTest` (2 
   answer is "there are no unit tests to run" — a no-test/no-op condition, not a genuine
   assertion failure. This is intentionally scoped narrowly: this pilot does **not** claim
   to have exercised a genuine test-failure diagnosis (a real assertion failing), only the
-  narrower "recognize there's nothing to run, don't claim false success" case. See the
-  task brief and BACKLOG-adjacent follow-up notes in Interpretation for why a true
-  failure-diagnosis scenario remains future work.
+  narrower "recognize there's nothing to run, don't claim false success" case. See
+  Interpretation for why a true failure-diagnosis scenario remains future work — this PR
+  deliberately does not add a BACKLOG.md entry (see Non-goals in the PR description); the
+  follow-up is tracked here, in this document, only.
 
 ### Prompt evolution
 
@@ -232,7 +251,7 @@ provider-neutral context proxy used instead.
 
 | Scenario | Condition | Success | First useful signal | Wall-clock (orchestrator) | Commands | Test attempts | Retries | stdout/stderr bytes | Human interventions | Verification quality |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| Success path (`:shared`) | `raw-gradle` | ✅ | ~46.1 min (self-report; not independently re-derivable — see note 1) | **~57.2 min** ⚠️ (includes ~30 min stall — see note 1) | 14 | 1 | 3 | 1,853 / 10,333 ⚠️ (known undercount — note 1) | **1** (overridden — see note 1) | focused |
+| Success path (`:shared`) | `raw-gradle` | ✅ | ~46.1 min (self-report; not independently re-derivable — see note 1) | **~57.2 min** ⚠️ (includes ~30 min stall — see note 1) | 15 (see note 1) | 1 | 3 | 1,888 / 10,963 ⚠️ (known undercount — note 1) | **1** (overridden — see note 1) | focused |
 | Success path (`:shared`) | `kmp-test-json` | ✅ | ~14.4 min | ~21.7 min (self-report: ~16.8 min) | 7 | 3 | 1 | 8,979 / 69 | 0 | focused (strong — note 2) |
 | No-test diagnostic (`:app`) | `kmp-test-json` | ✅ | ~1.7 min | ~11.9 min (self-report: ~5.1 min) | 8 | 2 | 0 | 6,395 / 82 | 0 | **focused — strongest** (note 3) |
 | No-test diagnostic (`:app`) | `raw-gradle` | ✅ | ~5 sec (static check — see note 5) | ~42.9 min ⚠️ (heavily inflated — note 5) | 11 | 4 | 2 | 5,235 / 0 | 0 | focused |
@@ -254,9 +273,21 @@ autonomous skepticism, but the intervention itself still counts as a real
 logging-wrapper counter collision (self-disclosed by the subagent, caused by two
 in-flight commands computing the same sequence number) also corrupted the byte count for
 one entry — almost certainly the largest single contributor — so the byte totals for this
-cell are a known undercount, not a precise measurement. The ~57.2 min wall-clock figure
-is real and disclosed, but should **not** be read as "how long the `raw-gradle` condition
-normally takes" — see Interpretation.
+cell are a known undercount, not a precise measurement, even after the correction below.
+The ~57.2 min wall-clock figure is real and disclosed, but should **not** be read as "how
+long the `raw-gradle` condition normally takes" — see Interpretation.
+
+**Post-review correction (caught in PR review, not by the original grading pass):** the
+subagent's own self-reported `commands_total`/`stdout_bytes_total`/`stderr_bytes_total`
+(14 / 1,853 / 10,333) undercounted the actually-committed `.pilot-log.jsonl` by one line
+— a trailing `Get-Date -Format o` housekeeping timestamp (`n=15`) was logged *after* the
+subagent computed its own summary totals, so it never made it into the subagent's math,
+only into the committed file. The table above and `summary.json` now report the
+independently-recomputed true sum over all 15 committed lines (15 / 1,888 / 10,963); the
+original self-reported values are preserved in `summary.json`'s `*_self_reported` fields
+for transparency. This is a distinct issue from the sequence-collision undercount
+described above — both are real, and both point the same direction (undercounting), so
+neither correction should be read as resolving the other.
 
 **Note 2 — S1/kmp-test-json verification behavior.** This cell's first `kmp-test parallel
 --json` attempt hit the *same* ~600-second stall ceiling as S1/raw-gradle's first attempt
