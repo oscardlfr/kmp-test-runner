@@ -410,6 +410,47 @@ describe('pickGradleTaskFor', () => {
     expect(r.reason).toMatch(/no common target/);
   });
 
+  it('--test-type common/desktop excludes testAndroidHostTest (belongs to androidUnit leg)', () => {
+    const mod = {
+      name: 'shared', type: 'kmp', androidDsl: null,
+      androidDslVariant: 'kmpAndroidLibrary',
+      sourceSets: { androidUnitTest: true, commonTest: true },
+      resolved: { unitTestTask: 'testAndroidHostTest' },
+    };
+    expect(pickGradleTaskFor(mod, 'common').task).toBeNull();
+    expect(pickGradleTaskFor(mod, 'common').reason).toMatch(/no common target/);
+    expect(pickGradleTaskFor(mod, 'desktop').task).toBeNull();
+  });
+
+  it('testAndroidHostTest dispatches via androidUnit only — no double-dispatch across legs', () => {
+    // Guards --test-type all: legsForAll() runs 'common' and 'androidUnit' as
+    // separate legs: without the exclusion above, both would resolve to the
+    // same gradle task for a kmpAndroidLibrary host-test-only module.
+    const mod = {
+      name: 'shared', type: 'kmp', androidDsl: null,
+      androidDslVariant: 'kmpAndroidLibrary',
+      sourceSets: { androidUnitTest: true, commonTest: true },
+      resolved: { unitTestTask: 'testAndroidHostTest' },
+    };
+    expect(pickGradleTaskFor(mod, 'common').task).toBeNull();
+    expect(pickGradleTaskFor(mod, 'androidUnit').task).toBe(':shared:testAndroidHostTest');
+  });
+
+  it('default (no --test-type) dispatches testAndroidHostTest identically whether unitTestTask is pre- or post-fix', () => {
+    // Documents that the default/auto-pick case is genuinely unaffected by
+    // the resolveTasksFor fallback — same final task, resolved via a
+    // different internal path (own inline fallback vs. the now-populated
+    // resolved field).
+    const base = {
+      name: 'shared', type: 'kmp', androidDslVariant: 'kmpAndroidLibrary',
+      sourceSets: { androidUnitTest: true },
+    };
+    expect(pickGradleTaskFor({ ...base, resolved: { unitTestTask: null } }, undefined).task)
+      .toBe(':shared:testAndroidHostTest');
+    expect(pickGradleTaskFor({ ...base, resolved: { unitTestTask: 'testAndroidHostTest' } }, undefined).task)
+      .toBe(':shared:testAndroidHostTest');
+  });
+
   it('--test-type ios uses iosTestTask candidate', () => {
     expect(pickGradleTaskFor(kmpModule, 'ios').task).toBe(':shared:iosSimulatorArm64Test');
     expect(pickGradleTaskFor(androidModule, 'ios').task).toBeNull();

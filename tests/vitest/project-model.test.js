@@ -2448,6 +2448,72 @@ describe('resolveTasksFor', () => {
       expect(r.macosTestTask).toBe('macosArm64Test');
     });
   });
+
+  // kmpAndroidLibrary (com.android.kotlin.multiplatform.library) modules with no
+  // co-declared jvm()/js()/wasmJs() target have no candidate in the primary
+  // unitTestTask chain, even though AGP genuinely creates testAndroidHostTest
+  // once withHostTestBuilder {} is declared. Lowest-priority fallback only.
+  describe('kmpAndroidLibrary testAndroidHostTest fallback', () => {
+    it('opt-in present, no JVM target → unitTestTask falls back to testAndroidHostTest', () => {
+      const analysis = {
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidUnitTest: true },
+        coveragePlugin: null,
+        type: 'kmp',
+      };
+      const r = resolveTasksFor(':shared', ['testAndroidHostTest', 'androidConnectedCheck'], analysis);
+      expect(r.unitTestTask).toBe('testAndroidHostTest');
+    });
+
+    it('opt-in absent → unitTestTask stays null (AGP creates no task without withHostTestBuilder{})', () => {
+      const analysis = {
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidUnitTest: false },
+        coveragePlugin: null,
+        type: 'kmp',
+      };
+      const r = resolveTasksFor(':shared', ['androidConnectedCheck'], analysis);
+      expect(r.unitTestTask).toBeNull();
+    });
+
+    it('co-declared jvm() wins over testAndroidHostTest (fallback, not override)', () => {
+      // A module can legitimately declare BOTH jvm() and androidLibrary {
+      // withHostTestBuilder {} } — see tests/fixtures/kmp-cross-platform-e2e/
+      // sample/build.gradle.kts, a real fixture shaped exactly this way.
+      const analysis = {
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidUnitTest: true },
+        coveragePlugin: null,
+        type: 'kmp',
+      };
+      const r = resolveTasksFor(':shared', ['jvmTest', 'testAndroidHostTest'], analysis);
+      expect(r.unitTestTask).toBe('jvmTest');
+    });
+
+    it('opt-in true but probe lacks testAndroidHostTest → unitTestTask stays null', () => {
+      // Proves the fallback trusts the real probe, not just the static opt-in
+      // signal — distinguishes it from dispatch.js's own unconditional fallback.
+      const analysis = {
+        androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidUnitTest: true },
+        coveragePlugin: null,
+        type: 'kmp',
+      };
+      const r = resolveTasksFor(':shared', ['androidConnectedCheck'], analysis);
+      expect(r.unitTestTask).toBeNull();
+    });
+
+    it('non-kmpAndroidLibrary module never gets the fallback', () => {
+      const analysis = {
+        androidDslVariant: null,
+        sourceSets: { androidUnitTest: true },
+        coveragePlugin: null,
+        type: 'android',
+      };
+      const r = resolveTasksFor(':m', ['testAndroidHostTest'], analysis);
+      expect(r.unitTestTask).toBeNull();
+    });
+  });
 });
 
 // ------------------------------------------------------------------

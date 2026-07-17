@@ -126,6 +126,43 @@ bats file was named as an example of direct-wrapper-invocation callers) — comm
 functional change. Vitest count unchanged. See `BACKLOG.md` ("Deferred — PR-28g", now
 shipped) for the full investigation record.
 
+### Fixed — `describe` now reports `test_tasks.unit` for kmpAndroidLibrary modules whose only unit-test target is `testAndroidHostTest`
+
+**Observable behavior change.** `resolveTasksFor` (`lib/project/analyze-module.js`)'s probed
+`unitTestTask` candidate chain (`desktopTest` / `jvmTest` / `test` / `jsTest` / `wasmJsTest`)
+never included `testAndroidHostTest` — the task Google's newer
+`com.android.kotlin.multiplatform.library` plugin creates once a module opts in via
+`androidLibrary { withHostTestBuilder {} }`. A module using this plugin with no co-declared
+`jvm()`/`js()`/`wasmJs()` target (e.g. touchlab/KaMPKit's `:shared`) matched none of the
+existing candidates, so `kmp-test describe` reported `test_tasks.unit: null` — read by an
+agent as "no tests" — even though Gradle genuinely creates `testAndroidHostTest` and
+`kmp-test parallel` already dispatches and runs it correctly (`dispatch.js` has carried its
+own independent fallback for this exact task since the plugin was first supported).
+Disclosed as a known finding in the 2026-07-17 agentic usage benchmark v2 and left
+unfixed there to keep measurement and intervention separate.
+
+Fixed by adding `testAndroidHostTest` as a lowest-priority fallback candidate in
+`resolveTasksFor`'s probed branch, gated on `androidDslVariant === 'kmpAndroidLibrary'` +
+`sourceSets.androidUnitTest` (already opt-in-aware via `analyzeModule`) and confirmed
+present in the probed `gradleTasks` list. A module that ALSO declares `jvm()`/`js()` keeps
+its generic unit task (`jvmTest` etc.) — the fallback never overrides a real candidate.
+`deviceTestTask` was already correct for this plugin; this closes the `unitTestTask` gap
+only. `describe-orchestrator.js` needed no changes — it passes `resolved.unitTestTask`
+through unchanged.
+
+**`parallel` dispatch is unaffected, with one deliberate exception.** `kmp-test parallel`
+with no explicit `--test-type` already dispatched `testAndroidHostTest` correctly via its
+own independent fallback in `dispatch.js` — that behavior does not change; it now resolves
+via the (now-populated) `resolved.unitTestTask` field instead of its own inline fallback,
+same final task. `--test-type common` / `--test-type desktop`, however, would have started
+dispatching `testAndroidHostTest` too once `unitTestTask` stopped being null — wrong,
+since that task belongs to the dedicated `--test-type androidUnit` leg, and `--test-type
+all` runs `common` and `androidUnit` as separate legs, which would have double-dispatched
+the same gradle task. `dispatch.js` gets one small additive guard excluding
+`testAndroidHostTest` from the `common`/`desktop` candidate (mirroring its existing
+`jsTest`/`wasmJsTest` exclusion for the same reason), restoring `common`/`desktop`/`all`
+to their exact pre-fix behavior.
+
 ### Fixed — `describe`'s JDK requirement block now reports the real AGP version instead of always null
 
 **Observable behavior change.** `describe-orchestrator.js` built its `jdk_requirement`
