@@ -143,7 +143,7 @@ Start small and expand only after the harness is boring.
 
 | Scenario | What it tests | Notes |
 |----------|---------------|-------|
-| Unit failure | Basic KMP test failure diagnosis | Stable, cheap, first pilot scenario |
+| Unit failure | Basic KMP test failure diagnosis | Stable, cheap, candidate early scenario — the actual first committed pilot (2026-07-17) used KaMPKit's success-path and no-test-diagnostic scenarios instead, for public-repo verifiability (see Current status); a genuine test-failure scenario remains pending |
 | Multi-module changed test | Whether the agent scopes the right modules | Good fit for `kmp-test changed` |
 | Coverage threshold failure | Whether the agent can find missed lines without reading large Kover output | Exercises the largest token-cost gap |
 | JDK/AGP mismatch | Whether the agent recognizes environment preflight signals | Useful for failure-code branching |

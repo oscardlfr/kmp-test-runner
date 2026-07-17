@@ -159,7 +159,8 @@ source anywhere under `app/`. `:shared` has real tests — `androidHostTest` (2 
   narrower "recognize there's nothing to run, don't claim false success" case. See
   Interpretation for why a true failure-diagnosis scenario remains future work — this PR
   deliberately does not add a BACKLOG.md entry (see Non-goals in the PR description); the
-  follow-up is tracked here, in this document, only.
+  follow-up is noted here, in this document, only, and will not surface in any
+  BACKLOG-driven workflow unless a future session explicitly adds it there.
 
 ### Prompt evolution
 
@@ -349,7 +350,9 @@ digit-to-low-double-digit seconds. A concrete recommendation for any future wave
 a single pre-tested shared logging wrapper to every cell instead of asking each subagent
 to write its own — this pilot deliberately chose the hand-rolled approach to keep the PR
 scope to docs+evidence only (see Non-goals), and paid for that choice in exactly the way
-this finding shows.
+this finding shows. **This recommendation, like the one above it, is noted here only —
+it is not entered into `BACKLOG.md` and will not surface anywhere unless a future session
+does so explicitly.**
 
 **The clearest, most confidently-stated finding of this pilot is about verification
 behavior and recovery, not raw speed.** With n=1 per cell and one cell's wall-clock
