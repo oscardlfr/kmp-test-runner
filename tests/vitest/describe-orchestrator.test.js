@@ -26,6 +26,7 @@ import {
   buildModuleEntry,
   parseArgs,
 } from '../../lib/orchestrators/describe-orchestrator.js';
+import { computeCacheKey, clearProjectModelCache, CACHE_DIR_NAME } from '../../lib/project-model.js';
 
 let workDir;
 
@@ -476,5 +477,68 @@ describe('formatDescribeText', () => {
     expect(text).toMatch(/Modules \(2\)/);
     expect(text).toMatch(/:app/);
     expect(text).toMatch(/:core/);
+  });
+});
+
+// kmpAndroidLibrary (com.android.kotlin.multiplatform.library) modules with no
+// co-declared jvm()/js() target reported test_tasks.unit: null even when Gradle
+// genuinely creates testAndroidHostTest from a withHostTestBuilder {} opt-in.
+// Locks the fix end-to-end through the describe envelope (narrower
+// resolveTasksFor-level coverage lives in project-model.test.js).
+describe('runDescribe — kmpAndroidLibrary testAndroidHostTest fallback (probed)', () => {
+  it(':android-only reports unit=testAndroidHostTest + platforms includes android; :android-only-no-optin is a true negative', () => {
+    const dir = makeProject([
+      {
+        name: 'android-only',
+        build: `plugins {
+  kotlin("multiplatform")
+  id("com.android.kotlin.multiplatform.library")
+}
+kotlin {
+  androidLibrary {
+    namespace = "com.x"
+    withHostTestBuilder { }
+  }
+}
+`,
+      },
+      {
+        name: 'android-only-no-optin',
+        build: `plugins {
+  kotlin("multiplatform")
+  id("com.android.kotlin.multiplatform.library")
+}
+kotlin {
+  androidLibrary {
+    namespace = "com.y"
+  }
+}
+`,
+      },
+    ]);
+
+    // Pre-seed the tasks-<sha>.txt probe cache so resolveTasksFor's probed
+    // branch runs without invoking real gradle.
+    const cacheKey = computeCacheKey(dir);
+    const cacheDir = path.join(dir, CACHE_DIR_NAME);
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      path.join(cacheDir, `tasks-${cacheKey}.txt`),
+      'android-only:testAndroidHostTest - Run unit tests for the androidMain build.\n' +
+      'android-only:androidConnectedCheck - Runs all device checks on currently connected devices.\n' +
+      'android-only-no-optin:assemble - Assembles the outputs of this project.\n'
+    );
+    clearProjectModelCache(dir);
+
+    const { envelope } = runDescribe({ projectRoot: dir, args: ['--skip-probe'] });
+
+    const androidOnly = envelope.describe.modules.find(m => m.name === ':android-only');
+    expect(androidOnly).toBeTruthy();
+    expect(androidOnly.test_tasks.unit).toBe('testAndroidHostTest');
+    expect(androidOnly.platforms).toContain('android');
+
+    const noOptin = envelope.describe.modules.find(m => m.name === ':android-only-no-optin');
+    expect(noOptin).toBeTruthy();
+    expect(noOptin.test_tasks.unit).toBeNull();
   });
 });
