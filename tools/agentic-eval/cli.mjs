@@ -21,7 +21,7 @@
 // policy_sha256 match against the CURRENT policy-hook.mjs, the privacy fail-closed check
 // (assertCleanOrThrow), and the run-kind's hard acceptance gate all pass -- see
 // finalizeAndWriteRecords(). Any failure writes nothing and reports why.
-import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync, linkSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync, linkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -589,13 +589,12 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
  * why a KMP_EVAL_RUNS_ROOT override is disclosed instead of silently assumed equally safe. Never
  * redacts/sanitizes the raw file itself; it simply never leaves this local destination.
  *
- * Writes to `<target>.tmp-<random>` first and renameSync()s each into place only after every
- * write has succeeded. Beyond that, the whole write-then-rename sequence is wrapped so a failure
- * ANYWHERE in it -- including partway through the four renameSync calls themselves, not just the
- * four writeFileSync calls -- rolls back every FINAL-path file this call already renamed into
- * place (plus any leftover temp files) before rethrowing: a rename failure on file 3 of 4
- * previously left files 1-2 committed as final evidence while 3-4 were missing, a partial pair on
- * disk despite each individual write itself being safe.
+ * Writes to `<target>.tmp-<random>` first and promotes each file with linkSync() only after every
+ * write has succeeded. Beyond that, the whole write-then-link sequence is wrapped so a failure
+ * ANYWHERE in it -- including partway through the four linkSync calls themselves, not just the
+ * four writeFileSync calls -- rolls back every FINAL-path file this call already linked into
+ * place (plus any leftover temp files) before rethrowing: a promotion failure on file 3 of 4 must
+ * never leave files 1-2 committed as final evidence while 3-4 are missing.
  */
 function resolveEvidenceOutDir(runKind, runsRootOverride = RUNS_ROOT) {
   return join(runsRootOverride, `agentic-eval-${runKind}`);
@@ -758,7 +757,7 @@ function findBlockingHarnessToolingDirty(record, runsRootIsDefault) {
   return record.errors.find((e) => e.code === 'dirty_harness_tooling');
 }
 
-async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, hardGateFn, privatePatternsFile }) {
+async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, hardGateFn, privatePatternsFile, runsRootOverride = RUNS_ROOT }) {
   for (const [label, record] of [['A', recordA], ['B', recordB]]) {
     const { errors } = validateRun(record);
     if (errors.length > 0) {
@@ -776,7 +775,8 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
     }
   }
   // dirty_harness_tooling (tools/agentic-eval/**, package.json) is fail-closed ONLY when this
-  // invocation is writing to the OFFICIAL, committable location (RUNS_ROOT_IS_DEFAULT) -- an
+  // invocation is writing to the OFFICIAL, committable location (as resolved canonically by
+  // isRunsRootDefault) -- an
   // independent review pass pointed out that leaving this purely disclosure-only meant code that
   // directly decides parsing/gates/metrics (this PR's own feature work) could change what
   // evidence actually captures while repo_commit still pointed at a clean HEAD. Scoped to the
@@ -786,8 +786,11 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
   // development/testing structurally unable to ever exercise this function. A REAL calibrate/
   // smoke run producing official evidence, though, should require the same clean-tree discipline
   // dirty_measured_code already enforces: develop, commit, then run.
+  // runsRootOverride is an internal test seam: production callers omit it, while destructive
+  // collision tests can exercise the complete finalization path in an isolated temp directory.
+  const runsRootIsDefault = isRunsRootDefault(runsRootOverride, REPO_ROOT);
   for (const [label, record] of [['A', recordA], ['B', recordB]]) {
-    const dirty = findBlockingHarnessToolingDirty(record, RUNS_ROOT_IS_DEFAULT);
+    const dirty = findBlockingHarnessToolingDirty(record, runsRootIsDefault);
     if (dirty) {
       return { ok: false, reason: `Run record ${label} was captured with an unclean harness-tooling tree while writing to the default, committable evidence location -- refusing to write evidence that would misrepresent repo_commit: ${dirty.message}` };
     }
@@ -838,7 +841,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
   // test asserting a file exists there) -- `redactedOutDir` is the separate, display-safe value
   // for anything printed to a terminal. A single raw path string (never JSON-serialized), so the
   // plain text-level assertCleanOrThrow is the correct tool here, not the object-aware variant.
-  const outDir = resolveEvidenceOutDir(runKind);
+  const outDir = resolveEvidenceOutDir(runKind, runsRootOverride);
   let redactedOutDir;
   try {
     redactedOutDir = assertCleanOrThrow(outDir, { privatePatternsFile });
@@ -850,7 +853,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
   // in this function, a refusal returns {ok:false, reason} rather than an uncaught exception
   // propagating out of cmdCalibrate/cmdSmoke, which never wrap this call in their own try/catch.
   try {
-    writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB);
+    writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB, runsRootOverride);
   } catch (err) {
     return { ok: false, reason: `Evidence write refused: ${err.message}` };
   }

@@ -663,9 +663,8 @@ describe('buildRunRecord -- raw_capture_location under the default (non-overridd
 // of the {ok:false, reason} pattern every OTHER check in this function already uses. Proven here
 // via a real run_id collision reaching finalizeAndWriteRecords() itself (not writeRunRecordEvidence
 // directly, which agentic-eval-cli.test.js's "writeRunRecordEvidence" describe block already
-// covers) -- pre-creates the exact file the REAL buildRunRecord()-generated run_id will target,
-// using the real default RUNS_ROOT (no override parameter exists on finalizeAndWriteRecords), and
-// cleans up by exact filename only, never a directory-wide delete.
+// covers). The finalizer's injectable runs root keeps this destructive fixture entirely outside
+// the repository and its real, shared evidence tree.
 describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {ok:false}, never an uncaught rejection', () => {
   it('returns {ok:false, reason} instead of throwing when the target evidence file already exists', async () => {
     function fakeConditionResult() {
@@ -692,7 +691,8 @@ describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {o
     // working-tree state.
     recordA.errors = [];
     recordB.errors = [];
-    const outDir = path.join(REPO_ROOT, 'tools', 'runs', 'agentic-eval-calibration');
+    const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'agentic-finalize-collision-'));
+    const outDir = path.join(runsRoot, 'agentic-eval-calibration');
     const collidingPath = path.join(outDir, `${recordA.run_id}.json`);
 
     mkdirSync(outDir, { recursive: true });
@@ -706,6 +706,7 @@ describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {o
           runA: { spawnResult: { rawStdout: '' } },
           runB: { spawnResult: { rawStdout: '' } },
           hardGateFn: () => ({ ok: true, reason: null }),
+          runsRootOverride: runsRoot,
         });
       } catch (err) {
         thrown = err;
@@ -715,7 +716,7 @@ describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {o
       expect(result?.reason).toContain('Evidence write refused');
       expect(readFileSync(collidingPath, 'utf8')).toBe('{"prior":"real evidence -- must survive"}');
     } finally {
-      rmSync(collidingPath, { force: true });
+      rmSync(runsRoot, { recursive: true, force: true });
     }
   });
 });
