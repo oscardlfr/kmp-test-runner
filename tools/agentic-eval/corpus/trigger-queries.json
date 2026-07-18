@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "notes": "Natural-language queries for future corpus-probe measurement (not executed by this PR -- see cli.mjs's HELP and the PR description). None mention kmp-test, kmp-test-runner, bin/kmp-test.js, or any expected command/activation result -- by construction and enforced by tools/agentic-eval/schemas.mjs's validateScenario() banned-terms check pattern (corpus.test.js applies the same regex here).",
+  "default_repeats": 3,
+  "queries": [
+    { "id": "st-01", "expected": "should-trigger", "partition": "train", "text": "This Kotlin Multiplatform project's tests take forever to run one module at a time -- is there a faster way to run them all?" },
+    { "id": "st-02", "expected": "should-trigger", "partition": "train", "text": "Can you run the test suite for this Android project and tell me which tests failed?" },
+    { "id": "st-03", "expected": "should-trigger", "partition": "train", "text": "I need to check if my recent changes broke any tests in this multi-module Gradle project." },
+    { "id": "st-04", "expected": "should-trigger", "partition": "train", "text": "Run the unit tests here and give me a summary of pass/fail counts per module." },
+    { "id": "st-05", "expected": "should-trigger", "partition": "train", "text": "Something in this Kotlin project is failing CI -- can you run the tests locally and show me the errors?" },
+    { "id": "st-06", "expected": "should-trigger", "partition": "train", "text": "Check test coverage on this project and tell me if it's below our threshold." },
+    { "id": "st-07", "expected": "should-trigger", "partition": "train", "text": "I only touched two modules -- can you run just the tests affected by my changes?" },
+    { "id": "st-08", "expected": "should-trigger", "partition": "train", "text": "Diagnose why this KMP project's test setup might be broken before I try running anything." },
+    { "id": "st-09", "expected": "should-trigger", "partition": "held-out", "text": "Run the instrumented tests on the connected device and report results." },
+    { "id": "st-10", "expected": "should-trigger", "partition": "held-out", "text": "This project has dozens of Gradle modules -- I want structured, machine-readable results from running all their tests, not a huge log dump." },
+    { "id": "st-11", "expected": "should-trigger", "partition": "held-out", "text": "Can you run the benchmark suite for this project and summarize the results?" },
+    { "id": "st-12", "expected": "should-trigger", "partition": "held-out", "text": "Kick off the test suite and let me know as soon as you find a failure, without waiting for the whole thing to finish serially." },
+    { "id": "nm-01", "expected": "near-miss", "partition": "train", "text": "Can you explain how the ViewModel in this module is structured?" },
+    { "id": "nm-02", "expected": "near-miss", "partition": "train", "text": "Write a new unit test for the UserRepository class covering the empty-list case." },
+    { "id": "nm-03", "expected": "near-miss", "partition": "train", "text": "What testing framework does this project use -- JUnit4 or JUnit5?" },
+    { "id": "nm-04", "expected": "near-miss", "partition": "train", "text": "Review this test file and suggest better test names." },
+    { "id": "nm-05", "expected": "near-miss", "partition": "train", "text": "Help me understand what this failing assertion in the code review comment means." },
+    { "id": "nm-06", "expected": "near-miss", "partition": "train", "text": "Add a README section documenting how to run tests manually." },
+    { "id": "nm-07", "expected": "near-miss", "partition": "train", "text": "Refactor this test class to reduce duplication between test methods." },
+    { "id": "nm-08", "expected": "near-miss", "partition": "train", "text": "What's the difference between instrumented tests and unit tests in Android?" },
+    { "id": "nm-09", "expected": "near-miss", "partition": "held-out", "text": "Can you look at the git blame for this test file and tell me who last changed it?" },
+    { "id": "nm-10", "expected": "near-miss", "partition": "held-out", "text": "I want to mock this dependency in my test -- what's the best approach here?" },
+    { "id": "nm-11", "expected": "near-miss", "partition": "held-out", "text": "Explain this stack trace from a test failure I'm pasting in -- no need to run anything." },
+    { "id": "nm-12", "expected": "near-miss", "partition": "held-out", "text": "Is this test file following the project's naming conventions?" }
+  ]
+}

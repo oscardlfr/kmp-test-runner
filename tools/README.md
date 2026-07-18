@@ -100,6 +100,13 @@ Claude Code plugin manifest gate. Asserts `.claude-plugin/plugin.json` has the r
 node tools/validate-plugin.mjs         # exit 0 on pass, 1 on validation failure
 ```
 
+### `agentic-eval/`
+Reproducible skill evaluation harness -- proves, technically, whether Claude Code's Skill-matching mechanism invokes `kmp-test-runner` under controlled conditions (no-skill vs. current-skill, isolated via a `--plugin-dir` snapshot + a `PreToolUse` command-policy hook, never prompt instruction). Foundation tooling only -- no benchmark is executed or published by this directory's own code. See [`tools/agentic-eval/README.md`](agentic-eval/README.md) for the full design.
+```
+node tools/agentic-eval/cli.mjs --help
+node tools/agentic-eval/cli.mjs calibrate
+```
+
 ## Output directory
 
 All scripts that emit per-project artefacts write under `tools/runs/` or `.smoke/<pass>/` in the repo root. Both are gitignored. Don't `git add` artefacts.

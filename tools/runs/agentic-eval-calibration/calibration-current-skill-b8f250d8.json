@@ -1,0 +1,119 @@
+{
+  "schema": 1,
+  "run_id": "calibration-current-skill-b8f250d8",
+  "run_kind": "calibration",
+  "benchmark_eligible": false,
+  "scenario_id": "calibration-explicit-invocation",
+  "query_id": null,
+  "condition": "current-skill",
+  "skill_source_sha": "c5c0661852f7c9da145ef56892048e706216a6ce",
+  "kmp_test_cli_version": null,
+  "kmp_test_cli_source_sha": null,
+  "resolved_kmp_test_executable_path": null,
+  "model_requested": "claude-sonnet-5",
+  "model_resolved": "claude-sonnet-5",
+  "session_id_observed": "46ab11d7-3630-4d3e-9497-f1259df7ed1e",
+  "repo_commit": "c5c0661852f7c9da145ef56892048e706216a6ce",
+  "project_alias": "calibration-project",
+  "project_commit": null,
+  "platform": "windows",
+  "family": "trigger-only",
+  "cache_state": "unknown",
+  "daemon_policy": "disabled-via-gradle-user-home-properties",
+  "env_allowlist_profile": "narrow",
+  "seed": null,
+  "order_index": null,
+  "started_at": "2026-07-18T09:48:45.311Z",
+  "ended_at": "2026-07-18T09:48:45.311Z",
+  "wall_clock_ms": null,
+  "skill_available": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invoked": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invocation_event": {
+    "type": "assistant.tool_use.Skill",
+    "index": 3
+  },
+  "success": {
+    "value": null,
+    "reason": "calibration run -- success grading not applicable"
+  },
+  "expected_outcome_matched": {
+    "value": null,
+    "reason": "calibration run -- no scenario grader applies"
+  },
+  "first_useful_signal_ms": {
+    "value": null,
+    "reason": "calibration run -- no first-useful-signal predicate applies"
+  },
+  "first_useful_signal_event": null,
+  "tokens": {
+    "input": {
+      "value": 32,
+      "reason": null
+    },
+    "output": {
+      "value": 3992,
+      "reason": null
+    },
+    "cache_read": {
+      "value": 370104,
+      "reason": null
+    },
+    "cache_creation": {
+      "value": 19772,
+      "reason": null
+    }
+  },
+  "tool_calls_total": {
+    "value": 15,
+    "reason": null
+  },
+  "shell_commands_total": {
+    "value": 14,
+    "reason": null
+  },
+  "test_invocations_total": {
+    "value": null,
+    "reason": "not tracked for calibration runs"
+  },
+  "retries": {
+    "value": 0,
+    "reason": null
+  },
+  "output_bytes": {
+    "value": 5017,
+    "reason": null
+  },
+  "stream_json_bytes": {
+    "value": 93495,
+    "reason": null
+  },
+  "human_interventions": {
+    "value": 0,
+    "reason": null
+  },
+  "terminated": false,
+  "termination_reason": null,
+  "exit_code": 0,
+  "permission_mode_used": "dontAsk",
+  "policy_allowed_gradle_tasks": [
+    "build"
+  ],
+  "policy_allowed_kmptest_subcommands": [
+    "doctor",
+    "parallel"
+  ],
+  "policy_sha256": "ea9f3a1fb56995ff8f497814360e3b2e67f35493064b9f9d771e30ad0a790fde",
+  "hook_call_count": 14,
+  "hook_deny_count": 10,
+  "privacy_status": "redacted-private",
+  "raw_capture_committed": false,
+  "raw_capture_location": "tools/runs/agentic-eval-calibration/raw/",
+  "notes": "Foundation-harness run; not a benchmark result.",
+  "errors": []
+}

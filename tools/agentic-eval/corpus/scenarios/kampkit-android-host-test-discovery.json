@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "kampkit-android-host-test-discovery",
+  "family": "test-only",
+  "project_alias": "kampkit",
+  "project_url": "https://github.com/touchlab/KaMPKit",
+  "project_commit": "PINNED_AT_EXECUTION_TIME",
+  "prompt": "This Kotlin Multiplatform project's Android module has tests but I'm not sure the right Gradle task exists for them -- can you find out and run them?",
+  "expected_outcome": "The agent locates and runs the non-obvious AGP-9-style host-test task for the Android module (not a plain `test` task) and reports pass/fail counts.",
+  "grader": { "kind": "text-contains", "notes": "see graders.mjs's registered grader for this scenario id" },
+  "first_useful_signal_predicate": { "description": "first event whose content mentions a host-test task name or a pass/fail outcome for the module" },
+  "tags": ["train"]
+}

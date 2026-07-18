@@ -1,0 +1,115 @@
+{
+  "schema": 1,
+  "run_id": "smoke-no-skill-4a9f8beb",
+  "run_kind": "smoke",
+  "benchmark_eligible": false,
+  "scenario_id": "kampkit-android-host-test-discovery",
+  "query_id": null,
+  "condition": "no-skill",
+  "skill_source_sha": null,
+  "kmp_test_cli_version": null,
+  "kmp_test_cli_source_sha": null,
+  "resolved_kmp_test_executable_path": null,
+  "model_requested": "claude-sonnet-5",
+  "model_resolved": "claude-sonnet-5",
+  "session_id_observed": "bb5ae0ca-2fd0-4196-8065-a3dbf682d74a",
+  "repo_commit": "c5c0661852f7c9da145ef56892048e706216a6ce",
+  "project_alias": "kampkit",
+  "project_commit": "b3a7784fb969a8558b88c80674c8b596944cdab7",
+  "platform": "windows",
+  "family": "test-only",
+  "cache_state": "unknown",
+  "daemon_policy": "disabled-via-gradle-user-home-properties",
+  "env_allowlist_profile": "narrow",
+  "seed": null,
+  "order_index": null,
+  "started_at": "2026-07-18T09:50:32.051Z",
+  "ended_at": "2026-07-18T09:50:32.052Z",
+  "wall_clock_ms": null,
+  "skill_available": {
+    "value": false,
+    "reason": null
+  },
+  "skill_invoked": {
+    "value": false,
+    "reason": null
+  },
+  "skill_invocation_event": null,
+  "success": {
+    "value": null,
+    "reason": "calibration run -- success grading not applicable"
+  },
+  "expected_outcome_matched": {
+    "value": null,
+    "reason": "calibration run -- no scenario grader applies"
+  },
+  "first_useful_signal_ms": {
+    "value": null,
+    "reason": "calibration run -- no first-useful-signal predicate applies"
+  },
+  "first_useful_signal_event": null,
+  "tokens": {
+    "input": {
+      "value": 14,
+      "reason": null
+    },
+    "output": {
+      "value": 1383,
+      "reason": null
+    },
+    "cache_read": {
+      "value": 115837,
+      "reason": null
+    },
+    "cache_creation": {
+      "value": 4124,
+      "reason": null
+    }
+  },
+  "tool_calls_total": {
+    "value": 6,
+    "reason": null
+  },
+  "shell_commands_total": {
+    "value": 6,
+    "reason": null
+  },
+  "test_invocations_total": {
+    "value": null,
+    "reason": "not tracked for calibration runs"
+  },
+  "retries": {
+    "value": 0,
+    "reason": null
+  },
+  "output_bytes": {
+    "value": 306,
+    "reason": null
+  },
+  "stream_json_bytes": {
+    "value": 30447,
+    "reason": null
+  },
+  "human_interventions": {
+    "value": 0,
+    "reason": null
+  },
+  "terminated": false,
+  "termination_reason": null,
+  "exit_code": 0,
+  "permission_mode_used": "dontAsk",
+  "policy_allowed_gradle_tasks": [
+    "build"
+  ],
+  "policy_allowed_kmptest_subcommands": [
+    "doctor"
+  ],
+  "policy_sha256": "ea9f3a1fb56995ff8f497814360e3b2e67f35493064b9f9d771e30ad0a790fde",
+  "hook_call_count": 6,
+  "hook_deny_count": 6,
+  "privacy_status": "redacted-private",
+  "raw_capture_committed": false,
+  "raw_capture_location": "tools/runs/agentic-eval-smoke/raw/",
+  "notes": "Foundation-harness run; not a benchmark result.",
+  "errors": []
+}

@@ -1,0 +1,228 @@
+#!/usr/bin/env node
+// SPDX-License-Identifier: MIT
+//
+// tools/agentic-eval/schemas.mjs -- versioned scenario/condition/run/aggregate schemas.
+//
+// Hand-rolled (CURRENT_SCHEMA int + CANONICAL_FIELDS array + typeof/enum/regex validators
+// returning {errors, warnings}), matching tools/measurement-registry.mjs's existing pattern --
+// no JSON-schema library exists anywhere in this repo's own code, so none is added here.
+//
+// "Never infer missing metrics; store null with a reason": every metric that can be
+// legitimately unavailable is {value: T|null, reason: string|null} -- the validator rejects
+// value:null paired with reason:null.
+
+export const CURRENT_RUN_SCHEMA = 1;
+export const CURRENT_SCENARIO_SCHEMA = 1;
+export const CURRENT_AGGREGATE_SCHEMA = 1;
+
+export const RUN_KIND_VALUES = ['calibration', 'corpus-probe', 'scenario', 'smoke'];
+export const CONDITION_VALUES = ['no-skill', 'current-skill', 'candidate-skill'];
+export const FAMILY_VALUES = ['test-only', 'coverage', 'trigger-only'];
+export const CACHE_STATE_VALUES = ['cold', 'warm', 'mixed', 'unknown'];
+export const PLATFORM_VALUES = ['windows', 'macos', 'linux', 'not-recorded'];
+export const TERMINATION_REASON_VALUES = [null, 'timeout', 'error', 'unsupported-platform-profile'];
+export const PRIVACY_STATUS_VALUES = ['public', 'redacted-private'];
+export const DAEMON_POLICY_VALUES = ['disabled-via-gradle-user-home-properties', 'default', 'unknown'];
+
+const RUN_CANONICAL_FIELDS = [
+  'schema', 'run_id', 'run_kind', 'benchmark_eligible', 'scenario_id', 'query_id', 'condition',
+  'skill_source_sha', 'kmp_test_cli_version', 'kmp_test_cli_source_sha',
+  'resolved_kmp_test_executable_path', 'model_requested', 'model_resolved', 'session_id_observed',
+  'repo_commit', 'project_alias', 'project_commit', 'platform', 'family', 'cache_state',
+  'daemon_policy', 'env_allowlist_profile', 'seed', 'order_index', 'started_at', 'ended_at',
+  'wall_clock_ms', 'skill_available', 'skill_invoked', 'skill_invocation_event', 'success',
+  'expected_outcome_matched', 'first_useful_signal_ms', 'first_useful_signal_event', 'tokens',
+  'tool_calls_total', 'shell_commands_total', 'test_invocations_total', 'retries', 'output_bytes',
+  'stream_json_bytes', 'human_interventions', 'terminated', 'termination_reason', 'exit_code',
+  'permission_mode_used', 'policy_allowed_gradle_tasks', 'policy_allowed_kmptest_subcommands',
+  'policy_sha256', 'hook_call_count', 'hook_deny_count', 'privacy_status', 'raw_capture_committed',
+  'raw_capture_location', 'notes', 'errors',
+];
+
+// Fields using the {value, reason} nullable-metric shape -- "never infer, store null with a reason".
+const NULLABLE_METRIC_FIELDS = [
+  'skill_available', 'skill_invoked', 'success', 'expected_outcome_matched',
+  'first_useful_signal_ms', 'tool_calls_total', 'shell_commands_total', 'test_invocations_total',
+  'retries', 'output_bytes', 'stream_json_bytes', 'human_interventions',
+];
+
+function isNullableMetric(m) {
+  return m != null && typeof m === 'object' && 'value' in m && 'reason' in m;
+}
+
+function validateNullableMetric(m, field, errors) {
+  if (!isNullableMetric(m)) {
+    errors.push({ field, message: `must be a {value, reason} object` });
+    return;
+  }
+  if (m.value === null && (m.reason == null || m.reason === '')) {
+    errors.push({ field, message: `value is null but reason is missing -- never infer, always explain` });
+  }
+  if (m.value !== null && m.reason != null) {
+    errors.push({ field, message: `reason must be null when value is present -- reason is only for explaining an absence` });
+  }
+}
+
+function validateEventRef(ref, field, errors) {
+  if (ref == null) return; // legitimately absent (e.g. skill never invoked)
+  if (typeof ref !== 'object' || typeof ref.type !== 'string' || typeof ref.index !== 'number') {
+    errors.push({ field, message: `must be null or {type: string, index: number}` });
+  }
+}
+
+function validateTokens(tokens, errors) {
+  if (tokens == null || typeof tokens !== 'object') {
+    errors.push({ field: 'tokens', message: 'must be an object' });
+    return;
+  }
+  for (const key of ['input', 'output', 'cache_read', 'cache_creation']) {
+    validateNullableMetric(tokens[key], `tokens.${key}`, errors);
+  }
+}
+
+export function validateRun(run) {
+  const errors = [];
+  const warnings = [];
+  if (run == null || typeof run !== 'object') {
+    errors.push({ field: '(root)', message: 'run record is not an object' });
+    return { errors, warnings };
+  }
+
+  const keys = new Set(Object.keys(run));
+  for (const f of RUN_CANONICAL_FIELDS) if (!keys.has(f)) errors.push({ field: f, message: 'missing required field' });
+  for (const k of keys) if (!RUN_CANONICAL_FIELDS.includes(k)) warnings.push({ field: k, message: 'unrecognized field' });
+
+  if (run.schema !== CURRENT_RUN_SCHEMA) errors.push({ field: 'schema', message: `expected ${CURRENT_RUN_SCHEMA}, got ${run.schema}` });
+  if (typeof run.run_id !== 'string' || run.run_id.length === 0) errors.push({ field: 'run_id', message: 'must be a non-empty string' });
+  if (!RUN_KIND_VALUES.includes(run.run_kind)) errors.push({ field: 'run_kind', message: `must be one of ${RUN_KIND_VALUES.join('|')}` });
+  if (typeof run.benchmark_eligible !== 'boolean') errors.push({ field: 'benchmark_eligible', message: 'must be a boolean' });
+  if (run.run_kind !== 'scenario' && run.benchmark_eligible !== false) {
+    errors.push({ field: 'benchmark_eligible', message: `must be false for run_kind "${run.run_kind}" -- only future controlled scenario runs may be true` });
+  }
+  if (!CONDITION_VALUES.includes(run.condition)) errors.push({ field: 'condition', message: `must be one of ${CONDITION_VALUES.join('|')}` });
+  if (run.condition === 'current-skill' && typeof run.skill_source_sha !== 'string') {
+    errors.push({ field: 'skill_source_sha', message: 'required (non-null) when condition is current-skill' });
+  }
+  if (run.condition !== 'current-skill' && run.skill_source_sha !== null) {
+    errors.push({ field: 'skill_source_sha', message: 'must be null when condition is not current-skill' });
+  }
+  if (!FAMILY_VALUES.includes(run.family)) errors.push({ field: 'family', message: `must be one of ${FAMILY_VALUES.join('|')}` });
+  if (!CACHE_STATE_VALUES.includes(run.cache_state)) errors.push({ field: 'cache_state', message: `must be one of ${CACHE_STATE_VALUES.join('|')}` });
+  if (!PLATFORM_VALUES.includes(run.platform)) errors.push({ field: 'platform', message: `must be one of ${PLATFORM_VALUES.join('|')}` });
+  if (!TERMINATION_REASON_VALUES.includes(run.termination_reason)) errors.push({ field: 'termination_reason', message: `must be one of ${TERMINATION_REASON_VALUES.map(String).join('|')}` });
+  if (typeof run.terminated !== 'boolean') errors.push({ field: 'terminated', message: 'must be a boolean' });
+  if (run.terminated === false && run.termination_reason !== null) errors.push({ field: 'termination_reason', message: 'must be null when terminated is false' });
+  if (!PRIVACY_STATUS_VALUES.includes(run.privacy_status)) errors.push({ field: 'privacy_status', message: `must be one of ${PRIVACY_STATUS_VALUES.join('|')}` });
+  if (typeof run.raw_capture_committed !== 'boolean') errors.push({ field: 'raw_capture_committed', message: 'must be a boolean' });
+  if (run.raw_capture_committed !== false) errors.push({ field: 'raw_capture_committed', message: 'must always be false -- raw transcripts are never committed' });
+  if (typeof run.raw_capture_location === 'string' && /^[a-zA-Z]:[\\/]|^\//.test(run.raw_capture_location)) {
+    errors.push({ field: 'raw_capture_location', message: 'must be a relative path, never absolute' });
+  }
+
+  for (const f of NULLABLE_METRIC_FIELDS) if (f in run) validateNullableMetric(run[f], f, errors);
+  if ('tokens' in run) validateTokens(run.tokens, errors);
+  validateEventRef(run.skill_invocation_event, 'skill_invocation_event', errors);
+  validateEventRef(run.first_useful_signal_event, 'first_useful_signal_event', errors);
+
+  if (run.hook_call_count != null && run.hook_deny_count != null) {
+    if (typeof run.hook_call_count !== 'number' || typeof run.hook_deny_count !== 'number') {
+      errors.push({ field: 'hook_call_count', message: 'hook_call_count/hook_deny_count must be numbers' });
+    } else if (run.hook_deny_count > run.hook_call_count) {
+      errors.push({ field: 'hook_deny_count', message: 'cannot exceed hook_call_count' });
+    }
+  }
+  if (!Array.isArray(run.policy_allowed_gradle_tasks)) errors.push({ field: 'policy_allowed_gradle_tasks', message: 'must be an array' });
+  if (!Array.isArray(run.policy_allowed_kmptest_subcommands)) errors.push({ field: 'policy_allowed_kmptest_subcommands', message: 'must be an array' });
+  if (typeof run.policy_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(run.policy_sha256)) {
+    errors.push({ field: 'policy_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
+  }
+  if (!Array.isArray(run.errors)) errors.push({ field: 'errors', message: 'must be an array' });
+
+  return { errors, warnings };
+}
+
+const SCENARIO_CANONICAL_FIELDS = [
+  'schema', 'id', 'family', 'project_alias', 'project_url', 'project_commit', 'prompt',
+  'expected_outcome', 'grader', 'first_useful_signal_predicate', 'tags',
+];
+
+export function validateScenario(scenario) {
+  const errors = [];
+  const warnings = [];
+  if (scenario == null || typeof scenario !== 'object') {
+    errors.push({ field: '(root)', message: 'scenario is not an object' });
+    return { errors, warnings };
+  }
+  const keys = new Set(Object.keys(scenario));
+  for (const f of SCENARIO_CANONICAL_FIELDS) if (!keys.has(f)) errors.push({ field: f, message: 'missing required field' });
+  for (const k of keys) if (!SCENARIO_CANONICAL_FIELDS.includes(k)) warnings.push({ field: k, message: 'unrecognized field' });
+
+  if (scenario.schema !== CURRENT_SCENARIO_SCHEMA) errors.push({ field: 'schema', message: `expected ${CURRENT_SCENARIO_SCHEMA}` });
+  if (typeof scenario.id !== 'string' || !/^[a-z0-9-]+$/.test(scenario.id)) errors.push({ field: 'id', message: 'must be a kebab-case string' });
+  if (!FAMILY_VALUES.includes(scenario.family) || scenario.family === 'trigger-only') {
+    errors.push({ field: 'family', message: 'must be test-only or coverage for a scenario' });
+  }
+  if (typeof scenario.project_url !== 'string' || !/^https:\/\//.test(scenario.project_url)) {
+    errors.push({ field: 'project_url', message: 'must be an https URL (public project)' });
+  }
+  if (typeof scenario.prompt !== 'string' || scenario.prompt.length === 0) errors.push({ field: 'prompt', message: 'must be a non-empty string' });
+  const bannedTermsRe = /\bkmp-test\b|kmp-test-runner|bin[\\/]kmp-test\.js/i;
+  if (typeof scenario.prompt === 'string' && bannedTermsRe.test(scenario.prompt)) {
+    errors.push({ field: 'prompt', message: 'must not mention kmp-test, the skill name, or the bin path' });
+  }
+  if (scenario.grader == null || typeof scenario.grader.kind !== 'string') errors.push({ field: 'grader', message: 'must have a string "kind"' });
+  if (scenario.first_useful_signal_predicate == null || typeof scenario.first_useful_signal_predicate.description !== 'string') {
+    errors.push({ field: 'first_useful_signal_predicate', message: 'must have a string "description"' });
+  }
+
+  return { errors, warnings };
+}
+
+const AGGREGATE_CANONICAL_FIELDS = ['schema', 'group_key', 'run_count', 'runs'];
+
+export function validateAggregateGroupKey(key) {
+  const errors = [];
+  if (key == null || typeof key !== 'object') {
+    errors.push({ field: '(root)', message: 'group key is not an object' });
+    return errors;
+  }
+  for (const f of ['scenario_id', 'condition', 'family', 'run_kind', 'cache_state']) {
+    if (!(f in key)) errors.push({ field: f, message: 'aggregate group key missing required partition field' });
+  }
+  return errors;
+}
+
+// Fairness Contract as code: refuses to fold runs into one aggregate group unless they agree
+// on every hard partition key -- mixing family, cache_state, or run_kind is a validation error,
+// and any benchmark_eligible:false run is refused outright (calibration/corpus-probe/smoke prove
+// the harness works; they are never measurement data).
+export function buildAggregateGroup(runs) {
+  const errors = [];
+  if (!Array.isArray(runs) || runs.length === 0) {
+    errors.push({ field: 'runs', message: 'must be a non-empty array' });
+    return { errors, group: null };
+  }
+  const ineligible = runs.filter((r) => r.benchmark_eligible !== true);
+  if (ineligible.length > 0) {
+    errors.push({ field: 'benchmark_eligible', message: `${ineligible.length} run(s) are benchmark_eligible:false and cannot be folded into a publishable aggregate` });
+  }
+  const partitionFields = ['scenario_id', 'condition', 'family', 'run_kind', 'cache_state'];
+  for (const f of partitionFields) {
+    const values = new Set(runs.map((r) => r[f]));
+    if (values.size > 1) errors.push({ field: f, message: `mixed values in one aggregate group: ${[...values].join(', ')}` });
+  }
+  if (errors.length > 0) return { errors, group: null };
+  const [first] = runs;
+  return {
+    errors,
+    group: {
+      schema: CURRENT_AGGREGATE_SCHEMA,
+      group_key: {
+        scenario_id: first.scenario_id, condition: first.condition, family: first.family,
+        run_kind: first.run_kind, cache_state: first.cache_state,
+      },
+      run_count: runs.length,
+      runs: runs.map((r) => r.run_id),
+    },
+  };
+}

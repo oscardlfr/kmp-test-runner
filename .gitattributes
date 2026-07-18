@@ -123,3 +123,20 @@ tests/vitest/runner.test.js text eol=lf
 # corruption already fixed elsewhere (set -euo pipefail, etc).
 tests/bats/*.bats text eol=lf
 tests/installer/*.bats text eol=lf
+
+# test(agentic): reproducible skill evaluation harness -- same vitest 2.1.x
+# CRLF+multi-line-ESM-import parser sensitivity as every other entry above.
+# Applies to every new .mjs source file, its paired test, and the sanitized
+# stream-json JSONL fixtures (JSON is whitespace-insensitive at the value
+# level, but a CRLF-corrupted JSONL line separator would still break
+# newline-delimited parsing on a Windows checkout).
+tools/agentic-eval/*.mjs text eol=lf
+tools/agentic-eval/README.md text eol=lf
+tools/agentic-eval/corpus/*.json text eol=lf
+tools/agentic-eval/corpus/scenarios/*.json text eol=lf
+tools/agentic-eval/fixtures/calibration-project/*.kts text eol=lf
+tools/agentic-eval/fixtures/calibration-project/gradlew text eol=lf
+tools/agentic-eval/fixtures/calibration-project/src/commonTest/kotlin/*.kt text eol=lf
+tests/vitest/agentic-eval-*.test.js text eol=lf
+tests/vitest/fixtures/agentic-eval-stream-*.jsonl text eol=lf
+tools/runs/agentic-eval-*/*.json text eol=lf
