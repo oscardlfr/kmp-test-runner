@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
-import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, findBlockingHarnessToolingDirty, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
+import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -555,6 +555,58 @@ describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree'
 // (like the one above) can only ever observe ONE of its two values within a single vitest
 // process -- this is the only way to exercise the OTHER branch (isolated/non-default root)
 // without a real subprocess.
+// Regression coverage for a real bypass an independent review pass reproduced concretely: a
+// path-equivalent-but-textually-different KMP_EVAL_RUNS_ROOT (a relative path, one with a
+// trailing separator, a different Windows casing) physically points at the exact same official
+// tools/runs/ directory, but a bare string-equality comparison classified it as "not default" --
+// silently bypassing BOTH the dirty_harness_tooling fail-closed gate (which exists specifically to
+// protect that official location) and the raw_capture_location honesty check, while still
+// physically writing evidence there. isRunsRootDefault() is realpath-based specifically so all of
+// these variants resolve to the same canonical comparison.
+describe('isRunsRootDefault', () => {
+  const defaultPath = path.join(REPO_ROOT, 'tools', 'runs');
+
+  it('recognizes the literal default path as default', () => {
+    expect(isRunsRootDefault(defaultPath, REPO_ROOT)).toBe(true);
+  });
+
+  it('recognizes a default path with a trailing separator as default (not textually equal, but physically identical)', () => {
+    expect(isRunsRootDefault(defaultPath + path.sep, REPO_ROOT)).toBe(true);
+  });
+
+  it('recognizes a dot-segment path that resolves to the same physical directory as default', () => {
+    // Built via raw string concatenation, deliberately NOT path.join() -- path.join() normalizes
+    // ".." segments away eagerly at construction time, which would silently defeat the entire
+    // point of this test (proving isRunsRootDefault() itself, via realpath, does the equivalent
+    // normalization -- not that the test's own input happened to already be pre-normalized).
+    const equivalent = defaultPath + path.sep + '..' + path.sep + 'runs';
+    expect(equivalent).not.toBe(defaultPath); // textually different, the whole point of this test
+    expect(isRunsRootDefault(equivalent, REPO_ROOT)).toBe(true);
+  });
+
+  if (process.platform === 'win32') {
+    it('recognizes a differently-cased default path as default on Windows (case-insensitive, case-preserving filesystem)', () => {
+      const uppercased = path.join(REPO_ROOT, 'TOOLS', 'RUNS');
+      expect(isRunsRootDefault(uppercased, REPO_ROOT)).toBe(true);
+    });
+  }
+
+  it('does NOT classify a genuinely different, real directory as default', () => {
+    const outsideRepo = mkdtempSync(path.join(os.tmpdir(), 'aec-isrunsroot-'));
+    try {
+      expect(isRunsRootDefault(outsideRepo, REPO_ROOT)).toBe(false);
+    } finally {
+      rmSync(outsideRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed (treats as default) when the candidate path does not exist yet, rather than assuming it is safely non-default', () => {
+    const doesNotExist = path.join(os.tmpdir(), 'aec-isrunsroot-definitely-does-not-exist-marker');
+    expect(existsSync(doesNotExist)).toBe(false);
+    expect(isRunsRootDefault(doesNotExist, REPO_ROOT)).toBe(true);
+  });
+});
+
 describe('findBlockingHarnessToolingDirty', () => {
   it('returns undefined (never blocks) when runsRootIsDefault is false, even with a real dirty_harness_tooling error present', () => {
     const record = { errors: [{ code: 'dirty_harness_tooling', message: 'tools/agentic-eval/cli.mjs has uncommitted local modifications' }] };

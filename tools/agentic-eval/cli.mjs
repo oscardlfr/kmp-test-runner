@@ -58,7 +58,48 @@ const RUNS_ROOT = process.env.KMP_EVAL_RUNS_ROOT || join(REPO_ROOT, 'tools', 'ru
 // transcripts unprotected by gitignore if anything were ever staged from there. Recorded (see
 // buildRunRecord's raw_capture_location/errors below) rather than silently assumed safe -- never
 // via the actual override path itself, which could itself be privacy-sensitive.
-const RUNS_ROOT_IS_DEFAULT = RUNS_ROOT === join(REPO_ROOT, 'tools', 'runs');
+//
+// Compared via realpath, never bare string equality -- an independent review pass reproduced
+// concretely that a path pointing at the EXACT SAME physical directory (a relative
+// `KMP_EVAL_RUNS_ROOT=tools\runs`, one with a trailing separator, a different Windows casing, or
+// a junction) still classified as "not default" under a textual comparison, silently bypassing
+// BOTH the dirty_harness_tooling fail-closed gate (findBlockingHarnessToolingDirty) added for
+// exactly the official/committable location AND the raw_capture_location honesty check, while
+// still physically writing evidence into the real, official tools/runs/ tree. realpathSync
+// resolves relative segments, trailing separators, symlinks/junctions, AND (on Windows, whose
+// filesystem is case-insensitive but case-preserving) always returns the canonical on-disk
+// casing regardless of how the input path was spelled -- so a single realpath-based comparison
+// closes all of those variants at once, without needing a separate manual .toLowerCase() step.
+//
+// Extracted as a named, parameterized, independently-testable function (mirroring
+// findBlockingHarnessToolingDirty's own rationale) specifically so path-equivalence variants
+// (relative paths, trailing separators, differently-cased inputs) can be unit-tested directly with
+// arbitrary values, without needing a real subprocess with a manipulated KMP_EVAL_RUNS_ROOT env
+// var and cwd just to exercise this one computation.
+//
+// realpathSync alone does NOT close the Windows-casing variant the way it was first assumed to --
+// confirmed empirically on this exact Node/Windows combination: realpathSync('...\TOOLS\RUNS')
+// (uppercase input) resolves successfully (NTFS lookup is case-insensitive) but returns the INPUT
+// casing verbatim, not the canonical on-disk casing, so a plain `===` after realpath still missed
+// this specific variant. Case-folded explicitly, but ONLY on win32: doing this unconditionally
+// would risk a false POSITIVE on a genuinely case-sensitive filesystem (treating two distinct,
+// differently-cased directories as the same) -- acceptable here specifically because the
+// consequence of that false positive is erring toward the SAFER direction (treating something as
+// "default" engages the stricter fail-closed checks, never the reverse), unlike a general
+// containment check where a false positive could wrongly APPROVE something.
+function isRunsRootDefault(runsRoot, repoRoot) {
+  try {
+    const a = realpath(runsRoot);
+    const b = realpath(join(repoRoot, 'tools', 'runs'));
+    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  } catch {
+    // Either side couldn't be resolved (doesn't exist yet, permissions, ...) -- can't positively
+    // confirm they're DIFFERENT locations, so err toward the safer assumption: treat as default,
+    // engaging the stricter checks rather than letting an unresolvable path silently bypass them.
+    return true;
+  }
+}
+const RUNS_ROOT_IS_DEFAULT = isRunsRootDefault(RUNS_ROOT, REPO_ROOT);
 
 const HELP = `tools/agentic-eval/cli.mjs -- reproducible skill evaluation harness
 
@@ -599,7 +640,14 @@ function isRawDirSafeFromAccidentalCommit(rawDir, runsRootOverride) {
   // `.error`), AND git's own exit code (128) and stderr match its well-known, stable
   // "not a git repository" message exactly. Every other outcome -- including a DIFFERENT
   // non-zero status, unrecognized stderr, or a spawn error -- fails closed.
-  const toplevel = spawnSync('git', ['-C', runsRootReal, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  // LC_ALL/LANG=C forces git's stderr into its default (English) locale regardless of the host's
+  // configured language -- a minor observation from an independent review pass: git can localize
+  // "fatal: not a git repository" into another language, and without this override, the stable
+  // pattern match below would fail to recognize a genuinely-confirmed-safe destination on a
+  // non-English host, over-rejecting (never under-rejecting -- fail-closed either way) a valid
+  // path. Merged onto process.env, not replacing it -- spawnSync's env option replaces the WHOLE
+  // environment if set, and git itself still needs PATH to be found at all.
+  const toplevel = spawnSync('git', ['-C', runsRootReal, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
   const confirmedNotInAnyRepo = !toplevel.error && toplevel.status === 128 && /fatal: not a git repository/i.test(toplevel.stderr ?? '');
   if (confirmedNotInAnyRepo) return true;
   if (toplevel.status !== 0) return false; // couldn't confirm either way -- fail closed, never assume safe
@@ -1117,4 +1165,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, writeRunRecordEvidence, calibrationHardGate, smokeHardGate, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES };
+export { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, writeRunRecordEvidence, calibrationHardGate, smokeHardGate, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES };

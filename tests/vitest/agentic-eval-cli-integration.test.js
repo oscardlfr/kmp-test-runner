@@ -128,6 +128,52 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     }
   }, 20000);
 
+  // Regression coverage for a real bypass an independent review pass reproduced concretely: a
+  // KMP_EVAL_RUNS_ROOT that's TEXTUALLY different from the default path but PHYSICALLY the same
+  // directory (a trailing separator here; unit-level coverage in agentic-eval-cli.test.js's
+  // isRunsRootDefault describe block covers relative paths and Windows casing too) was previously
+  // classified as "not default" -- silently bypassing the dirty_harness_tooling fail-closed gate
+  // while still writing evidence into the REAL, official tools/runs/ tree. This is a genuine,
+  // real subprocess test (not the isolated unit test) specifically to prove the fix holds through
+  // the full env-var-parsing-to-module-load path, not just the extracted function in isolation.
+  //
+  // Deliberately tolerant of this repo's OWN ambient git state: tools/agentic-eval/ may genuinely
+  // be dirty at test-run time (e.g. during active development of this very file), in which case
+  // the correctly-recognized-as-default root is EXPECTED to trip the dirty_harness_tooling
+  // fail-closed gate rather than write anything -- that failure is itself equally valid proof
+  // RUNS_ROOT_IS_DEFAULT was computed correctly (that gate only ever fires when it's true). Either
+  // a clean success with the right raw_capture_location, or a dirty_harness_tooling-specific
+  // failure, counts as passing; anything else (a mismatched raw_capture_location on success, or a
+  // failure for any OTHER reason) does not. Writes to the REAL tools/runs/agentic-eval-calibration/
+  // directory on the success path by design (that's the whole point) -- cleanup is surgical, by
+  // the exact run_id this run reports, never a directory-wide delete that could touch other, real
+  // committed evidence.
+  it('recognizes a trailing-separator variant of the real default path as default, via a real subprocess', () => {
+    const trailingSeparatorVariant = path.join(REPO_ROOT, 'tools', 'runs') + path.sep;
+    const env = { ...fakeClaudeEnv('success'), KMP_EVAL_RUNS_ROOT: trailingSeparatorVariant };
+    const result = runCli(['calibrate', '--model', 'fake-model-x'], env);
+    try {
+      if (result.status === 0) {
+        const { recordA, recordB } = result.parsed;
+        for (const record of [recordA, recordB]) {
+          expect(record.raw_capture_location).toBe('tools/runs/agentic-eval-calibration/raw/');
+          expect(record.errors.some((e) => e.code === 'raw_capture_location_overridden')).toBe(false);
+        }
+      } else {
+        expect(result.stderr).toContain('unclean harness-tooling tree');
+      }
+    } finally {
+      if (result.parsed) {
+        const realOutDir = path.join(REPO_ROOT, 'tools', 'runs', 'agentic-eval-calibration');
+        for (const runId of [result.parsed.recordA?.run_id, result.parsed.recordB?.run_id]) {
+          if (!runId) continue;
+          rmSync(path.join(realOutDir, `${runId}.json`), { force: true });
+          rmSync(path.join(realOutDir, 'raw', `${runId}.jsonl`), { force: true });
+        }
+      }
+    }
+  }, 20000);
+
   // This fixture's no-skill arm (A) genuinely attempts nothing; its current-skill arm (B)
   // genuinely attempts AND succeeds (mirrors the success fixture's own Skill-invocation shape).
   // Asserting the granular reason string -- not just "it failed" -- proves invocationOk is the
