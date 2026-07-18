@@ -85,8 +85,8 @@
     "reason": "not tracked for smoke runs"
   },
   "retries": {
-    "value": 0,
-    "reason": null
+    "value": null,
+    "reason": "not tracked for smoke runs"
   },
   "output_bytes": {
     "value": 3017,

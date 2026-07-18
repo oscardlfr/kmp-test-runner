@@ -22,9 +22,12 @@ Budget note: each condition is capped by an internal SDK safety ceiling (`--max-
 default `$0.60`/condition), not a per-token API charge. 4 sessions (2 commands × 2 conditions)
 × `$0.60` = a **$2.40 aggregate ceiling value**, consumed as Max-plan usage — not money billed.
 
-## Exact commands run
+## Sanitized commands run
 
-```
+`<local KaMPKit clone>` below is a deliberate substitution for the real local filesystem path —
+everything else is the literal command.
+
+```bash
 node tools/agentic-eval/cli.mjs calibrate --model claude-sonnet-5
 
 node tools/agentic-eval/cli.mjs smoke \
@@ -33,7 +36,9 @@ node tools/agentic-eval/cli.mjs smoke \
   --project-alias kampkit --model claude-sonnet-5
 ```
 
-Each run exactly once, no retries. Baseline: `origin/develop` at `c6defac903b303e2ff76a75800c79c5eeabca9fa`
+Each harness subcommand ran exactly once — no retries were issued by the operator. (This is
+distinct from the `retries` metric field below, which the harness does not actually track; see
+that row's note.) Baseline: `origin/develop` at `c6defac903b303e2ff76a75800c79c5eeabca9fa`
 (re-verified unchanged via `git fetch` immediately before starting). Public project only:
 `https://github.com/touchlab/KaMPKit`, pinned commit `b3a7784fb969a8558b88c80674c8b596944cdab7`
 ("Bump the minor group with 14 updates (#358)", 2026-07-13). No private project involved anywhere.
@@ -65,6 +70,7 @@ nullable-metric field shows its recorded `reason` when the value is null; nothin
 | `tool_calls_total` | 3 | 9 | 2 | 2 |
 | `shell_commands_total` | 2 | 8 | 2 | 2 |
 | `test_invocations_total` | null (reason: "not tracked for calibration runs") | null (same) | null (reason: "not tracked for smoke runs") | null (same) |
+| `retries` | null (reason: "not tracked for calibration runs") | null (same) | null (reason: "not tracked for smoke runs") | null (same) |
 | `hook_call_count` | 2 | 8 | 2 | 2 |
 | `hook_deny_count` | 2 | 5 | 0 | 0 |
 | `output_bytes` | 165 | 3884 | 3017 | 3017 |
@@ -79,6 +85,18 @@ nullable-metric field shows its recorded `reason` when the value is null; nothin
 | `project_alias` | "calibration-project" (fixed synthetic-fixture label) | same | "kampkit" | "kampkit" |
 | `project_commit` | null (no real external repo) | null | `b3a7784f...944cdab7` | `b3a7784f...944cdab7` |
 | `project_url` | null | null | `https://github.com/touchlab/KaMPKit` | same |
+
+**Note on `retries`:** the harness's record builder (`buildRunRecord` in `cli.mjs`) currently
+hardcodes `retries: nullableMetric(0)` unconditionally — there is no actual retry-detection logic
+behind it, unlike the sibling `test_invocations_total` field one line above it in the same
+function, which correctly uses `nullableMetric(null, 'not tracked for ${runKind} runs')`. This was
+caught during review: the calibration current-skill transcript shows a failed `kmp-test parallel
+--json` (exit code 3) followed by a `kmp-test parallel --dry-run --json` — a diagnostic follow-up
+with a different flag, not necessarily a same-command retry, but the harness has no mechanism to
+classify or count either way. The four committed records in this PR have been hand-corrected to
+`{"value": null, "reason": "not tracked for <calibration|smoke> runs"}` to match reality, without
+re-running the live sessions. The underlying `cli.mjs:525` hardcoding is a harness-code-level gap,
+appropriately fixed in its own small follow-up PR, not smuggled into this evidence-only PR.
 
 ## Gates passed
 

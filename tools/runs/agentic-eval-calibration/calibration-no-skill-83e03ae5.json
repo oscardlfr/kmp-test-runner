@@ -88,8 +88,8 @@
     "reason": "not tracked for calibration runs"
   },
   "retries": {
-    "value": 0,
-    "reason": null
+    "value": null,
+    "reason": "not tracked for calibration runs"
   },
   "output_bytes": {
     "value": 165,
