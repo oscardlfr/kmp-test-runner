@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-malformed/claude -- see fake-claude-success/claude for the shared
+# rationale. "malformed" scenario: otherwise IDENTICAL to fake-claude-success's shape (correct
+# --plugin-dir-driven skill_available, both expected Bash commands run and correctly hooked with
+# an "allow" decision, non-error results) -- the ONLY difference is one line of invalid JSON
+# mixed into the transcript. This isolates smoke's cleanTranscriptOk as the SOLE failing named
+# sub-check; availabilityOk/processOk/resultOk/hookAccountingOk/realWorkOk/exactCommandsOk all
+# still pass. An earlier version of this fixture had no Bash calls or hook events at all, which
+# meant removing the cleanTranscriptOk gate wouldn't have made this fixture pass smoke anyway --
+# realWorkOk and exactCommandsOk were ALSO failing for the unrelated reason of zero commands
+# having run, so the fixture didn't actually prove cleanTranscriptOk was doing anything.
+HAS_PLUGIN_DIR=0
+for arg in "$@"; do
+  if [ "$arg" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; fi
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGINS='[{"name":"kmp-test-runner","path":"/fake","source":"fake"}]'
+else
+  PLUGINS='[]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-0001\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"dontAsk\",\"plugins\":$PLUGINS,\"skills\":[],\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+echo 'not valid json at all'
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test doctor --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake doctor output]","tool_use_id":"toolu_fakebash1"}]}}'
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash2","name":"Bash","input":{"command":"kmp-test describe --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-2","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-2","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake describe output]","tool_use_id":"toolu_fakebash2"}]}}'
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"fake result text","permission_denials":[],"usage":{"input_tokens":2,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}'
+exit 0

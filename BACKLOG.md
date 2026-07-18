@@ -650,6 +650,43 @@
   picked up automatically by the existing required `build` job -- no new CI job. No
   runtime/wet validation applicable (repo-review config only, not CLI behavior).
 
+- **`tools/agentic-eval/` corpus scenarios + graders (deferred from PR #372, surfaced 2026-07-18
+  during independent review).** PR #372 ships the reproducible skill-evaluation harness
+  FOUNDATION only: isolation (fresh temp fixtures, narrow env allowlist, the `PreToolUse` policy
+  hook), schemas, the trigger-queries corpus, and one bounded `calibrate` + `smoke` run against a
+  single hardcoded prompt. It deliberately does NOT include the 6 scenario definitions originally
+  sketched in that PR's plan (`kampkit-android-host-test-discovery`,
+  `kampkit-no-applicable-tests`, `nowinandroid-core-common`, `deterministic-unit-test-failure`,
+  `coverage-threshold-failure`, `changed-module-verification`) or `graders.mjs` (deterministic,
+  index-returning grader + first-useful-signal predicate per scenario id) — both referenced as
+  future work by `tests/vitest/agentic-eval-corpus.test.js`'s own header comment and by
+  `docs/agentic-usage-measurement.md`'s "Registry relationship" section, but neither existed as a
+  tracked BACKLOG item until now. **Proposed shape (not started):** one JSON scenario file per
+  entry above under `tools/agentic-eval/corpus/scenarios/` (id, family, project alias + public URL
+  + pinned commit, prompt, expected_outcome, grader spec, first-useful-signal predicate spec) +
+  `graders.mjs` implementing one pure function per scenario id, wired through `cli.mjs run` (not
+  yet a subcommand). Own PR(s), small increments preferred over one large one — milestone
+  unassigned, user's call on timing and on how many scenarios ship per PR.
+- ✅ **`KMP_EVAL_RUNS_ROOT` real-world scope — SHIPPED in #372 itself (2026-07-18, closed across
+  three independent-review rounds).** The env var is a test-only escape hatch so vitest never
+  writes to (or cleans up inside) the real `tools/runs/` tree — nothing stops an operator from
+  setting it for a real `calibrate`/`smoke` run too. Round 1 (disclosure): `raw_capture_location`/
+  `errors[].code:"raw_capture_location_overridden"` report a non-default root honestly instead of
+  always claiming the default path. Round 2 (runtime enforcement, since disclosure alone doesn't
+  stop an accidental `git add -A`): `writeRunRecordEvidence()` refuses outright — before touching
+  anything — unless the raw-transcript destination is EITHER entirely outside any git repository
+  OR inside one and actually covered by `.gitignore`, verified via `git check-ignore` against a
+  representative file path inside `raw/` (checking the bare directory itself was tried first and
+  found unreliable: `.gitignore`'s `**` glob only matches directory *contents*, not the directory
+  path — confirmed empirically). Round 2's first cut only checked containment against THIS repo's
+  own root, treating anywhere else as automatically safe. Round 3 closed the gap Round 2 missed:
+  a destination inside a DIFFERENT git repository entirely (a sibling checkout, any other
+  git-managed directory) is not "outside a repo," it's inside a repo this harness never checked
+  `.gitignore` against — reproduced directly (a temp repository elsewhere showed the raw directory
+  as a real, trackable untracked path). Fixed by resolving the actual containing repository via
+  `git -C <path> rev-parse --show-toplevel` rather than assuming only this repo's root could ever
+  matter. No further action needed.
+
 ### Project conventions (do-not-do list)
 
 - **README "What's new in vX" sections** — don't add. Per-version highlight blocks belong in `CHANGELOG.md` only. Removed twice. See `CLAUDE.md` + `feedback_readme_no_whats_new.md`.

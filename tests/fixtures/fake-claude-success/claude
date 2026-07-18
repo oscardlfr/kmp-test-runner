@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-success/claude -- deterministic stand-in for the real `claude` CLI,
+# used by tests/vitest/agentic-eval-cli-integration.test.js to exercise cli.mjs's OWN
+# orchestration logic end-to-end (privacy wiring, gate-before-write, cleanup, schema
+# construction, wall_clock_ms, policy-hash freshness) without spending live API budget. Never
+# invoked outside these tests -- production runs always use the real, authenticated `claude` CLI.
+#
+# "success" scenario: both conditions attempt the Skill tool (--plugin-dir presence decides
+# whether the attempt is confirmed -- a real success tool_result, or an is_error:true "Unknown
+# skill" result matching a real captured transcript), plus two allowed Bash calls (kmp-test
+# doctor/describe), each correctly hooked. Satisfies both calibrate's and smoke's hard gates.
+HAS_PLUGIN_DIR=0
+for arg in "$@"; do
+  if [ "$arg" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; fi
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGINS='[{"name":"kmp-test-runner","path":"/fake","source":"fake"}]'
+else
+  PLUGINS='[]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-0001\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"dontAsk\",\"plugins\":$PLUGINS,\"skills\":[],\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+else
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
+fi
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test doctor --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake doctor output]","tool_use_id":"toolu_fakebash1"}]}}'
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash2","name":"Bash","input":{"command":"kmp-test describe --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-2","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-2","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake describe output]","tool_use_id":"toolu_fakebash2"}]}}'
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"fake result text","permission_denials":[],"usage":{"input_tokens":2,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}'
+exit 0

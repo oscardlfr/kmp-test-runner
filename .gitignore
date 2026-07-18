@@ -35,6 +35,11 @@ tools/.private-patterns.json
 # never a second source of truth. The .jsonl itself IS tracked (it's the
 # whole point of the registry) — only this derived artefact is ignored.
 tools/runs/measurement-registry.csv
+# test(agentic): raw claude stream-json transcripts contain absolute paths,
+# scenario fixture project details, and full session content. Never commit —
+# only sanitized, schema-valid, findLeaks()-clean run records (produced
+# separately, outside this glob) are ever tracked.
+tools/runs/agentic-eval-*/raw/**
 .gradle/
 build/
 .idea/
