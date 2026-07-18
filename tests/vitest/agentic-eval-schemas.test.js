@@ -426,6 +426,7 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
       run_kind: 'scenario', cache_state: 'warm', benchmark_eligible: true,
       project_commit: 'abc123', model_resolved: 'claude-sonnet-5', platform: 'windows',
       skill_source_sha: null, policy_sha256: 'a'.repeat(64), claude_code_version: '1.2.3-fake',
+      kmp_test_cli_source_sha: 'c5c0661852f7c9da145ef56892048e706216a6ce',
       skill_invoked: { value: false, reason: null }, success: { value: true, reason: null },
       ...overrides,
     };
@@ -499,6 +500,50 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
     const { errors, group } = buildAggregateGroup([run({ run_id: 'r1', claude_code_version: '1.2.3' }), run({ run_id: 'r2', claude_code_version: '1.2.3' })]);
     expect(errors.filter((e) => e.field === 'claude_code_version')).toEqual([]);
     expect(group.group_key.claude_code_version).toBe('1.2.3');
+  });
+
+  // Regression coverage for a real gap an independent review pass found: the claude_code_version
+  // fix above closed ONE field, but the SAME "null === null falsely agrees" risk applies to any
+  // HARD_PARTITION_FIELDS-adjacent field that can legitimately be null on a per-record basis.
+  // Scoped narrowly to run_kind:'scenario' + benchmark_eligible:true (the fixture's own defaults)
+  // -- this PR's own calibration/corpus-probe/smoke runs are always benchmark_eligible:false and
+  // legitimately carry null project_commit/model_resolved, so a blanket requirement would
+  // incorrectly reject them.
+  describe('scenario + benchmark_eligible completeness matrix (project_commit, model_resolved, kmp_test_cli_source_sha)', () => {
+    for (const field of ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha']) {
+      it(`refuses aggregation when ${field} is null on every scenario+eligible run, even though every run agrees it is null`, () => {
+        const { errors, group } = buildAggregateGroup([run({ run_id: 'r1', [field]: null }), run({ run_id: 'r2', [field]: null })]);
+        expect(errors.some((e) => e.field === field)).toBe(true);
+        expect(group).toBeNull();
+      });
+    }
+
+    it('does NOT apply to calibration runs (run_kind !== scenario), where project_commit/model_resolved are legitimately null', () => {
+      const { errors } = buildAggregateGroup([
+        run({ run_id: 'r1', run_kind: 'calibration', project_commit: null, model_resolved: null, kmp_test_cli_source_sha: null }),
+        run({ run_id: 'r2', run_kind: 'calibration', project_commit: null, model_resolved: null, kmp_test_cli_source_sha: null }),
+      ]);
+      expect(errors.filter((e) => ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha'].includes(e.field))).toEqual([]);
+    });
+
+    it('does NOT apply when benchmark_eligible is false (already refused outright by the existing check)', () => {
+      const { errors } = buildAggregateGroup([
+        run({ run_id: 'r1', benchmark_eligible: false, project_commit: null, model_resolved: null, kmp_test_cli_source_sha: null }),
+      ]);
+      // The pre-existing benchmark_eligible refusal fires; the completeness matrix specifically
+      // must not ALSO fire redundantly for a group that's already rejected for a different reason.
+      expect(errors.some((e) => e.field === 'benchmark_eligible')).toBe(true);
+      expect(errors.filter((e) => ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha'].includes(e.field))).toEqual([]);
+    });
+
+    it('accepts a scenario+eligible group when every completeness-matrix field is concrete', () => {
+      const { errors, group } = buildAggregateGroup([
+        run({ run_id: 'r1', project_commit: 'abc123', model_resolved: 'claude-sonnet-5', kmp_test_cli_source_sha: 'c5c0661852f7c9da145ef56892048e706216a6ce' }),
+        run({ run_id: 'r2', project_commit: 'abc123', model_resolved: 'claude-sonnet-5', kmp_test_cli_source_sha: 'c5c0661852f7c9da145ef56892048e706216a6ce' }),
+      ]);
+      expect(errors).toEqual([]);
+      expect(group.run_count).toBe(2);
+    });
   });
 
   it('group_key carries every hard partition field, not just the original five', () => {

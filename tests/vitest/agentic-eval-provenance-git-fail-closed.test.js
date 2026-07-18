@@ -25,18 +25,29 @@
 // fails closed on.
 import { describe, it, expect, vi } from 'vitest';
 
-// Which git call fails is toggled PER TEST via failMode -- avoids mixing a hoisted vi.mock() with
-// vi.doMock() for the same module path, which is fragile/order-dependent. Every OTHER spawnSync
-// call always behaves normally, isolating each test to exactly the one check under coverage.
-let failMode = null; // 'status' | 'rev-parse' | null
+// Which git call fails (or, for 'tools-lib-dirty', what it reports) is toggled PER TEST via
+// failMode -- avoids mixing a hoisted vi.mock() with vi.doMock() for the same module path, which
+// is fragile/order-dependent. Every OTHER spawnSync call always behaves normally, isolating each
+// test to exactly the one check under coverage.
+let failMode = null; // 'status' | 'rev-parse' | 'tools-lib-dirty' | null
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
     spawnSync: (cmd, args, opts) => {
-      if (failMode === 'status' && cmd === 'git' && args[0] === 'status' && args.includes('bin') && args.includes('lib') && args.includes('scripts')) {
+      const isMeasuredCodeStatusCall = cmd === 'git' && args[0] === 'status' && args.includes('bin') && args.includes('lib') && args.includes('scripts');
+      if (failMode === 'status' && isMeasuredCodeStatusCall) {
         return { status: 1, stdout: '', stderr: 'fatal: git: command not found (simulated)', error: new Error('spawn git ENOENT (simulated)') };
+      }
+      // Deliberately requires 'tools/lib' to actually be PRESENT in the real args -- not just the
+      // bin/lib/scripts heuristic above, which stays true regardless of whether the pathspec was
+      // ever extended. This is what makes the test genuinely exercise the REAL pathspec cli.mjs
+      // sends to git, rather than always firing the canned response irrespective of it.
+      if (failMode === 'tools-lib-dirty' && isMeasuredCodeStatusCall && args.includes('tools/lib')) {
+        // The status call itself SUCCEEDS -- it genuinely found a real, reportable modification --
+        // simulating an uncommitted local change to tools/lib/redact.mjs specifically.
+        return { status: 0, stdout: ' M tools/lib/redact.mjs\n', stderr: '' };
       }
       if (failMode === 'rev-parse' && cmd === 'git' && args[0] === 'rev-parse' && args[1] === 'HEAD') {
         return { status: 128, stdout: '', stderr: 'fatal: not a git repository (simulated)' };
@@ -92,5 +103,23 @@ describe('resolveHarnessProvenance -- fails closed when git rev-parse HEAD itsel
     expect(provenance.repoCommit).toBeNull();
     expect(provenance.measuredCodeDirtyPaths).toEqual([]); // the status check itself succeeded (found nothing dirty)
     expect(provenance.measuredCodeCheckFailed).toBe(true); // still fails closed, via repoCommit being null
+  });
+});
+
+// Regression coverage for a real coverage gap an independent review pass found: the measured-code
+// dirty-tree pathspec only covered bin/lib/scripts, completely missing tools/lib/redact.mjs
+// (imported by privacy.mjs -- IS the redaction logic every privacy guarantee in this PR depends
+// on) and tools/validate-plugin.mjs (imported by cli.mjs -- validates the materialized skill
+// snapshot). A local, uncommitted change to either was previously invisible to ANY dirty-tree
+// check, not even disclosed. Fixed by extending the SAME fail-closed pathspec (not a new,
+// separate category) to include both.
+describe('resolveHarnessProvenance -- the measured-code pathspec covers tools/lib and tools/validate-plugin.mjs, not just bin/lib/scripts', () => {
+  it('reports tools/lib/redact.mjs as a dirty measured-code path when it has a real, reported modification', async () => {
+    failMode = 'tools-lib-dirty';
+    const { resolveHarnessProvenance } = await import('../../tools/agentic-eval/cli.mjs');
+
+    const provenance = resolveHarnessProvenance({ fresh: true });
+    expect(provenance.measuredCodeDirtyPaths).toEqual(['M tools/lib/redact.mjs']);
+    expect(provenance.measuredCodeCheckFailed).toBe(false); // the check itself succeeded -- this is a genuinely dirty result, not a failed check
   });
 });

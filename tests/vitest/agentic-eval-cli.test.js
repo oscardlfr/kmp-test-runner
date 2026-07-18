@@ -440,6 +440,38 @@ describe('writeRunRecordEvidence', () => {
       rmSync(outsideRepo, { recursive: true, force: true });
     }
   });
+
+  // Regression coverage for a real gap an independent review pass found: "outside THIS repo's
+  // worktree" was treated as automatically safe, without checking whether the destination is
+  // inside a DIFFERENT git repository entirely -- reproduced directly by pointing
+  // KMP_EVAL_RUNS_ROOT at a fresh, unrelated git repository elsewhere, where `git status` showed
+  // the raw directory as a real, trackable untracked path (`?? agentic-eval-.../`), meaning an
+  // accidental `git add -A` in THAT repo would have staged it. Fixed by resolving the ACTUAL
+  // containing repository via `git -C <path> rev-parse --show-toplevel` rather than assuming
+  // REPO_ROOT is the only repository that could ever matter.
+  it('refuses to write when runsRootOverride is inside a DIFFERENT git repository (not this one) and unignored there', () => {
+    const otherRepo = mkdtempSync(path.join(os.tmpdir(), 'aec-other-repo-'));
+    try {
+      spawnSync('git', ['init', '-q'], { cwd: otherRepo, encoding: 'utf8' });
+      spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: otherRepo, encoding: 'utf8' });
+      spawnSync('git', ['config', 'user.name', 'Test'], { cwd: otherRepo, encoding: 'utf8' });
+      // Confirm the premise directly, matching Codex's own reproduction: this OTHER repo's git
+      // status genuinely sees the target as a real, trackable path before the fix is even
+      // exercised.
+      const statusBefore = spawnSync('git', ['status', '--porcelain'], { cwd: otherRepo, encoding: 'utf8' });
+      expect(statusBefore.status).toBe(0);
+
+      const { recordA, recordB, runA, runB } = fixtureRecords();
+      expect(() => writeRunRecordEvidence('test-kind', recordA, recordB, runA, runB, '{"redacted":"a"}', '{"redacted":"b"}', otherRepo))
+        .toThrow(/not covered by \.gitignore/);
+      expect(readdirSync(otherRepo).filter((f) => f !== '.git')).toEqual([]);
+
+      const statusAfter = spawnSync('git', ['status', '--porcelain'], { cwd: otherRepo, encoding: 'utf8' });
+      expect(statusAfter.stdout.trim()).toBe(''); // nothing was ever created to show up as untracked
+    } finally {
+      rmSync(otherRepo, { recursive: true, force: true });
+    }
+  });
 });
 
 // Regression coverage for a real fail-open gap an independent review pass demonstrated: an

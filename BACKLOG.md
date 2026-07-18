@@ -668,18 +668,24 @@
   yet a subcommand). Own PR(s), small increments preferred over one large one — milestone
   unassigned, user's call on timing and on how many scenarios ship per PR.
 - ✅ **`KMP_EVAL_RUNS_ROOT` real-world scope — SHIPPED in #372 itself (2026-07-18, closed across
-  two independent-review rounds).** The env var is a test-only escape hatch so vitest never writes
-  to (or cleans up inside) the real `tools/runs/` tree — nothing stops an operator from setting it
-  for a real `calibrate`/`smoke` run too. Round 1 (disclosure): `raw_capture_location`/
+  three independent-review rounds).** The env var is a test-only escape hatch so vitest never
+  writes to (or cleans up inside) the real `tools/runs/` tree — nothing stops an operator from
+  setting it for a real `calibrate`/`smoke` run too. Round 1 (disclosure): `raw_capture_location`/
   `errors[].code:"raw_capture_location_overridden"` report a non-default root honestly instead of
   always claiming the default path. Round 2 (runtime enforcement, since disclosure alone doesn't
-  stop an accidental `git add -A`): `writeRunRecordEvidence()` now refuses outright — before
-  touching anything — unless the raw-transcript destination is EITHER entirely outside this repo's
-  worktree (verified via realpath'd path containment) OR inside it and actually covered by
-  `.gitignore`, verified via `git check-ignore` against a representative file path inside `raw/`
-  (checking the bare directory itself was tried first and found unreliable: `.gitignore`'s `**`
-  glob only matches directory *contents*, not the directory path — confirmed empirically). No
-  further action needed.
+  stop an accidental `git add -A`): `writeRunRecordEvidence()` refuses outright — before touching
+  anything — unless the raw-transcript destination is EITHER entirely outside any git repository
+  OR inside one and actually covered by `.gitignore`, verified via `git check-ignore` against a
+  representative file path inside `raw/` (checking the bare directory itself was tried first and
+  found unreliable: `.gitignore`'s `**` glob only matches directory *contents*, not the directory
+  path — confirmed empirically). Round 2's first cut only checked containment against THIS repo's
+  own root, treating anywhere else as automatically safe. Round 3 closed the gap Round 2 missed:
+  a destination inside a DIFFERENT git repository entirely (a sibling checkout, any other
+  git-managed directory) is not "outside a repo," it's inside a repo this harness never checked
+  `.gitignore` against — reproduced directly (a temp repository elsewhere showed the raw directory
+  as a real, trackable untracked path). Fixed by resolving the actual containing repository via
+  `git -C <path> rev-parse --show-toplevel` rather than assuming only this repo's root could ever
+  matter. No further action needed.
 
 ### Project conventions (do-not-do list)
 

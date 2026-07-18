@@ -21,7 +21,7 @@
 // policy_sha256 match against the CURRENT policy-hook.mjs, the privacy fail-closed check
 // (assertCleanOrThrow), and the run-kind's hard acceptance gate all pass -- see
 // finalizeAndWriteRecords(). Any failure writes nothing and reports why.
-import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync, linkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,7 +36,7 @@ import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsF
 import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findBashToolUses, findBashToolUsesWithResults, findUnexpectedToolUses, hasExpectedToolProfile, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
 import { aggregateRuns } from './aggregate.mjs';
 import { assertCleanOrThrow, assertCleanOrThrowObject, loadPrivateRules } from './privacy.mjs';
-import { tokenize, isWithinOrEqualCanonical } from './policy-hook.mjs';
+import { tokenize } from './policy-hook.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 
 // dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
@@ -212,19 +212,31 @@ function resolveHarnessProvenance({ fresh = false } = {}) {
     cliVersion = null;
   }
   // Two SEPARATE dirty-tree checks, deliberately scoped and treated differently:
-  //  - measuredCodeDirtyPaths (bin/lib/scripts): the ACTUAL code a measured session's kmp-test
-  //    invocations execute via the shim. Dirtiness here is FAIL-CLOSED (see
-  //    finalizeAndWriteRecords) -- it directly means committable evidence would misrepresent
-  //    what repo_commit claims to describe.
-  //  - harnessToolingDirtyPaths (tools/agentic-eval/**, package.json): this HARNESS's own code
-  //    and manifest. Disclosed (via errors[]) but deliberately NOT fail-closed:
+  //  - measuredCodeDirtyPaths (bin/lib/scripts, tools/lib, tools/validate-plugin.mjs): code this
+  //    harness EXECUTES whose correctness the recorded evidence directly depends on -- not only
+  //    "runs inside the measured Claude session via the shim" (bin/lib/scripts), but also code the
+  //    HARNESS's own process executes around that session: tools/lib/redact.mjs (imported by
+  //    privacy.mjs -- IS the redaction/leak-detection logic every privacy guarantee in this PR
+  //    depends on) and tools/validate-plugin.mjs (imported by cli.mjs -- validates the
+  //    materialized skill snapshot before a session ever runs against it). An earlier version
+  //    left both completely uncovered by ANY dirty-tree check (not even disclosed) -- a local,
+  //    uncommitted change to redact.mjs specifically could silently affect what "clean" evidence
+  //    actually means, with repo_commit still claiming to describe it. Dirtiness here is
+  //    FAIL-CLOSED (see finalizeAndWriteRecords) -- it directly means committable evidence would
+  //    misrepresent what repo_commit claims to describe.
+  //  - harnessToolingDirtyPaths (tools/agentic-eval/**, package.json): THIS PR's own feature code
+  //    and the repo manifest. Disclosed (via errors[]) but deliberately NOT fail-closed:
   //    tools/agentic-eval/** is necessarily in-flux during the harness's own active
   //    development (including this very test suite, which lives inside that same tree) --
   //    blocking on it would make the harness structurally unable to ever produce evidence while
   //    being developed or exercised by its own local test run. package.json is grouped here
   //    (not the measured-code list) since its version field is metadata about the harness/CLI
-  //    release, not code a measured session's kmp-test invocation actually executes.
-  const measuredCode = gitDirtyPaths(['bin', 'lib', 'scripts']);
+  //    release, not code whose correctness affects what evidence actually captured. Unlike
+  //    tools/agentic-eval/**, tools/lib/ and tools/validate-plugin.mjs are shared, stable,
+  //    pre-existing repo infrastructure -- not novel code under active iteration as part of this
+  //    PR's own work -- so fail-closed enforcement there doesn't reproduce the
+  //    can-never-produce-evidence-during-development problem this split exists to avoid.
+  const measuredCode = gitDirtyPaths(['bin', 'lib', 'scripts', 'tools/lib', 'tools/validate-plugin.mjs']);
   const harnessTooling = gitDirtyPaths(['tools/agentic-eval', 'package.json']);
   cachedHarnessProvenance = {
     repoCommit,
@@ -502,9 +514,9 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
       // provably dirty" -- both mean repo_commit can't be trusted, and both must fail closed via
       // finalizeAndWriteRecords's existing check, not silently pass as if nothing were wrong.
       ...(provenance.measuredCodeCheckFailed
-        ? [{ code: 'dirty_measured_code', message: 'git provenance could not be established (rev-parse HEAD and/or the bin/lib/scripts status check failed -- git missing from PATH, spawn error, or not a git repository) -- cannot verify the tree is clean or record which commit this ran at, treated as dirty' }]
+        ? [{ code: 'dirty_measured_code', message: 'git provenance could not be established (rev-parse HEAD and/or the bin/lib/scripts/tools/lib/tools/validate-plugin.mjs status check failed -- git missing from PATH, spawn error, or not a git repository) -- cannot verify the tree is clean or record which commit this ran at, treated as dirty' }]
         : provenance.measuredCodeDirtyPaths.length > 0
-          ? [{ code: 'dirty_measured_code', message: `bin/lib/scripts have uncommitted local modifications not reflected in repo_commit: ${provenance.measuredCodeDirtyPaths.join(', ')}` }]
+          ? [{ code: 'dirty_measured_code', message: `bin/lib/scripts/tools/lib/tools/validate-plugin.mjs have uncommitted local modifications not reflected in repo_commit: ${provenance.measuredCodeDirtyPaths.join(', ')}` }]
           : []),
       ...(provenance.harnessToolingCheckFailed
         ? [{ code: 'dirty_harness_tooling', message: 'the git status check for tools/agentic-eval/package.json itself failed (git missing from PATH, spawn error, or not a git repository) -- cannot verify the tree is clean (informational only -- see resolveHarnessProvenance\'s own comment for why this never blocks evidence)' }]
@@ -557,12 +569,26 @@ function isRawDirSafeFromAccidentalCommit(rawDir, runsRootOverride) {
   } catch {
     return false; // can't even resolve the root -- fail closed
   }
-  if (!isWithinOrEqualCanonical(REPO_ROOT, runsRootReal)) return true; // outside this worktree entirely
+  // Determine the ACTUAL containing git repository, if any -- never assumed to be REPO_ROOT
+  // specifically. An earlier version only checked containment against REPO_ROOT and treated
+  // anything outside THIS repo's worktree as automatically safe, but a KMP_EVAL_RUNS_ROOT pointed
+  // at a location inside a COMPLETELY DIFFERENT git repository (a sibling checkout, any other
+  // git-managed directory on the machine) is not "outside a repo" at all -- it's inside a repo
+  // this harness never checks .gitignore against. Reproduced directly: pointed at a temp
+  // repository elsewhere, `git status` there showed the raw directory as a real, trackable
+  // untracked path (`?? agentic-eval-calibration/`) -- an accidental `git add -A` in THAT repo
+  // would have staged it. `git -C <path> rev-parse --show-toplevel` finds whatever repository (if
+  // any) actually contains the resolved root; a non-zero exit means it isn't inside ANY git
+  // repository at all, which is genuinely safe (nothing can ever track it).
+  const toplevel = spawnSync('git', ['-C', runsRootReal, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  if (toplevel.status !== 0) return true; // not inside any git repository
+  const containingRepoRoot = toplevel.stdout.trim();
   // .gitignore's own pattern is `tools/runs/agentic-eval-*/raw/**` -- the `**` only matches
   // CONTENTS of raw/, never the bare directory path itself (confirmed empirically: `git
   // check-ignore` on the directory alone exits 1/not-ignored, on a file inside it exits 0). Check
-  // a representative file path inside it, matching what actually gets written there.
-  const r = spawnSync('git', ['check-ignore', '--quiet', join(rawDir, 'probe.jsonl')], { cwd: REPO_ROOT, encoding: 'utf8' });
+  // a representative file path inside it, matching what actually gets written there, scoped to
+  // whichever repository actually contains it (not always REPO_ROOT).
+  const r = spawnSync('git', ['check-ignore', '--quiet', join(rawDir, 'probe.jsonl')], { cwd: containingRepoRoot, encoding: 'utf8' });
   return r.status === 0;
 }
 
@@ -579,13 +605,15 @@ function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedT
     [join(rawDir, `${recordB.run_id}.jsonl`), runB.spawnResult.rawStdout],
   ];
   // run_id embeds only an 8-hex-char slice of randomUUID() (~2^32 space, not the full 128 bits)
-  // -- not astronomically improbable to collide across this harness's full lifetime of runs.
-  // Refuse BEFORE touching anything (including creating outDir/rawDir themselves -- existsSync on
-  // a path whose parent doesn't exist yet simply returns false, no error, so this check is safe
-  // to run first) if any target already exists, rather than letting a later renameSync silently
-  // overwrite prior evidence (POSIX rename replaces an existing destination) and a subsequent
-  // rollback then permanently delete that overwritten replacement -- losing the original for
-  // good, with no trace it ever existed.
+  // -- not astronomically improbable to collide across this harness's full lifetime of runs (or,
+  // concurrently, two overlapping invocations racing each other). This upfront existsSync check is
+  // a fast, non-atomic PRE-check only -- it narrows the common case early, but does NOT by itself
+  // prevent a collision: an independent review pass reproduced a genuine TOCTOU race with two
+  // synchronized workers -- both passed this existsSync check (target didn't exist YET for
+  // either), then both proceeded to promote, and one silently overwrote the other via renameSync
+  // (which replaces an existing destination on POSIX). The REAL, atomic guarantee is the
+  // linkSync-based promotion below, which can never lose this race the way check-then-renameSync
+  // could.
   for (const [target] of targets) {
     if (existsSync(target)) {
       throw new Error(`refusing to write evidence: ${target} already exists (run_id collision?) -- nothing was written or touched`);
@@ -594,18 +622,38 @@ function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedT
   mkdirSync(rawDir, { recursive: true });
   const tmpSuffix = `.tmp-${randomUUID().slice(0, 8)}`;
   const tmpPaths = targets.map(([target]) => target + tmpSuffix);
-  const renamedTargets = [];
+  // linkSync (not renameSync) for promotion: creates a hard link to the fully-written tmp file at
+  // the FINAL target path, and -- critically -- fails atomically with EEXIST if that target
+  // already exists, rather than silently replacing it the way renameSync does on POSIX. This is
+  // what actually closes the TOCTOU window the existsSync pre-check above cannot: a concurrent
+  // invocation racing to create the SAME target can now only ever have ONE winner: whichever
+  // linkSync call the filesystem serializes first.
+  const linkedTargets = [];
   try {
     targets.forEach(([, content], i) => writeFileSync(tmpPaths[i], content));
     targets.forEach(([target], i) => {
-      renameSync(tmpPaths[i], target);
-      renamedTargets.push(target);
+      try {
+        linkSync(tmpPaths[i], target);
+      } catch (err) {
+        if (err.code === 'EEXIST') {
+          throw new Error(`refusing to write evidence: ${target} already exists (run_id collision -- lost a concurrent race) -- targets created by this invocation are being rolled back`);
+        }
+        throw err;
+      }
+      linkedTargets.push(target);
     });
   } catch (err) {
-    for (const target of renamedTargets) rmSync(target, { force: true });
+    // Roll back ONLY the targets THIS invocation actually created via a successful linkSync --
+    // never a target that failed with EEXIST, since that means a DIFFERENT invocation already
+    // owns it and this one must not touch it.
+    for (const target of linkedTargets) rmSync(target, { force: true });
     for (const tmpPath of tmpPaths) rmSync(tmpPath, { force: true });
     throw err;
   }
+  // linkSync creates an ADDITIONAL directory entry pointing at the same data -- unlike renameSync,
+  // it doesn't consume the source -- so the tmp files must be cleaned up explicitly once every
+  // target has been linked successfully.
+  for (const tmpPath of tmpPaths) rmSync(tmpPath, { force: true });
   return outDir;
 }
 

@@ -386,6 +386,27 @@ export function buildAggregateGroup(runs) {
   if (unknownClaudeVersion.length > 0) {
     errors.push({ field: 'claude_code_version', message: `${unknownClaudeVersion.length} run(s) have a missing/empty claude_code_version and cannot be folded into a publishable aggregate -- an unknown CLI version can't be trusted to match another unknown value` });
   }
+  // A further completeness matrix, scoped narrowly to run_kind:'scenario' + benchmark_eligible:
+  // true -- the only combination this Fairness Contract ever expects to reach real, publishable
+  // aggregation (this PR's own calibration/corpus-probe/smoke runs are always
+  // benchmark_eligible:false and never reach here). Unlike claude_code_version (checked for every
+  // run_kind above), these fields are LEGITIMATELY null for calibration/corpus-probe runs --
+  // project_commit: no external project is involved; model_resolved: the init event may lack it;
+  // kmp_test_cli_source_sha: only reliably non-null once resolveHarnessProvenance's own git checks
+  // succeed -- so a blanket requirement here would incorrectly reject valid non-scenario records.
+  // For scenario+eligible runs specifically, though, a null value is an unrecorded provenance gap,
+  // not a meaningful absence -- two such runs both carrying null would otherwise silently match as
+  // "the same partition key" (null === null) for fields that were never made HARD_PARTITION_FIELDS
+  // entries, permitting exactly the kind of unknown-provenance averaging this Contract exists to
+  // prevent.
+  if (runs.every((r) => r.run_kind === 'scenario') && runs.every((r) => r.benchmark_eligible === true)) {
+    for (const field of ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha']) {
+      const unknown = runs.filter((r) => typeof r[field] !== 'string' || r[field].length === 0);
+      if (unknown.length > 0) {
+        errors.push({ field, message: `${unknown.length} run(s) have a missing/empty ${field} and cannot be folded into a publishable scenario aggregate -- an unknown value can't be trusted to match another unknown value` });
+      }
+    }
+  }
   for (const f of HARD_PARTITION_FIELDS) {
     const values = new Set(runs.map((r) => partitionFieldKey(r[f])));
     if (values.size > 1) errors.push({ field: f, message: `mixed values in one aggregate group: ${[...values].join(', ')}` });
