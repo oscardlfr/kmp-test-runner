@@ -425,7 +425,7 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
       run_id: 'r1', scenario_id: 's1', condition: 'no-skill', family: 'test-only',
       run_kind: 'scenario', cache_state: 'warm', benchmark_eligible: true,
       project_commit: 'abc123', model_resolved: 'claude-sonnet-5', platform: 'windows',
-      skill_source_sha: null, policy_sha256: 'a'.repeat(64),
+      skill_source_sha: null, policy_sha256: 'a'.repeat(64), claude_code_version: '1.2.3-fake',
       skill_invoked: { value: false, reason: null }, success: { value: true, reason: null },
       ...overrides,
     };
@@ -471,6 +471,34 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
   it('refuses to mix policy_sha256 within one aggregate group (a changed policy-hook version)', () => {
     const { errors } = buildAggregateGroup([run({ run_id: 'r1', policy_sha256: 'a'.repeat(64) }), run({ run_id: 'r2', policy_sha256: 'b'.repeat(64) })]);
     expect(errors.some((e) => e.field === 'policy_sha256')).toBe(true);
+  });
+
+  it('refuses to mix claude_code_version within one aggregate group (a different Claude Code CLI release)', () => {
+    const { errors } = buildAggregateGroup([run({ run_id: 'r1', claude_code_version: '1.2.3' }), run({ run_id: 'r2', claude_code_version: '1.3.0' })]);
+    expect(errors.some((e) => e.field === 'claude_code_version')).toBe(true);
+  });
+
+  // Regression coverage for a real gap an independent review pass found: claude_code_version
+  // being merely PRESENT was validateRun's job; buildAggregateGroup's own mixing check treats
+  // `null`/`null` as "agreeing" (same partition key), which would otherwise silently permit
+  // folding two runs with genuinely unknown -- and possibly DIFFERENT -- Claude Code CLI
+  // releases into one aggregate, exactly the cross-release averaging this field exists to
+  // prevent. Aggregation eligibility now requires a concrete, non-empty string.
+  it('refuses aggregation when claude_code_version is null on any run, even if every run agrees it is null', () => {
+    const { errors, group } = buildAggregateGroup([run({ run_id: 'r1', claude_code_version: null }), run({ run_id: 'r2', claude_code_version: null })]);
+    expect(errors.some((e) => e.field === 'claude_code_version')).toBe(true);
+    expect(group).toBeNull();
+  });
+
+  it('refuses aggregation when claude_code_version is an empty string on every run (not just caught incidentally by the mixing check)', () => {
+    const { errors } = buildAggregateGroup([run({ run_id: 'r1', claude_code_version: '' }), run({ run_id: 'r2', claude_code_version: '' })]);
+    expect(errors.some((e) => e.field === 'claude_code_version')).toBe(true);
+  });
+
+  it('accepts aggregation when every run has the same concrete, non-empty claude_code_version', () => {
+    const { errors, group } = buildAggregateGroup([run({ run_id: 'r1', claude_code_version: '1.2.3' }), run({ run_id: 'r2', claude_code_version: '1.2.3' })]);
+    expect(errors.filter((e) => e.field === 'claude_code_version')).toEqual([]);
+    expect(group.group_key.claude_code_version).toBe('1.2.3');
   });
 
   it('group_key carries every hard partition field, not just the original five', () => {

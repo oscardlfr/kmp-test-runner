@@ -374,6 +374,18 @@ export function buildAggregateGroup(runs) {
   if (ineligible.length > 0) {
     errors.push({ field: 'benchmark_eligible', message: `${ineligible.length} run(s) are benchmark_eligible:false and cannot be folded into a publishable aggregate` });
   }
+  // claude_code_version being merely PRESENT (validateRun's job) isn't the same as it being a
+  // concrete, known value -- run.claude_code_version can legitimately be null (buildRunRecord's
+  // own `init?.claude_code_version ?? null` fallback) for a genuinely degraded capture that's
+  // still a valid, WRITABLE run record. Two such runs both carrying null would otherwise match
+  // as "the same partition key" in the mixing check below (null === null), silently permitting
+  // exactly the cross-CLI-release averaging this field exists to prevent -- unlike every other
+  // HARD_PARTITION_FIELDS entry, an unknown value here can't be trusted to genuinely agree with
+  // another unknown value, so aggregation eligibility requires a concrete, non-empty string.
+  const unknownClaudeVersion = runs.filter((r) => typeof r.claude_code_version !== 'string' || r.claude_code_version.length === 0);
+  if (unknownClaudeVersion.length > 0) {
+    errors.push({ field: 'claude_code_version', message: `${unknownClaudeVersion.length} run(s) have a missing/empty claude_code_version and cannot be folded into a publishable aggregate -- an unknown CLI version can't be trusted to match another unknown value` });
+  }
   for (const f of HARD_PARTITION_FIELDS) {
     const values = new Set(runs.map((r) => partitionFieldKey(r[f])));
     if (values.size > 1) errors.push({ field: f, message: `mixed values in one aggregate group: ${[...values].join(', ')}` });

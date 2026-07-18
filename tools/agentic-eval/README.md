@@ -109,24 +109,73 @@ Every record this PR's code can actually produce is `benchmark_eligible: false`.
 anything:
 
 1. Full schema validation (`validateRun`) on both ORIGINAL records.
-2. A **freshly recomputed** `policy_sha256` (via `computePolicySha256({fresh:true})`) matched
+2. A `dirty_measured_code` provenance check (see "Provenance" below) — fails closed, before
+   anything else, if `bin`/`lib`/`scripts` carry uncommitted local modifications not reflected in
+   the recorded `repo_commit`.
+3. A **freshly recomputed** `policy_sha256` (via `computePolicySha256({fresh:true})`) matched
    against both records — catches evidence that has silently gone stale relative to the current
    `policy-hook.mjs` content, which a format-only check (`/^[0-9a-f]{64}$/`) can't detect.
-3. The privacy fail-closed check (`assertCleanOrThrow` from `privacy.mjs`) on each record's
-   serialized text — refuses (throws, writes nothing) if any leak survives redaction. An earlier
-   version of this harness imported this function and never called it.
-4. The redacted TEXT is parsed back to JSON and RE-validated against the schema. A private-pattern
-   `replacement` string can satisfy `assertCleanOrThrow`'s leak scan (which only checks for
-   matching patterns, not JSON structural validity) while still breaking JSON syntax once
-   substituted in — e.g. a replacement containing a raw newline inside what was a JSON string.
-   Catching this here, before any write, means invalid-JSON evidence can never reach disk; an
-   earlier version wrote the redacted text first and only attempted `JSON.parse()` afterward.
-5. The run-kind's own hard acceptance predicate (see "Run kinds" above), evaluated against the
+4. The privacy fail-closed check (`assertCleanOrThrowObject` from `privacy.mjs`) — redacts each
+   RAW record OBJECT field-by-field (`tools/lib/redact.mjs`'s `redactValue()`), on the actual
+   (unescaped) string values, and only THEN runs the one-and-only `JSON.stringify()` on the
+   already-redacted object. This ordering is what makes redaction reliable at all: an earlier
+   version serialized first and redacted the resulting text, but `JSON.stringify()` doubles every
+   backslash, which `PUBLIC_SHAPE_RULES`' `user_path_win` rule (written for a single literal
+   backslash) then silently failed to match — a real Windows path survived completely intact.
+   Redacting before the only serialization pass also makes a second, earlier bug class
+   structurally impossible rather than merely detected: `JSON.stringify()` always correctly
+   escapes whatever a replacement string contains (a raw newline included), so redacted output can
+   no longer break JSON syntax the way the old serialize-then-redact-text order once could.
+   **Verification uses `findLeaksInValue()` on the raw redacted object, never `findLeaks()` on the
+   JSON-serialized text** — a private-patterns rule's own `replacement` string can itself be
+   leak-shaped (e.g. a real Windows path instead of a placeholder token); `redactValue()` correctly
+   substitutes it into the raw field, but a verification pass that then serialized the whole object
+   before scanning would see that replacement's backslashes doubled by JSON escaping and silently
+   miss it — confirmed empirically: `assertCleanOrThrowObject()` returned such a replacement
+   completely intact under the old stringify-then-scan verification order. `findLeaksInValue()`
+   mirrors `redactValue()`'s own recursive tree-walk, scanning each raw string value directly.
+5. The redacted OBJECT is still re-validated against the schema — not because redaction can break
+   JSON syntax anymore, but because a replacement placeholder could still make a field the wrong
+   TYPE for its own domain (e.g. a boolean-context field replaced with a non-boolean string).
+6. The run-kind's own hard acceptance predicate (see "Run kinds" above), evaluated against the
    ORIGINAL (pre-redaction) records — the gate's own checks never reference redaction-prone
    fields, and the pre-redaction data is the conceptually correct thing to gate on; redaction is
    a display/storage concern, not a data-correctness one.
+7. The evidence directory PATH's own privacy check (`assertCleanOrThrow`, plain text — the path is
+   a single string, never JSON-serialized) — verified BEFORE `writeRunRecordEvidence` is ever
+   called, not after. An earlier version wrote all four files first and only checked the path
+   afterward, so a private-patterns rule matching only the (possibly `KMP_EVAL_RUNS_ROOT`-
+   overridden) runs-root path itself — never the record content, already verified clean in step 4
+   — could report `{ok:false}` after real evidence was already committed to disk, contradicting
+   this list's own "any failure writes nothing" guarantee.
 
-Evidence writes (`writeRunRecordEvidence`) write all four files — two redacted records, two raw
+Evidence writes (`writeRunRecordEvidence`) run two checks before touching anything:
+
+1. **Raw-transcript destination safety** (`isRawDirSafeFromAccidentalCommit`) — runtime
+   enforcement, not just the run record's own `raw_capture_location_overridden` disclosure (see
+   `RUNS_ROOT_IS_DEFAULT`'s comment): disclosing a non-default root in the record doesn't itself
+   stop an accidental `git add -A` from staging raw, unredacted transcripts. Verifies the `raw/`
+   destination can never end up in a real commit — EITHER it's entirely outside this repo's
+   worktree (`isWithinOrEqualCanonical`, realpath'd; git can never see it regardless of any
+   gitignore rule), OR it's inside the worktree AND actually covered by `.gitignore`'s own
+   raw-transcript glob, checked via `git check-ignore` against a representative file path inside
+   `raw/` — never the bare directory, since `.gitignore`'s `**` glob only matches *contents* of
+   `raw/`, not the directory path itself (confirmed empirically: `git check-ignore` on the bare
+   directory exits 1/not-ignored, on a file inside it exits 0).
+2. **No target already exists** — `run_id` embeds only an 8-hex-char slice of `randomUUID()`
+   (~2^32 space, not the full 128 bits), so a collision isn't astronomically improbable across
+   this harness's full lifetime of runs, and a silent `renameSync` overwrite followed by a later
+   rollback could otherwise permanently delete genuine prior evidence with no trace it ever
+   existed. Refuses before touching anything, including creating `outDir`/`raw/` themselves.
+
+Both checks can throw; `finalizeAndWriteRecords()` wraps this call in its own `try`/`catch` so a
+refusal here returns the same `{ok:false, reason}` shape as every other check in that function,
+rather than propagating as an uncaught exception out of `cmdCalibrate`/`cmdSmoke` (neither of
+which wrap their own `await finalizeAndWriteRecords(...)` call) — a real gap found while adding
+check 1 above, verified by temporarily removing the `try`/`catch` and confirming a genuine
+uncaught rejection resulted.
+
+Past both checks, `writeRunRecordEvidence` writes all four files — two redacted records, two raw
 transcripts — to `.tmp-<random>` paths first and only `renameSync` them into place once every
 write has succeeded; if a failure occurs anywhere in that sequence, including partway through the
 renames themselves, every FINAL-path file this call already renamed is rolled back (removed)
@@ -359,13 +408,18 @@ instead of a boolean) previously passed validation silently.
 `HARD_PARTITION_FIELDS` key: `scenario_id`, `condition`, `family`, `run_kind`, `cache_state`,
 `project_commit`, `model_resolved`, `platform`, `skill_source_sha`, `policy_sha256`,
 `kmp_test_cli_source_sha`, `daemon_policy`, `env_allowlist_profile`, `policy_allowed_gradle_tasks`,
-`policy_allowed_kmptest_subcommands` — beyond the original guards (a re-pinned scenario commit, a
-different resolved model, host platform, skill snapshot, policy-hook version, or harness code
-version), the last three guard against silently averaging across a different environment-isolation
-profile or a materially different command-policy CONFIGURATION — `policy_sha256` only captures
-`policy-hook.mjs`'s own source code, not the caller-supplied allowed-task/subcommand lists it's
-configured with, which change what a run was actually permitted to do just as materially as the
-hook's code does. The two `policy_allowed_*` fields are arrays; `buildAggregateGroup()`'s
+`policy_allowed_kmptest_subcommands`, `claude_code_version` — beyond the original guards (a
+re-pinned scenario commit, a different resolved model, host platform, skill snapshot, policy-hook
+version, or harness code version), the next three guard against silently averaging across a
+different environment-isolation profile or a materially different command-policy CONFIGURATION —
+`policy_sha256` only captures `policy-hook.mjs`'s own source code, not the caller-supplied
+allowed-task/subcommand lists it's configured with, which change what a run was actually permitted
+to do just as materially as the hook's code does; `claude_code_version` guards against silently
+averaging across a different Claude Code CLI release, which can change event shapes or tool
+behavior independent of anything this harness itself controls — aggregation additionally requires
+it to be a concrete, non-empty string (not just present), since two runs both carrying `null` for
+an unknown CLI version can't be trusted to actually agree with one another. The two
+`policy_allowed_*` fields are arrays; `buildAggregateGroup()`'s
 mixing-check compares them by their `JSON.stringify()` representation, not by object reference —
 two runs with structurally identical arrays as separate object instances are correctly treated as
 matching, not spuriously rejected as "mixed". The bucket key itself is built via `JSON.stringify()`
@@ -402,10 +456,28 @@ permanently `null` and populated `repo_commit` with the pinned skill SHA instead
 own commit — silently correct only by coincidence when the checkout happened to sit exactly at
 that pinned SHA, wrong the moment `develop` moved forward. `repo_commit` describes `HEAD`, which
 can still differ from the exact bytes that executed if `bin/`/`lib/`/`scripts/` (the paths the
-PATH shim's own execution can actually reach) carry uncommitted local modifications — this is
-checked via `git status --porcelain` scoped to exactly those paths, and disclosed in the run
-record's own `errors[]` array (`code: 'dirty_execution_tree'`) rather than silently letting the
-recorded SHA imply a codebase that isn't quite what actually ran. Evidence writes
+PATH shim's own execution can actually reach) carry uncommitted local modifications — checked via
+`git status --porcelain` scoped to exactly those paths and reported as `errors[].code:
+'dirty_measured_code'`. Unlike every other disclosed-only error, this one is **fail-closed**:
+`finalizeAndWriteRecords()` refuses to write any evidence at all when it's present, rather than
+silently letting the recorded SHA imply a codebase that isn't quite what actually ran. A second,
+separate check covers `tools/agentic-eval/**`/`package.json` (`errors[].code:
+'dirty_harness_tooling'`) and is deliberately disclosure-only, never fail-closed — that tree is
+inherently, constantly dirty during this harness's own active development (its own test suite
+lives there), so blocking on it would make the harness unable to ever produce evidence locally.
+
+The `dirty_measured_code` fail-closed signal ALSO fires when the underlying git commands
+themselves fail (git missing from PATH, a spawn error, or the worktree not being a git repository
+at all) or when `git rev-parse HEAD` fails, leaving `repo_commit` null — an earlier version
+collapsed "the git status command itself failed" into the exact same empty array as "genuinely
+clean," reproduced by removing git from PATH entirely: `repo_commit` correctly came back `null`,
+but both dirty-path lists came back empty too, meaning the fail-closed gate silently never fired
+even though nothing had actually verified the tree. Both `measuredCodeCheckFailed` and
+`harnessToolingCheckFailed` now distinguish "checked and found clean" from "could not check at
+all," and an unknown result is treated with the same suspicion as a genuinely dirty one for the
+measured-code (fail-closed) category — an unrecorded `repo_commit` is fundamentally
+non-reproducible evidence regardless of which specific git call failed.
+Evidence writes
 (`writeRunRecordEvidence`) are atomic per file (write to a `.tmp-<random>` sibling, then rename
 into place) so a mid-write failure can't leave a half-written record on disk, AND the whole
 write-then-rename sequence for all four files (two records, two raw transcripts) is itself rolled

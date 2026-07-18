@@ -268,10 +268,28 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
       expect(files.length).toBe(2);
       const writtenText = readFileSync(path.join(evidenceDirFor('smoke'), files[0]), 'utf8');
       expect(writtenText).not.toContain(secretMarker);
+      // Both records, not just files[0] -- asymmetric redaction between conditions A/B could
+      // otherwise regress unnoticed (a CodeRabbit nitpick on an earlier round of this same test).
+      const otherFile = files.find((f) => f !== files[0]);
+      expect(readFileSync(path.join(evidenceDirFor('smoke'), otherFile), 'utf8')).not.toContain(secretMarker);
+      expect(result.parsed.recordB.project_alias).not.toBe(secretMarker);
     } finally {
       rmSync(patternsFile, { force: true });
     }
   }, 30000);
+
+  // A real ordering bug an independent review pass found -- finalizeAndWriteRecords() wrote all
+  // four files BEFORE checking the evidence directory PATH's own redaction-safety -- is covered
+  // by tests/vitest/agentic-eval-finalize-outdir-privacy-order.test.js (an isolated, mocked-
+  // assertCleanOrThrow test, kept in its own file per this repo's established
+  // node:fs-mock-isolation convention -- see coverage-orchestrator-report-write-failure.test.js).
+  // A real subprocess test was attempted here first and abandoned: this test file's own runsRoot
+  // always lives under a real Windows user-home-shaped path, so PUBLIC_SHAPE_RULES' built-in
+  // user_path_win rule (which always runs first) greedily collapses BOTH the evidence directory
+  // path AND the record's own resolved_kmp_test_executable_path field to the byte-identical
+  // `<USER_PATH>` placeholder -- no private-patterns-file rule running after it can distinguish
+  // which one it originally was, so a real end-to-end run can't isolate this specific ordering
+  // property on this platform.
 
   // Regression coverage for a real, reproduced privacy bypass an independent review pass
   // demonstrated directly against this code: an EARLIER version redacted by JSON.stringify()-ing

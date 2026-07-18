@@ -15,7 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REDACT_MODULE_PATH = resolve(__dirname, '..', 'lib', 'redact.mjs');
 // Dynamic import via pathToFileURL -- a raw "C:\..." path throws ERR_UNSUPPORTED_ESM_URL_SCHEME
 // on Windows (the same fix tools/runs/agentic-usage-benchmark-v2-2026-07-17/harness.mjs needed).
-const { PUBLIC_SHAPE_RULES, redactText, findLeaks, loadPrivateRules, redactValue } = await import(pathToFileURL(REDACT_MODULE_PATH).href);
+const { PUBLIC_SHAPE_RULES, redactText, findLeaks, findLeaksInValue, loadPrivateRules, redactValue } = await import(pathToFileURL(REDACT_MODULE_PATH).href);
 
 /**
  * @param {string} text
@@ -50,8 +50,18 @@ export function assertCleanOrThrow(text, opts) {
 /**
  * Object-aware variant: recursively redacts every STRING field's raw value (via redactValue(),
  * never a pre-serialized text blob -- see assertCleanOrThrow's note on why that matters), then
- * serializes the ALREADY-REDACTED object exactly once and re-scans that final text with
- * findLeaks() as a final defense-in-depth check before returning it.
+ * re-scans the ALREADY-REDACTED object's raw string VALUES with findLeaksInValue() -- never the
+ * JSON.stringify()'d text -- before returning it.
+ *
+ * NOTE: the verification pass must never run on JSON.stringify()'d text, for the same reason
+ * substitution mustn't: a private-patterns rule's own "replacement" can itself be leak-shaped
+ * (e.g. a real Windows path instead of a placeholder token) -- redactValue() correctly
+ * substitutes it into the raw value, but JSON.stringify() then doubles its backslashes, and
+ * user_path_win's single-backslash regex silently misses the JSON-escaped form. Confirmed
+ * empirically: a replacement value shaped like "C:\Users\<name>\..." survived a
+ * stringify-then-findLeaks verification pass completely undetected, returned intact by this
+ * function. findLeaksInValue() scans each raw string value directly, exactly mirroring
+ * redactValue()'s own recursion, so the regex always sees the real, unescaped text.
  * @param {object} obj
  * @param {{privatePatternsFile?: string}} [opts]
  * @returns {{ok: boolean, redactedObj: object|null, redactedText: string|null, leaks: Array<{class:string,lineNo:number}>}}
@@ -59,8 +69,8 @@ export function assertCleanOrThrow(text, opts) {
 export function redactObjectAndVerify(obj, { privatePatternsFile } = {}) {
   const rules = privatePatternsFile ? [...PUBLIC_SHAPE_RULES, ...loadPrivateRules(privatePatternsFile)] : PUBLIC_SHAPE_RULES;
   const redactedObj = redactValue(obj, rules);
+  const leaks = findLeaksInValue(redactedObj, rules);
   const redactedText = JSON.stringify(redactedObj, null, 2);
-  const leaks = findLeaks(redactedText, rules);
   return { ok: leaks.length === 0, redactedObj: leaks.length === 0 ? redactedObj : null, redactedText: leaks.length === 0 ? redactedText : null, leaks };
 }
 
@@ -73,4 +83,4 @@ export function assertCleanOrThrowObject(obj, opts) {
   return { redactedObj, redactedText };
 }
 
-export { PUBLIC_SHAPE_RULES, redactText, findLeaks, loadPrivateRules, redactValue };
+export { PUBLIC_SHAPE_RULES, redactText, findLeaks, findLeaksInValue, loadPrivateRules, redactValue };

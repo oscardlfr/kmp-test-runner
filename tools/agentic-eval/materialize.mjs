@@ -34,6 +34,19 @@ function isCommitAvailable(repoRoot, sha) {
 
 const PLAUSIBLE_SHA_RE = /^[0-9a-f]{7,40}$/i;
 
+// Used only in error-path (acquisition-failure) cleanup, never in normal operation. A bare rmSync
+// there risks two compounding failures: if it throws (a transient Windows file lock is a real,
+// reproducible cause on this platform), it MASKS the original acquisition error that triggered
+// the cleanup in the first place, AND -- when a catch block has more than one cleanup step, e.g.
+// materializeGradleUserHome's own two temp directories -- stops every step queued after it from
+// ever running. Swallowing this one's own failure means every queued step still gets attempted,
+// and the original `err` a caller already has in scope is always what gets rethrown.
+function bestEffortRemove(path) {
+  try {
+    rmSync(path, { recursive: true, force: true });
+  } catch { /* best-effort: the original acquisition error is what matters, not this */ }
+}
+
 function ensureCommitAvailable(repoRoot, sha) {
   if (isCommitAvailable(repoRoot, sha)) return;
   // Not hex-shaped -- definitely not a real commit; let `git archive` report it directly rather
@@ -70,7 +83,7 @@ export async function materializeSkillSnapshot({ repoRoot, sha, validateFn }) {
     }
     return { snapshotDir: dest, validation: result };
   } catch (err) {
-    rmSync(dest, { recursive: true, force: true });
+    bestEffortRemove(dest);
     throw err;
   }
 }
@@ -91,7 +104,7 @@ export function materializeCalibrationProject({ templateDir, existingDir }) {
     mkdirSync(dest, { recursive: true });
     cpSync(templateDir, dest, { recursive: true });
   } catch (err) {
-    rmSync(dest, { recursive: true, force: true });
+    bestEffortRemove(dest);
     throw err;
   }
   return { fixtureDir: dest };
@@ -170,9 +183,11 @@ export function materializeGradleUserHome({ runPrewarm } = {}) {
     cpSync(gradleUserHome, snapshotDir, { recursive: true });
   } catch (err) {
     // Whichever of the two temp directories got created before the failure -- writeFileSync,
-    // runPrewarm, or cpSync can each throw partway through -- must not survive it.
-    rmSync(gradleUserHome, { recursive: true, force: true });
-    if (snapshotDir) rmSync(snapshotDir, { recursive: true, force: true });
+    // runPrewarm, or cpSync can each throw partway through -- must not survive it. Each removal
+    // is independently best-effort so ONE of them failing (e.g. gradleUserHome locked by a
+    // still-exiting child process) never skips the other.
+    bestEffortRemove(gradleUserHome);
+    if (snapshotDir) bestEffortRemove(snapshotDir);
     throw err;
   }
 

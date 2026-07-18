@@ -208,3 +208,33 @@ export function redactValue(value, rules) {
   }
   return value;
 }
+
+// ---------------------------------------------------------------------------
+// findLeaksInValue(value, rules) → [{class, lineNo}]
+//
+// Recursively re-scans every STRING found anywhere in a JSON-shaped value for
+// remaining leaks, calling findLeaks() on each RAW string value directly --
+// never on an already-JSON.stringify()'d blob. Closes the same JSON-escaping
+// bypass class redactValue() closes for SUBSTITUTION, but for VERIFICATION: a
+// rule's own REPLACEMENT text can itself be leak-shaped -- e.g. a
+// private-patterns-file rule whose "replacement" is a real Windows path
+// rather than a placeholder token. redactValue() correctly substitutes it
+// into the raw value, but a verification pass that then JSON.stringify()s the
+// WHOLE object before scanning sees that replacement's backslashes doubled by
+// JSON escaping, and user_path_win's single-backslash regex silently misses
+// it (confirmed empirically: a replacement value shaped like
+// "C:\Users\<name>\..." survived a stringify-then-scan verification pass
+// completely undetected, returned intact by assertCleanOrThrowObject()).
+// Scanning each raw string value directly, before any serialization, means
+// the regex always sees the real, unescaped text -- exactly the same
+// discipline redactValue() already applies for substitution, now applied to
+// verification too.
+// ---------------------------------------------------------------------------
+export function findLeaksInValue(value, rules) {
+  if (typeof value === 'string') return findLeaks(value, rules);
+  if (Array.isArray(value)) return value.flatMap((v) => findLeaksInValue(v, rules));
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value).flatMap((v) => findLeaksInValue(v, rules));
+  }
+  return [];
+}

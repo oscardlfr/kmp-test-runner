@@ -667,17 +667,19 @@
   `graders.mjs` implementing one pure function per scenario id, wired through `cli.mjs run` (not
   yet a subcommand). Own PR(s), small increments preferred over one large one — milestone
   unassigned, user's call on timing and on how many scenarios ship per PR.
-- **`KMP_EVAL_RUNS_ROOT` real-world scope (surfaced 2026-07-18 during independent review of PR
-  #372).** The env var is a test-only escape hatch so vitest never writes to (or cleans up inside)
-  the real `tools/runs/` tree — but nothing stops an operator from setting it for a real
-  `calibrate`/`smoke` run too, which would move the raw transcript outside `.gitignore`'s
-  `tools/runs/agentic-eval-*/raw/**` coverage. Closed the silent-overclaim half in #372 itself
-  (`raw_capture_location`/`errors[].code:"raw_capture_location_overridden"` now disclose a
-  non-default root honestly instead of always reporting the default path). Not done: any runtime
-  guard that refuses to run (or warns loudly on the command line, not just inside the JSON record)
-  when the var is set outside a test process. Low priority — the var isn't documented as a
-  supported operator flag anywhere, so the realistic exposure is low; revisit if `calibrate`/
-  `smoke` ever gain a real user base beyond this repo's own maintainers.
+- ✅ **`KMP_EVAL_RUNS_ROOT` real-world scope — SHIPPED in #372 itself (2026-07-18, closed across
+  two independent-review rounds).** The env var is a test-only escape hatch so vitest never writes
+  to (or cleans up inside) the real `tools/runs/` tree — nothing stops an operator from setting it
+  for a real `calibrate`/`smoke` run too. Round 1 (disclosure): `raw_capture_location`/
+  `errors[].code:"raw_capture_location_overridden"` report a non-default root honestly instead of
+  always claiming the default path. Round 2 (runtime enforcement, since disclosure alone doesn't
+  stop an accidental `git add -A`): `writeRunRecordEvidence()` now refuses outright — before
+  touching anything — unless the raw-transcript destination is EITHER entirely outside this repo's
+  worktree (verified via realpath'd path containment) OR inside it and actually covered by
+  `.gitignore`, verified via `git check-ignore` against a representative file path inside `raw/`
+  (checking the bare directory itself was tried first and found unreliable: `.gitignore`'s `**`
+  glob only matches directory *contents*, not the directory path — confirmed empirically). No
+  further action needed.
 
 ### Project conventions (do-not-do list)
 

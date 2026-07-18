@@ -36,7 +36,7 @@ import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsF
 import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findBashToolUses, findBashToolUsesWithResults, findUnexpectedToolUses, hasExpectedToolProfile, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
 import { aggregateRuns } from './aggregate.mjs';
 import { assertCleanOrThrow, assertCleanOrThrowObject, loadPrivateRules } from './privacy.mjs';
-import { tokenize } from './policy-hook.mjs';
+import { tokenize, isWithinOrEqualCanonical } from './policy-hook.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 
 // dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
@@ -187,10 +187,17 @@ let cachedHarnessProvenance = null;
  * motivates routing other git calls through resolveBash() elsewhere in this harness. Cached per
  * process (the repo doesn't change mid-run); pass {fresh:true} to force re-resolution (test-only).
  */
+// Returns {ok, paths} rather than a bare array -- an independent review pass found that
+// collapsing "the git status command itself failed" (git missing from PATH, spawn error, not a
+// git repo) into the SAME empty array as "genuinely clean" silently defeated the fail-closed
+// dirty_measured_code gate: reproduced by removing git from PATH entirely, which returned
+// repo_commit:null AND both dirty-path lists empty, i.e. evidence indistinguishable from (and
+// falsely reported as) a clean tree. Callers must check `ok` and treat `ok:false` as "cannot
+// prove cleanliness" -- never silently treated as "definitely clean."
 function gitDirtyPaths(pathspecs) {
   const r = spawnSync('git', ['status', '--porcelain', '--', ...pathspecs], { cwd: REPO_ROOT, encoding: 'utf8' });
-  if (r.status !== 0) return [];
-  return r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (r.error || r.status !== 0) return { ok: false, paths: [] };
+  return { ok: true, paths: r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean) };
 }
 
 function resolveHarnessProvenance({ fresh = false } = {}) {
@@ -217,14 +224,21 @@ function resolveHarnessProvenance({ fresh = false } = {}) {
   //    being developed or exercised by its own local test run. package.json is grouped here
   //    (not the measured-code list) since its version field is metadata about the harness/CLI
   //    release, not code a measured session's kmp-test invocation actually executes.
-  const measuredCodeDirtyPaths = gitDirtyPaths(['bin', 'lib', 'scripts']);
-  const harnessToolingDirtyPaths = gitDirtyPaths(['tools/agentic-eval', 'package.json']);
+  const measuredCode = gitDirtyPaths(['bin', 'lib', 'scripts']);
+  const harnessTooling = gitDirtyPaths(['tools/agentic-eval', 'package.json']);
   cachedHarnessProvenance = {
     repoCommit,
     cliVersion,
     resolvedExecutablePath: join(REPO_ROOT, 'bin', 'kmp-test.js'),
-    measuredCodeDirtyPaths,
-    harnessToolingDirtyPaths,
+    measuredCodeDirtyPaths: measuredCode.paths,
+    // repoCommit:null (git rev-parse HEAD itself failed -- an independent git call from the two
+    // status checks above) is folded into the SAME fail-closed signal as a dirty measured-code
+    // tree: without knowing which commit this ran at, "is bin/lib/scripts dirty relative to it"
+    // is an unanswerable question, and repo_commit itself becomes unrecorded -- fundamentally
+    // non-reproducible evidence either way.
+    measuredCodeCheckFailed: !measuredCode.ok || repoCommit == null,
+    harnessToolingDirtyPaths: harnessTooling.paths,
+    harnessToolingCheckFailed: !harnessTooling.ok,
   };
   return cachedHarnessProvenance;
 }
@@ -482,12 +496,21 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     // dirty_harness_tooling (tools/agentic-eval/**, package.json -- informational only; see
     // resolveHarnessProvenance's own comment for why this category is never fail-closed).
     errors: [
-      ...(provenance.measuredCodeDirtyPaths.length > 0
-        ? [{ code: 'dirty_measured_code', message: `bin/lib/scripts have uncommitted local modifications not reflected in repo_commit: ${provenance.measuredCodeDirtyPaths.join(', ')}` }]
-        : []),
-      ...(provenance.harnessToolingDirtyPaths.length > 0
-        ? [{ code: 'dirty_harness_tooling', message: `tools/agentic-eval/package.json have uncommitted local modifications not reflected in repo_commit (informational only -- see resolveHarnessProvenance's own comment for why this never blocks evidence): ${provenance.harnessToolingDirtyPaths.join(', ')}` }]
-        : []),
+      // measuredCodeCheckFailed (the `git status` command itself failed -- git missing, spawn
+      // error, not a git repo) reuses the SAME dirty_measured_code code as an actual dirty tree:
+      // "cannot prove the tree is clean" carries the identical consequence as "the tree is
+      // provably dirty" -- both mean repo_commit can't be trusted, and both must fail closed via
+      // finalizeAndWriteRecords's existing check, not silently pass as if nothing were wrong.
+      ...(provenance.measuredCodeCheckFailed
+        ? [{ code: 'dirty_measured_code', message: 'git provenance could not be established (rev-parse HEAD and/or the bin/lib/scripts status check failed -- git missing from PATH, spawn error, or not a git repository) -- cannot verify the tree is clean or record which commit this ran at, treated as dirty' }]
+        : provenance.measuredCodeDirtyPaths.length > 0
+          ? [{ code: 'dirty_measured_code', message: `bin/lib/scripts have uncommitted local modifications not reflected in repo_commit: ${provenance.measuredCodeDirtyPaths.join(', ')}` }]
+          : []),
+      ...(provenance.harnessToolingCheckFailed
+        ? [{ code: 'dirty_harness_tooling', message: 'the git status check for tools/agentic-eval/package.json itself failed (git missing from PATH, spawn error, or not a git repository) -- cannot verify the tree is clean (informational only -- see resolveHarnessProvenance\'s own comment for why this never blocks evidence)' }]
+        : provenance.harnessToolingDirtyPaths.length > 0
+          ? [{ code: 'dirty_harness_tooling', message: `tools/agentic-eval/package.json have uncommitted local modifications not reflected in repo_commit (informational only -- see resolveHarnessProvenance's own comment for why this never blocks evidence): ${provenance.harnessToolingDirtyPaths.join(', ')}` }]
+          : []),
       // KMP_EVAL_RUNS_ROOT is a test-only escape hatch (see its own module-level comment) -- real
       // calibrate/smoke invocations are not expected to set it. Disclosed rather than silently
       // written under an unprotected path: only the DEFAULT tools/runs/ root is covered by
@@ -516,17 +539,60 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
  * previously left files 1-2 committed as final evidence while 3-4 were missing, a partial pair on
  * disk despite each individual write itself being safe.
  */
+function resolveEvidenceOutDir(runKind, runsRootOverride = RUNS_ROOT) {
+  return join(runsRootOverride, `agentic-eval-${runKind}`);
+}
+
+// Runtime enforcement, not just the run record's own errors[] disclosure (see
+// RUNS_ROOT_IS_DEFAULT's comment) -- an independent review pass argued that documenting a
+// non-default root in the record doesn't itself prevent an accidental `git add -A` from staging
+// raw, unredacted transcripts. Verifies the raw-transcript destination can never end up in a real
+// commit: EITHER it's entirely outside this repo's worktree (git can never see it, regardless of
+// any gitignore rule), OR it's inside the worktree AND actually covered by .gitignore's own
+// raw-transcript glob -- checked via `git check-ignore`, not assumed from the path's string shape.
+function isRawDirSafeFromAccidentalCommit(rawDir, runsRootOverride) {
+  let runsRootReal;
+  try {
+    runsRootReal = realpath(runsRootOverride);
+  } catch {
+    return false; // can't even resolve the root -- fail closed
+  }
+  if (!isWithinOrEqualCanonical(REPO_ROOT, runsRootReal)) return true; // outside this worktree entirely
+  // .gitignore's own pattern is `tools/runs/agentic-eval-*/raw/**` -- the `**` only matches
+  // CONTENTS of raw/, never the bare directory path itself (confirmed empirically: `git
+  // check-ignore` on the directory alone exits 1/not-ignored, on a file inside it exits 0). Check
+  // a representative file path inside it, matching what actually gets written there.
+  const r = spawnSync('git', ['check-ignore', '--quiet', join(rawDir, 'probe.jsonl')], { cwd: REPO_ROOT, encoding: 'utf8' });
+  return r.status === 0;
+}
+
 function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB, runsRootOverride = RUNS_ROOT) {
-  const outDir = join(runsRootOverride, `agentic-eval-${runKind}`);
+  const outDir = resolveEvidenceOutDir(runKind, runsRootOverride);
   const rawDir = join(outDir, 'raw');
-  mkdirSync(rawDir, { recursive: true });
-  const tmpSuffix = `.tmp-${randomUUID().slice(0, 8)}`;
+  if (!isRawDirSafeFromAccidentalCommit(rawDir, runsRootOverride)) {
+    throw new Error(`refusing to write raw transcripts: ${rawDir} is inside this repo's worktree but not covered by .gitignore -- would risk an accidental commit of unredacted data`);
+  }
   const targets = [
     [join(outDir, `${recordA.run_id}.json`), redactedTextA],
     [join(outDir, `${recordB.run_id}.json`), redactedTextB],
     [join(rawDir, `${recordA.run_id}.jsonl`), runA.spawnResult.rawStdout],
     [join(rawDir, `${recordB.run_id}.jsonl`), runB.spawnResult.rawStdout],
   ];
+  // run_id embeds only an 8-hex-char slice of randomUUID() (~2^32 space, not the full 128 bits)
+  // -- not astronomically improbable to collide across this harness's full lifetime of runs.
+  // Refuse BEFORE touching anything (including creating outDir/rawDir themselves -- existsSync on
+  // a path whose parent doesn't exist yet simply returns false, no error, so this check is safe
+  // to run first) if any target already exists, rather than letting a later renameSync silently
+  // overwrite prior evidence (POSIX rename replaces an existing destination) and a subsequent
+  // rollback then permanently delete that overwritten replacement -- losing the original for
+  // good, with no trace it ever existed.
+  for (const [target] of targets) {
+    if (existsSync(target)) {
+      throw new Error(`refusing to write evidence: ${target} already exists (run_id collision?) -- nothing was written or touched`);
+    }
+  }
+  mkdirSync(rawDir, { recursive: true });
+  const tmpSuffix = `.tmp-${randomUUID().slice(0, 8)}`;
   const tmpPaths = targets.map(([target]) => target + tmpSuffix);
   const renamedTargets = [];
   try {
@@ -556,8 +622,11 @@ function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedT
  * pre-serialized text) -> the run-kind's own hard acceptance predicate (evaluated against the
  * ORIGINAL records -- the gate's own checks never reference redaction-prone fields, and gating
  * on the pre-redaction truth of what happened is the conceptually correct choice; redaction is a
- * display/storage concern, not a data-correctness one). Any failure returns {ok:false, reason}
- * and writes nothing.
+ * display/storage concern, not a data-correctness one) -> the evidence directory PATH's own
+ * privacy check, verified before writeRunRecordEvidence is ever called (not after -- an earlier
+ * version wrote all four files first and only checked the path afterward, so a private-patterns
+ * rule matching only the runs-root path itself could report {ok:false} after real evidence was
+ * already on disk). Any failure returns {ok:false, reason} and writes nothing.
  */
 async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, hardGateFn, privatePatternsFile }) {
   for (const [label, record] of [['A', recordA], ['B', recordB]]) {
@@ -613,18 +682,32 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
   if (!gate.ok) {
     return { ok: false, reason: gate.reason };
   }
-  const outDir = writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB);
   // The evidence directory path itself can carry the real OS username (this repo may be checked
-  // out under e.g. C:\Users\<name>\...). `outDir` stays the REAL, navigable path (a caller may
-  // legitimately need it, e.g. a test asserting a file exists there) -- `redactedOutDir` is the
-  // separate, display-safe value for anything printed to a terminal. A single raw path string
-  // (never JSON-serialized), so the plain text-level assertCleanOrThrow is the correct tool here,
-  // not the object-aware variant.
+  // out under e.g. C:\Users\<name>\...). Verified BEFORE anything is written: an earlier version
+  // wrote all four files first and only checked outDir's own redaction-safety afterward, so a
+  // private-patterns rule matching only the (possibly KMP_EVAL_RUNS_ROOT-overridden) runs-root
+  // path itself -- never the record content, which was already verified clean above -- could
+  // report {ok:false} after real evidence and raw transcripts were already committed to disk,
+  // contradicting this function's own "any failure returns {ok:false} and writes nothing"
+  // contract. `outDir` stays the REAL, navigable path (a caller may legitimately need it, e.g. a
+  // test asserting a file exists there) -- `redactedOutDir` is the separate, display-safe value
+  // for anything printed to a terminal. A single raw path string (never JSON-serialized), so the
+  // plain text-level assertCleanOrThrow is the correct tool here, not the object-aware variant.
+  const outDir = resolveEvidenceOutDir(runKind);
   let redactedOutDir;
   try {
     redactedOutDir = assertCleanOrThrow(outDir, { privatePatternsFile });
   } catch (err) {
     return { ok: false, reason: `Privacy check refused to report the evidence directory path: ${err.message}` };
+  }
+  // writeRunRecordEvidence can itself refuse (a run_id collision, or the raw destination not
+  // being a safe gitignored/outside-worktree location) -- wrapped so that, like every other check
+  // in this function, a refusal returns {ok:false, reason} rather than an uncaught exception
+  // propagating out of cmdCalibrate/cmdSmoke, which never wrap this call in their own try/catch.
+  try {
+    writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB);
+  } catch (err) {
+    return { ok: false, reason: `Evidence write refused: ${err.message}` };
   }
   // redactedRecordA/B (not the originals) are for anything printed to stdout -- a caller
   // printing the originals would bypass the whole privacy check: redaction only ever protected

@@ -378,6 +378,68 @@ describe('writeRunRecordEvidence', () => {
       rmSync(runsRoot, { recursive: true, force: true });
     }
   });
+
+  // Regression coverage for a real data-loss risk an independent review pass found: run_id
+  // embeds only an 8-hex-char slice of randomUUID() (~2^32 space, not the full 128 bits) -- a
+  // collision isn't astronomically improbable across this harness's full lifetime of runs. On
+  // POSIX, renameSync silently REPLACES an existing destination file; a collision on target 1
+  // followed by a later rename failure on target 3 or 4 would previously have (a) silently
+  // overwritten genuine prior evidence, then (b) the rollback would have deleted that overwritten
+  // replacement too -- permanently losing the ORIGINAL evidence with no trace it ever existed.
+  it('refuses before writing/renaming anything if any target already exists (run_id collision)', () => {
+    const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aec-evidence-'));
+    try {
+      const { recordA, recordB, runA, runB } = fixtureRecords();
+      const outDir = path.join(runsRoot, 'agentic-eval-test-kind');
+      mkdirSync(outDir, { recursive: true });
+      const preExistingPath = path.join(outDir, 'test-run-a-0001.json');
+      writeFileSync(preExistingPath, '{"this":"is prior, real evidence -- must survive"}');
+
+      expect(() => writeRunRecordEvidence('test-kind', recordA, recordB, runA, runB, '{"redacted":"a"}', '{"redacted":"b"}', runsRoot))
+        .toThrow(/already exists/);
+
+      // The pre-existing file must be completely untouched -- not overwritten, not renamed away.
+      expect(readFileSync(preExistingPath, 'utf8')).toBe('{"this":"is prior, real evidence -- must survive"}');
+      // Nothing else was created either -- the check runs for ALL targets before ANY write.
+      expect(existsSync(path.join(outDir, 'test-run-b-0001.json'))).toBe(false);
+      expect(existsSync(path.join(outDir, 'raw'))).toBe(false);
+      expect(readdirSync(outDir).filter((f) => f.includes('.tmp-'))).toEqual([]);
+    } finally {
+      rmSync(runsRoot, { recursive: true, force: true });
+    }
+  });
+
+  // Regression coverage for a real risk an independent review pass argued: documenting a
+  // non-default KMP_EVAL_RUNS_ROOT in the run record's own errors[] (see the RUNS_ROOT_IS_DEFAULT
+  // tests elsewhere) doesn't itself prevent an accidental `git add -A` from staging raw,
+  // unredacted transcripts if the override happens to land INSIDE this repo's worktree at a
+  // location .gitignore doesn't actually cover. This points runsRootOverride at a real,
+  // uncommitted scratch directory inside the repo (verified via `git check-ignore` to NOT be
+  // covered by any existing rule) and asserts the write refuses outright.
+  it('refuses to write raw transcripts to a location inside the repo that .gitignore does not actually cover', () => {
+    const insideRepoUnignored = path.join(REPO_ROOT, 'tools', `.tmp-test-gitignore-check-${process.pid}`);
+    mkdirSync(insideRepoUnignored, { recursive: true });
+    try {
+      const { recordA, recordB, runA, runB } = fixtureRecords();
+      expect(() => writeRunRecordEvidence('test-kind', recordA, recordB, runA, runB, '{"redacted":"a"}', '{"redacted":"b"}', insideRepoUnignored))
+        .toThrow(/not covered by \.gitignore/);
+      // Nothing was created at all -- the check runs before any directory or file is touched.
+      expect(readdirSync(insideRepoUnignored)).toEqual([]);
+    } finally {
+      rmSync(insideRepoUnignored, { recursive: true, force: true });
+    }
+  });
+
+  it('allows writing when runsRootOverride is entirely outside the repo worktree (the normal test-isolation case)', () => {
+    const outsideRepo = mkdtempSync(path.join(os.tmpdir(), 'aec-evidence-outside-'));
+    try {
+      const { recordA, recordB, runA, runB } = fixtureRecords();
+      const outDir = writeRunRecordEvidence('test-kind', recordA, recordB, runA, runB, '{"redacted":"a"}', '{"redacted":"b"}', outsideRepo);
+      expect(existsSync(path.join(outDir, 'test-run-a-0001.json'))).toBe(true);
+    } finally {
+      rmSync(outsideRepo, { recursive: true, force: true });
+    }
+  });
 });
 
 // Regression coverage for a real fail-open gap an independent review pass demonstrated: an
@@ -481,6 +543,64 @@ describe('buildRunRecord -- raw_capture_location under the default (non-overridd
     });
     expect(record.raw_capture_location).toBe('tools/runs/agentic-eval-calibration/raw/');
     expect(record.errors.some((e) => e.code === 'raw_capture_location_overridden')).toBe(false);
+  });
+});
+
+// Regression coverage for a real gap found while implementing the gitignore-safety check above:
+// writeRunRecordEvidence() can itself throw (a run_id collision, or an unsafe raw destination),
+// but finalizeAndWriteRecords() called it with no try/catch of its own -- and neither
+// cmdCalibrate() nor cmdSmoke() wrap their own `await finalizeAndWriteRecords(...)` call either.
+// An uncaught throw there would have propagated all the way out as an unhandled rejection instead
+// of the {ok:false, reason} pattern every OTHER check in this function already uses. Proven here
+// via a real run_id collision reaching finalizeAndWriteRecords() itself (not writeRunRecordEvidence
+// directly, which agentic-eval-cli.test.js's "writeRunRecordEvidence" describe block already
+// covers) -- pre-creates the exact file the REAL buildRunRecord()-generated run_id will target,
+// using the real default RUNS_ROOT (no override parameter exists on finalizeAndWriteRecords), and
+// cleans up by exact filename only, never a directory-wide delete.
+describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {ok:false}, never an uncaught rejection', () => {
+  it('returns {ok:false, reason} instead of throwing when the target evidence file already exists', async () => {
+    function fakeConditionResult() {
+      return {
+        init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+        result: { subtype: 'success', is_error: false },
+        invocation: null,
+        hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
+        byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+        startedAt: new Date('2026-01-01T00:00:00.000Z'),
+        endedAt: new Date('2026-01-01T00:00:01.000Z'),
+        spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
+        events: [],
+      };
+    }
+    const policySha256 = computePolicySha256();
+    const common = { runKind: 'calibration', scenarioId: 'test-collision-via-finalize', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model' };
+    const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
+    const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
+    const outDir = path.join(REPO_ROOT, 'tools', 'runs', 'agentic-eval-calibration');
+    const collidingPath = path.join(outDir, `${recordA.run_id}.json`);
+
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(collidingPath, '{"prior":"real evidence -- must survive"}');
+    try {
+      let thrown = null;
+      let result = null;
+      try {
+        result = await finalizeAndWriteRecords({
+          runKind: 'calibration', recordA, recordB,
+          runA: { spawnResult: { rawStdout: '' } },
+          runB: { spawnResult: { rawStdout: '' } },
+          hardGateFn: () => ({ ok: true, reason: null }),
+        });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeNull();
+      expect(result?.ok).toBe(false);
+      expect(result?.reason).toContain('Evidence write refused');
+      expect(readFileSync(collidingPath, 'utf8')).toBe('{"prior":"real evidence -- must survive"}');
+    } finally {
+      rmSync(collidingPath, { force: true });
+    }
   });
 });
 

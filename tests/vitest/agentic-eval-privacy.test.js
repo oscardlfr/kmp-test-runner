@@ -118,4 +118,27 @@ describe('redactObjectAndVerify / assertCleanOrThrowObject', () => {
     expect(redactedObj).toEqual({ a: 'clean' });
     expect(JSON.parse(redactedText)).toEqual({ a: 'clean' });
   });
+
+  // Regression coverage for a real, reproduced bypass an independent review pass demonstrated
+  // directly against this code: a private-pattern rule's own REPLACEMENT text can itself be
+  // leak-shaped (e.g. a real Windows path instead of a placeholder token). redactValue() correctly
+  // substitutes it into the raw field value, but the OLD verification pass then JSON.stringify()d
+  // the whole object before scanning -- doubling the replacement's backslashes -- and
+  // user_path_win's single-backslash regex silently missed the JSON-escaped form. Reproduced
+  // directly: assertCleanOrThrowObject() returned the real path completely intact, no throw.
+  // Fixed via findLeaksInValue(), which scans each raw string value before any serialization,
+  // exactly mirroring redactValue()'s own recursion.
+  it('refuses when a private-pattern REPLACEMENT is itself leak-shaped, even though the ORIGINAL field value was not', () => {
+    const marker = 'leak-via-replacement-marker';
+    const privatePatternsFile = writeTempPatternsFile([{ class: 'x', literal: marker, replacement: FAKE_WIN_PATH }]);
+    try {
+      expect(() => assertCleanOrThrowObject({ some_field: `this contains ${marker} inside it` }, { privatePatternsFile })).toThrow(/REFUSED/);
+      const result = redactObjectAndVerify({ some_field: `this contains ${marker} inside it` }, { privatePatternsFile });
+      expect(result.ok).toBe(false);
+      expect(result.redactedObj).toBeNull();
+      expect(result.leaks.some((l) => l.class === 'user_path_win')).toBe(true);
+    } finally {
+      cleanupTempPatternsFile(privatePatternsFile);
+    }
+  });
 });
