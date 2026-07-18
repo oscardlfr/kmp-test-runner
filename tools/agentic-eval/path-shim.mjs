@@ -19,6 +19,8 @@ import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
+
 /**
  * @param {{worktreeRoot: string}} opts - absolute path to the kmp-test-runner worktree whose
  *   bin/kmp-test.js this shim must invoke.
@@ -35,7 +37,11 @@ export function buildPathShim({ worktreeRoot }) {
   const posixShimPath = join(shimDir, 'kmp-test');
   const posixShim = [
     '#!/usr/bin/env bash',
-    'HOME="$KMP_EVAL_TEMP_HOME" USERPROFILE="$KMP_EVAL_TEMP_HOME" exec node "' + posixKmpTestJsPath + '" "$@"',
+    // The pinned path is single-quote-escaped (never double-quoted): double quotes still allow
+    // bash to expand $vars/backticks/$(...) inside them, so a worktree path containing one of
+    // those characters would be silently (and dangerously) expanded at every shim invocation.
+    // "$KMP_EVAL_TEMP_HOME" and "$@" stay double-quoted deliberately -- both must expand.
+    'HOME="$KMP_EVAL_TEMP_HOME" USERPROFILE="$KMP_EVAL_TEMP_HOME" exec node ' + shQuote(posixKmpTestJsPath) + ' "$@"',
     '',
   ].join('\n');
   writeFileSync(posixShimPath, posixShim);

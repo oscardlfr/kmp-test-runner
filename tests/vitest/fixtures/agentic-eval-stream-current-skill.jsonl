@@ -14,8 +14,8 @@
 {"type":"system","subtype":"thinking_tokens"}
 {"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"thinking","thinking":""}],"usage":{"input_tokens":2,"cache_creation_input_tokens":335,"cache_read_input_tokens":21887,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":335},"output_tokens":3,"service_tier":"standard","inference_geo":"not_available"}}}
 {"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","name":"Bash","input":{"command":"[synthetic-command]","description":"[synthetic]"}}],"usage":{"input_tokens":2,"cache_creation_input_tokens":335,"cache_read_input_tokens":21887,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":335},"output_tokens":3,"service_tier":"standard","inference_geo":"not_available"}}}
-{"type":"system","subtype":"hook_started","hook_id":"hook-synthetic-0001","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}
-{"type":"system","subtype":"hook_response","hook_id":"hook-synthetic-0001","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Command permitted by evaluation harness policy.\"}}","exit_code":0,"outcome":"success"}
+{"type":"system","subtype":"hook_started","hook_id":"hook-synthetic-0002","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}
+{"type":"system","subtype":"hook_response","hook_id":"hook-synthetic-0002","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Command permitted by evaluation harness policy.\"}}","exit_code":0,"outcome":"success"}
 {"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[synthetic tool result]"}]},"tool_use_result":{}}
 {"type":"system","subtype":"thinking_tokens"}
 {"type":"system","subtype":"thinking_tokens"}

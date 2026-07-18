@@ -181,6 +181,43 @@ describe('validateRun', () => {
     const { errors } = validateRun(baseRun({ terminated: false, termination_reason: 'timeout' }));
     expect(errors.some((e) => e.field === 'termination_reason')).toBe(true);
   });
+
+  describe('nullable-metric value type/domain validation', () => {
+    it('rejects a string value for a boolean-typed metric (e.g. skill_invoked: "false")', () => {
+      const { errors } = validateRun(baseRun({ skill_invoked: { value: 'false', reason: null } }));
+      expect(errors.some((e) => e.field === 'skill_invoked')).toBe(true);
+    });
+
+    it('rejects a negative value for a count-typed metric', () => {
+      const { errors } = validateRun(baseRun({ retries: { value: -1, reason: null } }));
+      expect(errors.some((e) => e.field === 'retries')).toBe(true);
+    });
+
+    it('rejects a fractional value for a count-typed metric', () => {
+      const { errors } = validateRun(baseRun({ output_bytes: { value: 1.5, reason: null } }));
+      expect(errors.some((e) => e.field === 'output_bytes')).toBe(true);
+    });
+
+    it('accepts a fractional non-negative value for the timing-typed metric', () => {
+      const { errors } = validateRun(baseRun({ first_useful_signal_ms: { value: 12.5, reason: null } }));
+      expect(errors.filter((e) => e.field === 'first_useful_signal_ms')).toEqual([]);
+    });
+
+    it('rejects a negative value for the timing-typed metric', () => {
+      const { errors } = validateRun(baseRun({ first_useful_signal_ms: { value: -1, reason: null } }));
+      expect(errors.some((e) => e.field === 'first_useful_signal_ms')).toBe(true);
+    });
+
+    it('rejects a negative token count', () => {
+      const { errors } = validateRun(baseRun({ tokens: { input: { value: -5, reason: null }, output: { value: 1, reason: null }, cache_read: { value: 0, reason: null }, cache_creation: { value: 0, reason: null } } }));
+      expect(errors.some((e) => e.field === 'tokens.input')).toBe(true);
+    });
+
+    it('a null value still skips domain validation (governed by the {value,reason} contract instead)', () => {
+      const { errors } = validateRun(baseRun({ retries: { value: null, reason: 'not tracked' } }));
+      expect(errors.filter((e) => e.field === 'retries')).toEqual([]);
+    });
+  });
 });
 
 describe('validateScenario', () => {
@@ -237,6 +274,8 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
     return {
       run_id: 'r1', scenario_id: 's1', condition: 'no-skill', family: 'test-only',
       run_kind: 'scenario', cache_state: 'warm', benchmark_eligible: true,
+      project_commit: 'abc123', model_resolved: 'claude-sonnet-5', platform: 'windows',
+      skill_source_sha: null, policy_sha256: 'a'.repeat(64),
       skill_invoked: { value: false, reason: null }, success: { value: true, reason: null },
       ...overrides,
     };
@@ -246,6 +285,50 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
     const { errors, group } = buildAggregateGroup([run({ run_id: 'r1' }), run({ run_id: 'r2' })]);
     expect(errors).toEqual([]);
     expect(group.run_count).toBe(2);
+  });
+
+  it('rejects duplicate run_id values -- a re-submitted run must not inflate run_count', () => {
+    const { errors, group } = buildAggregateGroup([run({ run_id: 'r1' }), run({ run_id: 'r1' })]);
+    expect(errors.some((e) => e.field === 'run_id')).toBe(true);
+    expect(group).toBeNull();
+  });
+
+  it('rejects an empty run_id', () => {
+    const { errors } = buildAggregateGroup([run({ run_id: '' }), run({ run_id: 'r2' })]);
+    expect(errors.some((e) => e.field === 'run_id')).toBe(true);
+  });
+
+  it('refuses to mix project_commit within one aggregate group', () => {
+    const { errors } = buildAggregateGroup([run({ run_id: 'r1', project_commit: 'abc123' }), run({ run_id: 'r2', project_commit: 'def456' })]);
+    expect(errors.some((e) => e.field === 'project_commit')).toBe(true);
+  });
+
+  it('refuses to mix model_resolved within one aggregate group', () => {
+    const { errors } = buildAggregateGroup([run({ run_id: 'r1', model_resolved: 'claude-sonnet-5' }), run({ run_id: 'r2', model_resolved: 'claude-opus-4-8' })]);
+    expect(errors.some((e) => e.field === 'model_resolved')).toBe(true);
+  });
+
+  it('refuses to mix platform within one aggregate group', () => {
+    const { errors } = buildAggregateGroup([run({ run_id: 'r1', platform: 'windows' }), run({ run_id: 'r2', platform: 'linux' })]);
+    expect(errors.some((e) => e.field === 'platform')).toBe(true);
+  });
+
+  it('refuses to mix skill_source_sha within one aggregate group (a re-pinned skill snapshot)', () => {
+    const { errors } = buildAggregateGroup([run({ run_id: 'r1', skill_source_sha: 'sha-a' }), run({ run_id: 'r2', skill_source_sha: 'sha-b' })]);
+    expect(errors.some((e) => e.field === 'skill_source_sha')).toBe(true);
+  });
+
+  it('refuses to mix policy_sha256 within one aggregate group (a changed policy-hook version)', () => {
+    const { errors } = buildAggregateGroup([run({ run_id: 'r1', policy_sha256: 'a'.repeat(64) }), run({ run_id: 'r2', policy_sha256: 'b'.repeat(64) })]);
+    expect(errors.some((e) => e.field === 'policy_sha256')).toBe(true);
+  });
+
+  it('group_key carries every hard partition field, not just the original five', () => {
+    const { group } = buildAggregateGroup([run({ run_id: 'r1' }), run({ run_id: 'r2' })]);
+    expect(group.group_key.project_commit).toBe('abc123');
+    expect(group.group_key.model_resolved).toBe('claude-sonnet-5');
+    expect(group.group_key.platform).toBe('windows');
+    expect(group.group_key.policy_sha256).toBe('a'.repeat(64));
   });
 
   it('refuses to mix family within one aggregate group', () => {

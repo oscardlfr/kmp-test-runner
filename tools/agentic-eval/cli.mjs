@@ -16,7 +16,7 @@
 // future, genuinely controlled `scenario` run_kind -- not implemented by any subcommand here.
 // This PR does not execute the full benchmark; `smoke` runs exactly one scenario to prove the
 // harness works end-to-end, never publishing a ratio or performance claim.
-import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -70,6 +70,14 @@ function nullableMetric(value, reason = null) {
   return { value, reason: value === null ? (reason ?? 'not recorded') : null };
 }
 
+/** Maps Node's process.platform to the schema's PLATFORM_VALUES enum -- never hardcoded. */
+function resolvePlatform() {
+  if (process.platform === 'win32') return 'windows';
+  if (process.platform === 'darwin') return 'macos';
+  if (process.platform === 'linux') return 'linux';
+  return 'not-recorded';
+}
+
 /**
  * @param {Function} materializeFixture - (existingDir) => {fixtureDir}. Called once per
  *   condition with the PRIOR fixtureDir (or undefined for the first call) so the caller can
@@ -94,9 +102,14 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     const materialized = materializeFixture(fixtureDir);
     fixtureDir = materialized.fixtureDir;
     resetToSnapshot();
+    // KMP_EVAL_TEMP_HOME is reused (same path) across both conditions of a pair like
+    // fixtureDir/GRADLE_USER_HOME -- wiped back to empty before EACH condition's run, so
+    // whatever the first-run condition wrote under ~/.kmp-test/ can never leak into the second.
+    rmSync(kmpEvalTempHome, { recursive: true, force: true });
+    mkdirSync(kmpEvalTempHome, { recursive: true });
     const conditionEnv = { ...env, KMP_EVAL_EXPECTED_FIXTURE_ROOT: realpath(fixtureDir) };
     const argv = buildConditionArgv(base, condition, condition === 'current-skill' ? snapshotDir : null);
-    const spawnResult = spawnCondition(argv, { env: conditionEnv, cwd: fixtureDir, timeoutMs });
+    const spawnResult = await spawnCondition(argv, { env: conditionEnv, cwd: fixtureDir, timeoutMs });
     const { events, malformedLines } = parseStreamJsonl(spawnResult.rawStdout, { taggedLines: spawnResult.taggedLines });
     const init = findInitEvent(events);
     const result = findResultEvent(events);
@@ -116,8 +129,9 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
   return { runA, runB, snapshotDir, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands };
 }
 
-function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skillSourceSha, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias = 'calibration-project', projectCommit = null, family = 'trigger-only' }) {
+function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skillSourceSha, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias = 'calibration-project', projectCommit = null, family = 'trigger-only', modelRequested = 'claude-sonnet-5' }) {
   const { init, result, invocation, hookStats, byteMetrics } = conditionResult;
+  const notApplicableReason = `${runKind} run -- no scenario grader applies`;
   return {
     schema: CURRENT_RUN_SCHEMA,
     run_id: `${runKind}-${condition}-${randomUUID().slice(0, 8)}`,
@@ -130,13 +144,13 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     kmp_test_cli_version: null,
     kmp_test_cli_source_sha: null,
     resolved_kmp_test_executable_path: null,
-    model_requested: 'claude-sonnet-5',
+    model_requested: modelRequested,
     model_resolved: init?.model ?? null,
     session_id_observed: init?.session_id ?? null,
     repo_commit: skillSourceSha,
     project_alias: projectAlias,
     project_commit: projectCommit,
-    platform: 'windows',
+    platform: resolvePlatform(),
     family,
     cache_state: 'unknown',
     daemon_policy: daemonPolicy ?? 'unknown',
@@ -149,9 +163,9 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     skill_available: nullableMetric(isSkillAvailable(init, 'kmp-test-runner')),
     skill_invoked: nullableMetric(invocation != null),
     skill_invocation_event: invocation ? { type: invocation.type, index: invocation.index } : null,
-    success: nullableMetric(null, 'calibration run -- success grading not applicable'),
-    expected_outcome_matched: nullableMetric(null, 'calibration run -- no scenario grader applies'),
-    first_useful_signal_ms: nullableMetric(null, 'calibration run -- no first-useful-signal predicate applies'),
+    success: nullableMetric(null, `${runKind} run -- success grading not applicable`),
+    expected_outcome_matched: nullableMetric(null, notApplicableReason),
+    first_useful_signal_ms: nullableMetric(null, `${runKind} run -- no first-useful-signal predicate applies`),
     first_useful_signal_event: null,
     tokens: {
       input: nullableMetric(extractTokenUsage(result)?.input ?? null, extractTokenUsage(result) ? undefined : 'no result event'),
@@ -161,7 +175,7 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     },
     tool_calls_total: nullableMetric(findBashToolUses(conditionResult.events).length + (invocation ? 1 : 0)),
     shell_commands_total: nullableMetric(findBashToolUses(conditionResult.events).length),
-    test_invocations_total: nullableMetric(null, 'not tracked for calibration runs'),
+    test_invocations_total: nullableMetric(null, `not tracked for ${runKind} runs`),
     retries: nullableMetric(0),
     output_bytes: nullableMetric(byteMetrics.outputBytes),
     stream_json_bytes: nullableMetric(byteMetrics.streamJsonBytes),
@@ -213,8 +227,8 @@ async function cmdCalibrate(args) {
     materializeFixture: (existingDir) => materializeCalibrationProject({ templateDir, existingDir }),
   });
   const policySha256 = computePolicySha256();
-  const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256 });
-  const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256 });
+  const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model });
+  const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model });
 
   for (const [label, record] of [['A (no-skill)', recordA], ['B (current-skill)', recordB]]) {
     const { errors } = validateRun(record);
@@ -247,7 +261,7 @@ async function cmdSmoke(args) {
     timeoutMs: 180000,
   });
   const policySha256 = computePolicySha256();
-  const common = { runKind: 'smoke', scenarioId: 'kampkit-android-host-test-discovery', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, family: 'test-only' };
+  const common = { runKind: 'smoke', scenarioId: 'kampkit-android-host-test-discovery', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, family: 'test-only', modelRequested: model };
   const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
   const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
 

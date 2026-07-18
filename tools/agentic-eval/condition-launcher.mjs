@@ -6,12 +6,12 @@
 // argv diverge in more than --plugin-dir), no --allowedTools (superseded entirely by the
 // PreToolUse policy hook -- Round 6), no bypassPermissions, never Read/Glob/Grep/Edit/Write/
 // Agent in --tools.
-import { spawnSync } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildEvalEnv } from './env-builder.mjs';
-import { computePolicySha256 } from './policy-config.mjs';
+import { buildPolicyEnvValues, computePolicySha256 } from './policy-config.mjs';
 
 const POLICY_HOOK_PATH = join(import.meta.dirname, 'policy-hook.mjs');
 
@@ -68,19 +68,40 @@ export function buildConditionArgv(baseArgv, condition, snapshotDir) {
 /**
  * Builds the ONE shared env object used verbatim for both conditions of a run-pair -- the
  * harness-controlled policy config (fix #18) travels in this same object, so it is
- * byte-identical between A and B too.
+ * byte-identical between A and B too. Policy config is validated through
+ * buildPolicyEnvValues() (policy-config.mjs) BEFORE it ever reaches the env object: invalid
+ * grammar, duplicate entries, or a non-array input fail loudly here, at harness-construction
+ * time, instead of surfacing only as an opaque runtime hook denial once a real session is
+ * already spawned.
  */
 export function buildSharedEnv({ shimDir, gradleUserHome, kmpEvalTempHome, expectedFixtureRoot, allowedGradleTasks, allowedKmpTestSubcommands }) {
   const baseEnv = buildEvalEnv(process.env);
+  const { errors, envValues } = buildPolicyEnvValues({ allowedGradleTasks, allowedKmpTestSubcommands });
+  if (errors.length > 0) {
+    throw new Error(`Invalid policy configuration: ${JSON.stringify(errors)}`);
+  }
   return {
     ...baseEnv,
     PATH: `${shimDir}${process.platform === 'win32' ? ';' : ':'}${baseEnv.PATH ?? baseEnv.Path ?? ''}`,
     GRADLE_USER_HOME: gradleUserHome,
     KMP_EVAL_TEMP_HOME: kmpEvalTempHome,
     KMP_EVAL_EXPECTED_FIXTURE_ROOT: expectedFixtureRoot,
-    KMP_EVAL_ALLOWED_GRADLE_TASKS: JSON.stringify(allowedGradleTasks),
-    KMP_EVAL_ALLOWED_KMPTEST_SUBCOMMANDS: JSON.stringify(allowedKmpTestSubcommands),
+    ...envValues,
   };
+}
+
+// Killing just the wrapper bash PID does not reliably terminate a shell's descendants on
+// either platform -- confirmed empirically (a nested/child command kept running well past a
+// SIGTERM to the wrapper, on both `spawn()`'s own `timeout` option and a hand-rolled
+// `child.kill()`). `taskkill /F /T` targets the whole process tree by PID on Windows; on POSIX,
+// spawning with `detached: true` makes the wrapper the leader of a new process group, so
+// `process.kill(-pid, signal)` reaches the whole group instead of just the one process.
+function killTree(pid, signal) {
+  if (process.platform === 'win32') {
+    execFile('taskkill', ['/F', '/T', '/PID', String(pid)], () => { /* best-effort -- process may already be gone */ });
+  } else {
+    try { process.kill(-pid, signal); } catch { /* already exited, or never became a group leader */ }
+  }
 }
 
 /**
@@ -89,24 +110,83 @@ export function buildSharedEnv({ shimDir, gradleUserHome, kmpEvalTempHome, expec
  * documented for .bat/.cmd files; confirmed empirically during Step 1). Tags each stdout line
  * with a monotonic receipt_ns relative to a t0 captured immediately before spawn (Round 3 fix
  * #4) -- graders consume only the resulting event index, never a timestamp directly.
+ *
+ * Uses the async spawn() (not spawnSync()) specifically so lines can be tagged as they actually
+ * arrive off the child's stdout stream: spawnSync() buffers the entire child output until exit,
+ * so a post-hoc tagging pass over the buffered result would stamp every line with
+ * (approximately) the same post-exit timestamp -- flattening receipt_ns to "total run
+ * duration" for every event and defeating the whole point of per-event timing.
+ * @returns {Promise<object>}
  */
 export function spawnCondition(argv, { env, cwd, timeoutMs = 300000 }) {
   const cmd = argv.map(shQuote).join(' ');
   const t0 = process.hrtime.bigint();
-  const result = spawnSync('bash', ['-c', cmd], { env, cwd, encoding: 'utf8', timeout: timeoutMs });
-  const rawStdout = result.stdout ?? '';
-  const taggedLines = rawStdout.split('\n').filter(Boolean).map((line) => ({ line, receiptNs: process.hrtime.bigint() - t0 }));
-  const terminated = result.signal != null || result.error?.code === 'ETIMEDOUT';
-  return {
-    exitCode: result.status,
-    terminated,
-    terminationReason: terminated ? 'timeout' : (result.status !== 0 ? 'error' : null),
-    rawStdout,
-    stderr: result.stderr ?? '',
-    taggedLines,
-    spawnHrtimeNs: t0,
-    policySha256: computePolicySha256(),
-  };
+  return new Promise((resolve) => {
+    const child = spawn('bash', ['-c', cmd], { env, cwd, detached: process.platform !== 'win32' });
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    let rawStdout = '';
+    let stderr = '';
+    let buf = '';
+    const taggedLines = [];
+    let timedOut = false;
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree(child.pid, 'SIGTERM');
+      const killTimer = setTimeout(() => killTree(child.pid, 'SIGKILL'), 5000);
+      killTimer.unref?.();
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.stdout.on('data', (chunk) => {
+      const receiptNs = process.hrtime.bigint() - t0;
+      rawStdout += chunk;
+      buf += chunk;
+      let idx;
+      while ((idx = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, idx);
+        buf = buf.slice(idx + 1);
+        if (line) taggedLines.push({ line, receiptNs });
+      }
+    });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        exitCode: null,
+        terminated: false,
+        terminationReason: 'error',
+        rawStdout,
+        stderr: stderr + `\n[spawn error] ${err.message}`,
+        taggedLines,
+        spawnHrtimeNs: t0,
+        policySha256: computePolicySha256(),
+      });
+    });
+
+    child.on('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (buf) taggedLines.push({ line: buf, receiptNs: process.hrtime.bigint() - t0 });
+      const terminated = timedOut || signal != null;
+      resolve({
+        exitCode: code,
+        terminated,
+        terminationReason: terminated ? 'timeout' : (code !== 0 ? 'error' : null),
+        rawStdout,
+        stderr,
+        taggedLines,
+        spawnHrtimeNs: t0,
+        policySha256: computePolicySha256(),
+      });
+    });
+  });
 }
 
 export { POLICY_HOOK_PATH };

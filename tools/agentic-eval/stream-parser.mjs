@@ -41,6 +41,13 @@ export function parseStreamJsonl(rawJsonl, { taggedLines } = {}) {
       malformedLines.push({ line, error: err.message });
       continue;
     }
+    // A line can be syntactically valid JSON (null, a bare string, a number, an array) without
+    // being an event object -- assigning _receiptNs to a non-object throws in strict mode
+    // (every .mjs module is strict), which would abort the ENTIRE parse, not just this line.
+    if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      malformedLines.push({ line, error: 'stream event must be a JSON object' });
+      continue;
+    }
     parsed._receiptNs = receiptNs;
     events.push(parsed);
   }
@@ -92,12 +99,18 @@ export function findBashToolUses(events) {
 
 /** Proves every Bash call reached the policy hook (Round 6 evidence requirement) -- counts
  * hook_started/hook_response events and checks 1:1 correspondence against the actual Bash
- * tool_use count, not merely hookStarted.length === hookResponses.length against each other
- * (that weaker check would report true for zero-and-zero, missing an entirely unhooked call). */
+ * tool_use count. This is more than an aggregate-count comparison (bashCallCount ===
+ * hookStarted.length === hookResponses.length): that weaker check can't distinguish "N real,
+ * distinct hooked calls" from "a duplicated hook_id plus one Bash call that was never hooked at
+ * all" (the counts still balance). everyCallHooked additionally requires hook_started/
+ * hook_response events to be scoped to PreToolUse:Bash (excluding any hook for another tool),
+ * every hook_id to be unique within each side, and the started/response id SETS to match
+ * exactly -- not just their counts. */
 export function countHookEvents(events) {
   const bashCallCount = findBashToolUses(events).length;
-  const hookStarted = events.filter((e) => e.type === 'system' && e.subtype === 'hook_started');
-  const hookResponses = events.filter((e) => e.type === 'system' && e.subtype === 'hook_response');
+  const isBashHook = (e) => e.type === 'system' && (e.subtype === 'hook_started' || e.subtype === 'hook_response') && e.hook_name === 'PreToolUse:Bash';
+  const hookStarted = events.filter((e) => isBashHook(e) && e.subtype === 'hook_started');
+  const hookResponses = events.filter((e) => isBashHook(e) && e.subtype === 'hook_response');
   const decisions = hookResponses.map((e) => {
     try {
       return JSON.parse(e.output).hookSpecificOutput.permissionDecision;
@@ -105,11 +118,19 @@ export function countHookEvents(events) {
       return null;
     }
   });
+  const startedIds = hookStarted.map((e) => e.hook_id);
+  const responseIds = hookResponses.map((e) => e.hook_id);
+  const uniqueStartedIds = new Set(startedIds);
+  const uniqueResponseIds = new Set(responseIds);
+  const idsMatch = uniqueStartedIds.size === startedIds.length
+    && uniqueResponseIds.size === responseIds.length
+    && startedIds.length === responseIds.length
+    && [...uniqueStartedIds].every((id) => uniqueResponseIds.has(id));
   return {
     hookCallCount: hookStarted.length,
     hookResponseCount: hookResponses.length,
     hookDenyCount: decisions.filter((d) => d === 'deny').length,
-    everyCallHooked: bashCallCount === hookStarted.length && bashCallCount === hookResponses.length,
+    everyCallHooked: bashCallCount === hookStarted.length && bashCallCount === hookResponses.length && idsMatch,
   };
 }
 

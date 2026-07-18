@@ -302,13 +302,24 @@ export function decide(raw, env = process.env) {
   }
 }
 
+// process.stdout.write() is asynchronous when stdout is a pipe (always true here -- Claude
+// Code reads the hook's JSON response off a piped child stdout), so calling process.exit()
+// immediately after starting the write can terminate the process before the OS has actually
+// flushed it, truncating the response. Gating exit on the write's own completion callback
+// guarantees the full response is flushed first, while still exiting deterministically (no
+// reliance on the event loop draining naturally, which would risk a hang while process.stdin
+// still has an active listener on the timeout path below).
+function writeAndExit(output) {
+  process.stdout.write(output, () => process.exit(0));
+}
+
 function runAsHook() {
   let raw = '';
   let finished = false;
   let overflowed = false;
   const HARD_TIMEOUT_MS = 3000;
   const timer = setTimeout(() => {
-    if (!finished) { finished = true; process.stdout.write(denyOutput()); process.exit(0); }
+    if (!finished) { finished = true; writeAndExit(denyOutput()); }
   }, HARD_TIMEOUT_MS);
   timer.unref?.();
 
@@ -317,22 +328,20 @@ function runAsHook() {
     raw += chunk;
     if (Buffer.byteLength(raw, 'utf8') > MAX_STDIN_BYTES) {
       overflowed = true;
-      if (!finished) { finished = true; clearTimeout(timer); process.stdout.write(denyOutput()); process.exit(0); }
+      if (!finished) { finished = true; clearTimeout(timer); writeAndExit(denyOutput()); }
     }
   });
   process.stdin.on('end', () => {
     if (finished) return;
     finished = true;
     clearTimeout(timer);
-    process.stdout.write(decide(raw));
-    process.exit(0);
+    writeAndExit(decide(raw));
   });
   process.stdin.on('error', () => {
     if (finished) return;
     finished = true;
     clearTimeout(timer);
-    process.stdout.write(denyOutput());
-    process.exit(0);
+    writeAndExit(denyOutput());
   });
 }
 

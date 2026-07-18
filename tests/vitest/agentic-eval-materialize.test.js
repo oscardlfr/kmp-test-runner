@@ -3,7 +3,7 @@
 // *this* repo at a known commit -- local, no network, no Claude, matching the existing repo
 // idiom of real subprocess tests over mocking.
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -135,26 +135,39 @@ describe('materializeGradleUserHome', () => {
   it('resetToSnapshot restores the exact prewarmed state, discarding later mutation', () => {
     const { gradleUserHome, resetToSnapshot } = materializeGradleUserHome({});
     cleanupDirs.push(gradleUserHome);
+    const originalProperties = readFileSync(path.join(gradleUserHome, 'gradle.properties'), 'utf8');
     writeFileSync(path.join(gradleUserHome, 'fake-dep-cache.jar'), 'x');
+    writeFileSync(path.join(gradleUserHome, 'gradle.properties'), 'org.gradle.daemon=true\nmutated=yes\n');
     resetToSnapshot();
     expect(existsSync(path.join(gradleUserHome, 'fake-dep-cache.jar'))).toBe(false);
-    expect(existsSync(path.join(gradleUserHome, 'gradle.properties'))).toBe(true);
+    expect(readFileSync(path.join(gradleUserHome, 'gradle.properties'), 'utf8')).toBe(originalProperties);
   });
 
   it('repeated resetToSnapshot calls are idempotent (byte-identical restore each time)', () => {
     const { gradleUserHome, resetToSnapshot } = materializeGradleUserHome({});
     cleanupDirs.push(gradleUserHome);
     resetToSnapshot();
-    const afterFirst = existsSync(path.join(gradleUserHome, 'gradle.properties'));
+    const afterFirst = readFileSync(path.join(gradleUserHome, 'gradle.properties'), 'utf8');
+    writeFileSync(path.join(gradleUserHome, 'gradle.properties'), 'mutated-between-resets\n');
     resetToSnapshot();
-    const afterSecond = existsSync(path.join(gradleUserHome, 'gradle.properties'));
-    expect(afterFirst).toBe(afterSecond);
+    const afterSecond = readFileSync(path.join(gradleUserHome, 'gradle.properties'), 'utf8');
+    expect(afterSecond).toBe(afterFirst);
   });
 
-  it('runPrewarm callback receives the gradleUserHome path before the snapshot is taken', () => {
+  it('runPrewarm callback receives the gradleUserHome path before the snapshot is taken, and its writes survive resetToSnapshot', () => {
     let seenPath = null;
-    const { gradleUserHome } = materializeGradleUserHome({ runPrewarm: (dir) => { seenPath = dir; } });
+    const { gradleUserHome, resetToSnapshot } = materializeGradleUserHome({
+      runPrewarm: (dir) => { seenPath = dir; writeFileSync(path.join(dir, 'prewarm-marker.txt'), 'prewarmed-content'); },
+    });
     cleanupDirs.push(gradleUserHome);
     expect(seenPath).toBe(gradleUserHome);
+    expect(readFileSync(path.join(gradleUserHome, 'prewarm-marker.txt'), 'utf8')).toBe('prewarmed-content');
+
+    // Prove the marker was captured IN the snapshot (prewarm ran before the snapshot was taken),
+    // not just present in the live dir by coincidence -- mutate it, then confirm reset restores
+    // the prewarmed content specifically, not just "some" content.
+    writeFileSync(path.join(gradleUserHome, 'prewarm-marker.txt'), 'mutated-after-prewarm');
+    resetToSnapshot();
+    expect(readFileSync(path.join(gradleUserHome, 'prewarm-marker.txt'), 'utf8')).toBe('prewarmed-content');
   });
 });

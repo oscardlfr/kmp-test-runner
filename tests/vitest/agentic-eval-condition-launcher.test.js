@@ -9,6 +9,7 @@ import {
   buildConditionArgv,
   buildSharedEnv,
   buildPolicySettingsFile,
+  spawnCondition,
 } from '../../tools/agentic-eval/condition-launcher.mjs';
 
 describe('buildBaseArgv / buildConditionArgv -- mechanical A/B equivalence', () => {
@@ -128,6 +129,69 @@ describe('buildSharedEnv -- byte-identical policy config between conditions', ()
     const envA = buildSharedEnv(opts);
     const envB = buildSharedEnv(opts);
     expect(envA).toEqual(envB);
+  });
+
+  it('routes allowedGradleTasks/allowedKmpTestSubcommands through the policy-config validator -- fails loudly at construction time on invalid grammar', () => {
+    expect(() => buildSharedEnv({ ...opts, allowedGradleTasks: ['build; rm -rf /'] })).toThrow(/Invalid policy configuration/);
+  });
+
+  it('fails loudly on a non-array policy input, not just an opaque runtime hook denial later', () => {
+    expect(() => buildSharedEnv({ ...opts, allowedKmpTestSubcommands: 'doctor' })).toThrow(/Invalid policy configuration/);
+  });
+
+  it('fails loudly on duplicate policy entries', () => {
+    expect(() => buildSharedEnv({ ...opts, allowedGradleTasks: ['build', 'build'] })).toThrow(/Invalid policy configuration/);
+  });
+});
+
+describe('spawnCondition -- real subprocess (local shell only, no Claude, no network)', () => {
+  it('resolves with rawStdout, a zero exitCode, and per-line receiptNs values that are non-decreasing', async () => {
+    const argv = ['bash', '-c', 'printf "line1\\nline2\\nline3\\n"'];
+    const result = await spawnCondition(argv, { env: process.env, cwd: process.cwd(), timeoutMs: 10000 });
+    expect(result.exitCode).toBe(0);
+    expect(result.terminated).toBe(false);
+    expect(result.terminationReason).toBeNull();
+    expect(result.rawStdout).toContain('line1');
+    expect(result.taggedLines.length).toBe(3);
+    for (const { receiptNs } of result.taggedLines) expect(typeof receiptNs).toBe('bigint');
+    for (let i = 1; i < result.taggedLines.length; i++) {
+      expect(result.taggedLines[i].receiptNs >= result.taggedLines[i - 1].receiptNs).toBe(true);
+    }
+  });
+
+  it('reports terminationReason "error" for a nonzero exit code', async () => {
+    const argv = ['bash', '-c', 'exit 7'];
+    const result = await spawnCondition(argv, { env: process.env, cwd: process.cwd(), timeoutMs: 10000 });
+    expect(result.exitCode).toBe(7);
+    expect(result.terminated).toBe(false);
+    expect(result.terminationReason).toBe('error');
+  });
+
+  it('terminates a hanging command once timeoutMs elapses', async () => {
+    // A realistic argv shape (a plain command, matching how buildBaseArgv/buildConditionArgv
+    // produce a flat ['claude', '-p', ...] array) -- spawnCondition itself adds the one level
+    // of `bash -c` wrapping. An already-bash-wrapped argv here would double-wrap, which
+    // reproduces a DIFFERENT, real bug found during development: killing the outer wrapper did
+    // not reliably terminate a process it spawned further down (nested-bash or backgrounded
+    // child) via a plain child.kill() -- confirmed empirically on Windows, fixed by tree-killing
+    // via `taskkill /F /T` (win32) / a POSIX process-group kill (killTree in condition-launcher.mjs).
+    const argv = ['sleep', '60'];
+    const start = Date.now();
+    const result = await spawnCondition(argv, { env: process.env, cwd: process.cwd(), timeoutMs: 300 });
+    expect(result.terminated).toBe(true);
+    expect(result.terminationReason).toBe('timeout');
+    expect(Date.now() - start).toBeLessThan(5000);
+  }, 10000);
+
+  it('captures stdout emitted across multiple chunks/lines without dropping or duplicating any', async () => {
+    const argv = ['bash', '-c', 'for i in 1 2 3 4 5; do echo "row-$i"; done'];
+    const result = await spawnCondition(argv, { env: process.env, cwd: process.cwd(), timeoutMs: 10000 });
+    expect(result.taggedLines.map((t) => t.line)).toEqual(['row-1', 'row-2', 'row-3', 'row-4', 'row-5']);
+  });
+
+  it('resolves rather than hanging when the command itself fails to spawn', async () => {
+    const result = await spawnCondition(['this-binary-does-not-exist-anywhere-xyz'], { env: process.env, cwd: process.cwd(), timeoutMs: 5000 });
+    expect(result.exitCode).not.toBe(0);
   });
 });
 

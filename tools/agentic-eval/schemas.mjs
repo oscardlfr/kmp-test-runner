@@ -46,11 +46,35 @@ const NULLABLE_METRIC_FIELDS = [
   'retries', 'output_bytes', 'stream_json_bytes', 'human_interventions',
 ];
 
+// Per-field value domain: 'boolean' for status metrics, 'count' for non-negative integer
+// counts/bytes, 'timing' for non-negative (possibly fractional) millisecond values. A
+// non-null value failing its domain (e.g. skill_invoked: "false" as a string, or a negative
+// byte count) passes the {value,reason} shape check but is still wrong data -- validated
+// separately so a malformed value can't silently corrupt grading/aggregation downstream.
+const NULLABLE_METRIC_KIND = {
+  skill_available: 'boolean', skill_invoked: 'boolean', success: 'boolean',
+  expected_outcome_matched: 'boolean', first_useful_signal_ms: 'timing',
+  tool_calls_total: 'count', shell_commands_total: 'count', test_invocations_total: 'count',
+  retries: 'count', output_bytes: 'count', stream_json_bytes: 'count', human_interventions: 'count',
+  'tokens.input': 'count', 'tokens.output': 'count', 'tokens.cache_read': 'count', 'tokens.cache_creation': 'count',
+};
+
 function isNullableMetric(m) {
   return m != null && typeof m === 'object' && 'value' in m && 'reason' in m;
 }
 
-function validateNullableMetric(m, field, errors) {
+function validateMetricValueDomain(value, kind, field, errors) {
+  if (value === null || kind == null) return;
+  if (kind === 'boolean' && typeof value !== 'boolean') {
+    errors.push({ field, message: `value must be a boolean, got ${typeof value}` });
+  } else if (kind === 'count' && !(Number.isInteger(value) && value >= 0)) {
+    errors.push({ field, message: `value must be a non-negative integer` });
+  } else if (kind === 'timing' && !(typeof value === 'number' && Number.isFinite(value) && value >= 0)) {
+    errors.push({ field, message: `value must be a non-negative finite number` });
+  }
+}
+
+function validateNullableMetric(m, field, errors, kind = NULLABLE_METRIC_KIND[field] ?? null) {
   if (!isNullableMetric(m)) {
     errors.push({ field, message: `must be a {value, reason} object` });
     return;
@@ -61,6 +85,7 @@ function validateNullableMetric(m, field, errors) {
   if (m.value !== null && m.reason != null) {
     errors.push({ field, message: `reason must be null when value is present -- reason is only for explaining an absence` });
   }
+  validateMetricValueDomain(m.value, kind, field, errors);
 }
 
 function validateEventRef(ref, field, errors) {
@@ -180,47 +205,62 @@ export function validateScenario(scenario) {
 
 const AGGREGATE_CANONICAL_FIELDS = ['schema', 'group_key', 'run_count', 'runs'];
 
+// Hard partition keys: runs disagreeing on ANY of these represent materially different
+// executions and must never be folded into one aggregate. Beyond the original grouping/family
+// keys, project_commit/model_resolved/platform/skill_source_sha/policy_sha256 guard against
+// silently averaging across a re-pinned scenario commit, a different resolved model, a
+// different host platform, a different skill snapshot, or a changed policy-hook version.
+export const HARD_PARTITION_FIELDS = [
+  'scenario_id', 'condition', 'family', 'run_kind', 'cache_state',
+  'project_commit', 'model_resolved', 'platform', 'skill_source_sha', 'policy_sha256',
+];
+
 export function validateAggregateGroupKey(key) {
   const errors = [];
   if (key == null || typeof key !== 'object') {
     errors.push({ field: '(root)', message: 'group key is not an object' });
     return errors;
   }
-  for (const f of ['scenario_id', 'condition', 'family', 'run_kind', 'cache_state']) {
+  for (const f of HARD_PARTITION_FIELDS) {
     if (!(f in key)) errors.push({ field: f, message: 'aggregate group key missing required partition field' });
   }
   return errors;
 }
 
 // Fairness Contract as code: refuses to fold runs into one aggregate group unless they agree
-// on every hard partition key -- mixing family, cache_state, or run_kind is a validation error,
-// and any benchmark_eligible:false run is refused outright (calibration/corpus-probe/smoke prove
-// the harness works; they are never measurement data).
+// on every hard partition key (HARD_PARTITION_FIELDS) -- mixing any of them is a validation
+// error, any benchmark_eligible:false run is refused outright (calibration/corpus-probe/smoke
+// prove the harness works; they are never measurement data), and duplicate/empty run_id values
+// are rejected before counting so a re-submitted run can't silently inflate run_count.
 export function buildAggregateGroup(runs) {
   const errors = [];
   if (!Array.isArray(runs) || runs.length === 0) {
     errors.push({ field: 'runs', message: 'must be a non-empty array' });
     return { errors, group: null };
   }
+  const runIds = runs.map((r) => r?.run_id);
+  if (runIds.some((id) => typeof id !== 'string' || id.length === 0)) {
+    errors.push({ field: 'run_id', message: 'every run must have a non-empty run_id' });
+  } else if (new Set(runIds).size !== runIds.length) {
+    errors.push({ field: 'run_id', message: 'duplicate run_id values are not allowed in one aggregate group' });
+  }
   const ineligible = runs.filter((r) => r.benchmark_eligible !== true);
   if (ineligible.length > 0) {
     errors.push({ field: 'benchmark_eligible', message: `${ineligible.length} run(s) are benchmark_eligible:false and cannot be folded into a publishable aggregate` });
   }
-  const partitionFields = ['scenario_id', 'condition', 'family', 'run_kind', 'cache_state'];
-  for (const f of partitionFields) {
+  for (const f of HARD_PARTITION_FIELDS) {
     const values = new Set(runs.map((r) => r[f]));
     if (values.size > 1) errors.push({ field: f, message: `mixed values in one aggregate group: ${[...values].join(', ')}` });
   }
   if (errors.length > 0) return { errors, group: null };
   const [first] = runs;
+  const group_key = {};
+  for (const f of HARD_PARTITION_FIELDS) group_key[f] = first[f];
   return {
     errors,
     group: {
       schema: CURRENT_AGGREGATE_SCHEMA,
-      group_key: {
-        scenario_id: first.scenario_id, condition: first.condition, family: first.family,
-        run_kind: first.run_kind, cache_state: first.cache_state,
-      },
+      group_key,
       run_count: runs.length,
       runs: runs.map((r) => r.run_id),
     },

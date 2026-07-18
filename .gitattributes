@@ -136,6 +136,7 @@ tools/agentic-eval/corpus/*.json text eol=lf
 tools/agentic-eval/corpus/scenarios/*.json text eol=lf
 tools/agentic-eval/fixtures/calibration-project/*.kts text eol=lf
 tools/agentic-eval/fixtures/calibration-project/gradlew text eol=lf
+tools/agentic-eval/fixtures/calibration-project/gradlew.bat text eol=crlf
 tools/agentic-eval/fixtures/calibration-project/src/commonTest/kotlin/*.kt text eol=lf
 tests/vitest/agentic-eval-*.test.js text eol=lf
 tests/vitest/fixtures/agentic-eval-stream-*.jsonl text eol=lf

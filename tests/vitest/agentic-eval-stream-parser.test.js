@@ -47,6 +47,26 @@ describe('parseStreamJsonl', () => {
     expect(events).toEqual([]);
     expect(malformedLines).toEqual([]);
   });
+
+  it('isolates syntactically-valid JSON that is not an event object (null/string/number/array), instead of crashing on the whole parse', () => {
+    // Each of these parses successfully via JSON.parse -- assigning _receiptNs to a
+    // non-object throws in strict mode (every .mjs is strict), which would previously abort
+    // the entire parse rather than just skipping the one malformed line.
+    const raw = [
+      '{"type":"system","subtype":"init","tools":["Bash"]}',
+      'null',
+      '"just a string"',
+      '42',
+      '[1,2,3]',
+      '{"type":"result","subtype":"success"}',
+    ].join('\n');
+    const { events, malformedLines } = parseStreamJsonl(raw);
+    expect(events.length).toBe(2);
+    expect(events[0].type).toBe('system');
+    expect(events[1].type).toBe('result');
+    expect(malformedLines.length).toBe(4);
+    for (const m of malformedLines) expect(m.error).toContain('must be a JSON object');
+  });
 });
 
 describe('skill availability and invocation detection (real captured event shapes)', () => {
@@ -96,6 +116,51 @@ describe('hook accounting -- proves every Bash call reached the policy hook', ()
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'x' } }] } },
     ];
     expect(countHookEvents(events).everyCallHooked).toBe(false);
+  });
+
+  function hookEvent(subtype, hookId, extra = {}) {
+    return { type: 'system', subtype, hook_id: hookId, hook_name: 'PreToolUse:Bash', hook_event: 'PreToolUse', ...extra };
+  }
+  function bashUse() {
+    return { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'x' } }] } };
+  }
+  const allowResponse = { output: JSON.stringify({ hookSpecificOutput: { permissionDecision: 'allow' } }) };
+
+  it('reports everyCallHooked:false when a duplicate hook_id makes aggregate counts balance despite one Bash call never being hooked', () => {
+    // 2 real Bash calls, but the SAME hook_id fires twice for the first one while the second
+    // call is never hooked at all -- a pure count comparison (2 Bash === 2 started === 2
+    // response) would wrongly report true; id-set/uniqueness checking must catch this.
+    const events = [
+      bashUse(),
+      hookEvent('hook_started', 'dup-id'), hookEvent('hook_started', 'dup-id'),
+      hookEvent('hook_response', 'dup-id', allowResponse), hookEvent('hook_response', 'dup-id', allowResponse),
+      bashUse(),
+    ];
+    const stats = countHookEvents(events);
+    expect(stats.hookCallCount).toBe(2);
+    expect(stats.hookResponseCount).toBe(2);
+    expect(stats.everyCallHooked).toBe(false);
+  });
+
+  it('ignores hook events for a different hook_name (non-Bash tool) when counting', () => {
+    const events = [
+      bashUse(),
+      hookEvent('hook_started', 'id-1'), hookEvent('hook_response', 'id-1', allowResponse),
+      { type: 'system', subtype: 'hook_started', hook_id: 'id-unrelated', hook_name: 'PreToolUse:SomeOtherTool', hook_event: 'PreToolUse' },
+      { type: 'system', subtype: 'hook_response', hook_id: 'id-unrelated', hook_name: 'PreToolUse:SomeOtherTool', hook_event: 'PreToolUse', ...allowResponse },
+    ];
+    const stats = countHookEvents(events);
+    expect(stats.hookCallCount).toBe(1);
+    expect(stats.hookResponseCount).toBe(1);
+    expect(stats.everyCallHooked).toBe(true);
+  });
+
+  it('reports everyCallHooked:true for genuinely distinct, correctly-paired hook ids (real fixture, post-fix)', () => {
+    const { events } = parseStreamJsonl(currentSkillRaw);
+    const stats = countHookEvents(events);
+    expect(stats.hookCallCount).toBe(2);
+    expect(new Set(events.filter((e) => e.subtype === 'hook_started').map((e) => e.hook_id)).size).toBe(2);
+    expect(stats.everyCallHooked).toBe(true);
   });
 });
 

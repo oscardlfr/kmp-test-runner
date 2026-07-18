@@ -69,6 +69,33 @@ describe('makeFirstMatchSignalPredicate', () => {
     const findSignal = makeFirstMatchSignalPredicate(['x']);
     expect(() => findSignal([{ type: 'system', subtype: 'init' }])).not.toThrow();
   });
+
+  it('does not match on the injected prompt text or assistant prose -- only tool_use/tool_result blocks count as a signal', () => {
+    // The very first user event in a real stream IS the injected prompt itself; a naive scan
+    // of ALL content would let a scenario prompt that mentions its own subject (e.g.
+    // "core:common") match at event 0, reporting a near-zero "useful signal" that proves
+    // nothing actually ran. Covers both plausible raw-prompt shapes (a plain string, and an
+    // array of only "text" blocks) plus assistant prose mentioning the same term.
+    const findSignal = makeFirstMatchSignalPredicate(['core:common']);
+    const events = [
+      { type: 'user', message: { content: 'Check the core:common module for test coverage.' } },
+      { type: 'user', message: { content: [{ type: 'text', text: 'core:common results please' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Let me look at core:common.' }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'kmp-test parallel --module-filter core:common' } }] } },
+    ];
+    const signal = findSignal(events);
+    expect(signal).not.toBeNull();
+    expect(signal.index).toBe(3);
+  });
+
+  it('still matches a genuine user tool_result block, not just assistant tool_use', () => {
+    const findSignal = makeFirstMatchSignalPredicate(['core:common']);
+    const events = [
+      { type: 'user', message: { content: 'core:common' } },
+      { type: 'user', message: { content: [{ type: 'tool_result', content: 'core:common: 12 tests passed' }] } },
+    ];
+    expect(findSignal(events).index).toBe(1);
+  });
 });
 
 describe('grader registry', () => {

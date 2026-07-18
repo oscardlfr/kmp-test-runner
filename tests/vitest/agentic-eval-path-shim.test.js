@@ -105,4 +105,30 @@ describe('buildPathShim -- real subprocess variant (local node only, no Claude, 
     expect(homedirSeen).toBe(tempHome);
     expect(homedirSeen).not.toBe(mockRealHome);
   });
+
+  it('a worktree path containing shell metacharacters is invoked literally, not expanded', () => {
+    // If the pinned path were ever embedded in a double-quoted bash string (it must not be),
+    // bash would try to expand "$AEPS_METACHAR_PROBE_UNSET" as a variable -- unset, so it
+    // silently becomes an empty string, corrupting the path and breaking the exec. Single-quote
+    // escaping keeps a '$'-bearing path segment fully literal.
+    const parent = mkdtempSync(path.join(os.tmpdir(), 'aeps-metachar-'));
+    tmpDirs.push(parent);
+    const worktreeRoot = path.join(parent, '$AEPS_METACHAR_PROBE_UNSET-dir');
+    mkdirSync(path.join(worktreeRoot, 'bin'), { recursive: true });
+    writeFileSync(
+      path.join(worktreeRoot, 'bin', 'kmp-test.js'),
+      '#!/usr/bin/env node\nconsole.log("PINNED-VERSION-MARKER");\nconsole.log(require("os").homedir());\n',
+    );
+
+    const { shimDir, posixShimPath } = buildPathShim({ worktreeRoot });
+    tmpDirs.push(shimDir);
+    const tempHome = mkdtempSync(path.join(os.tmpdir(), 'aeps-metachar-home-'));
+    tmpDirs.push(tempHome);
+
+    const r = spawnSync('bash', ['-c', posixShimPath.replace(/\\/g, '/')], {
+      env: { ...process.env, KMP_EVAL_TEMP_HOME: tempHome },
+      encoding: 'utf8',
+    });
+    expect(r.stdout.trim().split('\n')[0]).toBe('PINNED-VERSION-MARKER');
+  });
 });
