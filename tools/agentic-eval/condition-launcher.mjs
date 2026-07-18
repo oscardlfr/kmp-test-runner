@@ -9,12 +9,19 @@
 import { spawn, execFile } from 'node:child_process';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { buildEvalEnv } from './env-builder.mjs';
 import { buildPolicyEnvValues, computePolicySha256 } from './policy-config.mjs';
 import { resolveBash } from './resolve-bash.mjs';
 
-const POLICY_HOOK_PATH = join(import.meta.dirname, 'policy-hook.mjs');
+// dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
+// but package.json declares "node": ">=18". Confirmed to actually matter: a real ubuntu-latest
+// CI job resolved an older node for this exact subprocess path and threw
+// ERR_INVALID_ARG_TYPE (join(undefined, ...)) the first time anything actually spawned
+// cli.mjs as a real child process in CI.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const POLICY_HOOK_PATH = join(__dirname, 'policy-hook.mjs');
 
 const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
 

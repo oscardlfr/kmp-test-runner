@@ -24,6 +24,7 @@
 import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
 import { CURRENT_RUN_SCHEMA, validateRun, validateScenario } from './schemas.mjs';
@@ -36,7 +37,11 @@ import { aggregateRuns } from './aggregate.mjs';
 import { assertCleanOrThrow } from './privacy.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 
-const REPO_ROOT = join(import.meta.dirname, '..', '..');
+// dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
+// but package.json declares "node": ">=18" (confirmed to actually matter on a real ubuntu-latest
+// CI job -- see condition-launcher.mjs's identical fix for the full story).
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dirname, '..', '..');
 const PINNED_SKILL_SHA = 'c5c0661852f7c9da145ef56892048e706216a6ce';
 const RUNS_ROOT = join(REPO_ROOT, 'tools', 'runs');
 
@@ -298,7 +303,7 @@ async function cmdCalibrate(args) {
   const privatePatternsFile = args['private-patterns-file'] ?? null;
   const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
   const { computePolicySha256 } = await import('./policy-config.mjs');
-  const templateDir = join(import.meta.dirname, 'fixtures', 'calibration-project');
+  const templateDir = join(__dirname, 'fixtures', 'calibration-project');
   const conditionPair = await runConditionPair({
     prompt: 'Use the kmp-test-runner skill to check this project.',
     model,
@@ -410,7 +415,7 @@ async function cmdSmoke(args) {
 }
 
 function cmdCorpusValidate() {
-  const corpusDir = join(import.meta.dirname, 'corpus');
+  const corpusDir = join(__dirname, 'corpus');
   const scenariosDir = join(corpusDir, 'scenarios');
   let ok = true;
   if (existsSync(scenariosDir)) {

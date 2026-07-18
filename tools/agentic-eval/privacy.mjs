@@ -5,10 +5,14 @@
 // following tools/wet-evidence.mjs's established pattern: redact, then re-scan with findLeaks
 // before anything leaves the gitignored raw-transcript location, and refuse (never silently
 // omit) if anything still matches.
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
 
-const REDACT_MODULE_PATH = resolve(import.meta.dirname, '..', 'lib', 'redact.mjs');
+// dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
+// but package.json declares "node": ">=18" (confirmed to actually matter on a real ubuntu-latest
+// CI job -- see condition-launcher.mjs's identical fix for the full story).
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REDACT_MODULE_PATH = resolve(__dirname, '..', 'lib', 'redact.mjs');
 // Dynamic import via pathToFileURL -- a raw "C:\..." path throws ERR_UNSUPPORTED_ESM_URL_SCHEME
 // on Windows (the same fix tools/runs/agentic-usage-benchmark-v2-2026-07-17/harness.mjs needed).
 const { PUBLIC_SHAPE_RULES, redactText, findLeaks, loadPrivateRules } = await import(pathToFileURL(REDACT_MODULE_PATH).href);
