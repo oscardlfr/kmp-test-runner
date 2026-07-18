@@ -28,7 +28,7 @@ const RUN_CANONICAL_FIELDS = [
   'schema', 'run_id', 'run_kind', 'benchmark_eligible', 'scenario_id', 'query_id', 'condition',
   'skill_source_sha', 'kmp_test_cli_version', 'kmp_test_cli_source_sha',
   'resolved_kmp_test_executable_path', 'model_requested', 'model_resolved', 'session_id_observed',
-  'repo_commit', 'project_alias', 'project_commit', 'platform', 'family', 'cache_state',
+  'claude_code_version', 'repo_commit', 'project_alias', 'project_commit', 'project_url', 'platform', 'family', 'cache_state',
   'daemon_policy', 'env_allowlist_profile', 'seed', 'order_index', 'started_at', 'ended_at',
   'wall_clock_ms', 'skill_available', 'skill_invocation_attempted', 'skill_invoked', 'skill_invocation_event', 'success',
   'expected_outcome_matched', 'first_useful_signal_ms', 'first_useful_signal_event', 'tokens',
@@ -225,8 +225,7 @@ export function validateScenario(scenario) {
     errors.push({ field: 'project_url', message: 'must be an https URL (public project)' });
   }
   if (typeof scenario.prompt !== 'string' || scenario.prompt.length === 0) errors.push({ field: 'prompt', message: 'must be a non-empty string' });
-  const bannedTermsRe = /\bkmp-test\b|kmp-test-runner|bin[\\/]kmp-test\.js/i;
-  if (typeof scenario.prompt === 'string' && bannedTermsRe.test(scenario.prompt)) {
+  if (typeof scenario.prompt === 'string' && BANNED_TERMS_RE.test(scenario.prompt)) {
     errors.push({ field: 'prompt', message: 'must not mention kmp-test, the skill name, or the bin path' });
   }
   if (scenario.grader == null || typeof scenario.grader.kind !== 'string') errors.push({ field: 'grader', message: 'must have a string "kind"' });
@@ -234,6 +233,76 @@ export function validateScenario(scenario) {
     errors.push({ field: 'first_useful_signal_predicate', message: 'must have a string "description"' });
   }
 
+  return { errors, warnings };
+}
+
+// Shared across validateScenario (prompt field) and validateTriggerQueries (each query's text)
+// -- a single exported constant so both call sites (and tests) can never silently drift apart.
+export const BANNED_TERMS_RE = /\bkmp-test\b|kmp-test-runner|bin[\\/]kmp-test\.js/i;
+// A query mentioning a specific expected COMMAND or ACTIVATION outcome would leak the exact
+// signal a corpus-probe run is trying to measure whether the model discovers on its own.
+export const SUSPICIOUS_ACTIVATION_HINT_RE = /--json|--dry-run|gradlew|Skill tool|invoke the skill/i;
+const TRIGGER_QUERY_EXPECTED_VALUES = ['should-trigger', 'near-miss'];
+const TRIGGER_QUERY_PARTITION_VALUES = ['train', 'held-out'];
+
+/**
+ * Validates tools/agentic-eval/corpus/trigger-queries.json's actual CONTENT -- not just its
+ * should-trigger/near-miss category counts (an earlier version of `corpus validate` only
+ * counted categories; this is what the README already claimed it did). Each query's shape
+ * (id/expected/partition/text), uniqueness of id, the banned-terms rule, and the
+ * suspicious-activation-hint rule are all checked here, matching
+ * tests/vitest/agentic-eval-corpus.test.js's own (separately maintained, pre-existing)
+ * assertions -- exported so both the CLI command and that test call the SAME logic instead of
+ * two hand-maintained copies risking drift.
+ */
+export function validateTriggerQueries(triggers) {
+  const errors = [];
+  const warnings = [];
+  if (triggers == null || typeof triggers !== 'object' || !Array.isArray(triggers.queries)) {
+    errors.push({ field: 'queries', message: 'must be an object with a "queries" array' });
+    return { errors, warnings };
+  }
+  const seenIds = new Set();
+  for (const [i, q] of triggers.queries.entries()) {
+    const label = `queries[${i}]`;
+    if (q == null || typeof q !== 'object') {
+      errors.push({ field: label, message: 'must be an object' });
+      continue;
+    }
+    if (typeof q.id !== 'string' || q.id.length === 0) {
+      errors.push({ field: `${label}.id`, message: 'must be a non-empty string' });
+    } else if (seenIds.has(q.id)) {
+      errors.push({ field: `${label}.id`, message: `duplicate id: ${q.id}` });
+    } else {
+      seenIds.add(q.id);
+    }
+    if (!TRIGGER_QUERY_EXPECTED_VALUES.includes(q.expected)) {
+      errors.push({ field: `${label}.expected`, message: `must be one of ${TRIGGER_QUERY_EXPECTED_VALUES.join('|')}` });
+    }
+    if (!TRIGGER_QUERY_PARTITION_VALUES.includes(q.partition)) {
+      errors.push({ field: `${label}.partition`, message: `must be one of ${TRIGGER_QUERY_PARTITION_VALUES.join('|')}` });
+    }
+    if (typeof q.text !== 'string' || q.text.length === 0) {
+      errors.push({ field: `${label}.text`, message: 'must be a non-empty string' });
+    } else {
+      if (BANNED_TERMS_RE.test(q.text)) {
+        errors.push({ field: `${label}.text`, message: 'must not mention kmp-test, the skill name, or the bin path' });
+      }
+      if (SUSPICIOUS_ACTIVATION_HINT_RE.test(q.text)) {
+        errors.push({ field: `${label}.text`, message: 'must not mention an expected command or activation outcome' });
+      }
+    }
+  }
+  const shouldTrigger = triggers.queries.filter((q) => q?.expected === 'should-trigger');
+  const nearMiss = triggers.queries.filter((q) => q?.expected === 'near-miss');
+  if (shouldTrigger.length < 10) errors.push({ field: 'queries', message: `needs at least 10 should-trigger queries, has ${shouldTrigger.length}` });
+  if (nearMiss.length < 10) errors.push({ field: 'queries', message: `needs at least 10 near-miss queries, has ${nearMiss.length}` });
+  for (const expected of TRIGGER_QUERY_EXPECTED_VALUES) {
+    const partitions = new Set(triggers.queries.filter((q) => q?.expected === expected).map((q) => q?.partition));
+    for (const partition of TRIGGER_QUERY_PARTITION_VALUES) {
+      if (!partitions.has(partition)) errors.push({ field: 'queries', message: `${expected} has no ${partition}-partition query` });
+    }
+  }
   return { errors, warnings };
 }
 
@@ -251,11 +320,15 @@ const AGGREGATE_CANONICAL_FIELDS = ['schema', 'group_key', 'run_count', 'runs'];
 // different command-policy configuration -- policy_sha256 only captures policy-hook.mjs's own
 // source code, not the CALLER-supplied allowed-task/subcommand lists it's configured with, which
 // change what a run was actually permitted to do just as materially as the hook's code does.
+// claude_code_version guards against silently averaging across a different Claude Code CLI
+// release, which can change event shapes or tool behavior independent of anything this harness
+// itself controls.
 export const HARD_PARTITION_FIELDS = [
   'scenario_id', 'condition', 'family', 'run_kind', 'cache_state',
   'project_commit', 'model_resolved', 'platform', 'skill_source_sha', 'policy_sha256',
   'kmp_test_cli_source_sha', 'daemon_policy',
   'env_allowlist_profile', 'policy_allowed_gradle_tasks', 'policy_allowed_kmptest_subcommands',
+  'claude_code_version',
 ];
 
 // Some HARD_PARTITION_FIELDS values (the two policy_allowed_* lists) are arrays -- a plain

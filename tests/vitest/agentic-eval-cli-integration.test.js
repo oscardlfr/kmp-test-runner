@@ -112,6 +112,22 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     }
   }, 20000);
 
+  // Regression coverage for a real gap an independent review pass found: raw_capture_location was
+  // a hardcoded 'tools/runs/...' literal regardless of where the raw transcript ACTUALLY landed --
+  // wrong (and only .gitignore-covered) once KMP_EVAL_RUNS_ROOT is set, which every test in this
+  // file already does. Fixed: the field is honest about a non-default root, and the actual
+  // override path (runsRoot, a temp directory) is never itself written into the record.
+  it('discloses a non-default KMP_EVAL_RUNS_ROOT honestly, never leaking the real override path', () => {
+    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('success'));
+    expect(result.status).toBe(0);
+    const { recordA, recordB } = result.parsed;
+    for (const record of [recordA, recordB]) {
+      expect(record.raw_capture_location).toBe('(KMP_EVAL_RUNS_ROOT override -- see errors[])');
+      expect(record.raw_capture_location).not.toContain(runsRoot);
+      expect(record.errors.some((e) => e.code === 'raw_capture_location_overridden')).toBe(true);
+    }
+  }, 20000);
+
   // This fixture's no-skill arm (A) genuinely attempts nothing; its current-skill arm (B)
   // genuinely attempts AND succeeds (mirrors the success fixture's own Skill-invocation shape).
   // Asserting the granular reason string -- not just "it failed" -- proves invocationOk is the
@@ -165,6 +181,9 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
     gitViaBash(['add', '-A'], sourceRepoDir);
     gitViaBash(['commit', '-q', '-m', 'initial'], sourceRepoDir);
     pinnedCommit = gitViaBash(['rev-parse', 'HEAD'], sourceRepoDir).trim();
+    // A fake (never-fetched-from) origin remote -- lets tests prove project_url is resolved
+    // from the REAL git remote of whatever --source-repo-dir points to, not hardcoded.
+    gitViaBash(['remote', 'add', 'origin', 'https://github.com/example/fake-scenario-repo.git'], sourceRepoDir);
   });
 
   afterEach(() => {
@@ -191,6 +210,36 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
     expect(recordA.privacy_status).toBe('public');
 
     expect(listEvidenceFiles('smoke').length).toBe(2);
+  }, 30000);
+
+  // See calibrate's identical regression test above for the full rationale -- smoke goes through
+  // the same buildRunRecord/writeRunRecordEvidence path and shares the bug class.
+  it('discloses a non-default KMP_EVAL_RUNS_ROOT honestly, never leaking the real override path', () => {
+    const result = runCli(smokeArgs(), fakeClaudeEnv('success'));
+    expect(result.status).toBe(0);
+    const { recordA, recordB } = result.parsed;
+    for (const record of [recordA, recordB]) {
+      expect(record.raw_capture_location).toBe('(KMP_EVAL_RUNS_ROOT override -- see errors[])');
+      expect(record.raw_capture_location).not.toContain(runsRoot);
+      expect(record.errors.some((e) => e.code === 'raw_capture_location_overridden')).toBe(true);
+    }
+  }, 30000);
+
+  // Regression coverage for a real bypass an independent review pass demonstrated: scenario_id
+  // was HARDCODED to 'kampkit-android-host-test-discovery' regardless of --source-repo-dir/
+  // --project-alias -- a smoke run against ANY other project was still labeled as if it were
+  // KaMPKit. project_url was never recorded at all. Fixed: scenario_id derives from the actual
+  // --project-alias; project_url is the real git remote origin URL of --source-repo-dir.
+  it('scenario_id and project_url reflect the ACTUAL project smoke is pointed at, never a hardcoded kampkit label', () => {
+    const result = runCli(smokeArgs([], 'totally-different-project'), fakeClaudeEnv('success'));
+    expect(result.status).toBe(0);
+    const { recordA, recordB } = result.parsed;
+    expect(recordA.scenario_id).toBe('totally-different-project-android-host-test-discovery');
+    expect(recordA.scenario_id).not.toContain('kampkit');
+    expect(recordB.scenario_id).toBe(recordA.scenario_id);
+    expect(recordA.project_alias).toBe('totally-different-project');
+    expect(recordA.project_url).toBe('https://github.com/example/fake-scenario-repo.git');
+    expect(recordB.project_url).toBe('https://github.com/example/fake-scenario-repo.git');
   }, 30000);
 
   // Regression coverage for a real fail-open bug found by an independent review pass: records
@@ -224,32 +273,99 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
     }
   }, 30000);
 
-  // Regression coverage for a real bypass an independent review pass demonstrated: records were
-  // redacted (assertCleanOrThrow, which only checks for LEAK patterns via findLeaks, not JSON
-  // structural validity) and WRITTEN to disk, with JSON.parse() only attempted afterward -- a
-  // private-pattern replacement string containing a raw, unescaped newline breaks JSON syntax
-  // once substituted into what was a JSON string value, but findLeaks has no way to catch that,
-  // so invalid-JSON evidence could previously reach disk. This drives a real subprocess with a
-  // patterns file whose replacement contains an actual newline byte (valid in the patterns FILE
-  // itself, which JSON-escapes it as \n -- redactText substitutes the REAL in-memory string,
-  // newline byte and all) and asserts the run fails closed with NO evidence written, rather than
-  // writing a file that then can't even be parsed back.
-  it('refuses to write evidence when a private-pattern replacement would produce invalid JSON', () => {
+  // Regression coverage for a real, reproduced privacy bypass an independent review pass
+  // demonstrated directly against this code: an EARLIER version redacted by JSON.stringify()-ing
+  // the whole record FIRST, then running text-level redaction on that already-serialized blob.
+  // JSON.stringify() escapes every backslash in a string as TWO characters (\ becomes \\), but
+  // PUBLIC_SHAPE_RULES' user_path_win rule is written to match a SINGLE literal backslash --
+  // redacting the JSON-escaped text silently failed to match, letting a real Windows user-home
+  // path survive completely untouched (confirmed empirically: a literal "C:\Users\<username>\..."
+  // path passed assertCleanOrThrow() intact once JSON.stringify() had already run on it). This
+  // drives a real subprocess with a Windows-path-SHAPED value planted in --project-alias (a
+  // PUBLIC_SHAPE_RULES match -- no custom --private-patterns-file needed, proving the built-in,
+  // always-on rule itself now works) and asserts it's redacted to <USER_PATH> in BOTH stdout and
+  // the written evidence file, never surviving as the raw path in either.
+  it('a Windows user-home-shaped path is redacted correctly -- not silently missed due to JSON-escaped backslashes', () => {
+    const windowsPath = 'C:\\Users\\someuser\\private-app';
+    const result = runCli(smokeArgs([], windowsPath), fakeClaudeEnv('success'));
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('someuser');
+    expect(result.stdout).not.toContain('private-app');
+    expect(result.stdout).toContain('<USER_PATH>');
+    expect(result.parsed.recordA.project_alias).toBe('<USER_PATH>');
+
+    const files = listEvidenceFiles('smoke');
+    expect(files.length).toBe(2);
+    const writtenText = readFileSync(path.join(evidenceDirFor('smoke'), files[0]), 'utf8');
+    expect(writtenText).not.toContain('someuser');
+    expect(writtenText).not.toContain('private-app');
+    expect(JSON.parse(writtenText).project_alias).toBe('<USER_PATH>');
+  }, 30000);
+
+  // Regression coverage for a real bypass an independent review pass demonstrated: an EARLIER
+  // version redacted records by JSON.stringify()-ing first, then running text-level redaction on
+  // that already-serialized blob -- a private-pattern replacement string containing a raw,
+  // unescaped newline broke JSON syntax once substituted into what was a JSON string value
+  // (findLeaks has no way to catch that; it only checks for leak PATTERNS, not JSON structural
+  // validity), so invalid-JSON evidence could previously reach disk. A later, more fundamental
+  // fix (field-level redaction BEFORE the one-and-only JSON.stringify() call, in
+  // tools/lib/redact.mjs's redactValue()) makes this failure mode structurally impossible rather
+  // than merely detecting it after the fact: JSON.stringify() always correctly escapes whatever
+  // a replacement string contains, including a raw newline. This test now proves that guarantee
+  // directly -- the exact same "breaking" replacement string from the original finding is used,
+  // and the run must now SUCCEED, with the newline correctly escaped as \n in the written
+  // evidence (still valid, re-parseable JSON), not silently corrupt anything.
+  it('a private-pattern replacement containing a raw newline is safely JSON-escaped, not left to break JSON syntax', () => {
     const patternsFile = path.join(os.tmpdir(), `aeci-breaking-patterns-${process.pid}-${Date.now()}.json`);
     const secretMarker = 'another-fake-marker-not-a-real-secret-xyz';
     writeFileSync(patternsFile, JSON.stringify([
-      { class: 'test_marker', literal: secretMarker, replacement: 'line-one\nline-two-breaks-json' },
+      { class: 'test_marker', literal: secretMarker, replacement: 'line-one\nline-two-used-to-break-json' },
     ]));
     try {
-      const before = listEvidenceFiles('smoke');
       const result = runCli(smokeArgs(['--private-patterns-file', patternsFile], secretMarker), fakeClaudeEnv('success'));
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain('SMOKE FAILED');
-      expect(result.stderr.toLowerCase()).toContain('invalid json');
-      expect(listEvidenceFiles('smoke')).toEqual(before);
+      expect(result.status).toBe(0);
+      expect(result.parsed).not.toBeNull();
+      expect(result.parsed.recordA.project_alias).toBe('line-one\nline-two-used-to-break-json');
+
+      const files = listEvidenceFiles('smoke');
+      expect(files.length).toBe(2);
+      // The written file is still valid, re-parseable JSON -- readFileSync + JSON.parse would
+      // throw here if the newline had corrupted the structure the way the original finding
+      // demonstrated.
+      const writtenText = readFileSync(path.join(evidenceDirFor('smoke'), files[0]), 'utf8');
+      const writtenRecord = JSON.parse(writtenText);
+      expect(writtenRecord.project_alias).toBe('line-one\nline-two-used-to-break-json');
+      // The RAW marker must never survive uninterpreted -- it was replaced, not left alone.
+      expect(writtenText).not.toContain(secretMarker);
     } finally {
       rmSync(patternsFile, { force: true });
     }
+  }, 30000);
+
+  // Regression coverage for the exact real adversarial transcript an independent review pass
+  // constructed against this code: an init event declaring Read alongside Bash/Skill, with Read
+  // actually invoked once (and succeeding) alongside both expected Bash calls also succeeding.
+  // An EARLIER version of smokeHardGate returned {ok:true} for exactly this transcript, since it
+  // never inspected the init event's own tools field or scanned for tool_use events beyond the
+  // two expected Bash calls -- "the two expected commands succeeded" was treated as sufficient
+  // proof of a narrow session, when it wasn't.
+  it('unexpected-tool scenario: fails the hard gate (Read enabled and invoked) and writes NO evidence', () => {
+    const result = runCli(smokeArgs(), fakeClaudeEnv('unexpected-tool'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('SMOKE FAILED');
+    expect(result.stderr).toContain('toolProfileOk:false');
+    expect(result.stderr).toContain('noUnexpectedToolsOk:false');
+    // Everything else about this transcript is genuinely clean -- isolating the two new checks
+    // as the ones actually catching this, not an artifact of something else also being broken.
+    expect(result.stderr).toContain('availabilityOk:true');
+    expect(result.stderr).toContain('initOk:true');
+    expect(result.stderr).toContain('processOk:true');
+    expect(result.stderr).toContain('resultOk:true');
+    expect(result.stderr).toContain('hookAccountingOk:true');
+    expect(result.stderr).toContain('realWorkOk:true');
+    expect(result.stderr).toContain('exactCommandsOk:true');
+    expect(result.stderr).toContain('cleanTranscriptOk:true');
+    expect(listEvidenceFiles('smoke').length).toBe(0);
   }, 30000);
 
   // This fixture's only Bash call is an unrelated, denied `ls` -- honestly, that ONE fact trips

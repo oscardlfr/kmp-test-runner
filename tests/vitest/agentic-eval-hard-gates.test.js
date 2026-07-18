@@ -22,6 +22,10 @@
 import { describe, it, expect } from 'vitest';
 import { calibrationHardGate, smokeHardGate } from '../../tools/agentic-eval/cli.mjs';
 
+function bashToolUseEvent(id, command) {
+  return { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', id, input: { command } }] } };
+}
+
 function passA(overrides = {}) {
   return {
     skill_available: { value: false, reason: null },
@@ -50,12 +54,22 @@ function passB(overrides = {}) {
 
 function passRunResult(overrides = {}) {
   return {
-    init: { model: 'claude-sonnet-5-fake-resolved', plugins: [] },
+    init: {
+      model: 'claude-sonnet-5-fake-resolved',
+      plugins: [],
+      tools: ['Bash', 'Skill'],
+      mcp_servers: [],
+      permissionMode: 'dontAsk',
+    },
     result: { subtype: 'success', is_error: false },
     hookStats: { everyCallHooked: true, hookAllowCount: 2 },
     bashResults: [
       { command: 'kmp-test doctor --json', resultFound: true, resultIsError: false },
       { command: 'kmp-test describe --json', resultFound: true, resultIsError: false },
+    ],
+    events: [
+      bashToolUseEvent('toolu_1', 'kmp-test doctor --json'),
+      bashToolUseEvent('toolu_2', 'kmp-test describe --json'),
     ],
     malformedLines: [],
     ...overrides,
@@ -157,6 +171,52 @@ describe('calibrationHardGate', () => {
     expect(reason).toContain('hookAccountingOk:true');
   });
 
+  // Regression coverage for a real gap an independent review pass demonstrated: a hard gate
+  // that only checks init!=null can't distinguish a genuinely narrow session from one that
+  // regressed to a wider tool/MCP/permission profile.
+  it('isolates toolProfileOk -- B\'s init event declares Read alongside Bash/Skill', () => {
+    const runB = passRunResult({ init: { ...passRunResult().init, tools: ['Bash', 'Skill', 'Read'] } });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('initOk:true');
+    expect(reason).toContain('toolProfileOk:false');
+    expect(reason).toContain('noUnexpectedToolsOk:true');
+    expect(reason).toContain('processOk:true');
+  });
+
+  it('isolates toolProfileOk -- A\'s init event declares a non-empty mcp_servers list', () => {
+    const runA = passRunResult({ init: { ...passRunResult().init, mcp_servers: [{ name: 'unexpected' }] } });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('toolProfileOk:false');
+    expect(reason).toContain('noUnexpectedToolsOk:true');
+  });
+
+  it('isolates toolProfileOk -- B\'s init event has permissionMode !== dontAsk', () => {
+    const runB = passRunResult({ init: { ...passRunResult().init, permissionMode: 'bypassPermissions' } });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('toolProfileOk:false');
+  });
+
+  // Regression coverage for the real adversarial transcript an independent review pass
+  // constructed: Read enabled AND invoked, alongside both expected Bash calls succeeding --
+  // the OLD gate returned {ok:true} for exactly this transcript.
+  it('isolates noUnexpectedToolsOk -- B invoked Read alongside the expected Bash calls', () => {
+    const base = passRunResult();
+    const runB = passRunResult({ events: [...base.events, { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', id: 'toolu_evil', input: { file_path: '/etc/passwd' } }] } }] });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('initOk:true');
+    expect(reason).toContain('toolProfileOk:true');
+    expect(reason).toContain('noUnexpectedToolsOk:false');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+  });
+
   it('isolates hookAccountingOk -- not every Bash call in B reached the policy hook', () => {
     const runB = passRunResult({ hookStats: { everyCallHooked: false, hookAllowCount: 2 } });
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
@@ -237,6 +297,48 @@ describe('smokeHardGate', () => {
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('initOk:false');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+    expect(reason).toContain('realWorkOk:true');
+    expect(reason).toContain('exactCommandsOk:true');
+    expect(reason).toContain('cleanTranscriptOk:true');
+  });
+
+  // Regression coverage -- see calibrationHardGate's identical tests for the full rationale.
+  it('isolates toolProfileOk -- A\'s init event declares Read alongside Bash/Skill', () => {
+    const runA = passRunResult({ init: { ...passRunResult().init, tools: ['Bash', 'Skill', 'Read'] } });
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('initOk:true');
+    expect(reason).toContain('toolProfileOk:false');
+    expect(reason).toContain('noUnexpectedToolsOk:true');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('realWorkOk:true');
+    expect(reason).toContain('exactCommandsOk:true');
+  });
+
+  it('isolates toolProfileOk -- B\'s init event has permissionMode !== dontAsk', () => {
+    const runB = passRunResult({ init: { ...passRunResult().init, permissionMode: 'acceptEdits' } });
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('toolProfileOk:false');
+  });
+
+  // Regression coverage for the exact real adversarial transcript an independent review pass
+  // constructed: Read enabled AND invoked, alongside both expected Bash calls succeeding -- the
+  // OLD gate returned {ok:true} for exactly this transcript, since it never inspected anything
+  // beyond the two expected Bash calls.
+  it('isolates noUnexpectedToolsOk -- A invoked Read alongside the expected Bash calls', () => {
+    const base = passRunResult();
+    const runA = passRunResult({ events: [...base.events, { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', id: 'toolu_evil', input: { file_path: '/etc/passwd' } }] } }] });
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('initOk:true');
+    expect(reason).toContain('toolProfileOk:true');
+    expect(reason).toContain('noUnexpectedToolsOk:false');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');

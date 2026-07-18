@@ -6,12 +6,24 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateTriggerQueries } from '../../tools/agentic-eval/schemas.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CORPUS_DIR = path.resolve(__dirname, '..', '..', 'tools', 'agentic-eval', 'corpus');
 const BANNED_TERMS_RE = /\bkmp-test\b|kmp-test-runner|bin[\\/]kmp-test\.js/i;
 
 const trigger = JSON.parse(readFileSync(path.join(CORPUS_DIR, 'trigger-queries.json'), 'utf8'));
+
+// Regression coverage for a real contradiction an independent review pass found: `corpus
+// validate` (cli.mjs's cmdCorpusValidate) previously only counted should-trigger/near-miss
+// categories, even though the README claims it validates shape and banned terms too. Fixed by
+// porting this file's own assertions into a shared, exported validateTriggerQueries() that both
+// the CLI command and this test call -- proving here that it agrees with every individual
+// assertion below, on the SAME real corpus file, so the two can never silently drift apart.
+it('validateTriggerQueries reports zero errors for the real, committed trigger-queries.json', () => {
+  const { errors } = validateTriggerQueries(trigger);
+  expect(errors).toEqual([]);
+});
 
 describe('trigger-queries.json', () => {
   it('has at least 10 should-trigger queries', () => {

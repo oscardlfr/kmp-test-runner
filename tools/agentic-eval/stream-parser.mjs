@@ -134,6 +134,49 @@ export function findBashToolUses(events) {
   return out;
 }
 
+/**
+ * Every tool_use block across the WHOLE transcript whose `name` is NOT in `allowedToolNames`.
+ * Regression coverage for a real gap an independent review pass demonstrated: a hard gate that
+ * only checks "the expected Bash calls succeeded" can't distinguish that from a transcript that
+ * ALSO used some other tool (e.g. Read) alongside them -- a real adversarial transcript with
+ * Read enabled and invoked, plus the two expected Bash calls, still passed the old gate outright.
+ * This scans every tool_use in the transcript, not just Bash ones, so an unexpected tool's mere
+ * PRESENCE is caught regardless of whether the expected Bash calls also happened to succeed.
+ */
+export function findUnexpectedToolUses(events, allowedToolNames) {
+  const out = [];
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type !== 'assistant') continue;
+    for (const c of ev.message?.content ?? []) {
+      if (c.type === 'tool_use' && !allowedToolNames.has(c.name)) {
+        out.push({ index: i, receiptNs: ev._receiptNs, name: c.name, id: c.id });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * True only if the init event's OWN declared profile exactly matches what this harness actually
+ * launches with -- `--tools "Bash,Skill"` (as a SET, not proving anything about order), zero MCP
+ * servers, `--permission-mode dontAsk`. Closes a real gap: a hard gate that only checks
+ * `init != null` can't distinguish a genuinely narrow session from one that regressed to a wider
+ * tool/MCP/permission profile (e.g. Read accidentally re-added to buildBaseArgv's --tools, or a
+ * stray MCP server configured in the environment) -- the gate would still pass as long as the
+ * expected Bash calls also happened to succeed, since nothing inspects the init event's own
+ * fields beyond its mere existence.
+ */
+export function hasExpectedToolProfile(initEvent, allowedToolNames) {
+  if (initEvent == null || !Array.isArray(initEvent.tools)) return false;
+  const toolSet = new Set(initEvent.tools);
+  if (toolSet.size !== allowedToolNames.size) return false;
+  for (const t of allowedToolNames) if (!toolSet.has(t)) return false;
+  if (!Array.isArray(initEvent.mcp_servers) || initEvent.mcp_servers.length !== 0) return false;
+  if (initEvent.permissionMode !== 'dontAsk') return false;
+  return true;
+}
+
 /** Every Bash tool_use, each correlated with its OWN tool_result outcome (mirrors
  * findSkillInvocation's attempted-vs-confirmed correlation, generalized to every Bash call).
  * Needed to verify not just THAT commands ran, but that each one's own result was not an error,

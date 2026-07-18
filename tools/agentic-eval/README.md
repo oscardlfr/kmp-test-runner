@@ -143,6 +143,19 @@ fresh, per-test temp directory) instead of the real, shared `tools/runs/` tree �
 version of this test file read/wrote/deleted directly under the real path, which would have
 destroyed real committed evidence the moment any existed there.
 
+`KMP_EVAL_RUNS_ROOT` is a **test-only escape hatch**, not a documented `calibrate`/`smoke` flag —
+real invocations should never set it. Only the default `tools/runs/` root is covered by
+`.gitignore`'s `tools/runs/agentic-eval-*/raw/**` pattern; a run captured under an overridden root
+is NOT gitignore-protected. Rather than silently claiming the default (gitignored) location
+regardless, `buildRunRecord()` checks whether `RUNS_ROOT` is actually the default and, if not,
+replaces `raw_capture_location` with a generic, content-free placeholder (never the real override
+path, which is an arbitrary local filesystem location and could itself be privacy-sensitive) and
+adds a `raw_capture_location_overridden` entry to `errors[]` — verified by
+`tests/vitest/agentic-eval-cli-integration.test.js`'s "discloses a non-default KMP_EVAL_RUNS_ROOT
+honestly" tests (every subprocess this file spawns exercises this exact path) and by
+`tests/vitest/agentic-eval-cli.test.js`'s equivalent default-root test (proving the literal
+`tools/runs/...` path is only ever reported when it's actually true).
+
 Redaction protects **both** the written file and stdout — `finalizeAndWriteRecords()` returns the
 same redacted text it wrote to disk (parsed back, not the original in-memory record), and every
 caller (`cmdCalibrate`/`cmdSmoke`) prints that redacted object, never the original. An earlier

@@ -216,6 +216,43 @@ describe('materializeScenarioProject -- worktree-add failure', () => {
   });
 });
 
+describe('materializeScenarioProject -- reset (existingWorktreeDir)', () => {
+  // Regression coverage for a real gap an independent review pass found: the README claims
+  // scenario-project reset (git clean -fdx && git reset --hard) discards local mutation between
+  // conditions A and B, the same guarantee materializeCalibrationProject's own "reset (existingDir)
+  // ..." test above proves for the copy-based fixture -- but nothing actually exercised the
+  // git-worktree reset path itself. This is the exact mechanism every real calibration/smoke run
+  // depends on to keep condition B from ever seeing condition A's leftovers.
+  it('reset discards local mutation (tracked and untracked) and restores the pinned commit exactly', () => {
+    const sourceRepoDir = mkdtempSync(path.join(os.tmpdir(), 'aemat-scenario-reset-source-'));
+    cleanupDirs.push(sourceRepoDir);
+    gitViaBash(['init', '-q'], sourceRepoDir);
+    gitViaBash(['config', 'user.email', 'test@example.com'], sourceRepoDir);
+    gitViaBash(['config', 'user.name', 'Test'], sourceRepoDir);
+    // A machine-global core.autocrlf=true (common on Windows) would check this file back out as
+    // CRLF regardless of what was committed -- irrelevant to what this test verifies (content
+    // reset, not line-ending policy), so pin it off for this throwaway repo.
+    gitViaBash(['config', 'core.autocrlf', 'false'], sourceRepoDir);
+    writeFileSync(path.join(sourceRepoDir, 'marker.txt'), 'pristine\n');
+    gitViaBash(['add', '-A'], sourceRepoDir);
+    gitViaBash(['commit', '-q', '-m', 'initial'], sourceRepoDir);
+    const pinnedCommit = gitViaBash(['rev-parse', 'HEAD'], sourceRepoDir).trim();
+
+    const { fixtureDir } = materializeScenarioProject({ sourceRepoDir, pinnedCommit });
+    cleanupDirs.push(fixtureDir);
+    // Simulate what condition A's agent session could leave behind: a mutated TRACKED file and a
+    // new UNTRACKED file.
+    writeFileSync(path.join(fixtureDir, 'marker.txt'), 'mutated by condition A\n');
+    writeFileSync(path.join(fixtureDir, 'untracked-junk.txt'), 'should not survive reset');
+
+    const { fixtureDir: fixtureDir2 } = materializeScenarioProject({ sourceRepoDir, pinnedCommit, existingWorktreeDir: fixtureDir });
+    expect(fixtureDir2).toBe(fixtureDir);
+    expect(readFileSync(path.join(fixtureDir2, 'marker.txt'), 'utf8')).toBe('pristine\n');
+    expect(existsSync(path.join(fixtureDir2, 'untracked-junk.txt'))).toBe(false);
+    expect(gitViaBash(['status', '--porcelain'], fixtureDir2).trim()).toBe('');
+  });
+});
+
 describe('materializeGradleUserHome', () => {
   it('creates a temp GRADLE_USER_HOME with the daemon disabled via gradle.properties', () => {
     const { gradleUserHome, daemonPolicy } = materializeGradleUserHome({});

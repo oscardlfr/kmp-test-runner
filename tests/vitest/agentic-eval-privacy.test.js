@@ -3,9 +3,23 @@
 // Synthetic secret-shaped values are split/assembled at runtime so this fixture file itself
 // can't trip tools/decouple-audit.mjs -- matches the existing repo test idiom.
 import { describe, it, expect } from 'vitest';
-import { redactAndVerify, assertCleanOrThrow } from '../../tools/agentic-eval/privacy.mjs';
+import { writeFileSync, rmSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { redactAndVerify, assertCleanOrThrow, redactObjectAndVerify, assertCleanOrThrowObject } from '../../tools/agentic-eval/privacy.mjs';
 
 const FAKE_WIN_PATH = 'C:\\' + 'Users' + '\\' + 'someuser' + '\\projects\\app';
+
+function writeTempPatternsFile(entries) {
+  const dir = mkdtempSync(join(tmpdir(), 'aep-patterns-'));
+  const file = join(dir, 'patterns.json');
+  writeFileSync(file, JSON.stringify(entries));
+  return file;
+}
+
+function cleanupTempPatternsFile(file) {
+  rmSync(join(file, '..'), { recursive: true, force: true });
+}
 
 describe('redactAndVerify', () => {
   it('reports ok:true for text with no sensitive shapes', () => {
@@ -41,5 +55,67 @@ describe('assertCleanOrThrow', () => {
   it('returns redacted (not raw) text for input containing a sensitive shape', () => {
     const redacted = assertCleanOrThrow(`path: ${FAKE_WIN_PATH}`);
     expect(redacted).not.toContain('someuser');
+  });
+
+  // Regression coverage for a real, reproduced bypass an independent review pass demonstrated:
+  // calling this TEXT-level function on an ALREADY-JSON.stringify()'d blob silently fails to
+  // redact a Windows path, because JSON.stringify() escapes every backslash as TWO characters
+  // (\\), while the user_path_win rule's regex is written to match a SINGLE literal backslash.
+  // This documents that failure mode directly (proving the bug is real, not hypothetical) --
+  // the fix is to never call assertCleanOrThrow on pre-serialized JSON; use
+  // assertCleanOrThrowObject on the raw object instead (see below).
+  it('DOES NOT catch a Windows path once JSON.stringify() has already escaped its backslashes -- this is why object-level redaction exists', () => {
+    const alreadySerialized = JSON.stringify({ path: FAKE_WIN_PATH });
+    const redacted = assertCleanOrThrow(alreadySerialized);
+    expect(redacted).toContain('someuser'); // the real, documented bypass -- NOT redacted
+  });
+});
+
+describe('redactObjectAndVerify / assertCleanOrThrowObject', () => {
+  it('redacts a Windows path nested in an object field -- closing the JSON-escaping bypass', () => {
+    const result = redactObjectAndVerify({ project_alias: FAKE_WIN_PATH });
+    expect(result.ok).toBe(true);
+    expect(result.redactedObj.project_alias).not.toContain('someuser');
+    expect(result.redactedObj.project_alias).toBe('<USER_PATH>');
+    expect(result.redactedText).not.toContain('someuser');
+  });
+
+  it('redacts recursively through nested objects and arrays', () => {
+    const result = redactObjectAndVerify({
+      errors: [{ code: 'x', message: `see ${FAKE_WIN_PATH}` }],
+      nested: { deeper: { path: FAKE_WIN_PATH } },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.redactedObj.errors[0].message).not.toContain('someuser');
+    expect(result.redactedObj.nested.deeper.path).toBe('<USER_PATH>');
+  });
+
+  it('leaves non-string values (numbers, booleans, null) untouched', () => {
+    const result = redactObjectAndVerify({ count: 5, ok: true, missing: null });
+    expect(result.redactedObj).toEqual({ count: 5, ok: true, missing: null });
+  });
+
+  it('the returned redactedText is valid, re-parseable JSON even when a private-pattern replacement contains a raw newline', () => {
+    // Regression coverage for a real bug: text-level redaction on an already-serialized blob
+    // could substitute a raw newline INTO a JSON string literal, breaking JSON syntax.
+    // Field-level redaction (this function) redacts the raw string BEFORE the one-and-only
+    // JSON.stringify() call, so the output is always valid JSON no matter what the replacement
+    // string contains -- JSON.stringify() itself correctly escapes it.
+    const marker = 'breaks-json-marker';
+    const privatePatternsFile = writeTempPatternsFile([{ class: 'x', literal: marker, replacement: 'line-one\nline-two' }]);
+    try {
+      const result = redactObjectAndVerify({ note: marker }, { privatePatternsFile });
+      expect(result.ok).toBe(true);
+      expect(() => JSON.parse(result.redactedText)).not.toThrow();
+      expect(JSON.parse(result.redactedText).note).toBe('line-one\nline-two');
+    } finally {
+      cleanupTempPatternsFile(privatePatternsFile);
+    }
+  });
+
+  it('assertCleanOrThrowObject returns {redactedObj, redactedText} when clean', () => {
+    const { redactedObj, redactedText } = assertCleanOrThrowObject({ a: 'clean' });
+    expect(redactedObj).toEqual({ a: 'clean' });
+    expect(JSON.parse(redactedText)).toEqual({ a: 'clean' });
   });
 });

@@ -10,7 +10,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
-import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
+import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
+import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -376,5 +377,121 @@ describe('writeRunRecordEvidence', () => {
     } finally {
       rmSync(runsRoot, { recursive: true, force: true });
     }
+  });
+});
+
+// Regression coverage for a real fail-open gap an independent review pass demonstrated: an
+// EARLIER version disclosed a dirty measured-code tree (bin/lib/scripts) via the run record's
+// own errors[] array, but the hard gate still allowed evidence to be written regardless --
+// meaning committable evidence could claim repo_commit described the exact code that ran when
+// it demonstrably didn't. This constructs a real, schema-valid record pair (via the real
+// buildRunRecord()) and injects the exact errors[] entry a genuinely dirty bin/lib/scripts tree
+// would produce -- proving finalizeAndWriteRecords() itself refuses before ever reaching the
+// hard gate, without needing to actually dirty this repo's own production code during a test.
+describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree', () => {
+  function fakeConditionResult() {
+    return {
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      result: { subtype: 'success', is_error: false },
+      invocation: null,
+      hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
+      events: [],
+    };
+  }
+
+  it('refuses to write evidence -- and never calls the hard gate at all -- when a record carries a dirty_measured_code error', async () => {
+    const policySha256 = computePolicySha256();
+    const common = { runKind: 'calibration', scenarioId: 'test-dirty-tree', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model' };
+    const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
+    const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
+    // Simulate what resolveHarnessProvenance() would have populated for a genuinely dirty
+    // bin/lib/scripts tree -- see cli.mjs's own buildRunRecord for the real construction.
+    recordA.errors = [{ code: 'dirty_measured_code', message: 'bin/kmp-test.js has uncommitted local modifications' }];
+    recordB.errors = [{ code: 'dirty_measured_code', message: 'bin/kmp-test.js has uncommitted local modifications' }];
+
+    let hardGateCalled = false;
+    const result = await finalizeAndWriteRecords({
+      runKind: 'calibration', recordA, recordB,
+      runA: { spawnResult: { rawStdout: '' } },
+      runB: { spawnResult: { rawStdout: '' } },
+      hardGateFn: () => { hardGateCalled = true; return { ok: true, reason: null }; },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('unclean measured-code tree');
+    expect(hardGateCalled).toBe(false);
+  });
+
+  // The hard gate stub returns {ok:false} here (never {ok:true}) -- deliberately, so this test
+  // never reaches writeRunRecordEvidence(). Calling finalizeAndWriteRecords() in-process, this
+  // far, would use cli.mjs's real default RUNS_ROOT (this test file never sets
+  // KMP_EVAL_RUNS_ROOT, and cli.mjs's module-level RUNS_ROOT const is fixed at its first
+  // import) -- a real {ok:true} here would write two real files into the actual, shared
+  // tools/runs/agentic-eval-calibration/ directory. Asserting hardGateCalled===true is the
+  // complete proof this test needs: dirty_harness_tooling did not short-circuit BEFORE the hard
+  // gate, which is the only thing this test claims.
+  it('a dirty_harness_tooling error (tools/agentic-eval itself) does NOT block before reaching the hard gate -- only dirty_measured_code does', async () => {
+    const policySha256 = computePolicySha256();
+    const common = { runKind: 'calibration', scenarioId: 'test-dirty-tooling', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model' };
+    const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
+    const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
+    recordA.errors = [{ code: 'dirty_harness_tooling', message: 'tools/agentic-eval/cli.mjs has uncommitted local modifications' }];
+    recordB.errors = [{ code: 'dirty_harness_tooling', message: 'tools/agentic-eval/cli.mjs has uncommitted local modifications' }];
+
+    let hardGateCalled = false;
+    const result = await finalizeAndWriteRecords({
+      runKind: 'calibration', recordA, recordB,
+      runA: { spawnResult: { rawStdout: '' } },
+      runB: { spawnResult: { rawStdout: '' } },
+      hardGateFn: () => { hardGateCalled = true; return { ok: false, reason: 'stubbed gate rejection -- test never intends to reach a real write' }; },
+    });
+    expect(hardGateCalled).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.reason).not.toContain('unclean measured-code tree');
+  });
+});
+
+// Regression coverage for a real gap an independent review pass found: raw_capture_location was a
+// hardcoded 'tools/runs/...' literal even when KMP_EVAL_RUNS_ROOT overrides where the raw
+// transcript actually lands (as it always does under the subprocess integration tests -- see
+// agentic-eval-cli-integration.test.js's identical-purpose regression tests for the override
+// case). This file never sets KMP_EVAL_RUNS_ROOT, so buildRunRecord() here exercises the DEFAULT
+// root -- the one case the original literal string was actually correct for.
+describe('buildRunRecord -- raw_capture_location under the default (non-overridden) RUNS_ROOT', () => {
+  it('reports the real tools/runs/ path and raises no override error, since this process never set KMP_EVAL_RUNS_ROOT', () => {
+    const conditionResult = {
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      result: { subtype: 'success', is_error: false },
+      invocation: null,
+      hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
+      events: [],
+    };
+    const record = buildRunRecord({
+      conditionResult, condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-default-root',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+    });
+    expect(record.raw_capture_location).toBe('tools/runs/agentic-eval-calibration/raw/');
+    expect(record.errors.some((e) => e.code === 'raw_capture_location_overridden')).toBe(false);
+  });
+});
+
+// cmdCorpusValidate() reads from a fixed, repo-relative corpus/ directory (not
+// parameterizable), so this only proves the wiring succeeds against the real, committed corpus
+// -- the underlying content-validation LOGIC (shape, banned terms, activation hints, partition
+// coverage) has its own comprehensive synthetic-failure-case coverage in
+// agentic-eval-schemas.test.js's validateTriggerQueries describe block.
+describe('cmdCorpusValidate', () => {
+  it('returns 0 (success) against the real, committed corpus', async () => {
+    const { cmdCorpusValidate } = await import('../../tools/agentic-eval/cli.mjs');
+    expect(cmdCorpusValidate()).toBe(0);
   });
 });

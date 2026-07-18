@@ -83,15 +83,19 @@ describe('policy-hook grammar -- approved shapes', () => {
     expect(decision(payload(cmd))).toBe('allow');
   });
 
-  it('allows: .\\gradlew.bat build (Windows relative-path separator -- win32 hosts only)', () => {
-    // A backslash is only a path separator under win32 path semantics; on POSIX hosts
-    // '.\gradlew.bat' is a single literal (nonexistent) filename, so realpath resolution
-    // correctly fails there. This is real, host-dependent production behavior (GRADLE_LEADING_
-    // TOKENS matches the literal token on every platform; only its *resolution* to a real file
-    // is platform-dependent), not a gap -- matches the windows-metachar.test.js house idiom of
-    // an early-return trivial pass on non-Windows hosts.
-    if (process.platform !== 'win32') return;
-    expect(decision(payload('.\\gradlew.bat build'))).toBe('allow');
+  // Regression coverage for a real, confirmed bypass an independent review pass demonstrated:
+  // every approved command actually executes via `bash -c "<command text>"`, and bash parses
+  // '.\gradlew.bat' using POSIX backslash-escaping rules -- '\g' becomes the literal character
+  // 'g' (backslash consumed as an escape, not a path separator) -- confirmed directly:
+  // `bash -c 'echo .\gradlew.bat'` prints `.gradlew.bat`, no leading `/` or `./` at all, which
+  // bash then treats as a BARE command name subject to PATH search, not a fixture-anchored
+  // relative path. An earlier version of this hook's own GRADLE_LEADING_TOKENS accepted this
+  // backslash form and resolved it correctly using Node's win32 path semantics -- meaning what
+  // the hook approved and what bash actually executed diverged completely, letting an
+  // executable planted earlier on PATH substitute for the real gradlew.bat. This form is now
+  // denied on every platform (not just non-Windows) -- there is no host on which it's safe.
+  it('denies: .\\gradlew.bat build on every platform (bash reinterprets the backslash as an escape, not a path separator)', () => {
+    expect(decision(payload('.\\gradlew.bat build'))).toBe('deny');
   });
 });
 

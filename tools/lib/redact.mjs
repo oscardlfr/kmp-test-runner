@@ -178,3 +178,33 @@ export function findLeaks(text, rules) {
   }
   return leaks;
 }
+
+// ---------------------------------------------------------------------------
+// redactValue(value, rules) → value (deep-cloned, every string redacted)
+//
+// Recursively redacts every STRING found anywhere in a JSON-shaped value
+// (object/array/primitive), applying redactText() to each RAW string value
+// directly -- never to an already-JSON.stringify()'d text blob. This closes a
+// real bypass: JSON.stringify() escapes each backslash in a Windows path as
+// TWO characters (\ becomes \\), but user_path_win's regex is written to
+// match a SINGLE literal backslash -- redacting text AFTER serialization
+// silently fails to match the JSON-escaped form (confirmed empirically: a
+// real "C:\Users\<name>\..." path survived redactText()+findLeaks() intact
+// once JSON.stringify() had already run on it). Redacting each string value
+// BEFORE serialization means the regex always sees the real, unescaped path
+// text, matching how tools/wet-evidence.mjs already redacts its own string
+// fields individually (never a pre-serialized blob) -- this generalizes that
+// same proven-correct pattern to an arbitrary object shape via recursion,
+// rather than requiring every caller to enumerate which fields to redact by
+// hand and risk missing one.
+// ---------------------------------------------------------------------------
+export function redactValue(value, rules) {
+  if (typeof value === 'string') return redactText(value, rules);
+  if (Array.isArray(value)) return value.map((v) => redactValue(v, rules));
+  if (value !== null && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = redactValue(v, rules);
+    return out;
+  }
+  return value;
+}

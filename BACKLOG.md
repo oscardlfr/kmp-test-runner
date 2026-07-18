@@ -650,6 +650,35 @@
   picked up automatically by the existing required `build` job -- no new CI job. No
   runtime/wet validation applicable (repo-review config only, not CLI behavior).
 
+- **`tools/agentic-eval/` corpus scenarios + graders (deferred from PR #372, surfaced 2026-07-18
+  during independent review).** PR #372 ships the reproducible skill-evaluation harness
+  FOUNDATION only: isolation (fresh temp fixtures, narrow env allowlist, the `PreToolUse` policy
+  hook), schemas, the trigger-queries corpus, and one bounded `calibrate` + `smoke` run against a
+  single hardcoded prompt. It deliberately does NOT include the 6 scenario definitions originally
+  sketched in that PR's plan (`kampkit-android-host-test-discovery`,
+  `kampkit-no-applicable-tests`, `nowinandroid-core-common`, `deterministic-unit-test-failure`,
+  `coverage-threshold-failure`, `changed-module-verification`) or `graders.mjs` (deterministic,
+  index-returning grader + first-useful-signal predicate per scenario id) — both referenced as
+  future work by `tests/vitest/agentic-eval-corpus.test.js`'s own header comment and by
+  `docs/agentic-usage-measurement.md`'s "Registry relationship" section, but neither existed as a
+  tracked BACKLOG item until now. **Proposed shape (not started):** one JSON scenario file per
+  entry above under `tools/agentic-eval/corpus/scenarios/` (id, family, project alias + public URL
+  + pinned commit, prompt, expected_outcome, grader spec, first-useful-signal predicate spec) +
+  `graders.mjs` implementing one pure function per scenario id, wired through `cli.mjs run` (not
+  yet a subcommand). Own PR(s), small increments preferred over one large one — milestone
+  unassigned, user's call on timing and on how many scenarios ship per PR.
+- **`KMP_EVAL_RUNS_ROOT` real-world scope (surfaced 2026-07-18 during independent review of PR
+  #372).** The env var is a test-only escape hatch so vitest never writes to (or cleans up inside)
+  the real `tools/runs/` tree — but nothing stops an operator from setting it for a real
+  `calibrate`/`smoke` run too, which would move the raw transcript outside `.gitignore`'s
+  `tools/runs/agentic-eval-*/raw/**` coverage. Closed the silent-overclaim half in #372 itself
+  (`raw_capture_location`/`errors[].code:"raw_capture_location_overridden"` now disclose a
+  non-default root honestly instead of always reporting the default path). Not done: any runtime
+  guard that refuses to run (or warns loudly on the command line, not just inside the JSON record)
+  when the var is set outside a test process. Low priority — the var isn't documented as a
+  supported operator flag anywhere, so the realistic exposure is low; revisit if `calibrate`/
+  `smoke` ever gain a real user base beyond this repo's own maintainers.
+
 ### Project conventions (do-not-do list)
 
 - **README "What's new in vX" sections** — don't add. Per-version highlight blocks belong in `CHANGELOG.md` only. Removed twice. See `CLAUDE.md` + `feedback_readme_no_whats_new.md`.

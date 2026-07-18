@@ -203,7 +203,23 @@ export const GRADLE_ALLOWED_FLAGS = new Set(['--offline', '-q', '--quiet', '--co
 // substitute a different executable earlier on PATH (verified with a fake gradlew planted
 // first on PATH during Step 1). Only fixture-anchored forms are allowed, and the wrapper file
 // itself is realpath-resolved below to reject a symlinked substitute too.
-export const GRADLE_LEADING_TOKENS = new Set(['./gradlew', './gradlew.bat', '.\\gradlew.bat']);
+//
+// The PowerShell-style backslash form ('.\gradlew.bat') is deliberately NOT in this set -- a
+// real, confirmed bypass an independent review pass demonstrated: every approved command
+// actually executes via `bash -c "<command text>"` (see condition-launcher.mjs), and this
+// hook's OWN evaluation resolves the literal token text using Node's path module (win32
+// semantics on this harness's actual target), where '.\gradlew.bat' is a valid relative path --
+// but bash parses that SAME literal text using POSIX backslash-escaping rules, where '\g'
+// simply becomes the literal character 'g' (the backslash is consumed as an escape character,
+// not treated as a path separator). Confirmed directly: `bash -c 'echo .\gradlew.bat'` prints
+// `.gradlew.bat` -- no leading `/` or `./` at all, so bash treats it as a BARE command name and
+// searches PATH for it, not as a fixture-anchored relative path. What the hook approves (the
+// real, fixture-anchored gradlew.bat, correctly resolved) and what bash actually executes (a
+// PATH-searched `.gradlew.bat`, which a planted executable earlier on PATH could substitute)
+// diverge completely. Only forward-slash forms are accepted: '/' is not a bash escape
+// character, so './gradlew.bat' is interpreted identically by both the hook's own resolution
+// and bash's actual execution -- no divergence is possible.
+export const GRADLE_LEADING_TOKENS = new Set(['./gradlew', './gradlew.bat']);
 
 export function evaluateGradle(tokens, cwd, config) {
   const wrapperReal = (() => {

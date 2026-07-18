@@ -5,6 +5,7 @@ import {
   CURRENT_RUN_SCHEMA,
   validateRun,
   validateScenario,
+  validateTriggerQueries,
   buildAggregateGroup,
   HARD_PARTITION_FIELDS,
 } from '../../tools/agentic-eval/schemas.mjs';
@@ -25,9 +26,11 @@ function baseRun(overrides = {}) {
     model_requested: 'claude-sonnet-5',
     model_resolved: 'claude-sonnet-5',
     session_id_observed: 'sess-0001',
+    claude_code_version: '1.2.3-fake',
     repo_commit: 'c5c0661852f7c9da145ef56892048e706216a6ce',
     project_alias: 'calibration-project',
     project_commit: null,
+    project_url: null,
     platform: 'windows',
     family: 'trigger-only',
     cache_state: 'unknown',
@@ -482,7 +485,8 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
     expect(HARD_PARTITION_FIELDS).toContain('env_allowlist_profile');
     expect(HARD_PARTITION_FIELDS).toContain('policy_allowed_gradle_tasks');
     expect(HARD_PARTITION_FIELDS).toContain('policy_allowed_kmptest_subcommands');
-    expect(HARD_PARTITION_FIELDS.length).toBe(15);
+    expect(HARD_PARTITION_FIELDS).toContain('claude_code_version');
+    expect(HARD_PARTITION_FIELDS.length).toBe(16);
   });
 
   it('refuses to mix policy_allowed_gradle_tasks within one aggregate group (a materially different command policy)', () => {
@@ -530,5 +534,102 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
     const { errors, group } = buildAggregateGroup([]);
     expect(errors.length).toBeGreaterThan(0);
     expect(group).toBeNull();
+  });
+});
+
+// Regression coverage for a real contradiction an independent review pass found: `corpus
+// validate` only counted should-trigger/near-miss categories, even though the README claims it
+// validates shape and banned terms too. validateTriggerQueries() is the fix -- ported from
+// tests/vitest/agentic-eval-corpus.test.js's own (pre-existing) assertions into a single,
+// shared, exported function both the CLI command and that test now call.
+describe('validateTriggerQueries', () => {
+  function baseQuery(overrides = {}) {
+    return { id: 'q-01', expected: 'should-trigger', partition: 'train', text: 'Run the tests for this project and tell me what failed.', ...overrides };
+  }
+  function trainAndHeldOut(expected, startId) {
+    return [
+      baseQuery({ id: `${startId}-train`, expected, partition: 'train' }),
+      baseQuery({ id: `${startId}-held`, expected, partition: 'held-out' }),
+    ];
+  }
+  function tenOfEach() {
+    const queries = [];
+    for (let i = 0; i < 10; i++) queries.push(baseQuery({ id: `st-${i}`, expected: 'should-trigger', partition: i % 2 === 0 ? 'train' : 'held-out' }));
+    for (let i = 0; i < 10; i++) queries.push(baseQuery({ id: `nm-${i}`, expected: 'near-miss', partition: i % 2 === 0 ? 'train' : 'held-out' }));
+    return { schema: 1, queries };
+  }
+
+  it('accepts a well-formed trigger-queries document', () => {
+    const { errors } = validateTriggerQueries(tenOfEach());
+    expect(errors).toEqual([]);
+  });
+
+  it('rejects a non-object / missing queries array', () => {
+    expect(validateTriggerQueries(null).errors.length).toBeGreaterThan(0);
+    expect(validateTriggerQueries({}).errors.length).toBeGreaterThan(0);
+  });
+
+  it('rejects a query with a missing/empty id', () => {
+    const doc = tenOfEach();
+    doc.queries[0].id = '';
+    const { errors } = validateTriggerQueries(doc);
+    expect(errors.some((e) => e.field.endsWith('.id'))).toBe(true);
+  });
+
+  it('rejects a duplicate id', () => {
+    const doc = tenOfEach();
+    doc.queries[1].id = doc.queries[0].id;
+    const { errors } = validateTriggerQueries(doc);
+    expect(errors.some((e) => e.field.endsWith('.id') && e.message.includes('duplicate'))).toBe(true);
+  });
+
+  it('rejects an invalid expected value', () => {
+    const doc = tenOfEach();
+    doc.queries[0].expected = 'sometimes-triggers';
+    const { errors } = validateTriggerQueries(doc);
+    expect(errors.some((e) => e.field.endsWith('.expected'))).toBe(true);
+  });
+
+  it('rejects an invalid partition value', () => {
+    const doc = tenOfEach();
+    doc.queries[0].partition = 'validation';
+    const { errors } = validateTriggerQueries(doc);
+    expect(errors.some((e) => e.field.endsWith('.partition'))).toBe(true);
+  });
+
+  it('rejects query text mentioning kmp-test by name', () => {
+    const doc = tenOfEach();
+    doc.queries[0].text = 'Run kmp-test parallel --json on this project.';
+    const { errors } = validateTriggerQueries(doc);
+    expect(errors.some((e) => e.field.endsWith('.text') && e.message.includes('kmp-test'))).toBe(true);
+  });
+
+  it('rejects query text hinting at an expected command or activation outcome', () => {
+    const doc = tenOfEach();
+    doc.queries[0].text = 'Please invoke the skill and run gradlew for me.';
+    const { errors } = validateTriggerQueries(doc);
+    expect(errors.some((e) => e.field.endsWith('.text') && e.message.includes('activation'))).toBe(true);
+  });
+
+  it('rejects fewer than 10 should-trigger queries', () => {
+    const doc = tenOfEach();
+    doc.queries = doc.queries.filter((q) => q.expected !== 'should-trigger' || q.id !== 'st-9');
+    const { errors } = validateTriggerQueries(doc);
+    expect(errors.some((e) => e.message.includes('should-trigger'))).toBe(true);
+  });
+
+  it('rejects fewer than 10 near-miss queries', () => {
+    const doc = tenOfEach();
+    doc.queries = doc.queries.filter((q) => q.expected !== 'near-miss' || q.id !== 'nm-9');
+    const { errors } = validateTriggerQueries(doc);
+    expect(errors.some((e) => e.message.includes('near-miss'))).toBe(true);
+  });
+
+  it('rejects a category missing train or held-out partition coverage', () => {
+    const doc = tenOfEach();
+    // Force every should-trigger query onto the same partition.
+    for (const q of doc.queries) if (q.expected === 'should-trigger') q.partition = 'train';
+    const { errors } = validateTriggerQueries(doc);
+    expect(errors.some((e) => e.message.includes('held-out'))).toBe(true);
   });
 });

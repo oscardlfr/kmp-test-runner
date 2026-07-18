@@ -28,14 +28,14 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
-import { CURRENT_RUN_SCHEMA, validateRun, validateScenario } from './schemas.mjs';
+import { CURRENT_RUN_SCHEMA, validateRun, validateScenario, validateTriggerQueries } from './schemas.mjs';
 import { buildEvalEnv } from './env-builder.mjs';
 import { buildPathShim } from './path-shim.mjs';
 import { materializeSkillSnapshot, materializeCalibrationProject, materializeScenarioProject, materializeGradleUserHome, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition } from './condition-launcher.mjs';
-import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findBashToolUses, findBashToolUsesWithResults, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
+import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findBashToolUses, findBashToolUsesWithResults, findUnexpectedToolUses, hasExpectedToolProfile, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
 import { aggregateRuns } from './aggregate.mjs';
-import { assertCleanOrThrow, loadPrivateRules } from './privacy.mjs';
+import { assertCleanOrThrow, assertCleanOrThrowObject, loadPrivateRules } from './privacy.mjs';
 import { tokenize } from './policy-hook.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 
@@ -52,6 +52,13 @@ const PINNED_SKILL_SHA = 'c5c0661852f7c9da145ef56892048e706216a6ce';
 // this makes that class of bug structurally impossible rather than relying on the test being
 // careful.
 const RUNS_ROOT = process.env.KMP_EVAL_RUNS_ROOT || join(REPO_ROOT, 'tools', 'runs');
+// Only the DEFAULT root is covered by .gitignore's `tools/runs/agentic-eval-*/raw/**` pattern.
+// KMP_EVAL_RUNS_ROOT is a test-only escape hatch (see above) -- nothing stops it from being set
+// to a path outside that glob, which would leave raw (unredacted, absolute-path-bearing)
+// transcripts unprotected by gitignore if anything were ever staged from there. Recorded (see
+// buildRunRecord's raw_capture_location/errors below) rather than silently assumed safe -- never
+// via the actual override path itself, which could itself be privacy-sensitive.
+const RUNS_ROOT_IS_DEFAULT = RUNS_ROOT === join(REPO_ROOT, 'tools', 'runs');
 
 const HELP = `tools/agentic-eval/cli.mjs -- reproducible skill evaluation harness
 
@@ -180,6 +187,12 @@ let cachedHarnessProvenance = null;
  * motivates routing other git calls through resolveBash() elsewhere in this harness. Cached per
  * process (the repo doesn't change mid-run); pass {fresh:true} to force re-resolution (test-only).
  */
+function gitDirtyPaths(pathspecs) {
+  const r = spawnSync('git', ['status', '--porcelain', '--', ...pathspecs], { cwd: REPO_ROOT, encoding: 'utf8' });
+  if (r.status !== 0) return [];
+  return r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+}
+
 function resolveHarnessProvenance({ fresh = false } = {}) {
   if (cachedHarnessProvenance != null && !fresh) return cachedHarnessProvenance;
   let repoCommit = null;
@@ -191,23 +204,38 @@ function resolveHarnessProvenance({ fresh = false } = {}) {
   } catch {
     cliVersion = null;
   }
-  // repoCommit describes HEAD -- but the shim actually executes whatever bytes currently sit on
-  // disk under bin/lib/scripts, which can differ from HEAD if those paths carry uncommitted
-  // local modifications. Scoped to exactly the paths the shim's own execution can reach (not the
-  // whole repo -- an unrelated dirty file elsewhere, e.g. this very PR's own working tree, isn't
-  // relevant to what code actually ran).
-  let dirtyTreePaths = [];
-  const statusResult = spawnSync('git', ['status', '--porcelain', '--', 'bin', 'lib', 'scripts'], { cwd: REPO_ROOT, encoding: 'utf8' });
-  if (statusResult.status === 0) {
-    dirtyTreePaths = statusResult.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  }
+  // Two SEPARATE dirty-tree checks, deliberately scoped and treated differently:
+  //  - measuredCodeDirtyPaths (bin/lib/scripts): the ACTUAL code a measured session's kmp-test
+  //    invocations execute via the shim. Dirtiness here is FAIL-CLOSED (see
+  //    finalizeAndWriteRecords) -- it directly means committable evidence would misrepresent
+  //    what repo_commit claims to describe.
+  //  - harnessToolingDirtyPaths (tools/agentic-eval/**, package.json): this HARNESS's own code
+  //    and manifest. Disclosed (via errors[]) but deliberately NOT fail-closed:
+  //    tools/agentic-eval/** is necessarily in-flux during the harness's own active
+  //    development (including this very test suite, which lives inside that same tree) --
+  //    blocking on it would make the harness structurally unable to ever produce evidence while
+  //    being developed or exercised by its own local test run. package.json is grouped here
+  //    (not the measured-code list) since its version field is metadata about the harness/CLI
+  //    release, not code a measured session's kmp-test invocation actually executes.
+  const measuredCodeDirtyPaths = gitDirtyPaths(['bin', 'lib', 'scripts']);
+  const harnessToolingDirtyPaths = gitDirtyPaths(['tools/agentic-eval', 'package.json']);
   cachedHarnessProvenance = {
     repoCommit,
     cliVersion,
     resolvedExecutablePath: join(REPO_ROOT, 'bin', 'kmp-test.js'),
-    dirtyTreePaths,
+    measuredCodeDirtyPaths,
+    harnessToolingDirtyPaths,
   };
   return cachedHarnessProvenance;
+}
+
+/** Best-effort real git remote origin URL for `repoDir` -- null if it has no configured remote
+ * (e.g. a purely-local test fixture repo). No path-shaped ARGUMENT is passed to git here (repoDir
+ * is a spawn-option cwd, not command-line text), so this doesn't need resolveBash() routing --
+ * matches resolveHarnessProvenance's own plain spawnSync git calls for the same reason. */
+function resolveGitRemoteUrl(repoDir) {
+  const r = spawnSync('git', ['remote', 'get-url', 'origin'], { cwd: repoDir, encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() : null;
 }
 
 function tokensEqual(a, b) {
@@ -243,6 +271,13 @@ const SMOKE_EXPECTED_COMMANDS = [
   ['kmp-test', 'doctor', '--json'],
   ['kmp-test', 'describe', '--json'],
 ];
+
+// The ONLY tools either condition's own --tools argv value ever grants (buildBaseArgv --
+// condition-launcher.mjs); used by both hard gates to prove the init event's OWN declared
+// profile actually matches this, and that no tool_use anywhere in the transcript names
+// anything outside this set. A gate that never checks this can't distinguish a genuinely narrow
+// session from one that regressed to a wider tool/MCP/permission profile.
+const EXPECTED_TOOL_NAMES = new Set(['Bash', 'Skill']);
 
 /**
  * Runs both conditions of a pair and returns everything buildRunRecord needs, plus a cleanup()
@@ -365,7 +400,7 @@ function reportCleanupFailures(failures, contextSuffix = '') {
   console.error(`WARNING: ${failures.length} cleanup step(s) failed${suffix} (resources may be left behind): ${failures.join('; ')}`);
 }
 
-function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skillSourceSha, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias = 'calibration-project', projectCommit = null, family = 'trigger-only', modelRequested = 'claude-sonnet-5', privacyStatus = 'public' }) {
+function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skillSourceSha, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias = 'calibration-project', projectCommit = null, projectUrl = null, family = 'trigger-only', modelRequested = 'claude-sonnet-5', privacyStatus = 'public' }) {
   const { init, result, invocation, hookStats, byteMetrics, startedAt, endedAt } = conditionResult;
   const notApplicableReason = `${runKind} run -- no scenario grader applies`;
   const provenance = resolveHarnessProvenance();
@@ -384,9 +419,11 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     model_requested: modelRequested,
     model_resolved: init?.model ?? null,
     session_id_observed: init?.session_id ?? null,
+    claude_code_version: init?.claude_code_version ?? null,
     repo_commit: provenance.repoCommit,
     project_alias: projectAlias,
     project_commit: projectCommit,
+    project_url: projectUrl,
     platform: resolvePlatform(),
     family,
     cache_state: 'unknown',
@@ -429,25 +466,47 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     hook_deny_count: hookStats.hookDenyCount,
     privacy_status: privacyStatus,
     raw_capture_committed: false,
-    raw_capture_location: `tools/runs/agentic-eval-${runKind}/raw/`,
+    // Only accurate when RUNS_ROOT is the default -- see RUNS_ROOT_IS_DEFAULT's own comment.
+    // Never falls back to the actual KMP_EVAL_RUNS_ROOT override value itself: that path is an
+    // arbitrary local filesystem location (test temp dirs are the only current caller) and could
+    // itself be privacy-sensitive, exactly the class of leak this harness's redaction exists to
+    // prevent -- so an override is disclosed generically (see dirty_harness_tooling's identical
+    // content-free-disclosure precedent), never printed verbatim.
+    raw_capture_location: RUNS_ROOT_IS_DEFAULT ? `tools/runs/agentic-eval-${runKind}/raw/` : '(KMP_EVAL_RUNS_ROOT override -- see errors[])',
     notes: 'Foundation-harness run; not a benchmark result.',
     // repo_commit/kmp_test_cli_source_sha describe HEAD, not necessarily the exact bytes that
-    // executed -- if bin/lib/scripts carry uncommitted local modifications, that's disclosed
-    // here rather than silently letting the recorded SHA imply a codebase that isn't quite what
-    // actually ran.
-    errors: provenance.dirtyTreePaths.length > 0
-      ? [{ code: 'dirty_execution_tree', message: `bin/lib/scripts have uncommitted local modifications not reflected in repo_commit: ${provenance.dirtyTreePaths.join(', ')}` }]
-      : [],
+    // executed -- disclosed here rather than silently letting the recorded SHA imply a codebase
+    // that isn't quite what actually ran. Two distinct codes: dirty_measured_code (bin/lib/
+    // scripts, the code a measured session's kmp-test invocations actually execute -- this ALSO
+    // fails finalizeAndWriteRecords's hard, fail-closed check, see there for why) and
+    // dirty_harness_tooling (tools/agentic-eval/**, package.json -- informational only; see
+    // resolveHarnessProvenance's own comment for why this category is never fail-closed).
+    errors: [
+      ...(provenance.measuredCodeDirtyPaths.length > 0
+        ? [{ code: 'dirty_measured_code', message: `bin/lib/scripts have uncommitted local modifications not reflected in repo_commit: ${provenance.measuredCodeDirtyPaths.join(', ')}` }]
+        : []),
+      ...(provenance.harnessToolingDirtyPaths.length > 0
+        ? [{ code: 'dirty_harness_tooling', message: `tools/agentic-eval/package.json have uncommitted local modifications not reflected in repo_commit (informational only -- see resolveHarnessProvenance's own comment for why this never blocks evidence): ${provenance.harnessToolingDirtyPaths.join(', ')}` }]
+        : []),
+      // KMP_EVAL_RUNS_ROOT is a test-only escape hatch (see its own module-level comment) -- real
+      // calibrate/smoke invocations are not expected to set it. Disclosed rather than silently
+      // written under an unprotected path: only the DEFAULT tools/runs/ root is covered by
+      // .gitignore's agentic-eval raw-transcript glob.
+      ...(!RUNS_ROOT_IS_DEFAULT
+        ? [{ code: 'raw_capture_location_overridden', message: 'KMP_EVAL_RUNS_ROOT was set to a non-default root for this run -- the raw transcript may not be covered by the default .gitignore pattern; verify manually before staging anything from that location' }]
+        : []),
+    ],
   };
 }
 
 /**
  * Writes ALREADY-REDACTED, already-gated record text (never re-serializes recordA/recordB --
  * the caller's redacted text is authoritative) to the committable top-level run-kind directory,
- * and the RAW stream-json transcripts to its raw subdirectory -- gitignored per .gitignore's
- * agentic-eval raw-transcript glob, matching what each record's raw_capture_location field
- * claims. Never redacts/sanitizes the raw file itself; it simply never leaves this local,
- * gitignored destination.
+ * and the RAW stream-json transcripts to its raw subdirectory. Under the default RUNS_ROOT this
+ * is gitignored per .gitignore's agentic-eval raw-transcript glob, matching what each record's
+ * raw_capture_location field claims for that case -- see RUNS_ROOT_IS_DEFAULT's own comment for
+ * why a KMP_EVAL_RUNS_ROOT override is disclosed instead of silently assumed equally safe. Never
+ * redacts/sanitizes the raw file itself; it simply never leaves this local destination.
  *
  * Writes to `<target>.tmp-<random>` first and renameSync()s each into place only after every
  * write has succeeded. Beyond that, the whole write-then-rename sequence is wrapped so a failure
@@ -489,23 +548,34 @@ function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedT
  * ORIGINAL records) -> a FRESH policy_sha256 recomputation matched against both records (catches
  * evidence silently going stale relative to policy-hook.mjs's current content -- a hand-carried
  * or previously-generated record with a stale hash is refused, not just format-checked) ->
- * assertCleanOrThrow privacy check on each record's serialized text (never previously wired in
- * -- this is what actually enforces "no leak ever reaches a committable file") -> the redacted
- * text is itself parsed back to JSON and RE-validated against the schema (a private-pattern
- * replacement string can pass assertCleanOrThrow's leak scan -- which only checks for matching
- * patterns, not JSON structural validity -- while still breaking JSON syntax once substituted in,
- * e.g. a replacement containing a raw newline inside what was a JSON string; catching this here,
- * BEFORE the write, means invalid-JSON evidence can never reach disk) -> the run-kind's own hard
- * acceptance predicate (evaluated against the ORIGINAL records -- the gate's own checks never
- * reference redaction-prone fields, and gating on the pre-redaction truth of what happened is the
- * conceptually correct choice; redaction is a display/storage concern, not a data-correctness
- * one). Any failure returns {ok:false, reason} and writes nothing.
+ * assertCleanOrThrowObject privacy check, FIELD BY FIELD, on the RAW record objects (never
+ * previously wired in -- this is what actually enforces "no leak ever reaches a committable
+ * file"; and never on an already-JSON.stringify()'d blob -- JSON-escaping doubles every
+ * backslash, which the user_path_win rule's single-backslash regex then silently fails to match,
+ * confirmed empirically: a real Windows path survived intact when redaction ran on
+ * pre-serialized text) -> the run-kind's own hard acceptance predicate (evaluated against the
+ * ORIGINAL records -- the gate's own checks never reference redaction-prone fields, and gating
+ * on the pre-redaction truth of what happened is the conceptually correct choice; redaction is a
+ * display/storage concern, not a data-correctness one). Any failure returns {ok:false, reason}
+ * and writes nothing.
  */
 async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, hardGateFn, privatePatternsFile }) {
   for (const [label, record] of [['A', recordA], ['B', recordB]]) {
     const { errors } = validateRun(record);
     if (errors.length > 0) {
       return { ok: false, reason: `Run record ${label} failed schema validation: ${JSON.stringify(errors)}` };
+    }
+  }
+  // Fail-closed on dirty MEASURED code (bin/lib/scripts) -- disclosing this in errors[] alone
+  // (the previous behavior) still let evidence write, meaning committable evidence could claim
+  // repo_commit described the code that ran when it actually didn't. dirty_harness_tooling
+  // (tools/agentic-eval/**, package.json) is deliberately NOT checked here -- see
+  // resolveHarnessProvenance's own comment for why blocking on that category would make the
+  // harness unable to ever produce evidence during its own active development.
+  for (const [label, record] of [['A', recordA], ['B', recordB]]) {
+    const dirty = record.errors.find((e) => e.code === 'dirty_measured_code');
+    if (dirty) {
+      return { ok: false, reason: `Run record ${label} was captured with an unclean measured-code tree -- refusing to write evidence that would misrepresent repo_commit: ${dirty.message}` };
     }
   }
   const { computePolicySha256 } = await import('./policy-config.mjs');
@@ -515,22 +585,24 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
       return { ok: false, reason: `Run record ${label} policy_sha256 (${record.policy_sha256}) does not match the current policy-hook.mjs (${freshHash}) -- evidence is stale relative to the code that produced it` };
     }
   }
-  let redactedA;
-  let redactedB;
+  let redactedRecordA;
+  let redactedTextA;
+  let redactedRecordB;
+  let redactedTextB;
   try {
-    redactedA = assertCleanOrThrow(JSON.stringify(recordA, null, 2), { privatePatternsFile });
-    redactedB = assertCleanOrThrow(JSON.stringify(recordB, null, 2), { privatePatternsFile });
+    ({ redactedObj: redactedRecordA, redactedText: redactedTextA } = assertCleanOrThrowObject(recordA, { privatePatternsFile }));
+    ({ redactedObj: redactedRecordB, redactedText: redactedTextB } = assertCleanOrThrowObject(recordB, { privatePatternsFile }));
   } catch (err) {
     return { ok: false, reason: `Privacy check refused to clear evidence for writing: ${err.message}` };
   }
-  let redactedRecordA;
-  let redactedRecordB;
-  try {
-    redactedRecordA = JSON.parse(redactedA);
-    redactedRecordB = JSON.parse(redactedB);
-  } catch (err) {
-    return { ok: false, reason: `Redaction produced invalid JSON (a private-pattern replacement likely breaks JSON syntax) -- refusing to write: ${err.message}` };
-  }
+  // redactedRecordA/B are parsed OBJECTS already (never re-serialized-then-reparsed) -- with
+  // redaction happening on each raw string VALUE before the one-and-only JSON.stringify() call,
+  // that call always produces syntactically valid JSON no matter what a replacement string
+  // contains (JSON.stringify correctly escapes a raw newline, quote, etc. in its output), so the
+  // "redaction breaks JSON syntax" failure mode from an earlier version is now structurally
+  // impossible here, not just detected after the fact. Still re-validate against the schema: a
+  // redaction placeholder could still make a field the wrong TYPE for its own domain (e.g. a
+  // boolean-context field replaced with a non-boolean placeholder string).
   for (const [label, record] of [['A', redactedRecordA], ['B', redactedRecordB]]) {
     const { errors } = validateRun(record);
     if (errors.length > 0) {
@@ -541,12 +613,23 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
   if (!gate.ok) {
     return { ok: false, reason: gate.reason };
   }
-  const outDir = writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedA, redactedB);
-  // Return the REDACTED objects (already parsed above, from the same text that was actually
-  // written), not the original recordA/recordB -- a caller printing the originals to stdout
-  // would bypass the whole privacy check: redaction only ever protected the FILE, never the
-  // terminal.
-  return { ok: true, reason: null, outDir, redactedRecordA, redactedRecordB };
+  const outDir = writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB);
+  // The evidence directory path itself can carry the real OS username (this repo may be checked
+  // out under e.g. C:\Users\<name>\...). `outDir` stays the REAL, navigable path (a caller may
+  // legitimately need it, e.g. a test asserting a file exists there) -- `redactedOutDir` is the
+  // separate, display-safe value for anything printed to a terminal. A single raw path string
+  // (never JSON-serialized), so the plain text-level assertCleanOrThrow is the correct tool here,
+  // not the object-aware variant.
+  let redactedOutDir;
+  try {
+    redactedOutDir = assertCleanOrThrow(outDir, { privatePatternsFile });
+  } catch (err) {
+    return { ok: false, reason: `Privacy check refused to report the evidence directory path: ${err.message}` };
+  }
+  // redactedRecordA/B (not the originals) are for anything printed to stdout -- a caller
+  // printing the originals would bypass the whole privacy check: redaction only ever protected
+  // the FILE, never the terminal.
+  return { ok: true, reason: null, outDir, redactedOutDir, redactedRecordA, redactedRecordB };
 }
 
 /**
@@ -568,6 +651,14 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   // it from) and happen to match the EXPECTED value there by coincidence, passing invocationOk
   // for the wrong reason entirely.
   const initOk = runAResult.init != null && runBResult.init != null;
+  // The init event's OWN declared profile must match exactly what this harness actually
+  // launches with -- proves a genuinely narrow session, not just that ONE happened to arrive.
+  const toolProfileOk = hasExpectedToolProfile(runAResult.init, EXPECTED_TOOL_NAMES) && hasExpectedToolProfile(runBResult.init, EXPECTED_TOOL_NAMES);
+  // No tool_use ANYWHERE in the transcript may name anything outside Bash/Skill -- a
+  // transcript could otherwise use some other tool (e.g. Read) alongside the expected calls and
+  // still pass every other check.
+  const noUnexpectedToolsOk = findUnexpectedToolUses(runAResult.events, EXPECTED_TOOL_NAMES).length === 0
+    && findUnexpectedToolUses(runBResult.events, EXPECTED_TOOL_NAMES).length === 0;
   const processOk = a.terminated === false && b.terminated === false && a.exit_code === 0 && b.exit_code === 0;
   // subtype==='success' (not just is_error===false) -- a session cut off by e.g. the budget cap
   // reports a distinct result.subtype (confirmed: 'error_max_budget_usd') that is NOT
@@ -576,10 +667,10 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   const resultOk = runAResult.result?.subtype === 'success' && runAResult.result?.is_error === false
     && runBResult.result?.subtype === 'success' && runBResult.result?.is_error === false;
   const hookAccountingOk = runAResult.hookStats.everyCallHooked === true && runBResult.hookStats.everyCallHooked === true;
-  const ok = invocationOk && initOk && processOk && resultOk && hookAccountingOk;
+  const ok = invocationOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk;
   return {
     ok,
-    reason: ok ? null : `calibration hard gate failed -- invocationOk:${invocationOk} initOk:${initOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked}})`,
+    reason: ok ? null : `calibration hard gate failed -- invocationOk:${invocationOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
   };
 }
 
@@ -619,7 +710,7 @@ async function cmdCalibrate(args) {
       console.error(`CALIBRATION FAILED: ${result.reason}`);
       return 1;
     }
-    console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.outDir }, null, 2));
+    console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.redactedOutDir }, null, 2));
     return 0;
   } finally {
     reportCleanupFailures(await conditionPair.cleanup());
@@ -638,6 +729,12 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   // See calibrationHardGate's identical check -- a session with no init event at all is a
   // broken/incomplete capture, not legitimately-observed data.
   const initOk = runAResult.init != null && runBResult.init != null;
+  // See calibrationHardGate's identical checks -- the init event's OWN declared profile must
+  // match what this harness actually launches with, and no tool_use anywhere in the transcript
+  // may name anything outside Bash/Skill.
+  const toolProfileOk = hasExpectedToolProfile(runAResult.init, EXPECTED_TOOL_NAMES) && hasExpectedToolProfile(runBResult.init, EXPECTED_TOOL_NAMES);
+  const noUnexpectedToolsOk = findUnexpectedToolUses(runAResult.events, EXPECTED_TOOL_NAMES).length === 0
+    && findUnexpectedToolUses(runBResult.events, EXPECTED_TOOL_NAMES).length === 0;
   const processOk = a.terminated === false && b.terminated === false && a.exit_code === 0 && b.exit_code === 0;
   // subtype==='success' (not just is_error===false) -- see calibrationHardGate's identical
   // check; a budget-cap-truncated session is not a genuine completion even when is_error is
@@ -657,10 +754,10 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   const exactCommandsOk = verifyExactCommandsSucceeded(runAResult.bashResults, SMOKE_EXPECTED_COMMANDS)
     && verifyExactCommandsSucceeded(runBResult.bashResults, SMOKE_EXPECTED_COMMANDS);
   const cleanTranscriptOk = runAResult.malformedLines.length === 0 && runBResult.malformedLines.length === 0;
-  const ok = availabilityOk && initOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk;
+  const ok = availabilityOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk;
   return {
     ok,
-    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} initOk:${initOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype})`,
+    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype} tools:${JSON.stringify(runAResult.init?.tools)}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype} tools:${JSON.stringify(runBResult.init?.tools)})`,
   };
 }
 
@@ -680,6 +777,13 @@ async function cmdSmoke(args) {
     console.error(patternsCheck.reason);
     return 1;
   }
+  // scenario_id and project_url both derive from the ACTUAL project smoke is pointed at, never
+  // hardcoded -- an earlier version hard-coded scenario_id to 'kampkit-android-host-test-
+  // discovery' regardless of --source-repo-dir/--project-alias, so a run against a DIFFERENT
+  // project would still be labeled as if it were KaMPKit. project_url is the real git remote
+  // origin URL of sourceRepoDir (null if it has none, e.g. a purely-local fixture repo).
+  const scenarioId = `${projectAlias}-android-host-test-discovery`;
+  const projectUrl = resolveGitRemoteUrl(sourceRepoDir);
   const { computePolicySha256 } = await import('./policy-config.mjs');
   const conditionPair = await runConditionPair({
     // Explicit and directive on purpose: smoke exists to prove the pipeline works end-to-end
@@ -701,7 +805,7 @@ async function cmdSmoke(args) {
   try {
     const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = conditionPair;
     const policySha256 = computePolicySha256();
-    const common = { runKind: 'smoke', scenarioId: 'kampkit-android-host-test-discovery', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, family: 'test-only', modelRequested: model, privacyStatus };
+    const common = { runKind: 'smoke', scenarioId, skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, projectUrl, family: 'test-only', modelRequested: model, privacyStatus };
     const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
     const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
 
@@ -719,7 +823,7 @@ async function cmdSmoke(args) {
       console.error(`SMOKE FAILED: ${result.reason}`);
       return 1;
     }
-    console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.outDir }, null, 2));
+    console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.redactedOutDir }, null, 2));
     return 0;
   } finally {
     reportCleanupFailures(await conditionPair.cleanup());
@@ -749,8 +853,13 @@ function cmdCorpusValidate() {
     const shouldTrigger = triggers.queries.filter((q) => q.expected === 'should-trigger');
     const nearMiss = triggers.queries.filter((q) => q.expected === 'near-miss');
     console.log(`trigger-queries.json: ${shouldTrigger.length} should-trigger, ${nearMiss.length} near-miss`);
-    if (shouldTrigger.length < 10 || nearMiss.length < 10) {
-      console.error('trigger-queries.json: needs at least 10 of each category');
+    // Validates actual CONTENT (shape, unique ids, banned-terms rule, suspicious-activation-hint
+    // rule, partition coverage) -- not just the category counts above. An earlier version of
+    // this command only did the category count, contradicting the README's claim that `corpus
+    // validate` checks shape and banned terms.
+    const { errors } = validateTriggerQueries(triggers);
+    if (errors.length > 0) {
+      console.error(`trigger-queries.json: ${JSON.stringify(errors)}`);
       ok = false;
     }
   }
