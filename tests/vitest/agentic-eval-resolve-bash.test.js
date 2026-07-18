@@ -3,6 +3,7 @@
 // return a bare 'bash' on Windows (PATH-ambiguous between Git Bash and WSL's launcher).
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { resolveBash, WINDOWS_GIT_BASH_CANDIDATES } from '../../tools/agentic-eval/resolve-bash.mjs';
 
 const originalEnvValue = process.env.KMP_EVAL_BASH_PATH;
@@ -37,8 +38,11 @@ describe('resolveBash', () => {
 
   it('KMP_EVAL_BASH_PATH override is honored when it points at a real file', () => {
     // Use this test file itself as a stand-in "exists" path -- resolveBash() only checks
-    // existence, not that it's actually bash.
-    const thisFile = import.meta.url.replace('file:///', '').replace(/%20/g, ' ');
+    // existence, not that it's actually bash. fileURLToPath() (not a naive string replace) is
+    // required for a correct absolute path on POSIX -- stripping the literal 'file:///' prefix
+    // from a POSIX file URL also strips the path's own leading '/', turning an absolute path
+    // into a relative-looking one (confirmed: broke this exact test on Linux CI).
+    const thisFile = fileURLToPath(import.meta.url);
     process.env.KMP_EVAL_BASH_PATH = thisFile;
     expect(resolveBash({ fresh: true })).toBe(thisFile);
   });
