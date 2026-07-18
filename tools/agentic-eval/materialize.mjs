@@ -21,6 +21,29 @@ function toPosixPath(winPath) {
 }
 const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
 
+// A CI checkout (or any shallow clone of this repo) only has the tip commit's tree locally --
+// `git archive <ancestor-sha>` fails with "not a tree object" even for a perfectly valid,
+// reachable SHA. GitHub allows fetching an arbitrary reachable commit by SHA directly, so
+// self-heal by backfilling just that one commit before archiving, rather than requiring every
+// caller (CI included) to carry a full, unshallowed clone just for this.
+function isCommitAvailable(repoRoot, sha) {
+  const r = spawnSync('bash', ['-c', `git cat-file -e ${shQuote(sha)}^{commit}`], { cwd: repoRoot, encoding: 'utf8' });
+  return r.status === 0;
+}
+
+const PLAUSIBLE_SHA_RE = /^[0-9a-f]{7,40}$/i;
+
+function ensureCommitAvailable(repoRoot, sha) {
+  if (isCommitAvailable(repoRoot, sha)) return;
+  // Not hex-shaped -- definitely not a real commit; let `git archive` report it directly rather
+  // than spending a network round-trip on input that can never resolve.
+  if (!PLAUSIBLE_SHA_RE.test(sha)) return;
+  const r = spawnSync('bash', ['-c', `git fetch --depth 1 origin ${shQuote(sha)}`], { cwd: repoRoot, encoding: 'utf8' });
+  if (r.status !== 0) {
+    throw new Error(`commit ${sha} not present locally (shallow clone?) and could not be fetched from origin (exit ${r.status}): ${r.stderr}`);
+  }
+}
+
 /**
  * git-archive the skill snapshot at a pinned SHA into a fresh temp dir, then validate it with
  * tools/validate-plugin.mjs's own runValidator -- fail-closed if validation doesn't pass.
@@ -28,6 +51,7 @@ const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
  */
 export async function materializeSkillSnapshot({ repoRoot, sha, validateFn }) {
   const dest = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-skill-'));
+  ensureCommitAvailable(repoRoot, sha);
   const cmd = `git archive ${shQuote(sha)} -- .claude-plugin .skills | tar -x -C ${shQuote(toPosixPath(dest))}`;
   const r = spawnSync('bash', ['-c', cmd], { cwd: repoRoot, encoding: 'utf8' });
   if (r.status !== 0) {

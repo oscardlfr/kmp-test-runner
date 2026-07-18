@@ -79,9 +79,19 @@ describe('policy-hook grammar -- approved shapes', () => {
     'kmp-test parallel --test-filter com.example.Foo#bar --json',
     './gradlew build',
     './gradlew.bat build',
-    '.\\gradlew.bat build',
   ])('allows: %s', (cmd) => {
     expect(decision(payload(cmd))).toBe('allow');
+  });
+
+  it('allows: .\\gradlew.bat build (Windows relative-path separator -- win32 hosts only)', () => {
+    // A backslash is only a path separator under win32 path semantics; on POSIX hosts
+    // '.\gradlew.bat' is a single literal (nonexistent) filename, so realpath resolution
+    // correctly fails there. This is real, host-dependent production behavior (GRADLE_LEADING_
+    // TOKENS matches the literal token on every platform; only its *resolution* to a real file
+    // is platform-dependent), not a gap -- matches the windows-metachar.test.js house idiom of
+    // an early-return trivial pass on non-Windows hosts.
+    if (process.platform !== 'win32') return;
+    expect(decision(payload('.\\gradlew.bat build'))).toBe('allow');
   });
 });
 
@@ -333,9 +343,22 @@ describe('path.relative-based containment algorithm -- never lowercase/prefix co
   it('on the platform-default path module (win32 here), still correctly rejects traversal/parent/sibling shapes', () => {
     // Using real Windows-style paths -- this IS what production actually receives (always
     // post-realpath). Case-folding is a Windows filesystem property, not a gap in this logic.
+    // Only meaningful on an actual win32 host: the default (uninjected) `path` module resolves
+    // to platform-native semantics, so backslash-separated strings only decompose as path
+    // segments where the host itself treats '\' as a separator.
+    if (process.platform !== 'win32') return;
     expect(isWithinOrEqualCanonical('C:\\tmp\\fixture', 'C:\\tmp\\fixture-evil\\sub')).toBe(false);
     expect(isWithinOrEqualCanonical('C:\\tmp\\fixture\\sub', 'C:\\tmp\\fixture')).toBe(false);
     expect(isWithinOrEqualCanonical('C:\\tmp\\fixture', 'C:\\tmp\\fixture\\sub\\dir')).toBe(true);
+  });
+  it('on the platform-default path module (POSIX here), still correctly rejects traversal/parent/sibling shapes', () => {
+    // Mirror of the win32 case above, using the default (uninjected) `path` module on a
+    // Linux/macOS host -- proves the *uninjected* default path is exercised for real on every
+    // CI platform, not just via the explicit path.posix-injected cases earlier in this file.
+    if (process.platform === 'win32') return;
+    expect(isWithinOrEqualCanonical('/tmp/fixture', '/tmp/fixture-evil/sub')).toBe(false);
+    expect(isWithinOrEqualCanonical('/tmp/fixture/sub', '/tmp/fixture')).toBe(false);
+    expect(isWithinOrEqualCanonical('/tmp/fixture', '/tmp/fixture/sub/dir')).toBe(true);
   });
 });
 
