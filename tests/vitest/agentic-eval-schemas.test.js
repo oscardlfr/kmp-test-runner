@@ -427,6 +427,8 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
       project_commit: 'abc123', model_resolved: 'claude-sonnet-5', platform: 'windows',
       skill_source_sha: null, policy_sha256: 'a'.repeat(64), claude_code_version: '1.2.3-fake',
       kmp_test_cli_source_sha: 'c5c0661852f7c9da145ef56892048e706216a6ce',
+      repo_commit: 'c5c0661852f7c9da145ef56892048e706216a6ce',
+      daemon_policy: 'disabled-via-gradle-user-home-properties', env_allowlist_profile: 'narrow',
       skill_invoked: { value: false, reason: null }, success: { value: true, reason: null },
       ...overrides,
     };
@@ -508,9 +510,13 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
   // Scoped narrowly to run_kind:'scenario' + benchmark_eligible:true (the fixture's own defaults)
   // -- this PR's own calibration/corpus-probe/smoke runs are always benchmark_eligible:false and
   // legitimately carry null project_commit/model_resolved, so a blanket requirement would
-  // incorrectly reject them.
-  describe('scenario + benchmark_eligible completeness matrix (project_commit, model_resolved, kmp_test_cli_source_sha)', () => {
-    for (const field of ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha']) {
+  // incorrectly reject them. A follow-up review pass found the fix itself was still partial --
+  // daemon_policy/env_allowlist_profile/scenario_id/repo_commit could ALSO silently agree on null
+  // -- extended to the same completeness matrix below.
+  describe('scenario + benchmark_eligible completeness matrix', () => {
+    const MATRIX_FIELDS = ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha', 'repo_commit', 'daemon_policy', 'env_allowlist_profile', 'scenario_id'];
+
+    for (const field of MATRIX_FIELDS) {
       it(`refuses aggregation when ${field} is null on every scenario+eligible run, even though every run agrees it is null`, () => {
         const { errors, group } = buildAggregateGroup([run({ run_id: 'r1', [field]: null }), run({ run_id: 'r2', [field]: null })]);
         expect(errors.some((e) => e.field === field)).toBe(true);
@@ -518,29 +524,28 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
       });
     }
 
-    it('does NOT apply to calibration runs (run_kind !== scenario), where project_commit/model_resolved are legitimately null', () => {
+    it('does NOT apply to calibration runs (run_kind !== scenario), where these fields are legitimately null', () => {
+      const allNull = Object.fromEntries(MATRIX_FIELDS.map((f) => [f, null]));
       const { errors } = buildAggregateGroup([
-        run({ run_id: 'r1', run_kind: 'calibration', project_commit: null, model_resolved: null, kmp_test_cli_source_sha: null }),
-        run({ run_id: 'r2', run_kind: 'calibration', project_commit: null, model_resolved: null, kmp_test_cli_source_sha: null }),
+        run({ run_id: 'r1', run_kind: 'calibration', ...allNull }),
+        run({ run_id: 'r2', run_kind: 'calibration', ...allNull }),
       ]);
-      expect(errors.filter((e) => ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha'].includes(e.field))).toEqual([]);
+      expect(errors.filter((e) => MATRIX_FIELDS.includes(e.field))).toEqual([]);
     });
 
     it('does NOT apply when benchmark_eligible is false (already refused outright by the existing check)', () => {
+      const allNull = Object.fromEntries(MATRIX_FIELDS.map((f) => [f, null]));
       const { errors } = buildAggregateGroup([
-        run({ run_id: 'r1', benchmark_eligible: false, project_commit: null, model_resolved: null, kmp_test_cli_source_sha: null }),
+        run({ run_id: 'r1', benchmark_eligible: false, ...allNull }),
       ]);
       // The pre-existing benchmark_eligible refusal fires; the completeness matrix specifically
       // must not ALSO fire redundantly for a group that's already rejected for a different reason.
       expect(errors.some((e) => e.field === 'benchmark_eligible')).toBe(true);
-      expect(errors.filter((e) => ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha'].includes(e.field))).toEqual([]);
+      expect(errors.filter((e) => MATRIX_FIELDS.includes(e.field))).toEqual([]);
     });
 
     it('accepts a scenario+eligible group when every completeness-matrix field is concrete', () => {
-      const { errors, group } = buildAggregateGroup([
-        run({ run_id: 'r1', project_commit: 'abc123', model_resolved: 'claude-sonnet-5', kmp_test_cli_source_sha: 'c5c0661852f7c9da145ef56892048e706216a6ce' }),
-        run({ run_id: 'r2', project_commit: 'abc123', model_resolved: 'claude-sonnet-5', kmp_test_cli_source_sha: 'c5c0661852f7c9da145ef56892048e706216a6ce' }),
-      ]);
+      const { errors, group } = buildAggregateGroup([run({ run_id: 'r1' }), run({ run_id: 'r2' })]);
       expect(errors).toEqual([]);
       expect(group.run_count).toBe(2);
     });

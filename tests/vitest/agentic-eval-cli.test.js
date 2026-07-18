@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
-import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
+import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, findBlockingHarnessToolingDirty, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -519,15 +519,16 @@ describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree'
     expect(hardGateCalled).toBe(false);
   });
 
-  // The hard gate stub returns {ok:false} here (never {ok:true}) -- deliberately, so this test
-  // never reaches writeRunRecordEvidence(). Calling finalizeAndWriteRecords() in-process, this
-  // far, would use cli.mjs's real default RUNS_ROOT (this test file never sets
-  // KMP_EVAL_RUNS_ROOT, and cli.mjs's module-level RUNS_ROOT const is fixed at its first
-  // import) -- a real {ok:true} here would write two real files into the actual, shared
-  // tools/runs/agentic-eval-calibration/ directory. Asserting hardGateCalled===true is the
-  // complete proof this test needs: dirty_harness_tooling did not short-circuit BEFORE the hard
-  // gate, which is the only thing this test claims.
-  it('a dirty_harness_tooling error (tools/agentic-eval itself) does NOT block before reaching the hard gate -- only dirty_measured_code does', async () => {
+  // Revised for a real gap an independent review pass found: leaving dirty_harness_tooling purely
+  // disclosure-only meant code that directly decides parsing/gates/metrics (this PR's own feature
+  // work) could change what evidence actually captures while repo_commit still pointed at a clean
+  // HEAD. Fixed: fail-closed, but ONLY when writing to the default RUNS_ROOT (RUNS_ROOT_IS_DEFAULT)
+  // -- this test file never sets KMP_EVAL_RUNS_ROOT, so it naturally IS the default-root case, and
+  // now correctly proves dirty_harness_tooling blocks the SAME way dirty_measured_code already
+  // does. The hard gate stub still returns {ok:false} defensively (never {ok:true}) even though
+  // this path is never expected to reach it -- consistent with this file's established
+  // never-risk-a-real-write discipline.
+  it('a dirty_harness_tooling error (tools/agentic-eval itself) DOES block before reaching the hard gate, when writing to the default RUNS_ROOT', async () => {
     const policySha256 = computePolicySha256();
     const common = { runKind: 'calibration', scenarioId: 'test-dirty-tooling', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model' };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
@@ -542,9 +543,33 @@ describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree'
       runB: { spawnResult: { rawStdout: '' } },
       hardGateFn: () => { hardGateCalled = true; return { ok: false, reason: 'stubbed gate rejection -- test never intends to reach a real write' }; },
     });
-    expect(hardGateCalled).toBe(true);
+    expect(hardGateCalled).toBe(false);
     expect(result.ok).toBe(false);
-    expect(result.reason).not.toContain('unclean measured-code tree');
+    expect(result.reason).toContain('unclean harness-tooling tree');
+  });
+});
+
+// Direct unit coverage for findBlockingHarnessToolingDirty() -- extracted specifically so BOTH
+// branches of "fail-closed only when writing to the default RUNS_ROOT" can be tested directly.
+// RUNS_ROOT_IS_DEFAULT is a module-level const fixed at first import, so a real in-process test
+// (like the one above) can only ever observe ONE of its two values within a single vitest
+// process -- this is the only way to exercise the OTHER branch (isolated/non-default root)
+// without a real subprocess.
+describe('findBlockingHarnessToolingDirty', () => {
+  it('returns undefined (never blocks) when runsRootIsDefault is false, even with a real dirty_harness_tooling error present', () => {
+    const record = { errors: [{ code: 'dirty_harness_tooling', message: 'tools/agentic-eval/cli.mjs has uncommitted local modifications' }] };
+    expect(findBlockingHarnessToolingDirty(record, false)).toBeUndefined();
+  });
+
+  it('returns the dirty error entry when runsRootIsDefault is true', () => {
+    const dirty = { code: 'dirty_harness_tooling', message: 'tools/agentic-eval/cli.mjs has uncommitted local modifications' };
+    const record = { errors: [dirty] };
+    expect(findBlockingHarnessToolingDirty(record, true)).toBe(dirty);
+  });
+
+  it('returns undefined when runsRootIsDefault is true but there is no dirty_harness_tooling error', () => {
+    const record = { errors: [{ code: 'dirty_measured_code', message: 'unrelated' }] };
+    expect(findBlockingHarnessToolingDirty(record, true)).toBeUndefined();
   });
 });
 
@@ -608,6 +633,13 @@ describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {o
     const common = { runKind: 'calibration', scenarioId: 'test-collision-via-finalize', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model' };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
+    // This test is specifically about the run_id-collision property, not dirty-tree behavior --
+    // clear whatever real dirty_measured_code/dirty_harness_tooling errors buildRunRecord() may
+    // have picked up from the ACTUAL, ambient git state of this repo at test-run time (e.g. this
+    // very file being actively edited), so the test result never depends on incidental local
+    // working-tree state.
+    recordA.errors = [];
+    recordB.errors = [];
     const outDir = path.join(REPO_ROOT, 'tools', 'runs', 'agentic-eval-calibration');
     const collidingPath = path.join(outDir, `${recordA.run_id}.json`);
 

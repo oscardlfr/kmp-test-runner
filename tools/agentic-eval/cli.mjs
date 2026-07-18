@@ -225,17 +225,21 @@ function resolveHarnessProvenance({ fresh = false } = {}) {
   //    FAIL-CLOSED (see finalizeAndWriteRecords) -- it directly means committable evidence would
   //    misrepresent what repo_commit claims to describe.
   //  - harnessToolingDirtyPaths (tools/agentic-eval/**, package.json): THIS PR's own feature code
-  //    and the repo manifest. Disclosed (via errors[]) but deliberately NOT fail-closed:
-  //    tools/agentic-eval/** is necessarily in-flux during the harness's own active
-  //    development (including this very test suite, which lives inside that same tree) --
-  //    blocking on it would make the harness structurally unable to ever produce evidence while
-  //    being developed or exercised by its own local test run. package.json is grouped here
-  //    (not the measured-code list) since its version field is metadata about the harness/CLI
-  //    release, not code whose correctness affects what evidence actually captured. Unlike
-  //    tools/agentic-eval/**, tools/lib/ and tools/validate-plugin.mjs are shared, stable,
-  //    pre-existing repo infrastructure -- not novel code under active iteration as part of this
-  //    PR's own work -- so fail-closed enforcement there doesn't reproduce the
-  //    can-never-produce-evidence-during-development problem this split exists to avoid.
+  //    and the repo manifest. Always disclosed via errors[]; FAIL-CLOSED conditionally, only when
+  //    finalizeAndWriteRecords() is writing to the default, committable RUNS_ROOT (see
+  //    RUNS_ROOT_IS_DEFAULT and finalizeAndWriteRecords's own comment for the full reasoning) --
+  //    never blanket, because tools/agentic-eval/** is necessarily in-flux during the harness's
+  //    own active development (including this very test suite, which lives inside that same tree
+  //    and always targets an isolated, non-default RUNS_ROOT) -- blocking there too would make
+  //    the harness structurally unable to ever produce evidence while being developed or
+  //    exercised by its own local test run. package.json is grouped here (not the measured-code
+  //    list) since its version field is metadata about the harness/CLI release, not code whose
+  //    correctness affects what evidence actually captured. Unlike tools/agentic-eval/**,
+  //    tools/lib/ and tools/validate-plugin.mjs are shared, stable, pre-existing repo
+  //    infrastructure -- not novel code under active iteration as part of this PR's own work --
+  //    so UNCONDITIONAL fail-closed enforcement there doesn't reproduce the
+  //    can-never-produce-evidence-during-development problem this conditional split exists to
+  //    avoid.
   const measuredCode = gitDirtyPaths(['bin', 'lib', 'scripts', 'tools/lib', 'tools/validate-plugin.mjs']);
   const harnessTooling = gitDirtyPaths(['tools/agentic-eval', 'package.json']);
   cachedHarnessProvenance = {
@@ -503,10 +507,11 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     // repo_commit/kmp_test_cli_source_sha describe HEAD, not necessarily the exact bytes that
     // executed -- disclosed here rather than silently letting the recorded SHA imply a codebase
     // that isn't quite what actually ran. Two distinct codes: dirty_measured_code (bin/lib/
-    // scripts, the code a measured session's kmp-test invocations actually execute -- this ALSO
-    // fails finalizeAndWriteRecords's hard, fail-closed check, see there for why) and
-    // dirty_harness_tooling (tools/agentic-eval/**, package.json -- informational only; see
-    // resolveHarnessProvenance's own comment for why this category is never fail-closed).
+    // scripts/tools/lib/tools/validate-plugin.mjs, code whose correctness this evidence directly
+    // depends on -- this ALSO always fails finalizeAndWriteRecords's hard, fail-closed check, see
+    // there for why) and dirty_harness_tooling (tools/agentic-eval/**, package.json -- always
+    // disclosed, but only fail-closed when writing to the default RUNS_ROOT; see
+    // resolveHarnessProvenance's own comment for the full reasoning).
     errors: [
       // measuredCodeCheckFailed (the `git status` command itself failed -- git missing, spawn
       // error, not a git repo) reuses the SAME dirty_measured_code code as an actual dirty tree:
@@ -559,9 +564,11 @@ function resolveEvidenceOutDir(runKind, runsRootOverride = RUNS_ROOT) {
 // RUNS_ROOT_IS_DEFAULT's comment) -- an independent review pass argued that documenting a
 // non-default root in the record doesn't itself prevent an accidental `git add -A` from staging
 // raw, unredacted transcripts. Verifies the raw-transcript destination can never end up in a real
-// commit: EITHER it's entirely outside this repo's worktree (git can never see it, regardless of
-// any gitignore rule), OR it's inside the worktree AND actually covered by .gitignore's own
-// raw-transcript glob -- checked via `git check-ignore`, not assumed from the path's string shape.
+// commit: EITHER it's CONFIRMED entirely outside any git repository (not just this one -- git can
+// never see it, regardless of any gitignore rule), OR it's inside one and actually covered by
+// that repository's own .gitignore -- checked via `git check-ignore`, not assumed from the path's
+// string shape. Every git call's failure mode is itself fail-closed: a result this function can't
+// positively confirm is never treated as safe by default.
 function isRawDirSafeFromAccidentalCommit(rawDir, runsRootOverride) {
   let runsRootReal;
   try {
@@ -578,10 +585,24 @@ function isRawDirSafeFromAccidentalCommit(rawDir, runsRootOverride) {
   // repository elsewhere, `git status` there showed the raw directory as a real, trackable
   // untracked path (`?? agentic-eval-calibration/`) -- an accidental `git add -A` in THAT repo
   // would have staged it. `git -C <path> rev-parse --show-toplevel` finds whatever repository (if
-  // any) actually contains the resolved root; a non-zero exit means it isn't inside ANY git
-  // repository at all, which is genuinely safe (nothing can ever track it).
+  // any) actually contains the resolved root.
+  //
+  // A non-zero exit is NOT by itself "confirmed not inside any git repository" -- a further
+  // independent review pass caught exactly this: git being unavailable (missing from PATH), a
+  // spawn-level error, a permissions problem, an unconfigured safe.directory, or any other
+  // unexpected failure ALSO produces a non-zero exit, and treating all of these the same as
+  // "definitely outside a repo, therefore safe" is the identical fail-open pattern already fixed
+  // once for gitDirtyPaths() -- reproduced concretely by disabling git for this exact call: the
+  // function returned "safe" for a destination that, with git working normally, would have shown
+  // up as trackable, untracked content in a real containing repository. Only ONE specific,
+  // positively-matched outcome counts as confirmed-safe: the spawn itself succeeded (no
+  // `.error`), AND git's own exit code (128) and stderr match its well-known, stable
+  // "not a git repository" message exactly. Every other outcome -- including a DIFFERENT
+  // non-zero status, unrecognized stderr, or a spawn error -- fails closed.
   const toplevel = spawnSync('git', ['-C', runsRootReal, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
-  if (toplevel.status !== 0) return true; // not inside any git repository
+  const confirmedNotInAnyRepo = !toplevel.error && toplevel.status === 128 && /fatal: not a git repository/i.test(toplevel.stderr ?? '');
+  if (confirmedNotInAnyRepo) return true;
+  if (toplevel.status !== 0) return false; // couldn't confirm either way -- fail closed, never assume safe
   const containingRepoRoot = toplevel.stdout.trim();
   // .gitignore's own pattern is `tools/runs/agentic-eval-*/raw/**` -- the `**` only matches
   // CONTENTS of raw/, never the bare directory path itself (confirmed empirically: `git
@@ -589,7 +610,7 @@ function isRawDirSafeFromAccidentalCommit(rawDir, runsRootOverride) {
   // a representative file path inside it, matching what actually gets written there, scoped to
   // whichever repository actually contains it (not always REPO_ROOT).
   const r = spawnSync('git', ['check-ignore', '--quiet', join(rawDir, 'probe.jsonl')], { cwd: containingRepoRoot, encoding: 'utf8' });
-  return r.status === 0;
+  return !r.error && r.status === 0;
 }
 
 function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB, runsRootOverride = RUNS_ROOT) {
@@ -676,6 +697,19 @@ function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedT
  * rule matching only the runs-root path itself could report {ok:false} after real evidence was
  * already on disk). Any failure returns {ok:false, reason} and writes nothing.
  */
+/**
+ * Extracted as a named, independently-testable function specifically so BOTH branches of this
+ * conditional (writing to the default RUNS_ROOT vs. an isolated override) can be unit-tested
+ * directly -- RUNS_ROOT_IS_DEFAULT is a module-level const fixed at first import, so a real
+ * in-process test can only ever observe ONE of its two values within a single process. Returns
+ * the blocking dirty_harness_tooling error entry (or undefined) rather than a boolean, so a caller
+ * can build a reason string from its message.
+ */
+function findBlockingHarnessToolingDirty(record, runsRootIsDefault) {
+  if (!runsRootIsDefault) return undefined;
+  return record.errors.find((e) => e.code === 'dirty_harness_tooling');
+}
+
 async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, hardGateFn, privatePatternsFile }) {
   for (const [label, record] of [['A', recordA], ['B', recordB]]) {
     const { errors } = validateRun(record);
@@ -683,16 +717,31 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
       return { ok: false, reason: `Run record ${label} failed schema validation: ${JSON.stringify(errors)}` };
     }
   }
-  // Fail-closed on dirty MEASURED code (bin/lib/scripts) -- disclosing this in errors[] alone
-  // (the previous behavior) still let evidence write, meaning committable evidence could claim
-  // repo_commit described the code that ran when it actually didn't. dirty_harness_tooling
-  // (tools/agentic-eval/**, package.json) is deliberately NOT checked here -- see
-  // resolveHarnessProvenance's own comment for why blocking on that category would make the
-  // harness unable to ever produce evidence during its own active development.
+  // Fail-closed on dirty MEASURED code (bin/lib/scripts/tools/lib/tools/validate-plugin.mjs) --
+  // disclosing this in errors[] alone (the previous behavior) still let evidence write, meaning
+  // committable evidence could claim repo_commit described the code that ran when it actually
+  // didn't.
   for (const [label, record] of [['A', recordA], ['B', recordB]]) {
     const dirty = record.errors.find((e) => e.code === 'dirty_measured_code');
     if (dirty) {
       return { ok: false, reason: `Run record ${label} was captured with an unclean measured-code tree -- refusing to write evidence that would misrepresent repo_commit: ${dirty.message}` };
+    }
+  }
+  // dirty_harness_tooling (tools/agentic-eval/**, package.json) is fail-closed ONLY when this
+  // invocation is writing to the OFFICIAL, committable location (RUNS_ROOT_IS_DEFAULT) -- an
+  // independent review pass pointed out that leaving this purely disclosure-only meant code that
+  // directly decides parsing/gates/metrics (this PR's own feature work) could change what
+  // evidence actually captures while repo_commit still pointed at a clean HEAD. Scoped to the
+  // default root specifically, not blanket: tools/agentic-eval/** is necessarily in-flux during
+  // the harness's own active development, including this very test suite (which always targets an
+  // isolated KMP_EVAL_RUNS_ROOT, never the default) -- blocking there too would make local
+  // development/testing structurally unable to ever exercise this function. A REAL calibrate/
+  // smoke run producing official evidence, though, should require the same clean-tree discipline
+  // dirty_measured_code already enforces: develop, commit, then run.
+  for (const [label, record] of [['A', recordA], ['B', recordB]]) {
+    const dirty = findBlockingHarnessToolingDirty(record, RUNS_ROOT_IS_DEFAULT);
+    if (dirty) {
+      return { ok: false, reason: `Run record ${label} was captured with an unclean harness-tooling tree while writing to the default, committable evidence location -- refusing to write evidence that would misrepresent repo_commit: ${dirty.message}` };
     }
   }
   const { computePolicySha256 } = await import('./policy-config.mjs');
@@ -1068,4 +1117,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, writeRunRecordEvidence, calibrationHardGate, smokeHardGate, verifyExactCommandsSucceeded, resolveHarnessProvenance, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES };
+export { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, writeRunRecordEvidence, calibrationHardGate, smokeHardGate, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES };

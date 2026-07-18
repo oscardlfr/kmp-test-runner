@@ -67,6 +67,13 @@ describe('finalizeAndWriteRecords -- evidence-directory-path privacy check runs 
     const common = { runKind: 'calibration', scenarioId: 'test-outdir-order', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model' };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
+    // This test is specifically about outDir-privacy-check ordering, not dirty-tree behavior --
+    // clear whatever real dirty_measured_code/dirty_harness_tooling errors buildRunRecord() may
+    // have picked up from the ACTUAL, ambient git state of this repo at test-run time, so the
+    // result never depends on incidental local working-tree state (e.g. this very file being
+    // actively edited).
+    recordA.errors = [];
+    recordB.errors = [];
     const outDir = path.join(REPO_ROOT, 'tools', 'runs', 'agentic-eval-calibration');
     const rawDir = path.join(outDir, 'raw');
     const thisRunsPaths = [

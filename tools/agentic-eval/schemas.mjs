@@ -392,15 +392,25 @@ export function buildAggregateGroup(runs) {
   // benchmark_eligible:false and never reach here). Unlike claude_code_version (checked for every
   // run_kind above), these fields are LEGITIMATELY null for calibration/corpus-probe runs --
   // project_commit: no external project is involved; model_resolved: the init event may lack it;
-  // kmp_test_cli_source_sha: only reliably non-null once resolveHarnessProvenance's own git checks
-  // succeed -- so a blanket requirement here would incorrectly reject valid non-scenario records.
-  // For scenario+eligible runs specifically, though, a null value is an unrecorded provenance gap,
-  // not a meaningful absence -- two such runs both carrying null would otherwise silently match as
-  // "the same partition key" (null === null) for fields that were never made HARD_PARTITION_FIELDS
-  // entries, permitting exactly the kind of unknown-provenance averaging this Contract exists to
-  // prevent.
+  // kmp_test_cli_source_sha/repo_commit: only reliably non-null once resolveHarnessProvenance's
+  // own git checks succeed -- so a blanket requirement here would incorrectly reject valid
+  // non-scenario records. For scenario+eligible runs specifically, though, a null value is an
+  // unrecorded provenance gap, not a meaningful absence -- two such runs both carrying null would
+  // otherwise silently match as "the same partition key" (null === null) for fields that were
+  // never made HARD_PARTITION_FIELDS entries, permitting exactly the kind of unknown-provenance
+  // averaging this Contract exists to prevent.
+  //
+  // daemon_policy/env_allowlist_profile/scenario_id are fixed, always-populated string constants
+  // in every code path this PR's own harness can currently produce -- included here anyway as
+  // defense-in-depth, not because a reachable null case exists today, but because nothing
+  // structurally guarantees that stays true as this harness grows (e.g. a future scenario/
+  // corpus-probe code path that derives one of these dynamically, the same way model_resolved
+  // already is). repo_commit is the literal same underlying value as kmp_test_cli_source_sha by
+  // construction today (both come from resolveHarnessProvenance()'s one git rev-parse call) --
+  // checked here as its own distinct schema field regardless, since nothing prevents them from
+  // diverging in the future and an independent review pass named it specifically.
   if (runs.every((r) => r.run_kind === 'scenario') && runs.every((r) => r.benchmark_eligible === true)) {
-    for (const field of ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha']) {
+    for (const field of ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha', 'repo_commit', 'daemon_policy', 'env_allowlist_profile', 'scenario_id']) {
       const unknown = runs.filter((r) => typeof r[field] !== 'string' || r[field].length === 0);
       if (unknown.length > 0) {
         errors.push({ field, message: `${unknown.length} run(s) have a missing/empty ${field} and cannot be folded into a publishable scenario aggregate -- an unknown value can't be trusted to match another unknown value` });
