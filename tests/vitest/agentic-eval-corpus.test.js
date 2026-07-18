@@ -1,12 +1,11 @@
 // tests/vitest/agentic-eval-corpus.test.js
-// Validates tools/agentic-eval/corpus/ content shape: trigger-queries.json counts/partitions,
-// banned-term rules, and the six scenario definitions.
+// Validates tools/agentic-eval/corpus/trigger-queries.json content shape: counts/partitions,
+// banned-term rules. Scenario definitions (corpus/scenarios/) and their graders are deferred
+// to a follow-up PR -- see BACKLOG.md -- and are not present in this PR at all.
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateScenario } from '../../tools/agentic-eval/schemas.mjs';
-import { getGrader } from '../../tools/agentic-eval/graders.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CORPUS_DIR = path.resolve(__dirname, '..', '..', 'tools', 'agentic-eval', 'corpus');
@@ -53,44 +52,5 @@ describe('trigger-queries.json', () => {
     for (const q of trigger.queries) {
       expect(suspiciousRe.test(q.text)).toBe(false);
     }
-  });
-});
-
-describe('scenario definitions', () => {
-  const scenariosDir = path.join(CORPUS_DIR, 'scenarios');
-  const files = readdirSync(scenariosDir).filter((f) => f.endsWith('.json'));
-
-  it('all six named scenarios from the task brief exist', () => {
-    const expectedIds = [
-      'kampkit-android-host-test-discovery',
-      'kampkit-no-applicable-tests',
-      'nowinandroid-core-common',
-      'deterministic-unit-test-failure',
-      'coverage-threshold-failure',
-      'changed-module-verification',
-    ];
-    const actualIds = files.map((f) => f.replace('.json', ''));
-    for (const id of expectedIds) expect(actualIds).toContain(id);
-  });
-
-  it.each(files)('%s passes schema validation', (file) => {
-    const scenario = JSON.parse(readFileSync(path.join(scenariosDir, file), 'utf8'));
-    const { errors } = validateScenario(scenario);
-    expect(errors).toEqual([]);
-  });
-
-  it.each(files)('%s prompt does not mention kmp-test, the skill name, or the bin path', (file) => {
-    const scenario = JSON.parse(readFileSync(path.join(scenariosDir, file), 'utf8'));
-    expect(BANNED_TERMS_RE.test(scenario.prompt)).toBe(false);
-  });
-
-  it.each(files)('%s has a registered grader in graders.mjs', (file) => {
-    const scenario = JSON.parse(readFileSync(path.join(scenariosDir, file), 'utf8'));
-    expect(() => getGrader(scenario.id)).not.toThrow();
-  });
-
-  it.each(files)('%s references only a public (https) project URL', (file) => {
-    const scenario = JSON.parse(readFileSync(path.join(scenariosDir, file), 'utf8'));
-    expect(scenario.project_url.startsWith('https://')).toBe(true);
   });
 });

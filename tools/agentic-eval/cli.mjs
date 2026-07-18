@@ -4,18 +4,23 @@
 // tools/agentic-eval/cli.mjs -- entrypoint for the reproducible skill evaluation harness.
 //
 // Usage:
-//   node tools/agentic-eval/cli.mjs calibrate [--model <name>]
+//   node tools/agentic-eval/cli.mjs calibrate [--model <name>] [--private-patterns-file <path>]
 //   node tools/agentic-eval/cli.mjs smoke --source-repo-dir <local-clone> --pinned-commit <sha>
 //                                          [--project-alias <alias>] [--model <name>]
+//                                          [--private-patterns-file <path>]
 //   node tools/agentic-eval/cli.mjs corpus validate
 //   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
 //   node tools/agentic-eval/cli.mjs validate --run <path-to-run.json>
 //   node tools/agentic-eval/cli.mjs --help
 //
-// Every measured run is benchmark_eligible:false (calibration/corpus-probe/smoke) except a
-// future, genuinely controlled `scenario` run_kind -- not implemented by any subcommand here.
-// This PR does not execute the full benchmark; `smoke` runs exactly one scenario to prove the
-// harness works end-to-end, never publishing a ratio or performance claim.
+// Every measured run is benchmark_eligible:false (calibration/smoke) -- this PR does not execute
+// the full benchmark; `smoke` runs exactly one scenario to prove the harness works end-to-end,
+// never publishing a ratio or performance claim.
+//
+// No committable evidence is ever written before ALL of: schema validation, a fresh
+// policy_sha256 match against the CURRENT policy-hook.mjs, the privacy fail-closed check
+// (assertCleanOrThrow), and the run-kind's hard acceptance gate all pass -- see
+// finalizeAndWriteRecords(). Any failure writes nothing and reports why.
 import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -24,10 +29,9 @@ import { randomUUID } from 'node:crypto';
 import { CURRENT_RUN_SCHEMA, validateRun, validateScenario } from './schemas.mjs';
 import { buildEvalEnv } from './env-builder.mjs';
 import { buildPathShim } from './path-shim.mjs';
-import { materializeSkillSnapshot, materializeCalibrationProject, materializeScenarioProject, materializeGradleUserHome, realpath } from './materialize.mjs';
+import { materializeSkillSnapshot, materializeCalibrationProject, materializeScenarioProject, materializeGradleUserHome, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition } from './condition-launcher.mjs';
-import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findBashToolUses, countHookEvents, computeByteMetrics, extractTokenUsage, deriveFirstUsefulSignalMs } from './stream-parser.mjs';
-import { getGrader } from './graders.mjs';
+import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findBashToolUses, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
 import { aggregateRuns } from './aggregate.mjs';
 import { assertCleanOrThrow } from './privacy.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
@@ -39,16 +43,18 @@ const RUNS_ROOT = join(REPO_ROOT, 'tools', 'runs');
 const HELP = `tools/agentic-eval/cli.mjs -- reproducible skill evaluation harness
 
 Usage:
-  node tools/agentic-eval/cli.mjs calibrate [--model <name>]
+  node tools/agentic-eval/cli.mjs calibrate [--model <name>] [--private-patterns-file <path>]
   node tools/agentic-eval/cli.mjs smoke --source-repo-dir <local-clone> --pinned-commit <sha>
                                          [--project-alias <alias>] [--model <name>]
+                                         [--private-patterns-file <path>]
   node tools/agentic-eval/cli.mjs corpus validate
   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
   node tools/agentic-eval/cli.mjs validate --run <path>
   node tools/agentic-eval/cli.mjs --help
 
 Every run this PR's subcommands can produce is benchmark_eligible:false. This is a foundation
-harness, not a benchmark -- see tools/agentic-eval/README.md.
+harness, not a benchmark -- see tools/agentic-eval/README.md. No evidence is committable until
+schema, policy-hash freshness, privacy, and the run-kind's hard acceptance gate all pass.
 `;
 
 function parseArgs(argv) {
@@ -60,10 +66,6 @@ function parseArgs(argv) {
     out._.push(a);
   }
   return out;
-}
-
-function nowIso() {
-  return new Date().toISOString();
 }
 
 function nullableMetric(value, reason = null) {
@@ -79,15 +81,29 @@ function resolvePlatform() {
 }
 
 /**
+ * Runs both conditions of a pair and returns everything buildRunRecord needs, plus a cleanup()
+ * function the caller MUST invoke from a finally block -- removes every temp directory this
+ * function created (shim, skill snapshot, GRADLE_USER_HOME, KMP_EVAL_TEMP_HOME, the generated
+ * --settings file's directory) and, via the caller-supplied cleanupFixture callback, the
+ * materialized fixture itself (a plain rmSync for a copied template, or `git worktree remove`
+ * for a scenario project -- see materialize.mjs's removeScenarioWorktree). Without this, a git
+ * worktree survives as registered metadata in the source repo forever even after its directory
+ * is gone (confirmed via `git worktree list` after a run that skipped this).
  * @param {Function} materializeFixture - (existingDir) => {fixtureDir}. Called once per
  *   condition with the PRIOR fixtureDir (or undefined for the first call) so the caller can
  *   implement "reuse the same path, wiped and re-populated" (Materialization Principle).
+ * @param {Function} [cleanupFixture] - (fixtureDir) => void|Promise<void>, called once at the end.
  */
-async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpTestSubcommands, materializeFixture, timeoutMs }) {
+async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpTestSubcommands, materializeFixture, cleanupFixture, timeoutMs }) {
   const settingsPath = buildPolicySettingsFile();
   const { shimDir } = buildPathShim({ worktreeRoot: REPO_ROOT });
   const { snapshotDir } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runPluginValidator });
-  const { gradleUserHome, resetToSnapshot, daemonPolicy } = materializeGradleUserHome({});
+  // materializeGradleUserHome creates TWO temp directories (gradleUserHome itself, plus its own
+  // internal snapshotDir it resets from) -- gradleSnapshotDir here is deliberately distinctly
+  // named from the skill snapshot's `snapshotDir` above; conflating the two previously meant the
+  // Gradle module's own snapshot directory was never captured at all and leaked on every run
+  // (caught by a real cleanup-verification test, not asserted).
+  const { gradleUserHome, snapshotDir: gradleSnapshotDir, resetToSnapshot, daemonPolicy } = materializeGradleUserHome({});
   const kmpEvalTempHome = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-home-'));
 
   const env = buildSharedEnv({
@@ -109,7 +125,9 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     mkdirSync(kmpEvalTempHome, { recursive: true });
     const conditionEnv = { ...env, KMP_EVAL_EXPECTED_FIXTURE_ROOT: realpath(fixtureDir) };
     const argv = buildConditionArgv(base, condition, condition === 'current-skill' ? snapshotDir : null);
+    const startedAt = new Date();
     const spawnResult = await spawnCondition(argv, { env: conditionEnv, cwd: fixtureDir, timeoutMs });
+    const endedAt = new Date();
     const { events, malformedLines } = parseStreamJsonl(spawnResult.rawStdout, { taggedLines: spawnResult.taggedLines });
     const init = findInitEvent(events);
     const result = findResultEvent(events);
@@ -119,18 +137,37 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
 
     return {
       condition, argv, env: conditionEnv, fixtureDir, events, malformedLines, init, result,
-      invocation, hookStats, byteMetrics, spawnResult,
+      invocation, hookStats, byteMetrics, spawnResult, startedAt, endedAt,
     };
   };
 
   const runB = await runOneCondition('current-skill');
   const runA = await runOneCondition('no-skill');
 
-  return { runA, runB, snapshotDir, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands };
+  async function cleanup() {
+    const steps = [
+      () => rmSync(shimDir, { recursive: true, force: true }),
+      () => rmSync(snapshotDir, { recursive: true, force: true }),
+      () => rmSync(gradleUserHome, { recursive: true, force: true }),
+      () => rmSync(gradleSnapshotDir, { recursive: true, force: true }),
+      () => rmSync(kmpEvalTempHome, { recursive: true, force: true }),
+      () => rmSync(dirname(settingsPath), { recursive: true, force: true }),
+      () => (cleanupFixture ? cleanupFixture(fixtureDir) : undefined),
+    ];
+    for (const step of steps) {
+      try {
+        await step();
+      } catch (err) {
+        console.error(`cleanup step failed (continuing): ${err.message}`);
+      }
+    }
+  }
+
+  return { runA, runB, snapshotDir, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, cleanup };
 }
 
-function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skillSourceSha, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias = 'calibration-project', projectCommit = null, family = 'trigger-only', modelRequested = 'claude-sonnet-5' }) {
-  const { init, result, invocation, hookStats, byteMetrics } = conditionResult;
+function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skillSourceSha, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias = 'calibration-project', projectCommit = null, family = 'trigger-only', modelRequested = 'claude-sonnet-5', privacyStatus = 'public' }) {
+  const { init, result, invocation, hookStats, byteMetrics, startedAt, endedAt } = conditionResult;
   const notApplicableReason = `${runKind} run -- no scenario grader applies`;
   return {
     schema: CURRENT_RUN_SCHEMA,
@@ -157,11 +194,12 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     env_allowlist_profile: 'narrow',
     seed: null,
     order_index: null,
-    started_at: nowIso(),
-    ended_at: nowIso(),
-    wall_clock_ms: null,
+    started_at: startedAt.toISOString(),
+    ended_at: endedAt.toISOString(),
+    wall_clock_ms: endedAt.getTime() - startedAt.getTime(),
     skill_available: nullableMetric(isSkillAvailable(init, 'kmp-test-runner')),
-    skill_invoked: nullableMetric(invocation != null),
+    skill_invocation_attempted: nullableMetric(invocation != null),
+    skill_invoked: nullableMetric(invocation?.confirmed ?? false),
     skill_invocation_event: invocation ? { type: invocation.type, index: invocation.index } : null,
     success: nullableMetric(null, `${runKind} run -- success grading not applicable`),
     expected_outcome_matched: nullableMetric(null, notApplicableReason),
@@ -189,7 +227,7 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     policy_sha256: policySha256,
     hook_call_count: hookStats.hookCallCount,
     hook_deny_count: hookStats.hookDenyCount,
-    privacy_status: 'redacted-private',
+    privacy_status: privacyStatus,
     raw_capture_committed: false,
     raw_capture_location: `tools/runs/agentic-eval-${runKind}/raw/`,
     notes: 'Foundation-harness run; not a benchmark result.',
@@ -198,48 +236,109 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
 }
 
 /**
- * Writes the schema-valid, redacted run records to the (committable) top-level run-kind
- * directory, and the RAW stream-json transcripts to its raw subdirectory -- gitignored per
- * .gitignore's agentic-eval raw-transcript glob, matching what each record's
- * raw_capture_location field claims. Never redacts/sanitizes the raw file itself; it simply
- * never leaves this local, gitignored destination.
+ * Writes ALREADY-REDACTED, already-gated record text (never re-serializes recordA/recordB --
+ * the caller's redacted text is authoritative) to the committable top-level run-kind directory,
+ * and the RAW stream-json transcripts to its raw subdirectory -- gitignored per .gitignore's
+ * agentic-eval raw-transcript glob, matching what each record's raw_capture_location field
+ * claims. Never redacts/sanitizes the raw file itself; it simply never leaves this local,
+ * gitignored destination.
  */
-function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB) {
+function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB) {
   const outDir = join(RUNS_ROOT, `agentic-eval-${runKind}`);
   const rawDir = join(outDir, 'raw');
   mkdirSync(rawDir, { recursive: true });
-  writeFileSync(join(outDir, `${recordA.run_id}.json`), JSON.stringify(recordA, null, 2));
-  writeFileSync(join(outDir, `${recordB.run_id}.json`), JSON.stringify(recordB, null, 2));
+  writeFileSync(join(outDir, `${recordA.run_id}.json`), redactedTextA);
+  writeFileSync(join(outDir, `${recordB.run_id}.json`), redactedTextB);
   writeFileSync(join(rawDir, `${recordA.run_id}.jsonl`), runA.spawnResult.rawStdout);
   writeFileSync(join(rawDir, `${recordB.run_id}.jsonl`), runB.spawnResult.rawStdout);
   return outDir;
 }
 
+/**
+ * The sole gate before ANY committable evidence is written. In order: schema validation (both
+ * records) -> a FRESH policy_sha256 recomputation matched against both records (catches
+ * evidence silently going stale relative to policy-hook.mjs's current content -- a hand-carried
+ * or previously-generated record with a stale hash is refused, not just format-checked) ->
+ * assertCleanOrThrow privacy check on each record's serialized text (never previously wired in
+ * -- this is what actually enforces "no leak ever reaches a committable file") -> the run-kind's
+ * own hard acceptance predicate. Any failure returns {ok:false, reason} and writes nothing.
+ */
+async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, hardGateFn, privatePatternsFile }) {
+  for (const [label, record] of [['A', recordA], ['B', recordB]]) {
+    const { errors } = validateRun(record);
+    if (errors.length > 0) {
+      return { ok: false, reason: `Run record ${label} failed schema validation: ${JSON.stringify(errors)}` };
+    }
+  }
+  const { computePolicySha256 } = await import('./policy-config.mjs');
+  const freshHash = computePolicySha256({ fresh: true });
+  for (const [label, record] of [['A', recordA], ['B', recordB]]) {
+    if (record.policy_sha256 !== freshHash) {
+      return { ok: false, reason: `Run record ${label} policy_sha256 (${record.policy_sha256}) does not match the current policy-hook.mjs (${freshHash}) -- evidence is stale relative to the code that produced it` };
+    }
+  }
+  let redactedA;
+  let redactedB;
+  try {
+    redactedA = assertCleanOrThrow(JSON.stringify(recordA, null, 2), { privatePatternsFile });
+    redactedB = assertCleanOrThrow(JSON.stringify(recordB, null, 2), { privatePatternsFile });
+  } catch (err) {
+    return { ok: false, reason: `Privacy check refused to clear evidence for writing: ${err.message}` };
+  }
+  const gate = hardGateFn(recordA, recordB, runA, runB);
+  if (!gate.ok) {
+    return { ok: false, reason: gate.reason };
+  }
+  const outDir = writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedA, redactedB);
+  return { ok: true, reason: null, outDir };
+}
+
 async function cmdCalibrate(args) {
   const model = args.model ?? 'claude-sonnet-5';
+  const privatePatternsFile = args['private-patterns-file'] ?? null;
+  const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
   const { computePolicySha256 } = await import('./policy-config.mjs');
   const templateDir = join(import.meta.dirname, 'fixtures', 'calibration-project');
-  const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = await runConditionPair({
+  const conditionPair = await runConditionPair({
     prompt: 'Use the kmp-test-runner skill to check this project.',
     model,
     allowedGradleTasks: ['build'],
     allowedKmpTestSubcommands: ['doctor', 'parallel'],
     materializeFixture: (existingDir) => materializeCalibrationProject({ templateDir, existingDir }),
+    cleanupFixture: (fixtureDir) => rmSync(fixtureDir, { recursive: true, force: true }),
   });
-  const policySha256 = computePolicySha256();
-  const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model });
-  const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model });
+  try {
+    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = conditionPair;
+    const policySha256 = computePolicySha256();
+    const common = { runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus };
+    const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
+    const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
 
-  for (const [label, record] of [['A (no-skill)', recordA], ['B (current-skill)', recordB]]) {
-    const { errors } = validateRun(record);
-    if (errors.length > 0) {
-      console.error(`Run record ${label} failed schema validation:`, JSON.stringify(errors, null, 2));
+    // Calibration's job is narrowly to prove invocation MECHANICS under an explicit-invocation
+    // prompt: both conditions must show a genuine attempt (proving the prompt actually drives
+    // the model to try), and CONFIRMED invocation must track availability exactly -- A attempts
+    // but fails (no skill registered), B attempts and succeeds.
+    const result = await finalizeAndWriteRecords({
+      runKind: 'calibration', recordA, recordB, runA, runB, privatePatternsFile,
+      hardGateFn: (a, b) => {
+        const ok = a.skill_available.value === false && b.skill_available.value === true
+          && a.skill_invocation_attempted.value === true && b.skill_invocation_attempted.value === true
+          && a.skill_invoked.value === false && b.skill_invoked.value === true;
+        return {
+          ok,
+          reason: ok ? null : `calibration hard gate failed -- expected A:{available:false,attempted:true,invoked:false} B:{available:true,attempted:true,invoked:true}, got A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value}}`,
+        };
+      },
+    });
+    if (!result.ok) {
+      console.error(`CALIBRATION FAILED: ${result.reason}`);
       return 1;
     }
+    console.log(JSON.stringify({ recordA, recordB, evidenceDir: result.outDir }, null, 2));
+    return 0;
+  } finally {
+    await conditionPair.cleanup();
   }
-  const outDir = writeRunRecordEvidence('calibration', recordA, recordB, runA, runB);
-  console.log(JSON.stringify({ recordA, recordB, evidenceDir: outDir }, null, 2));
-  return recordA.skill_available.value === false && recordB.skill_available.value === true && recordB.skill_invoked.value === true ? 0 : 1;
 }
 
 async function cmdSmoke(args) {
@@ -247,38 +346,67 @@ async function cmdSmoke(args) {
   const sourceRepoDir = args['source-repo-dir'];
   const pinnedCommit = args['pinned-commit'];
   const projectAlias = args['project-alias'] ?? 'kampkit';
+  const privatePatternsFile = args['private-patterns-file'] ?? null;
+  const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
   if (!sourceRepoDir || !pinnedCommit) {
     console.error('smoke requires --source-repo-dir <local clone> --pinned-commit <sha> [--project-alias <alias>]');
     return 1;
   }
   const { computePolicySha256 } = await import('./policy-config.mjs');
-  const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = await runConditionPair({
-    prompt: "Check whether this project's test setup is healthy and tell me what you find.",
+  const conditionPair = await runConditionPair({
+    // Explicit and directive on purpose: smoke exists to prove the pipeline works end-to-end
+    // with REAL diagnostic work in both arms, not to test whether the skill triggers naturally
+    // (that is a corpus-probe concern, deliberately out of scope here). An earlier, open-ended
+    // prompt ("check whether this project's test setup is healthy") drove the agent toward
+    // general exploration (ls/pwd/git status/find/cat) that the policy hook's narrow grammar
+    // correctly denies by design -- 11/13 and 6/6 calls were denied in that run, meaning the
+    // agent never actually got to do the diagnostic work smoke exists to prove. Naming the exact
+    // two read-only commands removes the need to explore.
+    prompt: "Run `kmp-test doctor --json` in this project directory, then run `kmp-test describe --json`. Based only on their output, tell me whether the test setup looks healthy. Do not run any other commands or tools.",
     model,
-    allowedGradleTasks: ['build'],
-    allowedKmpTestSubcommands: ['doctor'],
+    allowedGradleTasks: [],
+    allowedKmpTestSubcommands: ['doctor', 'describe'],
     materializeFixture: (existingWorktreeDir) => materializeScenarioProject({ sourceRepoDir, pinnedCommit, existingWorktreeDir }),
+    cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
     timeoutMs: 180000,
   });
-  const policySha256 = computePolicySha256();
-  const common = { runKind: 'smoke', scenarioId: 'kampkit-android-host-test-discovery', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, family: 'test-only', modelRequested: model };
-  const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
-  const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
+  try {
+    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = conditionPair;
+    const policySha256 = computePolicySha256();
+    const common = { runKind: 'smoke', scenarioId: 'kampkit-android-host-test-discovery', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, family: 'test-only', modelRequested: model, privacyStatus };
+    const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
+    const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
 
-  for (const [label, record] of [['A (no-skill)', recordA], ['B (current-skill)', recordB]]) {
-    const { errors } = validateRun(record);
-    if (errors.length > 0) {
-      console.error(`Run record ${label} failed schema validation:`, JSON.stringify(errors, null, 2));
+    // Smoke's gate requires EQUIVALENT REAL WORK in both arms -- not just skill availability.
+    // hook_call_count>=1 proves the agent actually tried real commands; hook_deny_count===0
+    // proves every command it tried was inside the approved grammar (i.e. genuine, useful
+    // diagnostic work happened, not "everything got blocked"); malformedLines===0 proves a
+    // clean, parseable transcript. skill_invoked is deliberately NOT required here (whether the
+    // skill triggers naturally on this prompt is exactly the open question a future
+    // corpus-probe run would investigate, not something smoke should presuppose).
+    const result = await finalizeAndWriteRecords({
+      runKind: 'smoke', recordA, recordB, runA, runB, privatePatternsFile,
+      hardGateFn: (a, b, runAResult, runBResult) => {
+        const availabilityOk = a.skill_available.value === false && b.skill_available.value === true;
+        const realWorkOk = a.hook_call_count >= 1 && a.hook_deny_count === 0
+          && b.hook_call_count >= 1 && b.hook_deny_count === 0;
+        const cleanTranscriptOk = runAResult.malformedLines.length === 0 && runBResult.malformedLines.length === 0;
+        const ok = availabilityOk && realWorkOk && cleanTranscriptOk;
+        return {
+          ok,
+          reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} realWorkOk:${realWorkOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count}) cleanTranscriptOk:${cleanTranscriptOk}`,
+        };
+      },
+    });
+    if (!result.ok) {
+      console.error(`SMOKE FAILED: ${result.reason}`);
       return 1;
     }
+    console.log(JSON.stringify({ recordA, recordB, evidenceDir: result.outDir }, null, 2));
+    return 0;
+  } finally {
+    await conditionPair.cleanup();
   }
-  const outDir = writeRunRecordEvidence('smoke', recordA, recordB, runA, runB);
-  console.log(JSON.stringify({ recordA, recordB, evidenceDir: outDir }, null, 2));
-  const hardGate = recordA.skill_available.value === false && recordB.skill_available.value === true && recordB.skill_invoked.value === true;
-  if (!hardGate) {
-    console.error('SMOKE FAILED the hard acceptance gate (skill availability/invocation did not match expectations).');
-  }
-  return hardGate ? 0 : 1;
 }
 
 function cmdCorpusValidate() {
@@ -318,6 +446,9 @@ function cmdAggregate(args) {
     console.error('--runs-dir <dir> is required and must exist');
     return 1;
   }
+  // aggregateRuns() validates every record against the full run schema itself (schema-invalid
+  // records are excluded and reported in `errors`, keyed by run_id) -- no separate pre-filter
+  // needed here.
   const runs = readdirSync(runsDir).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(readFileSync(join(runsDir, f), 'utf8')));
   const { groups, errors } = aggregateRuns(runs);
   console.log(JSON.stringify({ groups, errors }, null, 2));
@@ -365,4 +496,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric };
+export { parseArgs, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords };

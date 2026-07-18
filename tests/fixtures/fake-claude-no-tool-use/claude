@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-no-tool-use/claude -- see fake-claude-success/claude for the
+# shared rationale. "no-tool-use" scenario: no tool calls at all -- calibration's
+# skill_invocation_attempted:true requirement must fail closed on this (the explicit-invocation
+# prompt is meant to force a genuine attempt; a run where nothing was even tried proves the
+# calibration setup isn't testing what it claims to).
+echo '{"type":"system","subtype":"init","cwd":"/fake","session_id":"fake-sess-0001","tools":["Bash","Skill"],"mcp_servers":[],"model":"claude-sonnet-5-fake-resolved","permissionMode":"dontAsk","plugins":[],"skills":[],"apiKeySource":"none","claude_code_version":"fake"}'
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"text","text":"no tools needed"}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"fake result text","permission_denials":[],"usage":{"input_tokens":2,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}'
+exit 0

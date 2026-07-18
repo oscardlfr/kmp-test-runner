@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildEvalEnv } from './env-builder.mjs';
 import { buildPolicyEnvValues, computePolicySha256 } from './policy-config.mjs';
+import { resolveBash } from './resolve-bash.mjs';
 
 const POLICY_HOOK_PATH = join(import.meta.dirname, 'policy-hook.mjs');
 
@@ -108,8 +109,11 @@ function killTree(pid, signal) {
  * Spawns the measured session via `bash -c` (required on Windows -- direct spawnSync of
  * `claude` with shell:false hits EINVAL, the same class of issue the prior harness.mjs
  * documented for .bat/.cmd files; confirmed empirically during Step 1). Tags each stdout line
- * with a monotonic receipt_ns relative to a t0 captured immediately before spawn (Round 3 fix
- * #4) -- graders consume only the resulting event index, never a timestamp directly.
+ * with a monotonic, ABSOLUTE process.hrtime.bigint() receiptNs as it arrives (Round 3 fix #4)
+ * -- NOT pre-subtracted against t0 here; stream-parser.mjs's deriveFirstUsefulSignalMs() does
+ * the one subtraction against spawnHrtimeNs. Pre-subtracting here too would double-subtract
+ * there, producing a large negative "ms" value. Grading consumes only the resulting event
+ * index, never a timestamp directly.
  *
  * Uses the async spawn() (not spawnSync()) specifically so lines can be tagged as they actually
  * arrive off the child's stdout stream: spawnSync() buffers the entire child output until exit,
@@ -122,7 +126,7 @@ export function spawnCondition(argv, { env, cwd, timeoutMs = 300000 }) {
   const cmd = argv.map(shQuote).join(' ');
   const t0 = process.hrtime.bigint();
   return new Promise((resolve) => {
-    const child = spawn('bash', ['-c', cmd], { env, cwd, detached: process.platform !== 'win32' });
+    const child = spawn(resolveBash(), ['-c', cmd], { env, cwd, detached: process.platform !== 'win32' });
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     let rawStdout = '';
@@ -141,7 +145,7 @@ export function spawnCondition(argv, { env, cwd, timeoutMs = 300000 }) {
     timer.unref?.();
 
     child.stdout.on('data', (chunk) => {
-      const receiptNs = process.hrtime.bigint() - t0;
+      const receiptNs = process.hrtime.bigint();
       rawStdout += chunk;
       buf += chunk;
       let idx;
@@ -157,9 +161,12 @@ export function spawnCondition(argv, { env, cwd, timeoutMs = 300000 }) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      // terminated:true here (never false) -- the schema itself rejects terminated:false paired
+      // with a non-null termination_reason, and a spawn-level failure (e.g. ENOENT) is exactly
+      // an abnormal, non-'timeout' termination: the run never reached a normal conclusion.
       resolve({
         exitCode: null,
-        terminated: false,
+        terminated: true,
         terminationReason: 'error',
         rawStdout,
         stderr: stderr + `\n[spawn error] ${err.message}`,
@@ -173,7 +180,7 @@ export function spawnCondition(argv, { env, cwd, timeoutMs = 300000 }) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (buf) taggedLines.push({ line: buf, receiptNs: process.hrtime.bigint() - t0 });
+      if (buf) taggedLines.push({ line: buf, receiptNs: process.hrtime.bigint() });
       const terminated = timedOut || signal != null;
       resolve({
         exitCode: code,

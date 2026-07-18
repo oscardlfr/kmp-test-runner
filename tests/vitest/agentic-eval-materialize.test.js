@@ -13,6 +13,7 @@ import {
   materializeCalibrationProject,
   materializeGradleUserHome,
 } from '../../tools/agentic-eval/materialize.mjs';
+import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
 import { runValidator } from '../../tools/validate-plugin.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,14 +23,17 @@ const KNOWN_SHA = 'c5c0661852f7c9da145ef56892048e706216a6ce';
 // Local mirror of materialize.mjs's own bash-routing helpers -- Windows-native `execFileSync`/
 // `spawnSync` with shell:false has been shown elsewhere in this harness to mangle
 // backslash-heavy path arguments embedded in a command string, so all git calls that build a
-// path into the command text itself go through `bash -c`, matching the proven pattern.
+// path into the command text itself go through `bash -c`, matching the proven pattern. Uses
+// resolveBash() (not a bare 'bash') for the same reason production code does -- an ambiguous
+// PATH-resolved 'bash' can be WSL's launcher instead of Git Bash, which broke this exact test
+// suite under a PowerShell shell where System32 (WSL's bash.exe) precedes Git's bin/ on PATH.
 function toPosixPath(winPath) {
   return winPath.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, d) => `/${d.toLowerCase()}`);
 }
 const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
 function gitViaBash(argv, cwd) {
   const cmd = argv.map(shQuote).join(' ');
-  const r = spawnSync('bash', ['-c', `git ${cmd}`], { cwd, encoding: 'utf8' });
+  const r = spawnSync(resolveBash(), ['-c', `git ${cmd}`], { cwd, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`git ${argv.join(' ')} failed (exit ${r.status}): ${r.stderr}`);
   return r.stdout;
 }
@@ -85,7 +89,7 @@ describe('materializeSkillSnapshot', () => {
 
     // Confirm the fixture actually reproduces the bug -- the shallow clone must NOT have
     // `firstSha` locally yet, or this test would prove nothing.
-    const probe = spawnSync('bash', ['-c', `git cat-file -e ${shQuote(firstSha)}^{commit}`], { cwd: shallowDir, encoding: 'utf8' });
+    const probe = spawnSync(resolveBash(), ['-c', `git cat-file -e ${shQuote(firstSha)}^{commit}`], { cwd: shallowDir, encoding: 'utf8' });
     expect(probe.status).not.toBe(0);
 
     const stubValidate = async () => ({ ok: true, summary: 'stub' });

@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { buildPathShim } from '../../tools/agentic-eval/path-shim.mjs';
+import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
 
 const tmpDirs = [];
 afterEach(() => {
@@ -73,7 +74,7 @@ describe('buildPathShim -- real subprocess variant (local node only, no Claude, 
     const tempHome = mkdtempSync(path.join(os.tmpdir(), 'aeps-home-'));
     tmpDirs.push(tempHome);
 
-    const r = spawnSync('bash', ['-c', posixShimPath.replace(/\\/g, '/')], {
+    const r = spawnSync(resolveBash(), ['-c', posixShimPath.replace(/\\/g, '/')], {
       env: { ...process.env, KMP_EVAL_TEMP_HOME: tempHome },
       encoding: 'utf8',
     });
@@ -97,7 +98,7 @@ describe('buildPathShim -- real subprocess variant (local node only, no Claude, 
 
     // Simulate the parent claude session's env having the real HOME (as it does for OAuth),
     // while KMP_EVAL_TEMP_HOME points elsewhere -- the shim must redirect to the temp one.
-    const r = spawnSync('bash', ['-c', posixShimPath.replace(/\\/g, '/')], {
+    const r = spawnSync(resolveBash(), ['-c', posixShimPath.replace(/\\/g, '/')], {
       env: { ...process.env, HOME: mockRealHome, USERPROFILE: mockRealHome, KMP_EVAL_TEMP_HOME: tempHome },
       encoding: 'utf8',
     });
@@ -125,7 +126,7 @@ describe('buildPathShim -- real subprocess variant (local node only, no Claude, 
     const tempHome = mkdtempSync(path.join(os.tmpdir(), 'aeps-metachar-home-'));
     tmpDirs.push(tempHome);
 
-    const r = spawnSync('bash', ['-c', posixShimPath.replace(/\\/g, '/')], {
+    const r = spawnSync(resolveBash(), ['-c', posixShimPath.replace(/\\/g, '/')], {
       env: { ...process.env, KMP_EVAL_TEMP_HOME: tempHome },
       encoding: 'utf8',
     });

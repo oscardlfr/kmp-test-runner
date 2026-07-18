@@ -30,7 +30,7 @@ const RUN_CANONICAL_FIELDS = [
   'resolved_kmp_test_executable_path', 'model_requested', 'model_resolved', 'session_id_observed',
   'repo_commit', 'project_alias', 'project_commit', 'platform', 'family', 'cache_state',
   'daemon_policy', 'env_allowlist_profile', 'seed', 'order_index', 'started_at', 'ended_at',
-  'wall_clock_ms', 'skill_available', 'skill_invoked', 'skill_invocation_event', 'success',
+  'wall_clock_ms', 'skill_available', 'skill_invocation_attempted', 'skill_invoked', 'skill_invocation_event', 'success',
   'expected_outcome_matched', 'first_useful_signal_ms', 'first_useful_signal_event', 'tokens',
   'tool_calls_total', 'shell_commands_total', 'test_invocations_total', 'retries', 'output_bytes',
   'stream_json_bytes', 'human_interventions', 'terminated', 'termination_reason', 'exit_code',
@@ -41,7 +41,7 @@ const RUN_CANONICAL_FIELDS = [
 
 // Fields using the {value, reason} nullable-metric shape -- "never infer, store null with a reason".
 const NULLABLE_METRIC_FIELDS = [
-  'skill_available', 'skill_invoked', 'success', 'expected_outcome_matched',
+  'skill_available', 'skill_invocation_attempted', 'skill_invoked', 'success', 'expected_outcome_matched',
   'first_useful_signal_ms', 'tool_calls_total', 'shell_commands_total', 'test_invocations_total',
   'retries', 'output_bytes', 'stream_json_bytes', 'human_interventions',
 ];
@@ -52,7 +52,7 @@ const NULLABLE_METRIC_FIELDS = [
 // byte count) passes the {value,reason} shape check but is still wrong data -- validated
 // separately so a malformed value can't silently corrupt grading/aggregation downstream.
 const NULLABLE_METRIC_KIND = {
-  skill_available: 'boolean', skill_invoked: 'boolean', success: 'boolean',
+  skill_available: 'boolean', skill_invocation_attempted: 'boolean', skill_invoked: 'boolean', success: 'boolean',
   expected_outcome_matched: 'boolean', first_useful_signal_ms: 'timing',
   tool_calls_total: 'count', shell_commands_total: 'count', test_invocations_total: 'count',
   retries: 'count', output_bytes: 'count', stream_json_bytes: 'count', human_interventions: 'count',
@@ -142,6 +142,12 @@ export function validateRun(run) {
   if (run.raw_capture_committed !== false) errors.push({ field: 'raw_capture_committed', message: 'must always be false -- raw transcripts are never committed' });
   if (typeof run.raw_capture_location === 'string' && /^[a-zA-Z]:[\\/]|^\//.test(run.raw_capture_location)) {
     errors.push({ field: 'raw_capture_location', message: 'must be a relative path, never absolute' });
+  }
+  // A CONFIRMED invocation is only ever derived from an attempt that also succeeded (see
+  // stream-parser.mjs's findSkillInvocation) -- invoked:true without attempted:true is never
+  // truthfully producible and signals a construction bug upstream, not legitimate data.
+  if (run.skill_invoked?.value === true && run.skill_invocation_attempted?.value !== true) {
+    errors.push({ field: 'skill_invoked', message: 'cannot be true when skill_invocation_attempted is not true' });
   }
 
   for (const f of NULLABLE_METRIC_FIELDS) if (f in run) validateNullableMetric(run[f], f, errors);

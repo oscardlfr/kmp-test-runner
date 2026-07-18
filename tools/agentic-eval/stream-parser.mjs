@@ -12,7 +12,7 @@
 //    permissionMode, plugins:[{name,path,source}], skills:[], apiKeySource, claude_code_version}
 //   {type:"rate_limit_event", rate_limit_info:{...}}
 //   {type:"assistant", message:{model, content:[{type:"tool_use"|"text"|"thinking", ...}], usage:{...}}}
-//   {type:"user", message:{role:"user", content:[{type:"tool_result", ...}]}, tool_use_result:{...}}
+//   {type:"user", message:{role:"user", content:[{type:"tool_result", content, is_error, tool_use_id}]}, tool_use_result:{...}}
 //   {type:"system", subtype:"hook_started", hook_id, hook_name, hook_event}
 //   {type:"system", subtype:"hook_response", hook_id, hook_name, hook_event, output, stdout, stderr, exit_code, outcome}
 //   {type:"result", subtype, is_error, duration_ms, num_turns, result, permission_denials:[], usage:{...}}
@@ -70,16 +70,53 @@ export function isSkillAvailable(initEvent, skillName) {
   return initEvent.plugins.some((p) => p.name === skillName);
 }
 
-/** Finds the real Skill tool_use event for a given skill name, with its event index --
- * this is the actual invocation proof, never inferred from which CLI binary ran. */
+/** The tool_result for a given tool_use id, found by scanning forward from fromIndex.
+ * `is_error` is the real field name confirmed on a live "Unknown skill" transcript
+ * (content: "<tool_use_error>Unknown skill: ...</tool_use_error>", is_error: true,
+ * tool_use_id: "..."). */
+function findToolResultById(events, toolUseId, fromIndex) {
+  for (let i = fromIndex; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type !== 'user') continue;
+    for (const c of ev.message?.content ?? []) {
+      if (c.type === 'tool_result' && c.tool_use_id === toolUseId) {
+        return { index: i, isError: c.is_error === true };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Finds a Skill tool_use for a given skill name and its correlated outcome -- distinguishes an
+ * ATTEMPT (the model called Skill with this name) from a CONFIRMED invocation (the SAME
+ * tool_use_id's own tool_result did not report is_error:true). This is load-bearing: on a real
+ * "no-skill" condition transcript, the model calls Skill anyway (the skill isn't in its listing,
+ * but nothing stops it from trying), gets back `<tool_use_error>Unknown skill: ...</tool_use_error>`
+ * with is_error:true, and then tells the user the skill doesn't exist. A version of this
+ * function that only checked for the tool_use block (ignoring its result) would report
+ * skill_invoked:true for that same no-skill run -- directly contradicting skill_available:false
+ * in the same record. `confirmed` is only ever true when a matching, non-error tool_result was
+ * actually found; an attempt with no result yet (transcript cut short) is never assumed
+ * successful.
+ * @returns {{attempted: true, confirmed: boolean, type: string, index: number, receiptNs: bigint, input: object, resultIsError: boolean|null} | null}
+ */
 export function findSkillInvocation(events, skillName) {
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     if (ev.type !== 'assistant') continue;
     for (const c of ev.message?.content ?? []) {
-      if (c.type === 'tool_use' && c.name === 'Skill' && c.input?.skill === skillName) {
-        return { type: 'assistant.tool_use.Skill', index: i, receiptNs: ev._receiptNs, input: c.input };
-      }
+      if (c.type !== 'tool_use' || c.name !== 'Skill' || c.input?.skill !== skillName) continue;
+      const result = c.id != null ? findToolResultById(events, c.id, i + 1) : null;
+      return {
+        attempted: true,
+        confirmed: result != null && result.isError === false,
+        type: 'assistant.tool_use.Skill',
+        index: i,
+        receiptNs: ev._receiptNs,
+        input: c.input,
+        resultIsError: result ? result.isError : null,
+      };
     }
   }
   return null;
@@ -166,9 +203,13 @@ export function extractTokenUsage(resultEvent) {
 }
 
 /**
- * Derives first_useful_signal_ms from an already-chosen event index (graders.mjs returns the
+ * Derives first_useful_signal_ms from an already-chosen event index (a grader returns the
  * index; this function is the ONLY place that turns an index into a millisecond value, keeping
- * graders pure/content-only and timing purely a transport-layer concern -- Round 3 fix #4).
+ * grading pure/content-only and timing purely a transport-layer concern -- Round 3 fix #4).
+ * Requires events[eventIndex]._receiptNs to be an ABSOLUTE process.hrtime.bigint() value (as
+ * condition-launcher.mjs's spawnCondition tags it) -- subtracting spawnHrtimeNs here is the
+ * ONLY subtraction; a caller that pre-subtracts spawnHrtimeNs before tagging would double-
+ * subtract it here, producing a large negative "ms" value.
  */
 export function deriveFirstUsefulSignalMs(events, eventIndex, spawnHrtimeNs) {
   if (eventIndex == null || events[eventIndex] == null) return null;

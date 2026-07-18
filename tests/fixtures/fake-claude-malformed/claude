@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-malformed/claude -- see fake-claude-success/claude for the shared
+# rationale. "malformed" scenario: one line of invalid JSON mixed into an otherwise-valid
+# transcript -- runA.malformedLines/runB.malformedLines must be non-empty and smoke's
+# cleanTranscriptOk gate must fail closed on this.
+echo '{"type":"system","subtype":"init","cwd":"/fake","session_id":"fake-sess-0001","tools":["Bash","Skill"],"mcp_servers":[],"model":"claude-sonnet-5-fake-resolved","permissionMode":"dontAsk","plugins":[],"skills":[],"apiKeySource":"none","claude_code_version":"fake"}'
+echo 'not valid json at all'
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"fake result text","permission_denials":[],"usage":{"input_tokens":2,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}'
+exit 0

@@ -141,3 +141,8 @@ tools/agentic-eval/fixtures/calibration-project/src/commonTest/kotlin/*.kt text 
 tests/vitest/agentic-eval-*.test.js text eol=lf
 tests/vitest/fixtures/agentic-eval-stream-*.jsonl text eol=lf
 tools/runs/agentic-eval-*/*.json text eol=lf
+
+# CodeRabbit/Codex review fix pass -- new bash-script fixtures need the same LF pin as
+# .skills/**/*.sh and scripts/**/*.sh above (CRLF corrupts bash control-flow constructs under
+# Windows git-bash with core.autocrlf=true).
+tests/fixtures/fake-claude-*/claude text eol=lf

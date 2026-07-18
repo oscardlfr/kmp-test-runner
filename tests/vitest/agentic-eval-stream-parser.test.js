@@ -76,12 +76,15 @@ describe('skill availability and invocation detection (real captured event shape
     expect(isSkillAvailable(init, 'kmp-test-runner')).toBe(true);
   });
 
-  it('current-skill fixture: a real Skill tool_use event is found, not inferred', () => {
+  it('current-skill fixture: a real Skill tool_use event is found and CONFIRMED (matching, non-error tool_result)', () => {
     const { events } = parseStreamJsonl(currentSkillRaw);
     const invocation = findSkillInvocation(events, 'kmp-test-runner');
     expect(invocation).not.toBeNull();
     expect(invocation.type).toBe('assistant.tool_use.Skill');
     expect(typeof invocation.index).toBe('number');
+    expect(invocation.attempted).toBe(true);
+    expect(invocation.confirmed).toBe(true);
+    expect(invocation.resultIsError).toBe(false);
   });
 
   it('no-skill fixture: skill is absent from init.plugins', () => {
@@ -98,6 +101,56 @@ describe('skill availability and invocation detection (real captured event shape
   it('does not match a differently-named skill', () => {
     const { events } = parseStreamJsonl(currentSkillRaw);
     expect(findSkillInvocation(events, 'some-other-skill')).toBeNull();
+  });
+
+  // Regression coverage for a real bug found by an independent review pass: a version of this
+  // function that only checked for the Skill tool_use block (never its own tool_result) reported
+  // skill_invoked:true for a no-skill run where the model attempted the invocation and was told
+  // "Unknown skill: kmp-test-runner" -- directly contradicting skill_available:false in the same
+  // record. Event shapes below are copied verbatim (only session/tool ids changed) from a real
+  // captured "no-skill" calibration transcript.
+  describe('attempt vs. confirmed invocation (real "Unknown skill" transcript shape)', () => {
+    function toolUseEvent(id) {
+      return { type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Skill', input: { skill: 'kmp-test-runner' }, caller: { type: 'direct' } }] } };
+    }
+
+    it('an attempted invocation whose own tool_result is an error is NOT confirmed', () => {
+      const events = [
+        toolUseEvent('toolu_regression0001'),
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: '<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>', is_error: true, tool_use_id: 'toolu_regression0001' }] } },
+      ];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      expect(invocation.attempted).toBe(true);
+      expect(invocation.confirmed).toBe(false);
+      expect(invocation.resultIsError).toBe(true);
+    });
+
+    it('an attempted invocation with no matching tool_result yet is NOT assumed confirmed', () => {
+      const events = [toolUseEvent('toolu_regression0002')];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      expect(invocation.attempted).toBe(true);
+      expect(invocation.confirmed).toBe(false);
+      expect(invocation.resultIsError).toBeNull();
+    });
+
+    it('a tool_result for a DIFFERENT tool_use_id does not confirm this invocation', () => {
+      const events = [
+        toolUseEvent('toolu_regression0003'),
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'unrelated', tool_use_id: 'toolu_some_other_call' }] } },
+      ];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      expect(invocation.confirmed).toBe(false);
+    });
+
+    it('a tool_use with no id at all cannot be correlated, so it is never confirmed', () => {
+      const events = [
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', input: { skill: 'kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'ok', tool_use_id: 'toolu_unrelated' }] } },
+      ];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      expect(invocation.attempted).toBe(true);
+      expect(invocation.confirmed).toBe(false);
+    });
   });
 });
 
@@ -208,5 +261,26 @@ describe('deriveFirstUsefulSignalMs -- index-to-ms derivation is the only place 
   it('returns null for an out-of-range index', () => {
     const { events } = parseStreamJsonl(currentSkillRaw);
     expect(deriveFirstUsefulSignalMs(events, 99999, 0n)).toBeNull();
+  });
+
+  // Regression coverage for a real double-subtraction bug found by an independent review pass:
+  // condition-launcher.mjs's spawnCondition tags each line with an ABSOLUTE
+  // process.hrtime.bigint() receiptNs; deriveFirstUsefulSignalMs subtracts spawnHrtimeNs ONCE.
+  // A prior version of spawnCondition pre-subtracted t0 before tagging (receiptNs was already a
+  // duration, not absolute) -- with spawnHrtimeNs:0n (as every test above uses), that bug is
+  // invisible, since subtracting 0 is a no-op regardless of which convention is used. Using a
+  // large, realistic non-zero spawnHrtimeNs (matching a real process.hrtime.bigint() value,
+  // which is nanoseconds since an arbitrary large reference point) is required to actually catch
+  // it: a pre-subtracted (relative) receiptNs minus a large absolute spawnHrtimeNs would produce
+  // a large NEGATIVE "ms" value instead of the small positive elapsed time.
+  it('with a realistic large absolute spawnHrtimeNs, still derives a small non-negative ms value (catches double-subtraction)', () => {
+    const REALISTIC_T0 = 123_456_789_000_000n; // ns -- shaped like a real hrtime.bigint() value
+    const { events } = parseStreamJsonl(currentSkillRaw, {
+      taggedLines: currentSkillRaw.split('\n').filter(Boolean).map((line, i) => ({ line, receiptNs: REALISTIC_T0 + BigInt(i) * 1_000_000n })),
+    });
+    const ms = deriveFirstUsefulSignalMs(events, 2, REALISTIC_T0);
+    expect(ms).not.toBeNull();
+    expect(ms).toBeGreaterThanOrEqual(0);
+    expect(ms).toBeLessThan(1000); // event index 2, ~1ms apart -- must be small, not a huge negative number
   });
 });

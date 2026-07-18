@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync, mkdirSync, cpSync, writeFileSync, realpathSync } f
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { resolveBash } from './resolve-bash.mjs';
 
 // Windows-native tool resolution of `tar`/`git archive` piping mangles backslash-heavy paths
 // passed via a plain argv array (confirmed empirically -- a destination path's digits were
@@ -27,7 +28,7 @@ const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
 // self-heal by backfilling just that one commit before archiving, rather than requiring every
 // caller (CI included) to carry a full, unshallowed clone just for this.
 function isCommitAvailable(repoRoot, sha) {
-  const r = spawnSync('bash', ['-c', `git cat-file -e ${shQuote(sha)}^{commit}`], { cwd: repoRoot, encoding: 'utf8' });
+  const r = spawnSync(resolveBash(), ['-c', `git cat-file -e ${shQuote(sha)}^{commit}`], { cwd: repoRoot, encoding: 'utf8' });
   return r.status === 0;
 }
 
@@ -38,7 +39,7 @@ function ensureCommitAvailable(repoRoot, sha) {
   // Not hex-shaped -- definitely not a real commit; let `git archive` report it directly rather
   // than spending a network round-trip on input that can never resolve.
   if (!PLAUSIBLE_SHA_RE.test(sha)) return;
-  const r = spawnSync('bash', ['-c', `git fetch --depth 1 origin ${shQuote(sha)}`], { cwd: repoRoot, encoding: 'utf8' });
+  const r = spawnSync(resolveBash(), ['-c', `git fetch --depth 1 origin ${shQuote(sha)}`], { cwd: repoRoot, encoding: 'utf8' });
   if (r.status !== 0) {
     throw new Error(`commit ${sha} not present locally (shallow clone?) and could not be fetched from origin (exit ${r.status}): ${r.stderr}`);
   }
@@ -53,7 +54,7 @@ export async function materializeSkillSnapshot({ repoRoot, sha, validateFn }) {
   const dest = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-skill-'));
   ensureCommitAvailable(repoRoot, sha);
   const cmd = `git archive ${shQuote(sha)} -- .claude-plugin .skills | tar -x -C ${shQuote(toPosixPath(dest))}`;
-  const r = spawnSync('bash', ['-c', cmd], { cwd: repoRoot, encoding: 'utf8' });
+  const r = spawnSync(resolveBash(), ['-c', cmd], { cwd: repoRoot, encoding: 'utf8' });
   if (r.status !== 0) {
     throw new Error(`git archive | tar extraction failed (exit ${r.status}): ${r.stderr}`);
   }
@@ -80,9 +81,24 @@ export function materializeCalibrationProject({ templateDir, existingDir }) {
 
 function runGitViaBash(argv, cwd) {
   const cmd = argv.map(shQuote).join(' ');
-  const r = spawnSync('bash', ['-c', `git ${cmd}`], { cwd, encoding: 'utf8' });
+  const r = spawnSync(resolveBash(), ['-c', `git ${cmd}`], { cwd, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`git ${argv.join(' ')} failed (exit ${r.status}): ${r.stderr}`);
   return r.stdout;
+}
+
+/**
+ * Removes a disposable git worktree created by materializeScenarioProject -- `git worktree
+ * remove` (not a plain rmSync) so the source repo's .git/worktrees/ metadata is cleaned up too;
+ * a directory deleted out from under git without this leaves the worktree registered forever
+ * ("leftover worktree" -- confirmed via `git worktree list` after a run that skipped this).
+ * Best-effort: a worktree that's already gone (or was never registered) is not an error here.
+ */
+export function removeScenarioWorktree({ sourceRepoDir, worktreeDir }) {
+  const r = spawnSync(resolveBash(), ['-c', `git worktree remove --force ${shQuote(toPosixPath(worktreeDir))}`], { cwd: sourceRepoDir, encoding: 'utf8' });
+  if (r.status !== 0 && !/is not a working tree|not a valid path/i.test(r.stderr ?? '')) {
+    throw new Error(`git worktree remove failed (exit ${r.status}): ${r.stderr}`);
+  }
+  rmSync(worktreeDir, { recursive: true, force: true });
 }
 
 /**
@@ -104,11 +120,17 @@ export function materializeScenarioProject({ sourceRepoDir, pinnedCommit, existi
 }
 
 /**
- * Prewarm GRADLE_USER_HOME once (dependency resolution only, caller-supplied prewarm command),
- * snapshot it, and provide a resetToSnapshot() that restores the exact same pristine state --
- * both conditions of a run-pair always start from byte-identical cache state. Also writes a
- * gradle.properties disabling the daemon inside the temp GRADLE_USER_HOME itself, so the
- * policy applies regardless of which gradle-invoking command the agent types.
+ * Creates a temp GRADLE_USER_HOME, snapshots it, and provides a resetToSnapshot() that restores
+ * the exact same state -- both conditions of a run-pair always start from byte-identical cache
+ * state, whatever that state is. Also writes a gradle.properties disabling the daemon inside the
+ * temp GRADLE_USER_HOME itself, so the policy applies regardless of which gradle-invoking
+ * command the agent types.
+ *
+ * runPrewarm is OPTIONAL and, as of this PR, is never actually supplied by cli.mjs -- no
+ * dependency prewarming happens today, and the "snapshot" is of an otherwise-empty directory
+ * (just gradle.properties). The isolation guarantee (byte-identical reset between conditions)
+ * holds either way; what's NOT currently true is any claim that dependencies are pre-resolved.
+ * A caller that DOES pass runPrewarm gets its writes captured in the snapshot before it's taken.
  * @param {{runPrewarm?: (gradleUserHome: string) => void}} [opts]
  */
 export function materializeGradleUserHome({ runPrewarm } = {}) {

@@ -145,8 +145,14 @@ describe('buildSharedEnv -- byte-identical policy config between conditions', ()
 });
 
 describe('spawnCondition -- real subprocess (local shell only, no Claude, no network)', () => {
+  // Every argv here is a PLAIN command (no nested 'bash -c ...' inside argv itself) -- matching
+  // how buildBaseArgv/buildConditionArgv actually shape a real invocation (['claude', '-p',
+  // ...]). spawnCondition already adds the one level of bash -c wrapping; an argv that ALSO
+  // starts with 'bash' would double-wrap and depend on the outer (correctly resolveBash()'d)
+  // process successfully resolving a nested, PATH-ambiguous 'bash' a second time -- the exact
+  // portability hazard resolveBash() exists to eliminate at the outer layer.
   it('resolves with rawStdout, a zero exitCode, and per-line receiptNs values that are non-decreasing', async () => {
-    const argv = ['bash', '-c', 'printf "line1\\nline2\\nline3\\n"'];
+    const argv = ['printf', 'line1\nline2\nline3\n'];
     const result = await spawnCondition(argv, { env: process.env, cwd: process.cwd(), timeoutMs: 10000 });
     expect(result.exitCode).toBe(0);
     expect(result.terminated).toBe(false);
@@ -160,7 +166,7 @@ describe('spawnCondition -- real subprocess (local shell only, no Claude, no net
   });
 
   it('reports terminationReason "error" for a nonzero exit code', async () => {
-    const argv = ['bash', '-c', 'exit 7'];
+    const argv = ['node', '-e', 'process.exit(7)'];
     const result = await spawnCondition(argv, { env: process.env, cwd: process.cwd(), timeoutMs: 10000 });
     expect(result.exitCode).toBe(7);
     expect(result.terminated).toBe(false);
@@ -184,7 +190,7 @@ describe('spawnCondition -- real subprocess (local shell only, no Claude, no net
   }, 10000);
 
   it('captures stdout emitted across multiple chunks/lines without dropping or duplicating any', async () => {
-    const argv = ['bash', '-c', 'for i in 1 2 3 4 5; do echo "row-$i"; done'];
+    const argv = ['printf', 'row-1\nrow-2\nrow-3\nrow-4\nrow-5\n'];
     const result = await spawnCondition(argv, { env: process.env, cwd: process.cwd(), timeoutMs: 10000 });
     expect(result.taggedLines.map((t) => t.line)).toEqual(['row-1', 'row-2', 'row-3', 'row-4', 'row-5']);
   });
@@ -192,6 +198,20 @@ describe('spawnCondition -- real subprocess (local shell only, no Claude, no net
   it('resolves rather than hanging when the command itself fails to spawn', async () => {
     const result = await spawnCondition(['this-binary-does-not-exist-anywhere-xyz'], { env: process.env, cwd: process.cwd(), timeoutMs: 5000 });
     expect(result.exitCode).not.toBe(0);
+  });
+
+  it('when the spawn itself fails (ENOENT), resolves with a schema-valid terminated/termination_reason pair', async () => {
+    // A nonexistent cwd reliably triggers Node's real child.on('error', ...) path (distinct from
+    // the previous test, where bash spawns fine and only the COMMAND inside it is missing) --
+    // resolveBash() checks well-known absolute install paths first, so an empty/broken PATH env
+    // alone no longer reproduces this (confirmed: it fell through to a normal close/127 instead).
+    // The schema rejects terminated:false paired with a non-null termination_reason -- this
+    // confirms the fix, not just that the promise resolves.
+    const result = await spawnCondition(['anything'], { env: process.env, cwd: 'C:\\this-directory-does-not-exist-xyz-12345', timeoutMs: 5000 });
+    expect(result.exitCode).toBeNull();
+    expect(result.terminated).toBe(true);
+    expect(result.terminationReason).toBe('error');
+    expect(result.stderr).toContain('[spawn error]');
   });
 });
 

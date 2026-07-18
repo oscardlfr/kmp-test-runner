@@ -38,6 +38,7 @@ function baseRun(overrides = {}) {
     ended_at: '2026-07-18T00:00:01.000Z',
     wall_clock_ms: 1000,
     skill_available: { value: false, reason: null },
+    skill_invocation_attempted: { value: false, reason: null },
     skill_invoked: { value: false, reason: null },
     skill_invocation_event: null,
     success: { value: null, reason: 'calibration run -- success grading not applicable' },
