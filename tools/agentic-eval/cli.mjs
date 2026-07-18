@@ -35,7 +35,8 @@ import { materializeSkillSnapshot, materializeCalibrationProject, materializeSce
 import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition } from './condition-launcher.mjs';
 import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findBashToolUses, findBashToolUsesWithResults, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
 import { aggregateRuns } from './aggregate.mjs';
-import { assertCleanOrThrow } from './privacy.mjs';
+import { assertCleanOrThrow, loadPrivateRules } from './privacy.mjs';
+import { tokenize } from './policy-hook.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 
 // dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
@@ -75,8 +76,12 @@ schema, policy-hash freshness, privacy, and the run-kind's hard acceptance gate 
  * is recorded in `errors` rather than silently assigned `undefined` -- an undefined value
  * previously fell through `?? null` fallbacks unnoticed, so e.g. a trailing
  * `--private-patterns-file` with nothing after it silently disabled private-pattern redaction
- * and reported the run as 'public' instead of failing loudly. Callers must check
- * `errors.length > 0` before doing anything else.
+ * and reported the run as 'public' instead of failing loudly. A flag provided more than once is
+ * also an error (silent last-wins previously masked what's very likely a copy-paste mistake).
+ * Callers must check `errors.length > 0` before doing anything else. This function is
+ * deliberately unaware of which SUBCOMMAND is being parsed -- an unknown-but-well-formed flag
+ * name (e.g. a typo like `--private-pattern-file`, missing the 's') is NOT rejected here; see
+ * `validateSubcommandArgs()`, which requires the subcommand to already be known.
  */
 function parseArgs(argv) {
   const out = { _: [], errors: [] };
@@ -90,6 +95,9 @@ function parseArgs(argv) {
         out.errors.push(`--${name} requires a value`);
         continue;
       }
+      if (name in out) {
+        out.errors.push(`--${name} was provided more than once`);
+      }
       out[name] = next;
       i++;
       continue;
@@ -97,6 +105,54 @@ function parseArgs(argv) {
     out._.push(a);
   }
   return out;
+}
+
+// Every recognized flag per subcommand, plus how many extra positional arguments (beyond the
+// subcommand name itself) it consumes. A typo'd flag name (e.g. --private-pattern-file, missing
+// the 's') previously parsed with ZERO errors and silently behaved as if the flag had never been
+// supplied at all -- cmdCalibrate/cmdSmoke only ever read the CORRECTLY-spelled key, so a typo'd
+// --private-patterns-file disabled redaction with no error and reported the run as 'public'. This
+// allowlist closes that: any flag not in the current subcommand's list is a hard error.
+const SUBCOMMAND_SHAPES = {
+  calibrate: { flags: ['model', 'private-patterns-file'], extraPositionals: 0 },
+  smoke: { flags: ['model', 'source-repo-dir', 'pinned-commit', 'project-alias', 'private-patterns-file'], extraPositionals: 0 },
+  corpus: { flags: [], extraPositionals: 1 }, // corpus <validate>
+  aggregate: { flags: ['runs-dir'], extraPositionals: 0 },
+  validate: { flags: ['run'], extraPositionals: 0 },
+};
+
+/** Validates a parsed `args` against SUBCOMMAND_SHAPES[sub] -- unknown flags and unexpected
+ * extra positional arguments are both hard errors. Returns an array of error strings (empty if
+ * valid). Called from main() BEFORE any subcommand handler runs, so a malformed invocation is
+ * rejected before runConditionPair() ever spends a session on it. */
+function validateSubcommandArgs(sub, args) {
+  const shape = SUBCOMMAND_SHAPES[sub];
+  if (!shape) return [`Unknown subcommand: ${sub}`];
+  const errors = [];
+  const providedFlags = Object.keys(args).filter((k) => k !== '_' && k !== 'errors' && k !== 'help');
+  for (const f of providedFlags) {
+    if (!shape.flags.includes(f)) errors.push(`Unknown flag for '${sub}': --${f}`);
+  }
+  const extraPositionals = args._.length - 1 - shape.extraPositionals;
+  if (extraPositionals > 0) {
+    errors.push(`Unexpected extra argument(s) for '${sub}': ${args._.slice(1 + shape.extraPositionals).join(' ')}`);
+  }
+  return errors;
+}
+
+/** Eagerly loads/validates --private-patterns-file BEFORE any Claude session runs -- previously
+ * the file was only read inside finalizeAndWriteRecords(), AFTER both conditions had already
+ * completed, so a missing/malformed patterns file was only discovered after spending a full
+ * run-pair (real API cost and time for a live re-run) for nothing. Returns {ok:true} or
+ * {ok:false, reason}; does not throw. */
+function validatePrivatePatternsFileOrFail(privatePatternsFile) {
+  if (!privatePatternsFile) return { ok: true };
+  try {
+    loadPrivateRules(privatePatternsFile);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: `--private-patterns-file is invalid: ${err.message}` };
+  }
 }
 
 function nullableMetric(value, reason = null) {
@@ -135,22 +191,58 @@ function resolveHarnessProvenance({ fresh = false } = {}) {
   } catch {
     cliVersion = null;
   }
+  // repoCommit describes HEAD -- but the shim actually executes whatever bytes currently sit on
+  // disk under bin/lib/scripts, which can differ from HEAD if those paths carry uncommitted
+  // local modifications. Scoped to exactly the paths the shim's own execution can reach (not the
+  // whole repo -- an unrelated dirty file elsewhere, e.g. this very PR's own working tree, isn't
+  // relevant to what code actually ran).
+  let dirtyTreePaths = [];
+  const statusResult = spawnSync('git', ['status', '--porcelain', '--', 'bin', 'lib', 'scripts'], { cwd: REPO_ROOT, encoding: 'utf8' });
+  if (statusResult.status === 0) {
+    dirtyTreePaths = statusResult.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  }
   cachedHarnessProvenance = {
     repoCommit,
     cliVersion,
     resolvedExecutablePath: join(REPO_ROOT, 'bin', 'kmp-test.js'),
+    dirtyTreePaths,
   };
   return cachedHarnessProvenance;
 }
 
-/** True only if EVERY expected command pattern matches some Bash tool_use whose OWN correlated
- * tool_result was found and was not an error -- "the agent called Bash twice" alone does not
- * prove it ran the two SPECIFIC expected commands, or that either one actually succeeded. */
-function verifyExactCommandsSucceeded(bashResults, expectedPatterns) {
-  return expectedPatterns.every((pattern) =>
-    bashResults.some((b) => pattern.test(b.command ?? '') && b.resultFound && b.resultIsError === false));
+function tokensEqual(a, b) {
+  return a.length === b.length && a.every((t, i) => t === b[i]);
 }
-const SMOKE_EXPECTED_COMMANDS = [/kmp-test\s+doctor\b/, /kmp-test\s+describe\b/];
+
+/**
+ * True only if `bashResults` is EXACTLY the expected multiset of commands: every expected
+ * tokenized command appears exactly once, each with its own correlated non-error result, and
+ * there are NO other Bash calls at all (no extras, no retries, no partial-flag variants).
+ * Tokenizes via policy-hook.mjs's own quote-aware tokenize() and compares the resulting token
+ * ARRAYS, not a regex match against the raw string -- an earlier version used unanchored regexes
+ * with no --json requirement, which a real adversarial probe showed could be satisfied by e.g.
+ * `kmp-test doctor` (no --json at all, contradicting smoke's own prompt) or even
+ * `kmp-test doctor-evil-subcommand` (the old `\bdoctor\b` pattern's word-boundary matched a
+ * hyphen-adjacent suffix too). An unparseable command (tokenize() returns null, e.g. an
+ * unterminated quote) can never satisfy any expected command.
+ */
+function verifyExactCommandsSucceeded(bashResults, expectedCommands) {
+  if (bashResults.length !== expectedCommands.length) return false;
+  const remaining = expectedCommands.map((tokens) => ({ tokens, matched: false }));
+  for (const b of bashResults) {
+    const tokens = tokenize(b.command ?? '');
+    if (tokens == null) return false;
+    const slot = remaining.find((r) => !r.matched && tokensEqual(r.tokens, tokens));
+    if (slot == null) return false;
+    if (!b.resultFound || b.resultIsError !== false) return false;
+    slot.matched = true;
+  }
+  return remaining.every((r) => r.matched);
+}
+const SMOKE_EXPECTED_COMMANDS = [
+  ['kmp-test', 'doctor', '--json'],
+  ['kmp-test', 'describe', '--json'],
+];
 
 /**
  * Runs both conditions of a pair and returns everything buildRunRecord needs, plus a cleanup()
@@ -175,14 +267,23 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
   // itself threw, `await runConditionPair(...)` never resolved to anything the caller's own
   // try/finally could invoke cleanup() on, leaking every resource created up to that point.
   const cleanupSteps = [];
+  // Returns the list of step failures (never throws itself) -- deliberately best-effort, so ONE
+  // failed step (e.g. a transient file lock on a temp dir delete) doesn't prevent every OTHER
+  // queued step from still running. Callers MUST inspect the returned array: silently discarding
+  // it (the previous behavior -- only a console.error per step, with nothing surfaced to the
+  // caller) meant a run could report overall success while leaving resources registered, with no
+  // way for a script or CI log reviewer to detect that short of grepping for the per-step
+  // message.
   async function runCleanup() {
+    const failures = [];
     for (const step of cleanupSteps.splice(0)) {
       try {
         await step();
       } catch (err) {
-        console.error(`cleanup step failed (continuing): ${err.message}`);
+        failures.push(err.message);
       }
     }
+    return failures;
   }
 
   try {
@@ -250,9 +351,18 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
 
     return { runA, runB, snapshotDir, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup };
   } catch (err) {
-    await runCleanup();
+    reportCleanupFailures(await runCleanup(), 'during acquisition-failure rollback');
     throw err;
   }
+}
+
+/** Prints a single, clearly-labeled WARNING line if `failures` (from runCleanup()) is
+ * non-empty -- never silent, but never escalated into a hard failure either: a temp-dir cleanup
+ * race is a disk-hygiene concern, not evidence the run's own gate result is wrong. */
+function reportCleanupFailures(failures, contextSuffix = '') {
+  if (failures.length === 0) return;
+  const suffix = contextSuffix ? ` ${contextSuffix}` : '';
+  console.error(`WARNING: ${failures.length} cleanup step(s) failed${suffix} (resources may be left behind): ${failures.join('; ')}`);
 }
 
 function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skillSourceSha, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias = 'calibration-project', projectCommit = null, family = 'trigger-only', modelRequested = 'claude-sonnet-5', privacyStatus = 'public' }) {
@@ -321,7 +431,13 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     raw_capture_committed: false,
     raw_capture_location: `tools/runs/agentic-eval-${runKind}/raw/`,
     notes: 'Foundation-harness run; not a benchmark result.',
-    errors: [],
+    // repo_commit/kmp_test_cli_source_sha describe HEAD, not necessarily the exact bytes that
+    // executed -- if bin/lib/scripts carry uncommitted local modifications, that's disclosed
+    // here rather than silently letting the recorded SHA imply a codebase that isn't quite what
+    // actually ran.
+    errors: provenance.dirtyTreePaths.length > 0
+      ? [{ code: 'dirty_execution_tree', message: `bin/lib/scripts have uncommitted local modifications not reflected in repo_commit: ${provenance.dirtyTreePaths.join(', ')}` }]
+      : [],
   };
 }
 
@@ -334,13 +450,15 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
  * gitignored destination.
  *
  * Writes to `<target>.tmp-<random>` first and renameSync()s each into place only after every
- * write has succeeded -- these four writes were previously sequential, non-atomic direct writes,
- * so a failure partway through (disk full, permission error) could leave a PARTIAL pair on disk
- * (e.g. recordA.json written, recordB.json missing). renameSync is atomic on the same
- * filesystem/volume, which every path here is (all under RUNS_ROOT).
+ * write has succeeded. Beyond that, the whole write-then-rename sequence is wrapped so a failure
+ * ANYWHERE in it -- including partway through the four renameSync calls themselves, not just the
+ * four writeFileSync calls -- rolls back every FINAL-path file this call already renamed into
+ * place (plus any leftover temp files) before rethrowing: a rename failure on file 3 of 4
+ * previously left files 1-2 committed as final evidence while 3-4 were missing, a partial pair on
+ * disk despite each individual write itself being safe.
  */
-function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB) {
-  const outDir = join(RUNS_ROOT, `agentic-eval-${runKind}`);
+function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB, runsRootOverride = RUNS_ROOT) {
+  const outDir = join(runsRootOverride, `agentic-eval-${runKind}`);
   const rawDir = join(outDir, 'raw');
   mkdirSync(rawDir, { recursive: true });
   const tmpSuffix = `.tmp-${randomUUID().slice(0, 8)}`;
@@ -350,23 +468,38 @@ function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedT
     [join(rawDir, `${recordA.run_id}.jsonl`), runA.spawnResult.rawStdout],
     [join(rawDir, `${recordB.run_id}.jsonl`), runB.spawnResult.rawStdout],
   ];
-  const tmpPaths = targets.map(([target, content]) => {
-    const tmpPath = target + tmpSuffix;
-    writeFileSync(tmpPath, content);
-    return tmpPath;
-  });
-  targets.forEach(([target], i) => renameSync(tmpPaths[i], target));
+  const tmpPaths = targets.map(([target]) => target + tmpSuffix);
+  const renamedTargets = [];
+  try {
+    targets.forEach(([, content], i) => writeFileSync(tmpPaths[i], content));
+    targets.forEach(([target], i) => {
+      renameSync(tmpPaths[i], target);
+      renamedTargets.push(target);
+    });
+  } catch (err) {
+    for (const target of renamedTargets) rmSync(target, { force: true });
+    for (const tmpPath of tmpPaths) rmSync(tmpPath, { force: true });
+    throw err;
+  }
   return outDir;
 }
 
 /**
  * The sole gate before ANY committable evidence is written. In order: schema validation (both
- * records) -> a FRESH policy_sha256 recomputation matched against both records (catches
+ * ORIGINAL records) -> a FRESH policy_sha256 recomputation matched against both records (catches
  * evidence silently going stale relative to policy-hook.mjs's current content -- a hand-carried
  * or previously-generated record with a stale hash is refused, not just format-checked) ->
  * assertCleanOrThrow privacy check on each record's serialized text (never previously wired in
- * -- this is what actually enforces "no leak ever reaches a committable file") -> the run-kind's
- * own hard acceptance predicate. Any failure returns {ok:false, reason} and writes nothing.
+ * -- this is what actually enforces "no leak ever reaches a committable file") -> the redacted
+ * text is itself parsed back to JSON and RE-validated against the schema (a private-pattern
+ * replacement string can pass assertCleanOrThrow's leak scan -- which only checks for matching
+ * patterns, not JSON structural validity -- while still breaking JSON syntax once substituted in,
+ * e.g. a replacement containing a raw newline inside what was a JSON string; catching this here,
+ * BEFORE the write, means invalid-JSON evidence can never reach disk) -> the run-kind's own hard
+ * acceptance predicate (evaluated against the ORIGINAL records -- the gate's own checks never
+ * reference redaction-prone fields, and gating on the pre-redaction truth of what happened is the
+ * conceptually correct choice; redaction is a display/storage concern, not a data-correctness
+ * one). Any failure returns {ok:false, reason} and writes nothing.
  */
 async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, hardGateFn, privatePatternsFile }) {
   for (const [label, record] of [['A', recordA], ['B', recordB]]) {
@@ -390,15 +523,30 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
   } catch (err) {
     return { ok: false, reason: `Privacy check refused to clear evidence for writing: ${err.message}` };
   }
+  let redactedRecordA;
+  let redactedRecordB;
+  try {
+    redactedRecordA = JSON.parse(redactedA);
+    redactedRecordB = JSON.parse(redactedB);
+  } catch (err) {
+    return { ok: false, reason: `Redaction produced invalid JSON (a private-pattern replacement likely breaks JSON syntax) -- refusing to write: ${err.message}` };
+  }
+  for (const [label, record] of [['A', redactedRecordA], ['B', redactedRecordB]]) {
+    const { errors } = validateRun(record);
+    if (errors.length > 0) {
+      return { ok: false, reason: `Redacted run record ${label} failed schema validation (redaction corrupted a field) -- refusing to write: ${JSON.stringify(errors)}` };
+    }
+  }
   const gate = hardGateFn(recordA, recordB, runA, runB);
   if (!gate.ok) {
     return { ok: false, reason: gate.reason };
   }
   const outDir = writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedA, redactedB);
-  // Return the REDACTED objects (parsed back from the same text that was actually written), not
-  // the original recordA/recordB -- a caller printing the originals to stdout would bypass the
-  // whole privacy check: redaction only ever protected the FILE, never the terminal.
-  return { ok: true, reason: null, outDir, redactedRecordA: JSON.parse(redactedA), redactedRecordB: JSON.parse(redactedB) };
+  // Return the REDACTED objects (already parsed above, from the same text that was actually
+  // written), not the original recordA/recordB -- a caller printing the originals to stdout
+  // would bypass the whole privacy check: redaction only ever protected the FILE, never the
+  // terminal.
+  return { ok: true, reason: null, outDir, redactedRecordA, redactedRecordB };
 }
 
 /**
@@ -414,13 +562,24 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   const invocationOk = a.skill_available.value === false && b.skill_available.value === true
     && a.skill_invocation_attempted.value === true && b.skill_invocation_attempted.value === true
     && a.skill_invoked.value === false && b.skill_invoked.value === true;
+  // A session that never emitted an init event at all is a fundamentally broken/incomplete
+  // capture, not a legitimately-observed "skill unavailable" -- without this check, a run with
+  // NO init event could still show skill_available:false for the no-skill arm (nothing to derive
+  // it from) and happen to match the EXPECTED value there by coincidence, passing invocationOk
+  // for the wrong reason entirely.
+  const initOk = runAResult.init != null && runBResult.init != null;
   const processOk = a.terminated === false && b.terminated === false && a.exit_code === 0 && b.exit_code === 0;
-  const resultOk = runAResult.result?.is_error === false && runBResult.result?.is_error === false;
+  // subtype==='success' (not just is_error===false) -- a session cut off by e.g. the budget cap
+  // reports a distinct result.subtype (confirmed: 'error_max_budget_usd') that is NOT
+  // necessarily paired with is_error:true, so is_error alone doesn't prove the session ran to a
+  // genuine, uninterrupted completion.
+  const resultOk = runAResult.result?.subtype === 'success' && runAResult.result?.is_error === false
+    && runBResult.result?.subtype === 'success' && runBResult.result?.is_error === false;
   const hookAccountingOk = runAResult.hookStats.everyCallHooked === true && runBResult.hookStats.everyCallHooked === true;
-  const ok = invocationOk && processOk && resultOk && hookAccountingOk;
+  const ok = invocationOk && initOk && processOk && resultOk && hookAccountingOk;
   return {
     ok,
-    reason: ok ? null : `calibration hard gate failed -- invocationOk:${invocationOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked}})`,
+    reason: ok ? null : `calibration hard gate failed -- invocationOk:${invocationOk} initOk:${initOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked}})`,
   };
 }
 
@@ -428,6 +587,11 @@ async function cmdCalibrate(args) {
   const model = args.model ?? 'claude-sonnet-5';
   const privatePatternsFile = args['private-patterns-file'] ?? null;
   const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
+  const patternsCheck = validatePrivatePatternsFileOrFail(privatePatternsFile);
+  if (!patternsCheck.ok) {
+    console.error(patternsCheck.reason);
+    return 1;
+  }
   const { computePolicySha256 } = await import('./policy-config.mjs');
   const templateDir = join(__dirname, 'fixtures', 'calibration-project');
   const conditionPair = await runConditionPair({
@@ -458,7 +622,7 @@ async function cmdCalibrate(args) {
     console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.outDir }, null, 2));
     return 0;
   } finally {
-    await conditionPair.cleanup();
+    reportCleanupFailures(await conditionPair.cleanup());
   }
 }
 
@@ -471,8 +635,15 @@ async function cmdCalibrate(args) {
  */
 function smokeHardGate(a, b, runAResult, runBResult) {
   const availabilityOk = a.skill_available.value === false && b.skill_available.value === true;
+  // See calibrationHardGate's identical check -- a session with no init event at all is a
+  // broken/incomplete capture, not legitimately-observed data.
+  const initOk = runAResult.init != null && runBResult.init != null;
   const processOk = a.terminated === false && b.terminated === false && a.exit_code === 0 && b.exit_code === 0;
-  const resultOk = runAResult.result?.is_error === false && runBResult.result?.is_error === false;
+  // subtype==='success' (not just is_error===false) -- see calibrationHardGate's identical
+  // check; a budget-cap-truncated session is not a genuine completion even when is_error is
+  // false for that particular subtype.
+  const resultOk = runAResult.result?.subtype === 'success' && runAResult.result?.is_error === false
+    && runBResult.result?.subtype === 'success' && runBResult.result?.is_error === false;
   const hookAccountingOk = runAResult.hookStats.everyCallHooked === true && runBResult.hookStats.everyCallHooked === true;
   // hook_call_count>=1 proves the agent actually tried real commands; hook_deny_count===0 proves
   // every command it tried was inside the approved grammar; hookAllowCount matching
@@ -481,16 +652,15 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   // hook_deny_count===0 alone would silently accept that).
   const realWorkOk = a.hook_call_count >= 1 && a.hook_deny_count === 0 && runAResult.hookStats.hookAllowCount === a.hook_call_count
     && b.hook_call_count >= 1 && b.hook_deny_count === 0 && runBResult.hookStats.hookAllowCount === b.hook_call_count;
-  // "the agent called Bash N times" alone doesn't prove it ran the exact two expected commands
-  // (it could have run one of them twice, or one expected plus one unrelated allowed command),
-  // or that either one's own result was actually successful.
+  // Requires the EXACT expected multiset (both commands, --json included, exactly once each, no
+  // extras) -- see verifyExactCommandsSucceeded's own doc comment.
   const exactCommandsOk = verifyExactCommandsSucceeded(runAResult.bashResults, SMOKE_EXPECTED_COMMANDS)
     && verifyExactCommandsSucceeded(runBResult.bashResults, SMOKE_EXPECTED_COMMANDS);
   const cleanTranscriptOk = runAResult.malformedLines.length === 0 && runBResult.malformedLines.length === 0;
-  const ok = availabilityOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk;
+  const ok = availabilityOk && initOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk;
   return {
     ok,
-    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount})`,
+    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} initOk:${initOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype})`,
   };
 }
 
@@ -503,6 +673,11 @@ async function cmdSmoke(args) {
   const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
   if (!sourceRepoDir || !pinnedCommit) {
     console.error('smoke requires --source-repo-dir <local clone> --pinned-commit <sha> [--project-alias <alias>]');
+    return 1;
+  }
+  const patternsCheck = validatePrivatePatternsFileOrFail(privatePatternsFile);
+  if (!patternsCheck.ok) {
+    console.error(patternsCheck.reason);
     return 1;
   }
   const { computePolicySha256 } = await import('./policy-config.mjs');
@@ -547,7 +722,7 @@ async function cmdSmoke(args) {
     console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.outDir }, null, 2));
     return 0;
   } finally {
-    await conditionPair.cleanup();
+    reportCleanupFailures(await conditionPair.cleanup());
   }
 }
 
@@ -622,6 +797,11 @@ async function main() {
     process.stdout.write(HELP);
     return 0;
   }
+  const shapeErrors = validateSubcommandArgs(sub, args);
+  if (shapeErrors.length > 0) {
+    process.stderr.write(`Argument error: ${shapeErrors.join('; ')}\n\n${HELP}`);
+    return 1;
+  }
   switch (sub) {
     case 'calibrate': return cmdCalibrate(args);
     case 'corpus': return args._[1] === 'validate' ? cmdCorpusValidate() : (process.stderr.write('usage: corpus validate\n'), 1);
@@ -636,10 +816,16 @@ async function main() {
 
 const isMain = process.argv[1] && process.argv[1].endsWith('cli.mjs');
 if (isMain) {
-  main().then((code) => process.exit(code)).catch((err) => {
+  // process.exitCode (never process.exit()) -- an explicit exit() can terminate the process
+  // before a piped stdout's buffered console.log() output has actually flushed, silently
+  // truncating the JSON this CLI's own subcommands print. Setting exitCode and returning lets
+  // Node drain the event loop (including pending stdout writes) naturally before exiting; the
+  // exact same class of bug this harness already fixed once in policy-hook.mjs's write-then-exit
+  // ordering.
+  main().then((code) => { process.exitCode = code; }).catch((err) => {
     process.stderr.write(`agentic-eval: ${err.stack || err.message}\n`);
-    process.exit(2);
+    process.exitCode = 2;
   });
 }
 
-export { parseArgs, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, calibrationHardGate, smokeHardGate, verifyExactCommandsSucceeded, resolveHarnessProvenance, SMOKE_EXPECTED_COMMANDS };
+export { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, writeRunRecordEvidence, calibrationHardGate, smokeHardGate, verifyExactCommandsSucceeded, resolveHarnessProvenance, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES };

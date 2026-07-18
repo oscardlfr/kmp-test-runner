@@ -26,6 +26,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { runConditionPair } from '../../tools/agentic-eval/cli.mjs';
 
+// Node coerces `process.env.KEY = undefined` to the literal STRING "undefined" rather than
+// removing the variable -- assigning back a `saved` value that was itself `undefined` (the var
+// genuinely wasn't set before this test touched it, plausible for TMPDIR specifically on Linux)
+// would corrupt process.env for the rest of this worker process's test run, not actually restore
+// the pre-test state. delete is the correct restoration for an originally-absent variable.
+function restoreEnvVar(key, value) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
 describe('runConditionPair -- cleanup on acquisition failure', () => {
   it('removes every temp resource created so far when materializeFixture throws mid-acquisition', async () => {
     // os.tmpdir() reads TEMP/TMP/TMPDIR fresh on every call (not cached at module load) -- so
@@ -55,9 +65,9 @@ describe('runConditionPair -- cleanup on acquisition failure', () => {
       expect(materializeCalls).toBe(1);
       expect(readdirSync(isolatedTmp)).toEqual([]);
     } finally {
-      process.env.TEMP = saved.TEMP;
-      process.env.TMP = saved.TMP;
-      process.env.TMPDIR = saved.TMPDIR;
+      restoreEnvVar('TEMP', saved.TEMP);
+      restoreEnvVar('TMP', saved.TMP);
+      restoreEnvVar('TMPDIR', saved.TMPDIR);
       rmSync(isolatedTmp, { recursive: true, force: true });
     }
   }, 30000);

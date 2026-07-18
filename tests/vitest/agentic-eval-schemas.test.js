@@ -6,6 +6,7 @@ import {
   validateRun,
   validateScenario,
   buildAggregateGroup,
+  HARD_PARTITION_FIELDS,
 } from '../../tools/agentic-eval/schemas.mjs';
 
 function baseRun(overrides = {}) {
@@ -171,6 +172,39 @@ describe('validateRun', () => {
   it('rejects hook_deny_count exceeding hook_call_count', () => {
     const { errors } = validateRun(baseRun({ hook_call_count: 1, hook_deny_count: 2 }));
     expect(errors.some((e) => e.field === 'hook_deny_count')).toBe(true);
+  });
+
+  // Regression coverage for a real schema bypass CodeRabbit independently confirmed: the
+  // original check only validated hook_call_count/hook_deny_count as a PAIR, gated on BOTH
+  // being non-null (`run.hook_call_count != null && run.hook_deny_count != null`). If one field
+  // was a wrong type while the OTHER was null, the outer guard was false and the ENTIRE check
+  // block -- including the wrong-typed field's own validation -- was skipped, silently
+  // accepting the malformed value.
+  describe('hook_call_count/hook_deny_count are validated independently, never gated on the other', () => {
+    it('rejects a non-integer hook_call_count even when hook_deny_count is null', () => {
+      const { errors } = validateRun(baseRun({ hook_call_count: 'bad', hook_deny_count: null }));
+      expect(errors.some((e) => e.field === 'hook_call_count')).toBe(true);
+    });
+
+    it('rejects a non-integer hook_deny_count even when hook_call_count is null', () => {
+      const { errors } = validateRun(baseRun({ hook_call_count: null, hook_deny_count: 'bad' }));
+      expect(errors.some((e) => e.field === 'hook_deny_count')).toBe(true);
+    });
+
+    it('rejects hook_call_count being null outright -- it is never legitimately absent', () => {
+      const { errors } = validateRun(baseRun({ hook_call_count: null }));
+      expect(errors.some((e) => e.field === 'hook_call_count')).toBe(true);
+    });
+
+    it('rejects a negative hook_deny_count', () => {
+      const { errors } = validateRun(baseRun({ hook_deny_count: -1 }));
+      expect(errors.some((e) => e.field === 'hook_deny_count')).toBe(true);
+    });
+
+    it('accepts well-formed, independently-valid non-negative integers', () => {
+      const { errors } = validateRun(baseRun({ hook_call_count: 5, hook_deny_count: 2 }));
+      expect(errors.filter((e) => e.field === 'hook_call_count' || e.field === 'hook_deny_count')).toEqual([]);
+    });
   });
 
   it('rejects a malformed policy_sha256', () => {
@@ -442,6 +476,34 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
     expect(group.group_key.model_resolved).toBe('claude-sonnet-5');
     expect(group.group_key.platform).toBe('windows');
     expect(group.group_key.policy_sha256).toBe('a'.repeat(64));
+  });
+
+  it('HARD_PARTITION_FIELDS includes env_allowlist_profile/policy_allowed_gradle_tasks/policy_allowed_kmptest_subcommands', () => {
+    expect(HARD_PARTITION_FIELDS).toContain('env_allowlist_profile');
+    expect(HARD_PARTITION_FIELDS).toContain('policy_allowed_gradle_tasks');
+    expect(HARD_PARTITION_FIELDS).toContain('policy_allowed_kmptest_subcommands');
+    expect(HARD_PARTITION_FIELDS.length).toBe(15);
+  });
+
+  it('refuses to mix policy_allowed_gradle_tasks within one aggregate group (a materially different command policy)', () => {
+    const { errors } = buildAggregateGroup([
+      run({ run_id: 'r1', policy_allowed_gradle_tasks: ['build'] }),
+      run({ run_id: 'r2', policy_allowed_gradle_tasks: ['build', 'test'] }),
+    ]);
+    expect(errors.some((e) => e.field === 'policy_allowed_gradle_tasks')).toBe(true);
+  });
+
+  // Regression coverage: a plain `new Set(runs.map(r => r[f]))` compares array VALUES by
+  // object reference, so two runs with a STRUCTURALLY IDENTICAL array as two separate object
+  // instances would previously be spuriously flagged as "mixed" even though they represent the
+  // exact same policy configuration.
+  it('does NOT mix two runs whose policy_allowed_gradle_tasks are structurally identical but separate array instances', () => {
+    const { errors, group } = buildAggregateGroup([
+      run({ run_id: 'r1', policy_allowed_gradle_tasks: ['build', 'test'] }),
+      run({ run_id: 'r2', policy_allowed_gradle_tasks: ['build', 'test'] }),
+    ]);
+    expect(errors.filter((e) => e.field === 'policy_allowed_gradle_tasks')).toEqual([]);
+    expect(group.run_count).toBe(2);
   });
 
   it('refuses to mix family within one aggregate group', () => {

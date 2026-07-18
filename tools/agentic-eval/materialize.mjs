@@ -78,14 +78,22 @@ export async function materializeSkillSnapshot({ repoRoot, sha, validateFn }) {
 /**
  * Copy the committed calibration-project template into a fresh temp dir. Reset (for the second
  * condition of a run-pair) means: delete and recopy from the SAME pristine template, never
- * mutate in place.
+ * mutate in place. mkdirSync+cpSync are wrapped so a failure partway through (cpSync throwing on
+ * a disk-full/permission error) removes the just-created `dest` before rethrowing, rather than
+ * leaving an empty or partially-copied directory behind -- confirmed as a real leak (a genuine
+ * kmp-agentic-eval-calibration-* directory survived a forced cpSync failure) before this fix.
  * @param {{templateDir: string, existingDir?: string}} opts
  */
 export function materializeCalibrationProject({ templateDir, existingDir }) {
   const dest = existingDir ?? mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-calibration-'));
   if (existingDir) rmSync(existingDir, { recursive: true, force: true });
-  mkdirSync(dest, { recursive: true });
-  cpSync(templateDir, dest, { recursive: true });
+  try {
+    mkdirSync(dest, { recursive: true });
+    cpSync(templateDir, dest, { recursive: true });
+  } catch (err) {
+    rmSync(dest, { recursive: true, force: true });
+    throw err;
+  }
   return { fixtureDir: dest };
 }
 
@@ -125,7 +133,15 @@ export function materializeScenarioProject({ sourceRepoDir, pinnedCommit, existi
   }
   const dest = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-scenario-'));
   rmSync(dest, { recursive: true, force: true }); // git worktree add requires the target not exist
-  runGitViaBash(['worktree', 'add', '--detach', toPosixPath(dest), pinnedCommit], sourceRepoDir);
+  // `git worktree add` can leave partial state registered (or a partially-populated directory)
+  // if it fails partway through -- best-effort clean up via the same removeScenarioWorktree()
+  // path a successful worktree's own teardown uses, before rethrowing the original error.
+  try {
+    runGitViaBash(['worktree', 'add', '--detach', toPosixPath(dest), pinnedCommit], sourceRepoDir);
+  } catch (err) {
+    try { removeScenarioWorktree({ sourceRepoDir, worktreeDir: dest }); } catch { /* best-effort */ }
+    throw err;
+  }
   return { fixtureDir: dest };
 }
 
@@ -145,11 +161,20 @@ export function materializeScenarioProject({ sourceRepoDir, pinnedCommit, existi
  */
 export function materializeGradleUserHome({ runPrewarm } = {}) {
   const gradleUserHome = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-gradle-'));
-  writeFileSync(join(gradleUserHome, 'gradle.properties'), 'org.gradle.daemon=false\n');
-  const snapshotDir = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-gradle-snapshot-'));
-  if (runPrewarm) runPrewarm(gradleUserHome);
-  rmSync(snapshotDir, { recursive: true, force: true });
-  cpSync(gradleUserHome, snapshotDir, { recursive: true });
+  let snapshotDir;
+  try {
+    writeFileSync(join(gradleUserHome, 'gradle.properties'), 'org.gradle.daemon=false\n');
+    snapshotDir = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-gradle-snapshot-'));
+    if (runPrewarm) runPrewarm(gradleUserHome);
+    rmSync(snapshotDir, { recursive: true, force: true });
+    cpSync(gradleUserHome, snapshotDir, { recursive: true });
+  } catch (err) {
+    // Whichever of the two temp directories got created before the failure -- writeFileSync,
+    // runPrewarm, or cpSync can each throw partway through -- must not survive it.
+    rmSync(gradleUserHome, { recursive: true, force: true });
+    if (snapshotDir) rmSync(snapshotDir, { recursive: true, force: true });
+    throw err;
+  }
 
   function resetToSnapshot() {
     rmSync(gradleUserHome, { recursive: true, force: true });

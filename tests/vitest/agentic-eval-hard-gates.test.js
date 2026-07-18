@@ -50,7 +50,8 @@ function passB(overrides = {}) {
 
 function passRunResult(overrides = {}) {
   return {
-    result: { is_error: false },
+    init: { model: 'claude-sonnet-5-fake-resolved', plugins: [] },
+    result: { subtype: 'success', is_error: false },
     hookStats: { everyCallHooked: true, hookAllowCount: 2 },
     bashResults: [
       { command: 'kmp-test doctor --json', resultFound: true, resultIsError: false },
@@ -125,6 +126,37 @@ describe('calibrationHardGate', () => {
     expect(reason).toContain('resultOk:false');
   });
 
+  // Regression coverage for a real bypass an independent review pass demonstrated: a session
+  // truncated by, say, the budget cap can report a distinct result.subtype (confirmed:
+  // 'error_max_budget_usd') that is NOT necessarily paired with is_error:true -- so is_error
+  // alone previously let a genuinely-interrupted session pass resultOk.
+  it('isolates resultOk -- B\'s result event has is_error:false but subtype is NOT success (the budget-cap-truncation shape)', () => {
+    const runB = passRunResult({ result: { subtype: 'error_max_budget_usd', is_error: false } });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('initOk:true');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:false');
+    expect(reason).toContain('hookAccountingOk:true');
+  });
+
+  // Regression coverage for a real bypass: a session with NO init event at all is a
+  // fundamentally broken/incomplete capture -- without initOk, a no-init run's derived
+  // skill_available:false for the no-skill arm could coincidentally match the EXPECTED value,
+  // passing invocationOk for the wrong reason (nothing to derive availability from, not a
+  // genuine observation).
+  it('isolates initOk -- A never produced an init event at all', () => {
+    const runA = passRunResult({ init: null });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('initOk:false');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+  });
+
   it('isolates hookAccountingOk -- not every Bash call in B reached the policy hook', () => {
     const runB = passRunResult({ hookStats: { everyCallHooked: false, hookAllowCount: 2 } });
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
@@ -176,6 +208,37 @@ describe('smokeHardGate', () => {
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:false');
+    expect(reason).toContain('hookAccountingOk:true');
+    expect(reason).toContain('realWorkOk:true');
+    expect(reason).toContain('exactCommandsOk:true');
+    expect(reason).toContain('cleanTranscriptOk:true');
+  });
+
+  // Regression coverage -- see calibrationHardGate's identical test for the full rationale
+  // (a budget-cap-truncated session reports is_error:false with a non-'success' subtype).
+  it('isolates resultOk -- B\'s result event has is_error:false but subtype is NOT success', () => {
+    const runB = passRunResult({ result: { subtype: 'error_max_budget_usd', is_error: false } });
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('initOk:true');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:false');
+    expect(reason).toContain('hookAccountingOk:true');
+    expect(reason).toContain('realWorkOk:true');
+    expect(reason).toContain('exactCommandsOk:true');
+    expect(reason).toContain('cleanTranscriptOk:true');
+  });
+
+  // Regression coverage -- see calibrationHardGate's identical test for the full rationale.
+  it('isolates initOk -- B never produced an init event at all', () => {
+    const runB = passRunResult({ init: null });
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('initOk:false');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');
     expect(reason).toContain('realWorkOk:true');
     expect(reason).toContain('exactCommandsOk:true');

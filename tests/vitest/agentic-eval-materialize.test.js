@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import {
   materializeSkillSnapshot,
   materializeCalibrationProject,
+  materializeScenarioProject,
   materializeGradleUserHome,
 } from '../../tools/agentic-eval/materialize.mjs';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
@@ -154,6 +155,65 @@ describe('materializeCalibrationProject', () => {
     expect(existsSync(path.join(fixtureDir2, 'junk.txt'))).toBe(false);
     expect(existsSync(path.join(fixtureDir2, 'marker.txt'))).toBe(true);
   });
+
+  // Regression coverage for a real leak an independent review pass reproduced concretely: a
+  // cpSync failure partway through (here: a nonexistent templateDir, which cpSync throws ENOENT
+  // on) previously left the mkdirSync'd `dest` behind forever, since the function had no
+  // try/catch of its own. Redirects TEMP/TMP/TMPDIR to an isolated, test-exclusive directory
+  // (same technique as materializeSkillSnapshot's own cleanup-on-failure test above) so "is it
+  // empty afterward" is exact -- no need to parse the thrown error's message to recover the
+  // dest path.
+  it('cleans up the created dest directory when cpSync fails (e.g. a nonexistent templateDir)', () => {
+    const isolatedTmp = mkdtempSync(path.join(os.tmpdir(), 'aemat-calib-cleanup-'));
+    const originalEnv = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
+    process.env.TEMP = isolatedTmp;
+    process.env.TMP = isolatedTmp;
+    process.env.TMPDIR = isolatedTmp;
+    try {
+      const bogusTemplateDir = path.join(os.tmpdir(), 'aemat-nonexistent-template');
+      expect(existsSync(bogusTemplateDir)).toBe(false);
+      expect(() => materializeCalibrationProject({ templateDir: bogusTemplateDir })).toThrow();
+      expect(readdirSync(isolatedTmp)).toEqual([]);
+    } finally {
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(isolatedTmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('materializeScenarioProject -- worktree-add failure', () => {
+  // NOTE: this is deliberately NOT a full regression test for the try/catch+removeScenarioWorktree
+  // cleanup wrapping `git worktree add` in materialize.mjs. An invalid commit-ish (tried here)
+  // fails cleanly during git's own ref resolution, before any worktree metadata or directory is
+  // created -- confirmed empirically by temporarily removing the try/catch and re-running this
+  // exact scenario, which still passed identically either way, meaning it doesn't actually
+  // discriminate. No other reliably cross-platform way to force `git worktree add` to create
+  // PARTIAL state before failing was found (a bad path, an already-existing dest, a locked
+  // index all either fail before creating anything or aren't reliably reproducible outside a
+  // real interrupted-process scenario). The code fix mirrors the already-verified pattern used
+  // by materializeSkillSnapshot/materializeCalibrationProject/materializeGradleUserHome, and the
+  // BROADER leak class this defends against -- a successful materialize followed by a LATER,
+  // unrelated failure elsewhere in runConditionPair -- is covered for real by
+  // agentic-eval-run-condition-pair.test.js. This test only confirms the function still throws
+  // (and doesn't crash some other way) on a bad commit.
+  it('throws (does not hang or crash unexpectedly) when pinnedCommit does not resolve to a real commit', () => {
+    const sourceRepoDir = mkdtempSync(path.join(os.tmpdir(), 'aemat-scenario-source-'));
+    cleanupDirs.push(sourceRepoDir);
+    gitViaBash(['init', '-q'], sourceRepoDir);
+    gitViaBash(['config', 'user.email', 'test@example.com'], sourceRepoDir);
+    gitViaBash(['config', 'user.name', 'Test'], sourceRepoDir);
+    writeFileSync(path.join(sourceRepoDir, 'marker.txt'), 'pristine\n');
+    gitViaBash(['add', '-A'], sourceRepoDir);
+    gitViaBash(['commit', '-q', '-m', 'initial'], sourceRepoDir);
+
+    const bogusCommit = '0000000000000000000000000000000000dead';
+    expect(() => materializeScenarioProject({ sourceRepoDir, pinnedCommit: bogusCommit })).toThrow();
+    const worktreeList = gitViaBash(['worktree', 'list'], sourceRepoDir);
+    expect(worktreeList.trim().split('\n').length).toBe(1); // only the main working tree
+  });
 });
 
 describe('materializeGradleUserHome', () => {
@@ -201,5 +261,28 @@ describe('materializeGradleUserHome', () => {
     writeFileSync(path.join(gradleUserHome, 'prewarm-marker.txt'), 'mutated-after-prewarm');
     resetToSnapshot();
     expect(readFileSync(path.join(gradleUserHome, 'prewarm-marker.txt'), 'utf8')).toBe('prewarmed-content');
+  });
+
+  // Regression coverage: a failure inside runPrewarm (or writeFileSync/cpSync) partway through
+  // previously left BOTH the gradleUserHome and its own internal snapshotDir behind forever,
+  // since the function had no try/catch of its own.
+  it('cleans up both temp directories it created when runPrewarm throws', () => {
+    const isolatedTmp = mkdtempSync(path.join(os.tmpdir(), 'aemat-gradle-cleanup-'));
+    const originalEnv = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
+    process.env.TEMP = isolatedTmp;
+    process.env.TMP = isolatedTmp;
+    process.env.TMPDIR = isolatedTmp;
+    try {
+      expect(() => materializeGradleUserHome({
+        runPrewarm: () => { throw new Error('injected prewarm failure'); },
+      })).toThrow('injected prewarm failure');
+      expect(readdirSync(isolatedTmp)).toEqual([]);
+    } finally {
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(isolatedTmp, { recursive: true, force: true });
+    }
   });
 });

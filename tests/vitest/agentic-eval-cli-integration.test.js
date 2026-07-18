@@ -171,8 +171,11 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
     rmSync(sourceRepoDir, { recursive: true, force: true });
   });
 
-  function smokeArgs(extra = []) {
-    return ['smoke', '--source-repo-dir', sourceRepoDir, '--pinned-commit', pinnedCommit, '--project-alias', 'integration-test', '--model', 'fake-model-x', ...extra];
+  // projectAlias is a parameter (not folded into `extra`) because parseArgs now rejects a
+  // duplicated --project-alias as a hard error -- a caller that wants a non-default alias must
+  // set it here, not append a second --project-alias onto `extra`.
+  function smokeArgs(extra = [], projectAlias = 'integration-test') {
+    return ['smoke', '--source-repo-dir', sourceRepoDir, '--pinned-commit', pinnedCommit, '--project-alias', projectAlias, '--model', 'fake-model-x', ...extra];
   }
 
   it('success scenario: passes the equivalent-real-work hard gate and writes schema-valid evidence', () => {
@@ -204,7 +207,7 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
       { class: 'test_marker', literal: secretMarker, replacement: '<REDACTED_TEST_MARKER>' },
     ]));
     try {
-      const result = runCli(smokeArgs(['--private-patterns-file', patternsFile, '--project-alias', secretMarker]), fakeClaudeEnv('success'));
+      const result = runCli(smokeArgs(['--private-patterns-file', patternsFile], secretMarker), fakeClaudeEnv('success'));
       expect(result.status).toBe(0);
       expect(result.stdout).not.toContain(secretMarker);
       expect(result.stdout).toContain('<REDACTED_TEST_MARKER>');
@@ -216,6 +219,34 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
       expect(files.length).toBe(2);
       const writtenText = readFileSync(path.join(evidenceDirFor('smoke'), files[0]), 'utf8');
       expect(writtenText).not.toContain(secretMarker);
+    } finally {
+      rmSync(patternsFile, { force: true });
+    }
+  }, 30000);
+
+  // Regression coverage for a real bypass an independent review pass demonstrated: records were
+  // redacted (assertCleanOrThrow, which only checks for LEAK patterns via findLeaks, not JSON
+  // structural validity) and WRITTEN to disk, with JSON.parse() only attempted afterward -- a
+  // private-pattern replacement string containing a raw, unescaped newline breaks JSON syntax
+  // once substituted into what was a JSON string value, but findLeaks has no way to catch that,
+  // so invalid-JSON evidence could previously reach disk. This drives a real subprocess with a
+  // patterns file whose replacement contains an actual newline byte (valid in the patterns FILE
+  // itself, which JSON-escapes it as \n -- redactText substitutes the REAL in-memory string,
+  // newline byte and all) and asserts the run fails closed with NO evidence written, rather than
+  // writing a file that then can't even be parsed back.
+  it('refuses to write evidence when a private-pattern replacement would produce invalid JSON', () => {
+    const patternsFile = path.join(os.tmpdir(), `aeci-breaking-patterns-${process.pid}-${Date.now()}.json`);
+    const secretMarker = 'another-fake-marker-not-a-real-secret-xyz';
+    writeFileSync(patternsFile, JSON.stringify([
+      { class: 'test_marker', literal: secretMarker, replacement: 'line-one\nline-two-breaks-json' },
+    ]));
+    try {
+      const before = listEvidenceFiles('smoke');
+      const result = runCli(smokeArgs(['--private-patterns-file', patternsFile], secretMarker), fakeClaudeEnv('success'));
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('SMOKE FAILED');
+      expect(result.stderr.toLowerCase()).toContain('invalid json');
+      expect(listEvidenceFiles('smoke')).toEqual(before);
     } finally {
       rmSync(patternsFile, { force: true });
     }

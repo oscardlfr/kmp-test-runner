@@ -168,13 +168,18 @@ export function validateRun(run) {
   validateEventRef(run.skill_invocation_event, 'skill_invocation_event', errors);
   validateEventRef(run.first_useful_signal_event, 'first_useful_signal_event', errors);
 
-  if (run.hook_call_count != null && run.hook_deny_count != null) {
-    if (!Number.isInteger(run.hook_call_count) || run.hook_call_count < 0
-      || !Number.isInteger(run.hook_deny_count) || run.hook_deny_count < 0) {
-      errors.push({ field: 'hook_call_count', message: 'hook_call_count/hook_deny_count must be non-negative integers' });
-    } else if (run.hook_deny_count > run.hook_call_count) {
-      errors.push({ field: 'hook_deny_count', message: 'cannot exceed hook_call_count' });
-    }
+  // hook_call_count/hook_deny_count are ALWAYS real, non-negative integers in production --
+  // countHookEvents() derives both as array .length values, never null/undefined -- so both are
+  // validated unconditionally, independently of one another. A previous version only validated
+  // this PAIR when BOTH were non-null, which meant e.g. hook_call_count:"bad" alongside
+  // hook_deny_count:null produced ZERO errors (the outer `!= null` guard on hook_deny_count was
+  // false, so the whole block -- including hook_call_count's own check -- was skipped entirely).
+  const hookCallCountOk = Number.isInteger(run.hook_call_count) && run.hook_call_count >= 0;
+  if (!hookCallCountOk) errors.push({ field: 'hook_call_count', message: 'must be a non-negative integer' });
+  const hookDenyCountOk = Number.isInteger(run.hook_deny_count) && run.hook_deny_count >= 0;
+  if (!hookDenyCountOk) errors.push({ field: 'hook_deny_count', message: 'must be a non-negative integer' });
+  if (hookCallCountOk && hookDenyCountOk && run.hook_deny_count > run.hook_call_count) {
+    errors.push({ field: 'hook_deny_count', message: 'cannot exceed hook_call_count' });
   }
   for (const field of ['policy_allowed_gradle_tasks', 'policy_allowed_kmptest_subcommands']) {
     if (!Array.isArray(run[field])) {
@@ -241,11 +246,27 @@ const AGGREGATE_CANONICAL_FIELDS = ['schema', 'group_key', 'run_count', 'runs'];
 // different host platform, a different skill snapshot, or a changed policy-hook version.
 // kmp_test_cli_source_sha/daemon_policy guard against silently averaging across a different
 // harness code version or a different Gradle daemon policy (e.g. one run's daemon left enabled).
+// env_allowlist_profile/policy_allowed_gradle_tasks/policy_allowed_kmptest_subcommands guard
+// against silently averaging across a different environment-isolation profile or a materially
+// different command-policy configuration -- policy_sha256 only captures policy-hook.mjs's own
+// source code, not the CALLER-supplied allowed-task/subcommand lists it's configured with, which
+// change what a run was actually permitted to do just as materially as the hook's code does.
 export const HARD_PARTITION_FIELDS = [
   'scenario_id', 'condition', 'family', 'run_kind', 'cache_state',
   'project_commit', 'model_resolved', 'platform', 'skill_source_sha', 'policy_sha256',
   'kmp_test_cli_source_sha', 'daemon_policy',
+  'env_allowlist_profile', 'policy_allowed_gradle_tasks', 'policy_allowed_kmptest_subcommands',
 ];
+
+// Some HARD_PARTITION_FIELDS values (the two policy_allowed_* lists) are arrays -- a plain
+// `new Set(runs.map(r => r[f]))` compares array VALUES by reference, so two runs with
+// structurally identical arrays (e.g. both ['doctor']) as separate object instances would be
+// treated as "different" and spuriously rejected as mixed. Comparing the JSON.stringify
+// representation instead compares by structural equality, matching how aggregate.mjs's own
+// bucket key already treats array-valued fields.
+function partitionFieldKey(value) {
+  return Array.isArray(value) ? JSON.stringify(value) : value;
+}
 
 export function validateAggregateGroupKey(key) {
   const errors = [];
@@ -281,7 +302,7 @@ export function buildAggregateGroup(runs) {
     errors.push({ field: 'benchmark_eligible', message: `${ineligible.length} run(s) are benchmark_eligible:false and cannot be folded into a publishable aggregate` });
   }
   for (const f of HARD_PARTITION_FIELDS) {
-    const values = new Set(runs.map((r) => r[f]));
+    const values = new Set(runs.map((r) => partitionFieldKey(r[f])));
     if (values.size > 1) errors.push({ field: f, message: `mixed values in one aggregate group: ${[...values].join(', ')}` });
   }
   if (errors.length > 0) return { errors, group: null };
