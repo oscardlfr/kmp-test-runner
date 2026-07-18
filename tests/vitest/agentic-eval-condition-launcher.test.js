@@ -3,7 +3,9 @@
 // mocked spawn, no real claude process. Real end-to-end spawn behavior is proven separately
 // (Step 1 gate evidence, in the PR description) since it inherently requires a real session.
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildBaseArgv,
   buildConditionArgv,
@@ -165,12 +167,18 @@ describe('spawnCondition -- real subprocess (local shell only, no Claude, no net
     }
   });
 
-  it('reports terminationReason "error" for a nonzero exit code', async () => {
+  it('a normal nonzero exit is NOT a "termination" -- exit_code alone conveys it (terminated:false, reason:null)', async () => {
+    // Regression coverage for a real schema-violation bug found by an independent review pass:
+    // this exact case previously produced {terminated:false, terminationReason:'error'}, a
+    // combination schemas.mjs itself rejects (terminated:false requires termination_reason:null).
+    // A process that ran to a normal (if unsuccessful) conclusion was never "terminated" in the
+    // abnormal sense that field is meant to capture -- only OUR OWN timeout firing, or the
+    // process being killed by some signal we did not send, should ever set terminated:true.
     const argv = ['node', '-e', 'process.exit(7)'];
     const result = await spawnCondition(argv, { env: process.env, cwd: process.cwd(), timeoutMs: 10000 });
     expect(result.exitCode).toBe(7);
     expect(result.terminated).toBe(false);
-    expect(result.terminationReason).toBe('error');
+    expect(result.terminationReason).toBeNull();
   });
 
   it('terminates a hanging command once timeoutMs elapses', async () => {
@@ -207,7 +215,16 @@ describe('spawnCondition -- real subprocess (local shell only, no Claude, no net
     // alone no longer reproduces this (confirmed: it fell through to a normal close/127 instead).
     // The schema rejects terminated:false paired with a non-null termination_reason -- this
     // confirms the fix, not just that the promise resolves.
-    const result = await spawnCondition(['anything'], { env: process.env, cwd: 'C:\\this-directory-does-not-exist-xyz-12345', timeoutMs: 5000 });
+    //
+    // The missing directory is a REAL temp directory, created then immediately removed --
+    // guaranteed absent on every platform this suite runs on, rather than a hardcoded
+    // Windows-drive-letter-shaped string. An earlier version of this test used a literal
+    // 'C:\\...' path, which is only an absolute (and thus reliably nonexistent) path on Windows
+    // -- on POSIX it's just an unusual relative path name, technically not a principled
+    // guarantee of absence even though it happened to work in practice.
+    const missingDir = mkdtempSync(join(tmpdir(), 'aecl-missing-'));
+    rmSync(missingDir, { recursive: true, force: true });
+    const result = await spawnCondition(['anything'], { env: process.env, cwd: missingDir, timeoutMs: 5000 });
     expect(result.exitCode).toBeNull();
     expect(result.terminated).toBe(true);
     expect(result.terminationReason).toBe('error');

@@ -1,0 +1,283 @@
+// tests/vitest/agentic-eval-hard-gates.test.js
+// Isolated unit tests for calibrationHardGate/smokeHardGate (tools/agentic-eval/cli.mjs).
+//
+// Both gates were extracted from inline closures into named, exported functions specifically so
+// each sub-check could be unit-tested in isolation with precise synthetic inputs -- an
+// independent review pass found the ORIGINAL inline gates insufficient (missing several checks
+// entirely) and separately observed that real subprocess fixtures tend to fail for MULTIPLE
+// simultaneous reasons at once, so a negative fixture couldn't prove it isolates the ONE failure
+// mode it claims to. Constructing a real subprocess fixture that fails EXACTLY one sub-check and
+// none of the others is fragile in a different way too: it's not actually verified anywhere what,
+// say, a denied command's own tool_result looks like on a real transcript, so fabricating one for
+// a fixture risks encoding an unverified guess as if it were confirmed fact. Testing the gate
+// FUNCTIONS directly with synthetic data sidesteps both problems -- each test below flips exactly
+// one input, asserts exactly one named sub-check goes false, and asserts every OTHER named
+// sub-check stays true in the same failure-reason string.
+//
+// The real-subprocess fake-claude fixtures (agentic-eval-cli-integration.test.js) remain
+// necessary too, for a different reason: they prove the gate is actually WIRED UP end-to-end
+// (real stream-json parsing -> real hookStats/bashResults -> this gate -> exit code/evidence
+// writing). Where a single fake-claude scenario trips more than one sub-check at once, that's
+// disclosed inline in that file's scenario comments, not presented as single-cause isolation.
+import { describe, it, expect } from 'vitest';
+import { calibrationHardGate, smokeHardGate } from '../../tools/agentic-eval/cli.mjs';
+
+function passA(overrides = {}) {
+  return {
+    skill_available: { value: false, reason: null },
+    skill_invocation_attempted: { value: true, reason: null },
+    skill_invoked: { value: false, reason: null },
+    terminated: false,
+    exit_code: 0,
+    hook_call_count: 2,
+    hook_deny_count: 0,
+    ...overrides,
+  };
+}
+
+function passB(overrides = {}) {
+  return {
+    skill_available: { value: true, reason: null },
+    skill_invocation_attempted: { value: true, reason: null },
+    skill_invoked: { value: true, reason: null },
+    terminated: false,
+    exit_code: 0,
+    hook_call_count: 2,
+    hook_deny_count: 0,
+    ...overrides,
+  };
+}
+
+function passRunResult(overrides = {}) {
+  return {
+    result: { is_error: false },
+    hookStats: { everyCallHooked: true, hookAllowCount: 2 },
+    bashResults: [
+      { command: 'kmp-test doctor --json', resultFound: true, resultIsError: false },
+      { command: 'kmp-test describe --json', resultFound: true, resultIsError: false },
+    ],
+    malformedLines: [],
+    ...overrides,
+  };
+}
+
+describe('calibrationHardGate', () => {
+  it('passes when every sub-check is satisfied', () => {
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), passRunResult());
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('isolates invocationOk -- B never confirms invocation (the real "Unknown skill" shape: attempted but not invoked)', () => {
+    const b = passB({ skill_invoked: { value: false, reason: 'attempted but not confirmed' } });
+    const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('invocationOk:false');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+  });
+
+  it('isolates invocationOk -- A shows skill_available:true (isolation itself broken, not a scoring artifact)', () => {
+    const a = passA({ skill_available: { value: true, reason: null } });
+    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('invocationOk:false');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+  });
+
+  it('isolates processOk -- B exits nonzero', () => {
+    const b = passB({ exit_code: 1 });
+    const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('processOk:false');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+  });
+
+  it('isolates processOk -- A was terminated (timeout/signal)', () => {
+    const a = passA({ terminated: true });
+    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('processOk:false');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+  });
+
+  it('isolates resultOk -- B\'s own result event reports is_error:true', () => {
+    const runB = passRunResult({ result: { is_error: true } });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:false');
+    expect(reason).toContain('hookAccountingOk:true');
+  });
+
+  it('isolates resultOk -- no result event was ever found (undefined, not false)', () => {
+    const runA = passRunResult({ result: null });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('resultOk:false');
+  });
+
+  it('isolates hookAccountingOk -- not every Bash call in B reached the policy hook', () => {
+    const runB = passRunResult({ hookStats: { everyCallHooked: false, hookAllowCount: 2 } });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:false');
+  });
+});
+
+describe('smokeHardGate', () => {
+  it('passes when every sub-check is satisfied', () => {
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), passRunResult());
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('isolates availabilityOk -- A shows the skill as available (breaks the no-skill/current-skill contrast)', () => {
+    const a = passA({ skill_available: { value: true, reason: null } });
+    const { ok, reason } = smokeHardGate(a, passB(), passRunResult(), passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:false');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+    expect(reason).toContain('realWorkOk:true');
+    expect(reason).toContain('exactCommandsOk:true');
+    expect(reason).toContain('cleanTranscriptOk:true');
+  });
+
+  it('isolates processOk -- B exits nonzero', () => {
+    const b = passB({ exit_code: 1 });
+    const { ok, reason } = smokeHardGate(passA(), b, passRunResult(), passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('processOk:false');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+    expect(reason).toContain('realWorkOk:true');
+    expect(reason).toContain('exactCommandsOk:true');
+    expect(reason).toContain('cleanTranscriptOk:true');
+  });
+
+  it('isolates resultOk -- A\'s own result event reports is_error:true', () => {
+    const runA = passRunResult({ result: { is_error: true } });
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:false');
+    expect(reason).toContain('hookAccountingOk:true');
+    expect(reason).toContain('realWorkOk:true');
+    expect(reason).toContain('exactCommandsOk:true');
+    expect(reason).toContain('cleanTranscriptOk:true');
+  });
+
+  it('isolates hookAccountingOk -- not every Bash call in A reached the policy hook', () => {
+    const runA = passRunResult({ hookStats: { everyCallHooked: false, hookAllowCount: 2 } });
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:false');
+    expect(reason).toContain('realWorkOk:true');
+    expect(reason).toContain('exactCommandsOk:true');
+    expect(reason).toContain('cleanTranscriptOk:true');
+  });
+
+  it('isolates realWorkOk -- B had at least one denied command (hook_deny_count>0)', () => {
+    const b = passB({ hook_deny_count: 1 });
+    const { ok, reason } = smokeHardGate(passA(), b, passRunResult(), passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+    expect(reason).toContain('realWorkOk:false');
+    expect(reason).toContain('exactCommandsOk:true');
+    expect(reason).toContain('cleanTranscriptOk:true');
+  });
+
+  it('isolates realWorkOk -- A never attempted any real command (hook_call_count:0)', () => {
+    const a = passA({ hook_call_count: 0 });
+    const runA = passRunResult({ hookStats: { everyCallHooked: true, hookAllowCount: 0 }, bashResults: [] });
+    const { ok, reason } = smokeHardGate(a, passB(), runA, passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('realWorkOk:false');
+    // bashResults is empty in this fixture too, so exactCommandsOk is honestly also false here --
+    // "zero commands run" cannot satisfy "the two expected commands ran successfully" no matter
+    // how the check is phrased. This is a case where two sub-checks are causally the same fact
+    // (no commands at all), not a fixture-isolation failure.
+    expect(reason).toContain('exactCommandsOk:false');
+  });
+
+  it('isolates realWorkOk -- B has a malformed hook decision (hookAllowCount does not match hook_call_count even though hook_deny_count is 0)', () => {
+    const runB = passRunResult({ hookStats: { everyCallHooked: true, hookAllowCount: 1 } }); // 1 allow for 2 calls, 0 denies
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+    expect(reason).toContain('realWorkOk:false');
+    expect(reason).toContain('exactCommandsOk:true');
+    expect(reason).toContain('cleanTranscriptOk:true');
+  });
+
+  it('isolates exactCommandsOk -- B ran doctor twice instead of doctor+describe', () => {
+    const runB = passRunResult({
+      bashResults: [
+        { command: 'kmp-test doctor --json', resultFound: true, resultIsError: false },
+        { command: 'kmp-test doctor --json', resultFound: true, resultIsError: false },
+      ],
+    });
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+    expect(reason).toContain('realWorkOk:true');
+    expect(reason).toContain('exactCommandsOk:false');
+    expect(reason).toContain('cleanTranscriptOk:true');
+  });
+
+  it('isolates exactCommandsOk -- B ran both expected commands but describe\'s own result was an error', () => {
+    const runB = passRunResult({
+      bashResults: [
+        { command: 'kmp-test doctor --json', resultFound: true, resultIsError: false },
+        { command: 'kmp-test describe --json', resultFound: true, resultIsError: true },
+      ],
+    });
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('exactCommandsOk:false');
+    // A denied/errored command still reaches the hook and can still be an explicit "allow"
+    // decision at the hook layer (the hook approves the command; the command itself then fails
+    // for an unrelated reason) -- realWorkOk and exactCommandsOk are independent facts here.
+    expect(reason).toContain('realWorkOk:true');
+  });
+
+  it('isolates cleanTranscriptOk -- A has a malformed/truncated JSONL line', () => {
+    const runA = passRunResult({ malformedLines: ['{not valid json'] });
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+    expect(reason).toContain('realWorkOk:true');
+    expect(reason).toContain('exactCommandsOk:true');
+    expect(reason).toContain('cleanTranscriptOk:false');
+  });
+});

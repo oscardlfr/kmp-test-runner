@@ -52,17 +52,27 @@ function ensureCommitAvailable(repoRoot, sha) {
  */
 export async function materializeSkillSnapshot({ repoRoot, sha, validateFn }) {
   const dest = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-skill-'));
-  ensureCommitAvailable(repoRoot, sha);
-  const cmd = `git archive ${shQuote(sha)} -- .claude-plugin .skills | tar -x -C ${shQuote(toPosixPath(dest))}`;
-  const r = spawnSync(resolveBash(), ['-c', cmd], { cwd: repoRoot, encoding: 'utf8' });
-  if (r.status !== 0) {
-    throw new Error(`git archive | tar extraction failed (exit ${r.status}): ${r.stderr}`);
+  // Everything after mkdtempSync is wrapped so a failure at ANY step (missing commit, archive
+  // failure, validation failure) still removes `dest` before rethrowing -- previously a
+  // validation failure specifically left the temp directory behind forever, since nothing
+  // downstream of this function's own return value ever gets a chance to clean it up (the
+  // caller's cleanup() handle doesn't exist yet if THIS call is what throws).
+  try {
+    ensureCommitAvailable(repoRoot, sha);
+    const cmd = `git archive ${shQuote(sha)} -- .claude-plugin .skills | tar -x -C ${shQuote(toPosixPath(dest))}`;
+    const r = spawnSync(resolveBash(), ['-c', cmd], { cwd: repoRoot, encoding: 'utf8' });
+    if (r.status !== 0) {
+      throw new Error(`git archive | tar extraction failed (exit ${r.status}): ${r.stderr}`);
+    }
+    const result = await validateFn({ repoRoot: dest });
+    if (!result.ok) {
+      throw new Error(`Skill snapshot at ${sha} failed validation: ${result.summary}`);
+    }
+    return { snapshotDir: dest, validation: result };
+  } catch (err) {
+    rmSync(dest, { recursive: true, force: true });
+    throw err;
   }
-  const result = await validateFn({ repoRoot: dest });
-  if (!result.ok) {
-    throw new Error(`Skill snapshot at ${sha} failed validation: ${result.summary}`);
-  }
-  return { snapshotDir: dest, validation: result };
 }
 
 /**

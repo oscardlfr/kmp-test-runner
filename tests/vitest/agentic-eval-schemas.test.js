@@ -183,6 +183,118 @@ describe('validateRun', () => {
     expect(errors.some((e) => e.field === 'termination_reason')).toBe(true);
   });
 
+  describe('exit_code domain', () => {
+    it('accepts a null exit_code', () => {
+      const { errors } = validateRun(baseRun({ exit_code: null }));
+      expect(errors.filter((e) => e.field === 'exit_code')).toEqual([]);
+    });
+
+    it('accepts a nonzero integer exit_code', () => {
+      const { errors } = validateRun(baseRun({ exit_code: 7 }));
+      expect(errors.filter((e) => e.field === 'exit_code')).toEqual([]);
+    });
+
+    it('rejects a non-integer exit_code', () => {
+      const { errors } = validateRun(baseRun({ exit_code: 1.5 }));
+      expect(errors.some((e) => e.field === 'exit_code')).toBe(true);
+    });
+
+    it('rejects a string exit_code', () => {
+      const { errors } = validateRun(baseRun({ exit_code: '0' }));
+      expect(errors.some((e) => e.field === 'exit_code')).toBe(true);
+    });
+  });
+
+  describe('started_at/ended_at/wall_clock_ms domain', () => {
+    it('rejects a non-ISO started_at', () => {
+      const { errors } = validateRun(baseRun({ started_at: 'not-a-timestamp' }));
+      expect(errors.some((e) => e.field === 'started_at')).toBe(true);
+    });
+
+    it('rejects a non-ISO ended_at', () => {
+      const { errors } = validateRun(baseRun({ ended_at: 'not-a-timestamp' }));
+      expect(errors.some((e) => e.field === 'ended_at')).toBe(true);
+    });
+
+    it('rejects ended_at before started_at', () => {
+      const { errors } = validateRun(baseRun({ started_at: '2026-07-18T00:00:05.000Z', ended_at: '2026-07-18T00:00:00.000Z' }));
+      expect(errors.some((e) => e.field === 'ended_at')).toBe(true);
+    });
+
+    it('accepts ended_at equal to started_at', () => {
+      const { errors } = validateRun(baseRun({ started_at: '2026-07-18T00:00:00.000Z', ended_at: '2026-07-18T00:00:00.000Z' }));
+      expect(errors.filter((e) => e.field === 'ended_at')).toEqual([]);
+    });
+
+    it('rejects a null wall_clock_ms -- it is always computed from real timestamps, never legitimately absent', () => {
+      const { errors } = validateRun(baseRun({ wall_clock_ms: null }));
+      expect(errors.some((e) => e.field === 'wall_clock_ms')).toBe(true);
+    });
+
+    it('rejects a negative wall_clock_ms', () => {
+      const { errors } = validateRun(baseRun({ wall_clock_ms: -1 }));
+      expect(errors.some((e) => e.field === 'wall_clock_ms')).toBe(true);
+    });
+  });
+
+  describe('skill_invoked / skill_invocation_attempted correlation contract', () => {
+    it('rejects skill_invoked:true when skill_invocation_attempted is not true -- a confirmed invocation always implies an attempt', () => {
+      const { errors } = validateRun(baseRun({
+        skill_invocation_attempted: { value: false, reason: null },
+        skill_invoked: { value: true, reason: null },
+      }));
+      expect(errors.some((e) => e.field === 'skill_invoked')).toBe(true);
+    });
+
+    it('accepts skill_invoked:true when skill_invocation_attempted is also true', () => {
+      const { errors } = validateRun(baseRun({
+        skill_invocation_attempted: { value: true, reason: null },
+        skill_invoked: { value: true, reason: null },
+      }));
+      expect(errors.filter((e) => e.field === 'skill_invoked')).toEqual([]);
+    });
+
+    it('accepts an attempt that was not confirmed (attempted:true, invoked:false) -- the real "Unknown skill" shape', () => {
+      const { errors } = validateRun(baseRun({
+        skill_invocation_attempted: { value: true, reason: null },
+        skill_invoked: { value: false, reason: null },
+      }));
+      expect(errors.filter((e) => e.field === 'skill_invoked')).toEqual([]);
+    });
+  });
+
+  describe('policy_allowed_* array and errors[] domain', () => {
+    it('rejects a non-array policy_allowed_gradle_tasks', () => {
+      const { errors } = validateRun(baseRun({ policy_allowed_gradle_tasks: 'build' }));
+      expect(errors.some((e) => e.field === 'policy_allowed_gradle_tasks')).toBe(true);
+    });
+
+    it('rejects an empty-string entry in policy_allowed_kmptest_subcommands', () => {
+      const { errors } = validateRun(baseRun({ policy_allowed_kmptest_subcommands: ['doctor', ''] }));
+      expect(errors.some((e) => e.field === 'policy_allowed_kmptest_subcommands')).toBe(true);
+    });
+
+    it('accepts an empty array for either policy list -- "nothing in this category is allowed" is valid config', () => {
+      const { errors } = validateRun(baseRun({ policy_allowed_gradle_tasks: [], policy_allowed_kmptest_subcommands: [] }));
+      expect(errors.filter((e) => e.field === 'policy_allowed_gradle_tasks' || e.field === 'policy_allowed_kmptest_subcommands')).toEqual([]);
+    });
+
+    it('rejects a non-array errors field', () => {
+      const { errors } = validateRun(baseRun({ errors: 'oops' }));
+      expect(errors.some((e) => e.field === 'errors')).toBe(true);
+    });
+
+    it('rejects a string entry inside errors[]', () => {
+      const { errors } = validateRun(baseRun({ errors: ['plain string error'] }));
+      expect(errors.some((e) => e.field === 'errors')).toBe(true);
+    });
+
+    it('accepts a well-formed errors[] entry', () => {
+      const { errors } = validateRun(baseRun({ errors: [{ code: 'timeout', message: 'exceeded 180000ms' }] }));
+      expect(errors.filter((e) => e.field === 'errors')).toEqual([]);
+    });
+  });
+
   describe('nullable-metric value type/domain validation', () => {
     it('rejects a string value for a boolean-typed metric (e.g. skill_invoked: "false")', () => {
       const { errors } = validateRun(baseRun({ skill_invoked: { value: 'false', reason: null } }));

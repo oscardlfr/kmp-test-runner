@@ -137,6 +137,19 @@ export function validateRun(run) {
   if (!TERMINATION_REASON_VALUES.includes(run.termination_reason)) errors.push({ field: 'termination_reason', message: `must be one of ${TERMINATION_REASON_VALUES.map(String).join('|')}` });
   if (typeof run.terminated !== 'boolean') errors.push({ field: 'terminated', message: 'must be a boolean' });
   if (run.terminated === false && run.termination_reason !== null) errors.push({ field: 'termination_reason', message: 'must be null when terminated is false' });
+  if (run.exit_code !== null && !(Number.isInteger(run.exit_code))) {
+    errors.push({ field: 'exit_code', message: 'must be null or an integer' });
+  }
+  const startedAtMs = typeof run.started_at === 'string' ? Date.parse(run.started_at) : NaN;
+  const endedAtMs = typeof run.ended_at === 'string' ? Date.parse(run.ended_at) : NaN;
+  if (Number.isNaN(startedAtMs)) errors.push({ field: 'started_at', message: 'must be a valid ISO timestamp string' });
+  if (Number.isNaN(endedAtMs)) errors.push({ field: 'ended_at', message: 'must be a valid ISO timestamp string' });
+  if (!Number.isNaN(startedAtMs) && !Number.isNaN(endedAtMs) && endedAtMs < startedAtMs) {
+    errors.push({ field: 'ended_at', message: 'must not be before started_at' });
+  }
+  if (!(typeof run.wall_clock_ms === 'number' && Number.isFinite(run.wall_clock_ms) && run.wall_clock_ms >= 0)) {
+    errors.push({ field: 'wall_clock_ms', message: 'must be a non-negative finite number' });
+  }
   if (!PRIVACY_STATUS_VALUES.includes(run.privacy_status)) errors.push({ field: 'privacy_status', message: `must be one of ${PRIVACY_STATUS_VALUES.join('|')}` });
   if (typeof run.raw_capture_committed !== 'boolean') errors.push({ field: 'raw_capture_committed', message: 'must be a boolean' });
   if (run.raw_capture_committed !== false) errors.push({ field: 'raw_capture_committed', message: 'must always be false -- raw transcripts are never committed' });
@@ -156,18 +169,28 @@ export function validateRun(run) {
   validateEventRef(run.first_useful_signal_event, 'first_useful_signal_event', errors);
 
   if (run.hook_call_count != null && run.hook_deny_count != null) {
-    if (typeof run.hook_call_count !== 'number' || typeof run.hook_deny_count !== 'number') {
-      errors.push({ field: 'hook_call_count', message: 'hook_call_count/hook_deny_count must be numbers' });
+    if (!Number.isInteger(run.hook_call_count) || run.hook_call_count < 0
+      || !Number.isInteger(run.hook_deny_count) || run.hook_deny_count < 0) {
+      errors.push({ field: 'hook_call_count', message: 'hook_call_count/hook_deny_count must be non-negative integers' });
     } else if (run.hook_deny_count > run.hook_call_count) {
       errors.push({ field: 'hook_deny_count', message: 'cannot exceed hook_call_count' });
     }
   }
-  if (!Array.isArray(run.policy_allowed_gradle_tasks)) errors.push({ field: 'policy_allowed_gradle_tasks', message: 'must be an array' });
-  if (!Array.isArray(run.policy_allowed_kmptest_subcommands)) errors.push({ field: 'policy_allowed_kmptest_subcommands', message: 'must be an array' });
+  for (const field of ['policy_allowed_gradle_tasks', 'policy_allowed_kmptest_subcommands']) {
+    if (!Array.isArray(run[field])) {
+      errors.push({ field, message: 'must be an array' });
+    } else if (run[field].some((entry) => typeof entry !== 'string' || entry.length === 0)) {
+      errors.push({ field, message: 'every entry must be a non-empty string' });
+    }
+  }
   if (typeof run.policy_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(run.policy_sha256)) {
     errors.push({ field: 'policy_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
   }
-  if (!Array.isArray(run.errors)) errors.push({ field: 'errors', message: 'must be an array' });
+  if (!Array.isArray(run.errors)) {
+    errors.push({ field: 'errors', message: 'must be an array' });
+  } else if (run.errors.some((entry) => entry == null || typeof entry !== 'object' || Array.isArray(entry))) {
+    errors.push({ field: 'errors', message: 'every entry must be an object' });
+  }
 
   return { errors, warnings };
 }
@@ -216,9 +239,12 @@ const AGGREGATE_CANONICAL_FIELDS = ['schema', 'group_key', 'run_count', 'runs'];
 // keys, project_commit/model_resolved/platform/skill_source_sha/policy_sha256 guard against
 // silently averaging across a re-pinned scenario commit, a different resolved model, a
 // different host platform, a different skill snapshot, or a changed policy-hook version.
+// kmp_test_cli_source_sha/daemon_policy guard against silently averaging across a different
+// harness code version or a different Gradle daemon policy (e.g. one run's daemon left enabled).
 export const HARD_PARTITION_FIELDS = [
   'scenario_id', 'condition', 'family', 'run_kind', 'cache_state',
   'project_commit', 'model_resolved', 'platform', 'skill_source_sha', 'policy_sha256',
+  'kmp_test_cli_source_sha', 'daemon_policy',
 ];
 
 export function validateAggregateGroupKey(key) {

@@ -134,6 +134,18 @@ export function findBashToolUses(events) {
   return out;
 }
 
+/** Every Bash tool_use, each correlated with its OWN tool_result outcome (mirrors
+ * findSkillInvocation's attempted-vs-confirmed correlation, generalized to every Bash call).
+ * Needed to verify not just THAT commands ran, but that each one's own result was not an error,
+ * and exactly WHICH commands ran -- "the agent invoked Bash twice" alone doesn't prove it ran
+ * the two SPECIFIC expected commands, or that either one actually succeeded. */
+export function findBashToolUsesWithResults(events) {
+  return findBashToolUses(events).map((u) => {
+    const result = u.id != null ? findToolResultById(events, u.id, u.index + 1) : null;
+    return { ...u, command: u.input?.command ?? null, resultFound: result != null, resultIsError: result ? result.isError : null };
+  });
+}
+
 /** Proves every Bash call reached the policy hook (Round 6 evidence requirement) -- counts
  * hook_started/hook_response events and checks 1:1 correspondence against the actual Bash
  * tool_use count. This is more than an aggregate-count comparison (bashCallCount ===
@@ -167,6 +179,12 @@ export function countHookEvents(events) {
     hookCallCount: hookStarted.length,
     hookResponseCount: hookResponses.length,
     hookDenyCount: decisions.filter((d) => d === 'deny').length,
+    // Explicit "allow" count, not just "not deny" -- a hook_response whose `output` is
+    // unparseable JSON (or lacks hookSpecificOutput.permissionDecision) produces a null
+    // decision, counted in NEITHER hookDenyCount NOR this field. A caller checking only
+    // hookDenyCount===0 would silently accept a malformed/unrecognized decision as if it were
+    // an allow; requiring hookAllowCount===hookCallCount closes that gap.
+    hookAllowCount: decisions.filter((d) => d === 'allow').length,
     everyCallHooked: bashCallCount === hookStarted.length && bashCallCount === hookResponses.length && idsMatch,
   };
 }

@@ -1,10 +1,32 @@
 #!/usr/bin/env bash
 # tests/fixtures/fake-claude-no-tool-use/claude -- see fake-claude-success/claude for the
-# shared rationale. "no-tool-use" scenario: no tool calls at all -- calibration's
-# skill_invocation_attempted:true requirement must fail closed on this (the explicit-invocation
-# prompt is meant to force a genuine attempt; a run where nothing was even tried proves the
-# calibration setup isn't testing what it claims to).
-echo '{"type":"system","subtype":"init","cwd":"/fake","session_id":"fake-sess-0001","tools":["Bash","Skill"],"mcp_servers":[],"model":"claude-sonnet-5-fake-resolved","permissionMode":"dontAsk","plugins":[],"skills":[],"apiKeySource":"none","claude_code_version":"fake"}'
-echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"text","text":"no tools needed"}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+# shared rationale. "no-tool-use" scenario: the no-skill arm (A, no --plugin-dir) genuinely
+# attempts nothing at all; the current-skill arm (B, --plugin-dir present) genuinely attempts
+# AND succeeds, mirroring fake-claude-success's verified Skill-invocation shape exactly. This
+# isolates calibration's invocationOk failure to SPECIFICALLY "A never attempted" rather than
+# both arms trivially being identical/empty -- an earlier version of this fixture produced the
+# exact same (no tool use at all) transcript for both conditions, which only proved "if NEITHER
+# arm attempts, invocationOk fails," a weaker claim than what this scenario's name promises. The
+# explicit-invocation prompt is meant to force a genuine attempt in both arms; a no-skill run
+# where nothing was even tried proves the calibration setup isn't testing what it claims to.
+HAS_PLUGIN_DIR=0
+for arg in "$@"; do
+  if [ "$arg" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; fi
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGINS='[{"name":"kmp-test-runner","path":"/fake","source":"fake"}]'
+else
+  PLUGINS='[]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-0001\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"dontAsk\",\"plugins\":$PLUGINS,\"skills\":[],\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+else
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"text","text":"no tools needed"}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+fi
 echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"fake result text","permission_denials":[],"usage":{"input_tokens":2,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}'
 exit 0

@@ -142,11 +142,21 @@ export function spawnCondition(argv, { env, cwd, timeoutMs = 300000 }) {
     const taggedLines = [];
     let timedOut = false;
     let settled = false;
+    let killTimer = null;
+
+    function clearTimers() {
+      clearTimeout(timer);
+      // Without this, a killTimer scheduled 5s in the future keeps running even after the
+      // process has already closed on its own (e.g. SIGTERM succeeded quickly) -- 5 seconds
+      // later it fires SIGKILL/taskkill against a bare PID NUMBER the OS may have already
+      // reassigned to a completely unrelated process by then.
+      if (killTimer) { clearTimeout(killTimer); killTimer = null; }
+    }
 
     const timer = setTimeout(() => {
       timedOut = true;
       killTree(child.pid, 'SIGTERM');
-      const killTimer = setTimeout(() => killTree(child.pid, 'SIGKILL'), 5000);
+      killTimer = setTimeout(() => killTree(child.pid, 'SIGKILL'), 5000);
       killTimer.unref?.();
     }, timeoutMs);
     timer.unref?.();
@@ -167,7 +177,7 @@ export function spawnCondition(argv, { env, cwd, timeoutMs = 300000 }) {
     child.on('error', (err) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clearTimers();
       // terminated:true here (never false) -- the schema itself rejects terminated:false paired
       // with a non-null termination_reason, and a spawn-level failure (e.g. ENOENT) is exactly
       // an abnormal, non-'timeout' termination: the run never reached a normal conclusion.
@@ -186,13 +196,20 @@ export function spawnCondition(argv, { env, cwd, timeoutMs = 300000 }) {
     child.on('close', (code, signal) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clearTimers();
       if (buf) taggedLines.push({ line: buf, receiptNs: process.hrtime.bigint() });
+      // A merely nonzero exit code is NOT a "termination" -- the process ran to a normal
+      // conclusion and exit_code alone conveys the failure (terminated:false, reason:null, per
+      // the schema's own contract). terminated:true is reserved for OUR OWN timeout firing, or
+      // the process being killed by some signal we did not send ourselves (a real crash/external
+      // kill) -- previously ANY nonzero code produced terminated:false paired with
+      // termination_reason:'error', a combination the schema rejects.
       const terminated = timedOut || signal != null;
+      const terminationReason = timedOut ? 'timeout' : (signal != null ? 'error' : null);
       resolve({
         exitCode: code,
         terminated,
-        terminationReason: terminated ? 'timeout' : (code !== 0 ? 'error' : null),
+        terminationReason,
         rawStdout,
         stderr,
         taggedLines,

@@ -111,6 +111,26 @@ describe('aggregateRuns', () => {
     expect(groups[0].run_count).toBe(1);
     expect(errors.some((e) => e.run_id === 'r-broken')).toBe(true);
   });
+
+  // Regression guard for a real bucket-key construction bug: the original bucket key was
+  // HARD_PARTITION_FIELDS.map(f => run[f]).join(' '), which two DIFFERENT field-value tuples can
+  // produce identically whenever a space moves across a field boundary. project_commit/
+  // model_resolved are adjacent, free-text (non-enum) hard-partition fields, so shifting the
+  // space between 'abc def'/'claude-sonnet-5' and 'abc'/'def claude-sonnet-5' produces the exact
+  // same joined string under the old scheme while the two runs' actual field values differ. Under
+  // the old .join(' ') key, these collided into ONE bucket, and buildAggregateGroup's own
+  // per-field mixing check then correctly rejected that bucket as "mixed values" -- meaning two
+  // fully legitimate, independently groupable runs spuriously failed aggregation entirely (zero
+  // valid groups) purely because of where a space fell in unrelated data. The JSON.stringify key
+  // keeps them in two separate, independently valid, error-free groups.
+  it('does not collide two runs whose partition field values differ only in where a space falls', () => {
+    const runX = run({ run_id: 'r-x', project_commit: 'abc def', model_resolved: 'claude-sonnet-5' });
+    const runY = run({ run_id: 'r-y', project_commit: 'abc', model_resolved: 'def claude-sonnet-5' });
+    const { groups, errors } = aggregateRuns([runX, runY]);
+    expect(errors).toEqual([]);
+    expect(groups.length).toBe(2);
+    expect(groups.every((g) => g.run_count === 1)).toBe(true);
+  });
 });
 
 describe('summarizeGroup', () => {

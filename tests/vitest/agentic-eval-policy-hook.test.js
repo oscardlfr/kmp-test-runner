@@ -360,6 +360,19 @@ describe('path.relative-based containment algorithm -- never lowercase/prefix co
     expect(isWithinOrEqualCanonical('/tmp/fixture/sub', '/tmp/fixture')).toBe(false);
     expect(isWithinOrEqualCanonical('/tmp/fixture', '/tmp/fixture/sub/dir')).toBe(true);
   });
+  // With path.win32 explicitly injected (mirroring the path.posix-injected block above), these
+  // Windows-formatted-path assertions run for real on EVERY host, not just when process.platform
+  // happens to be 'win32' -- this repo's CI matrix does include a windows-latest job, so the
+  // guarded case above already gets real coverage there, but an explicit injection means the
+  // exact same assertions also hold on a contributor's Linux/macOS machine (isWithinOrEqualCanonical
+  // defaults its third parameter to the host's own `path` module, which parses backslashes as
+  // literal characters, not separators, on POSIX -- passing path.win32 explicitly bypasses that
+  // entirely, independent of the host).
+  it('with path.win32 explicitly injected, rejects traversal/parent/sibling shapes on ANY host', () => {
+    expect(isWithinOrEqualCanonical('C:\\tmp\\fixture', 'C:\\tmp\\fixture-evil\\sub', path.win32)).toBe(false);
+    expect(isWithinOrEqualCanonical('C:\\tmp\\fixture\\sub', 'C:\\tmp\\fixture', path.win32)).toBe(false);
+    expect(isWithinOrEqualCanonical('C:\\tmp\\fixture', 'C:\\tmp\\fixture\\sub\\dir', path.win32)).toBe(true);
+  });
 });
 
 describe('parsePolicyList (unit-level)', () => {

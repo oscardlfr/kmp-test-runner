@@ -21,18 +21,19 @@
 // policy_sha256 match against the CURRENT policy-hook.mjs, the privacy fail-closed check
 // (assertCleanOrThrow), and the run-kind's hard acceptance gate all pass -- see
 // finalizeAndWriteRecords(). Any failure writes nothing and reports why.
-import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 
 import { CURRENT_RUN_SCHEMA, validateRun, validateScenario } from './schemas.mjs';
 import { buildEvalEnv } from './env-builder.mjs';
 import { buildPathShim } from './path-shim.mjs';
 import { materializeSkillSnapshot, materializeCalibrationProject, materializeScenarioProject, materializeGradleUserHome, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition } from './condition-launcher.mjs';
-import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findBashToolUses, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
+import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findBashToolUses, findBashToolUsesWithResults, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
 import { aggregateRuns } from './aggregate.mjs';
 import { assertCleanOrThrow } from './privacy.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
@@ -43,7 +44,13 @@ import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
 const PINNED_SKILL_SHA = 'c5c0661852f7c9da145ef56892048e706216a6ce';
-const RUNS_ROOT = join(REPO_ROOT, 'tools', 'runs');
+// KMP_EVAL_RUNS_ROOT override exists specifically so tests never write to (or, worse, clean up
+// inside) the real committable tools/runs/ directory -- an earlier version of the integration
+// test suite listed and deleted files directly under the real RUNS_ROOT, including an
+// unconditional recursive delete of the whole raw/ subdirectory in its own afterEach. Redirecting
+// this makes that class of bug structurally impossible rather than relying on the test being
+// careful.
+const RUNS_ROOT = process.env.KMP_EVAL_RUNS_ROOT || join(REPO_ROOT, 'tools', 'runs');
 
 const HELP = `tools/agentic-eval/cli.mjs -- reproducible skill evaluation harness
 
@@ -62,12 +69,31 @@ harness, not a benchmark -- see tools/agentic-eval/README.md. No evidence is com
 schema, policy-hash freshness, privacy, and the run-kind's hard acceptance gate all pass.
 `;
 
+/**
+ * Every `--flag` here (other than --help/-h) requires a value. A flag with no following
+ * argument, or immediately followed by another `--flag` (never consumed as that flag's value),
+ * is recorded in `errors` rather than silently assigned `undefined` -- an undefined value
+ * previously fell through `?? null` fallbacks unnoticed, so e.g. a trailing
+ * `--private-patterns-file` with nothing after it silently disabled private-pattern redaction
+ * and reported the run as 'public' instead of failing loudly. Callers must check
+ * `errors.length > 0` before doing anything else.
+ */
 function parseArgs(argv) {
-  const out = { _: [] };
+  const out = { _: [], errors: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--help' || a === '-h') { out.help = true; continue; }
-    if (a.startsWith('--')) { out[a.slice(2)] = argv[i + 1]; i++; continue; }
+    if (a.startsWith('--')) {
+      const name = a.slice(2);
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith('--')) {
+        out.errors.push(`--${name} requires a value`);
+        continue;
+      }
+      out[name] = next;
+      i++;
+      continue;
+    }
     out._.push(a);
   }
   return out;
@@ -85,6 +111,47 @@ function resolvePlatform() {
   return 'not-recorded';
 }
 
+let cachedHarnessProvenance = null;
+/**
+ * Resolves this HARNESS's own identity -- the kmp-test-runner repo commit it's actually running
+ * from, and the kmp-test CLI version/path it pins via the shim. Previously all three fields
+ * (kmp_test_cli_version, kmp_test_cli_source_sha, resolved_kmp_test_executable_path) were always
+ * null, and `repo_commit` was populated with the PINNED SKILL snapshot's SHA instead of the
+ * harness's own actual commit -- silently correct only when the checkout happens to be sitting
+ * exactly at PINNED_SKILL_SHA, wrong the moment develop moves forward and the harness is re-run
+ * from a newer checkout. No `bash -c` needed here: `git rev-parse HEAD` takes no path-shaped
+ * argument in its command string, so it doesn't hit the Windows path-mangling issue that
+ * motivates routing other git calls through resolveBash() elsewhere in this harness. Cached per
+ * process (the repo doesn't change mid-run); pass {fresh:true} to force re-resolution (test-only).
+ */
+function resolveHarnessProvenance({ fresh = false } = {}) {
+  if (cachedHarnessProvenance != null && !fresh) return cachedHarnessProvenance;
+  let repoCommit = null;
+  const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' });
+  if (r.status === 0) repoCommit = r.stdout.trim();
+  let cliVersion = null;
+  try {
+    cliVersion = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version ?? null;
+  } catch {
+    cliVersion = null;
+  }
+  cachedHarnessProvenance = {
+    repoCommit,
+    cliVersion,
+    resolvedExecutablePath: join(REPO_ROOT, 'bin', 'kmp-test.js'),
+  };
+  return cachedHarnessProvenance;
+}
+
+/** True only if EVERY expected command pattern matches some Bash tool_use whose OWN correlated
+ * tool_result was found and was not an error -- "the agent called Bash twice" alone does not
+ * prove it ran the two SPECIFIC expected commands, or that either one actually succeeded. */
+function verifyExactCommandsSucceeded(bashResults, expectedPatterns) {
+  return expectedPatterns.every((pattern) =>
+    bashResults.some((b) => pattern.test(b.command ?? '') && b.resultFound && b.resultIsError === false));
+}
+const SMOKE_EXPECTED_COMMANDS = [/kmp-test\s+doctor\b/, /kmp-test\s+describe\b/];
+
 /**
  * Runs both conditions of a pair and returns everything buildRunRecord needs, plus a cleanup()
  * function the caller MUST invoke from a finally block -- removes every temp directory this
@@ -100,66 +167,16 @@ function resolvePlatform() {
  * @param {Function} [cleanupFixture] - (fixtureDir) => void|Promise<void>, called once at the end.
  */
 async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpTestSubcommands, materializeFixture, cleanupFixture, timeoutMs }) {
-  const settingsPath = buildPolicySettingsFile();
-  const { shimDir } = buildPathShim({ worktreeRoot: REPO_ROOT });
-  const { snapshotDir } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runPluginValidator });
-  // materializeGradleUserHome creates TWO temp directories (gradleUserHome itself, plus its own
-  // internal snapshotDir it resets from) -- gradleSnapshotDir here is deliberately distinctly
-  // named from the skill snapshot's `snapshotDir` above; conflating the two previously meant the
-  // Gradle module's own snapshot directory was never captured at all and leaked on every run
-  // (caught by a real cleanup-verification test, not asserted).
-  const { gradleUserHome, snapshotDir: gradleSnapshotDir, resetToSnapshot, daemonPolicy } = materializeGradleUserHome({});
-  const kmpEvalTempHome = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-home-'));
-
-  const env = buildSharedEnv({
-    shimDir, gradleUserHome, kmpEvalTempHome,
-    expectedFixtureRoot: null, // set per-condition below once the fixture dir is materialized
-    allowedGradleTasks, allowedKmpTestSubcommands,
-  });
-  const base = buildBaseArgv({ prompt, model, settingsPath });
-
-  let fixtureDir;
-  const runOneCondition = async (condition) => {
-    const materialized = materializeFixture(fixtureDir);
-    fixtureDir = materialized.fixtureDir;
-    resetToSnapshot();
-    // KMP_EVAL_TEMP_HOME is reused (same path) across both conditions of a pair like
-    // fixtureDir/GRADLE_USER_HOME -- wiped back to empty before EACH condition's run, so
-    // whatever the first-run condition wrote under ~/.kmp-test/ can never leak into the second.
-    rmSync(kmpEvalTempHome, { recursive: true, force: true });
-    mkdirSync(kmpEvalTempHome, { recursive: true });
-    const conditionEnv = { ...env, KMP_EVAL_EXPECTED_FIXTURE_ROOT: realpath(fixtureDir) };
-    const argv = buildConditionArgv(base, condition, condition === 'current-skill' ? snapshotDir : null);
-    const startedAt = new Date();
-    const spawnResult = await spawnCondition(argv, { env: conditionEnv, cwd: fixtureDir, timeoutMs });
-    const endedAt = new Date();
-    const { events, malformedLines } = parseStreamJsonl(spawnResult.rawStdout, { taggedLines: spawnResult.taggedLines });
-    const init = findInitEvent(events);
-    const result = findResultEvent(events);
-    const invocation = findSkillInvocation(events, 'kmp-test-runner');
-    const hookStats = countHookEvents(events);
-    const byteMetrics = computeByteMetrics(spawnResult.rawStdout, events);
-
-    return {
-      condition, argv, env: conditionEnv, fixtureDir, events, malformedLines, init, result,
-      invocation, hookStats, byteMetrics, spawnResult, startedAt, endedAt,
-    };
-  };
-
-  const runB = await runOneCondition('current-skill');
-  const runA = await runOneCondition('no-skill');
-
-  async function cleanup() {
-    const steps = [
-      () => rmSync(shimDir, { recursive: true, force: true }),
-      () => rmSync(snapshotDir, { recursive: true, force: true }),
-      () => rmSync(gradleUserHome, { recursive: true, force: true }),
-      () => rmSync(gradleSnapshotDir, { recursive: true, force: true }),
-      () => rmSync(kmpEvalTempHome, { recursive: true, force: true }),
-      () => rmSync(dirname(settingsPath), { recursive: true, force: true }),
-      () => (cleanupFixture ? cleanupFixture(fixtureDir) : undefined),
-    ];
-    for (const step of steps) {
+  // Cleanup steps accumulate AS EACH RESOURCE IS CREATED, not all at once at the end -- a
+  // failure partway through acquisition (materialization throwing, or either condition's own
+  // run throwing) is caught here and runs whatever steps have been queued SO FAR before
+  // rethrowing. Previously, the returned cleanup() was the ONLY cleanup mechanism, but a caller
+  // only receives it once this whole function returns successfully -- if runConditionPair
+  // itself threw, `await runConditionPair(...)` never resolved to anything the caller's own
+  // try/finally could invoke cleanup() on, leaking every resource created up to that point.
+  const cleanupSteps = [];
+  async function runCleanup() {
+    for (const step of cleanupSteps.splice(0)) {
       try {
         await step();
       } catch (err) {
@@ -168,12 +185,80 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     }
   }
 
-  return { runA, runB, snapshotDir, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, cleanup };
+  try {
+    const settingsPath = buildPolicySettingsFile();
+    cleanupSteps.push(() => rmSync(dirname(settingsPath), { recursive: true, force: true }));
+    const { shimDir } = buildPathShim({ worktreeRoot: REPO_ROOT });
+    cleanupSteps.push(() => rmSync(shimDir, { recursive: true, force: true }));
+    const { snapshotDir } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runPluginValidator });
+    cleanupSteps.push(() => rmSync(snapshotDir, { recursive: true, force: true }));
+    // materializeGradleUserHome creates TWO temp directories (gradleUserHome itself, plus its
+    // own internal snapshotDir it resets from) -- gradleSnapshotDir here is deliberately
+    // distinctly named from the skill snapshot's `snapshotDir` above; conflating the two
+    // previously meant the Gradle module's own snapshot directory was never captured at all and
+    // leaked on every run (caught by a real cleanup-verification test, not asserted).
+    const { gradleUserHome, snapshotDir: gradleSnapshotDir, resetToSnapshot, daemonPolicy } = materializeGradleUserHome({});
+    cleanupSteps.push(() => rmSync(gradleUserHome, { recursive: true, force: true }));
+    cleanupSteps.push(() => rmSync(gradleSnapshotDir, { recursive: true, force: true }));
+    const kmpEvalTempHome = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-home-'));
+    cleanupSteps.push(() => rmSync(kmpEvalTempHome, { recursive: true, force: true }));
+
+    const env = buildSharedEnv({
+      shimDir, gradleUserHome, kmpEvalTempHome,
+      expectedFixtureRoot: null, // set per-condition below once the fixture dir is materialized
+      allowedGradleTasks, allowedKmpTestSubcommands,
+    });
+    const base = buildBaseArgv({ prompt, model, settingsPath });
+
+    let fixtureDir;
+    let fixtureCleanupQueued = false;
+    const runOneCondition = async (condition) => {
+      const materialized = materializeFixture(fixtureDir);
+      fixtureDir = materialized.fixtureDir;
+      if (!fixtureCleanupQueued && cleanupFixture) {
+        fixtureCleanupQueued = true;
+        cleanupSteps.push(() => cleanupFixture(fixtureDir));
+      }
+      resetToSnapshot();
+      // KMP_EVAL_TEMP_HOME is reused (same path) across both conditions of a pair like
+      // fixtureDir/GRADLE_USER_HOME -- wiped back to empty before EACH condition's run, so
+      // whatever the first-run condition wrote under ~/.kmp-test/ can never leak into the
+      // second.
+      rmSync(kmpEvalTempHome, { recursive: true, force: true });
+      mkdirSync(kmpEvalTempHome, { recursive: true });
+      const conditionEnv = { ...env, KMP_EVAL_EXPECTED_FIXTURE_ROOT: realpath(fixtureDir) };
+      const argv = buildConditionArgv(base, condition, condition === 'current-skill' ? snapshotDir : null);
+      const startedAt = new Date();
+      const spawnResult = await spawnCondition(argv, { env: conditionEnv, cwd: fixtureDir, timeoutMs });
+      const endedAt = new Date();
+      const { events, malformedLines } = parseStreamJsonl(spawnResult.rawStdout, { taggedLines: spawnResult.taggedLines });
+      const init = findInitEvent(events);
+      const result = findResultEvent(events);
+      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      const hookStats = countHookEvents(events);
+      const byteMetrics = computeByteMetrics(spawnResult.rawStdout, events);
+      const bashResults = findBashToolUsesWithResults(events);
+
+      return {
+        condition, argv, env: conditionEnv, fixtureDir, events, malformedLines, init, result,
+        invocation, hookStats, byteMetrics, bashResults, spawnResult, startedAt, endedAt,
+      };
+    };
+
+    const runB = await runOneCondition('current-skill');
+    const runA = await runOneCondition('no-skill');
+
+    return { runA, runB, snapshotDir, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup };
+  } catch (err) {
+    await runCleanup();
+    throw err;
+  }
 }
 
 function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skillSourceSha, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias = 'calibration-project', projectCommit = null, family = 'trigger-only', modelRequested = 'claude-sonnet-5', privacyStatus = 'public' }) {
   const { init, result, invocation, hookStats, byteMetrics, startedAt, endedAt } = conditionResult;
   const notApplicableReason = `${runKind} run -- no scenario grader applies`;
+  const provenance = resolveHarnessProvenance();
   return {
     schema: CURRENT_RUN_SCHEMA,
     run_id: `${runKind}-${condition}-${randomUUID().slice(0, 8)}`,
@@ -183,13 +268,13 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     query_id: null,
     condition,
     skill_source_sha: condition === 'current-skill' ? skillSourceSha : null,
-    kmp_test_cli_version: null,
-    kmp_test_cli_source_sha: null,
-    resolved_kmp_test_executable_path: null,
+    kmp_test_cli_version: provenance.cliVersion,
+    kmp_test_cli_source_sha: provenance.repoCommit,
+    resolved_kmp_test_executable_path: provenance.resolvedExecutablePath,
     model_requested: modelRequested,
     model_resolved: init?.model ?? null,
     session_id_observed: init?.session_id ?? null,
-    repo_commit: skillSourceSha,
+    repo_commit: provenance.repoCommit,
     project_alias: projectAlias,
     project_commit: projectCommit,
     platform: resolvePlatform(),
@@ -247,15 +332,30 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
  * agentic-eval raw-transcript glob, matching what each record's raw_capture_location field
  * claims. Never redacts/sanitizes the raw file itself; it simply never leaves this local,
  * gitignored destination.
+ *
+ * Writes to `<target>.tmp-<random>` first and renameSync()s each into place only after every
+ * write has succeeded -- these four writes were previously sequential, non-atomic direct writes,
+ * so a failure partway through (disk full, permission error) could leave a PARTIAL pair on disk
+ * (e.g. recordA.json written, recordB.json missing). renameSync is atomic on the same
+ * filesystem/volume, which every path here is (all under RUNS_ROOT).
  */
 function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB) {
   const outDir = join(RUNS_ROOT, `agentic-eval-${runKind}`);
   const rawDir = join(outDir, 'raw');
   mkdirSync(rawDir, { recursive: true });
-  writeFileSync(join(outDir, `${recordA.run_id}.json`), redactedTextA);
-  writeFileSync(join(outDir, `${recordB.run_id}.json`), redactedTextB);
-  writeFileSync(join(rawDir, `${recordA.run_id}.jsonl`), runA.spawnResult.rawStdout);
-  writeFileSync(join(rawDir, `${recordB.run_id}.jsonl`), runB.spawnResult.rawStdout);
+  const tmpSuffix = `.tmp-${randomUUID().slice(0, 8)}`;
+  const targets = [
+    [join(outDir, `${recordA.run_id}.json`), redactedTextA],
+    [join(outDir, `${recordB.run_id}.json`), redactedTextB],
+    [join(rawDir, `${recordA.run_id}.jsonl`), runA.spawnResult.rawStdout],
+    [join(rawDir, `${recordB.run_id}.jsonl`), runB.spawnResult.rawStdout],
+  ];
+  const tmpPaths = targets.map(([target, content]) => {
+    const tmpPath = target + tmpSuffix;
+    writeFileSync(tmpPath, content);
+    return tmpPath;
+  });
+  targets.forEach(([target], i) => renameSync(tmpPaths[i], target));
   return outDir;
 }
 
@@ -295,7 +395,33 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
     return { ok: false, reason: gate.reason };
   }
   const outDir = writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedA, redactedB);
-  return { ok: true, reason: null, outDir };
+  // Return the REDACTED objects (parsed back from the same text that was actually written), not
+  // the original recordA/recordB -- a caller printing the originals to stdout would bypass the
+  // whole privacy check: redaction only ever protected the FILE, never the terminal.
+  return { ok: true, reason: null, outDir, redactedRecordA: JSON.parse(redactedA), redactedRecordB: JSON.parse(redactedB) };
+}
+
+/**
+ * Calibration's hard gate, extracted as a named, independently-testable function (not an inline
+ * closure) specifically so each sub-check can be unit-tested in isolation with precise synthetic
+ * inputs -- constructing a real subprocess fixture that fails EXACTLY one of these and none of
+ * the others is fragile (e.g. it's not actually verified anywhere what a denied command's own
+ * tool_result looks like on a real transcript, so fabricating one for a fixture risks encoding a
+ * guess as if it were confirmed fact). Every sub-check is reported by name in the failure reason
+ * (not just an aggregate boolean).
+ */
+function calibrationHardGate(a, b, runAResult, runBResult) {
+  const invocationOk = a.skill_available.value === false && b.skill_available.value === true
+    && a.skill_invocation_attempted.value === true && b.skill_invocation_attempted.value === true
+    && a.skill_invoked.value === false && b.skill_invoked.value === true;
+  const processOk = a.terminated === false && b.terminated === false && a.exit_code === 0 && b.exit_code === 0;
+  const resultOk = runAResult.result?.is_error === false && runBResult.result?.is_error === false;
+  const hookAccountingOk = runAResult.hookStats.everyCallHooked === true && runBResult.hookStats.everyCallHooked === true;
+  const ok = invocationOk && processOk && resultOk && hookAccountingOk;
+  return {
+    ok,
+    reason: ok ? null : `calibration hard gate failed -- invocationOk:${invocationOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked}})`,
+  };
 }
 
 async function cmdCalibrate(args) {
@@ -320,30 +446,52 @@ async function cmdCalibrate(args) {
     const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
 
     // Calibration's job is narrowly to prove invocation MECHANICS under an explicit-invocation
-    // prompt: both conditions must show a genuine attempt (proving the prompt actually drives
-    // the model to try), and CONFIRMED invocation must track availability exactly -- A attempts
-    // but fails (no skill registered), B attempts and succeeds.
+    // prompt -- see calibrationHardGate's own doc comment for why this is a named function.
     const result = await finalizeAndWriteRecords({
       runKind: 'calibration', recordA, recordB, runA, runB, privatePatternsFile,
-      hardGateFn: (a, b) => {
-        const ok = a.skill_available.value === false && b.skill_available.value === true
-          && a.skill_invocation_attempted.value === true && b.skill_invocation_attempted.value === true
-          && a.skill_invoked.value === false && b.skill_invoked.value === true;
-        return {
-          ok,
-          reason: ok ? null : `calibration hard gate failed -- expected A:{available:false,attempted:true,invoked:false} B:{available:true,attempted:true,invoked:true}, got A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value}}`,
-        };
-      },
+      hardGateFn: calibrationHardGate,
     });
     if (!result.ok) {
       console.error(`CALIBRATION FAILED: ${result.reason}`);
       return 1;
     }
-    console.log(JSON.stringify({ recordA, recordB, evidenceDir: result.outDir }, null, 2));
+    console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.outDir }, null, 2));
     return 0;
   } finally {
     await conditionPair.cleanup();
   }
+}
+
+/**
+ * Smoke's hard gate, extracted as a named, independently-testable function for the same reason
+ * as calibrationHardGate. Requires EQUIVALENT REAL WORK in both arms -- not just skill
+ * availability. skill_invoked is deliberately NOT required (whether the skill triggers
+ * naturally on this prompt is an open question for a future corpus-probe run, not something
+ * smoke should presuppose).
+ */
+function smokeHardGate(a, b, runAResult, runBResult) {
+  const availabilityOk = a.skill_available.value === false && b.skill_available.value === true;
+  const processOk = a.terminated === false && b.terminated === false && a.exit_code === 0 && b.exit_code === 0;
+  const resultOk = runAResult.result?.is_error === false && runBResult.result?.is_error === false;
+  const hookAccountingOk = runAResult.hookStats.everyCallHooked === true && runBResult.hookStats.everyCallHooked === true;
+  // hook_call_count>=1 proves the agent actually tried real commands; hook_deny_count===0 proves
+  // every command it tried was inside the approved grammar; hookAllowCount matching
+  // hook_call_count proves every decision was explicitly "allow", not merely "not deny" (a
+  // hook_response with unparseable `output` JSON produces neither an allow nor a deny decision --
+  // hook_deny_count===0 alone would silently accept that).
+  const realWorkOk = a.hook_call_count >= 1 && a.hook_deny_count === 0 && runAResult.hookStats.hookAllowCount === a.hook_call_count
+    && b.hook_call_count >= 1 && b.hook_deny_count === 0 && runBResult.hookStats.hookAllowCount === b.hook_call_count;
+  // "the agent called Bash N times" alone doesn't prove it ran the exact two expected commands
+  // (it could have run one of them twice, or one expected plus one unrelated allowed command),
+  // or that either one's own result was actually successful.
+  const exactCommandsOk = verifyExactCommandsSucceeded(runAResult.bashResults, SMOKE_EXPECTED_COMMANDS)
+    && verifyExactCommandsSucceeded(runBResult.bashResults, SMOKE_EXPECTED_COMMANDS);
+  const cleanTranscriptOk = runAResult.malformedLines.length === 0 && runBResult.malformedLines.length === 0;
+  const ok = availabilityOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk;
+  return {
+    ok,
+    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount})`,
+  };
 }
 
 async function cmdSmoke(args) {
@@ -383,31 +531,20 @@ async function cmdSmoke(args) {
     const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
 
     // Smoke's gate requires EQUIVALENT REAL WORK in both arms -- not just skill availability.
-    // hook_call_count>=1 proves the agent actually tried real commands; hook_deny_count===0
-    // proves every command it tried was inside the approved grammar (i.e. genuine, useful
-    // diagnostic work happened, not "everything got blocked"); malformedLines===0 proves a
-    // clean, parseable transcript. skill_invoked is deliberately NOT required here (whether the
-    // skill triggers naturally on this prompt is exactly the open question a future
-    // corpus-probe run would investigate, not something smoke should presuppose).
+    // Every sub-check is reported by name in the failure reason (not just an aggregate boolean)
+    // specifically so a negative-fixture test can assert WHICH check failed, proving the fixture
+    // isolates the ONE failure mode it claims to. skill_invoked is deliberately NOT required
+    // here (whether the skill triggers naturally on this prompt is exactly the open question a
+    // future corpus-probe run would investigate, not something smoke should presuppose).
     const result = await finalizeAndWriteRecords({
       runKind: 'smoke', recordA, recordB, runA, runB, privatePatternsFile,
-      hardGateFn: (a, b, runAResult, runBResult) => {
-        const availabilityOk = a.skill_available.value === false && b.skill_available.value === true;
-        const realWorkOk = a.hook_call_count >= 1 && a.hook_deny_count === 0
-          && b.hook_call_count >= 1 && b.hook_deny_count === 0;
-        const cleanTranscriptOk = runAResult.malformedLines.length === 0 && runBResult.malformedLines.length === 0;
-        const ok = availabilityOk && realWorkOk && cleanTranscriptOk;
-        return {
-          ok,
-          reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} realWorkOk:${realWorkOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count}) cleanTranscriptOk:${cleanTranscriptOk}`,
-        };
-      },
+      hardGateFn: smokeHardGate,
     });
     if (!result.ok) {
       console.error(`SMOKE FAILED: ${result.reason}`);
       return 1;
     }
-    console.log(JSON.stringify({ recordA, recordB, evidenceDir: result.outDir }, null, 2));
+    console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.outDir }, null, 2));
     return 0;
   } finally {
     await conditionPair.cleanup();
@@ -475,6 +612,10 @@ function cmdValidate(args) {
 async function main() {
   const argv = process.argv.slice(2);
   const args = parseArgs(argv);
+  if (args.errors.length > 0) {
+    process.stderr.write(`Argument error: ${args.errors.join('; ')}\n\n${HELP}`);
+    return 1;
+  }
   const sub = args._[0];
 
   if (args.help || sub == null) {
@@ -501,4 +642,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords };
+export { parseArgs, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, calibrationHardGate, smokeHardGate, verifyExactCommandsSucceeded, resolveHarnessProvenance, SMOKE_EXPECTED_COMMANDS };

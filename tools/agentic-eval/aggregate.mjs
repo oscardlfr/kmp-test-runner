@@ -35,7 +35,11 @@ export function aggregateRuns(runs) {
   }
   const buckets = new Map();
   for (const run of validRuns) {
-    const key = HARD_PARTITION_FIELDS.map((f) => run[f]).join(' ');
+    // JSON.stringify of the field-value ARRAY, not .join(' ') -- a plain space-join lets two
+    // runs whose field values differ only in WHERE a space falls collide into the same bucket
+    // (e.g. project_alias:'a b', platform:'c' vs. project_alias:'a', platform:'b c' both join to
+    // "a b c"). JSON encoding unambiguously delimits each element regardless of its own content.
+    const key = JSON.stringify(HARD_PARTITION_FIELDS.map((f) => run[f]));
     if (!buckets.has(key)) buckets.set(key, []);
     buckets.get(key).push(run);
   }

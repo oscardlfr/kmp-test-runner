@@ -3,7 +3,7 @@
 // *this* repo at a known commit -- local, no network, no Claude, matching the existing repo
 // idiom of real subprocess tests over mocking.
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -50,6 +50,34 @@ describe('materializeSkillSnapshot', () => {
     expect(validation.ok).toBe(true);
     expect(existsSync(path.join(snapshotDir, '.claude-plugin', 'plugin.json'))).toBe(true);
     expect(existsSync(path.join(snapshotDir, '.skills', 'kmp-test-runner', 'SKILL.md'))).toBe(true);
+  });
+
+  it('cleans up its temp directory when validation fails partway through (not just on an invalid SHA)', async () => {
+    // Regression coverage for a real leak found by an independent review pass: a failure
+    // AFTER mkdtempSync (specifically, a validation failure against a perfectly valid archive)
+    // previously left the temp directory behind forever, since the function had no try/catch of
+    // its own. Redirects TEMP/TMP/TMPDIR to a dedicated, empty, test-exclusive directory (os.
+    // tmpdir() re-reads these per call) so "is it empty afterward" is exact, not a fragile
+    // global count under concurrent test-file execution.
+    const isolatedTmp = mkdtempSync(path.join(os.tmpdir(), 'aemat-skill-cleanup-'));
+    const originalEnv = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
+    process.env.TEMP = isolatedTmp;
+    process.env.TMP = isolatedTmp;
+    process.env.TMPDIR = isolatedTmp;
+    try {
+      const forcedFailValidate = async () => ({ ok: false, summary: 'forced failure for this test' });
+      await expect(
+        materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: KNOWN_SHA, validateFn: forcedFailValidate }),
+      ).rejects.toThrow(/failed validation/);
+      expect(existsSync(isolatedTmp)).toBe(true); // the isolated root itself must survive
+      expect(readdirSync(isolatedTmp)).toEqual([]); // but nothing was left inside it
+    } finally {
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(isolatedTmp, { recursive: true, force: true });
+    }
   });
 
   it('throws if the materialize+validate pipeline is pointed at an invalid SHA', async () => {
