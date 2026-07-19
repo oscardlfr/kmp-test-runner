@@ -22,13 +22,13 @@ metadata:
 
 ## Quick start
 
-If `kmp-test` is installed and the project has `gradlew`, run:
+If `kmp-test` is installed and the project has `gradlew`, run the subcommand matching what the user asked for, e.g.:
 
 ```bash
-kmp-test parallel --json
+kmp-test parallel --json --project-root .
 ```
 
-Parse the JSON envelope (see [`references/cli/envelope-schema.md`](references/cli/envelope-schema.md)) for module-level results and failure details.
+Parse the JSON envelope (see [`references/cli/envelope-schema.md`](references/cli/envelope-schema.md)) for module-level results and failure details. If `exit_code` is `3`, run `kmp-test doctor --json --project-root .` to localize the environment problem.
 
 ## Prerequisites
 
@@ -40,27 +40,9 @@ Parse the JSON envelope (see [`references/cli/envelope-schema.md`](references/cl
 
 ## Environment detection
 
-Before running INSTRUMENTED tests, branch on Android CLI presence. The skill ships a dedicated detector (also useful as a stable executable for agent invocation):
+Optional — not required to run tests. `kmp-test doctor --json --project-root .` (see Steps below) already reports ADB availability, and `kmp-test android --json --project-root .` works without any further environment probing. The `android` CLI adds optional emulator / screen-capture / UI-debug tooling on top of the JSON envelope; if useful, detect and use it via the branch-specific reference docs below — that detection command is not part of the canonical, policy-evaluated agent workflow.
 
-```bash
-bash .skills/kmp-test-runner/scripts/detect-env.sh
-# → prints HAS_ANDROID_CLI or NO_ANDROID_CLI; exits 0 either way
-```
-
-```powershell
-pwsh .skills/kmp-test-runner/scripts/detect-env.ps1
-```
-
-Inline equivalent (fallback for agents that can't execute scripts):
-
-```bash
-which android && android info >/dev/null 2>&1 && echo "HAS_ANDROID_CLI" || echo "NO_ANDROID_CLI"
-```
-
-If `HAS_ANDROID_CLI`, use `android emulator` / `android screen capture` / `android layout` for enhanced workflows.
-If `NO_ANDROID_CLI`, fall back to ADB directly (`adb devices`, `adb shell screencap`, `adb shell uiautomator dump`).
-
-Both paths produce the same `kmp-test --json` envelope. The Android CLI verbs only enrich the agent's troubleshooting surface, not the test dispatch itself.
+Both branches produce the same `kmp-test --json` envelope; the Android CLI verbs only enrich the agent's troubleshooting surface, not the test dispatch itself.
 
 Per-branch deep-dives:
 - HAS_ANDROID_CLI → [`references/workflows/instrumented/with-android-cli.md`](references/workflows/instrumented/with-android-cli.md) + [`references/troubleshooting/instrumented-setup-failed/with-android-cli.md`](references/troubleshooting/instrumented-setup-failed/with-android-cli.md)
@@ -72,28 +54,30 @@ Two `android` CLI subcommands superficially overlap with `kmp-test`: `android de
 
 ## Steps
 
-### 1. Diagnose the environment
-
-```bash
-kmp-test doctor
-```
-
-Confirms gradlew, JDK, ADB (optional), Kotlin/AGP versions, project shape. Exits non-zero with `errors[].code` if anything blocks running tests.
-
-### 2. Run the relevant test type
+### 1. Run the relevant test type
 
 Use the right subcommand based on what the user asked for:
 
 | User intent | Subcommand | Notes |
 |-------------|-----------|-------|
-| "run tests" / "run unit tests" / "test this" | `kmp-test parallel --json` | Dispatches `<module>:test`, `<module>:jvmTest`, `<module>:desktopTest` across modules in parallel |
-| "run instrumented tests" / "run on device" | `kmp-test android --json` | Dispatches `<module>:connectedAndroidTest`. Requires a connected device or emulator |
-| "run coverage" / "with coverage" | `kmp-test coverage --json` | Aggregates kover/jacoco XML across all modules with coverage plugins applied |
-| "run benchmarks" | `kmp-test benchmark --json` | Dispatches macrobenchmark/microbenchmark tasks |
+| "run tests" / "run unit tests" / "test this" | `kmp-test parallel --json --project-root .` | Dispatches `<module>:test`, `<module>:jvmTest`, `<module>:desktopTest` across modules in parallel |
+| "run instrumented tests" / "run on device" | `kmp-test android --json --project-root .` | Dispatches `<module>:connectedAndroidTest`. Requires a connected device or emulator |
+| "run coverage" / "with coverage" | `kmp-test coverage --json --project-root .` | Aggregates kover/jacoco XML across all modules with coverage plugins applied |
+| "run benchmarks" | `kmp-test benchmark --json --project-root .` | Dispatches macrobenchmark/microbenchmark tasks |
 | "what would run?" / "dry run" | append `--dry-run` to any subcommand | No spawn — emits the plan as JSON |
-| "run only changed tests" | `kmp-test changed --json` | Restricts dispatch to modules touched in the current git working tree |
+| "run only changed tests" | `kmp-test changed --json --project-root .` | Restricts dispatch to modules touched in the current git working tree |
 
 > Per-subcommand workflow deep-dives (common flags, edge cases, recommended combinations) are documented in `references/workflows/` — start at [`workflows/overview.md`](references/workflows/overview.md).
+
+### 2. Diagnose only if the environment blocks the run
+
+Skip this step unless `exit_code` is `3` or the user explicitly asks to diagnose the environment:
+
+```bash
+kmp-test doctor --json --project-root .
+```
+
+Confirms gradlew, JDK, ADB (optional), Kotlin/AGP versions, project shape. Exits non-zero with `errors[].code` if anything blocks running tests.
 
 ### 3. Parse the JSON envelope
 
@@ -119,30 +103,22 @@ For test failures (not setup errors), drill into per-module `modules[].test_fail
 
 ## Convenience scripts
 
-The skill ships executable helpers under `.skills/kmp-test-runner/scripts/` for the two common patterns. They return the same JSON envelope as direct `kmp-test` invocation — use whichever surface fits the host shell.
+Optional, source checkout only — `.skills/kmp-test-runner/scripts/` only resolves as a shell-callable path when the working directory is this skill's own source tree, which isn't guaranteed when the skill is installed as a Claude Code plugin or via agentskills.io. Prefer the direct `kmp-test` invocations above for agent use. When working from a source checkout: `run-tests.sh` / `run-tests.ps1` wrap the same JSON envelope as direct `kmp-test` invocation; `detect-env.sh` / `detect-env.ps1` print a plain `HAS_ANDROID_CLI` / `NO_ANDROID_CLI` token (not an envelope).
 
 | Script | Purpose |
 |---|---|
 | `detect-env.sh` / `detect-env.ps1` | Prints `HAS_ANDROID_CLI` or `NO_ANDROID_CLI` to stdout. Exits 0 either way. Used as the env preamble in `run-tests.sh`, also callable standalone. |
-| `run-tests.sh` / `run-tests.ps1` | Smart dispatcher. First positional (`-Type` on PowerShell) picks the subcommand: `unit` (default) / `android` / `coverage` / `benchmark` / `changed` / `info` / `doctor` / `describe`. Remaining args forward verbatim; `--json` + `--project-root .` inject automatically. For `android`, emits `[INFO] env: HAS_ANDROID_CLI\|NO_ANDROID_CLI` to stderr. |
-
-Example:
-
-```bash
-bash .skills/kmp-test-runner/scripts/run-tests.sh android --device <DEVICE_SERIAL>
-# [INFO] env: HAS_ANDROID_CLI                          (stderr)
-# {"tool":"kmp-test","subcommand":"android",...}      (stdout)
-```
+| `run-tests.sh` / `run-tests.ps1` | Smart dispatcher. First positional (`-Type` on PowerShell) picks the subcommand: `unit` (default) / `android` / `coverage` / `benchmark` / `changed` / `info` / `doctor` / `describe`. Remaining args forward verbatim; `--json` + `--project-root .` inject automatically. |
 
 ## Verification
 
 After the run, confirm:
 
-1. `kmp-test --version` prints the installed version (current: 0.10.0+).
+1. `kmp-test --version` prints the installed version.
 2. For a successful run, the envelope has `exit_code: 0` and `errors[]` is empty (or contains only soft codes like `no_summary` / `no_changed_modules`).
 3. If `exit_code` is `1`, tests ran but at least one failed — drill into `modules[].test_failures[]`.
 4. If `exit_code` is `2`, it's a CLI usage error — check `errors[].code` (typically `invalid_*`, `flavor_unused`, `isolated_runtime_race`, or `no_test_modules` with `caused_by_filter:true`).
-5. If `exit_code` is `3`, it's an environment error — re-run `kmp-test doctor` to localize (`lock_held`, `no_gradlew`, `missing_shell`, `task_not_found`, `unsupported_class_version`, `instrumented_setup_failed`, or `no_test_modules` with `caused_by_filter:false`).
+5. If `exit_code` is `3`, it's an environment error — run `kmp-test doctor --json --project-root .` to localize (`lock_held`, `no_gradlew`, `missing_shell`, `task_not_found`, `unsupported_class_version`, `instrumented_setup_failed`, or `no_test_modules` with `caused_by_filter:false`).
 
 ## Guidelines
 

@@ -406,3 +406,39 @@ describe('tokenize (unit-level)', () => {
     expect(tokenize('kmp-test "unterminated')).toBeNull();
   });
 });
+
+describe('policy-hook grammar -- SKILL.md canonical commands (skill-portability alignment)', () => {
+  // A function, not a const: `describe` bodies run at collection time, before `beforeAll` has
+  // set `fixtureRoot`, so a `baseEnv({...})` computed here directly would freeze in
+  // KMP_EVAL_EXPECTED_FIXTURE_ROOT: undefined. Calling this inside each test (execution time,
+  // after `beforeAll`) is what the existing `decision(raw, env = baseEnv())` default-parameter
+  // pattern already relies on -- same fix, applied explicitly since this env needs an override.
+  function skillCanonicalEnv() {
+    return baseEnv({
+      KMP_EVAL_ALLOWED_KMPTEST_SUBCOMMANDS: JSON.stringify(
+        ['doctor', 'parallel', 'android', 'coverage', 'benchmark', 'changed'],
+      ),
+    });
+  }
+
+  it.each([
+    'kmp-test doctor --json --project-root .',
+    'kmp-test parallel --json --project-root .',
+    'kmp-test android --json --project-root .',
+    'kmp-test coverage --json --project-root .',
+    'kmp-test benchmark --json --project-root .',
+    'kmp-test changed --json --project-root .',
+    'kmp-test parallel --json --project-root . --dry-run',
+  ])('allows the documented canonical shape: %s', (cmd) => {
+    expect(decision(payload(cmd), skillCanonicalEnv())).toBe('allow');
+  });
+
+  it.each([
+    'bash .skills/kmp-test-runner/scripts/detect-env.sh',
+    'pwsh .skills/kmp-test-runner/scripts/detect-env.ps1',
+    'bash .skills/kmp-test-runner/scripts/run-tests.sh android --device emulator-5554',
+    'which android && android info >/dev/null 2>&1 && echo "HAS_ANDROID_CLI" || echo "NO_ANDROID_CLI"',
+  ])('denies the non-canonical shapes SKILL.md no longer presents as agent commands: %s', (cmd) => {
+    expect(decision(payload(cmd))).toBe('deny');
+  });
+});
