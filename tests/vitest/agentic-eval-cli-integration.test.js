@@ -97,6 +97,11 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     expect(recordB.skill_invocation_attempted.value).toBe(true);
     expect(recordA.skill_invoked.value).toBe(false);
     expect(recordB.skill_invoked.value).toBe(true);
+    // 2 Bash calls + 1 Skill attempt each -- regression coverage for a real undercount an
+    // independent review pass found: tool_calls_total previously added a flat 0-or-1 for the
+    // Skill contribution regardless of how many Skill attempts actually occurred.
+    expect(recordA.tool_calls_total.value).toBe(3);
+    expect(recordB.tool_calls_total.value).toBe(3);
     expect(recordA.model_requested).toBe('fake-model-x');
     expect(typeof recordA.wall_clock_ms).toBe('number');
     expect(recordA.wall_clock_ms).toBeGreaterThanOrEqual(0);
@@ -152,6 +157,25 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     expect(recordB.skill_invocation_attempted.value).toBe(true);
     expect(recordB.skill_invoked.value).toBe(true);
     expect(listEvidenceFiles('calibration').length).toBe(2);
+  }, 20000);
+
+  // Regression coverage for a real evidence-contamination bypass an independent review pass
+  // demonstrated directly against calibrationHardGate: A calling an entirely UNRELATED skill
+  // (not kmp-test-runner) is invisible to findSkillInvocation (scoped to kmp-test-runner only),
+  // so A's own attempted/invoked both still read false for kmp-test-runner -- the exact same
+  // shape the 'no-tool-use' scenario above legitimately tolerates. Without skillSelectionOk this
+  // fixture would pass the gate outright and write evidence for a run that actually invoked a
+  // DIFFERENT skill entirely. Proves the fix is wired up end-to-end (real stream-json parsing,
+  // not just the synthetic unit tests in agentic-eval-hard-gates.test.js) and writes NO evidence.
+  it('foreign-skill scenario: A calling an unrelated Skill is rejected (evidence-contamination bypass) and writes NO evidence', () => {
+    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('foreign-skill'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CALIBRATION FAILED');
+    expect(result.stderr).toContain('skillSelectionOk:false');
+    expect(result.stderr).toContain('availabilityOk:true');
+    expect(result.stderr).toContain('noSkillSafetyOk:true');
+    expect(result.stderr).toContain('currentInvocationOk:true');
+    expect(listEvidenceFiles('calibration').length).toBe(0);
   }, 20000);
 
   it('leaves no leftover temp directories after a passing run (cleanup ran)', () => {

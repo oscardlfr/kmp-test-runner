@@ -33,7 +33,7 @@ import { buildEvalEnv } from './env-builder.mjs';
 import { buildPathShim } from './path-shim.mjs';
 import { materializeSkillSnapshot, materializeCalibrationProject, materializeScenarioProject, materializeGradleUserHome, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition } from './condition-launcher.mjs';
-import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findBashToolUses, findBashToolUsesWithResults, findUnexpectedToolUses, hasExpectedToolProfile, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
+import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findForeignSkillUses, findBashToolUses, findBashToolUsesWithResults, findUnexpectedToolUses, hasExpectedToolProfile, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
 import { aggregateRuns } from './aggregate.mjs';
 import { assertCleanOrThrow, assertCleanOrThrowObject, loadPrivateRules } from './privacy.mjs';
 import { tokenize } from './policy-hook.mjs';
@@ -352,6 +352,12 @@ const SMOKE_EXPECTED_COMMANDS = [
 // session from one that regressed to a wider tool/MCP/permission profile.
 const EXPECTED_TOOL_NAMES = new Set(['Bash', 'Skill']);
 
+// The ONLY skill name findSkillInvocation/findForeignSkillUses ever target -- a single shared
+// constant so every call site (buildRunRecord's own attempted/invoked/tool_calls_total
+// derivation, and both hard gates' skillSelectionOk check) can never drift out of agreement with
+// each other on what "the expected skill" actually is.
+const TARGET_SKILL_NAME = 'kmp-test-runner';
+
 /**
  * Runs both conditions of a pair and returns everything buildRunRecord needs, plus a cleanup()
  * function the caller MUST invoke from a finally block -- removes every temp directory this
@@ -443,7 +449,7 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
       const { events, malformedLines } = parseStreamJsonl(spawnResult.rawStdout, { taggedLines: spawnResult.taggedLines });
       const init = findInitEvent(events);
       const result = findResultEvent(events);
-      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      const invocation = findSkillInvocation(events, TARGET_SKILL_NAME);
       const hookStats = countHookEvents(events);
       const byteMetrics = computeByteMetrics(spawnResult.rawStdout, events);
       const bashResults = findBashToolUsesWithResults(events);
@@ -512,7 +518,7 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     started_at: startedAt.toISOString(),
     ended_at: endedAt.toISOString(),
     wall_clock_ms: endedAt.getTime() - startedAt.getTime(),
-    skill_available: nullableMetric(isSkillAvailable(init, 'kmp-test-runner')),
+    skill_available: nullableMetric(isSkillAvailable(init, TARGET_SKILL_NAME)),
     skill_invocation_attempted: nullableMetric(invocation != null),
     skill_invoked: nullableMetric(invocation?.confirmed ?? false),
     skill_invocation_event: invocation ? { type: invocation.type, index: invocation.index } : null,
@@ -526,7 +532,10 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
       cache_read: nullableMetric(extractTokenUsage(result)?.cache_read ?? null, extractTokenUsage(result) ? undefined : 'no result event'),
       cache_creation: nullableMetric(extractTokenUsage(result)?.cache_creation ?? null, extractTokenUsage(result) ? undefined : 'no result event'),
     },
-    tool_calls_total: nullableMetric(findBashToolUses(conditionResult.events).length + (invocation ? 1 : 0)),
+    // Counts EVERY Skill attempt (invocation?.attemptCount), not just presence/absence -- a
+    // version that added a flat 0-or-1 undercounted a real multi-attempt transcript (e.g. a
+    // failed attempt followed by a retry) by construction.
+    tool_calls_total: nullableMetric(findBashToolUses(conditionResult.events).length + (invocation?.attemptCount ?? 0)),
     shell_commands_total: nullableMetric(findBashToolUses(conditionResult.events).length),
     test_invocations_total: nullableMetric(null, `not tracked for ${runKind} runs`),
     retries: nullableMetric(null, `not tracked for ${runKind} runs`),
@@ -892,6 +901,15 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
     a.skill_invocation_attempted.value === true || a.skill_invocation_attempted.value === false;
   const noSkillSafetyOk = noSkillAttemptObserved && a.skill_invoked.value === false;
   const currentInvocationOk = b.skill_invocation_attempted.value === true && b.skill_invoked.value === true;
+  // Regression coverage for a real bypass an independent review pass demonstrated: relaxing the
+  // no-skill arm to tolerate attempted:false made a NEW gap reachable -- noUnexpectedToolsOk only
+  // checks the tool NAME (Bash/Skill), never a Skill call's own `input.skill` argument, so a
+  // transcript that called Skill with some OTHER skill name entirely would show
+  // attempted:false/invoked:false for kmp-test-runner (that call is invisible to
+  // findSkillInvocation, which is scoped to kmp-test-runner only) and pass unnoticed. Requires
+  // BOTH conditions to contain zero Skill calls targeting anything other than kmp-test-runner.
+  const skillSelectionOk = findForeignSkillUses(runAResult.events, TARGET_SKILL_NAME).length === 0
+    && findForeignSkillUses(runBResult.events, TARGET_SKILL_NAME).length === 0;
   // A session that never emitted an init event at all is a fundamentally broken/incomplete
   // capture, not a legitimately-observed "skill unavailable" -- without this check, a run with
   // NO init event could still show skill_available:false for the no-skill arm (nothing to derive
@@ -914,10 +932,10 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   const resultOk = runAResult.result?.subtype === 'success' && runAResult.result?.is_error === false
     && runBResult.result?.subtype === 'success' && runBResult.result?.is_error === false;
   const hookAccountingOk = runAResult.hookStats.everyCallHooked === true && runBResult.hookStats.everyCallHooked === true;
-  const ok = availabilityOk && noSkillSafetyOk && currentInvocationOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk;
+  const ok = availabilityOk && noSkillSafetyOk && currentInvocationOk && skillSelectionOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk;
   return {
     ok,
-    reason: ok ? null : `calibration hard gate failed -- availabilityOk:${availabilityOk} noSkillSafetyOk:${noSkillSafetyOk} currentInvocationOk:${currentInvocationOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
+    reason: ok ? null : `calibration hard gate failed -- availabilityOk:${availabilityOk} noSkillSafetyOk:${noSkillSafetyOk} currentInvocationOk:${currentInvocationOk} skillSelectionOk:${skillSelectionOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
   };
 }
 
@@ -973,6 +991,12 @@ async function cmdCalibrate(args) {
  */
 function smokeHardGate(a, b, runAResult, runBResult) {
   const availabilityOk = a.skill_available.value === false && b.skill_available.value === true;
+  // See calibrationHardGate's identical check and doc comment -- noUnexpectedToolsOk only checks
+  // the tool NAME (Bash/Skill), never a Skill call's own `input.skill` argument, so this closes
+  // the same gap here: neither condition may contain a Skill call targeting anything other than
+  // kmp-test-runner.
+  const skillSelectionOk = findForeignSkillUses(runAResult.events, TARGET_SKILL_NAME).length === 0
+    && findForeignSkillUses(runBResult.events, TARGET_SKILL_NAME).length === 0;
   // See calibrationHardGate's identical check -- a session with no init event at all is a
   // broken/incomplete capture, not legitimately-observed data.
   const initOk = runAResult.init != null && runBResult.init != null;
@@ -1001,10 +1025,10 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   const exactCommandsOk = verifyExactCommandsSucceeded(runAResult.bashResults, SMOKE_EXPECTED_COMMANDS)
     && verifyExactCommandsSucceeded(runBResult.bashResults, SMOKE_EXPECTED_COMMANDS);
   const cleanTranscriptOk = runAResult.malformedLines.length === 0 && runBResult.malformedLines.length === 0;
-  const ok = availabilityOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk;
+  const ok = availabilityOk && skillSelectionOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk;
   return {
     ok,
-    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype} tools:${JSON.stringify(runAResult.init?.tools)}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype} tools:${JSON.stringify(runBResult.init?.tools)})`,
+    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} skillSelectionOk:${skillSelectionOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype} tools:${JSON.stringify(runAResult.init?.tools)}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype} tools:${JSON.stringify(runBResult.init?.tools)})`,
   };
 }
 

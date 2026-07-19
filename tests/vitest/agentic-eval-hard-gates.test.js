@@ -88,6 +88,7 @@ describe('calibrationHardGate', () => {
     const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('noSkillSafetyOk:true');
     expect(reason).toContain('currentInvocationOk:false');
     expect(reason).toContain('processOk:true');
@@ -102,6 +103,7 @@ describe('calibrationHardGate', () => {
     expect(reason).toContain('availabilityOk:false');
     expect(reason).toContain('noSkillSafetyOk:true');
     expect(reason).toContain('currentInvocationOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');
@@ -112,6 +114,7 @@ describe('calibrationHardGate', () => {
     const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('noSkillSafetyOk:true');
     expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('processOk:false');
@@ -124,6 +127,7 @@ describe('calibrationHardGate', () => {
     const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('noSkillSafetyOk:true');
     expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('processOk:false');
@@ -136,6 +140,7 @@ describe('calibrationHardGate', () => {
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('noSkillSafetyOk:true');
     expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('processOk:true');
@@ -159,6 +164,7 @@ describe('calibrationHardGate', () => {
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('noSkillSafetyOk:true');
     expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('initOk:true');
@@ -177,6 +183,7 @@ describe('calibrationHardGate', () => {
     const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('noSkillSafetyOk:true');
     expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('initOk:false');
@@ -193,6 +200,7 @@ describe('calibrationHardGate', () => {
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('noSkillSafetyOk:true');
     expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('initOk:true');
@@ -225,6 +233,7 @@ describe('calibrationHardGate', () => {
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('noSkillSafetyOk:true');
     expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('initOk:true');
@@ -240,6 +249,7 @@ describe('calibrationHardGate', () => {
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('noSkillSafetyOk:true');
     expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('processOk:true');
@@ -270,6 +280,7 @@ describe('calibrationHardGate', () => {
     const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('noSkillSafetyOk:false');
     expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('processOk:true');
@@ -286,6 +297,7 @@ describe('calibrationHardGate', () => {
     const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('noSkillSafetyOk:false');
     expect(reason).toContain('currentInvocationOk:true');
   });
@@ -298,11 +310,50 @@ describe('calibrationHardGate', () => {
     const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('noSkillSafetyOk:true');
     expect(reason).toContain('currentInvocationOk:false');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');
+  });
+
+  // Regression coverage for a real bypass an independent review pass demonstrated against the
+  // relaxed no-skill contract: the OLD single invocationOk check happened to catch this
+  // accidentally (it required A to show attempted:true, which a foreign-skill-only transcript
+  // never does); relaxing to tolerate attempted:false made this reachable. A no-skill arm that
+  // calls an entirely UNRELATED skill still shows attempted:false/invoked:false for
+  // kmp-test-runner (that call is invisible to findSkillInvocation) and must not silently pass.
+  function foreignSkillToolUseEvent(skillArg) {
+    const input = skillArg === undefined ? {} : { skill: skillArg };
+    return { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_foreign', name: 'Skill', input }] } };
+  }
+
+  it('isolates skillSelectionOk -- A calls an entirely unrelated Skill (evidence-contamination bypass)', () => {
+    const base = passRunResult();
+    const runA = passRunResult({ events: [...base.events, foreignSkillToolUseEvent('some-other-skill')] });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:false');
+    expect(reason).toContain('noSkillSafetyOk:true');
+    expect(reason).toContain('currentInvocationOk:true');
+  });
+
+  it('isolates skillSelectionOk -- B calls an entirely unrelated Skill in addition to the real one', () => {
+    const base = passRunResult();
+    const runB = passRunResult({ events: [...base.events, foreignSkillToolUseEvent('some-other-skill')] });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('skillSelectionOk:false');
+  });
+
+  it('isolates skillSelectionOk -- A calls Skill with a missing input.skill', () => {
+    const base = passRunResult();
+    const runA = passRunResult({ events: [...base.events, foreignSkillToolUseEvent(undefined)] });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('skillSelectionOk:false');
   });
 });
 
@@ -318,6 +369,7 @@ describe('smokeHardGate', () => {
     const { ok, reason } = smokeHardGate(a, passB(), passRunResult(), passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:false');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');
@@ -331,6 +383,7 @@ describe('smokeHardGate', () => {
     const { ok, reason } = smokeHardGate(passA(), b, passRunResult(), passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('processOk:false');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');
@@ -344,6 +397,7 @@ describe('smokeHardGate', () => {
     const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:false');
     expect(reason).toContain('hookAccountingOk:true');
@@ -359,6 +413,7 @@ describe('smokeHardGate', () => {
     const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('initOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:false');
@@ -374,6 +429,7 @@ describe('smokeHardGate', () => {
     const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('initOk:false');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
@@ -389,6 +445,7 @@ describe('smokeHardGate', () => {
     const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('initOk:true');
     expect(reason).toContain('toolProfileOk:false');
     expect(reason).toContain('noUnexpectedToolsOk:true');
@@ -414,6 +471,7 @@ describe('smokeHardGate', () => {
     const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('initOk:true');
     expect(reason).toContain('toolProfileOk:true');
     expect(reason).toContain('noUnexpectedToolsOk:false');
@@ -430,6 +488,7 @@ describe('smokeHardGate', () => {
     const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:false');
@@ -443,6 +502,7 @@ describe('smokeHardGate', () => {
     const { ok, reason } = smokeHardGate(passA(), b, passRunResult(), passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');
@@ -469,6 +529,7 @@ describe('smokeHardGate', () => {
     const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');
@@ -487,6 +548,7 @@ describe('smokeHardGate', () => {
     const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');
@@ -516,11 +578,44 @@ describe('smokeHardGate', () => {
     const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult());
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');
     expect(reason).toContain('realWorkOk:true');
     expect(reason).toContain('exactCommandsOk:true');
     expect(reason).toContain('cleanTranscriptOk:false');
+  });
+
+  // See calibrationHardGate's identical tests + rationale -- the same gap (noUnexpectedToolsOk
+  // only checks tool NAME, never a Skill call's own input.skill argument) applies to smoke too.
+  function foreignSkillToolUseEvent(skillArg) {
+    const input = skillArg === undefined ? {} : { skill: skillArg };
+    return { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_foreign', name: 'Skill', input }] } };
+  }
+
+  it('isolates skillSelectionOk -- A calls an entirely unrelated Skill (evidence-contamination bypass)', () => {
+    const base = passRunResult();
+    const runA = passRunResult({ events: [...base.events, foreignSkillToolUseEvent('some-other-skill')] });
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('skillSelectionOk:false');
+  });
+
+  it('isolates skillSelectionOk -- B calls an entirely unrelated Skill in addition to real diagnostic work', () => {
+    const base = passRunResult();
+    const runB = passRunResult({ events: [...base.events, foreignSkillToolUseEvent('some-other-skill')] });
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('skillSelectionOk:false');
+  });
+
+  it('isolates skillSelectionOk -- A calls Skill with a non-string, malformed input.skill', () => {
+    const base = passRunResult();
+    const runA = passRunResult({ events: [...base.events, foreignSkillToolUseEvent(42)] });
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('skillSelectionOk:false');
   });
 });

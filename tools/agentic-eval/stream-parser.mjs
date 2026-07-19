@@ -88,38 +88,97 @@ function findToolResultById(events, toolUseId, fromIndex) {
 }
 
 /**
- * Finds a Skill tool_use for a given skill name and its correlated outcome -- distinguishes an
- * ATTEMPT (the model called Skill with this name) from a CONFIRMED invocation (the SAME
- * tool_use_id's own tool_result did not report is_error:true). This is load-bearing: on a real
- * "no-skill" condition transcript, the model calls Skill anyway (the skill isn't in its listing,
- * but nothing stops it from trying), gets back `<tool_use_error>Unknown skill: ...</tool_use_error>`
- * with is_error:true, and then tells the user the skill doesn't exist. A version of this
- * function that only checked for the tool_use block (ignoring its result) would report
- * skill_invoked:true for that same no-skill run -- directly contradicting skill_available:false
- * in the same record. `confirmed` is only ever true when a matching, non-error tool_result was
- * actually found; an attempt with no result yet (transcript cut short) is never assumed
- * successful.
- * @returns {{attempted: true, confirmed: boolean, type: string, index: number, receiptNs: bigint, input: object, resultIsError: boolean|null} | null}
+ * Finds EVERY Skill tool_use for a given skill name and aggregates their correlated outcomes --
+ * distinguishes an ATTEMPT (the model called Skill with this name, one or more times) from a
+ * CONFIRMED invocation (ANY of those attempts' own tool_result did not report is_error:true).
+ * This is load-bearing: on a real "no-skill" condition transcript, the model calls Skill anyway
+ * (the skill isn't in its listing, but nothing stops it from trying), gets back
+ * `<tool_use_error>Unknown skill: ...</tool_use_error>` with is_error:true, and then tells the
+ * user the skill doesn't exist. A version of this function that only checked for the tool_use
+ * block (ignoring its result) would report skill_invoked:true for that same no-skill run --
+ * directly contradicting skill_available:false in the same record. `confirmed` is only ever true
+ * when a matching, non-error tool_result was actually found; an attempt with no result yet
+ * (transcript cut short) is never assumed successful.
+ *
+ * Regression coverage for a real bug an independent review pass demonstrated: an earlier version
+ * `return`ed on the FIRST matching tool_use, ignoring any later ones entirely. A transcript with
+ * an initial failed attempt followed by a later successful retry reported confirmed:false (wrong
+ * -- a genuinely confirmed invocation existed, just not on attempt 1); the inverse (an initial
+ * success followed by a later, unrelated failure) would likewise have been reported by whichever
+ * attempt happened to come first, not by whether the skill was EVER actually confirmed. This
+ * version scans the WHOLE transcript and aggregates: `attempted` is true iff at least one
+ * matching call exists at all; `confirmed` is true iff ANY matching call's own tool_result was
+ * non-error, regardless of order; `attemptCount` is the total number of matching calls (used by
+ * callers for `tool_calls_total`, which must count every attempt, not just presence/absence).
+ * @returns {{attempted: true, confirmed: boolean, attemptCount: number, type: string, index: number, receiptNs: bigint, input: object, resultIsError: boolean|null} | null}
  */
 export function findSkillInvocation(events, skillName) {
+  const matches = [];
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     if (ev.type !== 'assistant') continue;
     for (const c of ev.message?.content ?? []) {
       if (c.type !== 'tool_use' || c.name !== 'Skill' || c.input?.skill !== skillName) continue;
       const result = c.id != null ? findToolResultById(events, c.id, i + 1) : null;
-      return {
-        attempted: true,
-        confirmed: result != null && result.isError === false,
+      matches.push({
         type: 'assistant.tool_use.Skill',
         index: i,
         receiptNs: ev._receiptNs,
         input: c.input,
         resultIsError: result ? result.isError : null,
-      };
+        confirmed: result != null && result.isError === false,
+      });
     }
   }
-  return null;
+  if (matches.length === 0) return null;
+  // The "representative" match for the single-event fields (type/index/receiptNs/input/
+  // resultIsError) that this record's evidence still carries just one of: whichever attempt
+  // actually PROVES the aggregated `confirmed` value -- the first confirmed one if any exist,
+  // otherwise the last attempt (the model's final state before giving up).
+  const confirmedMatch = matches.find((m) => m.confirmed === true);
+  const representative = confirmedMatch ?? matches[matches.length - 1];
+  return {
+    attempted: true,
+    confirmed: confirmedMatch != null,
+    attemptCount: matches.length,
+    type: representative.type,
+    index: representative.index,
+    receiptNs: representative.receiptNs,
+    input: representative.input,
+    resultIsError: representative.resultIsError,
+  };
+}
+
+/**
+ * Every Skill tool_use block across the WHOLE transcript whose `input.skill` does NOT exactly
+ * match `expectedSkillName` -- including a missing or non-string `input.skill`. Distinct from
+ * findUnexpectedToolUses, which only checks the tool NAME (Bash/Skill) and has no visibility into
+ * a Skill call's own arguments: "Skill" is itself an allowed tool name regardless of which skill
+ * it targets, so a transcript that invoked Skill with some OTHER skill name entirely passes
+ * findUnexpectedToolUses outright. Meanwhile findSkillInvocation(events, expectedSkillName)
+ * simply never matches that call -- it's scoped to expectedSkillName only -- so an unrelated/
+ * foreign skill invocation is invisible to skill_invocation_attempted/skill_invoked and can
+ * silently coexist with attempted:false/invoked:false for the expected skill. Regression coverage
+ * for a real gap an independent review pass demonstrated against the relaxed calibration contract
+ * (a no-skill arm that never attempts kmp-test-runner can now legitimately show
+ * attempted:false/invoked:false -- without this check, a transcript that instead called some
+ * OTHER skill would show the exact same attempted:false/invoked:false for kmp-test-runner, and
+ * pass unnoticed, potentially writing contaminated evidence).
+ */
+export function findForeignSkillUses(events, expectedSkillName) {
+  const out = [];
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type !== 'assistant') continue;
+    for (const c of ev.message?.content ?? []) {
+      if (c.type !== 'tool_use' || c.name !== 'Skill') continue;
+      const skillArg = c.input?.skill;
+      if (typeof skillArg !== 'string' || skillArg.length === 0 || skillArg !== expectedSkillName) {
+        out.push({ index: i, receiptNs: ev._receiptNs, id: c.id, skillArg: typeof skillArg === 'string' ? skillArg : null });
+      }
+    }
+  }
+  return out;
 }
 
 export function findBashToolUses(events) {
