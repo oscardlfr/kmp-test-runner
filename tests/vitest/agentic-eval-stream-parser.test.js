@@ -11,6 +11,7 @@ import {
   findResultEvent,
   isSkillAvailable,
   findSkillInvocation,
+  findForeignSkillUses,
   findBashToolUses,
   countHookEvents,
   computeByteMetrics,
@@ -151,6 +152,127 @@ describe('skill availability and invocation detection (real captured event shape
       expect(invocation.attempted).toBe(true);
       expect(invocation.confirmed).toBe(false);
     });
+  });
+
+  // Regression coverage for a real bug an independent review pass demonstrated: an earlier
+  // version of findSkillInvocation returned on the FIRST matching tool_use, ignoring any later
+  // ones. A no-skill arm whose SECOND attempt actually succeeded (a real availability
+  // contradiction worth catching) previously read confirmed:false, since only attempt 1 (which
+  // failed) was ever considered; the inverse -- a current-skill arm whose first attempt happened
+  // to fail transiently but whose second succeeded -- was previously reported as an unconfirmed,
+  // wrongly-rejected run for the same reason.
+  describe('multiple Skill attempts in one transcript are all aggregated, not just the first', () => {
+    function toolUseEvent(id, skill = 'kmp-test-runner') {
+      return { type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Skill', input: { skill } }] } };
+    }
+    function toolResultEvent(id, isError) {
+      return { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: isError ? '<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>' : 'ok', is_error: isError, tool_use_id: id }] } };
+    }
+
+    it('an initial failed attempt followed by a later successful retry is CONFIRMED, not just attempt 1', () => {
+      const events = [
+        toolUseEvent('toolu_try1'), toolResultEvent('toolu_try1', true),
+        toolUseEvent('toolu_try2'), toolResultEvent('toolu_try2', false),
+      ];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      expect(invocation.attempted).toBe(true);
+      expect(invocation.confirmed).toBe(true);
+      expect(invocation.attemptCount).toBe(2);
+      // The representative event must be the one that actually PROVES confirmed:true -- not the
+      // earlier, failed attempt.
+      expect(invocation.resultIsError).toBe(false);
+    });
+
+    it('an initial successful attempt followed by a later unrelated failure is still CONFIRMED (order-independent)', () => {
+      const events = [
+        toolUseEvent('toolu_try1'), toolResultEvent('toolu_try1', false),
+        toolUseEvent('toolu_try2'), toolResultEvent('toolu_try2', true),
+      ];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      expect(invocation.confirmed).toBe(true);
+      expect(invocation.attemptCount).toBe(2);
+    });
+
+    it('two failed attempts are still NOT confirmed, and attemptCount reflects both', () => {
+      const events = [
+        toolUseEvent('toolu_try1'), toolResultEvent('toolu_try1', true),
+        toolUseEvent('toolu_try2'), toolResultEvent('toolu_try2', true),
+      ];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      expect(invocation.confirmed).toBe(false);
+      expect(invocation.attemptCount).toBe(2);
+    });
+
+    it('a single attempt still reports attemptCount:1 (no regression on the common case)', () => {
+      const events = [toolUseEvent('toolu_only'), toolResultEvent('toolu_only', false)];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      expect(invocation.attemptCount).toBe(1);
+    });
+
+    it('a second call to a DIFFERENT skill name does not count toward kmp-test-runner\'s attemptCount', () => {
+      const events = [
+        toolUseEvent('toolu_try1'), toolResultEvent('toolu_try1', false),
+        toolUseEvent('toolu_try2', 'some-other-skill'), toolResultEvent('toolu_try2', false),
+      ];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      expect(invocation.attemptCount).toBe(1);
+    });
+  });
+});
+
+// Regression coverage for a real gap an independent review pass demonstrated against the relaxed
+// calibration contract: findUnexpectedToolUses only checks the tool NAME (Bash/Skill), never a
+// Skill call's own `input.skill` argument -- a transcript that called Skill with some OTHER skill
+// name entirely passes it outright, while findSkillInvocation(events, 'kmp-test-runner') simply
+// never matches that call (scoped to kmp-test-runner only), so a foreign skill invocation is
+// invisible to skill_invocation_attempted/skill_invoked and could silently coexist with
+// attempted:false/invoked:false for the expected skill.
+describe('findForeignSkillUses -- detects Skill calls NOT targeting the expected skill', () => {
+  function skillToolUse(skillArg) {
+    const input = skillArg === undefined ? {} : { skill: skillArg };
+    return { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_x', name: 'Skill', input }] } };
+  }
+
+  it('returns empty for a transcript with only matching-skill calls', () => {
+    const events = [skillToolUse('kmp-test-runner')];
+    expect(findForeignSkillUses(events, 'kmp-test-runner')).toEqual([]);
+  });
+
+  it('returns empty for a transcript with no Skill calls at all', () => {
+    const events = [{ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'x' } }] } }];
+    expect(findForeignSkillUses(events, 'kmp-test-runner')).toEqual([]);
+  });
+
+  it('flags a Skill call targeting a completely different skill name', () => {
+    const events = [skillToolUse('some-other-skill')];
+    const foreign = findForeignSkillUses(events, 'kmp-test-runner');
+    expect(foreign.length).toBe(1);
+    expect(foreign[0].skillArg).toBe('some-other-skill');
+  });
+
+  it('flags a Skill call with a missing input.skill', () => {
+    const events = [skillToolUse(undefined)];
+    expect(findForeignSkillUses(events, 'kmp-test-runner').length).toBe(1);
+  });
+
+  it('flags a Skill call with a non-string (malformed) input.skill', () => {
+    const events = [skillToolUse(42)];
+    expect(findForeignSkillUses(events, 'kmp-test-runner').length).toBe(1);
+  });
+
+  it('flags a Skill call with an empty-string input.skill', () => {
+    const events = [skillToolUse('')];
+    expect(findForeignSkillUses(events, 'kmp-test-runner').length).toBe(1);
+  });
+
+  it('flags EVERY foreign call, not just the first, when several are present', () => {
+    const events = [skillToolUse('other-1'), skillToolUse('kmp-test-runner'), skillToolUse('other-2')];
+    expect(findForeignSkillUses(events, 'kmp-test-runner').length).toBe(2);
+  });
+
+  it('never flags a Bash call -- scoped to Skill tool_use blocks only', () => {
+    const events = [{ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'kmp-test doctor --json' } }] } }];
+    expect(findForeignSkillUses(events, 'kmp-test-runner')).toEqual([]);
   });
 });
 

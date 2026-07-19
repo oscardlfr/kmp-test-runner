@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-foreign-skill/claude -- see fake-claude-success/claude for the
+# shared rationale. "foreign-skill" scenario: the no-skill arm (A, no --plugin-dir) calls Skill
+# with an ENTIRELY UNRELATED skill name instead of kmp-test-runner. That call is invisible to
+# findSkillInvocation(events, 'kmp-test-runner') (scoped to that skill name only), so A's own
+# attempted/invoked both still read false for kmp-test-runner -- EXACTLY the newly-legitimate
+# no-skill shape the relaxed calibration contract now tolerates. Without a check on the CONTENT
+# of Skill calls (not just their tool NAME), this would pass calibrationHardGate outright and
+# write contaminated evidence -- an independent review pass demonstrated exactly this bypass
+# against the real gate. This fixture proves skillSelectionOk actually catches it end-to-end
+# (real stream-json parsing -> real event scanning -> the gate), not just in the synthetic unit
+# tests in agentic-eval-hard-gates.test.js. The current-skill arm (B) behaves normally (calls
+# kmp-test-runner, succeeds), mirroring fake-claude-success's own verified shape.
+HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  PREV_ARG="$arg"
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  # See fake-claude-success/claude for the shared rationale on reporting the REAL --plugin-dir
+  # value instead of a hardcoded placeholder.
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
+else
+  PLUGINS='[]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-0001\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"dontAsk\",\"plugins\":$PLUGINS,\"skills\":[],\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+else
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"totally-unrelated-skill"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake unrelated skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+fi
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"fake result text","permission_denials":[],"usage":{"input_tokens":2,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}'
+exit 0

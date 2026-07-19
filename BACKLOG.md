@@ -96,6 +96,18 @@
 
 ### 📋 QUEUED follow-ups (next sessions)
 
+- **Rejected `agentic-eval` hard-gate runs leave no auditable trace (BACKLOG CANDIDATE — surfaced
+  2026-07-19 during the calibration no-skill-arm contract fix).** `calibrationHardGate`/
+  `smokeHardGate` failures currently write zero evidence anywhere — `finalizeAndWriteRecords`
+  (`tools/agentic-eval/cli.mjs`) only writes on success, so a rejected run leaves nothing beyond
+  the terse stderr `reason` string once the terminal/log is gone. Proposed shape (not started):
+  retain minimal metadata only for a rejected run — timestamp, `run_kind`, which named sub-checks
+  failed, `model_requested`, `skill_source_sha` — explicitly no raw transcript and no
+  private/content-bearing fields, and never written into the same location/schema as accepted
+  evidence, so `aggregate`/`validate` can never confuse a rejected-run record with a real one.
+  Schema shape and retention policy (where, how long, committed vs. local-only) are undecided.
+  Its own small follow-up PR — deliberately not implemented as part of the contract fix that
+  surfaced it (kept narrow, no live calls).
 - **FULL-REPO AUDIT REMEDIATION v3.2 — active execution queue.** Source of truth:
   `docs/audits/full-repo-audit-improvement-plan-v3.2.md`; fresh-session handoff prompt:
   `docs/audits/claude-code-audit-corrections-prompt.md`. This supersedes the loose

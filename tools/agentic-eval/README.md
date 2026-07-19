@@ -48,10 +48,16 @@ invocation succeeded. On a real captured no-skill transcript, the model calls `S
 correlated `tool_result` (matched by `tool_use_id`), and tells the user the skill doesn't exist.
 `stream-parser.mjs`'s `findSkillInvocation()` reports this correctly via two separate fields:
 
-- `skill_invocation_attempted` — a matching `Skill` `tool_use` block was found, regardless of
-  outcome.
-- `skill_invoked` — that attempt's own `tool_result` was found and was **not** an error. Never
-  assumed true from the tool_use block alone, and never assumed true when no result exists yet.
+- `skill_invocation_attempted` — at least one matching `Skill` `tool_use` block was found,
+  regardless of outcome.
+- `skill_invoked` — ANY matching attempt's own `tool_result` was found and was **not** an error.
+  Never assumed true from a tool_use block alone, and never assumed true when no result exists yet.
+
+`findSkillInvocation()` scans the WHOLE transcript, not just the first matching call — an earlier
+version returned on the first match, so a failed-then-retried-successfully invocation was
+incorrectly reported as unconfirmed (only the failed first attempt was ever considered). Both
+fields are aggregated across every matching call by name: `attempted` is true iff at least one
+exists at all; `invoked` is true iff any of them succeeded, regardless of order.
 
 An earlier version of this harness only checked for the `tool_use` block, so a no-skill run's
 record could show `skill_available:false` and `skill_invoked:true` in the *same record* —
@@ -61,15 +67,27 @@ directly self-contradictory. `schemas.mjs` now also rejects that combination at 
 ## Run kinds
 
 - **`calibration`** — explicit-invocation only (the prompt directly asks for the skill by name).
-  Proves invocation *mechanics*: both conditions must show a genuine attempt (the prompt actually
-  drives one), confirmed invocation must track availability exactly (A attempts and fails, B
-  attempts and succeeds), both conditions must have produced a real `init` event (`initOk` —
-  a session with no `init` event at all is a broken/incomplete capture, not legitimately-observed
-  "unavailable" data), and both conditions' own `result` event must read `subtype:'success'`
-  **and** `is_error:false` (not `is_error` alone — a session cut short by, say, the budget cap
-  reports a distinct `subtype` — confirmed `'error_max_budget_usd'` — that isn't necessarily
-  paired with `is_error:true`, so `is_error` alone doesn't prove a genuine, uninterrupted
-  completion). A failure here is a harness bug, not a measurement result.
+  Proves invocation *mechanics*: the current-skill condition (B) must show a full, confirmed
+  invocation (`available:true`, `attempted:true`, `invoked:true`) — no relaxation there. The
+  no-skill condition (A) must show `available:false` and, always, `invoked:false` — but whether it
+  *attempted* the call first is not required: a model correctly recognizing the skill isn't in its
+  available tool list and not trying it at all is just as legitimate isolation proof as trying it
+  and getting `Unknown skill` back (both real, observed shapes — see "Attempted vs. confirmed
+  invocation" above). `attempted` must still be a genuine observation, though (`true` or `false`,
+  never `null`/unknown — an incomplete capture must not silently pass). Both conditions must also
+  have produced a real `init` event (`initOk` — a session with no `init` event at all is a
+  broken/incomplete capture, not legitimately-observed "unavailable" data), and both conditions'
+  own `result` event must read `subtype:'success'` **and** `is_error:false` (not `is_error` alone
+  — a session cut short by, say, the budget cap reports a distinct `subtype` — confirmed
+  `'error_max_budget_usd'` — that isn't necessarily paired with `is_error:true`, so `is_error`
+  alone doesn't prove a genuine, uninterrupted completion), and neither condition may contain a
+  `Skill` call targeting anything other than `kmp-test-runner` (`skillSelectionOk` — closes a real
+  evidence-contamination bypass an independent review pass found: without it, a transcript that
+  called an entirely unrelated skill would show `attempted:false`/`invoked:false` for
+  `kmp-test-runner` — the same shape the relaxed no-skill contract above legitimately tolerates —
+  and pass unnoticed). A calibration failure is rejected validation, not benchmark evidence;
+  investigate harness, setup, and model behavior before retrying — it is not automatically a
+  harness bug.
 - **`smoke`** — one bounded scenario, both conditions, through the real CLI end-to-end. Proves
   the pipeline works with **equivalent real diagnostic work in both arms** — not just skill
   availability. `smokeHardGate()` requires, in *both* conditions: skill availability matches
@@ -184,9 +202,10 @@ observed on disk.
 
 Any failure returns `{ok:false, reason}` and writes nothing — verified directly:
 `tests/vitest/agentic-eval-cli-integration.test.js` spawns real `node cli.mjs calibrate|smoke`
-subprocesses against fake `claude` fixtures (`tests/fixtures/fake-claude-*/`) covering both a
-passing scenario and three distinct failure scenarios (no attempt at all, all commands denied, a
-malformed transcript line), asserting zero evidence files are written on every failure path.
+subprocesses against fake `claude` fixtures (`tests/fixtures/fake-claude-*/`) covering passing
+scenarios (including both legitimate no-skill-arm shapes for calibration) and smoke's three
+distinct failure scenarios (an unexpected tool invoked, all commands denied, a malformed
+transcript line), asserting zero evidence files are written on every failure path.
 Every subprocess this test file spawns is pointed at an isolated `KMP_EVAL_RUNS_ROOT` (a
 fresh, per-test temp directory) instead of the real, shared `tools/runs/` tree — an earlier
 version of this test file read/wrote/deleted directly under the real path, which would have
@@ -217,9 +236,11 @@ silently-ignored value previously meant private-pattern redaction was silently d
 run still reported `privacy_status: 'public'` with no error at all.
 
 `calibrationHardGate()`/`smokeHardGate()` are named, exported functions (not inline closures)
-specifically so each sub-check (`invocationOk`, `processOk`, `resultOk`, `hookAccountingOk`, and
-for smoke also `realWorkOk`, `exactCommandsOk`, `cleanTranscriptOk`) can be unit-tested in
-isolation with precise synthetic inputs — `tests/vitest/agentic-eval-hard-gates.test.js` flips
+specifically so each sub-check (`availabilityOk`, `skillSelectionOk`, `pluginProfileOk`,
+`pluginSnapshotBindingOk`, `processOk`, `resultOk`, `hookAccountingOk`, `toolResultsCompleteOk`,
+`cleanTranscriptOk`, `transcriptStructureOk` -- shared by both gates -- calibration's own
+`noSkillSafetyOk`/`currentInvocationOk`, and for smoke also `realWorkOk`, `exactCommandsOk`) can
+be unit-tested in isolation with precise synthetic inputs — `tests/vitest/agentic-eval-hard-gates.test.js` flips
 exactly one input per test and asserts exactly one named sub-check goes false while every other
 named sub-check in the same failure-reason string stays true. This is deliberately a different
 proof than the real-subprocess fake-`claude` fixtures in `agentic-eval-cli-integration.test.js`:

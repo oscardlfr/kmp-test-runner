@@ -21,7 +21,7 @@
 // policy_sha256 match against the CURRENT policy-hook.mjs, the privacy fail-closed check
 // (assertCleanOrThrow), and the run-kind's hard acceptance gate all pass -- see
 // finalizeAndWriteRecords(). Any failure writes nothing and reports why.
-import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync, linkSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync, linkSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,7 +33,7 @@ import { buildEvalEnv } from './env-builder.mjs';
 import { buildPathShim } from './path-shim.mjs';
 import { materializeSkillSnapshot, materializeCalibrationProject, materializeScenarioProject, materializeGradleUserHome, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition } from './condition-launcher.mjs';
-import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findBashToolUses, findBashToolUsesWithResults, findUnexpectedToolUses, hasExpectedToolProfile, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
+import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findForeignSkillUses, findBashToolUses, findBashToolUsesWithResults, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, findTranscriptStructuralIssues, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
 import { aggregateRuns } from './aggregate.mjs';
 import { assertCleanOrThrow, assertCleanOrThrowObject, loadPrivateRules } from './privacy.mjs';
 import { tokenize } from './policy-hook.mjs';
@@ -100,6 +100,55 @@ function isRunsRootDefault(runsRoot, repoRoot) {
   }
 }
 const RUNS_ROOT_IS_DEFAULT = isRunsRootDefault(RUNS_ROOT, REPO_ROOT);
+
+// Regression coverage for a real evidence-contamination bypass an independent review pass
+// demonstrated directly against calibrationHardGate: hasExpectedPluginProfile only checks the
+// LOADED plugin's name and count -- never its `path` -- so a same-named "kmp-test-runner" plugin
+// loaded from a completely unrelated directory satisfied it outright. The run record still
+// publishes skill_source_sha as the harness's PINNED_SKILL_SHA regardless (buildRunRecord has no
+// way to know the loaded plugin came from somewhere else), so evidence could be attributed to a
+// SHA whose actual, verified snapshot was never the thing exercised. This is the provenance
+// guarantee skill_source_sha implicitly claims -- closing it requires binding the reported path
+// to the SAME materialized snapshot directory this specific run actually built.
+//
+// Compared via FILESYSTEM IDENTITY (device + inode from statSync), never a string comparison of
+// resolved paths -- a review-round-5 finding demonstrated a bare case-folded comparison
+// (resolvedReported.toLowerCase() === resolvedExpected.toLowerCase(), the previous approach here)
+// is unsound on Windows: NTFS volumes support PER-DIRECTORY case sensitivity (fsutil.exe file
+// setCaseSensitiveInfo, shipped for WSL interop since Windows 10 1803), under which two
+// DIFFERENTLY-cased paths can be two GENUINELY DISTINCT directories -- a case-folded string
+// compare would wrongly treat them as the same snapshot. isRunsRootDefault's OWN case-fold is
+// safe specifically because a false positive there only engages STRICTER scrutiny (erring toward
+// "true" is the safe direction for that check) -- that justification does not transfer here: a
+// false positive in THIS check would APPROVE the WRONG plugin outright, exactly the provenance
+// guarantee this function exists to protect. dev+ino is the OS's own unambiguous identity for a
+// filesystem entry, invariant to case, trailing separators, or symlink/junction indirection --
+// statSync follows symlinks on both inputs the same way realpath would have, so no separate
+// realpath step is needed first. {bigint:true} avoids precision loss on Windows, where NTFS file
+// IDs can exceed Number.MAX_SAFE_INTEGER. An unresolvable path fails CLOSED: "can't positively
+// confirm this is the expected snapshot" must mean "reject", never "assume it's fine". Deliberately
+// returns ONLY a boolean -- the actual path (which could itself be privacy-sensitive, e.g.
+// containing the real OS username) is never included in the return value or surfaced in any
+// caller's error/log output.
+function isPluginBoundToSnapshot(initEvent, expectedSnapshotDir) {
+  if (initEvent == null || !Array.isArray(initEvent.plugins) || initEvent.plugins.length !== 1) return false;
+  const reportedPath = initEvent.plugins[0]?.path;
+  if (typeof reportedPath !== 'string' || reportedPath.length === 0) return false;
+  if (typeof expectedSnapshotDir !== 'string' || expectedSnapshotDir.length === 0) return false;
+  let reportedStat;
+  let expectedStat;
+  try {
+    reportedStat = statSync(reportedPath, { bigint: true });
+  } catch {
+    return false; // reported path doesn't exist / unresolvable -- fail closed, never assume a match
+  }
+  try {
+    expectedStat = statSync(expectedSnapshotDir, { bigint: true });
+  } catch {
+    return false; // the harness's OWN expected snapshot vanished -- also fail closed
+  }
+  return reportedStat.dev === expectedStat.dev && reportedStat.ino === expectedStat.ino;
+}
 
 const HELP = `tools/agentic-eval/cli.mjs -- reproducible skill evaluation harness
 
@@ -352,6 +401,12 @@ const SMOKE_EXPECTED_COMMANDS = [
 // session from one that regressed to a wider tool/MCP/permission profile.
 const EXPECTED_TOOL_NAMES = new Set(['Bash', 'Skill']);
 
+// The ONLY skill name findSkillInvocation/findForeignSkillUses ever target -- a single shared
+// constant so every call site (buildRunRecord's own attempted/invoked/tool_calls_total
+// derivation, and both hard gates' skillSelectionOk check) can never drift out of agreement with
+// each other on what "the expected skill" actually is.
+const TARGET_SKILL_NAME = 'kmp-test-runner';
+
 /**
  * Runs both conditions of a pair and returns everything buildRunRecord needs, plus a cleanup()
  * function the caller MUST invoke from a finally block -- removes every temp directory this
@@ -443,7 +498,7 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
       const { events, malformedLines } = parseStreamJsonl(spawnResult.rawStdout, { taggedLines: spawnResult.taggedLines });
       const init = findInitEvent(events);
       const result = findResultEvent(events);
-      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      const invocation = findSkillInvocation(events, TARGET_SKILL_NAME);
       const hookStats = countHookEvents(events);
       const byteMetrics = computeByteMetrics(spawnResult.rawStdout, events);
       const bashResults = findBashToolUsesWithResults(events);
@@ -451,6 +506,12 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
       return {
         condition, argv, env: conditionEnv, fixtureDir, events, malformedLines, init, result,
         invocation, hookStats, byteMetrics, bashResults, spawnResult, startedAt, endedAt,
+        // Only current-skill's own argv actually passed --plugin-dir snapshotDir (see
+        // buildConditionArgv above) -- carried on the per-condition result itself (rather than as
+        // a separate hard-gate parameter threaded through finalizeAndWriteRecords) so
+        // pluginSnapshotBindingOk can read runBResult.snapshotDir directly, the same way every
+        // other gate check already reads its inputs off runAResult/runBResult.
+        snapshotDir: condition === 'current-skill' ? snapshotDir : null,
       };
     };
 
@@ -512,7 +573,7 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     started_at: startedAt.toISOString(),
     ended_at: endedAt.toISOString(),
     wall_clock_ms: endedAt.getTime() - startedAt.getTime(),
-    skill_available: nullableMetric(isSkillAvailable(init, 'kmp-test-runner')),
+    skill_available: nullableMetric(isSkillAvailable(init, TARGET_SKILL_NAME)),
     skill_invocation_attempted: nullableMetric(invocation != null),
     skill_invoked: nullableMetric(invocation?.confirmed ?? false),
     skill_invocation_event: invocation ? { type: invocation.type, index: invocation.index } : null,
@@ -526,7 +587,10 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
       cache_read: nullableMetric(extractTokenUsage(result)?.cache_read ?? null, extractTokenUsage(result) ? undefined : 'no result event'),
       cache_creation: nullableMetric(extractTokenUsage(result)?.cache_creation ?? null, extractTokenUsage(result) ? undefined : 'no result event'),
     },
-    tool_calls_total: nullableMetric(findBashToolUses(conditionResult.events).length + (invocation ? 1 : 0)),
+    // Counts EVERY Skill attempt (invocation?.attemptCount), not just presence/absence -- a
+    // version that added a flat 0-or-1 undercounted a real multi-attempt transcript (e.g. a
+    // failed attempt followed by a retry) by construction.
+    tool_calls_total: nullableMetric(findBashToolUses(conditionResult.events).length + (invocation?.attemptCount ?? 0)),
     shell_commands_total: nullableMetric(findBashToolUses(conditionResult.events).length),
     test_invocations_total: nullableMetric(null, `not tracked for ${runKind} runs`),
     retries: nullableMetric(null, `not tracked for ${runKind} runs`),
@@ -880,13 +944,53 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
  * (not just an aggregate boolean).
  */
 function calibrationHardGate(a, b, runAResult, runBResult) {
-  const invocationOk = a.skill_available.value === false && b.skill_available.value === true
-    && a.skill_invocation_attempted.value === true && b.skill_invocation_attempted.value === true
-    && a.skill_invoked.value === false && b.skill_invoked.value === true;
+  const availabilityOk = a.skill_available.value === false && b.skill_available.value === true;
+  // The no-skill arm's actual safety property is "never a CONFIRMED invocation" -- whether it
+  // ATTEMPTED the call first is not required. A model correctly recognizing the skill isn't in
+  // its available tool list and not trying it at all is just as legitimate isolation proof as
+  // trying it and getting `Unknown skill` back (both real, observed shapes -- see README
+  // "Attempted vs. confirmed invocation"). attempted must still be a genuine OBSERVATION (true or
+  // false), though -- a null/unknown value means the capture itself is incomplete and must not
+  // silently pass just because invoked happens to read false.
+  const noSkillAttemptObserved =
+    a.skill_invocation_attempted.value === true || a.skill_invocation_attempted.value === false;
+  const noSkillSafetyOk = noSkillAttemptObserved && a.skill_invoked.value === false;
+  const currentInvocationOk = b.skill_invocation_attempted.value === true && b.skill_invoked.value === true;
+  // Regression coverage for a real bypass an independent review pass demonstrated: relaxing the
+  // no-skill arm to tolerate attempted:false made a NEW gap reachable -- noUnexpectedToolsOk only
+  // checks the tool NAME (Bash/Skill), never a Skill call's own `input.skill` argument, so a
+  // transcript that called Skill with some OTHER skill name entirely would show
+  // attempted:false/invoked:false for kmp-test-runner (that call is invisible to
+  // findSkillInvocation, which is scoped to kmp-test-runner only) and pass unnoticed. Requires
+  // BOTH conditions to contain zero Skill calls targeting anything other than kmp-test-runner.
+  const skillSelectionOk = findForeignSkillUses(runAResult.events, TARGET_SKILL_NAME).length === 0
+    && findForeignSkillUses(runBResult.events, TARGET_SKILL_NAME).length === 0;
+  // Regression coverage for a real gap an independent review pass demonstrated: neither
+  // isSkillAvailable nor hasExpectedToolProfile ever inspects the init event's OWN plugins[]
+  // array -- an unexpected third-party plugin loaded alongside (or instead of) the intended one
+  // went completely undetected. A must load exactly zero plugins; B must load exactly one,
+  // named kmp-test-runner -- no duplicates, no extras.
+  const pluginProfileOk = hasExpectedPluginProfile(runAResult.init, TARGET_SKILL_NAME, false)
+    && hasExpectedPluginProfile(runBResult.init, TARGET_SKILL_NAME, true);
+  // Regression coverage for a real evidence-contamination bypass an independent review pass
+  // demonstrated: pluginProfileOk only checks the loaded plugin's NAME, never its path -- a
+  // same-named "kmp-test-runner" plugin loaded from a completely unrelated directory satisfied
+  // it outright, while the record still published skill_source_sha as the pinned SHA regardless.
+  // See isPluginBoundToSnapshot's own doc comment for the full rationale. Only meaningful for B
+  // (the no-skill arm never loads a plugin at all, per pluginProfileOk above).
+  const pluginSnapshotBindingOk = isPluginBoundToSnapshot(runBResult.init, runBResult.snapshotDir);
+  // Regression coverage for a real gap an independent review pass demonstrated: findInitEvent/
+  // findResultEvent/findIncompleteToolResults all either take "the first" event of a kind or only
+  // check "at least one" correlation exists -- neither catches a transcript with a SECOND,
+  // contradictory init+result pair appended after a legitimate first one, or two tool_use blocks
+  // sharing one id satisfied by a single tool_result. See findTranscriptStructuralIssues's own
+  // doc comment for the full rationale.
+  const transcriptStructureOk = findTranscriptStructuralIssues(runAResult.events).length === 0
+    && findTranscriptStructuralIssues(runBResult.events).length === 0;
   // A session that never emitted an init event at all is a fundamentally broken/incomplete
   // capture, not a legitimately-observed "skill unavailable" -- without this check, a run with
   // NO init event could still show skill_available:false for the no-skill arm (nothing to derive
-  // it from) and happen to match the EXPECTED value there by coincidence, passing invocationOk
+  // it from) and happen to match the EXPECTED value there by coincidence, passing availabilityOk
   // for the wrong reason entirely.
   const initOk = runAResult.init != null && runBResult.init != null;
   // The init event's OWN declared profile must match exactly what this harness actually
@@ -905,10 +1009,24 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   const resultOk = runAResult.result?.subtype === 'success' && runAResult.result?.is_error === false
     && runBResult.result?.subtype === 'success' && runBResult.result?.is_error === false;
   const hookAccountingOk = runAResult.hookStats.everyCallHooked === true && runBResult.hookStats.everyCallHooked === true;
-  const ok = invocationOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk;
+  // Regression coverage for a real gap an independent review pass demonstrated: findSkillInvocation
+  // correctly reports confirmed:false for a Skill attempt with NO correlated tool_result at all
+  // (transcript cut short before a result arrived), but the gate previously treated
+  // attempted:true/invoked:false uniformly as a "clean" no-skill shape -- a dangling attempt is an
+  // INCOMPLETE capture, not a demonstrated Unknown-skill rejection, and must not be silently
+  // accepted as equivalent. Scans every tool_use (Bash included -- calibration has no per-command
+  // result check of its own, unlike smoke's exactCommandsOk).
+  const toolResultsCompleteOk = findIncompleteToolResults(runAResult.events).length === 0
+    && findIncompleteToolResults(runBResult.events).length === 0;
+  // Only smokeHardGate had this check until now -- a malformed/truncated JSONL line could hide
+  // exactly a Skill tool_use or its result, artificially producing attempted:false for A, which
+  // the relaxed no-skill contract now legitimately tolerates. Calibration needs the same
+  // protection smoke already has.
+  const cleanTranscriptOk = runAResult.malformedLines.length === 0 && runBResult.malformedLines.length === 0;
+  const ok = availabilityOk && noSkillSafetyOk && currentInvocationOk && skillSelectionOk && pluginProfileOk && pluginSnapshotBindingOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && toolResultsCompleteOk && cleanTranscriptOk && transcriptStructureOk;
   return {
     ok,
-    reason: ok ? null : `calibration hard gate failed -- invocationOk:${invocationOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
+    reason: ok ? null : `calibration hard gate failed -- availabilityOk:${availabilityOk} noSkillSafetyOk:${noSkillSafetyOk} currentInvocationOk:${currentInvocationOk} skillSelectionOk:${skillSelectionOk} pluginProfileOk:${pluginProfileOk} pluginSnapshotBindingOk:${pluginSnapshotBindingOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} toolResultsCompleteOk:${toolResultsCompleteOk} cleanTranscriptOk:${cleanTranscriptOk} transcriptStructureOk:${transcriptStructureOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
   };
 }
 
@@ -964,6 +1082,25 @@ async function cmdCalibrate(args) {
  */
 function smokeHardGate(a, b, runAResult, runBResult) {
   const availabilityOk = a.skill_available.value === false && b.skill_available.value === true;
+  // See calibrationHardGate's identical check and doc comment -- noUnexpectedToolsOk only checks
+  // the tool NAME (Bash/Skill), never a Skill call's own `input.skill` argument, so this closes
+  // the same gap here: neither condition may contain a Skill call targeting anything other than
+  // kmp-test-runner.
+  const skillSelectionOk = findForeignSkillUses(runAResult.events, TARGET_SKILL_NAME).length === 0
+    && findForeignSkillUses(runBResult.events, TARGET_SKILL_NAME).length === 0;
+  // See calibrationHardGate's identical check and doc comment -- neither isSkillAvailable nor
+  // hasExpectedToolProfile ever inspects the init event's own plugins[] array.
+  const pluginProfileOk = hasExpectedPluginProfile(runAResult.init, TARGET_SKILL_NAME, false)
+    && hasExpectedPluginProfile(runBResult.init, TARGET_SKILL_NAME, true);
+  // See calibrationHardGate's identical check and doc comment -- pluginProfileOk never checks
+  // the loaded plugin's own path, only its name/count.
+  const pluginSnapshotBindingOk = isPluginBoundToSnapshot(runBResult.init, runBResult.snapshotDir);
+  // See calibrationHardGate's identical check and doc comment -- neither findInitEvent/
+  // findResultEvent (take "the first" of a kind) nor findIncompleteToolResults (only checks "at
+  // least one" correlation) catch a second contradictory init+result pair, or duplicated
+  // tool_use ids satisfied by a single tool_result.
+  const transcriptStructureOk = findTranscriptStructuralIssues(runAResult.events).length === 0
+    && findTranscriptStructuralIssues(runBResult.events).length === 0;
   // See calibrationHardGate's identical check -- a session with no init event at all is a
   // broken/incomplete capture, not legitimately-observed data.
   const initOk = runAResult.init != null && runBResult.init != null;
@@ -992,10 +1129,14 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   const exactCommandsOk = verifyExactCommandsSucceeded(runAResult.bashResults, SMOKE_EXPECTED_COMMANDS)
     && verifyExactCommandsSucceeded(runBResult.bashResults, SMOKE_EXPECTED_COMMANDS);
   const cleanTranscriptOk = runAResult.malformedLines.length === 0 && runBResult.malformedLines.length === 0;
-  const ok = availabilityOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk;
+  // See calibrationHardGate's identical check and doc comment -- a dangling tool_use with no
+  // correlated tool_result is an incomplete capture, not a demonstrated outcome.
+  const toolResultsCompleteOk = findIncompleteToolResults(runAResult.events).length === 0
+    && findIncompleteToolResults(runBResult.events).length === 0;
+  const ok = availabilityOk && skillSelectionOk && pluginProfileOk && pluginSnapshotBindingOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk && toolResultsCompleteOk && transcriptStructureOk;
   return {
     ok,
-    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype} tools:${JSON.stringify(runAResult.init?.tools)}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype} tools:${JSON.stringify(runBResult.init?.tools)})`,
+    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} skillSelectionOk:${skillSelectionOk} pluginProfileOk:${pluginProfileOk} pluginSnapshotBindingOk:${pluginSnapshotBindingOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} toolResultsCompleteOk:${toolResultsCompleteOk} transcriptStructureOk:${transcriptStructureOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype} tools:${JSON.stringify(runAResult.init?.tools)}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype} tools:${JSON.stringify(runBResult.init?.tools)})`,
   };
 }
 
@@ -1175,4 +1316,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, writeRunRecordEvidence, calibrationHardGate, smokeHardGate, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };
+export { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, writeRunRecordEvidence, calibrationHardGate, smokeHardGate, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };

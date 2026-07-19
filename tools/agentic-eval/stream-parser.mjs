@@ -88,38 +88,97 @@ function findToolResultById(events, toolUseId, fromIndex) {
 }
 
 /**
- * Finds a Skill tool_use for a given skill name and its correlated outcome -- distinguishes an
- * ATTEMPT (the model called Skill with this name) from a CONFIRMED invocation (the SAME
- * tool_use_id's own tool_result did not report is_error:true). This is load-bearing: on a real
- * "no-skill" condition transcript, the model calls Skill anyway (the skill isn't in its listing,
- * but nothing stops it from trying), gets back `<tool_use_error>Unknown skill: ...</tool_use_error>`
- * with is_error:true, and then tells the user the skill doesn't exist. A version of this
- * function that only checked for the tool_use block (ignoring its result) would report
- * skill_invoked:true for that same no-skill run -- directly contradicting skill_available:false
- * in the same record. `confirmed` is only ever true when a matching, non-error tool_result was
- * actually found; an attempt with no result yet (transcript cut short) is never assumed
- * successful.
- * @returns {{attempted: true, confirmed: boolean, type: string, index: number, receiptNs: bigint, input: object, resultIsError: boolean|null} | null}
+ * Finds EVERY Skill tool_use for a given skill name and aggregates their correlated outcomes --
+ * distinguishes an ATTEMPT (the model called Skill with this name, one or more times) from a
+ * CONFIRMED invocation (ANY of those attempts' own tool_result did not report is_error:true).
+ * This is load-bearing: on a real "no-skill" condition transcript, the model calls Skill anyway
+ * (the skill isn't in its listing, but nothing stops it from trying), gets back
+ * `<tool_use_error>Unknown skill: ...</tool_use_error>` with is_error:true, and then tells the
+ * user the skill doesn't exist. A version of this function that only checked for the tool_use
+ * block (ignoring its result) would report skill_invoked:true for that same no-skill run --
+ * directly contradicting skill_available:false in the same record. `confirmed` is only ever true
+ * when a matching, non-error tool_result was actually found; an attempt with no result yet
+ * (transcript cut short) is never assumed successful.
+ *
+ * Regression coverage for a real bug an independent review pass demonstrated: an earlier version
+ * `return`ed on the FIRST matching tool_use, ignoring any later ones entirely. A transcript with
+ * an initial failed attempt followed by a later successful retry reported confirmed:false (wrong
+ * -- a genuinely confirmed invocation existed, just not on attempt 1); the inverse (an initial
+ * success followed by a later, unrelated failure) would likewise have been reported by whichever
+ * attempt happened to come first, not by whether the skill was EVER actually confirmed. This
+ * version scans the WHOLE transcript and aggregates: `attempted` is true iff at least one
+ * matching call exists at all; `confirmed` is true iff ANY matching call's own tool_result was
+ * non-error, regardless of order; `attemptCount` is the total number of matching calls (used by
+ * callers for `tool_calls_total`, which must count every attempt, not just presence/absence).
+ * @returns {{attempted: true, confirmed: boolean, attemptCount: number, type: string, index: number, receiptNs: bigint, input: object, resultIsError: boolean|null} | null}
  */
 export function findSkillInvocation(events, skillName) {
+  const matches = [];
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     if (ev.type !== 'assistant') continue;
     for (const c of ev.message?.content ?? []) {
       if (c.type !== 'tool_use' || c.name !== 'Skill' || c.input?.skill !== skillName) continue;
       const result = c.id != null ? findToolResultById(events, c.id, i + 1) : null;
-      return {
-        attempted: true,
-        confirmed: result != null && result.isError === false,
+      matches.push({
         type: 'assistant.tool_use.Skill',
         index: i,
         receiptNs: ev._receiptNs,
         input: c.input,
         resultIsError: result ? result.isError : null,
-      };
+        confirmed: result != null && result.isError === false,
+      });
     }
   }
-  return null;
+  if (matches.length === 0) return null;
+  // The "representative" match for the single-event fields (type/index/receiptNs/input/
+  // resultIsError) that this record's evidence still carries just one of: whichever attempt
+  // actually PROVES the aggregated `confirmed` value -- the first confirmed one if any exist,
+  // otherwise the last attempt (the model's final state before giving up).
+  const confirmedMatch = matches.find((m) => m.confirmed === true);
+  const representative = confirmedMatch ?? matches[matches.length - 1];
+  return {
+    attempted: true,
+    confirmed: confirmedMatch != null,
+    attemptCount: matches.length,
+    type: representative.type,
+    index: representative.index,
+    receiptNs: representative.receiptNs,
+    input: representative.input,
+    resultIsError: representative.resultIsError,
+  };
+}
+
+/**
+ * Every Skill tool_use block across the WHOLE transcript whose `input.skill` does NOT exactly
+ * match `expectedSkillName` -- including a missing or non-string `input.skill`. Distinct from
+ * findUnexpectedToolUses, which only checks the tool NAME (Bash/Skill) and has no visibility into
+ * a Skill call's own arguments: "Skill" is itself an allowed tool name regardless of which skill
+ * it targets, so a transcript that invoked Skill with some OTHER skill name entirely passes
+ * findUnexpectedToolUses outright. Meanwhile findSkillInvocation(events, expectedSkillName)
+ * simply never matches that call -- it's scoped to expectedSkillName only -- so an unrelated/
+ * foreign skill invocation is invisible to skill_invocation_attempted/skill_invoked and can
+ * silently coexist with attempted:false/invoked:false for the expected skill. Regression coverage
+ * for a real gap an independent review pass demonstrated against the relaxed calibration contract
+ * (a no-skill arm that never attempts kmp-test-runner can now legitimately show
+ * attempted:false/invoked:false -- without this check, a transcript that instead called some
+ * OTHER skill would show the exact same attempted:false/invoked:false for kmp-test-runner, and
+ * pass unnoticed, potentially writing contaminated evidence).
+ */
+export function findForeignSkillUses(events, expectedSkillName) {
+  const out = [];
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type !== 'assistant') continue;
+    for (const c of ev.message?.content ?? []) {
+      if (c.type !== 'tool_use' || c.name !== 'Skill') continue;
+      const skillArg = c.input?.skill;
+      if (typeof skillArg !== 'string' || skillArg.length === 0 || skillArg !== expectedSkillName) {
+        out.push({ index: i, receiptNs: ev._receiptNs, id: c.id, skillArg: typeof skillArg === 'string' ? skillArg : null });
+      }
+    }
+  }
+  return out;
 }
 
 export function findBashToolUses(events) {
@@ -175,6 +234,176 @@ export function hasExpectedToolProfile(initEvent, allowedToolNames) {
   if (!Array.isArray(initEvent.mcp_servers) || initEvent.mcp_servers.length !== 0) return false;
   if (initEvent.permissionMode !== 'dontAsk') return false;
   return true;
+}
+
+/**
+ * True only if the init event's OWN declared `plugins[]` array exactly matches what THIS
+ * condition should have loaded -- zero plugins when the skill should be unavailable, or exactly
+ * one plugin named `expectedSkillName` (no duplicates, no extras) when it should be available.
+ * Regression coverage for a real gap an independent review pass demonstrated: neither
+ * `isSkillAvailable` (only checks the target skill is present SOMEWHERE in the array) nor
+ * `hasExpectedToolProfile` (validates tools/mcp_servers/permissionMode but never inspects
+ * `plugins` at all) catches an unexpected THIRD-PARTY plugin coexisting alongside -- or instead
+ * of -- the intended one. A no-skill condition secretly carrying some other loaded plugin, or a
+ * current-skill condition carrying extra unexpected plugins, isn't genuinely isolated, even
+ * though `skill_available` for the TARGET skill still happens to read correctly.
+ */
+export function hasExpectedPluginProfile(initEvent, expectedSkillName, skillShouldBeLoaded) {
+  if (initEvent == null || !Array.isArray(initEvent.plugins)) return false;
+  if (!skillShouldBeLoaded) return initEvent.plugins.length === 0;
+  return initEvent.plugins.length === 1 && initEvent.plugins[0]?.name === expectedSkillName;
+}
+
+/**
+ * Every STRUCTURAL ambiguity in the transcript that would let a hard gate's simple "find the
+ * first X" / "does at least one Y exist" checks be fooled by a malformed or adversarially-shaped
+ * transcript. Returns a list of distinct issues found (empty = structurally sound):
+ *  - exactly one `init` event required (not zero, not several) -- findInitEvent/findResultEvent
+ *    silently take the FIRST and ignore the rest, so a transcript with a legitimate init/result
+ *    pair FOLLOWED by a second, different init+result pair (e.g. a foreign plugin and a
+ *    budget-truncated result) is completely invisible to every check built on top of those two
+ *    functions.
+ *  - exactly one terminal `result` event required, for the same reason.
+ *  - every `tool_use` block must have a non-empty id, and no two `tool_use` blocks anywhere in
+ *    the transcript may share the same id -- a duplicated id makes tool_use<->tool_result
+ *    correlation itself ambiguous (a single tool_result could then appear to confirm TWO
+ *    distinct calls, only one of which it legitimately belongs to).
+ *  - every `tool_result`'s own `tool_use_id` must correspond to EXACTLY one `tool_use` in the
+ *    transcript -- never zero (an ORPHAN result, referencing a call that was never made) and
+ *    never more than one (a DUPLICATE result for the same call).
+ *  - `init` must be the literal FIRST event in the whole transcript, and `result` must be
+ *    positionally the LAST -- proving exactly one of each exists SOMEWHERE is not the same as
+ *    proving WHERE. A transcript with `result` at index 0, `init` at index 1, and a Skill
+ *    `tool_use` after the "terminal" result satisfied every check above while being structurally
+ *    nonsensical; only meaningful once the single-init/single-result checks above already hold
+ *    (an ambiguous count has no unique event to anchor an ordering check against). Matches the
+ *    real stream-json protocol shape directly (a conversation begins with init and ends with
+ *    result), not just "no tool_use/tool_result precedes init" -- a plain assistant TEXT message
+ *    (no tool call at all) sitting before init is just as structurally invalid, and would
+ *    otherwise be invisible to a check scoped only to tool_use/tool_result indices.
+ * Regression coverage for a real gap an independent review pass demonstrated: both reproductions
+ * (a second init+result pair appended after a legitimate first one; two Skill tool_use blocks
+ * sharing one id satisfied by a single tool_result) returned {ok:true} against the hard gates as
+ * they stood -- every existing check either reads "the first" event of its kind, or only
+ * verifies "at least one" correlation exists, neither of which detects these shapes. A further
+ * round found the ordering gap above: `result` before `init`, with real activity trailing the
+ * fake "terminal" result, also returned {ok:true} with zero structural issues reported. A round
+ * after that found the ordering check itself was still too narrow: a plain assistant TEXT message
+ * (no tool_use) preceding init was invisible to a check that only looked at tool_use/tool_result
+ * indices, also returning {ok:true}.
+ * @returns {Array<{type: string, [key: string]: any}>}
+ */
+export function findTranscriptStructuralIssues(events) {
+  const issues = [];
+  const initIndices = [];
+  const resultIndices = [];
+  events.forEach((e, i) => {
+    if (e.type === 'system' && e.subtype === 'init') initIndices.push(i);
+    if (e.type === 'result') resultIndices.push(i);
+  });
+  if (initIndices.length !== 1) issues.push({ type: 'init_count', count: initIndices.length });
+  if (resultIndices.length !== 1) issues.push({ type: 'result_count', count: resultIndices.length });
+
+  const toolUseIds = [];
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type !== 'assistant') continue;
+    for (const c of ev.message?.content ?? []) {
+      if (c.type !== 'tool_use') continue;
+      if (typeof c.id !== 'string' || c.id.length === 0) {
+        issues.push({ type: 'empty_tool_use_id' });
+        continue;
+      }
+      toolUseIds.push(c.id);
+    }
+  }
+  const toolUseIdCounts = new Map();
+  for (const id of toolUseIds) toolUseIdCounts.set(id, (toolUseIdCounts.get(id) ?? 0) + 1);
+  for (const [id, count] of toolUseIdCounts) {
+    if (count > 1) issues.push({ type: 'duplicate_tool_use_id', id, count });
+  }
+
+  const uniqueToolUseIds = new Set(toolUseIds);
+  const toolResultIdCounts = new Map();
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type !== 'user') continue;
+    for (const c of ev.message?.content ?? []) {
+      if (c.type !== 'tool_result') continue;
+      const id = c.tool_use_id ?? null;
+      toolResultIdCounts.set(id, (toolResultIdCounts.get(id) ?? 0) + 1);
+    }
+  }
+  for (const [id, count] of toolResultIdCounts) {
+    if (id == null || !uniqueToolUseIds.has(id)) {
+      issues.push({ type: 'orphan_tool_result', id });
+      continue;
+    }
+    if (count > 1) issues.push({ type: 'duplicate_tool_result', id, count });
+  }
+
+  // Regression coverage for a review-round-5 finding: everything above proves exactly one init
+  // and one result exist SOMEWHERE in the transcript, but never checked WHERE -- a transcript
+  // with `result` at index 0, `init` at index 1, and a Skill tool_use AFTER the "terminal" result
+  // returned zero issues here, and calibrationHardGate() returned {ok:true} for it. Only
+  // meaningful when there's exactly one init and one result to anchor against -- a count mismatch
+  // is already reported above, and anchoring an ordering check to an arbitrary "first" or "last"
+  // one on a fundamentally ambiguous transcript would add noise, not signal.
+  if (initIndices.length === 1 && resultIndices.length === 1) {
+    const initIndex = initIndices[0];
+    const resultIndex = resultIndices[0];
+    // `result` must be positionally the LAST event in the whole transcript -- not merely present
+    // and unique. Once this holds, every other real event (init included) necessarily precedes it
+    // by construction, so this alone also proves "result comes after init".
+    if (resultIndex !== events.length - 1) {
+      issues.push({ type: 'result_not_last', resultIndex, eventsLength: events.length });
+    }
+    // `init` must be the literal FIRST event in the transcript, not merely "before every tool_use/
+    // tool_result" -- a review-round-6 finding demonstrated a plain assistant TEXT message (no
+    // tool_use at all) sitting before init was invisible to a check scoped to only tool_use/
+    // tool_result indices: findTranscriptStructuralIssues() returned [] and calibrationHardGate()
+    // returned {ok:true} for it. The real stream-json protocol begins with init and ends with
+    // result, with nothing of any kind preceding the former -- this also subsumes the narrower
+    // "no tool_use/tool_result before init" property a prior round checked directly (any such call
+    // now trivially implies initIndex > 0 too).
+    if (initIndex !== 0) {
+      issues.push({ type: 'init_not_first', initIndex });
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Every `tool_use` block (any name) that either has no `id` at all, or an id with no correlated
+ * `tool_result` found anywhere later in the transcript. Distinct from a call whose own
+ * `tool_result` WAS found but reported `is_error:true` (a demonstrated, conclusive failure) --
+ * this catches a genuinely INCOMPLETE capture, where what actually happened is simply unknown.
+ * Regression coverage for a real gap an independent review pass demonstrated: `findSkillInvocation`
+ * correctly reports `confirmed:false` for a dangling attempt with no result, but that's the exact
+ * same `confirmed:false` a demonstrated `<tool_use_error>Unknown skill</tool_use_error>` result
+ * produces -- the hard gates collapsed both into "safe" via `skill_invoked:false` alone,
+ * accepting a dangling attempt as if it were a proven clean rejection. Scans every tool_use
+ * regardless of name (Bash, Skill, or anything else) so it protects both calibration (which has
+ * no per-command result verification of its own) and smoke.
+ */
+export function findIncompleteToolResults(events) {
+  const out = [];
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type !== 'assistant') continue;
+    for (const c of ev.message?.content ?? []) {
+      if (c.type !== 'tool_use') continue;
+      if (c.id == null) {
+        out.push({ index: i, receiptNs: ev._receiptNs, name: c.name, id: null });
+        continue;
+      }
+      if (findToolResultById(events, c.id, i + 1) == null) {
+        out.push({ index: i, receiptNs: ev._receiptNs, name: c.name, id: c.id });
+      }
+    }
+  }
+  return out;
 }
 
 /** Every Bash tool_use, each correlated with its OWN tool_result outcome (mirrors
