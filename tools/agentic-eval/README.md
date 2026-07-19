@@ -29,8 +29,8 @@ presence (see "Attempted vs. confirmed invocation" below).
 - **`no-skill`** — the skill is technically absent (proven via the `init` event's `plugins[]`
   array being empty, not asserted from flag choice).
 - **`current-skill`** — the skill is loaded via `--plugin-dir` from a git-archive snapshot of a
-  pinned commit (`c5c0661852f7c9da145ef56892048e706216a6ce` by default), never the live working
-  tree, so the evaluated skill content can't silently drift.
+  pinned commit (configured by `PINNED_SKILL_SHA` in `tools/agentic-eval/cli.mjs`), never the live
+  working tree, so the evaluated skill content can't silently drift.
 - **`candidate-skill`** — accepted as a future path in the schema; `condition-launcher.mjs`
   throws a clear, typed error if selected. Not implemented here.
 
