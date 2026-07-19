@@ -44,7 +44,7 @@ import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 // CI job -- see condition-launcher.mjs's identical fix for the full story).
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
-const PINNED_SKILL_SHA = 'c5c0661852f7c9da145ef56892048e706216a6ce';
+const PINNED_SKILL_SHA = 'aeba6eaa8d027be999cdfeeb5bb2d1bbd0f688ee';
 // KMP_EVAL_RUNS_ROOT override exists specifically so tests never write to (or, worse, clean up
 // inside) the real committable tools/runs/ directory -- an earlier version of the integration
 // test suite listed and deleted files directly under the real RUNS_ROOT, including an
