@@ -23,13 +23,26 @@
 // repoCommit is treated the SAME as a genuinely dirty tree -- all three mean repo_commit can't be
 // trusted, so all three must produce the dirty_measured_code error that finalizeAndWriteRecords
 // fails closed on.
+//
+// Also covers a THIRD, unrelated gap discovered alongside the above: the dirty_harness_tooling
+// error messages (and the README's Fairness Contract prose describing them) claimed this code was
+// unconditionally "disclosure-only, never fail-closed" -- stale, since findBlockingHarnessToolingDirty
+// / finalizeAndWriteRecords already fail closed on it conditionally (default RUNS_ROOT only). Reuses
+// this file's existing spawnSync mock (targeting the harness-tooling pathspec instead of the
+// measured-code one) rather than standing up a second parallel mock of the same module.
 import { describe, it, expect, vi } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { readFileSync } from 'node:fs';
 
-// Which git call fails (or, for 'tools-lib-dirty', what it reports) is toggled PER TEST via
-// failMode -- avoids mixing a hoisted vi.mock() with vi.doMock() for the same module path, which
-// is fragile/order-dependent. Every OTHER spawnSync call always behaves normally, isolating each
-// test to exactly the one check under coverage.
-let failMode = null; // 'status' | 'rev-parse' | 'tools-lib-dirty' | null
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+
+// Which git call fails (or, for 'tools-lib-dirty'/'harness-dirty', what it reports) is toggled PER
+// TEST via failMode -- avoids mixing a hoisted vi.mock() with vi.doMock() for the same module path,
+// which is fragile/order-dependent. Every OTHER spawnSync call always behaves normally, isolating
+// each test to exactly the one check under coverage.
+let failMode = null; // 'status' | 'rev-parse' | 'tools-lib-dirty' | 'harness-status-fail' | 'harness-dirty' | null
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal();
@@ -37,6 +50,7 @@ vi.mock('node:child_process', async (importOriginal) => {
     ...actual,
     spawnSync: (cmd, args, opts) => {
       const isMeasuredCodeStatusCall = cmd === 'git' && args[0] === 'status' && args.includes('bin') && args.includes('lib') && args.includes('scripts');
+      const isHarnessToolingStatusCall = cmd === 'git' && args[0] === 'status' && args.includes('tools/agentic-eval') && args.includes('package.json');
       if (failMode === 'status' && isMeasuredCodeStatusCall) {
         return { status: 1, stdout: '', stderr: 'fatal: git: command not found (simulated)', error: new Error('spawn git ENOENT (simulated)') };
       }
@@ -51,6 +65,12 @@ vi.mock('node:child_process', async (importOriginal) => {
       }
       if (failMode === 'rev-parse' && cmd === 'git' && args[0] === 'rev-parse' && args[1] === 'HEAD') {
         return { status: 128, stdout: '', stderr: 'fatal: not a git repository (simulated)' };
+      }
+      if (failMode === 'harness-status-fail' && isHarnessToolingStatusCall) {
+        return { status: 1, stdout: '', stderr: 'fatal: git: command not found (simulated)', error: new Error('spawn git ENOENT (simulated)') };
+      }
+      if (failMode === 'harness-dirty' && isHarnessToolingStatusCall) {
+        return { status: 0, stdout: ' M tools/agentic-eval/cli.mjs\n', stderr: '' };
       }
       return actual.spawnSync(cmd, args, opts);
     },
@@ -121,5 +141,73 @@ describe('resolveHarnessProvenance -- the measured-code pathspec covers tools/li
     const provenance = resolveHarnessProvenance({ fresh: true });
     expect(provenance.measuredCodeDirtyPaths).toEqual(['M tools/lib/redact.mjs']);
     expect(provenance.measuredCodeCheckFailed).toBe(false); // the check itself succeeded -- this is a genuinely dirty result, not a failed check
+  });
+});
+
+// Regression coverage for a stale-prose gap: the dirty_harness_tooling error messages built in
+// buildRunRecord() claimed this was unconditionally "informational only" / "never blocks evidence".
+// That was true once, but findBlockingHarnessToolingDirty()/finalizeAndWriteRecords() were later
+// made conditionally fail-closed (blocks only when writing to the default RUNS_ROOT) without the
+// message text catching up. Asserts on substance (contains the corrected framing, drops the old
+// absolute claim) via .toContain(), never a full-message deep-equal/snapshot, so this survives
+// incidental future rewording as long as the conditional truth is still stated.
+async function buildRecordWithHarnessToolingError() {
+  const { resolveHarnessProvenance, buildRunRecord } = await import('../../tools/agentic-eval/cli.mjs');
+  const { computePolicySha256 } = await import('../../tools/agentic-eval/policy-config.mjs');
+  resolveHarnessProvenance({ fresh: true });
+  const conditionResult = {
+    init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+    result: { subtype: 'success', is_error: false },
+    invocation: null,
+    hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
+    byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+    startedAt: new Date('2026-01-01T00:00:00.000Z'),
+    endedAt: new Date('2026-01-01T00:00:01.000Z'),
+    spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
+    events: [],
+  };
+  return buildRunRecord({
+    conditionResult, condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-harness-tooling-wording',
+    skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+    allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+    modelRequested: 'fake-model',
+  });
+}
+
+describe('buildRunRecord -- dirty_harness_tooling message states the real conditional, not "never blocks evidence"', () => {
+  it('when the harness-tooling status check itself fails', async () => {
+    failMode = 'harness-status-fail';
+    const record = await buildRecordWithHarnessToolingError();
+    const dirty = record.errors.find((e) => e.code === 'dirty_harness_tooling');
+    expect(dirty).toBeDefined();
+    expect(dirty.message).toContain('fail-closed');
+    expect(dirty.message).toContain('default');
+    expect(dirty.message).toContain('RUNS_ROOT');
+    expect(dirty.message).not.toContain('never blocks evidence');
+    expect(dirty.message).not.toContain('informational only');
+  });
+
+  it('when the harness-tooling status check succeeds but reports a real dirty path', async () => {
+    failMode = 'harness-dirty';
+    const record = await buildRecordWithHarnessToolingError();
+    const dirty = record.errors.find((e) => e.code === 'dirty_harness_tooling');
+    expect(dirty).toBeDefined();
+    expect(dirty.message).toContain('fail-closed');
+    expect(dirty.message).toContain('default');
+    expect(dirty.message).toContain('RUNS_ROOT');
+    expect(dirty.message).not.toContain('never blocks evidence');
+    expect(dirty.message).not.toContain('informational only');
+  });
+});
+
+// Regression coverage for the actual place this drift happened: README.md's Fairness Contract
+// prose, not just the two runtime messages above. Nothing else in this suite reads the README, so
+// without this, the prose could drift stale again while every code-level test stays green.
+describe('README.md -- Fairness Contract describes dirty_harness_tooling conditionally', () => {
+  it('states the default/non-default RUNS_ROOT conditional and drops the stale unconditional wording', () => {
+    const readme = readFileSync(path.join(REPO_ROOT, 'tools', 'agentic-eval', 'README.md'), 'utf8');
+    expect(readme).toMatch(/dirty_harness_tooling[\s\S]{0,600}\bdefault\b/i);
+    expect(readme).toMatch(/dirty_harness_tooling[\s\S]{0,600}non-default/i);
+    expect(readme).not.toMatch(/disclosure-only,\s*never fail-closed/i);
   });
 });
