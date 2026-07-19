@@ -21,7 +21,7 @@
 // policy_sha256 match against the CURRENT policy-hook.mjs, the privacy fail-closed check
 // (assertCleanOrThrow), and the run-kind's hard acceptance gate all pass -- see
 // finalizeAndWriteRecords(). Any failure writes nothing and reports why.
-import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync, linkSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync, linkSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -111,34 +111,43 @@ const RUNS_ROOT_IS_DEFAULT = isRunsRootDefault(RUNS_ROOT, REPO_ROOT);
 // guarantee skill_source_sha implicitly claims -- closing it requires binding the reported path
 // to the SAME materialized snapshot directory this specific run actually built.
 //
-// Compared via realpath (mirrors isRunsRootDefault's identical rationale immediately above: a
-// relative path, trailing separator, differently-cased Windows path, or symlink/junction must not
-// let an equivalent-but-textually-different path slip past a bare `===`). Unlike
-// isRunsRootDefault, an unresolvable path here fails CLOSED in the opposite direction: "can't
-// positively confirm this is the expected snapshot" must mean "reject", never "assume it's fine".
-// Deliberately returns ONLY a boolean -- the actual resolved path (which could itself be
-// privacy-sensitive, e.g. containing the real OS username) is never included in the return value
-// or surfaced in any caller's error/log output.
+// Compared via FILESYSTEM IDENTITY (device + inode from statSync), never a string comparison of
+// resolved paths -- a review-round-5 finding demonstrated a bare case-folded comparison
+// (resolvedReported.toLowerCase() === resolvedExpected.toLowerCase(), the previous approach here)
+// is unsound on Windows: NTFS volumes support PER-DIRECTORY case sensitivity (fsutil.exe file
+// setCaseSensitiveInfo, shipped for WSL interop since Windows 10 1803), under which two
+// DIFFERENTLY-cased paths can be two GENUINELY DISTINCT directories -- a case-folded string
+// compare would wrongly treat them as the same snapshot. isRunsRootDefault's OWN case-fold is
+// safe specifically because a false positive there only engages STRICTER scrutiny (erring toward
+// "true" is the safe direction for that check) -- that justification does not transfer here: a
+// false positive in THIS check would APPROVE the WRONG plugin outright, exactly the provenance
+// guarantee this function exists to protect. dev+ino is the OS's own unambiguous identity for a
+// filesystem entry, invariant to case, trailing separators, or symlink/junction indirection --
+// statSync follows symlinks on both inputs the same way realpath would have, so no separate
+// realpath step is needed first. {bigint:true} avoids precision loss on Windows, where NTFS file
+// IDs can exceed Number.MAX_SAFE_INTEGER. An unresolvable path fails CLOSED: "can't positively
+// confirm this is the expected snapshot" must mean "reject", never "assume it's fine". Deliberately
+// returns ONLY a boolean -- the actual path (which could itself be privacy-sensitive, e.g.
+// containing the real OS username) is never included in the return value or surfaced in any
+// caller's error/log output.
 function isPluginBoundToSnapshot(initEvent, expectedSnapshotDir) {
   if (initEvent == null || !Array.isArray(initEvent.plugins) || initEvent.plugins.length !== 1) return false;
   const reportedPath = initEvent.plugins[0]?.path;
   if (typeof reportedPath !== 'string' || reportedPath.length === 0) return false;
   if (typeof expectedSnapshotDir !== 'string' || expectedSnapshotDir.length === 0) return false;
-  let resolvedReported;
-  let resolvedExpected;
+  let reportedStat;
+  let expectedStat;
   try {
-    resolvedReported = realpath(reportedPath);
+    reportedStat = statSync(reportedPath, { bigint: true });
   } catch {
     return false; // reported path doesn't exist / unresolvable -- fail closed, never assume a match
   }
   try {
-    resolvedExpected = realpath(expectedSnapshotDir);
+    expectedStat = statSync(expectedSnapshotDir, { bigint: true });
   } catch {
     return false; // the harness's OWN expected snapshot vanished -- also fail closed
   }
-  return process.platform === 'win32'
-    ? resolvedReported.toLowerCase() === resolvedExpected.toLowerCase()
-    : resolvedReported === resolvedExpected;
+  return reportedStat.dev === expectedStat.dev && reportedStat.ino === expectedStat.ino;
 }
 
 const HELP = `tools/agentic-eval/cli.mjs -- reproducible skill evaluation harness

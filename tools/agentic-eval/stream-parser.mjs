@@ -271,25 +271,40 @@ export function hasExpectedPluginProfile(initEvent, expectedSkillName, skillShou
  *  - every `tool_result`'s own `tool_use_id` must correspond to EXACTLY one `tool_use` in the
  *    transcript -- never zero (an ORPHAN result, referencing a call that was never made) and
  *    never more than one (a DUPLICATE result for the same call).
+ *  - `init` must precede every `tool_use`/`tool_result`, and `result` must be positionally the
+ *    LAST event in the whole transcript -- proving exactly one of each exists SOMEWHERE is not
+ *    the same as proving WHERE. A transcript with `result` at index 0, `init` at index 1, and a
+ *    Skill `tool_use` after the "terminal" result satisfied every check above while being
+ *    structurally nonsensical; only meaningful once the single-init/single-result checks above
+ *    already hold (an ambiguous count has no unique event to anchor an ordering check against).
  * Regression coverage for a real gap an independent review pass demonstrated: both reproductions
  * (a second init+result pair appended after a legitimate first one; two Skill tool_use blocks
  * sharing one id satisfied by a single tool_result) returned {ok:true} against the hard gates as
  * they stood -- every existing check either reads "the first" event of its kind, or only
- * verifies "at least one" correlation exists, neither of which detects these shapes.
+ * verifies "at least one" correlation exists, neither of which detects these shapes. A further
+ * round found the ordering gap above: `result` before `init`, with real activity trailing the
+ * fake "terminal" result, also returned {ok:true} with zero structural issues reported.
  * @returns {Array<{type: string, [key: string]: any}>}
  */
 export function findTranscriptStructuralIssues(events) {
   const issues = [];
-  const initCount = events.filter((e) => e.type === 'system' && e.subtype === 'init').length;
-  if (initCount !== 1) issues.push({ type: 'init_count', count: initCount });
-  const resultCount = events.filter((e) => e.type === 'result').length;
-  if (resultCount !== 1) issues.push({ type: 'result_count', count: resultCount });
+  const initIndices = [];
+  const resultIndices = [];
+  events.forEach((e, i) => {
+    if (e.type === 'system' && e.subtype === 'init') initIndices.push(i);
+    if (e.type === 'result') resultIndices.push(i);
+  });
+  if (initIndices.length !== 1) issues.push({ type: 'init_count', count: initIndices.length });
+  if (resultIndices.length !== 1) issues.push({ type: 'result_count', count: resultIndices.length });
 
   const toolUseIds = [];
-  for (const ev of events) {
+  const toolUseIndices = [];
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
     if (ev.type !== 'assistant') continue;
     for (const c of ev.message?.content ?? []) {
       if (c.type !== 'tool_use') continue;
+      toolUseIndices.push(i);
       if (typeof c.id !== 'string' || c.id.length === 0) {
         issues.push({ type: 'empty_tool_use_id' });
         continue;
@@ -305,10 +320,13 @@ export function findTranscriptStructuralIssues(events) {
 
   const uniqueToolUseIds = new Set(toolUseIds);
   const toolResultIdCounts = new Map();
-  for (const ev of events) {
+  const toolResultIndices = [];
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
     if (ev.type !== 'user') continue;
     for (const c of ev.message?.content ?? []) {
       if (c.type !== 'tool_result') continue;
+      toolResultIndices.push(i);
       const id = c.tool_use_id ?? null;
       toolResultIdCounts.set(id, (toolResultIdCounts.get(id) ?? 0) + 1);
     }
@@ -319,6 +337,33 @@ export function findTranscriptStructuralIssues(events) {
       continue;
     }
     if (count > 1) issues.push({ type: 'duplicate_tool_result', id, count });
+  }
+
+  // Regression coverage for a review-round-5 finding: everything above proves exactly one init
+  // and one result exist SOMEWHERE in the transcript, but never checked WHERE -- a transcript
+  // with `result` at index 0, `init` at index 1, and a Skill tool_use AFTER the "terminal" result
+  // returned zero issues here, and calibrationHardGate() returned {ok:true} for it. Only
+  // meaningful when there's exactly one init and one result to anchor against -- a count mismatch
+  // is already reported above, and anchoring an ordering check to an arbitrary "first" or "last"
+  // one on a fundamentally ambiguous transcript would add noise, not signal.
+  if (initIndices.length === 1 && resultIndices.length === 1) {
+    const initIndex = initIndices[0];
+    const resultIndex = resultIndices[0];
+    // `result` must be positionally the LAST event in the whole transcript -- not merely present
+    // and unique. Once this holds, every other real event (init included) necessarily precedes it
+    // by construction, so this alone also proves "result comes after init".
+    if (resultIndex !== events.length - 1) {
+      issues.push({ type: 'result_not_last', resultIndex, eventsLength: events.length });
+    }
+    // `init` must precede every tool_use/tool_result -- proving "result is last" alone doesn't
+    // also prove "init is first"; a tool_use before init (with init and result both otherwise
+    // correctly placed) is a distinct violation this catches.
+    for (const i of toolUseIndices) {
+      if (i < initIndex) issues.push({ type: 'activity_before_init', eventType: 'tool_use', index: i, initIndex });
+    }
+    for (const i of toolResultIndices) {
+      if (i < initIndex) issues.push({ type: 'activity_before_init', eventType: 'tool_result', index: i, initIndex });
+    }
   }
 
   return issues;

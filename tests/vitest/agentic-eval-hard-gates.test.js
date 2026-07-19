@@ -607,6 +607,69 @@ describe('calibrationHardGate', () => {
     expect(reason).toContain('toolResultsCompleteOk:true');
     expect(reason).toContain('transcriptStructureOk:false');
   });
+
+  // Regression coverage for a review-round-5 finding: findTranscriptStructuralIssues proved
+  // exactly one init and one result exist SOMEWHERE in the transcript, but never checked WHERE.
+  // This is the reviewer's own exact reproduction: result before init, with a Skill invocation
+  // trailing the supposedly-terminal result -- findTranscriptStructuralIssues() returned zero
+  // issues and calibrationHardGate() returned {ok:true} against the pre-fix code.
+  it('isolates transcriptStructureOk -- A\'s result event appears BEFORE its own init event, with a tool_use trailing the supposedly-terminal result', () => {
+    const runA = passRunResult({
+      events: [
+        resultEventStub(),
+        initEventStub(),
+        bashToolUseEvent('toolu_late', 'kmp-test parallel --json'),
+        toolResultEvent('toolu_late'),
+      ],
+    });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    // init/result stay valid on their own SEPARATE fields (unaffected by the events array shape),
+    // and the dangling-looking Bash call still has its own correlated result -- isolates this to
+    // transcriptStructureOk specifically, not a pile-up of unrelated cascading failures.
+    expect(reason).toContain('initOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('toolResultsCompleteOk:true');
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
+  it('isolates transcriptStructureOk -- B has a tool_use/tool_result pair BEFORE its own init event, even though result is correctly last', () => {
+    const runB = passRunResult({
+      events: [
+        bashToolUseEvent('toolu_early', 'kmp-test parallel --json'),
+        toolResultEvent('toolu_early'),
+        initEventStub(),
+        bashToolUseEvent('toolu_1', 'kmp-test doctor --json'),
+        toolResultEvent('toolu_1'),
+        bashToolUseEvent('toolu_2', 'kmp-test describe --json'),
+        toolResultEvent('toolu_2'),
+        resultEventStub(),
+      ],
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+    });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
+  it('isolates transcriptStructureOk -- A has a tool_use/tool_result pair AFTER what should have been the terminal result event', () => {
+    const runA = passRunResult({
+      events: [
+        initEventStub(),
+        bashToolUseEvent('toolu_1', 'kmp-test doctor --json'),
+        toolResultEvent('toolu_1'),
+        bashToolUseEvent('toolu_2', 'kmp-test describe --json'),
+        toolResultEvent('toolu_2'),
+        resultEventStub(),
+        bashToolUseEvent('toolu_late', 'kmp-test parallel --json'),
+        toolResultEvent('toolu_late'),
+      ],
+    });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
 });
 
 describe('smokeHardGate', () => {
@@ -1025,4 +1088,61 @@ describe('smokeHardGate', () => {
     expect(reason).toContain('toolResultsCompleteOk:true');
     expect(reason).toContain('transcriptStructureOk:false');
   });
+
+  // See calibrationHardGate's identical tests + rationale -- the same ordering gap (exactly one
+  // init/result proven to exist, but never checked WHERE) applies to smoke too.
+  it('isolates transcriptStructureOk -- A\'s result event appears BEFORE its own init event, with a tool_use trailing the supposedly-terminal result', () => {
+    const runA = passRunResult({
+      events: [
+        resultEventStub(),
+        initEventStub(),
+        bashToolUseEvent('toolu_late', 'kmp-test parallel --json'),
+        toolResultEvent('toolu_late'),
+      ],
+    });
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    expect(reason).toContain('initOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('toolResultsCompleteOk:true');
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
+  it('isolates transcriptStructureOk -- B has a tool_use/tool_result pair BEFORE its own init event, even though result is correctly last', () => {
+    const runB = passRunResult({
+      events: [
+        bashToolUseEvent('toolu_early', 'kmp-test parallel --json'),
+        toolResultEvent('toolu_early'),
+        initEventStub(),
+        bashToolUseEvent('toolu_1', 'kmp-test doctor --json'),
+        toolResultEvent('toolu_1'),
+        bashToolUseEvent('toolu_2', 'kmp-test describe --json'),
+        toolResultEvent('toolu_2'),
+        resultEventStub(),
+      ],
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+    });
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
+  it('isolates transcriptStructureOk -- A has a tool_use/tool_result pair AFTER what should have been the terminal result event', () => {
+    const runA = passRunResult({
+      events: [
+        initEventStub(),
+        bashToolUseEvent('toolu_1', 'kmp-test doctor --json'),
+        toolResultEvent('toolu_1'),
+        bashToolUseEvent('toolu_2', 'kmp-test describe --json'),
+        toolResultEvent('toolu_2'),
+        resultEventStub(),
+        bashToolUseEvent('toolu_late', 'kmp-test parallel --json'),
+        toolResultEvent('toolu_late'),
+      ],
+    });
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
 });
