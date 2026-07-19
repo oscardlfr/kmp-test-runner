@@ -697,6 +697,62 @@ describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded ze
   });
 });
 
+// Regression coverage for a review-round-3 finding: tool_calls_total's new
+// `invocation?.attemptCount ?? 0` computation (replacing a flat 0-or-1) was only exercised at the
+// findSkillInvocation/attemptCount level (agentic-eval-stream-parser.test.js) -- nothing proved
+// buildRunRecord() itself actually wires that field into the final total correctly.
+describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not just presence/absence', () => {
+  function bashToolUseEvent(id) {
+    return { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', id, input: { command: 'kmp-test doctor --json' } }] } };
+  }
+
+  it('sums N real Bash tool_use events plus a multi-attempt invocation.attemptCount, not a flat 0-or-1', () => {
+    const conditionResult = {
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [{ name: 'kmp-test-runner', path: '/fake', source: 'fake' }], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      result: { subtype: 'success', is_error: false },
+      // Simulates what findSkillInvocation() itself would return for 2 real Skill attempts
+      // (e.g. a failed-then-retried-successful invocation) -- attemptCount:2, not 1.
+      invocation: { attempted: true, confirmed: true, attemptCount: 2, type: 'assistant.tool_use.Skill', index: 0, receiptNs: 0n, input: { skill: 'kmp-test-runner' }, resultIsError: false },
+      hookStats: { hookCallCount: 3, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 3 },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
+      events: [bashToolUseEvent('toolu_1'), bashToolUseEvent('toolu_2'), bashToolUseEvent('toolu_3')],
+    };
+    const record = buildRunRecord({
+      conditionResult, condition: 'current-skill', runKind: 'calibration', scenarioId: 'test-tool-calls-total',
+      skillSourceSha: 'aeba6eaa8d027be999cdfeeb5bb2d1bbd0f688ee', daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+    });
+    // 3 real Bash tool_use events + attemptCount:2 (NOT the old flat +1) = 5, not 4.
+    expect(record.tool_calls_total).toEqual({ value: 5, reason: null });
+    expect(record.shell_commands_total).toEqual({ value: 3, reason: null });
+  });
+
+  it('falls back to 0 for the Skill contribution when invocation is null (no attempt at all)', () => {
+    const conditionResult = {
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      result: { subtype: 'success', is_error: false },
+      invocation: null,
+      hookStats: { hookCallCount: 1, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 1 },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
+      events: [bashToolUseEvent('toolu_1')],
+    };
+    const record = buildRunRecord({
+      conditionResult, condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-tool-calls-total-no-invocation',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+    });
+    expect(record.tool_calls_total).toEqual({ value: 1, reason: null });
+  });
+});
+
 // Regression coverage for a real gap found while implementing the gitignore-safety check above:
 // writeRunRecordEvidence() can itself throw (a run_id collision, or an unsafe raw destination),
 // but finalizeAndWriteRecords() called it with no try/catch of its own -- and neither

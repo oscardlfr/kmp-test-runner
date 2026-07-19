@@ -33,7 +33,7 @@ import { buildEvalEnv } from './env-builder.mjs';
 import { buildPathShim } from './path-shim.mjs';
 import { materializeSkillSnapshot, materializeCalibrationProject, materializeScenarioProject, materializeGradleUserHome, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition } from './condition-launcher.mjs';
-import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findForeignSkillUses, findBashToolUses, findBashToolUsesWithResults, findUnexpectedToolUses, hasExpectedToolProfile, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
+import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findForeignSkillUses, findBashToolUses, findBashToolUsesWithResults, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
 import { aggregateRuns } from './aggregate.mjs';
 import { assertCleanOrThrow, assertCleanOrThrowObject, loadPrivateRules } from './privacy.mjs';
 import { tokenize } from './policy-hook.mjs';
@@ -910,6 +910,13 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   // BOTH conditions to contain zero Skill calls targeting anything other than kmp-test-runner.
   const skillSelectionOk = findForeignSkillUses(runAResult.events, TARGET_SKILL_NAME).length === 0
     && findForeignSkillUses(runBResult.events, TARGET_SKILL_NAME).length === 0;
+  // Regression coverage for a real gap an independent review pass demonstrated: neither
+  // isSkillAvailable nor hasExpectedToolProfile ever inspects the init event's OWN plugins[]
+  // array -- an unexpected third-party plugin loaded alongside (or instead of) the intended one
+  // went completely undetected. A must load exactly zero plugins; B must load exactly one,
+  // named kmp-test-runner -- no duplicates, no extras.
+  const pluginProfileOk = hasExpectedPluginProfile(runAResult.init, TARGET_SKILL_NAME, false)
+    && hasExpectedPluginProfile(runBResult.init, TARGET_SKILL_NAME, true);
   // A session that never emitted an init event at all is a fundamentally broken/incomplete
   // capture, not a legitimately-observed "skill unavailable" -- without this check, a run with
   // NO init event could still show skill_available:false for the no-skill arm (nothing to derive
@@ -932,10 +939,24 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   const resultOk = runAResult.result?.subtype === 'success' && runAResult.result?.is_error === false
     && runBResult.result?.subtype === 'success' && runBResult.result?.is_error === false;
   const hookAccountingOk = runAResult.hookStats.everyCallHooked === true && runBResult.hookStats.everyCallHooked === true;
-  const ok = availabilityOk && noSkillSafetyOk && currentInvocationOk && skillSelectionOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk;
+  // Regression coverage for a real gap an independent review pass demonstrated: findSkillInvocation
+  // correctly reports confirmed:false for a Skill attempt with NO correlated tool_result at all
+  // (transcript cut short before a result arrived), but the gate previously treated
+  // attempted:true/invoked:false uniformly as a "clean" no-skill shape -- a dangling attempt is an
+  // INCOMPLETE capture, not a demonstrated Unknown-skill rejection, and must not be silently
+  // accepted as equivalent. Scans every tool_use (Bash included -- calibration has no per-command
+  // result check of its own, unlike smoke's exactCommandsOk).
+  const toolResultsCompleteOk = findIncompleteToolResults(runAResult.events).length === 0
+    && findIncompleteToolResults(runBResult.events).length === 0;
+  // Only smokeHardGate had this check until now -- a malformed/truncated JSONL line could hide
+  // exactly a Skill tool_use or its result, artificially producing attempted:false for A, which
+  // the relaxed no-skill contract now legitimately tolerates. Calibration needs the same
+  // protection smoke already has.
+  const cleanTranscriptOk = runAResult.malformedLines.length === 0 && runBResult.malformedLines.length === 0;
+  const ok = availabilityOk && noSkillSafetyOk && currentInvocationOk && skillSelectionOk && pluginProfileOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && toolResultsCompleteOk && cleanTranscriptOk;
   return {
     ok,
-    reason: ok ? null : `calibration hard gate failed -- availabilityOk:${availabilityOk} noSkillSafetyOk:${noSkillSafetyOk} currentInvocationOk:${currentInvocationOk} skillSelectionOk:${skillSelectionOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
+    reason: ok ? null : `calibration hard gate failed -- availabilityOk:${availabilityOk} noSkillSafetyOk:${noSkillSafetyOk} currentInvocationOk:${currentInvocationOk} skillSelectionOk:${skillSelectionOk} pluginProfileOk:${pluginProfileOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} toolResultsCompleteOk:${toolResultsCompleteOk} cleanTranscriptOk:${cleanTranscriptOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
   };
 }
 
@@ -997,6 +1018,10 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   // kmp-test-runner.
   const skillSelectionOk = findForeignSkillUses(runAResult.events, TARGET_SKILL_NAME).length === 0
     && findForeignSkillUses(runBResult.events, TARGET_SKILL_NAME).length === 0;
+  // See calibrationHardGate's identical check and doc comment -- neither isSkillAvailable nor
+  // hasExpectedToolProfile ever inspects the init event's own plugins[] array.
+  const pluginProfileOk = hasExpectedPluginProfile(runAResult.init, TARGET_SKILL_NAME, false)
+    && hasExpectedPluginProfile(runBResult.init, TARGET_SKILL_NAME, true);
   // See calibrationHardGate's identical check -- a session with no init event at all is a
   // broken/incomplete capture, not legitimately-observed data.
   const initOk = runAResult.init != null && runBResult.init != null;
@@ -1025,10 +1050,14 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   const exactCommandsOk = verifyExactCommandsSucceeded(runAResult.bashResults, SMOKE_EXPECTED_COMMANDS)
     && verifyExactCommandsSucceeded(runBResult.bashResults, SMOKE_EXPECTED_COMMANDS);
   const cleanTranscriptOk = runAResult.malformedLines.length === 0 && runBResult.malformedLines.length === 0;
-  const ok = availabilityOk && skillSelectionOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk;
+  // See calibrationHardGate's identical check and doc comment -- a dangling tool_use with no
+  // correlated tool_result is an incomplete capture, not a demonstrated outcome.
+  const toolResultsCompleteOk = findIncompleteToolResults(runAResult.events).length === 0
+    && findIncompleteToolResults(runBResult.events).length === 0;
+  const ok = availabilityOk && skillSelectionOk && pluginProfileOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk && toolResultsCompleteOk;
   return {
     ok,
-    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} skillSelectionOk:${skillSelectionOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype} tools:${JSON.stringify(runAResult.init?.tools)}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype} tools:${JSON.stringify(runBResult.init?.tools)})`,
+    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} skillSelectionOk:${skillSelectionOk} pluginProfileOk:${pluginProfileOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} toolResultsCompleteOk:${toolResultsCompleteOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype} tools:${JSON.stringify(runAResult.init?.tools)}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype} tools:${JSON.stringify(runBResult.init?.tools)})`,
   };
 }
 

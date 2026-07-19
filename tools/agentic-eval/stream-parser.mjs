@@ -236,6 +236,56 @@ export function hasExpectedToolProfile(initEvent, allowedToolNames) {
   return true;
 }
 
+/**
+ * True only if the init event's OWN declared `plugins[]` array exactly matches what THIS
+ * condition should have loaded -- zero plugins when the skill should be unavailable, or exactly
+ * one plugin named `expectedSkillName` (no duplicates, no extras) when it should be available.
+ * Regression coverage for a real gap an independent review pass demonstrated: neither
+ * `isSkillAvailable` (only checks the target skill is present SOMEWHERE in the array) nor
+ * `hasExpectedToolProfile` (validates tools/mcp_servers/permissionMode but never inspects
+ * `plugins` at all) catches an unexpected THIRD-PARTY plugin coexisting alongside -- or instead
+ * of -- the intended one. A no-skill condition secretly carrying some other loaded plugin, or a
+ * current-skill condition carrying extra unexpected plugins, isn't genuinely isolated, even
+ * though `skill_available` for the TARGET skill still happens to read correctly.
+ */
+export function hasExpectedPluginProfile(initEvent, expectedSkillName, skillShouldBeLoaded) {
+  if (initEvent == null || !Array.isArray(initEvent.plugins)) return false;
+  if (!skillShouldBeLoaded) return initEvent.plugins.length === 0;
+  return initEvent.plugins.length === 1 && initEvent.plugins[0]?.name === expectedSkillName;
+}
+
+/**
+ * Every `tool_use` block (any name) that either has no `id` at all, or an id with no correlated
+ * `tool_result` found anywhere later in the transcript. Distinct from a call whose own
+ * `tool_result` WAS found but reported `is_error:true` (a demonstrated, conclusive failure) --
+ * this catches a genuinely INCOMPLETE capture, where what actually happened is simply unknown.
+ * Regression coverage for a real gap an independent review pass demonstrated: `findSkillInvocation`
+ * correctly reports `confirmed:false` for a dangling attempt with no result, but that's the exact
+ * same `confirmed:false` a demonstrated `<tool_use_error>Unknown skill</tool_use_error>` result
+ * produces -- the hard gates collapsed both into "safe" via `skill_invoked:false` alone,
+ * accepting a dangling attempt as if it were a proven clean rejection. Scans every tool_use
+ * regardless of name (Bash, Skill, or anything else) so it protects both calibration (which has
+ * no per-command result verification of its own) and smoke.
+ */
+export function findIncompleteToolResults(events) {
+  const out = [];
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type !== 'assistant') continue;
+    for (const c of ev.message?.content ?? []) {
+      if (c.type !== 'tool_use') continue;
+      if (c.id == null) {
+        out.push({ index: i, receiptNs: ev._receiptNs, name: c.name, id: null });
+        continue;
+      }
+      if (findToolResultById(events, c.id, i + 1) == null) {
+        out.push({ index: i, receiptNs: ev._receiptNs, name: c.name, id: c.id });
+      }
+    }
+  }
+  return out;
+}
+
 /** Every Bash tool_use, each correlated with its OWN tool_result outcome (mirrors
  * findSkillInvocation's attempted-vs-confirmed correlation, generalized to every Bash call).
  * Needed to verify not just THAT commands ran, but that each one's own result was not an error,

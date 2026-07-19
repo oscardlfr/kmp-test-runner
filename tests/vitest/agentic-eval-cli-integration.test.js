@@ -159,6 +159,25 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     expect(listEvidenceFiles('calibration').length).toBe(2);
   }, 20000);
 
+  // Regression coverage for a real bypass an independent review pass demonstrated: only
+  // smokeHardGate had cleanTranscriptOk -- a malformed/truncated JSONL line could hide exactly a
+  // Skill tool_use or its own result, artificially producing a "clean" attempted:false shape the
+  // relaxed no-skill contract now legitimately tolerates. Reuses the same fake-claude-malformed
+  // fixture smoke's own cleanTranscriptOk test uses; it never calls Skill at all, so for
+  // calibrate this ALSO trips currentInvocationOk (B never confirms an invocation either) -- not
+  // pure single-cause isolation, disclosed honestly rather than fabricating a calibrate-specific
+  // fixture just to force a cleaner split.
+  it('malformed-transcript scenario: fails the hard gate (cleanTranscriptOk, alongside currentInvocationOk since this fixture never calls Skill) and writes NO evidence', () => {
+    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('malformed'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CALIBRATION FAILED');
+    expect(result.stderr).toContain('cleanTranscriptOk:false');
+    expect(result.stderr).toContain('availabilityOk:true');
+    expect(result.stderr).toContain('skillSelectionOk:true');
+    expect(result.stderr).toContain('pluginProfileOk:true');
+    expect(listEvidenceFiles('calibration').length).toBe(0);
+  }, 20000);
+
   // Regression coverage for a real evidence-contamination bypass an independent review pass
   // demonstrated directly against calibrationHardGate: A calling an entirely UNRELATED skill
   // (not kmp-test-runner) is invisible to findSkillInvocation (scoped to kmp-test-runner only),
