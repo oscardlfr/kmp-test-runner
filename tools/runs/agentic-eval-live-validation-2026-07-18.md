@@ -86,6 +86,35 @@ nullable-metric field shows its recorded `reason` when the value is null; nothin
 | `project_commit` | null (no real external repo) | null | `b3a7784f...944cdab7` | `b3a7784f...944cdab7` |
 | `project_url` | null | null | `https://github.com/touchlab/KaMPKit` | same |
 
+## Reading the metric table correctly
+
+The numbers above must not be read as a performance/efficacy comparison between "with skill" and
+"without skill" — not even informally, by eyeballing them side by side — for four independent
+reasons:
+
+1. **Calibration's two arms do fundamentally different amounts of work; they are not the same
+   task measured faster/slower.** The no-skill arm attempts the `Skill` tool once, receives an
+   `Unknown skill` error, makes two denied exploratory Bash attempts, and stops. The current-skill
+   arm successfully loads the skill and continues much further: real `doctor`/`parallel`
+   diagnostic work, a failed `parallel` run, a `parallel --dry-run` follow-up, and more. B's higher
+   token/time/tool-call counts reflect that B did substantially more actual work — they are not a
+   latency or efficiency signal.
+2. **The calibration fixture (`tools/agentic-eval/fixtures/calibration-project/`) is intentionally
+   not a runnable KMP/Gradle project** — an empty `build.gradle.kts`, a `settings.gradle.kts` with
+   no modules, and a stub `gradlew` that only echoes and exits 0. The non-zero/no-test-modules-shaped
+   result `kmp-test parallel` returns against it is expected fixture behavior, not a skill or CLI
+   defect.
+3. **Smoke's prompt explicitly named the two commands and prohibited anything else**
+   ("Do not run any other commands or tools", `cli.mjs:1028`), so neither arm attempted the
+   `Skill` tool at all. Smoke validates harness isolation and pipeline equivalence between
+   conditions **only** — it makes no claim about skill efficacy and does not test whether the
+   skill triggers naturally on an unprompted request.
+4. **Conditions run in a fixed order, not randomized or counterbalanced** — `runConditionPair`
+   always runs `current-skill` (B) before `no-skill` (A). `tokens.cache_read`/`tokens.cache_creation`
+   in particular are order-confounded by this: any difference could reflect calling order rather
+   than skill presence/absence. A future benchmark-grade harness would need to randomize or
+   counterbalance condition order before any such comparison could be drawn honestly.
+
 **Note on `retries`:** the harness's record builder (`buildRunRecord` in `cli.mjs`) currently
 hardcodes `retries: nullableMetric(0)` unconditionally — there is no actual retry-detection logic
 behind it, unlike the sibling `test_invocations_total` field one line above it in the same
@@ -152,7 +181,10 @@ and `git diff --cached --check`, all clean.
 - This is **n=1 paired validation**, not a benchmark. No statistical claim of any kind follows
   from a single paired run per condition.
 - No performance, cost-saving, latency, token-efficiency, or skill-efficacy claim is made or
-  implied anywhere in this report.
+  implied anywhere in this report — see "Reading the metric table correctly" above for the four
+  independent reasons the raw numbers are not comparable even informally (workload asymmetry,
+  fixture design, smoke's prescribed-commands-only prompt, and fixed non-randomized condition
+  order).
 - Only the public `touchlab/KaMPKit` project was used. No private project, module, or
   maintainer-specific identifier appears anywhere in the committed evidence.
 - Claude Max / OAuth was used throughout; no API key was present in the environment at any scope.
