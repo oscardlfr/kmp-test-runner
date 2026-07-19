@@ -270,10 +270,12 @@ function resolveHarnessProvenance({ fresh = false } = {}) {
   //    finalizeAndWriteRecords() is writing to the default, committable RUNS_ROOT (see
   //    RUNS_ROOT_IS_DEFAULT and finalizeAndWriteRecords's own comment for the full reasoning) --
   //    never blanket, because tools/agentic-eval/** is necessarily in-flux during the harness's
-  //    own active development (including this very test suite, which lives inside that same tree
-  //    and always targets an isolated, non-default RUNS_ROOT) -- blocking there too would make
-  //    the harness structurally unable to ever produce evidence while being developed or
-  //    exercised by its own local test run. package.json is grouped here (not the measured-code
+  //    own active development (including this very test suite, which lives inside that same
+  //    tree -- tests that exercise evidence-writing paths use isolated, non-default roots where
+  //    required, while some unit tests intentionally exercise the canonical default-root branch
+  //    directly, short of an actual write) -- blocking there too would make the harness
+  //    structurally unable to ever produce evidence while being developed or exercised by its
+  //    own local test run. package.json is grouped here (not the measured-code
   //    list) since its version field is metadata about the harness/CLI release, not code whose
   //    correctness affects what evidence actually captured. Unlike tools/agentic-eval/**,
   //    tools/lib/ and tools/validate-plugin.mjs are shared, stable, pre-existing repo
@@ -475,6 +477,11 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
   const { init, result, invocation, hookStats, byteMetrics, startedAt, endedAt } = conditionResult;
   const notApplicableReason = `${runKind} run -- no scenario grader applies`;
   const provenance = resolveHarnessProvenance();
+  // Shared by BOTH dirty_harness_tooling branches below so the two messages can't drift apart
+  // again -- this exact drift (the messages claiming "never blocks evidence" after
+  // findBlockingHarnessToolingDirty/finalizeAndWriteRecords were made conditionally fail-closed)
+  // is the bug this constant exists to prevent from recurring.
+  const harnessToolingDispositionNote = `always disclosed here; additionally fail-closed by finalizeAndWriteRecords() when writing to the default, committable RUNS_ROOT -- see resolveHarnessProvenance's own comment for the full conditional reasoning`;
   return {
     schema: CURRENT_RUN_SCHEMA,
     run_id: `${runKind}-${condition}-${randomUUID().slice(0, 8)}`,
@@ -522,7 +529,7 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     tool_calls_total: nullableMetric(findBashToolUses(conditionResult.events).length + (invocation ? 1 : 0)),
     shell_commands_total: nullableMetric(findBashToolUses(conditionResult.events).length),
     test_invocations_total: nullableMetric(null, `not tracked for ${runKind} runs`),
-    retries: nullableMetric(0),
+    retries: nullableMetric(null, `not tracked for ${runKind} runs`),
     output_bytes: nullableMetric(byteMetrics.outputBytes),
     stream_json_bytes: nullableMetric(byteMetrics.streamJsonBytes),
     human_interventions: nullableMetric(0),
@@ -565,9 +572,9 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
           ? [{ code: 'dirty_measured_code', message: `bin/lib/scripts/tools/lib/tools/validate-plugin.mjs have uncommitted local modifications not reflected in repo_commit: ${provenance.measuredCodeDirtyPaths.join(', ')}` }]
           : []),
       ...(provenance.harnessToolingCheckFailed
-        ? [{ code: 'dirty_harness_tooling', message: 'the git status check for tools/agentic-eval/package.json itself failed (git missing from PATH, spawn error, or not a git repository) -- cannot verify the tree is clean (informational only -- see resolveHarnessProvenance\'s own comment for why this never blocks evidence)' }]
+        ? [{ code: 'dirty_harness_tooling', message: `the git status check for tools/agentic-eval/package.json itself failed (git missing from PATH, spawn error, or not a git repository) -- cannot verify the tree is clean (${harnessToolingDispositionNote})` }]
         : provenance.harnessToolingDirtyPaths.length > 0
-          ? [{ code: 'dirty_harness_tooling', message: `tools/agentic-eval/package.json have uncommitted local modifications not reflected in repo_commit (informational only -- see resolveHarnessProvenance's own comment for why this never blocks evidence): ${provenance.harnessToolingDirtyPaths.join(', ')}` }]
+          ? [{ code: 'dirty_harness_tooling', message: `tools/agentic-eval/package.json have uncommitted local modifications not reflected in repo_commit (${harnessToolingDispositionNote}): ${provenance.harnessToolingDirtyPaths.join(', ')}` }]
           : []),
       // KMP_EVAL_RUNS_ROOT is a test-only escape hatch (see its own module-level comment) -- real
       // calibrate/smoke invocations are not expected to set it. Disclosed rather than silently

@@ -655,6 +655,48 @@ describe('buildRunRecord -- raw_capture_location under the default (non-overridd
   });
 });
 
+// Regression coverage for a real gap PR #373 found and hand-corrected only in its 4 committed
+// evidence records, not in the generator itself: retries was hardcoded to nullableMetric(0) with
+// no retry-detection logic behind it anywhere in this file, silently claiming a measured value of
+// zero rather than disclosing that retries simply aren't tracked -- exactly the shape
+// test_invocations_total already uses one field above. Fixed at the generator, not just the 4
+// already-committed records (which PR #373 already corrected and which stay untouched).
+describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded zero', () => {
+  function fakeConditionResult() {
+    return {
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      result: { subtype: 'success', is_error: false },
+      invocation: null,
+      hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
+      events: [],
+    };
+  }
+
+  it('reports retries as null with a runKind-specific reason for a calibration run', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-retries-calibration',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+    });
+    expect(record.retries).toEqual({ value: null, reason: 'not tracked for calibration runs' });
+  });
+
+  it('reports retries as null with a runKind-specific reason for a smoke run', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeConditionResult(), condition: 'no-skill', runKind: 'smoke', scenarioId: 'test-retries-smoke',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+    });
+    expect(record.retries).toEqual({ value: null, reason: 'not tracked for smoke runs' });
+  });
+});
+
 // Regression coverage for a real gap found while implementing the gitignore-safety check above:
 // writeRunRecordEvidence() can itself throw (a run_id collision, or an unsafe raw destination),
 // but finalizeAndWriteRecords() called it with no try/catch of its own -- and neither

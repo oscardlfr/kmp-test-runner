@@ -462,9 +462,16 @@ PATH shim's own execution can actually reach) carry uncommitted local modificati
 `finalizeAndWriteRecords()` refuses to write any evidence at all when it's present, rather than
 silently letting the recorded SHA imply a codebase that isn't quite what actually ran. A second,
 separate check covers `tools/agentic-eval/**`/`package.json` (`errors[].code:
-'dirty_harness_tooling'`) and is deliberately disclosure-only, never fail-closed — that tree is
-inherently, constantly dirty during this harness's own active development (its own test suite
-lives there), so blocking on it would make the harness unable to ever produce evidence locally.
+'dirty_harness_tooling'`) and is always disclosed, but fail-closed only conditionally: blocking
+applies only when `finalizeAndWriteRecords()` is writing to the default, committable `RUNS_ROOT`
+(see `isRunsRootDefault`/`findBlockingHarnessToolingDirty`) — not blanket, because
+`tools/agentic-eval/**` is necessarily in-flux during the harness's own active development. Tests
+that exercise evidence-writing paths use isolated, non-default roots where required, so
+unconditional blocking would make the harness structurally unable to ever produce evidence while
+being developed or exercised by its own local test runs; some unit tests do intentionally exercise
+the canonical default-root branch directly (they stop short of an actual write). A real
+`calibrate`/`smoke` invocation producing official evidence, though, is held to the same clean-tree
+discipline as `dirty_measured_code`: develop, commit, then run.
 
 The `dirty_measured_code` fail-closed signal ALSO fires when the underlying git commands
 themselves fail (git missing from PATH, a spawn error, or the worktree not being a git repository
