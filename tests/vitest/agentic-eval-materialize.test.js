@@ -53,6 +53,20 @@ describe('materializeSkillSnapshot', () => {
     expect(existsSync(path.join(snapshotDir, '.skills', 'kmp-test-runner', 'SKILL.md'))).toBe(true);
   });
 
+  // Uses the live HEAD (not KNOWN_SHA above, which is intentionally a fixed historical pin for
+  // mechanism-only tests) because this test's whole point is content-sensitive: it proves the
+  // skill-portability fix survives real plugin materialization, not just a working-tree read.
+  // Only meaningful once a commit containing the fix exists -- added in the commit right after it.
+  it('a materialized snapshot of the current commit reflects the portable canonical workflow', async () => {
+    const headSha = gitViaBash(['rev-parse', 'HEAD'], REPO_ROOT).trim();
+    const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: headSha, validateFn: runValidator });
+    cleanupDirs.push(snapshotDir);
+    expect(validation.ok).toBe(true);
+    const materializedSkillMd = readFileSync(path.join(snapshotDir, '.skills', 'kmp-test-runner', 'SKILL.md'), 'utf8');
+    expect(materializedSkillMd).not.toMatch(/^(bash|pwsh)\s+\.skills\/kmp-test-runner\//m);
+    expect(materializedSkillMd).toContain('kmp-test parallel --json --project-root .');
+  });
+
   it('cleans up its temp directory when validation fails partway through (not just on an invalid SHA)', async () => {
     // Regression coverage for a real leak found by an independent review pass: a failure
     // AFTER mkdtempSync (specifically, a validation failure against a perfectly valid archive)
