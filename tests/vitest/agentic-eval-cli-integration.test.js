@@ -130,18 +130,28 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
 
   // This fixture's no-skill arm (A) genuinely attempts nothing; its current-skill arm (B)
   // genuinely attempts AND succeeds (mirrors the success fixture's own Skill-invocation shape).
-  // Asserting the granular reason string -- not just "it failed" -- proves invocationOk is the
-  // ONLY named sub-check this fixture trips, isolating specifically "A never attempted" rather
-  // than both arms trivially being empty/identical.
-  it('no-tool-use scenario: fails the hard gate (no attempt at all) and writes NO evidence', () => {
+  // A prior version of calibrationHardGate rejected this shape (required A to ATTEMPT the call
+  // before trusting it) -- a real live run hit exactly this shape (2026-07-19 agentic-eval
+  // revalidation) and review established the requirement itself was wrong: a model correctly
+  // recognizing the skill isn't in its available tool list and not trying it at all is just as
+  // legitimate no-skill-arm proof as trying it and getting `Unknown skill` back. This is now a
+  // PASS. Calibrate's remaining failure mode against this fixture family -- B failing to confirm
+  // invocation -- is deliberately left to agentic-eval-hard-gates.test.js's synthetic unit tests
+  // only, not a new fake-claude fixture, mirroring this same file's own established precedent for
+  // smoke's 'all-denied' scenario (see its comment above): fabricating a realistic transcript
+  // shape that isn't independently verified anywhere isn't worth the guesswork.
+  it('no-tool-use scenario: A never attempting the skill is a legitimate no-skill shape -- passes and writes evidence', () => {
     const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('no-tool-use'));
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain('CALIBRATION FAILED');
-    expect(result.stderr).toContain('invocationOk:false');
-    expect(result.stderr).toContain('processOk:true');
-    expect(result.stderr).toContain('resultOk:true');
-    expect(result.stderr).toContain('hookAccountingOk:true');
-    expect(listEvidenceFiles('calibration').length).toBe(0);
+    expect(result.status).toBe(0);
+    expect(result.parsed).not.toBeNull();
+    const { recordA, recordB } = result.parsed;
+    expect(recordA.skill_available.value).toBe(false);
+    expect(recordA.skill_invocation_attempted.value).toBe(false);
+    expect(recordA.skill_invoked.value).toBe(false);
+    expect(recordB.skill_available.value).toBe(true);
+    expect(recordB.skill_invocation_attempted.value).toBe(true);
+    expect(recordB.skill_invoked.value).toBe(true);
+    expect(listEvidenceFiles('calibration').length).toBe(2);
   }, 20000);
 
   it('leaves no leftover temp directories after a passing run (cleanup ran)', () => {
@@ -150,9 +160,16 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     expect(readdirSync(isolatedTmp)).toEqual([]);
   }, 20000);
 
+  // Uses 'unexpected-tool', not 'no-tool-use' -- the latter is now a legitimate PASS scenario
+  // (see the flipped test above), so this cleanup-on-failure test needs a fixture that still
+  // genuinely fails calibrate for a reason unrelated to the invocation contract.
+  // 'unexpected-tool' trips noUnexpectedToolsOk (a Read tool_use outside the two expected calls)
+  // in both conditions regardless of --plugin-dir, so it fails calibrate the same way it fails
+  // smoke -- see this fixture's own header comment.
   it('leaves no leftover temp directories after a FAILING run either (cleanup runs in finally)', () => {
-    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('no-tool-use'));
+    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('unexpected-tool'));
     expect(result.status).toBe(1);
+    expect(result.stderr).toContain('noUnexpectedToolsOk:false');
     expect(readdirSync(isolatedTmp)).toEqual([]);
   }, 20000);
 });

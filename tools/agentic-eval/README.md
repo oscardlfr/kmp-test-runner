@@ -61,15 +61,21 @@ directly self-contradictory. `schemas.mjs` now also rejects that combination at 
 ## Run kinds
 
 - **`calibration`** — explicit-invocation only (the prompt directly asks for the skill by name).
-  Proves invocation *mechanics*: both conditions must show a genuine attempt (the prompt actually
-  drives one), confirmed invocation must track availability exactly (A attempts and fails, B
-  attempts and succeeds), both conditions must have produced a real `init` event (`initOk` —
-  a session with no `init` event at all is a broken/incomplete capture, not legitimately-observed
-  "unavailable" data), and both conditions' own `result` event must read `subtype:'success'`
-  **and** `is_error:false` (not `is_error` alone — a session cut short by, say, the budget cap
-  reports a distinct `subtype` — confirmed `'error_max_budget_usd'` — that isn't necessarily
-  paired with `is_error:true`, so `is_error` alone doesn't prove a genuine, uninterrupted
-  completion). A failure here is a harness bug, not a measurement result.
+  Proves invocation *mechanics*: the current-skill condition (B) must show a full, confirmed
+  invocation (`available:true`, `attempted:true`, `invoked:true`) — no relaxation there. The
+  no-skill condition (A) must show `available:false` and, always, `invoked:false` — but whether it
+  *attempted* the call first is not required: a model correctly recognizing the skill isn't in its
+  available tool list and not trying it at all is just as legitimate isolation proof as trying it
+  and getting `Unknown skill` back (both real, observed shapes — see "Attempted vs. confirmed
+  invocation" above). `attempted` must still be a genuine observation, though (`true` or `false`,
+  never `null`/unknown — an incomplete capture must not silently pass). Both conditions must also
+  have produced a real `init` event (`initOk` — a session with no `init` event at all is a
+  broken/incomplete capture, not legitimately-observed "unavailable" data), and both conditions'
+  own `result` event must read `subtype:'success'` **and** `is_error:false` (not `is_error` alone
+  — a session cut short by, say, the budget cap reports a distinct `subtype` — confirmed
+  `'error_max_budget_usd'` — that isn't necessarily paired with `is_error:true`, so `is_error`
+  alone doesn't prove a genuine, uninterrupted completion). A failure here is a harness bug, not a
+  measurement result.
 - **`smoke`** — one bounded scenario, both conditions, through the real CLI end-to-end. Proves
   the pipeline works with **equivalent real diagnostic work in both arms** — not just skill
   availability. `smokeHardGate()` requires, in *both* conditions: skill availability matches
@@ -184,9 +190,10 @@ observed on disk.
 
 Any failure returns `{ok:false, reason}` and writes nothing — verified directly:
 `tests/vitest/agentic-eval-cli-integration.test.js` spawns real `node cli.mjs calibrate|smoke`
-subprocesses against fake `claude` fixtures (`tests/fixtures/fake-claude-*/`) covering both a
-passing scenario and three distinct failure scenarios (no attempt at all, all commands denied, a
-malformed transcript line), asserting zero evidence files are written on every failure path.
+subprocesses against fake `claude` fixtures (`tests/fixtures/fake-claude-*/`) covering passing
+scenarios (including both legitimate no-skill-arm shapes for calibration) and smoke's three
+distinct failure scenarios (an unexpected tool invoked, all commands denied, a malformed
+transcript line), asserting zero evidence files are written on every failure path.
 Every subprocess this test file spawns is pointed at an isolated `KMP_EVAL_RUNS_ROOT` (a
 fresh, per-test temp directory) instead of the real, shared `tools/runs/` tree — an earlier
 version of this test file read/wrote/deleted directly under the real path, which would have
@@ -217,8 +224,9 @@ silently-ignored value previously meant private-pattern redaction was silently d
 run still reported `privacy_status: 'public'` with no error at all.
 
 `calibrationHardGate()`/`smokeHardGate()` are named, exported functions (not inline closures)
-specifically so each sub-check (`invocationOk`, `processOk`, `resultOk`, `hookAccountingOk`, and
-for smoke also `realWorkOk`, `exactCommandsOk`, `cleanTranscriptOk`) can be unit-tested in
+specifically so each sub-check (`availabilityOk`, `processOk`, `resultOk`, `hookAccountingOk`,
+calibration's own `noSkillSafetyOk`/`currentInvocationOk`, and for smoke also `realWorkOk`,
+`exactCommandsOk`, `cleanTranscriptOk`) can be unit-tested in
 isolation with precise synthetic inputs — `tests/vitest/agentic-eval-hard-gates.test.js` flips
 exactly one input per test and asserts exactly one named sub-check goes false while every other
 named sub-check in the same failure-reason string stays true. This is deliberately a different

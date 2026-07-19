@@ -83,21 +83,25 @@ describe('calibrationHardGate', () => {
     expect(reason).toBeNull();
   });
 
-  it('isolates invocationOk -- B never confirms invocation (the real "Unknown skill" shape: attempted but not invoked)', () => {
+  it('isolates currentInvocationOk -- B never confirms invocation (the real "Unknown skill" shape: attempted but not invoked)', () => {
     const b = passB({ skill_invoked: { value: false, reason: 'attempted but not confirmed' } });
     const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult());
     expect(ok).toBe(false);
-    expect(reason).toContain('invocationOk:false');
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('noSkillSafetyOk:true');
+    expect(reason).toContain('currentInvocationOk:false');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');
   });
 
-  it('isolates invocationOk -- A shows skill_available:true (isolation itself broken, not a scoring artifact)', () => {
+  it('isolates availabilityOk -- A shows the skill as available (breaks the no-skill/current-skill contrast)', () => {
     const a = passA({ skill_available: { value: true, reason: null } });
     const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult());
     expect(ok).toBe(false);
-    expect(reason).toContain('invocationOk:false');
+    expect(reason).toContain('availabilityOk:false');
+    expect(reason).toContain('noSkillSafetyOk:true');
+    expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');
@@ -107,7 +111,9 @@ describe('calibrationHardGate', () => {
     const b = passB({ exit_code: 1 });
     const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult());
     expect(ok).toBe(false);
-    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('noSkillSafetyOk:true');
+    expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('processOk:false');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');
@@ -117,7 +123,9 @@ describe('calibrationHardGate', () => {
     const a = passA({ terminated: true });
     const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult());
     expect(ok).toBe(false);
-    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('noSkillSafetyOk:true');
+    expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('processOk:false');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:true');
@@ -127,7 +135,9 @@ describe('calibrationHardGate', () => {
     const runB = passRunResult({ result: { is_error: true } });
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
-    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('noSkillSafetyOk:true');
+    expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:false');
     expect(reason).toContain('hookAccountingOk:true');
@@ -148,7 +158,9 @@ describe('calibrationHardGate', () => {
     const runB = passRunResult({ result: { subtype: 'error_max_budget_usd', is_error: false } });
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
-    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('noSkillSafetyOk:true');
+    expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('initOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:false');
@@ -158,13 +170,15 @@ describe('calibrationHardGate', () => {
   // Regression coverage for a real bypass: a session with NO init event at all is a
   // fundamentally broken/incomplete capture -- without initOk, a no-init run's derived
   // skill_available:false for the no-skill arm could coincidentally match the EXPECTED value,
-  // passing invocationOk for the wrong reason (nothing to derive availability from, not a
+  // passing availabilityOk for the wrong reason (nothing to derive availability from, not a
   // genuine observation).
   it('isolates initOk -- A never produced an init event at all', () => {
     const runA = passRunResult({ init: null });
     const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult());
     expect(ok).toBe(false);
-    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('noSkillSafetyOk:true');
+    expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('initOk:false');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
@@ -178,7 +192,9 @@ describe('calibrationHardGate', () => {
     const runB = passRunResult({ init: { ...passRunResult().init, tools: ['Bash', 'Skill', 'Read'] } });
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
-    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('noSkillSafetyOk:true');
+    expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('initOk:true');
     expect(reason).toContain('toolProfileOk:false');
     expect(reason).toContain('noUnexpectedToolsOk:true');
@@ -208,7 +224,9 @@ describe('calibrationHardGate', () => {
     const runB = passRunResult({ events: [...base.events, { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', id: 'toolu_evil', input: { file_path: '/etc/passwd' } }] } }] });
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
-    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('noSkillSafetyOk:true');
+    expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('initOk:true');
     expect(reason).toContain('toolProfileOk:true');
     expect(reason).toContain('noUnexpectedToolsOk:false');
@@ -221,10 +239,70 @@ describe('calibrationHardGate', () => {
     const runB = passRunResult({ hookStats: { everyCallHooked: false, hookAllowCount: 2 } });
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
-    expect(reason).toContain('invocationOk:true');
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('noSkillSafetyOk:true');
+    expect(reason).toContain('currentInvocationOk:true');
     expect(reason).toContain('processOk:true');
     expect(reason).toContain('resultOk:true');
     expect(reason).toContain('hookAccountingOk:false');
+  });
+
+  // Regression coverage for a real live finding (agentic-eval revalidation, 2026-07-19): a live
+  // no-skill run came back attempted:false, invoked:false -- the model correctly recognized the
+  // skill wasn't in its available tool list and didn't try it at all. The OLD gate rejected this
+  // as a failure; it's actually just as legitimate isolation proof as attempt-then-"Unknown skill".
+  it('passes when A never attempted the skill at all (legitimate -- correctly recognized as unavailable without trying)', () => {
+    const a = passA({ skill_invocation_attempted: { value: false, reason: null } });
+    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult());
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('passes when A attempted the skill and got a clean non-invocation (the "Unknown skill" shape -- also legitimate)', () => {
+    const a = passA({ skill_invocation_attempted: { value: true, reason: null }, skill_invoked: { value: false, reason: null } });
+    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult());
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('isolates noSkillSafetyOk -- A somehow shows a confirmed invocation despite being the no-skill arm (contradictory input, must still fail)', () => {
+    const a = passA({ skill_invoked: { value: true, reason: null } });
+    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('noSkillSafetyOk:false');
+    expect(reason).toContain('currentInvocationOk:true');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
+  });
+
+  // Regression coverage for a review-round-2 finding: skill_invocation_attempted is a nullable
+  // metric and CAN legitimately be unobserved -- a null value must not silently pass just because
+  // invoked happens to read false. Distinct from attempted:false, which is a genuine, positive
+  // "did not attempt" observation, not a capture gap.
+  it('isolates noSkillSafetyOk -- A\'s skill_invocation_attempted is null (unobserved capture, not a genuine "did not attempt" observation)', () => {
+    const a = passA({ skill_invocation_attempted: { value: null, reason: 'capture incomplete' } });
+    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('noSkillSafetyOk:false');
+    expect(reason).toContain('currentInvocationOk:true');
+  });
+
+  // Regression coverage for a review-round-2 finding: B's contract stays strict even though A's
+  // was relaxed -- this is the exact counterpart of the newly-tolerated A shape and must still
+  // fail, specifically via currentInvocationOk, not be accidentally tolerated by symmetry with A.
+  it('isolates currentInvocationOk -- B never attempts the skill at all (unlike A, B\'s contract stays strict)', () => {
+    const b = passB({ skill_invocation_attempted: { value: false, reason: null }, skill_invoked: { value: false, reason: null } });
+    const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult());
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:true');
+    expect(reason).toContain('noSkillSafetyOk:true');
+    expect(reason).toContain('currentInvocationOk:false');
+    expect(reason).toContain('processOk:true');
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('hookAccountingOk:true');
   });
 });
 

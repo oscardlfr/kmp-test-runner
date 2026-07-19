@@ -880,13 +880,22 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
  * (not just an aggregate boolean).
  */
 function calibrationHardGate(a, b, runAResult, runBResult) {
-  const invocationOk = a.skill_available.value === false && b.skill_available.value === true
-    && a.skill_invocation_attempted.value === true && b.skill_invocation_attempted.value === true
-    && a.skill_invoked.value === false && b.skill_invoked.value === true;
+  const availabilityOk = a.skill_available.value === false && b.skill_available.value === true;
+  // The no-skill arm's actual safety property is "never a CONFIRMED invocation" -- whether it
+  // ATTEMPTED the call first is not required. A model correctly recognizing the skill isn't in
+  // its available tool list and not trying it at all is just as legitimate isolation proof as
+  // trying it and getting `Unknown skill` back (both real, observed shapes -- see README
+  // "Attempted vs. confirmed invocation"). attempted must still be a genuine OBSERVATION (true or
+  // false), though -- a null/unknown value means the capture itself is incomplete and must not
+  // silently pass just because invoked happens to read false.
+  const noSkillAttemptObserved =
+    a.skill_invocation_attempted.value === true || a.skill_invocation_attempted.value === false;
+  const noSkillSafetyOk = noSkillAttemptObserved && a.skill_invoked.value === false;
+  const currentInvocationOk = b.skill_invocation_attempted.value === true && b.skill_invoked.value === true;
   // A session that never emitted an init event at all is a fundamentally broken/incomplete
   // capture, not a legitimately-observed "skill unavailable" -- without this check, a run with
   // NO init event could still show skill_available:false for the no-skill arm (nothing to derive
-  // it from) and happen to match the EXPECTED value there by coincidence, passing invocationOk
+  // it from) and happen to match the EXPECTED value there by coincidence, passing availabilityOk
   // for the wrong reason entirely.
   const initOk = runAResult.init != null && runBResult.init != null;
   // The init event's OWN declared profile must match exactly what this harness actually
@@ -905,10 +914,10 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   const resultOk = runAResult.result?.subtype === 'success' && runAResult.result?.is_error === false
     && runBResult.result?.subtype === 'success' && runBResult.result?.is_error === false;
   const hookAccountingOk = runAResult.hookStats.everyCallHooked === true && runBResult.hookStats.everyCallHooked === true;
-  const ok = invocationOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk;
+  const ok = availabilityOk && noSkillSafetyOk && currentInvocationOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk;
   return {
     ok,
-    reason: ok ? null : `calibration hard gate failed -- invocationOk:${invocationOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
+    reason: ok ? null : `calibration hard gate failed -- availabilityOk:${availabilityOk} noSkillSafetyOk:${noSkillSafetyOk} currentInvocationOk:${currentInvocationOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
   };
 }
 
