@@ -522,7 +522,7 @@ function buildRunRecord({ conditionResult, condition, runKind, scenarioId, skill
     tool_calls_total: nullableMetric(findBashToolUses(conditionResult.events).length + (invocation ? 1 : 0)),
     shell_commands_total: nullableMetric(findBashToolUses(conditionResult.events).length),
     test_invocations_total: nullableMetric(null, `not tracked for ${runKind} runs`),
-    retries: nullableMetric(0),
+    retries: nullableMetric(null, `not tracked for ${runKind} runs`),
     output_bytes: nullableMetric(byteMetrics.outputBytes),
     stream_json_bytes: nullableMetric(byteMetrics.streamJsonBytes),
     human_interventions: nullableMetric(0),
