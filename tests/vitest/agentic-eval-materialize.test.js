@@ -68,14 +68,16 @@ describe('materializeSkillSnapshot', () => {
     expect(materializedSkillMd).toContain('kmp-test parallel --json --project-root .');
   });
 
-  // Locks the harness's actual runtime pin -- separate from KNOWN_SHA above (mechanism-only) and
-  // from the live-HEAD test above (tracks develop's tip forever, never references this constant).
-  // calibrate/smoke both materialize current-skill via runConditionPair's one call site using
-  // exactly PINNED_SKILL_SHA, so this is the only test that catches that constant itself going
-  // stale. Split into two independent it() blocks on purpose: expect().toBe() throws
-  // synchronously, so a single block with the equality check first would hide whether the content
-  // assertions below actually discriminate -- two blocks means a run against a stale pin shows
-  // both failing for real, not just the first one.
+  // Locks the harness's actual runtime pin to this specific update -- separate from KNOWN_SHA
+  // above (mechanism-only) and from the live-HEAD test above (tracks develop's tip forever, never
+  // references this constant). calibrate/smoke both materialize current-skill via
+  // runConditionPair's one call site using exactly PINNED_SKILL_SHA. This is a tripwire, not a
+  // general staleness detector: it deliberately hardcodes aeba6ea and will need its own edit on
+  // every future legitimate pin advance -- the next test verifies the semantics that should
+  // survive such an advance. Split into two independent it() blocks on purpose: expect().toBe()
+  // throws synchronously, so a single block with the equality check first would hide whether the
+  // content assertions below actually discriminate -- two blocks means a run against a stale pin
+  // shows both failing for real, not just the first one.
   it('PINNED_SKILL_SHA is locked to the aeba6ea skill-portability fix', () => {
     expect(PINNED_SKILL_SHA).toBe('aeba6eaa8d027be999cdfeeb5bb2d1bbd0f688ee');
   });
