@@ -126,7 +126,9 @@ describe('materializeSkillSnapshot', () => {
     cleanupDirs.push(snapshotDir);
     expect(validation.ok).toBe(true);
     expect(existsSync(path.join(snapshotDir, '.claude-plugin', 'plugin.json'))).toBe(true);
-  });
+  }, 30000); // real init + 2 commits + a --no-local shallow clone + backfill-and-archive: several
+  // real git subprocess spawns, slow enough on Windows CI runners to trip vitest's default 5000ms
+  // per-test timeout (observed: build (windows-latest) timing out here with no other failure).
 });
 
 describe('materializeCalibrationProject', () => {
