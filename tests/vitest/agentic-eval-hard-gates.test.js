@@ -19,7 +19,10 @@
 // (real stream-json parsing -> real hookStats/bashResults -> this gate -> exit code/evidence
 // writing). Where a single fake-claude scenario trips more than one sub-check at once, that's
 // disclosed inline in that file's scenario comments, not presented as single-cause isolation.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { calibrationHardGate, smokeHardGate } from '../../tools/agentic-eval/cli.mjs';
 
 function bashToolUseEvent(id, command) {
@@ -30,7 +33,30 @@ function toolResultEvent(id, isError = false) {
   return { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: isError ? 'error' : 'ok', is_error: isError, tool_use_id: id }] } };
 }
 
-const KMP_TEST_RUNNER_PLUGIN = [{ name: 'kmp-test-runner', path: '/fake', source: 'fake' }];
+function initEventStub() {
+  return { type: 'system', subtype: 'init' };
+}
+
+function resultEventStub() {
+  return { type: 'result', subtype: 'success' };
+}
+
+// isPluginBoundToSnapshot (cli.mjs) does a realpath-based comparison between the plugin's own
+// reported `path` and the run's actually-materialized snapshotDir -- both sides must resolve to a
+// REAL path on disk, so a hardcoded string like the old '/fake' placeholder can never satisfy it.
+// A real, empty temp directory is enough: only its resolved path matters, never its contents.
+// WRONG_SNAPSHOT_DIR is a SECOND, distinct real directory -- used only by pluginSnapshotBindingOk's
+// own negative test, to prove a same-named plugin loaded from the wrong (but still real,
+// resolvable) location is rejected, not just an unresolvable one.
+const FAKE_SNAPSHOT_DIR = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-test-snapshot-'));
+const WRONG_SNAPSHOT_DIR = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-test-wrong-snapshot-'));
+
+afterAll(() => {
+  rmSync(FAKE_SNAPSHOT_DIR, { recursive: true, force: true });
+  rmSync(WRONG_SNAPSHOT_DIR, { recursive: true, force: true });
+});
+
+const KMP_TEST_RUNNER_PLUGIN = [{ name: 'kmp-test-runner', path: FAKE_SNAPSHOT_DIR, source: 'fake' }];
 
 function passA(overrides = {}) {
   return {
@@ -74,12 +100,20 @@ function passRunResult(overrides = {}) {
       { command: 'kmp-test describe --json', resultFound: true, resultIsError: false },
     ],
     events: [
+      initEventStub(),
       bashToolUseEvent('toolu_1', 'kmp-test doctor --json'),
       toolResultEvent('toolu_1'),
       bashToolUseEvent('toolu_2', 'kmp-test describe --json'),
       toolResultEvent('toolu_2'),
+      resultEventStub(),
     ],
     malformedLines: [],
+    // Only meaningful when this object is used as the CURRENT-SKILL (B) side -- see
+    // isPluginBoundToSnapshot's own doc comment (cli.mjs). Defaults to FAKE_SNAPSHOT_DIR so every
+    // existing "good" B-shape override (which sets plugins: KMP_TEST_RUNNER_PLUGIN but does not
+    // otherwise touch snapshotDir) is automatically bound correctly, with zero changes needed at
+    // those call sites; only pluginSnapshotBindingOk's own dedicated negative tests override this.
+    snapshotDir: FAKE_SNAPSHOT_DIR,
     ...overrides,
   };
 }
@@ -468,6 +502,10 @@ describe('calibrationHardGate', () => {
     expect(reason).toContain('toolResultsCompleteOk:false');
   });
 
+  // A tool_use with NO id at all also has no way to be UNIQUELY identified, so this fixture
+  // necessarily also cascades into transcriptStructureOk's own empty_tool_use_id check (added
+  // later, see below) -- not asserted here since this test's own point is toolResultsCompleteOk,
+  // but disclosed rather than left as an unexplained coincidence between the two.
   it('isolates toolResultsCompleteOk -- A has a tool_use with no id at all (cannot be correlated, so it can never be proven complete)', () => {
     const noIdToolUse = { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'kmp-test parallel --json' } }] } };
     const base = passRunResult();
@@ -475,6 +513,99 @@ describe('calibrationHardGate', () => {
     const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
     expect(ok).toBe(false);
     expect(reason).toContain('toolResultsCompleteOk:false');
+  });
+
+  // Regression coverage for a review-round-4 finding: hasExpectedPluginProfile only checks the
+  // loaded plugin's NAME and count, never its own `path` -- a same-named "kmp-test-runner" plugin
+  // loaded from a completely unrelated directory satisfied pluginProfileOk outright, while the
+  // record still published skill_source_sha as the pinned SHA regardless. Reproduced directly
+  // against the gate as it stood: a plugin named correctly but loaded from an arbitrary wrong
+  // directory passed calibrationHardGate entirely. See isPluginBoundToSnapshot's own doc comment
+  // (cli.mjs) for the full provenance rationale.
+  it('isolates pluginSnapshotBindingOk -- B loads a correctly-NAMED plugin from the WRONG directory (the exact evidence-contamination bypass this closes)', () => {
+    const runB = passRunResult({
+      init: { ...passRunResult().init, plugins: [{ name: 'kmp-test-runner', path: WRONG_SNAPSHOT_DIR, source: 'fake' }] },
+    });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('pluginProfileOk:true');
+    expect(reason).toContain('pluginSnapshotBindingOk:false');
+  });
+
+  it('isolates pluginSnapshotBindingOk -- B\'s own snapshotDir is missing (null), so a correctly-named-and-pathed plugin still cannot be bound', () => {
+    const runB = passRunResult({
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+      snapshotDir: null,
+    });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('pluginProfileOk:true');
+    expect(reason).toContain('pluginSnapshotBindingOk:false');
+  });
+
+  // Regression coverage for a review-round-4 finding: findInitEvent/findResultEvent silently take
+  // the FIRST event of their kind, and findIncompleteToolResults only proves "at least one"
+  // tool_use<->tool_result correlation exists -- neither catches a transcript with a SECOND,
+  // contradictory init+result pair appended after a legitimate first one, or two tool_use blocks
+  // sharing one id satisfied by a single tool_result. Both reproductions returned {ok:true}
+  // against the gate as it stood. See findTranscriptStructuralIssues's own doc comment
+  // (stream-parser.mjs) for the full rationale.
+  it('isolates transcriptStructureOk -- A has a second, contradictory init event later in the transcript', () => {
+    const base = passRunResult();
+    const runA = passRunResult({ events: [...base.events, initEventStub()] });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    expect(reason).toContain('initOk:true');
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
+  it('isolates transcriptStructureOk -- B has a second, contradictory result event later in the transcript', () => {
+    const base = passRunResult();
+    const runB = passRunResult({
+      events: [...base.events, resultEventStub()],
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+    });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
+  it('isolates transcriptStructureOk -- A has two tool_use blocks sharing the same id (a single tool_result cannot unambiguously satisfy both)', () => {
+    const base = passRunResult();
+    // Both duplicate-id tool_use blocks come BEFORE the one tool_result that answers 'toolu_dup',
+    // so each one's own forward-scan for a correlated result still finds (the same) one -- this
+    // isolates transcriptStructureOk's duplicate_tool_use_id check specifically, without also
+    // tripping toolResultsCompleteOk (which only asks "does some result exist", not "is the id
+    // actually unique").
+    const dup1 = bashToolUseEvent('toolu_dup', 'kmp-test parallel --json');
+    const dup2 = bashToolUseEvent('toolu_dup', 'kmp-test parallel --json');
+    const runA = passRunResult({ events: [...base.events, dup1, dup2, toolResultEvent('toolu_dup')] });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    expect(reason).toContain('toolResultsCompleteOk:true');
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
+  it('isolates transcriptStructureOk -- B has two tool_result blocks answering the same tool_use id', () => {
+    const base = passRunResult();
+    const runB = passRunResult({
+      events: [...base.events, toolResultEvent('toolu_1')],
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+    });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('toolResultsCompleteOk:true');
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
+  it('isolates transcriptStructureOk -- A has an orphan tool_result referencing a tool_use id that was never called', () => {
+    const base = passRunResult();
+    const runA = passRunResult({ events: [...base.events, toolResultEvent('toolu_never_called')] });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    expect(reason).toContain('toolResultsCompleteOk:true');
+    expect(reason).toContain('transcriptStructureOk:false');
   });
 });
 
@@ -805,6 +936,8 @@ describe('smokeHardGate', () => {
     expect(reason).toContain('toolResultsCompleteOk:false');
   });
 
+  // See calibrationHardGate's identical test's own comment -- a tool_use with no id also
+  // cascades into transcriptStructureOk's empty_tool_use_id check, not just toolResultsCompleteOk.
   it('isolates toolResultsCompleteOk -- B has a tool_use with no id at all (cannot be correlated, so it can never be proven complete)', () => {
     const noIdToolUse = { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'kmp-test doctor --json' } }] } };
     const base = passRunResult();
@@ -812,5 +945,84 @@ describe('smokeHardGate', () => {
     const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('toolResultsCompleteOk:false');
+  });
+
+  // See calibrationHardGate's identical tests + rationale -- the same gap (pluginProfileOk never
+  // checks the loaded plugin's own path) applies to smoke too.
+  it('isolates pluginSnapshotBindingOk -- B loads a correctly-NAMED plugin from the WRONG directory (the exact evidence-contamination bypass this closes)', () => {
+    const runB = passRunResult({
+      init: { ...passRunResult().init, plugins: [{ name: 'kmp-test-runner', path: WRONG_SNAPSHOT_DIR, source: 'fake' }] },
+    });
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('pluginProfileOk:true');
+    expect(reason).toContain('pluginSnapshotBindingOk:false');
+  });
+
+  it('isolates pluginSnapshotBindingOk -- B\'s own snapshotDir is missing (null), so a correctly-named-and-pathed plugin still cannot be bound', () => {
+    const runB = passRunResult({
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+      snapshotDir: null,
+    });
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('pluginProfileOk:true');
+    expect(reason).toContain('pluginSnapshotBindingOk:false');
+  });
+
+  // See calibrationHardGate's identical tests + rationale -- the same gaps (findInitEvent/
+  // findResultEvent take "the first" event of a kind; findIncompleteToolResults only proves "at
+  // least one" correlation) apply to smoke too.
+  it('isolates transcriptStructureOk -- A has a second, contradictory init event later in the transcript', () => {
+    const base = passRunResult();
+    const runA = passRunResult({ events: [...base.events, initEventStub()] });
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    expect(reason).toContain('initOk:true');
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
+  it('isolates transcriptStructureOk -- B has a second, contradictory result event later in the transcript', () => {
+    const base = passRunResult();
+    const runB = passRunResult({
+      events: [...base.events, resultEventStub()],
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+    });
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('resultOk:true');
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
+  it('isolates transcriptStructureOk -- A has two tool_use blocks sharing the same id (a single tool_result cannot unambiguously satisfy both)', () => {
+    const base = passRunResult();
+    const dup1 = bashToolUseEvent('toolu_dup', 'kmp-test parallel --json');
+    const dup2 = bashToolUseEvent('toolu_dup', 'kmp-test parallel --json');
+    const runA = passRunResult({ events: [...base.events, dup1, dup2, toolResultEvent('toolu_dup')] });
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    expect(reason).toContain('toolResultsCompleteOk:true');
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
+  it('isolates transcriptStructureOk -- B has two tool_result blocks answering the same tool_use id', () => {
+    const base = passRunResult();
+    const runB = passRunResult({
+      events: [...base.events, toolResultEvent('toolu_1')],
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+    });
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(false);
+    expect(reason).toContain('toolResultsCompleteOk:true');
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
+  it('isolates transcriptStructureOk -- A has an orphan tool_result referencing a tool_use id that was never called', () => {
+    const base = passRunResult();
+    const runA = passRunResult({ events: [...base.events, toolResultEvent('toolu_never_called')] });
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    expect(reason).toContain('toolResultsCompleteOk:true');
+    expect(reason).toContain('transcriptStructureOk:false');
   });
 });

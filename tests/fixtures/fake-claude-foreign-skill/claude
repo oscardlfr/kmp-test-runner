@@ -12,12 +12,18 @@
 # tests in agentic-eval-hard-gates.test.js. The current-skill arm (B) behaves normally (calls
 # kmp-test-runner, succeeds), mirroring fake-claude-success's own verified shape.
 HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PREV_ARG=""
 for arg in "$@"; do
-  if [ "$arg" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; fi
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  PREV_ARG="$arg"
 done
 
 if [ "$HAS_PLUGIN_DIR" = "1" ]; then
-  PLUGINS='[{"name":"kmp-test-runner","path":"/fake","source":"fake"}]'
+  # See fake-claude-success/claude for the shared rationale on reporting the REAL --plugin-dir
+  # value instead of a hardcoded placeholder.
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
 else
   PLUGINS='[]'
 fi

@@ -237,10 +237,10 @@ run still reported `privacy_status: 'public'` with no error at all.
 
 `calibrationHardGate()`/`smokeHardGate()` are named, exported functions (not inline closures)
 specifically so each sub-check (`availabilityOk`, `skillSelectionOk`, `pluginProfileOk`,
-`processOk`, `resultOk`, `hookAccountingOk`, `toolResultsCompleteOk`, `cleanTranscriptOk` --
-shared by both gates -- calibration's own `noSkillSafetyOk`/`currentInvocationOk`, and for smoke
-also `realWorkOk`, `exactCommandsOk`) can be unit-tested in
-isolation with precise synthetic inputs — `tests/vitest/agentic-eval-hard-gates.test.js` flips
+`pluginSnapshotBindingOk`, `processOk`, `resultOk`, `hookAccountingOk`, `toolResultsCompleteOk`,
+`cleanTranscriptOk`, `transcriptStructureOk` -- shared by both gates -- calibration's own
+`noSkillSafetyOk`/`currentInvocationOk`, and for smoke also `realWorkOk`, `exactCommandsOk`) can
+be unit-tested in isolation with precise synthetic inputs — `tests/vitest/agentic-eval-hard-gates.test.js` flips
 exactly one input per test and asserts exactly one named sub-check goes false while every other
 named sub-check in the same failure-reason string stays true. This is deliberately a different
 proof than the real-subprocess fake-`claude` fixtures in `agentic-eval-cli-integration.test.js`:

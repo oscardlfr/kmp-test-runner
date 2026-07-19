@@ -10,12 +10,22 @@
 # skill" result matching a real captured transcript), plus two allowed Bash calls (kmp-test
 # doctor/describe), each correctly hooked. Satisfies both calibrate's and smoke's hard gates.
 HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PREV_ARG=""
 for arg in "$@"; do
-  if [ "$arg" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; fi
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  PREV_ARG="$arg"
 done
 
 if [ "$HAS_PLUGIN_DIR" = "1" ]; then
-  PLUGINS='[{"name":"kmp-test-runner","path":"/fake","source":"fake"}]'
+  # Reports the REAL --plugin-dir value this specific invocation received (JSON-escaped for
+  # Windows backslashes), not a hardcoded placeholder -- isPluginBoundToSnapshot() (cli.mjs)
+  # binds skill_source_sha's provenance claim to the plugin's OWN reported path matching the
+  # actually-materialized snapshot directory; a fixture that echoed back a fake, unrelated path
+  # would make every "success"-shaped scenario fail that check for a reason having nothing to do
+  # with what it's meant to test.
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
 else
   PLUGINS='[]'
 fi

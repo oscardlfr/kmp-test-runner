@@ -33,7 +33,7 @@ import { buildEvalEnv } from './env-builder.mjs';
 import { buildPathShim } from './path-shim.mjs';
 import { materializeSkillSnapshot, materializeCalibrationProject, materializeScenarioProject, materializeGradleUserHome, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition } from './condition-launcher.mjs';
-import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findForeignSkillUses, findBashToolUses, findBashToolUsesWithResults, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
+import { parseStreamJsonl, findInitEvent, findResultEvent, isSkillAvailable, findSkillInvocation, findForeignSkillUses, findBashToolUses, findBashToolUsesWithResults, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, findTranscriptStructuralIssues, countHookEvents, computeByteMetrics, extractTokenUsage } from './stream-parser.mjs';
 import { aggregateRuns } from './aggregate.mjs';
 import { assertCleanOrThrow, assertCleanOrThrowObject, loadPrivateRules } from './privacy.mjs';
 import { tokenize } from './policy-hook.mjs';
@@ -100,6 +100,46 @@ function isRunsRootDefault(runsRoot, repoRoot) {
   }
 }
 const RUNS_ROOT_IS_DEFAULT = isRunsRootDefault(RUNS_ROOT, REPO_ROOT);
+
+// Regression coverage for a real evidence-contamination bypass an independent review pass
+// demonstrated directly against calibrationHardGate: hasExpectedPluginProfile only checks the
+// LOADED plugin's name and count -- never its `path` -- so a same-named "kmp-test-runner" plugin
+// loaded from a completely unrelated directory satisfied it outright. The run record still
+// publishes skill_source_sha as the harness's PINNED_SKILL_SHA regardless (buildRunRecord has no
+// way to know the loaded plugin came from somewhere else), so evidence could be attributed to a
+// SHA whose actual, verified snapshot was never the thing exercised. This is the provenance
+// guarantee skill_source_sha implicitly claims -- closing it requires binding the reported path
+// to the SAME materialized snapshot directory this specific run actually built.
+//
+// Compared via realpath (mirrors isRunsRootDefault's identical rationale immediately above: a
+// relative path, trailing separator, differently-cased Windows path, or symlink/junction must not
+// let an equivalent-but-textually-different path slip past a bare `===`). Unlike
+// isRunsRootDefault, an unresolvable path here fails CLOSED in the opposite direction: "can't
+// positively confirm this is the expected snapshot" must mean "reject", never "assume it's fine".
+// Deliberately returns ONLY a boolean -- the actual resolved path (which could itself be
+// privacy-sensitive, e.g. containing the real OS username) is never included in the return value
+// or surfaced in any caller's error/log output.
+function isPluginBoundToSnapshot(initEvent, expectedSnapshotDir) {
+  if (initEvent == null || !Array.isArray(initEvent.plugins) || initEvent.plugins.length !== 1) return false;
+  const reportedPath = initEvent.plugins[0]?.path;
+  if (typeof reportedPath !== 'string' || reportedPath.length === 0) return false;
+  if (typeof expectedSnapshotDir !== 'string' || expectedSnapshotDir.length === 0) return false;
+  let resolvedReported;
+  let resolvedExpected;
+  try {
+    resolvedReported = realpath(reportedPath);
+  } catch {
+    return false; // reported path doesn't exist / unresolvable -- fail closed, never assume a match
+  }
+  try {
+    resolvedExpected = realpath(expectedSnapshotDir);
+  } catch {
+    return false; // the harness's OWN expected snapshot vanished -- also fail closed
+  }
+  return process.platform === 'win32'
+    ? resolvedReported.toLowerCase() === resolvedExpected.toLowerCase()
+    : resolvedReported === resolvedExpected;
+}
 
 const HELP = `tools/agentic-eval/cli.mjs -- reproducible skill evaluation harness
 
@@ -457,6 +497,12 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
       return {
         condition, argv, env: conditionEnv, fixtureDir, events, malformedLines, init, result,
         invocation, hookStats, byteMetrics, bashResults, spawnResult, startedAt, endedAt,
+        // Only current-skill's own argv actually passed --plugin-dir snapshotDir (see
+        // buildConditionArgv above) -- carried on the per-condition result itself (rather than as
+        // a separate hard-gate parameter threaded through finalizeAndWriteRecords) so
+        // pluginSnapshotBindingOk can read runBResult.snapshotDir directly, the same way every
+        // other gate check already reads its inputs off runAResult/runBResult.
+        snapshotDir: condition === 'current-skill' ? snapshotDir : null,
       };
     };
 
@@ -917,6 +963,21 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   // named kmp-test-runner -- no duplicates, no extras.
   const pluginProfileOk = hasExpectedPluginProfile(runAResult.init, TARGET_SKILL_NAME, false)
     && hasExpectedPluginProfile(runBResult.init, TARGET_SKILL_NAME, true);
+  // Regression coverage for a real evidence-contamination bypass an independent review pass
+  // demonstrated: pluginProfileOk only checks the loaded plugin's NAME, never its path -- a
+  // same-named "kmp-test-runner" plugin loaded from a completely unrelated directory satisfied
+  // it outright, while the record still published skill_source_sha as the pinned SHA regardless.
+  // See isPluginBoundToSnapshot's own doc comment for the full rationale. Only meaningful for B
+  // (the no-skill arm never loads a plugin at all, per pluginProfileOk above).
+  const pluginSnapshotBindingOk = isPluginBoundToSnapshot(runBResult.init, runBResult.snapshotDir);
+  // Regression coverage for a real gap an independent review pass demonstrated: findInitEvent/
+  // findResultEvent/findIncompleteToolResults all either take "the first" event of a kind or only
+  // check "at least one" correlation exists -- neither catches a transcript with a SECOND,
+  // contradictory init+result pair appended after a legitimate first one, or two tool_use blocks
+  // sharing one id satisfied by a single tool_result. See findTranscriptStructuralIssues's own
+  // doc comment for the full rationale.
+  const transcriptStructureOk = findTranscriptStructuralIssues(runAResult.events).length === 0
+    && findTranscriptStructuralIssues(runBResult.events).length === 0;
   // A session that never emitted an init event at all is a fundamentally broken/incomplete
   // capture, not a legitimately-observed "skill unavailable" -- without this check, a run with
   // NO init event could still show skill_available:false for the no-skill arm (nothing to derive
@@ -953,10 +1014,10 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   // the relaxed no-skill contract now legitimately tolerates. Calibration needs the same
   // protection smoke already has.
   const cleanTranscriptOk = runAResult.malformedLines.length === 0 && runBResult.malformedLines.length === 0;
-  const ok = availabilityOk && noSkillSafetyOk && currentInvocationOk && skillSelectionOk && pluginProfileOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && toolResultsCompleteOk && cleanTranscriptOk;
+  const ok = availabilityOk && noSkillSafetyOk && currentInvocationOk && skillSelectionOk && pluginProfileOk && pluginSnapshotBindingOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && toolResultsCompleteOk && cleanTranscriptOk && transcriptStructureOk;
   return {
     ok,
-    reason: ok ? null : `calibration hard gate failed -- availabilityOk:${availabilityOk} noSkillSafetyOk:${noSkillSafetyOk} currentInvocationOk:${currentInvocationOk} skillSelectionOk:${skillSelectionOk} pluginProfileOk:${pluginProfileOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} toolResultsCompleteOk:${toolResultsCompleteOk} cleanTranscriptOk:${cleanTranscriptOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
+    reason: ok ? null : `calibration hard gate failed -- availabilityOk:${availabilityOk} noSkillSafetyOk:${noSkillSafetyOk} currentInvocationOk:${currentInvocationOk} skillSelectionOk:${skillSelectionOk} pluginProfileOk:${pluginProfileOk} pluginSnapshotBindingOk:${pluginSnapshotBindingOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} toolResultsCompleteOk:${toolResultsCompleteOk} cleanTranscriptOk:${cleanTranscriptOk} transcriptStructureOk:${transcriptStructureOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
   };
 }
 
@@ -1022,6 +1083,15 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   // hasExpectedToolProfile ever inspects the init event's own plugins[] array.
   const pluginProfileOk = hasExpectedPluginProfile(runAResult.init, TARGET_SKILL_NAME, false)
     && hasExpectedPluginProfile(runBResult.init, TARGET_SKILL_NAME, true);
+  // See calibrationHardGate's identical check and doc comment -- pluginProfileOk never checks
+  // the loaded plugin's own path, only its name/count.
+  const pluginSnapshotBindingOk = isPluginBoundToSnapshot(runBResult.init, runBResult.snapshotDir);
+  // See calibrationHardGate's identical check and doc comment -- neither findInitEvent/
+  // findResultEvent (take "the first" of a kind) nor findIncompleteToolResults (only checks "at
+  // least one" correlation) catch a second contradictory init+result pair, or duplicated
+  // tool_use ids satisfied by a single tool_result.
+  const transcriptStructureOk = findTranscriptStructuralIssues(runAResult.events).length === 0
+    && findTranscriptStructuralIssues(runBResult.events).length === 0;
   // See calibrationHardGate's identical check -- a session with no init event at all is a
   // broken/incomplete capture, not legitimately-observed data.
   const initOk = runAResult.init != null && runBResult.init != null;
@@ -1054,10 +1124,10 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   // correlated tool_result is an incomplete capture, not a demonstrated outcome.
   const toolResultsCompleteOk = findIncompleteToolResults(runAResult.events).length === 0
     && findIncompleteToolResults(runBResult.events).length === 0;
-  const ok = availabilityOk && skillSelectionOk && pluginProfileOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk && toolResultsCompleteOk;
+  const ok = availabilityOk && skillSelectionOk && pluginProfileOk && pluginSnapshotBindingOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk && toolResultsCompleteOk && transcriptStructureOk;
   return {
     ok,
-    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} skillSelectionOk:${skillSelectionOk} pluginProfileOk:${pluginProfileOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} toolResultsCompleteOk:${toolResultsCompleteOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype} tools:${JSON.stringify(runAResult.init?.tools)}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype} tools:${JSON.stringify(runBResult.init?.tools)})`,
+    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} skillSelectionOk:${skillSelectionOk} pluginProfileOk:${pluginProfileOk} pluginSnapshotBindingOk:${pluginSnapshotBindingOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} toolResultsCompleteOk:${toolResultsCompleteOk} transcriptStructureOk:${transcriptStructureOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype} tools:${JSON.stringify(runAResult.init?.tools)}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype} tools:${JSON.stringify(runBResult.init?.tools)})`,
   };
 }
 
@@ -1237,4 +1307,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, writeRunRecordEvidence, calibrationHardGate, smokeHardGate, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };
+export { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, writeRunRecordEvidence, calibrationHardGate, smokeHardGate, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };

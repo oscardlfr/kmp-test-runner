@@ -255,6 +255,76 @@ export function hasExpectedPluginProfile(initEvent, expectedSkillName, skillShou
 }
 
 /**
+ * Every STRUCTURAL ambiguity in the transcript that would let a hard gate's simple "find the
+ * first X" / "does at least one Y exist" checks be fooled by a malformed or adversarially-shaped
+ * transcript. Returns a list of distinct issues found (empty = structurally sound):
+ *  - exactly one `init` event required (not zero, not several) -- findInitEvent/findResultEvent
+ *    silently take the FIRST and ignore the rest, so a transcript with a legitimate init/result
+ *    pair FOLLOWED by a second, different init+result pair (e.g. a foreign plugin and a
+ *    budget-truncated result) is completely invisible to every check built on top of those two
+ *    functions.
+ *  - exactly one terminal `result` event required, for the same reason.
+ *  - every `tool_use` block must have a non-empty id, and no two `tool_use` blocks anywhere in
+ *    the transcript may share the same id -- a duplicated id makes tool_use<->tool_result
+ *    correlation itself ambiguous (a single tool_result could then appear to confirm TWO
+ *    distinct calls, only one of which it legitimately belongs to).
+ *  - every `tool_result`'s own `tool_use_id` must correspond to EXACTLY one `tool_use` in the
+ *    transcript -- never zero (an ORPHAN result, referencing a call that was never made) and
+ *    never more than one (a DUPLICATE result for the same call).
+ * Regression coverage for a real gap an independent review pass demonstrated: both reproductions
+ * (a second init+result pair appended after a legitimate first one; two Skill tool_use blocks
+ * sharing one id satisfied by a single tool_result) returned {ok:true} against the hard gates as
+ * they stood -- every existing check either reads "the first" event of its kind, or only
+ * verifies "at least one" correlation exists, neither of which detects these shapes.
+ * @returns {Array<{type: string, [key: string]: any}>}
+ */
+export function findTranscriptStructuralIssues(events) {
+  const issues = [];
+  const initCount = events.filter((e) => e.type === 'system' && e.subtype === 'init').length;
+  if (initCount !== 1) issues.push({ type: 'init_count', count: initCount });
+  const resultCount = events.filter((e) => e.type === 'result').length;
+  if (resultCount !== 1) issues.push({ type: 'result_count', count: resultCount });
+
+  const toolUseIds = [];
+  for (const ev of events) {
+    if (ev.type !== 'assistant') continue;
+    for (const c of ev.message?.content ?? []) {
+      if (c.type !== 'tool_use') continue;
+      if (typeof c.id !== 'string' || c.id.length === 0) {
+        issues.push({ type: 'empty_tool_use_id' });
+        continue;
+      }
+      toolUseIds.push(c.id);
+    }
+  }
+  const toolUseIdCounts = new Map();
+  for (const id of toolUseIds) toolUseIdCounts.set(id, (toolUseIdCounts.get(id) ?? 0) + 1);
+  for (const [id, count] of toolUseIdCounts) {
+    if (count > 1) issues.push({ type: 'duplicate_tool_use_id', id, count });
+  }
+
+  const uniqueToolUseIds = new Set(toolUseIds);
+  const toolResultIdCounts = new Map();
+  for (const ev of events) {
+    if (ev.type !== 'user') continue;
+    for (const c of ev.message?.content ?? []) {
+      if (c.type !== 'tool_result') continue;
+      const id = c.tool_use_id ?? null;
+      toolResultIdCounts.set(id, (toolResultIdCounts.get(id) ?? 0) + 1);
+    }
+  }
+  for (const [id, count] of toolResultIdCounts) {
+    if (id == null || !uniqueToolUseIds.has(id)) {
+      issues.push({ type: 'orphan_tool_result', id });
+      continue;
+    }
+    if (count > 1) issues.push({ type: 'duplicate_tool_result', id, count });
+  }
+
+  return issues;
+}
+
+/**
  * Every `tool_use` block (any name) that either has no `id` at all, or an id with no correlated
  * `tool_result` found anywhere later in the transcript. Distinct from a call whose own
  * `tool_result` WAS found but reported `is_error:true` (a demonstrated, conclusive failure) --
