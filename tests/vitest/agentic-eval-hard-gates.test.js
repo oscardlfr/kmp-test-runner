@@ -41,13 +41,20 @@ function resultEventStub() {
   return { type: 'result', subtype: 'success' };
 }
 
-// isPluginBoundToSnapshot (cli.mjs) does a realpath-based comparison between the plugin's own
-// reported `path` and the run's actually-materialized snapshotDir -- both sides must resolve to a
-// REAL path on disk, so a hardcoded string like the old '/fake' placeholder can never satisfy it.
-// A real, empty temp directory is enough: only its resolved path matters, never its contents.
-// WRONG_SNAPSHOT_DIR is a SECOND, distinct real directory -- used only by pluginSnapshotBindingOk's
-// own negative test, to prove a same-named plugin loaded from the wrong (but still real,
-// resolvable) location is rejected, not just an unresolvable one.
+function assistantTextEvent(text) {
+  return { type: 'assistant', message: { content: [{ type: 'text', text }] } };
+}
+
+// isPluginBoundToSnapshot (cli.mjs) compares the plugin's own reported `path` against the run's
+// actually-materialized snapshotDir by filesystem IDENTITY (dev+ino via statSync) -- both sides
+// must exist as a REAL path on disk, so a hardcoded string like the old '/fake' placeholder can
+// never satisfy it. A real, empty temp directory is enough: only its filesystem identity matters,
+// never its contents. (An earlier version of this comment said "realpath-based comparison" --
+// stale since a review-round-5 fix replaced that with the dev+ino comparison described above;
+// see agentic-eval-plugin-snapshot-identity.test.js for dedicated coverage of that comparison
+// itself.) WRONG_SNAPSHOT_DIR is a SECOND, distinct real directory -- used only by
+// pluginSnapshotBindingOk's own negative test, to prove a same-named plugin loaded from the wrong
+// (but still real, resolvable) location is rejected, not just an unresolvable one.
 const FAKE_SNAPSHOT_DIR = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-test-snapshot-'));
 const WRONG_SNAPSHOT_DIR = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-test-wrong-snapshot-'));
 
@@ -670,6 +677,30 @@ describe('calibrationHardGate', () => {
     expect(reason).toContain('transcriptStructureOk:false');
   });
 
+  // Regression coverage for a review-round-6 finding: the round-5 ordering fix only checked that
+  // init precedes every tool_use/tool_result -- a plain assistant TEXT message (no tool call at
+  // all) sitting before init was invisible to it. Reproduced directly: findTranscriptStructuralIssues()
+  // returned [] and calibrationHardGate() returned {"ok":true,"reason":null}. The real stream-json
+  // protocol begins with init and ends with result, with nothing of any kind preceding the
+  // former -- init_not_first (stream-parser.mjs) now requires init to be the literal first event,
+  // not just "before every tool call".
+  it('isolates transcriptStructureOk -- A has a plain assistant text message BEFORE its own init event (no tool_use at all, still structurally invalid)', () => {
+    const runA = passRunResult({
+      events: [
+        assistantTextEvent('stray pre-init content'),
+        initEventStub(),
+        bashToolUseEvent('toolu_1', 'kmp-test doctor --json'),
+        toolResultEvent('toolu_1'),
+        bashToolUseEvent('toolu_2', 'kmp-test describe --json'),
+        toolResultEvent('toolu_2'),
+        resultEventStub(),
+      ],
+    });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
 });
 
 describe('smokeHardGate', () => {
@@ -1138,6 +1169,25 @@ describe('smokeHardGate', () => {
         resultEventStub(),
         bashToolUseEvent('toolu_late', 'kmp-test parallel --json'),
         toolResultEvent('toolu_late'),
+      ],
+    });
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    expect(reason).toContain('transcriptStructureOk:false');
+  });
+
+  // See calibrationHardGate's identical test + rationale -- the same gap (init_not_first catches
+  // ANY event preceding init, not just a tool_use/tool_result) applies to smoke too.
+  it('isolates transcriptStructureOk -- A has a plain assistant text message BEFORE its own init event (no tool_use at all, still structurally invalid)', () => {
+    const runA = passRunResult({
+      events: [
+        assistantTextEvent('stray pre-init content'),
+        initEventStub(),
+        bashToolUseEvent('toolu_1', 'kmp-test doctor --json'),
+        toolResultEvent('toolu_1'),
+        bashToolUseEvent('toolu_2', 'kmp-test describe --json'),
+        toolResultEvent('toolu_2'),
+        resultEventStub(),
       ],
     });
     const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));

@@ -271,19 +271,26 @@ export function hasExpectedPluginProfile(initEvent, expectedSkillName, skillShou
  *  - every `tool_result`'s own `tool_use_id` must correspond to EXACTLY one `tool_use` in the
  *    transcript -- never zero (an ORPHAN result, referencing a call that was never made) and
  *    never more than one (a DUPLICATE result for the same call).
- *  - `init` must precede every `tool_use`/`tool_result`, and `result` must be positionally the
- *    LAST event in the whole transcript -- proving exactly one of each exists SOMEWHERE is not
- *    the same as proving WHERE. A transcript with `result` at index 0, `init` at index 1, and a
- *    Skill `tool_use` after the "terminal" result satisfied every check above while being
- *    structurally nonsensical; only meaningful once the single-init/single-result checks above
- *    already hold (an ambiguous count has no unique event to anchor an ordering check against).
+ *  - `init` must be the literal FIRST event in the whole transcript, and `result` must be
+ *    positionally the LAST -- proving exactly one of each exists SOMEWHERE is not the same as
+ *    proving WHERE. A transcript with `result` at index 0, `init` at index 1, and a Skill
+ *    `tool_use` after the "terminal" result satisfied every check above while being structurally
+ *    nonsensical; only meaningful once the single-init/single-result checks above already hold
+ *    (an ambiguous count has no unique event to anchor an ordering check against). Matches the
+ *    real stream-json protocol shape directly (a conversation begins with init and ends with
+ *    result), not just "no tool_use/tool_result precedes init" -- a plain assistant TEXT message
+ *    (no tool call at all) sitting before init is just as structurally invalid, and would
+ *    otherwise be invisible to a check scoped only to tool_use/tool_result indices.
  * Regression coverage for a real gap an independent review pass demonstrated: both reproductions
  * (a second init+result pair appended after a legitimate first one; two Skill tool_use blocks
  * sharing one id satisfied by a single tool_result) returned {ok:true} against the hard gates as
  * they stood -- every existing check either reads "the first" event of its kind, or only
  * verifies "at least one" correlation exists, neither of which detects these shapes. A further
  * round found the ordering gap above: `result` before `init`, with real activity trailing the
- * fake "terminal" result, also returned {ok:true} with zero structural issues reported.
+ * fake "terminal" result, also returned {ok:true} with zero structural issues reported. A round
+ * after that found the ordering check itself was still too narrow: a plain assistant TEXT message
+ * (no tool_use) preceding init was invisible to a check that only looked at tool_use/tool_result
+ * indices, also returning {ok:true}.
  * @returns {Array<{type: string, [key: string]: any}>}
  */
 export function findTranscriptStructuralIssues(events) {
@@ -298,13 +305,11 @@ export function findTranscriptStructuralIssues(events) {
   if (resultIndices.length !== 1) issues.push({ type: 'result_count', count: resultIndices.length });
 
   const toolUseIds = [];
-  const toolUseIndices = [];
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     if (ev.type !== 'assistant') continue;
     for (const c of ev.message?.content ?? []) {
       if (c.type !== 'tool_use') continue;
-      toolUseIndices.push(i);
       if (typeof c.id !== 'string' || c.id.length === 0) {
         issues.push({ type: 'empty_tool_use_id' });
         continue;
@@ -320,13 +325,11 @@ export function findTranscriptStructuralIssues(events) {
 
   const uniqueToolUseIds = new Set(toolUseIds);
   const toolResultIdCounts = new Map();
-  const toolResultIndices = [];
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     if (ev.type !== 'user') continue;
     for (const c of ev.message?.content ?? []) {
       if (c.type !== 'tool_result') continue;
-      toolResultIndices.push(i);
       const id = c.tool_use_id ?? null;
       toolResultIdCounts.set(id, (toolResultIdCounts.get(id) ?? 0) + 1);
     }
@@ -355,14 +358,16 @@ export function findTranscriptStructuralIssues(events) {
     if (resultIndex !== events.length - 1) {
       issues.push({ type: 'result_not_last', resultIndex, eventsLength: events.length });
     }
-    // `init` must precede every tool_use/tool_result -- proving "result is last" alone doesn't
-    // also prove "init is first"; a tool_use before init (with init and result both otherwise
-    // correctly placed) is a distinct violation this catches.
-    for (const i of toolUseIndices) {
-      if (i < initIndex) issues.push({ type: 'activity_before_init', eventType: 'tool_use', index: i, initIndex });
-    }
-    for (const i of toolResultIndices) {
-      if (i < initIndex) issues.push({ type: 'activity_before_init', eventType: 'tool_result', index: i, initIndex });
+    // `init` must be the literal FIRST event in the transcript, not merely "before every tool_use/
+    // tool_result" -- a review-round-6 finding demonstrated a plain assistant TEXT message (no
+    // tool_use at all) sitting before init was invisible to a check scoped to only tool_use/
+    // tool_result indices: findTranscriptStructuralIssues() returned [] and calibrationHardGate()
+    // returned {ok:true} for it. The real stream-json protocol begins with init and ends with
+    // result, with nothing of any kind preceding the former -- this also subsumes the narrower
+    // "no tool_use/tool_result before init" property a prior round checked directly (any such call
+    // now trivially implies initIndex > 0 too).
+    if (initIndex !== 0) {
+      issues.push({ type: 'init_not_first', initIndex });
     }
   }
 
