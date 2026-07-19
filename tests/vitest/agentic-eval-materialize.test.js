@@ -16,6 +16,7 @@ import {
 } from '../../tools/agentic-eval/materialize.mjs';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
 import { runValidator } from '../../tools/validate-plugin.mjs';
+import { PINNED_SKILL_SHA } from '../../tools/agentic-eval/cli.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -65,6 +66,31 @@ describe('materializeSkillSnapshot', () => {
     const materializedSkillMd = readFileSync(path.join(snapshotDir, '.skills', 'kmp-test-runner', 'SKILL.md'), 'utf8');
     expect(materializedSkillMd).not.toMatch(/^(bash|pwsh)\s+\.skills\/kmp-test-runner\//m);
     expect(materializedSkillMd).toContain('kmp-test parallel --json --project-root .');
+  });
+
+  // Locks the harness's actual runtime pin -- separate from KNOWN_SHA above (mechanism-only) and
+  // from the live-HEAD test above (tracks develop's tip forever, never references this constant).
+  // calibrate/smoke both materialize current-skill via runConditionPair's one call site using
+  // exactly PINNED_SKILL_SHA, so this is the only test that catches that constant itself going
+  // stale. Split into two independent it() blocks on purpose: expect().toBe() throws
+  // synchronously, so a single block with the equality check first would hide whether the content
+  // assertions below actually discriminate -- two blocks means a run against a stale pin shows
+  // both failing for real, not just the first one.
+  it('PINNED_SKILL_SHA is locked to the aeba6ea skill-portability fix', () => {
+    expect(PINNED_SKILL_SHA).toBe('aeba6eaa8d027be999cdfeeb5bb2d1bbd0f688ee');
+  });
+
+  it('the pinned current-skill snapshot reflects the portable canonical workflow', async () => {
+    const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runValidator });
+    cleanupDirs.push(snapshotDir);
+    expect(validation.ok).toBe(true);
+    const materializedSkillMd = readFileSync(path.join(snapshotDir, '.skills', 'kmp-test-runner', 'SKILL.md'), 'utf8');
+    expect(materializedSkillMd).toContain('kmp-test parallel --json --project-root .');
+    expect(materializedSkillMd).toContain('### 1. Run the relevant test type');
+    expect(materializedSkillMd).toContain('### 2. Diagnose only if the environment blocks the run');
+    expect(materializedSkillMd).toContain('Skip this step unless `exit_code` is `3`');
+    expect(materializedSkillMd).not.toMatch(/^(bash|pwsh)\s+\.skills\/kmp-test-runner\//m);
+    expect(materializedSkillMd).not.toContain('current: 0.10.0+');
   });
 
   it('cleans up its temp directory when validation fails partway through (not just on an invalid SHA)', async () => {
