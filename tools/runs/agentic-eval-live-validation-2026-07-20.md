@@ -30,7 +30,10 @@ named ever reaches the child, verified empirically here rather than only by read
 - `claude auth status`, run **with that same constructed child environment**: `loggedIn`:
   **true**, `authMethod`: **claude.ai**, `apiProvider`: **firstParty**, `subscriptionType`:
   **max**
-- `apiKeySource` / `apiKeyHelper` configured anywhere: **false** (no such field/config present)
+- `apiKeySource` / `apiKeyHelper` not present in the inspected parent scopes or effective
+  measured-child configuration: **true** (not a claim about every possible configuration source
+  in existence — scoped to what was actually inspected: `claude auth status`'s own output, and
+  `~/.claude/settings.json`)
 
 Budget note: each condition runs under the harness's internal `--max-budget-usd` safety ceiling
 (default $0.60/condition) — an internal cap on Agent SDK usage, not a per-token API charge. A
@@ -157,13 +160,20 @@ sub-checks), the pinned skill snapshot changed (`c5c0661→aeba6ea`, PR #375's p
 the Claude Code CLI version changed (`2.1.214→2.1.215`). Any of the three could move these
 numbers independent of anything the skill itself does.
 
+All fields available in the main table above are included here too — deliberately not a curated
+subset, to avoid the appearance of picking the metrics that tell the most flattering story.
+
 | Field | cal A 07-18 → 07-20 | cal B 07-18 → 07-20 | smoke A 07-18 → 07-20 | smoke B 07-18 → 07-20 |
 |---|---|---|---|---|
 | `skill_invocation_attempted` | true → **false** | true → true | false → false | false → false |
 | `tool_calls_total` | 3 → 0 | 9 → 7 | 2 → 2 | 2 → 2 |
 | `hook_call_count` / `hook_deny_count` | 2/2 → 0/0 | 8/5 → 6/3 | 2/0 → 2/0 | 2/0 → 2/0 |
 | `wall_clock_ms` | 15692 → 7879 | 55147 → 54007 | 70185 → 79200 | 73815 → 83168 |
+| `tokens.output` | 684 → 205 | 2793 → 2526 | 1204 → 1168 | 1248 → 1045 |
 | `tokens.cache_read` | 63490 → 13762 | 203641 → 150499 | 30348 → 30411 | 16626 → 24839 |
+| `tokens.cache_creation` | 3338 → 2243 | 26043 → 25029 | 4437 → 4071 | 18537 → 10279 |
+| `output_bytes` | 165 → 0 | 3884 → 3664 | 3017 → 3017 | 3017 → 3017 |
+| `stream_json_bytes` | 15363 → 6531 | 67540 → 61339 | 24685 → 24604 | 24644 → 22467 |
 
 The most conspicuous change — calibration's no-skill arm going from `attempted:true` (it tried the
 `Skill` tool and got `Unknown skill`) to `attempted:false` (it didn't try at all this time) — is
@@ -203,9 +213,31 @@ attempted:false, invoked:false` — the no-skill arm never attempted the `Skill`
 time, which the *current* gate (post-#377) correctly treats as legitimate isolation proof, not a
 failure. B: `available:true, attempted:true, invoked:true`. `benchmark_eligible:false` on both.
 `validate --run` clean on both. *Reported honestly, not treated as a failure*: `hook_call_count`
-was 0 on A (it made no tool calls of any kind) and B's `hook_deny_count` was 3 of 6 — the current
-gate doesn't require `hook_deny_count===0` for calibration (only smoke's gate does), so this is
-disclosed, not treated as blocking.
+was 0 on A (it made no tool calls of any kind — not even a `Skill` attempt, since
+`skill_invocation_attempted` was `false`) and B made 6 Bash calls (plus the 1 `Skill` call,
+matching `tool_calls_total:7`), 3 denied and 3 allowed. Independently re-parsed from B's raw
+transcript itself, not just the aggregate counts — raw transcripts aren't version-controlled, so
+this detail would otherwise be lost entirely:
+
+- **Denied** (outside calibrate's narrow allowlist — only `kmp-test doctor`/`kmp-test parallel`
+  are approved): a chained shell-inspection command (a directory listing, a `gradlew*` glob check,
+  and a bare `kmp-test --version` call, joined with `&&`), a second bare directory-listing
+  command, and a Windows `dir /a` listing.
+- **Allowed but failed**: the first `kmp-test parallel --json` call, exit code 3
+  (`no_test_modules`) — expected, not a defect: the calibration fixture is intentionally not a
+  runnable Gradle project (see Explicit limitations).
+- **Allowed and succeeded**: `kmp-test doctor --json`, then a follow-up
+  `kmp-test parallel --json --dry-run`.
+
+None of this is gate-blocking — calibration's gate doesn't require `hook_deny_count===0` (only
+smoke's does) — but it's a genuine, mild signal worth naming rather than collapsing into the
+aggregate count alone: B reached slightly past calibration's intentionally narrow allowlist before
+settling into the two approved subcommands. This is not a security or hard-gate failure — the
+policy hook caught all three denied attempts correctly — but it is a real alignment/efficiency
+signal for the skill-present arm. With n=1 it can't be attributed causally to the skill itself
+(see Explicit limitations), and it isn't dismissed as irrelevant either — a candidate signal for
+future calibration prompt/policy-alignment refinement, echoing the same observation already made
+in the 2026-07-18 report.
 
 **Smoke**: `smokeHardGate` passed on both records, including the strict `hook_deny_count===0` on
 both (2/2 and 2/2 hook calls, all allowed, zero denials) and the exact expected command multiset
