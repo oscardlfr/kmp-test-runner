@@ -313,6 +313,11 @@ const SCENARIO_CANONICAL_FIELDS = [
 
 const OUTCOME_KIND_VALUES = ['tests_executed', 'no_applicable_tests'];
 const GRADLE_MARKER_VALUES = ['NO-SOURCE'];
+// Mirrors TRIGGER_QUERY_PARTITION_VALUES's own train/held-out split for a conceptually identical
+// purpose (which corpus subset a scenario belongs to) -- a fresh review reproduced `tags` never
+// being validated at all: `"train"` (a bare string, not an array) and `null` `project_alias` both
+// passed `validateScenario()` with zero errors.
+const SCENARIO_TAG_VALUES = ['train', 'held-out'];
 
 /** Validates `policy.{allowed_kmptest_subcommands,allowed_gradle_tasks}` -- the ONLY place a
  * scenario field is ever interpreted as something that reaches a shell/exec call (decision 9),
@@ -341,7 +346,35 @@ function validatePolicy(policy, errors) {
  * status). `tests_executed`: `tests` AND `exit_code` (must be exactly 0) are both REQUIRED on
  * both providers; `error_code`/`caused_by_filter`/`marker` are FORBIDDEN. `no_applicable_tests`:
  * kmp_test requires `error_code`+`exit_code`+`caused_by_filter`; gradle requires `exit_code`+
- * `marker`; `tests` is FORBIDDEN on both. No hybrid combination validates either way. */
+ * `marker`; `tests` is FORBIDDEN on both. No hybrid combination validates either way.
+ *
+ * A fresh review reproduced two further gaps, both closed with genuinely PROVIDER-SPECIFIC
+ * contracts rather than one shared shape:
+ * 1. `individual_total`/`skipped` were optional-if-present on BOTH providers, with no distinction
+ *    between them -- but `graders.mjs`'s Gradle-path evaluation (`evaluateGradleAttempt`) never
+ *    reads either field at all (the JUnit-XML capture mechanism, `matrix-runner.mjs`'s
+ *    `captureGradleJunitEvidence`, cannot verify them). A scenario file could declare completely
+ *    FALSE values for `expected.gradle.tests.skipped`/`individual_total` and neither the schema
+ *    nor the grader would ever notice -- confirmed by direct reproduction (`skipped:99,
+ *    individual_total:999` added to a real scenario's gradle contract: zero validation errors,
+ *    grading still `success:true`). Worse, because they were merely OPTIONAL (not required) on
+ *    the kmp_test side too, omitting them from BOTH the scenario file AND an incomplete envelope
+ *    let `graders.mjs`'s own `envelope.tests?.skipped === kt.tests.skipped` comparison pass
+ *    VACUOUSLY (`undefined === undefined`), silently defeating the very check that field exists
+ *    to enforce. Fixed: `kmp_test` now REQUIRES all five counters (`total`, `passed`, `failed`,
+ *    `individual_total`, `skipped`) -- an absent counter is a schema error, never a silent
+ *    vacuous match. `gradle` now FORBIDS `individual_total`/`skipped` entirely -- an unenforced
+ *    claim a scenario author can never even accidentally make, mirroring how the earlier
+ *    unenforced `kmp_test.task` claim was retired rather than left as decoration.
+ * 2. `total` only required a non-negative integer (`>= 0`), so a `tests_executed` contract could
+ *    legitimately claim `{total:0, passed:0, failed:0}` -- a self-contradictory claim (if
+ *    `outcome_kind` is `tests_executed`, by definition at least one test ran; zero tests executed
+ *    is a `no_applicable_tests` claim, not a degenerate `tests_executed` one) that also happens to
+ *    exactly match what an ABSENT JUnit-XML directory produces (see `matrix-runner.mjs`'s
+ *    `captureGradleJunitEvidence`, fixed separately to distinguish "no XML at all" from "real XML
+ *    showing zero"). `total` is now required to be a POSITIVE integer (`>= 1`) for `tests_executed`
+ *    on both providers -- closing the schema-level half of that finding; `passed`/`failed`
+ *    individually may still legitimately be zero. */
 function validateProviderContract(provider, contractName, outcomeKind, errors) {
   const field = `expected.${contractName}`;
   if (provider == null || typeof provider !== 'object') {
@@ -355,22 +388,38 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
 
   if (outcomeKind === 'tests_executed') {
     // Non-negative INTEGER, not just typeof 'number' -- a review pass reproduced total:-1,
-    // passed:1.5, failed:-2 all passing validation under a bare typeof check, and
-    // individual_total/skipped (both optional -- individual_total is kmp_test-only; skipped is
-    // only meaningfully validated by graders.mjs on the kmp_test path too, since the Gradle/
-    // JUnit-XML capture mechanism doesn't expose a skipped count at all) went unvalidated
-    // entirely. total===passed+failed is checked only once the individual fields are confirmed
+    // passed:1.5, failed:-2 all passing validation under a bare typeof check. `total` specifically
+    // must be POSITIVE (>=1), not merely non-negative -- see this function's own doc comment,
+    // finding 2. total===passed+failed is checked only once the individual fields are confirmed
     // well-shaped (comparing potentially-non-numeric values would be meaningless).
     const isNonNegInt = (v) => Number.isInteger(v) && v >= 0;
+    const isPositiveInt = (v) => Number.isInteger(v) && v >= 1;
     const hasIndividualTotal = hasTests && 'individual_total' in provider.tests && provider.tests.individual_total != null;
     const hasSkipped = hasTests && 'skipped' in provider.tests && provider.tests.skipped != null;
-    const testsShapeOk = hasTests
-      && isNonNegInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && isNonNegInt(provider.tests.failed)
-      && (!hasIndividualTotal || isNonNegInt(provider.tests.individual_total))
-      && (!hasSkipped || isNonNegInt(provider.tests.skipped));
-    if (!testsShapeOk) {
-      errors.push({ field: `${field}.tests`, message: 'required (non-negative integer total/passed/failed, and individual_total/skipped when present) when outcome_kind is tests_executed' });
-    } else if (provider.tests.total !== provider.tests.passed + provider.tests.failed) {
+    let testsShapeOk;
+    if (contractName === 'kmp_test') {
+      // kmp-test's own real envelope always reports all five counters for a genuine `parallel`
+      // run -- REQUIRE all five, not merely validate-if-present, so a scenario (and an
+      // intentionally-incomplete matching envelope) can never vacuously "agree" by both omitting
+      // a counter the grader is supposed to check (see this function's own doc comment, finding 1).
+      testsShapeOk = hasTests
+        && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && isNonNegInt(provider.tests.failed)
+        && isNonNegInt(provider.tests.individual_total) && isNonNegInt(provider.tests.skipped);
+      if (!testsShapeOk) {
+        errors.push({ field: `${field}.tests`, message: 'required (positive integer total; non-negative integer passed/failed/individual_total/skipped -- ALL five required for kmp_test) when outcome_kind is tests_executed' });
+      }
+    } else {
+      // Gradle/JUnit-XML: individual_total/skipped are FORBIDDEN, not merely unvalidated -- the
+      // capture mechanism genuinely cannot verify either today (see this function's own doc
+      // comment, finding 1, and graders.mjs's disclosed limitation on skipped specifically).
+      if (hasIndividualTotal) errors.push({ field: `${field}.tests.individual_total`, message: 'forbidden on the gradle contract -- the JUnit-XML capture path cannot verify it' });
+      if (hasSkipped) errors.push({ field: `${field}.tests.skipped`, message: 'forbidden on the gradle contract -- the JUnit-XML capture path cannot verify it' });
+      testsShapeOk = hasTests && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && isNonNegInt(provider.tests.failed);
+      if (!testsShapeOk) {
+        errors.push({ field: `${field}.tests`, message: 'required (positive integer total; non-negative integer passed/failed) when outcome_kind is tests_executed' });
+      }
+    }
+    if (testsShapeOk && provider.tests.total !== provider.tests.passed + provider.tests.failed) {
       errors.push({ field: `${field}.tests`, message: `total (${provider.tests.total}) must equal passed (${provider.tests.passed}) + failed (${provider.tests.failed})` });
     }
     if (provider.exit_code !== 0) errors.push({ field: `${field}.exit_code`, message: 'required and must be exactly 0 when outcome_kind is tests_executed' });
@@ -450,6 +499,12 @@ export function validateScenario(scenario) {
   if (typeof scenario.id !== 'string' || !/^[a-z0-9-]+$/.test(scenario.id)) errors.push({ field: 'id', message: 'must be a kebab-case string' });
   if (!FAMILY_VALUES.includes(scenario.family) || scenario.family === 'trigger-only') {
     errors.push({ field: 'family', message: 'must be test-only or coverage for a scenario' });
+  }
+  if (typeof scenario.project_alias !== 'string' || scenario.project_alias.length === 0) {
+    errors.push({ field: 'project_alias', message: 'must be a non-empty string' });
+  }
+  if (!Array.isArray(scenario.tags) || scenario.tags.length === 0 || scenario.tags.some((t) => !SCENARIO_TAG_VALUES.includes(t))) {
+    errors.push({ field: 'tags', message: `must be a non-empty array, every entry one of ${SCENARIO_TAG_VALUES.join('|')}` });
   }
   if (typeof scenario.project_url !== 'string' || !/^https:\/\//.test(scenario.project_url)) {
     errors.push({ field: 'project_url', message: 'must be an https URL (public project)' });

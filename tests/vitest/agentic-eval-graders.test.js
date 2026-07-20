@@ -1373,3 +1373,73 @@ describe('gradeScenarioCondition -- round-6: dimension-matrix gaps a fresh test-
     expect(grade.expectedOutcomeMatched).toBe(false);
   });
 });
+
+// Round 7: a fresh adversarial review found 3 more P1s, all affecting core, publishable metrics
+// rather than phrasing -- an unenforced oracle (schema/grader out of sync on which counters are
+// actually verifiable), evidence absence masquerading as a valid zero-test result, and missing
+// execution/plan coherence between a command and its OWN envelope's self-reported mode. Covered
+// here: the graders.mjs-side execution-mode coherence + schema_version checks (the schema-level
+// provider-contract and total>=1 fixes live in agentic-eval-schemas.test.js; the JUnit-XML
+// absence fix lives in agentic-eval-matrix-runner.test.js).
+describe('gradeScenarioCondition -- round-7: envelope execution/plan-mode must agree with a real execution, not just the command text', () => {
+  it('command has NO --dry-run in its own text, but the RETURNED envelope claims dry_run:true -- must fail, never trust matching counts over the envelope\'s own self-reported mode', () => {
+    const staleDryRunEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100, dry_run: true,
+      tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
+      modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: staleDryRunEnvelope }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('command has NO --list-only in its own text, but the RETURNED envelope claims parallel.list_only:true -- must fail the same way', () => {
+    const staleListOnlyEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100, parallel: { test_type: 'auto', list_only: true, legs: [] },
+      tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
+      modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: staleListOnlyEnvelope }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('regression guard: a real envelope with neither dry_run nor parallel.list_only set (the ordinary case, matching every existing fixture in this file) still passes normally', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+});
+
+describe('gradeScenarioCondition -- round-7: envelope schema_version must match the CURRENT envelope schema exactly', () => {
+  it('an envelope claiming a DIFFERENT schema_version (e.g. a stale/older value) is not trusted as a kmp-test envelope at all -- extraction fails, the attempt is malformed', () => {
+    const wrongSchemaVersionEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 1, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100,
+      tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
+      modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
+    });
+    expect(extractKmpTestEnvelope(wrongSchemaVersionEnvelope)).toBeNull();
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: wrongSchemaVersionEnvelope }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+});

@@ -23,7 +23,7 @@ import { materializeSkillSnapshot, materializeGradleUserHome, realpath } from '.
 import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition } from './condition-launcher.mjs';
 import { parseStreamJsonl, findInitEvent, findResultEvent, findSkillInvocation, countHookEvents, computeByteMetrics, findBashToolUsesWithResults } from './stream-parser.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
-import { junitTestCountFor, junitTestFailuresFor } from '../../lib/parsers/junit-xml.js';
+import { junitTestCountFor, junitTestFailuresFor, forEachJunitXml } from '../../lib/parsers/junit-xml.js';
 
 /** Prints a single, clearly-labeled WARNING line if `failures` (from a cleanup accumulator's
  * runCleanup()) is non-empty -- never silent, but never escalated into a hard failure either: a
@@ -216,12 +216,28 @@ export async function runSingleCondition({ condition, materializeFixture, previo
  * non-reset-between-legs use case. Only meaningful for `outcome_kind:'tests_executed'` scenarios --
  * a `no_applicable_tests` scenario has no XML to read by definition; returns null for both that
  * case and a scenario with no `evidence_task` declared at all.
+ *
+ * Returns `null`, not `{total:0,passed:0,failed:0}`, when NO JUnit XML file was ever produced for
+ * the task at all -- a fresh review reproduced a real gap: `junitTestCountFor`/
+ * `junitTestFailuresFor` both simply accumulate from zero and never distinguish "walked zero
+ * matching files" from "walked real files that happen to report zero testcases," so a completely
+ * ABSENT `build/test-results/<task>/` directory (nothing ever ran, or ran against the wrong task
+ * entirely) previously produced the exact same `{total:0,passed:0,failed:0}` shape a real,
+ * genuinely-empty test suite would -- and the schema permitted a `tests_executed` contract to
+ * legitimately expect all-zero counts, so this could grade as a fully-matching "correct execution
+ * of zero tests" with no real evidence behind it at all. `forEachJunitXml` is called directly
+ * (imported from the same shared `lib/parsers/junit-xml.js` utility, not reimplemented) purely to
+ * detect whether at least one real XML file exists for this task, before trusting the counts
+ * `junitTestCountFor`/`junitTestFailuresFor` compute from those same files.
  * @returns {{total: number, passed: number, failed: number}|null}
  */
-function captureGradleJunitEvidence(fixtureDir, scenario) {
+export function captureGradleJunitEvidence(fixtureDir, scenario) {
   if (scenario.expected?.outcome_kind !== 'tests_executed') return null;
   const evidenceTask = scenario.expected?.gradle?.evidence_task;
   if (!evidenceTask) return null;
+  let anyXmlFound = false;
+  forEachJunitXml(fixtureDir, evidenceTask, 0, () => { anyXmlFound = true; });
+  if (!anyXmlFound) return null;
   const total = junitTestCountFor(fixtureDir, evidenceTask, 0);
   const failures = junitTestFailuresFor(fixtureDir, evidenceTask, 0);
   return { total, passed: total - failures.length, failed: failures.length };

@@ -563,7 +563,7 @@ describe('validateScenario', () => {
       expected: {
         module: ':shared',
         outcome_kind: 'tests_executed',
-        kmp_test: { tests: { total: 1, passed: 1, failed: 0, individual_total: 24 }, exit_code: 0 },
+        kmp_test: { tests: { total: 1, passed: 1, failed: 0, individual_total: 24, skipped: 0 }, exit_code: 0 },
         gradle: { allowed_invocations: [':shared:testAndroidHostTest'], evidence_task: ':shared:testAndroidHostTest', tests: { total: 24, passed: 24, failed: 0 }, exit_code: 0 },
       },
       first_useful_signal_predicate: { description: 'first mention of test results' },
@@ -817,7 +817,7 @@ describe('validateScenario', () => {
 
       it('accepts total that correctly equals passed + failed', () => {
         const s = baseScenario();
-        s.expected.kmp_test.tests = { total: 1, passed: 1, failed: 0, individual_total: 24 };
+        s.expected.kmp_test.tests = { total: 1, passed: 1, failed: 0, individual_total: 24, skipped: 0 };
         const { errors } = validateScenario(s);
         expect(errors.filter((e) => e.field === 'expected.kmp_test.tests')).toEqual([]);
       });
@@ -867,6 +867,110 @@ describe('validateScenario', () => {
   it('rejects a module not shaped like a colon-prefixed Gradle project path', () => {
     const { errors } = validateScenario(baseScenario({ expected: { ...baseScenario().expected, module: 'shared' } }));
     expect(errors.some((e) => e.field === 'expected.module')).toBe(true);
+  });
+
+  // A fresh review reproduced the oracle accepting ground truth the grader itself never
+  // verifies: `skipped`/`individual_total` were optional-if-present on BOTH providers, but
+  // graders.mjs's Gradle-path evaluation never reads either field at all (the JUnit-XML capture
+  // mechanism can't verify them). Provider-specific contracts close this: kmp_test REQUIRES all
+  // five counters; gradle FORBIDS the two it can't verify.
+  describe('provider-specific tests contracts (a fresh review reproduced an unenforced oracle)', () => {
+    it('EXACT REPRODUCTION: adding skipped:99/individual_total:999 to a real gradle contract now fails validation -- previously accepted with zero errors', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests = { ...s.expected.gradle.tests, skipped: 99, individual_total: 999 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.skipped')).toBe(true);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.individual_total')).toBe(true);
+    });
+
+    it('gradle contract with ONLY skipped present (no individual_total) is still rejected', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests = { ...s.expected.gradle.tests, skipped: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.skipped')).toBe(true);
+    });
+
+    it('gradle contract with ONLY individual_total present (no skipped) is still rejected', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests = { ...s.expected.gradle.tests, individual_total: 24 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.individual_total')).toBe(true);
+    });
+
+    it('kmp_test contract MISSING skipped is rejected (was merely optional before -- an absent counter on both scenario and envelope let the comparison pass vacuously)', () => {
+      const s = baseScenario();
+      const { skipped, ...withoutSkipped } = s.expected.kmp_test.tests;
+      s.expected.kmp_test.tests = withoutSkipped;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('kmp_test contract MISSING individual_total is rejected', () => {
+      const s = baseScenario();
+      const { individual_total, ...withoutIndividualTotal } = s.expected.kmp_test.tests;
+      s.expected.kmp_test.tests = withoutIndividualTotal;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('regression guard: a kmp_test contract with all five counters present and well-formed still validates cleanly', () => {
+      const { errors } = validateScenario(baseScenario());
+      expect(errors.filter((e) => e.field.startsWith('expected.kmp_test'))).toEqual([]);
+    });
+  });
+
+  // A fresh review reproduced tests_executed contracts legitimately claiming {total:0,...} --
+  // self-contradictory (if outcome_kind is tests_executed, at least one test ran by definition),
+  // and indistinguishable at the schema level from an absent-XML false positive (fixed separately
+  // in matrix-runner.mjs's captureGradleJunitEvidence).
+  describe('tests_executed requires a POSITIVE total, not merely non-negative (a fresh review reproduced total:0 as schema-legal)', () => {
+    it('rejects kmp_test.tests.total:0 for a tests_executed contract', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.tests = { total: 0, passed: 0, failed: 0, individual_total: 0, skipped: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('rejects gradle.tests.total:0 for a tests_executed contract', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests = { total: 0, passed: 0, failed: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests')).toBe(true);
+    });
+  });
+
+  // A fresh review reproduced project_alias:null and tags:"train" (a bare string, not an array)
+  // both passing validateScenario() with zero errors.
+  describe('project_alias / tags metadata validation (a fresh review reproduced these as entirely unvalidated)', () => {
+    it('rejects project_alias:null', () => {
+      const { errors } = validateScenario(baseScenario({ project_alias: null }));
+      expect(errors.some((e) => e.field === 'project_alias')).toBe(true);
+    });
+
+    it('rejects project_alias as an empty string', () => {
+      const { errors } = validateScenario(baseScenario({ project_alias: '' }));
+      expect(errors.some((e) => e.field === 'project_alias')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: rejects tags as a bare string ("train") instead of an array', () => {
+      const { errors } = validateScenario(baseScenario({ tags: 'train' }));
+      expect(errors.some((e) => e.field === 'tags')).toBe(true);
+    });
+
+    it('rejects an empty tags array', () => {
+      const { errors } = validateScenario(baseScenario({ tags: [] }));
+      expect(errors.some((e) => e.field === 'tags')).toBe(true);
+    });
+
+    it('rejects a tag value outside the known enum', () => {
+      const { errors } = validateScenario(baseScenario({ tags: ['not-a-real-tag'] }));
+      expect(errors.some((e) => e.field === 'tags')).toBe(true);
+    });
+
+    it('accepts a well-formed tags array (regression guard)', () => {
+      const { errors } = validateScenario(baseScenario({ tags: ['held-out'] }));
+      expect(errors.some((e) => e.field === 'tags')).toBe(false);
+    });
   });
 });
 

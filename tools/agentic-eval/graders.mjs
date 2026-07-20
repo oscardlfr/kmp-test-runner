@@ -23,6 +23,7 @@
 import { tokenize } from './policy-hook.mjs';
 import { classifyTaskExecutionMode } from '../../lib/orchestrators/parallel/result-rollup.js';
 import { findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout } from './stream-parser.mjs';
+import { ENVELOPE_SCHEMA_VERSION } from '../../lib/envelope/exit-codes.js';
 
 /** The fixed, canonical set of check names every gradeScenarioCondition() result's `checks` array
  * must contain -- exactly these 8, no more, no fewer, enforced by schemas.mjs's validateRun() for
@@ -113,10 +114,17 @@ function escapeRegExp(s) {
 // genuine Claude Code tool_result for these commands).
 // ---------------------------------------------------------------------------------------------
 
+// `schema_version` must match the CURRENT envelope schema exactly, not merely be typeof
+// 'number' -- a fresh review flagged this as a real gap: a stale or wrong-schema envelope (a
+// different schema version could give the same field NAMES an entirely different meaning) still
+// passed as trustworthy evidence as long as its shape happened to superficially match. Treated
+// identically to "not a kmp-test envelope at all" -- both are equally untrustworthy, and this
+// naturally flows into the existing `malformed` classification downstream (evaluateKmpTestAttempt
+// already treats "content exists but extractKmpTestEnvelope returns null" as malformed).
 const KMP_TEST_ENVELOPE_REQUIRED_SHAPE = (obj) =>
   obj != null && typeof obj === 'object' && !Array.isArray(obj)
   && obj.tool === 'kmp-test'
-  && typeof obj.schema_version === 'number'
+  && obj.schema_version === ENVELOPE_SCHEMA_VERSION
   && typeof obj.subcommand === 'string'
   && obj.tests != null && typeof obj.tests === 'object'
   && Array.isArray(obj.modules)
@@ -243,6 +251,19 @@ export function extractKmpTestEnvelope(content) {
  */
 function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsError, scenario) {
   if (envelope.subcommand !== invokedSubcommand) return false;
+  // Execution/plan-mode coherence: the envelope's OWN self-reported mode must agree with a real
+  // execution, not merely with what the invoking command's text happened to say. A fresh review
+  // reproduced this as a real gap -- this grader already excludes a command whose OWN text
+  // contains --dry-run/--list-only (see classifyBashCommand's isPlanOnly), but never cross-checked
+  // the RETURNED envelope's own dry_run/list_only fields (both real, confirmed fields --
+  // lib/envelope/builder.js's buildDryRunReport sets `dry_run:true` at the top level;
+  // parallel-orchestrator.js's --list-only path sets `parallel.list_only:true`) against a command
+  // that looked like a real execution. This grader presents itself as fail-closed against stale or
+  // mis-correlated evidence -- a command with no --dry-run/--list-only in its own text, paired
+  // (whether by a caching bug, a mismatched tool_result, or anything else) with an envelope that
+  // itself claims plan-only mode, must not be trusted just because its counts happen to coincide.
+  if (envelope.dry_run === true) return false;
+  if (envelope.parallel?.list_only === true) return false;
   // resultIsError:true contradicting a CLEAN exit_code:0 claim is wrong under any plausible
   // convention, but the REVERSE (resultIsError:false alongside a non-zero exit_code) is NOT
   // flagged: kmp-test's own exit codes encode multiple LEGITIMATE non-zero states (exit_code:2/

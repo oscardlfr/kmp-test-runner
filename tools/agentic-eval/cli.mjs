@@ -8,14 +8,22 @@
 //   node tools/agentic-eval/cli.mjs smoke --source-repo-dir <local-clone> --pinned-commit <sha>
 //                                          [--project-alias <alias>] [--model <name>]
 //                                          [--private-patterns-file <path>]
+//   node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
+//                                        [--repeats <n>] [--model <name>] [--dry-run]
+//                                        [--private-patterns-file <path>]
 //   node tools/agentic-eval/cli.mjs corpus validate
 //   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
 //   node tools/agentic-eval/cli.mjs validate --run <path-to-run.json>
 //   node tools/agentic-eval/cli.mjs --help
 //
-// Every measured run is benchmark_eligible:false (calibration/smoke) -- this PR does not execute
-// the full benchmark; `smoke` runs exactly one scenario to prove the harness works end-to-end,
-// never publishing a ratio or performance claim.
+// calibrate/smoke always produce benchmark_eligible:false -- foundation-harness runs proving the
+// Skill mechanism invokes at all, never a benchmark result. `run` is the one subcommand that CAN
+// produce benchmark_eligible:true records (a fresh review flagged this file's own header as stale
+// -- it used to claim EVERY measured run was benchmark_eligible:false and didn't enumerate `run`
+// at all, which stopped being true the moment `run` shipped): it executes a full --repeats-sized
+// scenario matrix against a scenario in corpus/scenarios/ and grades each condition's transcript
+// against that scenario's structured ground truth (graders.mjs); benchmark_eligible depends only
+// on protocol/integrity completeness, never on whether the agent's answer was correct.
 //
 // No committable evidence is ever written before ALL of: schema validation, a fresh
 // policy_sha256 match against the CURRENT policy-hook.mjs, the privacy fail-closed check
@@ -1535,18 +1543,39 @@ function loadScenarioById(scenarioId) {
   return { ok: true, scenario };
 }
 
+/** Canonicalizes a git remote URL to a bare `host/org/repo` identity for comparison -- a fresh
+ * review reproduced a real false rejection: a legitimate SSH-remote clone
+ * (`git@github.com:org/repo.git`) was rejected as "wrong local clone" purely because it was
+ * compared literally against the scenario's declared HTTPS `project_url`
+ * (`https://github.com/org/repo`), even though both name the exact same remote repository.
+ * Recognizes the SSH `git@host:path` form and the `http(s)://host/path` form; anything else
+ * (an unrecognized scheme) falls through to the same trim-only normalization as before, so this
+ * is strictly additive -- it never makes an already-passing comparison stricter. */
+function normalizeGitRemoteForComparison(url) {
+  const trimmed = url.trim().replace(/\.git$/, '').replace(/\/+$/, '');
+  const sshMatch = /^[\w-]+@([^:]+):(.+)$/.exec(trimmed);
+  if (sshMatch) return `${sshMatch[1]}/${sshMatch[2]}`;
+  const httpMatch = /^https?:\/\/([^/]+)\/(.+)$/.exec(trimmed);
+  if (httpMatch) return `${httpMatch[1]}/${httpMatch[2]}`;
+  return trimmed;
+}
+
 /**
  * Verifies `sourceRepoDir` is a trustworthy materialization source for `scenario` BEFORE any git
  * worktree is ever created from it -- never called for --dry-run, which returns before touching
  * the source repo at all. Three independent checks, each its own actionable error: (1) the
- * repo's own `origin` remote matches the scenario's declared project_url -- catches "pointed at
- * the wrong local clone entirely"; (2) the working tree is clean -- an uncommitted local
- * modification could silently diverge the materialized fixture from the exact pinned commit the
- * scenario's `expected` ground truth was calibrated against (decision 4), which `git worktree
- * add --detach <dir> <pinnedCommit>` alone would not catch (it reads the commit object, never the
- * working tree); (3) the pinned commit actually resolves inside the repo -- gives a clear,
- * specific error instead of materializeScenarioProject's own raw `git worktree add` failure deep
- * inside a try/catch.
+ * repo's own `origin` remote identifies the SAME repository as the scenario's declared
+ * project_url, tolerating the SSH-vs-HTTPS scheme difference (see `normalizeGitRemoteForComparison`)
+ * -- catches "pointed at the wrong local clone entirely" without also rejecting a legitimate clone
+ * merely for using a different, equally valid remote URL form; (2) the working tree is clean --
+ * this is deliberately a courtesy check protecting the operator's own uncommitted local work in
+ * `sourceRepoDir` from being silently ignored, NOT a scenario-ground-truth-correctness check: a
+ * fresh review correctly pointed out that materialization reads the pinned commit object from the
+ * repository's OWN database, never the working tree, so dirty state in `sourceRepoDir`
+ * structurally CANNOT leak into what actually gets materialized -- the original doc comment's
+ * framing ("could silently diverge the materialized fixture") overstated what this check
+ * protects against, corrected here; (3) the pinned commit actually resolves inside the repo --
+ * gives a clear, specific error instead of a raw failure deep inside a try/catch elsewhere.
  */
 function verifySourceRepoForScenario(sourceRepoDir, scenario) {
   if (!existsSync(sourceRepoDir)) {
@@ -1556,8 +1585,7 @@ function verifySourceRepoForScenario(sourceRepoDir, scenario) {
   if (remoteUrl == null) {
     return { ok: false, reason: `--source-repo-dir does not look like a git repository with an 'origin' remote: ${sourceRepoDir}` };
   }
-  const normalizeRemote = (u) => u.trim().replace(/\.git$/, '').replace(/\/+$/, '');
-  if (normalizeRemote(remoteUrl) !== normalizeRemote(scenario.project_url)) {
+  if (normalizeGitRemoteForComparison(remoteUrl) !== normalizeGitRemoteForComparison(scenario.project_url)) {
     return { ok: false, reason: `--source-repo-dir's origin remote (${remoteUrl}) does not match the scenario's declared project_url (${scenario.project_url}) -- wrong local clone?` };
   }
   const status = spawnSync('git', ['status', '--porcelain'], { cwd: sourceRepoDir, encoding: 'utf8' });
@@ -1566,7 +1594,7 @@ function verifySourceRepoForScenario(sourceRepoDir, scenario) {
   }
   const dirtyPaths = status.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (dirtyPaths.length > 0) {
-    return { ok: false, reason: `--source-repo-dir has uncommitted local modifications -- refusing to materialize from a dirty source, which could silently diverge from the pinned commit the scenario's ground truth was calibrated against: ${dirtyPaths.join(', ')}` };
+    return { ok: false, reason: `--source-repo-dir has uncommitted local modifications -- refusing as a courtesy to your own in-progress work there (materialization always reads the pinned commit object regardless, so this is optional hygiene, not a scenario-correctness protection): ${dirtyPaths.join(', ')}` };
   }
   const commitCheck = spawnSync('git', ['cat-file', '-e', `${scenario.project_commit}^{commit}`], { cwd: sourceRepoDir, encoding: 'utf8' });
   if (commitCheck.status !== 0) {
