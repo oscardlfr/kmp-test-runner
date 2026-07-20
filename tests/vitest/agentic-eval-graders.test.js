@@ -157,6 +157,38 @@ describe('extractKmpTestEnvelope', () => {
     expect(extractKmpTestEnvelope('')).toBeNull();
     expect(extractKmpTestEnvelope(undefined)).toBeNull();
   });
+
+  // Review-fix regression: the original implementation only scanned the FIRST balanced {...}
+  // substring -- a decoy/wrapper object appearing BEFORE the real envelope in the same content
+  // made the real envelope invisible entirely, since the (non-conforming) first object was the
+  // only one ever examined.
+  it('finds a real envelope even when a non-conforming decoy JSON object appears BEFORE it in the same content', () => {
+    const noisy = `{"wrapper":"meta"}\n${KMP_TEST_ENVELOPE_SCENARIO1_PASS}`;
+    const envelope = extractKmpTestEnvelope(noisy);
+    expect(envelope).not.toBeNull();
+    expect(envelope.tool).toBe('kmp-test');
+    expect(envelope.tests.individual_total).toBe(24);
+  });
+
+  it('finds a real envelope when a non-conforming decoy JSON object appears AFTER it too', () => {
+    const noisy = `${KMP_TEST_ENVELOPE_SCENARIO1_PASS}\n{"trailer":"meta"}`;
+    const envelope = extractKmpTestEnvelope(noisy);
+    expect(envelope).not.toBeNull();
+    expect(envelope.tool).toBe('kmp-test');
+  });
+
+  it('returns null (ambiguous) when TWO conforming envelopes both appear in the same content, rather than silently picking one', () => {
+    const twoEnvelopes = `${KMP_TEST_ENVELOPE_SCENARIO1_PASS}\n${KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS}`;
+    expect(extractKmpTestEnvelope(twoEnvelopes)).toBeNull();
+  });
+
+  it('does NOT dig inside a single, whole-string-parseable-but-non-conforming JSON value looking for a nested envelope', () => {
+    // The whole trimmed content parses as exactly ONE JSON value (a wrapper object with the real
+    // envelope only as a NESTED field) -- this must not be treated the same as noisy/concatenated
+    // content; the outer object is the only thing "printed", and it doesn't conform.
+    const wrapped = JSON.stringify({ wrapper: 'meta', nested: JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS) });
+    expect(extractKmpTestEnvelope(wrapped)).toBeNull();
+  });
 });
 
 describe('gradeScenarioCondition -- scenario 1 (:shared, tests_executed) happy paths', () => {
@@ -413,6 +445,83 @@ describe('gradeScenarioCondition -- adversarial cases a keyword grader would hav
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
     expect(grade.expectedOutcomeMatched).toBe(true); // real evidence is still correct
     expect(grade.success).toBe(false); // but success requires the positive final-answer fact too
+  });
+
+  // Review-fix regression: the original implementation never checked resultIsError at all and
+  // simply asked "does BUILD SUCCESSFUL appear ANYWHERE in the content" -- a real repro with
+  // resultIsError:true (the Bash call itself failed) alongside SUCCESSFUL-looking text graded as
+  // a genuine pass.
+  it('a Gradle attempt with resultIsError:true, despite BUILD SUCCESSFUL text present, must fail (never silently trusts the text over resultIsError)', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, resultIsError: true }],
+      '24/24 tests passed for :shared via testAndroidHostTest.',
+      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a Gradle attempt whose LAST footer is BUILD FAILED (an earlier retry\'s BUILD SUCCESSFUL text still sitting earlier in the content) must fail, not pass on "SUCCESSFUL appears somewhere"', () => {
+    const retriedThenFailed = `${GRADLE_SCENARIO1_PASS_STDOUT}\n> Task :shared:testAndroidHostTest FAILED\n\nBUILD FAILED in 2s\n`;
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: retriedThenFailed }],
+      '24/24 tests passed for :shared via testAndroidHostTest.',
+      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  // Review-fix regression: JUnit XML is captured ONCE per condition (after the whole cell
+  // finishes), never per-attempt -- if MORE than one Gradle attempt targets the scenario's allowed
+  // invocations within a single condition, that one snapshot cannot be reliably attributed to any
+  // SPECIFIC attempt. Must fail closed rather than silently attributing it to both/either.
+  it('two Gradle attempts in the same condition targeting the evidence task -- JUnit evidence is ambiguous, must fail closed even though both attempts look clean', () => {
+    const cr = buildConditionResult(
+      [
+        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT },
+        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain --rerun-tasks', resultContent: GRADLE_SCENARIO1_PASS_STDOUT },
+      ],
+      '24/24 tests passed for :shared via testAndroidHostTest.',
+      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a SINGLE Gradle attempt (no ambiguity) still passes normally -- the ambiguity fix does not regress the ordinary one-attempt case', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT }],
+      '24/24 tests passed for :shared via testAndroidHostTest.',
+      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  // Review-fix regression: plain `.includes()` for the bare module name treated "app" as
+  // "mentioned" inside completely unrelated words like "application".
+  it('scenario 2: final answer says "application" (never the actual module) -- must NOT count as mentioning :app', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS }],
+      'This application has no applicable tests.',
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('scenario 2: final answer correctly says "the app module" (standalone word) -- DOES count as mentioning :app', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS }],
+      'The app module has no applicable tests.',
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
+    expect(grade.success).toBe(true);
   });
 });
 

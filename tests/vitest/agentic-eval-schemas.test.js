@@ -754,6 +754,81 @@ describe('validateScenario', () => {
       const { errors } = validateScenario(s);
       expect(errors.some((e) => e.field === 'expected.gradle.marker')).toBe(true);
     });
+
+    // Review-fix regression: the docstring already claimed "non-negative integer
+    // total/passed/failed" but the code only checked `typeof === 'number'` -- total:-1,
+    // passed:1.5, failed:-2 all passed validation with zero errors under the old check.
+    describe('tests.{total,passed,failed,individual_total} must be non-negative INTEGERS, not merely typeof number', () => {
+      it('rejects a negative total', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: -1, passed: 1, failed: 0, individual_total: 24 };
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      });
+
+      it('rejects a fractional passed', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: 1, passed: 1.5, failed: 0, individual_total: 24 };
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      });
+
+      it('rejects a negative failed', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: 1, passed: 1, failed: -2, individual_total: 24 };
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      });
+
+      it('rejects a negative individual_total (present, but never validated by the old code)', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: 1, passed: 1, failed: 0, individual_total: -24 };
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      });
+
+      it('rejects a fractional individual_total', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: 1, passed: 1, failed: 0, individual_total: 24.5 };
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      });
+
+      it('the EXACT adversarial repro from review (total:-1, passed:1.5, failed:-2) produces at least one error, not zero', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: -1, passed: 1.5, failed: -2, individual_total: 24 };
+        const { errors } = validateScenario(s);
+        expect(errors.length).toBeGreaterThan(0);
+      });
+
+      it('still accepts well-formed non-negative integers (the fix does not regress the happy path)', () => {
+        const { errors } = validateScenario(baseScenario());
+        expect(errors.filter((e) => e.field === 'expected.kmp_test.tests')).toEqual([]);
+      });
+    });
+
+    describe('tests.total must equal passed + failed (arithmetic consistency invariant)', () => {
+      it('rejects total that does not equal passed + failed', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: 10, passed: 1, failed: 0, individual_total: 24 };
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      });
+
+      it('accepts total that correctly equals passed + failed', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: 1, passed: 1, failed: 0, individual_total: 24 };
+        const { errors } = validateScenario(s);
+        expect(errors.filter((e) => e.field === 'expected.kmp_test.tests')).toEqual([]);
+      });
+
+      it('applies the same invariant to the gradle provider', () => {
+        const s = baseScenario();
+        s.expected.gradle.tests = { total: 24, passed: 20, failed: 0 }; // 20 != 24
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.gradle.tests')).toBe(true);
+      });
+    });
   });
 
   describe('expected.gradle -- allowed_invocations/evidence_task consistency (decisions 3/round-4)', () => {

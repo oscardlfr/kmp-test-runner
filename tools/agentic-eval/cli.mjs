@@ -1577,6 +1577,16 @@ function buildScenarioRunPlan(scenarioId, repeats, seed) {
   return plan;
 }
 
+// A review pass flagged --repeats as unbounded: each repetition spawns 2 real live Claude
+// sessions once `run` is ever pointed at a genuine Claude Code binary (never true in THIS PR,
+// which spawns only the fake-claude test fixture -- but this safeguard belongs in the code being
+// shipped now, since a future live-validation PR will use this exact command). A single typo
+// (e.g. --repeats 100 instead of --repeats 10) would silently authorize 200 live sessions with no
+// warning. 20 (5x the default of 4) comfortably covers legitimate manual research runs while
+// still catching an obvious order-of-magnitude typo; anything larger is refused outright rather
+// than silently accepted.
+const MAX_REPEATS = 20;
+
 /**
  * `run` -- executes a full scenario matrix (decisions 1/2/3 of the design) and, on success,
  * atomically promotes all `2*repeats` records together (decision 11). `--scenario`/
@@ -1584,11 +1594,12 @@ function buildScenarioRunPlan(scenarioId, repeats, seed) {
  * --seed would make a run's own --dry-run preview silently diverge from a later real run unless
  * the caller remembered to pass the identical value both times -- every OTHER value this harness
  * ever varies is either fixed or explicitly flagged, and seed is no different). `--repeats`
- * defaults to 4 (decision 15: even, benchmark_eligible-capable by construction) but accepts any
- * positive integer explicitly. `--dry-run` returns the resolved plan immediately after
- * matrix-build/policy-print, strictly before source-repo verification or any spawn -- zero git
- * calls against --source-repo-dir, zero subprocesses, by construction (the early return is
- * textually before either is ever reached).
+ * defaults to 4 (decision 15: even, benchmark_eligible-capable by construction), accepts any
+ * positive integer up to MAX_REPEATS explicitly. `--dry-run` returns the resolved plan
+ * immediately after matrix-build/policy-print, strictly before source-repo verification or any
+ * spawn -- zero git calls against --source-repo-dir, zero subprocesses, by construction (the
+ * early return is textually before either is ever reached); its own output states the real live
+ * session count this run would spawn once pointed at a genuine `claude` binary.
  */
 async function cmdRun(args) {
   const scenarioId = args.scenario;
@@ -1616,6 +1627,10 @@ async function cmdRun(args) {
     console.error(`--repeats must be a positive integer, got: ${args.repeats}`);
     return 1;
   }
+  if (repeats > MAX_REPEATS) {
+    console.error(`--repeats ${repeats} exceeds the maximum of ${MAX_REPEATS} (each repetition spawns 2 live Claude sessions once pointed at a real claude binary -- ${repeats} repeats would authorize ${repeats * 2} sessions; if this is genuinely intentional, split it into multiple smaller --repeats invocations)`);
+    return 1;
+  }
   const patternsCheck = validatePrivatePatternsFileOrFail(privatePatternsFile);
   if (!patternsCheck.ok) {
     console.error(patternsCheck.reason);
@@ -1633,7 +1648,7 @@ async function cmdRun(args) {
   // this is a genuine preview, never a separately-maintained summary that could drift.
   const plan = buildScenarioRunPlan(scenario.id, repeats, seed);
   if (isDryRun) {
-    console.log(JSON.stringify({ dry_run: true, scenario_id: scenario.id, repeats, seed, model, policy: scenario.policy, plan }, null, 2));
+    console.log(JSON.stringify({ dry_run: true, scenario_id: scenario.id, repeats, seed, model, total_live_claude_sessions: repeats * 2, policy: scenario.policy, plan }, null, 2));
     return 0;
   }
 

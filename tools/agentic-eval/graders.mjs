@@ -107,42 +107,63 @@ function tryParseJsonObject(text) {
   }
 }
 
-/** Scans for the first substring that looks like a balanced top-level `{...}` JSON object --
+/** Scans for EVERY substring that looks like a balanced top-level `{...}` JSON object --
  * brace-depth counting (with string/escape awareness), not a regex, since a regex cannot in
  * general match nested braces correctly. Defensive fallback for when the whole trimmed string
- * doesn't parse directly (e.g. banner text before/after the JSON line). */
-function extractFirstJsonObjectSubstring(text) {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-  let depth = 0;
-  let inString = false;
-  let escapeNext = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (escapeNext) { escapeNext = false; continue; }
-    if (ch === '\\') { escapeNext = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) return text.slice(start, i + 1);
+ * doesn't parse directly (e.g. banner text before/after the JSON line). Scans ALL of them, not
+ * just the first -- a review pass reproduced a real gap where a decoy/wrapper object appearing
+ * BEFORE the real envelope in the same content (e.g. `{"wrapper":"meta"}\n<real envelope>`) made
+ * the real envelope invisible entirely, since only the first balanced object was ever examined. */
+function extractAllJsonObjectSubstrings(text) {
+  const substrings = [];
+  let i = 0;
+  while (i < text.length) {
+    const start = text.indexOf('{', i);
+    if (start === -1) break;
+    let depth = 0;
+    let inString = false;
+    let escapeNext = false;
+    let end = -1;
+    for (let j = start; j < text.length; j++) {
+      const ch = text[j];
+      if (escapeNext) { escapeNext = false; continue; }
+      if (ch === '\\') { escapeNext = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) { end = j; break; }
+      }
     }
+    if (end === -1) break; // unbalanced from here on -- nothing further to find
+    substrings.push(text.slice(start, end + 1));
+    i = end + 1;
   }
-  return null;
+  return substrings;
 }
 
 /** Locates and parses a kmp-test `--json` envelope within possibly-noisy tool_result content.
- * Tries a direct whole-string parse first, then falls back to locating a balanced `{...}`
- * substring. Returns the parsed envelope object only if it has every required top-level field
- * with the right basic shape (`KMP_TEST_ENVELOPE_REQUIRED_SHAPE`); `null` otherwise -- covers
- * both "not JSON at all" and "JSON, but not a kmp-test envelope" identically, since a grader only
- * needs to know "is this usable evidence," not which specific way it failed to be. */
+ * Tries a direct whole-string parse first (the clean, expected case: the whole content IS one
+ * JSON document) -- if that parses but doesn't conform to the envelope shape, returns `null`
+ * immediately without digging further (the content is already fully accounted for by that one
+ * value; hunting for a DIFFERENT envelope nested somewhere inside it would be reaching beyond
+ * what's honestly parseable). Only when the whole-string parse fails outright (content is NOT one
+ * single valid JSON document -- e.g. two objects concatenated) does it fall back to scanning EVERY
+ * balanced top-level `{...}` substring and collecting every one that conforms to
+ * `KMP_TEST_ENVELOPE_REQUIRED_SHAPE`. Returns the single conforming envelope only if EXACTLY one
+ * was found; `null` otherwise -- covers "not JSON at all", "JSON, but not a kmp-test envelope",
+ * AND "more than one conforming envelope found" (itself an ambiguous, untrustworthy shape)
+ * identically, since a grader only needs to know "is this UNAMBIGUOUSLY usable evidence," not
+ * which specific way it failed to be. */
 export function extractKmpTestEnvelope(content) {
   if (typeof content !== 'string' || content.length === 0) return null;
   const direct = tryParseJsonObject(content.trim());
-  const candidate = direct ?? tryParseJsonObject(extractFirstJsonObjectSubstring(content));
-  return KMP_TEST_ENVELOPE_REQUIRED_SHAPE(candidate) ? candidate : null;
+  if (direct != null) return KMP_TEST_ENVELOPE_REQUIRED_SHAPE(direct) ? direct : null;
+  const candidates = extractAllJsonObjectSubstrings(content)
+    .map((s) => tryParseJsonObject(s))
+    .filter((obj) => KMP_TEST_ENVELOPE_REQUIRED_SHAPE(obj));
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -199,9 +220,32 @@ function evaluateKmpTestAttempt(bashResult, scenario) {
   return { provider: 'kmp_test', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence, malformed, targetMatches, outcomeMatches };
 }
 
+/** Parses the terminal Gradle build-outcome from possibly-noisy tool_result content: the LAST
+ * occurrence of either `BUILD SUCCESSFUL` or `BUILD FAILED` (Gradle always prints exactly one such
+ * footer as its own last informational line -- taking the LAST occurrence, rather than "does
+ * either pattern appear ANYWHERE", is what correctly handles an earlier retry's own footer text
+ * still sitting earlier in the same accumulated content). Cross-checked against the tool_result's
+ * own `resultIsError`: a review pass reproduced a real gap where `resultIsError:true` (the Bash
+ * call itself failed) alongside `BUILD SUCCESSFUL` text appearing anywhere in the content was
+ * graded as a genuine success, since `resultIsError` was never consulted at all. A contradiction
+ * between the text's own last footer and `resultIsError` means the content cannot be trusted --
+ * returns `null` in that case (never silently prefers one signal over the other), same as when
+ * neither footer is found at all. Returns 0 (success), 1 (failed), or null (untrustworthy). */
+function parseGradleBuildOutcome(resultContent, resultIsError) {
+  const successIndex = resultContent.lastIndexOf('BUILD SUCCESSFUL');
+  const failedIndex = resultContent.lastIndexOf('BUILD FAILED');
+  if (successIndex === -1 && failedIndex === -1) return null;
+  const lastWasSuccess = successIndex > failedIndex;
+  // resultIsError is only ever a MEANINGFUL contradiction signal when it's an explicit true/false
+  // observation -- null (never determined) neither confirms nor contradicts either footer.
+  if (resultIsError === true && lastWasSuccess) return null;
+  if (resultIsError === false && !lastWasSuccess) return null;
+  return lastWasSuccess ? 0 : 1;
+}
+
 /** @returns {null | {provider:'gradle', bashIndex:number, resultIndex:number|null,
  *   hasEvidence:boolean, malformed:boolean, targetMatches:boolean, outcomeMatches:boolean}} */
-function evaluateGradleAttempt(bashResult, scenario, gradleJunitEvidence) {
+function evaluateGradleAttempt(bashResult, scenario, gradleJunitEvidence, ambiguousJunitEvidence) {
   const classification = classifyBashCommand(bashResult.command);
   if (classification.kind !== 'gradle') return null;
   const g = scenario.expected.gradle;
@@ -224,24 +268,38 @@ function evaluateGradleAttempt(bashResult, scenario, gradleJunitEvidence) {
   // which invocation was actually used.
   const modes = classifyTaskExecutionMode(bashResult.resultContent, '', [g.evidence_task]);
   const mode = modes.get(g.evidence_task) ?? 'no_evidence';
-  const buildSuccessful = /BUILD SUCCESSFUL/.test(bashResult.resultContent);
-  const buildFailed = /BUILD FAILED/.test(bashResult.resultContent);
-  const observedExitCode = buildSuccessful ? 0 : (buildFailed ? 1 : null);
+  const observedExitCode = parseGradleBuildOutcome(bashResult.resultContent, bashResult.resultIsError);
+  // A footer/resultIsError contradiction (or no recognizable footer at all) means the build
+  // outcome itself cannot be trusted -- the Gradle-provider equivalent of the kmp-test provider's
+  // own "content exists but doesn't parse as valid evidence" malformed shape.
+  const malformed = observedExitCode == null;
 
   let outcomeMatches = false;
-  if (scenario.expected.outcome_kind === 'tests_executed') {
-    const executedModes = new Set(['fresh', 'up_to_date', 'from_cache']);
-    outcomeMatches = observedExitCode === (g.exit_code ?? 0)
-      && executedModes.has(mode)
-      && gradleJunitEvidence != null
-      && gradleJunitEvidence.total === g.tests.total
-      && gradleJunitEvidence.passed === g.tests.passed
-      && gradleJunitEvidence.failed === g.tests.failed;
-  } else {
-    outcomeMatches = observedExitCode === g.exit_code && mode === 'no_source' && g.marker === 'NO-SOURCE';
+  if (!malformed) {
+    if (scenario.expected.outcome_kind === 'tests_executed') {
+      const executedModes = new Set(['fresh', 'up_to_date', 'from_cache']);
+      // JUnit XML is captured ONCE per condition, after the whole cell finishes (see
+      // matrix-runner.mjs's captureGradleJunitEvidence) -- if more than one Gradle attempt in
+      // this condition could have produced/overwritten it, that one snapshot cannot be reliably
+      // attributed to THIS specific attempt (a review pass found this could misattribute a
+      // later-or-earlier attempt's evidence, falsifying first_useful_signal/retries/contradiction
+      // detection). ambiguousJunitEvidence fails this closed rather than guessing.
+      outcomeMatches = observedExitCode === (g.exit_code ?? 0)
+        && executedModes.has(mode)
+        && !ambiguousJunitEvidence
+        && gradleJunitEvidence != null
+        && gradleJunitEvidence.total === g.tests.total
+        && gradleJunitEvidence.passed === g.tests.passed
+        && gradleJunitEvidence.failed === g.tests.failed;
+    } else {
+      // no_applicable_tests never depends on cross-attempt JUnit evidence at all -- the NO-SOURCE
+      // marker is parsed from THIS attempt's own resultContent, so ambiguousJunitEvidence does
+      // not apply here.
+      outcomeMatches = observedExitCode === g.exit_code && mode === 'no_source' && g.marker === 'NO-SOURCE';
+    }
   }
 
-  return { provider: 'gradle', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence: true, malformed: false, targetMatches, outcomeMatches };
+  return { provider: 'gradle', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence: true, malformed, targetMatches, outcomeMatches };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -250,12 +308,32 @@ function evaluateGradleAttempt(bashResult, scenario, gradleJunitEvidence) {
 // `expectedOutcomeMatched`, only `success` on top of it (decision 13).
 // ---------------------------------------------------------------------------------------------
 
+/** Escapes regex metacharacters in `s` so it can be embedded literally inside a RegExp pattern. */
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** True iff `identifier` (a module name or a bare token like a test count) appears in `text` as
+ * its own standalone token -- bounded by a character OUTSIDE `[A-Za-z0-9_-]` (or the string edge)
+ * on both sides, never merely as a substring. A review pass reproduced a real false positive with
+ * plain `.includes()`: `expected.module=':app'` (bare `app`) matched inside "This application has
+ * no applicable tests." Plain `\b` alone is not sufficient either for a hyphen-containing
+ * identifier (e.g. a Gradle module like `core-network`): `\b` treats `-` itself as a boundary
+ * character, so a bare `\bnetwork\b` would incorrectly match the "network" INSIDE "core-network"
+ * too. Treating the full `[A-Za-z0-9_-]` class as "identifier" for boundary purposes closes both
+ * directions at once. */
+function textMentionsIdentifier(text, identifier) {
+  const escaped = escapeRegExp(String(identifier));
+  const re = new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`);
+  return re.test(text);
+}
+
 function evaluateFinalAnswer(resultEvent, scenario) {
   const text = typeof resultEvent?.result === 'string' ? resultEvent.result : '';
   if (text.length === 0) return { passed: false, detail: 'no final answer text found' };
 
   const moduleBare = normalizeModuleName(scenario.expected.module);
-  const mentionsModule = text.includes(scenario.expected.module) || text.includes(moduleBare);
+  const mentionsModule = textMentionsIdentifier(text, scenario.expected.module) || textMentionsIdentifier(text, moduleBare);
   if (!mentionsModule) {
     return { passed: false, detail: `final answer never mentions the expected module (${scenario.expected.module})` };
   }
@@ -265,7 +343,7 @@ function evaluateFinalAnswer(resultEvent, scenario) {
     // passed") -- the kmp-test envelope's task-level `tests.total` is always 1 here (one module
     // resolves to one task) and would never appear in a natural final answer.
     const totalToken = String(scenario.expected.kmp_test?.tests?.individual_total ?? scenario.expected.gradle?.tests?.total);
-    const mentionsCount = text.includes(totalToken);
+    const mentionsCount = textMentionsIdentifier(text, totalToken);
     // A bare "fail"/"failed"/"failure" NOT itself negated by an adjacent "0"/"no" is treated as
     // asserting the opposite conclusion -- narrow, evidence-relative (checked against THIS
     // scenario's own expected zero-failures fact), never a blanket "/fail/i anywhere" scan.
@@ -334,12 +412,25 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     incomplete.length === 0 ? 'every relevant tool_use has a correlated tool_result' : `${incomplete.length} orphaned tool_use(s)`,
     incomplete.map((i) => i.index));
 
+  // JUnit XML is captured ONCE per condition (after the whole cell finishes -- see
+  // matrix-runner.mjs's captureGradleJunitEvidence), never per individual Gradle attempt. If more
+  // than one Gradle attempt in this condition could have produced/overwritten evidence_task's
+  // JUnit output, that one snapshot cannot be reliably attributed to any SPECIFIC attempt --
+  // counted here (once, from the full bashResults list) and threaded into every
+  // evaluateGradleAttempt call so the ambiguity fails closed rather than silently attributing the
+  // snapshot to whichever attempt happens to be evaluated.
+  const gradleAttemptCandidateCount = bashResults.filter((b) => {
+    const c = classifyBashCommand(b.command);
+    return c.kind === 'gradle' && c.taskTokens.some((t) => (scenario.expected?.gradle?.allowed_invocations ?? []).includes(t));
+  }).length;
+  const ambiguousJunitEvidence = gradleAttemptCandidateCount > 1;
+
   // Evaluate every attempt capable of producing target evidence, from either provider, in
   // transcript order -- "terminal" is the LAST one overall (decision 5's last-relevant-attempt
   // rule applied uniformly, including to whether it individually succeeded or was malformed; a
   // retry that fixes an earlier malformed/wrong attempt is exactly what this is for).
   const kmpTestAttempts = bashResults.map((b) => evaluateKmpTestAttempt(b, scenario)).filter(Boolean);
-  const gradleAttempts = bashResults.map((b) => evaluateGradleAttempt(b, scenario, conditionResult.gradleJunitEvidence)).filter(Boolean);
+  const gradleAttempts = bashResults.map((b) => evaluateGradleAttempt(b, scenario, conditionResult.gradleJunitEvidence, ambiguousJunitEvidence)).filter(Boolean);
   const allAttempts = [...kmpTestAttempts, ...gradleAttempts].sort((a, b) => a.bashIndex - b.bashIndex);
   const terminal = allAttempts.length > 0 ? allAttempts[allAttempts.length - 1] : null;
 

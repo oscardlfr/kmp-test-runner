@@ -165,6 +165,9 @@ describe('cli.mjs run --dry-run -- zero-spawn plan preview', () => {
     }
     // Zero evidence written -- dry-run never reaches materialization or grading.
     expect(listEvidenceFiles('scenario')).toEqual([]);
+    // Review-fix: the real live-session blast radius is disclosed explicitly, not left for a
+    // reviewer to compute themselves from repeats alone.
+    expect(result.parsed.total_live_claude_sessions).toBe(4);
   }, 15000);
 
   it('is deterministic -- the same --seed produces the identical plan every time', () => {
@@ -179,6 +182,30 @@ describe('cli.mjs run -- argument validation', () => {
     const result = runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--dry-run'], fakeClaudeEnv('run-scenario-success'));
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/--seed/);
+  });
+
+  // Review-fix regression: --repeats previously accepted ANY positive integer with no upper
+  // bound -- each repetition spawns 2 real live Claude sessions once `run` is pointed at a real
+  // claude binary, so a single typo (e.g. --repeats 100) would have silently authorized 200
+  // sessions with no warning at all, even under --dry-run.
+  it('rejects --repeats exceeding MAX_REPEATS (20), even under --dry-run -- a typo must never silently authorize hundreds of live sessions', () => {
+    const result = runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '1', '--repeats', '100', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--repeats 100 exceeds the maximum/);
+    expect(result.parsed).toBeNull(); // no plan was ever printed
+  });
+
+  it('accepts --repeats exactly AT the cap (20)', () => {
+    const result = runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '1', '--repeats', '20', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+    expect(result.status).toBe(0);
+    expect(result.parsed.repeats).toBe(20);
+    expect(result.parsed.total_live_claude_sessions).toBe(40);
+  });
+
+  it('rejects --repeats one over the cap (21)', () => {
+    const result = runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '1', '--repeats', '21', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--repeats 21 exceeds the maximum/);
   });
 
   it('rejects an unknown --scenario id with a clear, actionable error', () => {

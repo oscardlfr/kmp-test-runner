@@ -124,9 +124,13 @@ directly self-contradictory. `schemas.mjs` now also rejects that combination at 
   always required and never
   auto-generated, so a `--dry-run` preview can never silently diverge from the real run it
   previews, and any run is exactly reproducible from its own recorded evidence. `--repeats`
-  defaults to 4 (even, counterbalance-capable by construction); any other positive integer is a
-  valid, explicit choice for development/debugging, just not `benchmark_eligible`-capable (see
-  below). `--dry-run` prints the fully resolved execution plan and returns before touching
+  defaults to 4 (even, counterbalance-capable by construction); any other positive integer up to
+  `MAX_REPEATS` (20) is a valid, explicit choice for development/debugging, just not
+  `benchmark_eligible`-capable unless even (see below) — the cap exists because each repetition
+  spawns 2 live Claude sessions once `run` is pointed at a real `claude` binary, so an unbounded
+  value would let a single typo (`--repeats 100` for `--repeats 10`) silently authorize hundreds
+  of live sessions; `--dry-run`'s own output states `total_live_claude_sessions` explicitly.
+  `--dry-run` prints the fully resolved execution plan and returns before touching
   `--source-repo-dir` or spawning anything. A real run first verifies `--source-repo-dir`'s own
   `origin` remote matches the scenario's declared `project_url`, its working tree is clean, and
   the scenario's pinned commit resolves inside it — before any git worktree is ever created from

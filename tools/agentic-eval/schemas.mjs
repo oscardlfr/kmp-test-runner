@@ -354,8 +354,20 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
   const hasMarker = 'marker' in provider && provider.marker != null;
 
   if (outcomeKind === 'tests_executed') {
-    if (!hasTests || typeof provider.tests.total !== 'number' || typeof provider.tests.passed !== 'number' || typeof provider.tests.failed !== 'number') {
-      errors.push({ field: `${field}.tests`, message: 'required (non-negative integer total/passed/failed) when outcome_kind is tests_executed' });
+    // Non-negative INTEGER, not just typeof 'number' -- a review pass reproduced total:-1,
+    // passed:1.5, failed:-2 all passing validation under a bare typeof check, and individual_total
+    // (kmp_test-only, optional) went unvalidated entirely. total===passed+failed is checked only
+    // once the individual fields are confirmed well-shaped (comparing potentially-non-numeric
+    // values would be meaningless).
+    const isNonNegInt = (v) => Number.isInteger(v) && v >= 0;
+    const hasIndividualTotal = hasTests && 'individual_total' in provider.tests && provider.tests.individual_total != null;
+    const testsShapeOk = hasTests
+      && isNonNegInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && isNonNegInt(provider.tests.failed)
+      && (!hasIndividualTotal || isNonNegInt(provider.tests.individual_total));
+    if (!testsShapeOk) {
+      errors.push({ field: `${field}.tests`, message: 'required (non-negative integer total/passed/failed, and individual_total when present) when outcome_kind is tests_executed' });
+    } else if (provider.tests.total !== provider.tests.passed + provider.tests.failed) {
+      errors.push({ field: `${field}.tests`, message: `total (${provider.tests.total}) must equal passed (${provider.tests.passed}) + failed (${provider.tests.failed})` });
     }
     if (provider.exit_code !== 0) errors.push({ field: `${field}.exit_code`, message: 'required and must be exactly 0 when outcome_kind is tests_executed' });
     if (hasErrorCode) errors.push({ field: `${field}.error_code`, message: 'forbidden when outcome_kind is tests_executed' });
