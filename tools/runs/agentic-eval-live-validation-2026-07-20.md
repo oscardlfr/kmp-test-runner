@@ -160,8 +160,8 @@ sub-checks), the pinned skill snapshot changed (`c5c0661→aeba6ea`, PR #375's p
 the Claude Code CLI version changed (`2.1.214→2.1.215`). Any of the three could move these
 numbers independent of anything the skill itself does.
 
-All fields available in the main table above are included here too — deliberately not a curated
-subset, to avoid the appearance of picking the metrics that tell the most flattering story.
+The table includes all comparable usage fields plus the behavior signals most relevant to gate
+validation; invariant identity, result, and provenance fields are omitted.
 
 | Field | cal A 07-18 → 07-20 | cal B 07-18 → 07-20 | smoke A 07-18 → 07-20 | smoke B 07-18 → 07-20 |
 |---|---|---|---|---|
@@ -169,6 +169,7 @@ subset, to avoid the appearance of picking the metrics that tell the most flatte
 | `tool_calls_total` | 3 → 0 | 9 → 7 | 2 → 2 | 2 → 2 |
 | `hook_call_count` / `hook_deny_count` | 2/2 → 0/0 | 8/5 → 6/3 | 2/0 → 2/0 | 2/0 → 2/0 |
 | `wall_clock_ms` | 15692 → 7879 | 55147 → 54007 | 70185 → 79200 | 73815 → 83168 |
+| `tokens.input` | 8 → 2 | 20 → 16 | 4 → 4 | 4 → 4 |
 | `tokens.output` | 684 → 205 | 2793 → 2526 | 1204 → 1168 | 1248 → 1045 |
 | `tokens.cache_read` | 63490 → 13762 | 203641 → 150499 | 30348 → 30411 | 16626 → 24839 |
 | `tokens.cache_creation` | 3338 → 2243 | 26043 → 25029 | 4437 → 4071 | 18537 → 10279 |
@@ -219,8 +220,9 @@ matching `tool_calls_total:7`), 3 denied and 3 allowed. Independently re-parsed 
 transcript itself, not just the aggregate counts — raw transcripts aren't version-controlled, so
 this detail would otherwise be lost entirely:
 
-- **Denied** (outside calibrate's narrow allowlist — only `kmp-test doctor`/`kmp-test parallel`
-  are approved): a chained shell-inspection command (a directory listing, a `gradlew*` glob check,
+- **Denied** (outside calibrate's narrow allowlist — among `kmp-test` subcommands, only `doctor`
+  and `parallel` are approved): a chained shell-inspection command (a directory listing, a
+  `gradlew*` glob check,
   and a bare `kmp-test --version` call, joined with `&&`), a second bare directory-listing
   command, and a Windows `dir /a` listing.
 - **Allowed but failed**: the first `kmp-test parallel --json` call, exit code 3
