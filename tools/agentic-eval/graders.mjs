@@ -24,6 +24,7 @@ import { tokenize } from './policy-hook.mjs';
 import { classifyTaskExecutionMode } from '../../lib/orchestrators/parallel/result-rollup.js';
 import { findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout } from './stream-parser.mjs';
 import { ENVELOPE_SCHEMA_VERSION } from '../../lib/envelope/exit-codes.js';
+import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
 
 /** The fixed, canonical set of check names every gradeScenarioCondition() result's `checks` array
  * must contain -- exactly these 8, no more, no fewer, enforced by schemas.mjs's validateRun() for
@@ -75,12 +76,20 @@ function classifyBashCommand(command) {
   if (tokens == null || tokens.length === 0) return { kind: 'other' };
   if (tokens[0] === 'kmp-test') {
     let moduleFilter = null;
+    // `testType` is the LITERAL value the command itself passed to `--test-type`, or `null` if
+    // the flag is absent entirely (an implicit-`auto` dispatch). Needed for
+    // `validateParallelEvidence`'s command/envelope test-type correlation (a systematic-closure
+    // pass reproduced a real gap: nothing previously cross-checked the invoked `--test-type`
+    // against the envelope's own `parallel.test_type`/per-leg `test_type` fields at all).
+    let testType = null;
     for (let i = 1; i < tokens.length; i++) {
       if (tokens[i] === '--module-filter') { moduleFilter = tokens[i + 1] ?? null; i++; }
       else if (tokens[i].startsWith('--module-filter=')) { moduleFilter = tokens[i].slice('--module-filter='.length); }
+      else if (tokens[i] === '--test-type') { testType = tokens[i + 1] ?? null; i++; }
+      else if (tokens[i].startsWith('--test-type=')) { testType = tokens[i].slice('--test-type='.length); }
     }
     const isPlanOnly = tokens.includes('--dry-run') || tokens.includes('--list') || tokens.includes('--list-only');
-    return { kind: 'kmp-test', subcommand: tokens[1] ?? null, moduleFilter, isPlanOnly };
+    return { kind: 'kmp-test', subcommand: tokens[1] ?? null, moduleFilter, testType, isPlanOnly };
   }
   if (tokens[0] === './gradlew' || tokens[0] === './gradlew.bat') {
     const taskTokens = tokens.slice(1).filter((t) => !t.startsWith('-'));
@@ -249,7 +258,129 @@ export function extractKmpTestEnvelope(content) {
  *    a grading-correctness pass scoped to `tools/agentic-eval/`.)
  * @returns {boolean}
  */
-function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsError, scenario) {
+// Concrete per-leg test types a real `--test-type all` dispatch can ever produce
+// (lib/orchestrators/parallel/dispatch.js's legsForAll: 'common'/'desktop'/'androidUnit'
+// unconditionally, '+androidInstrumented' unless KMP_TEST_SKIP_ADB=1, '+ios'/'+macos' only on a
+// macOS host) -- 'all' itself is NEVER a per-leg test_type, only ever the top-level
+// parallel.test_type value for a multi-leg dispatch. legsForAll always returns >= 3 legs
+// (the three unconditional entries), so a top-level 'all' with fewer than 3 legs cannot be real.
+const ALL_LEG_TEST_TYPES = ['common', 'desktop', 'androidUnit', 'androidInstrumented', 'ios', 'macos'];
+// The 3 leg types legsForAll (lib/orchestrators/parallel/dispatch.js) NEVER omits, in any
+// environment -- a real 'all' dispatch's leg-type set is always a superset of exactly these 3.
+const UNCONDITIONAL_ALL_LEG_TYPES = ['common', 'desktop', 'androidUnit'];
+const MIN_LEGS_FOR_ALL = 3;
+// `TEST_TYPE_VALUES` is the set of valid CLI INPUT values for --test-type -- it deliberately does
+// NOT include 'auto', since 'auto' is never a real CLI input (cli.js's own validateEnum would
+// reject `--test-type auto`). But the ENVELOPE's own `parallel.test_type` field legitimately
+// renders as the string 'auto' when --test-type was never supplied at all (opts.testType='' -->
+// 'auto' at the envelope boundary, confirmed in parallel-orchestrator.js/result-rollup.js) -- so
+// the set of values valid ON THE ENVELOPE is TEST_TYPE_VALUES plus this one rendering-only value.
+const ENVELOPE_TEST_TYPE_VALUES = [...TEST_TYPE_VALUES, 'auto'];
+// The complete, unconditional per-leg `execution` shape (lib/orchestrators/parallel/
+// result-rollup.js's summarizeExecutionModes/recordLegResults) -- per-TASK counts within this
+// leg, never booleans, always non-negative integers.
+const EXECUTION_MODE_KEYS = ['fresh', 'up_to_date', 'from_cache', 'no_source', 'skipped_by_gradle', 'failed', 'no_evidence'];
+
+/** Validates one `parallel.legs[]` entry against the exact, complete production shape
+ * (`lib/orchestrators/parallel-orchestrator.js`'s per-leg dispatch loop): `test_type` (string),
+ * `exit_code` (integer), `execution` (a plain object with EXACTLY the 7 `EXECUTION_MODE_KEYS`,
+ * each a non-negative integer), `cascade_detected`/`retry_fired` (booleans). `device`/`retries`/
+ * `pre_run_actions` are legitimately additive/conditional in real production output (present only
+ * for an androidInstrumented leg with a resolved device serial, or when retries/pre-run actions
+ * actually occurred) -- tolerated if present, never required. */
+function isWellFormedParallelLeg(leg) {
+  if (leg == null || typeof leg !== 'object' || Array.isArray(leg)) return false;
+  if (typeof leg.test_type !== 'string') return false;
+  if (!Number.isInteger(leg.exit_code)) return false;
+  if (typeof leg.cascade_detected !== 'boolean') return false;
+  if (typeof leg.retry_fired !== 'boolean') return false;
+  const exec = leg.execution;
+  if (exec == null || typeof exec !== 'object' || Array.isArray(exec)) return false;
+  // A round-2 test-fidelity review found this function's own doc comment (above) claims
+  // "EXACTLY the 7 EXECUTION_MODE_KEYS", but the code only ever validated that the 7 known keys
+  // are well-shaped -- it never rejected an EXTRA, unrecognized key, so a leg with a fabricated
+  // additional `execution` field (impossible from real production, which always constructs
+  // exactly these 7 via summarizeExecutionModes) silently passed as well-formed. The explicit
+  // length check closes this asymmetry (missing keys were already caught by the `every` below;
+  // extra keys were not).
+  if (Object.keys(exec).length !== EXECUTION_MODE_KEYS.length) return false;
+  return EXECUTION_MODE_KEYS.every((k) => Number.isInteger(exec[k]) && exec[k] >= 0);
+}
+
+/**
+ * Validates `envelope.parallel` against the real production contract for a `tests_executed`
+ * outcome. A systematic-closure pass (after 9 patch-by-patch review rounds) replacing round 9's
+ * narrow "parallel.legs is a non-empty array" check, which a fresh review reproduced as still
+ * accepting `[null]`, `[{}]`, `[1]`, a failed leg contradicting a clean envelope, a wrong-test-type
+ * leg, and a command/envelope `--test-type` mismatch -- all with `success:true`. Contract extracted
+ * directly from `lib/orchestrators/parallel-orchestrator.js` (leg dispatch loop, `legsForAll`) and
+ * `lib/orchestrators/parallel/result-rollup.js` (`buildParallelParsed`, `recordLegResults`'s
+ * `execSummary.failed === errors.filter(module_failed).length` per-leg invariant) -- never guessed.
+ *
+ * `invokedTestType` is the literal `--test-type` value the command itself passed (from
+ * `classifyBashCommand`), or `null` if the flag is absent (an implicit `auto` dispatch --
+ * `opts.testType` is internally `''`, always rendered as the string `'auto'` at the envelope
+ * boundary; `'auto'` itself is never a valid `--test-type` CLI input, so there is no ambiguity
+ * between "auto because unset" and "auto because explicitly typed").
+ *
+ * Single-type (or implicit `auto`) vs `all` semantics -- the one place a leg's own `test_type`
+ * LEGITIMATELY disagreeing with the top-level `parallel.test_type` is correct, not a red flag:
+ * for a specific single type, `legsForAll` never runs -- exactly one leg dispatches, and its own
+ * `test_type` must equal the top-level value exactly. For `all`, `legsForAll` enumerates 3-6
+ * CONCRETE per-leg types (never `'all'` itself on any individual leg) while the top-level
+ * `parallel.test_type` stays `'all'` -- confirmed directly in `parallel-orchestrator.js`.
+ *
+ * Aggregate consistency: the SUM of every leg's own `execution.failed` count must equal the
+ * envelope's own top-level `tests.failed` -- a production-guaranteed invariant (every task
+ * classified 'failed' increments both `execSummary.failed` for its leg AND the top-level
+ * `state.tests.failed` exactly once, in the same pass). A leg reporting real task failures while
+ * the envelope's top-level counters claim a clean run (or vice versa) is not a real production
+ * shape -- it is internally self-contradictory, fabricated, or tampered evidence. This is an
+ * envelope SELF-consistency check, independent of what any particular scenario expects -- the
+ * caller separately compares the (now-validated-coherent) top-level counters against the
+ * scenario's own expected values.
+ */
+export function validateParallelEvidence(envelope, invokedTestType) {
+  const parallelBlock = envelope.parallel;
+  if (parallelBlock == null || typeof parallelBlock !== 'object' || Array.isArray(parallelBlock)) return false;
+
+  const topTestType = parallelBlock.test_type;
+  if (typeof topTestType !== 'string' || !ENVELOPE_TEST_TYPE_VALUES.includes(topTestType)) return false;
+
+  const expectedTopTestType = invokedTestType == null ? 'auto' : invokedTestType;
+  if (topTestType !== expectedTopTestType) return false;
+
+  if (!Array.isArray(parallelBlock.legs) || parallelBlock.legs.length === 0) return false;
+
+  if (topTestType === 'all') {
+    if (parallelBlock.legs.length < MIN_LEGS_FOR_ALL) return false;
+    if (!parallelBlock.legs.every((leg) => isWellFormedParallelLeg(leg) && ALL_LEG_TEST_TYPES.includes(leg.test_type))) return false;
+    // A fresh review reproduced a real gap: membership-per-leg alone doesn't reject a fabricated
+    // set with a DUPLICATE type and a MISSING one (e.g. [common, common, desktop], androidUnit
+    // never dispatched) -- legsForAll (lib/orchestrators/parallel/dispatch.js) can never produce a
+    // repeated leg type in any environment, so a duplicate is unconditionally impossible evidence.
+    const distinctLegTypes = new Set(parallelBlock.legs.map((leg) => leg.test_type));
+    if (distinctLegTypes.size !== parallelBlock.legs.length) return false;
+    // A follow-up review found the distinctness check above still didn't validate the SURVIVING
+    // set is one legsForAll can actually produce -- e.g. ['androidInstrumented','ios','macos'],
+    // missing all three UNCONDITIONAL types, is distinct and every member is individually valid,
+    // but no real dispatch could ever produce it. legsForAll always includes 'common'/'desktop'/
+    // 'androidUnit' unconditionally, and adds 'ios'/'macos' only TOGETHER as a pair (macOS host
+    // only) -- never one without the other. Both invariants are unconditional across every
+    // environment (confirmed directly in dispatch.js), so violating either is impossible evidence
+    // regardless of platform/env-var state, not merely "environment-specific and thus a guess."
+    if (!UNCONDITIONAL_ALL_LEG_TYPES.every((t) => distinctLegTypes.has(t))) return false;
+    if (distinctLegTypes.has('ios') !== distinctLegTypes.has('macos')) return false;
+  } else {
+    if (parallelBlock.legs.length !== 1) return false;
+    if (!isWellFormedParallelLeg(parallelBlock.legs[0]) || parallelBlock.legs[0].test_type !== topTestType) return false;
+  }
+
+  const legsFailedSum = parallelBlock.legs.reduce((sum, leg) => sum + leg.execution.failed, 0);
+  return legsFailedSum === envelope.tests?.failed;
+}
+
+function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsError, scenario, invokedTestType) {
   if (envelope.subcommand !== invokedSubcommand) return false;
   // Execution/plan-mode coherence: the envelope's OWN self-reported mode must agree with a real
   // execution, not merely with what the invoking command's text happened to say. A fresh review
@@ -290,24 +421,11 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
     // what actually proves real tests ran and passed. `errors.length === 0`: a "tests executed
     // cleanly" claim must never ALSO carry a no_test_modules-shaped (or any other) error entry.
     //
-    // A fresh review reproduced this whole branch never validating the envelope's own `parallel`
-    // structure at all -- KMP_TEST_ENVELOPE_REQUIRED_SHAPE doesn't require it, and the dry_run/
-    // list_only coherence check above uses optional chaining (`envelope.parallel?.list_only`),
-    // which silently evaluates to `undefined` (treated as "absent, OK") for ANY non-nullish
-    // `parallel` value that isn't a plain object -- `parallel:1`, `parallel:"list_only"`,
-    // `parallel:[]`, `parallel:{}` all reproduced as full-credit passes. A real `parallel`
-    // subcommand's real dispatch (lib/orchestrators/parallel/result-rollup.js's
-    // buildParallelParsed) ALWAYS constructs `parallel:{test_type, legs:[...], max_workers,
-    // timeout_s}` with at least one leg when tests actually ran -- `legs` is only ever empty on the
-    // `--list-only` early-return path (parallel-orchestrator.js), which is already excluded above
-    // via `list_only`. For `no_applicable_tests`, by contrast, `parallel` is legitimately ABSENT
-    // entirely: the `no_test_modules` early-exit (parallel-orchestrator.js) calls buildJsonReport
-    // before any `parallel` block is ever constructed -- so this structural requirement is scoped
-    // to `tests_executed` only, never applied to the other branch.
-    const parallelBlock = envelope.parallel;
-    const hasValidParallelBlock = parallelBlock != null && typeof parallelBlock === 'object' && !Array.isArray(parallelBlock)
-      && Array.isArray(parallelBlock.legs) && parallelBlock.legs.length >= 1;
-    return hasValidParallelBlock
+    // For `no_applicable_tests`, `parallel` is legitimately ABSENT entirely: the `no_test_modules`
+    // early-exit (parallel-orchestrator.js) calls buildJsonReport before any `parallel` block is
+    // ever constructed -- so `validateParallelEvidence`'s full structural/leg/test-type contract
+    // is scoped to `tests_executed` only, never applied to the other branch.
+    return validateParallelEvidence(envelope, invokedTestType)
       && envelope.errors.length === 0
       && envelope.exit_code === (kt.exit_code ?? 0)
       && envelope.tests?.total === kt.tests.total
@@ -320,6 +438,19 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
   // entry contradicts "cleanly determined that no tests apply". `individual_total === 0`/
   // `skipped === 0` are the converse of the tests_executed branch's own checks: a no_test_modules
   // claim alongside a stale non-zero counter is just as internally inconsistent as the reverse.
+  //
+  // A round-2 follow-up review reproduced the identical class of gap this round closed for
+  // tests_executed, in the SIBLING branch: nothing here checked `envelope.parallel` at all, so a
+  // fabricated envelope carrying a genuinely matching no_test_modules error PLUS an arbitrarily
+  // malformed `parallel` block (e.g. `{legs:[null]}` -- the exact shape this file's own
+  // adversarial matrix rejects for tests_executed) still graded success:true. Real production
+  // NEVER sets `parallel` on this early-exit at all (confirmed in buildJsonReport, which only ever
+  // adds the key `if (parsed.parallel)` -- the no_test_modules early-exit's own `state` never has
+  // that key) -- so, unlike tests_executed (which requires `parallel` to be PRESENT and valid),
+  // this branch requires it to be ABSENT entirely; any presence, malformed or not, is impossible
+  // real evidence for this scenario shape. This directly affects one of this PR's two real
+  // shipped scenarios (kampkit-no-applicable-tests.json).
+  if (envelope.parallel !== undefined) return false;
   const matchingErrors = envelope.errors.filter((e) => e && e.code === kt.error_code);
   return envelope.errors.length === 1 && matchingErrors.length === 1
     && envelope.exit_code === kt.exit_code
@@ -378,7 +509,7 @@ function computeKmpTestTargetMatch(envelope, classification, scenario) {
 
 /** @returns {null | {provider:'kmp_test', bashIndex:number, resultIndex:number|null,
  *   hasEvidence:boolean, malformed:boolean, targetMatches:boolean, intendedTargetMatches:boolean,
- *   outcomeMatches:boolean}} */
+ *   outcomeMatches:boolean, parallelEvidenceInvalid:boolean}} */
 function evaluateKmpTestAttempt(bashResult, scenario) {
   const classification = classifyBashCommand(bashResult.command);
   if (classification.kind !== 'kmp-test' || classification.subcommand !== 'parallel') return null;
@@ -400,7 +531,25 @@ function evaluateKmpTestAttempt(bashResult, scenario) {
   const targetMatches = hasEvidence && computeKmpTestTargetMatch(envelope, classification, scenario);
 
   const outcomeMatches = hasEvidence && targetMatches
-    && validateKmpEnvelopeForAttempt(envelope, classification.subcommand, bashResult.resultIsError, scenario);
+    && validateKmpEnvelopeForAttempt(envelope, classification.subcommand, bashResult.resultIsError, scenario, classification.testType);
+
+  // A systematic-closure review found this: `validateParallelEvidence` rejecting a genuinely
+  // incoherent `parallel` block was previously laundered ONLY through `outcomeMatches`, which check
+  // 4 (authoritative_evidence_well_formed) never inspects -- that check only looks at `malformed`
+  // (whether the envelope's TOP-LEVEL shape parsed at all). The result: a self-contradictory tool
+  // JSON output (e.g. a leg missing a required field) read as "well-formed evidence that simply
+  // didn't match the expected outcome" -- a valid negative result -- when it actually means the
+  // tool's own output cannot be trusted at all. Exactly the same class of problem
+  // `harnessEvidenceAmbiguous` already exists to catch for JUnit-XML provenance (see that field's
+  // own doc comment below), just for a different evidence shape. Computed independently of
+  // `outcomeMatches` (which ALSO folds in ordinary count-mismatches against a legitimately
+  // different real outcome -- those must stay a plain negative result, not a harness defect) by
+  // re-checking `validateParallelEvidence` directly, scoped to only fire when the envelope
+  // otherwise looks like real, on-target, subcommand-matching evidence for a scenario that expects
+  // `parallel` to be present at all.
+  const parallelEvidenceInvalid = hasEvidence && targetMatches && envelope.subcommand === classification.subcommand
+    && scenario.expected.outcome_kind === 'tests_executed'
+    && !validateParallelEvidence(envelope, classification.testType);
 
   // Whether this attempt was even ATTEMPTING to check the expected module, independent of
   // whether its response was well-formed -- derived from the INVOKED --module-filter (absent
@@ -413,7 +562,7 @@ function evaluateKmpTestAttempt(bashResult, scenario) {
   const targetModule = normalizeModuleName(scenario.expected.module);
   const intendedTargetMatches = classification.moduleFilter == null || normalizeModuleName(classification.moduleFilter) === targetModule;
 
-  return { provider: 'kmp_test', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence, malformed, targetMatches, intendedTargetMatches, outcomeMatches };
+  return { provider: 'kmp_test', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence, malformed, targetMatches, intendedTargetMatches, outcomeMatches, parallelEvidenceInvalid };
 }
 
 /** Parses the terminal Gradle build-outcome from possibly-noisy tool_result content: EXACTLY ONE
@@ -704,7 +853,8 @@ function classifyJunitProvenance(bashResults, scenario) {
  * @param {object} scenario - a validated scenario object (schemas.mjs's validateScenario shape)
  * @returns {{expectedOutcomeMatched: boolean, success: boolean, checks: Array<{name, passed,
  *   detail, evidence_event_indices: number[]}>, firstUsefulSignalEventIndex: number|null,
- *   testInvocationsTotal: number, retries: number, harnessEvidenceAmbiguous: boolean}}
+ *   testInvocationsTotal: number, retries: number, harnessEvidenceAmbiguous: boolean,
+ *   parallelEvidenceMalformed: boolean}}
  */
 export function gradeScenarioCondition(conditionResult, scenario) {
   const checks = [];
@@ -767,13 +917,20 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   const terminalPool = onTargetAttempts.length > 0 ? onTargetAttempts : allAttempts;
   const terminal = terminalPool.length > 0 ? terminalPool[terminalPool.length - 1] : null;
 
-  // Check 4.
-  const evidenceWellFormed = terminal != null && terminal.hasEvidence && !terminal.malformed;
+  // Check 4. `!terminal.parallelEvidenceInvalid` closes a gap a fresh review found: a genuinely
+  // incoherent `parallel` block (malformed leg shape, wrong test-type correlation, or a leg/
+  // top-level failure-count contradiction) parses fine at the TOP level (`malformed:false`), so
+  // this check previously read it as "well-formed evidence" -- exactly the same class of mistake
+  // `harnessEvidenceAmbiguous` already exists to avoid for JUnit-XML provenance, just for a
+  // different evidence shape (see `parallelEvidenceMalformed`, below, for the harness-integrity
+  // propagation this enables).
+  const evidenceWellFormed = terminal != null && terminal.hasEvidence && !terminal.malformed && !terminal.parallelEvidenceInvalid;
   addCheck('authoritative_evidence_well_formed', evidenceWellFormed,
     terminal == null ? 'no attempt capable of producing target evidence was ever made'
       : terminal.malformed ? 'the terminal attempt produced content that did not parse as valid evidence'
         : !terminal.hasEvidence ? 'the terminal attempt produced no result at all'
-          : 'the terminal attempt produced well-formed evidence',
+          : terminal.parallelEvidenceInvalid ? 'the terminal attempt\'s own parallel.legs[] structure is internally incoherent -- not trustworthy evidence'
+            : 'the terminal attempt produced well-formed evidence',
     terminal ? [terminal.resultIndex] : []);
 
   // Check 5 -- required conjunct of expectedOutcomeMatched, not merely reported alongside it
@@ -848,5 +1005,11 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     // block the WHOLE matrix's promotion, matching decision 4's existing "one bad cell blocks the
     // whole matrix" treatment of every other integrity defect.
     harnessEvidenceAmbiguous: ambiguousJunitEvidence,
+    // The identical HARNESS-INTEGRITY treatment, for the identical reason, applied to the
+    // TERMINAL attempt's own `parallel`-evidence coherence (see evaluateKmpTestAttempt's
+    // `parallelEvidenceInvalid` doc comment) -- a systematic-closure review found this was
+    // previously laundered only through expectedOutcomeMatched:false, which reads as a legitimate
+    // negative result rather than "the tool's own JSON output cannot be trusted at all."
+    parallelEvidenceMalformed: terminal?.parallelEvidenceInvalid === true,
   };
 }

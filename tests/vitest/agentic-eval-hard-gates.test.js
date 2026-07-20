@@ -1313,6 +1313,24 @@ describe('scenarioCellIntegrityOk', () => {
     expect(reason).toBeNull();
   });
 
+  // Round 10 (systematic-closure pass): the identical HARNESS-integrity treatment applied to a
+  // malformed parallel.legs[] structure -- a fresh review found this was previously laundered
+  // only through expected_outcome_matched:false, reading as a legitimate negative result rather
+  // than "the tool's own JSON output cannot be trusted at all."
+  it('isolates parallelEvidenceOk -- a record carrying a malformed_parallel_evidence error fails, even though everything else is clean', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'malformed_parallel_evidence', message: 'incoherent' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(false);
+    expect(reason).toContain('parallelEvidenceOk:false');
+  });
+
+  it('a record with a DIFFERENT, unrelated error code does not trip parallelEvidenceOk', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'raw_capture_location_overridden', message: 'unrelated' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
   it('isolates skillSelectionOk -- a foreign Skill call unrelated to kmp-test-runner', () => {
     const cr = passConditionResult('no-skill', {
       events: [

@@ -673,6 +673,16 @@ function buildRunRecord({
       ...(isScenario && gradeResult?.harnessEvidenceAmbiguous
         ? [{ code: 'ambiguous_junit_evidence', message: 'more than one attempt in this condition (a Gradle invocation and/or a kmp-test parallel call) could have produced the scenario\'s JUnit evidence -- the single per-condition JUnit XML snapshot cannot be reliably attributed to any specific attempt' }]
         : []),
+      // A systematic-closure review found the identical HARNESS-INTEGRITY treatment applies here:
+      // a genuinely incoherent parallel.legs[] structure on the terminal attempt (malformed leg
+      // shape, wrong test-type correlation, or a leg/top-level failure-count contradiction --
+      // see graders.mjs's validateParallelEvidence/parallelEvidenceInvalid) means the tool's own
+      // JSON output cannot be trusted as genuine evidence of what happened -- not a legitimate
+      // agent outcome, so it must block promotion here rather than merely reading as
+      // expected_outcome_matched:false, a valid negative result the ambiguity is NOT.
+      ...(isScenario && gradeResult?.parallelEvidenceMalformed
+        ? [{ code: 'malformed_parallel_evidence', message: 'the terminal kmp-test parallel attempt\'s own parallel.legs[] structure is internally incoherent (malformed leg shape, wrong test-type correlation, or a leg/top-level failure-count contradiction) -- the tool\'s own JSON output cannot be trusted as genuine evidence of what happened' }]
+        : []),
     ],
   };
 }
@@ -1282,7 +1292,11 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
  * and/or a kmp-test `parallel` call -- could have produced the single per-condition JUnit XML
  * snapshot -- a genuine HARNESS defect (the harness cannot produce trustworthy evidence for this
  * cell at all), not a legitimate agent outcome, so it blocks here rather than merely degrading
- * that one cell's outcomeMatches to false.
+ * that one cell's outcomeMatches to false. `parallelEvidenceOk` is the identical treatment for a
+ * `malformed_parallel_evidence` error (buildRunRecord, from graders.mjs's own
+ * `parallelEvidenceMalformed`) -- the terminal kmp-test attempt's own `parallel.legs[]` structure
+ * was internally incoherent, a systematic-closure review found this was previously laundered only
+ * through expected_outcome_matched:false (a valid negative result the incoherence is NOT).
  */
 function scenarioCellIntegrityOk(record, conditionResult) {
   const expectSkillAvailable = record.condition === 'current-skill';
@@ -1300,13 +1314,14 @@ function scenarioCellIntegrityOk(record, conditionResult) {
   const toolResultsCompleteOk = findIncompleteToolResultsToleratingTimeout(conditionResult.events, timeoutCtx).length === 0;
   const terminationOk = conditionResult.spawnResult.terminated === false || conditionResult.spawnResult.terminationReason === 'timeout';
   const junitEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'ambiguous_junit_evidence');
+  const parallelEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'malformed_parallel_evidence');
 
   const ok = availabilityOk && pluginProfileOk && pluginSnapshotBindingOk && skillSelectionOk && initOk
     && toolProfileOk && noUnexpectedToolsOk && hookAccountingOk && cleanTranscriptOk && transcriptStructureOk
-    && toolResultsCompleteOk && terminationOk && junitEvidenceOk;
+    && toolResultsCompleteOk && terminationOk && junitEvidenceOk && parallelEvidenceOk;
   return {
     ok,
-    reason: ok ? null : `availabilityOk:${availabilityOk} pluginProfileOk:${pluginProfileOk} pluginSnapshotBindingOk:${pluginSnapshotBindingOk} skillSelectionOk:${skillSelectionOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} hookAccountingOk:${hookAccountingOk} cleanTranscriptOk:${cleanTranscriptOk} transcriptStructureOk:${transcriptStructureOk} toolResultsCompleteOk:${toolResultsCompleteOk} terminationOk:${terminationOk} junitEvidenceOk:${junitEvidenceOk}`,
+    reason: ok ? null : `availabilityOk:${availabilityOk} pluginProfileOk:${pluginProfileOk} pluginSnapshotBindingOk:${pluginSnapshotBindingOk} skillSelectionOk:${skillSelectionOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} hookAccountingOk:${hookAccountingOk} cleanTranscriptOk:${cleanTranscriptOk} transcriptStructureOk:${transcriptStructureOk} toolResultsCompleteOk:${toolResultsCompleteOk} terminationOk:${terminationOk} junitEvidenceOk:${junitEvidenceOk} parallelEvidenceOk:${parallelEvidenceOk}`,
   };
 }
 

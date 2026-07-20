@@ -758,6 +758,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       checks: [], firstUsefulSignalEventIndex: null,
       testInvocationsTotal: 2, retries: 1,
       harnessEvidenceAmbiguous: false,
+      parallelEvidenceMalformed: false,
       ...overrides,
     };
   }
@@ -792,6 +793,42 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       modelRequested: 'fake-model',
     });
     expect(record.errors.some((e) => e.code === 'ambiguous_junit_evidence')).toBe(false);
+  });
+
+  // Round 10 (systematic-closure pass): the identical propagation gap existed for
+  // parallelEvidenceMalformed (a genuinely incoherent parallel.legs[] structure on the terminal
+  // kmp-test attempt) -- a fresh review found nothing surfaced it onto the run record either,
+  // so scenarioCellIntegrityOk had no way to see it and block promotion.
+  it('a gradeResult with parallelEvidenceMalformed:true produces a malformed_parallel_evidence error entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-malformed-parallel',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ parallelEvidenceMalformed: true }),
+    });
+    expect(record.errors.some((e) => e.code === 'malformed_parallel_evidence')).toBe(true);
+  });
+
+  it('a gradeResult with parallelEvidenceMalformed:false produces NO malformed_parallel_evidence entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-malformed-parallel-clean',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ parallelEvidenceMalformed: false }),
+    });
+    expect(record.errors.some((e) => e.code === 'malformed_parallel_evidence')).toBe(false);
+  });
+
+  it('calibrate/smoke records (runKind !== scenario) never produce malformed_parallel_evidence, regardless of gradeResult', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-malformed-parallel-calibration',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+    });
+    expect(record.errors.some((e) => e.code === 'malformed_parallel_evidence')).toBe(false);
   });
 });
 

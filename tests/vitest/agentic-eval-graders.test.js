@@ -10,7 +10,7 @@
 // tested a mechanism that no longer exists), not "fixed" -- their intent is now covered by the
 // smaller, structural KMP_EVAL_RESULT test group instead.
 import { describe, it, expect } from 'vitest';
-import { extractKmpTestEnvelope, gradeScenarioCondition, GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
+import { extractKmpTestEnvelope, gradeScenarioCondition, GRADING_CHECK_NAMES, validateParallelEvidence } from '../../tools/agentic-eval/graders.mjs';
 
 // The exact two scenario shapes this PR ships, matching corpus/scenarios/*.json byte-for-byte
 // (kept here as plain objects so grader tests don't depend on file I/O -- schema-shape coverage
@@ -121,16 +121,40 @@ const SCENARIO_2_CORRECT_ANSWER = kmpEvalResultText(
   { module: ':app', outcome_kind: 'no_applicable_tests' },
 );
 
-// `parallel` mirrors the real shape buildParallelParsed constructs for a genuine dispatch
-// (lib/orchestrators/parallel/result-rollup.js) -- a fresh review reproduced this canonical
-// "correct" fixture NOT reflecting real production shape at all (parallel entirely absent), which
-// would have silently defeated the new parallel.legs[] structural requirement below.
+// `parallel` mirrors the EXACT real shape `lib/orchestrators/parallel-orchestrator.js`'s per-leg
+// dispatch loop constructs for a genuine `--module-filter shared` dispatch with NO explicit
+// --test-type (every command this constant is paired with, throughout this file, omits
+// --test-type entirely) -- a systematic-closure pass reproduced the PRIOR version of this fixture
+// as still not production-real: it invented a `task` field (real legs never have one) and used
+// `test_type:'androidUnit'` at both levels despite every invoking command being test-type-implicit
+// (`opts.testType=''` internally, always rendered as the string `'auto'` at the envelope boundary
+// -- confirmed directly in parallel-orchestrator.js's leg-dispatch loop and
+// result-rollup.js's buildParallelParsed), and omitted `execution`/`cascade_detected`/
+// `retry_fired` (all unconditional real fields) entirely.
+// `isolated` mirrors buildIsolatedField's real default shape (lib/orchestrators/
+// orchestrator-utils.js) -- a fresh test-fidelity review found this field absent from every
+// "production-real" fixture in this file, even though buildParallelParsed sets
+// `envelope.isolated` UNCONDITIONALLY (never omitted) on both the success path and every
+// early-exit branch, including the no_test_modules exit KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS
+// models. Currently inert (the grader never reads `isolated`), so this closes a realism gap in
+// these fixtures' own documented claim, not a behavioral one.
+const DEFAULT_ISOLATED_FIELD = { enabled: false, cache_dir: null, kept: false, locked: true };
+
 const KMP_TEST_ENVELOPE_SCENARIO1_PASS = JSON.stringify({
   tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
   project_root: 'C:\\fake', exit_code: 0, duration_ms: 13169,
   tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
   modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
-  parallel: { test_type: 'androidUnit', legs: [{ test_type: 'androidUnit', task: ':shared:testAndroidHostTest', exit_code: 0 }], max_workers: 4, timeout_s: 900 },
+  parallel: {
+    test_type: 'auto',
+    legs: [{
+      test_type: 'auto', exit_code: 0,
+      execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
+      cascade_detected: false, retry_fired: false,
+    }],
+    max_workers: 4, timeout_s: 900,
+  },
+  isolated: DEFAULT_ISOLATED_FIELD,
 });
 
 const KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS = JSON.stringify({
@@ -140,6 +164,7 @@ const KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS = JSON.stringify({
   modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: {},
   errors: [{ code: 'no_test_modules', message: 'No modules found matching filter: app', test_type: '', caused_by_filter: true }],
   warnings: [],
+  isolated: DEFAULT_ISOLATED_FIELD,
 });
 
 const GRADLE_SCENARIO1_PASS_STDOUT = `> Task :shared:compileAndroidHostTest UP-TO-DATE\n> Task :shared:testAndroidHostTest\n\nBUILD SUCCESSFUL in 8s\n21 actionable tasks: 21 executed\n`;
@@ -1490,7 +1515,16 @@ describe('gradeScenarioCondition -- round-8: execution-mode coherence must fail 
       exit_code: 0, duration_ms: 100, dry_run: false,
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
-      parallel: { test_type: 'androidUnit', legs: [{ test_type: 'androidUnit', task: ':shared:testAndroidHostTest', exit_code: 0 }], max_workers: 4, timeout_s: 900 },
+      parallel: {
+        test_type: 'auto',
+        legs: [{
+          test_type: 'auto', exit_code: 0,
+          execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
+          cascade_detected: false, retry_fired: false,
+        }],
+        max_workers: 4, timeout_s: 900,
+      },
+      isolated: DEFAULT_ISOLATED_FIELD,
     });
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: explicitFalseDryRunEnvelope }],
@@ -1611,6 +1645,293 @@ describe('gradeScenarioCondition -- round-9: tests_executed requires a real, wel
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);
+  });
+});
+
+// Round 10: after 9 patch-by-patch review rounds against `parallel`-evidence validation, a
+// systematic-closure pass replaced the narrow "non-empty legs array" check with
+// `validateParallelEvidence()` -- a single named validator implementing the COMPLETE production
+// contract extracted directly from lib/orchestrators/parallel-orchestrator.js (leg dispatch loop,
+// legsForAll) and lib/orchestrators/parallel/result-rollup.js (buildParallelParsed,
+// recordLegResults's execSummary.failed/errors invariant). This table-driven matrix mutates
+// EXACTLY ONE invariant at a time away from a known-good baseline envelope, proving each is
+// independently enforced -- not just the specific reproductions a prior review round happened to
+// try. Every case here was proven RED (wrongly accepted) against the pre-fix commit before this
+// fix was implemented.
+describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes the complete malformed/contradictory leg class', () => {
+  const GOOD_LEG = {
+    test_type: 'auto', exit_code: 0,
+    execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
+    cascade_detected: false, retry_fired: false,
+  };
+  const GOOD_PARALLEL = { test_type: 'auto', legs: [GOOD_LEG], max_workers: 4, timeout_s: 900 };
+  const DEFAULT_COMMAND = 'kmp-test parallel --module-filter shared --json';
+
+  function buildEnvelope({ parallel = GOOD_PARALLEL, tests = { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 }, errors = [] } = {}) {
+    return JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100, tests,
+      modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors, warnings: [],
+      parallel,
+    });
+  }
+
+  function gradeCommand(command, envelopeJson) {
+    const cr = buildConditionResult([{ command, resultContent: envelopeJson }], SCENARIO_1_CORRECT_ANSWER);
+    return gradeScenarioCondition(cr, SCENARIO_1);
+  }
+
+  // [name, command, envelopeJson] -- every entry must be rejected (expectedOutcomeMatched:false).
+  const ADVERSARIAL_MATRIX = [
+    ['null leg', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [null] } })],
+    ['primitive-number leg', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [1] } })],
+    ['empty-object leg (structurally present, no fields at all)', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{}] } })],
+    ['legs is an empty ARRAY (distinct from parallel itself being {})', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [] } })],
+    ['leg missing the required execution object entirely', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ test_type: 'auto', exit_code: 0, cascade_detected: false, retry_fired: false }] } })],
+    ['leg.exit_code is the STRING "0", not an integer', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ ...GOOD_LEG, exit_code: '0' }] } })],
+    ['leg.cascade_detected is the STRING "false", not a boolean', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ ...GOOD_LEG, cascade_detected: 'false' }] } })],
+    ['leg.retry_fired is the NUMBER 0, not a boolean', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ ...GOOD_LEG, retry_fired: 0 }] } })],
+    ['leg.execution is missing a required key (no_evidence)', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ ...GOOD_LEG, execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0 } }] } })],
+    // EXACT REPRODUCTION (round-2 test-fidelity review): the converse of the missing-key row
+    // above -- isWellFormedParallelLeg's own doc comment claims "EXACTLY the 7 EXECUTION_MODE_KEYS"
+    // but the code previously only validated the 7 known keys, never rejecting an EXTRA,
+    // unrecognized one (impossible from real production, which always constructs exactly these 7
+    // via summarizeExecutionModes).
+    ['leg.execution has an EXTRA, unrecognized key beyond the 7 real ones', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ ...GOOD_LEG, execution: { ...GOOD_LEG.execution, injected_bogus_field: 'x' } }] } })],
+    // NOTE: an out-of-range/non-integer execution.failed also always trips the SEPARATE aggregate
+    // check (legsFailedSum vs. envelope.tests.failed) and/or the scenario-comparison layer's own
+    // envelope.tests.failed===kt.tests.failed check OUTSIDE validateParallelEvidence entirely --
+    // through this end-to-end pipeline there is no envelope.tests.failed value that satisfies both
+    // "matches kt.tests.failed" AND "matches a mutated leg execution.failed" simultaneously, so a
+    // row here could never isolate the per-key type/range guard from those other checks. A fresh
+    // test-fidelity review confirmed (via mutation testing) that attempting to align tests.failed
+    // to bypass the aggregate check still fails via the outer kt.tests.failed comparison, making
+    // any such row here non-discriminating regardless of framing. That specific invariant is
+    // instead covered by direct, isolated unit tests against validateParallelEvidence itself, see
+    // the 'validateParallelEvidence -- direct unit tests' describe block below.
+    ['EXACT REPRODUCTION: a failed leg contradicts a clean top-level tests.failed:0', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ ...GOOD_LEG, exit_code: 1, execution: { ...GOOD_LEG.execution, fresh: 0, failed: 1 } }] } })],
+    ['EXACT REPRODUCTION: wrong leg test_type (leg says androidUnit, top-level and command both say implicit auto)', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ ...GOOD_LEG, test_type: 'androidUnit' }] } })],
+    ['impossible: top-level test_type "all" with only 1 leg (legsForAll always produces >= 3)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'common' }], max_workers: 4, timeout_s: 900 } })],
+    ['impossible: top-level test_type "auto" with 2 legs (a non-all dispatch always has exactly 1 leg)', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [GOOD_LEG, { ...GOOD_LEG }] } })],
+    ['impossible: a leg itself claims test_type "all" (legsForAll never dispatches a literal "all" leg)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'all' }, { ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'desktop' }] } })],
+    ['malformed multi-leg: two good concrete legs plus one null leg under test_type "all"', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'desktop' }, null] } })],
+    ['EXACT REPRODUCTION: explicit command/envelope --test-type mismatch (command says androidUnit, envelope says jvm)', DEFAULT_COMMAND.replace('--json', '--test-type androidUnit --json'), buildEnvelope({ parallel: { test_type: 'jvm', legs: [{ ...GOOD_LEG, test_type: 'jvm' }], max_workers: 4, timeout_s: 900 } })],
+    ['command omits --test-type (implicit auto) but envelope claims a specific type', DEFAULT_COMMAND, buildEnvelope({ parallel: { test_type: 'androidUnit', legs: [{ ...GOOD_LEG, test_type: 'androidUnit' }], max_workers: 4, timeout_s: 900 } })],
+    // EXACT REPRODUCTION (independent contract review): a duplicated leg type standing in for a
+    // MISSING one -- legsForAll (lib/orchestrators/parallel/dispatch.js) can never produce a
+    // repeated leg type in any environment, so membership-per-leg alone (without a distinctness
+    // check) previously accepted this as valid "all" evidence.
+    ['EXACT REPRODUCTION: "all" dispatch with a DUPLICATE leg type standing in for a missing one (common repeated, androidUnit never dispatched)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'desktop' }], max_workers: 4, timeout_s: 900 } })],
+    // EXACT REPRODUCTION (round-2 contract review): distinctness alone doesn't validate the
+    // surviving SET is one legsForAll can actually produce -- legsForAll always includes
+    // common/desktop/androidUnit unconditionally; a distinct, all-valid-membership set missing
+    // all three (standing in with OTHER valid-but-conditional types instead) is still impossible.
+    ['EXACT REPRODUCTION: "all" dispatch missing all 3 unconditional leg types (androidInstrumented/ios/macos only -- common/desktop/androidUnit never dispatched)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'androidInstrumented' }, { ...GOOD_LEG, test_type: 'ios' }, { ...GOOD_LEG, test_type: 'macos' }], max_workers: 4, timeout_s: 900 } })],
+    // EXACT REPRODUCTION (round-2 contract review): ios/macos are only ever added TOGETHER as a
+    // pair (macOS host only) -- never one without the other. A set with exactly one of the two is
+    // impossible regardless of platform/env-var state.
+    ['EXACT REPRODUCTION: "all" dispatch with ios present but macos absent (legsForAll only ever adds them as a pair)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'desktop' }, { ...GOOD_LEG, test_type: 'androidUnit' }, { ...GOOD_LEG, test_type: 'ios' }], max_workers: 4, timeout_s: 900 } })],
+  ];
+
+  it.each(ADVERSARIAL_MATRIX)('rejects: %s', (_name, command, envelopeJson) => {
+    const grade = gradeCommand(command, envelopeJson);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('regression guard: production-real implicit auto (no --test-type in the command) still passes', () => {
+    const grade = gradeCommand(DEFAULT_COMMAND, buildEnvelope());
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  it('regression guard: production-real explicit single test-type (command and envelope both say androidUnit) still passes', () => {
+    const envelope = buildEnvelope({ parallel: { test_type: 'androidUnit', legs: [{ ...GOOD_LEG, test_type: 'androidUnit' }], max_workers: 4, timeout_s: 900 } });
+    const grade = gradeCommand(DEFAULT_COMMAND.replace('--json', '--test-type androidUnit --json'), envelope);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  it('regression guard: production-real multi-leg "all" dispatch (3 concrete legs, none literally "all") still passes', () => {
+    // Hand-authored to the exact contract extracted from legsForAll (lib/orchestrators/parallel/
+    // dispatch.js): 'common'/'desktop'/'androidUnit' are the 3 unconditional legs it always
+    // produces; each leg's own test_type is a concrete value, never 'all', while the top-level
+    // parallel.test_type is 'all'. (The dedicated production-real integration test in
+    // agentic-eval-graders-production-contract.test.js covers the single-leg case via a genuine
+    // runParallel() call; replicating a real multi-leg all dispatch would require a synthetic
+    // project with android+ios+macos+jvm source sets and platform stubbing, out of scope for this
+    // structural unit test.)
+    const legs = ['common', 'desktop', 'androidUnit'].map((t) => ({ ...GOOD_LEG, test_type: t }));
+    const envelope = buildEnvelope({ parallel: { test_type: 'all', legs, max_workers: 4, timeout_s: 900 } });
+    const grade = gradeCommand(DEFAULT_COMMAND.replace('--json', '--test-type all --json'), envelope);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  it('regression guard: production-real 6-leg "all" dispatch on a macOS host with ADB (all 3 conditional legs present: androidInstrumented + ios + macos) still passes', () => {
+    // The full legsForAll output when nothing is skipped: the 3 unconditional legs plus
+    // androidInstrumented (skipAdb=false) plus BOTH ios and macos together (macOS host).
+    const legs = ['common', 'desktop', 'androidUnit', 'androidInstrumented', 'ios', 'macos'].map((t) => ({ ...GOOD_LEG, test_type: t }));
+    const envelope = buildEnvelope({ parallel: { test_type: 'all', legs, max_workers: 4, timeout_s: 900 } });
+    const grade = gradeCommand(DEFAULT_COMMAND.replace('--json', '--test-type all --json'), envelope);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  it('regression guard: legitimate no_applicable_tests (parallel absent entirely) is unaffected by any of the above', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS }],
+      SCENARIO_2_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  // EXACT REPRODUCTION (round-2 measurement-integrity review): the identical class of gap this
+  // round closed for tests_executed existed in the SIBLING no_applicable_tests branch too --
+  // nothing checked envelope.parallel at all there, so a fabricated envelope carrying a genuinely
+  // matching no_test_modules error PLUS an arbitrarily malformed parallel block still graded
+  // success:true. Directly affects kampkit-no-applicable-tests.json, one of this PR's two real
+  // shipped scenarios.
+  it('EXACT REPRODUCTION: a genuinely matching no_test_modules envelope with a malformed parallel block ({legs:[null]}) tacked on is rejected, not silently accepted', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS);
+    envelope.parallel = { test_type: 'auto', legs: [null], max_workers: 4, timeout_s: 900 };
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_2_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('EXACT REPRODUCTION: a genuinely matching no_test_modules envelope with an otherwise WELL-FORMED parallel block tacked on is still rejected -- real production never sets parallel on this early-exit at all, so ANY presence is impossible evidence', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS);
+    envelope.parallel = {
+      test_type: 'auto',
+      legs: [{
+        test_type: 'auto', exit_code: 0,
+        execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
+        cascade_detected: false, retry_fired: false,
+      }],
+      max_workers: 4, timeout_s: 900,
+    };
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_2_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+});
+
+// Round 10 (continued): a fresh test-fidelity review found that two of the round-10 matrix's
+// rows (out-of-range/non-integer leg.execution.failed) could never isolate
+// isWellFormedParallelLeg's own per-key type/range guard from the SEPARATE aggregate check
+// (legsFailedSum vs. envelope.tests.failed) AND the scenario-comparison layer's own
+// envelope.tests.failed===kt.tests.failed check -- through the full end-to-end pipeline, no
+// envelope.tests.failed value can simultaneously match kt.tests.failed AND a mutated leg
+// execution.failed, so those checks always fire first regardless of what the per-key guard does.
+// Calling validateParallelEvidence directly removes every check that lives OUTSIDE it, genuinely
+// isolating its own internal invariants -- confirmed by the SAME mutation-testing technique used
+// throughout this session (temporarily weaken the specific guard, confirm ONLY the intended
+// case(s) flip, restore).
+describe('validateParallelEvidence -- direct unit tests (isolates leg/aggregate invariants from the scenario-comparison layer)', () => {
+  const GOOD_LEG = {
+    test_type: 'auto', exit_code: 0,
+    execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
+    cascade_detected: false, retry_fired: false,
+  };
+
+  function envelopeWithTestsFailed(testsFailed, legOverride) {
+    return {
+      tests: { failed: testsFailed },
+      parallel: { test_type: 'auto', legs: [{ ...GOOD_LEG, ...legOverride }], max_workers: 4, timeout_s: 900 },
+    };
+  }
+
+  it('EXACT REPRODUCTION: leg.execution.failed is negative (-1), with envelope.tests.failed ALIGNED to -1 so only the per-key guard can be responsible', () => {
+    const envelope = envelopeWithTestsFailed(-1, { execution: { ...GOOD_LEG.execution, failed: -1 } });
+    expect(validateParallelEvidence(envelope, null)).toBe(false);
+  });
+
+  it('EXACT REPRODUCTION: leg.execution.failed is a non-integer (1.5), with envelope.tests.failed ALIGNED to 1.5 so only the per-key guard can be responsible', () => {
+    const envelope = envelopeWithTestsFailed(1.5, { execution: { ...GOOD_LEG.execution, failed: 1.5 } });
+    expect(validateParallelEvidence(envelope, null)).toBe(false);
+  });
+
+  it('EXACT REPRODUCTION (missing coverage, reverse direction): envelope.tests.failed is INFLATED above what the legs actually report (legs clean, top-level fabricated)', () => {
+    // The round-10 matrix only ever covered leg-says-failed/envelope-says-clean. A fresh
+    // test-fidelity review confirmed the converse -- a clean, well-formed leg (execution.failed:0)
+    // paired with a fabricated non-zero envelope.tests.failed -- had zero coverage anywhere.
+    const envelope = envelopeWithTestsFailed(1, { execution: { ...GOOD_LEG.execution, failed: 0 } });
+    expect(validateParallelEvidence(envelope, null)).toBe(false);
+  });
+
+  it('regression guard: a well-formed leg whose execution.failed genuinely matches envelope.tests.failed still validates', () => {
+    const envelope = envelopeWithTestsFailed(0, {});
+    expect(validateParallelEvidence(envelope, null)).toBe(true);
+  });
+});
+
+describe('gradeScenarioCondition -- round-10: malformed parallel evidence is a HARNESS-INTEGRITY signal, not a plain negative result', () => {
+  const GOOD_LEG = {
+    test_type: 'auto', exit_code: 0,
+    execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
+    cascade_detected: false, retry_fired: false,
+  };
+
+  it('EXACT REPRODUCTION: a well-shaped outer envelope with an incoherent parallel.legs[] (missing no_evidence key) sets parallelEvidenceMalformed:true, not just expectedOutcomeMatched:false', () => {
+    const envelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100,
+      tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
+      modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
+      parallel: {
+        test_type: 'auto',
+        legs: [{ test_type: 'auto', exit_code: 0, cascade_detected: false, retry_fired: false, execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0 } }],
+        max_workers: 4, timeout_s: 900,
+      },
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: envelope }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    // Check 4 (authoritative_evidence_well_formed) must ALSO reflect this -- previously it only
+    // inspected the top-level parse (`malformed`), reading a self-contradictory parallel block as
+    // "well-formed evidence that simply didn't match."
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.parallelEvidenceMalformed).toBe(true);
+  });
+
+  it('regression guard: a genuine count-mismatch (well-formed parallel evidence, but wrong test counts) is NOT flagged as parallelEvidenceMalformed -- still a plain, legitimate negative result', () => {
+    const envelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100,
+      tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 20 }, // wrong count (expected 24), otherwise clean
+      modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
+      parallel: { test_type: 'auto', legs: [GOOD_LEG], max_workers: 4, timeout_s: 900 },
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: envelope }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.parallelEvidenceMalformed).toBe(false);
+  });
+
+  it('regression guard: a genuinely well-formed, matching envelope has parallelEvidenceMalformed:false', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.parallelEvidenceMalformed).toBe(false);
   });
 });
 
