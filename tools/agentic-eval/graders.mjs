@@ -10,12 +10,16 @@
 // review for exactly one, verbatim reason: "six scenario-specific graders using broad keyword
 // matching, not structured outcome verification" -- e.g. `makeTextContainsGrader([/fail/i])`
 // against the raw final-answer string, which passes on a correct-sounding sentence regardless of
-// what (if anything) actually ran. This file is the corrected design: every check below
-// correlates a tokenized Bash tool_use, its own tool_result, an authoritative kmp-test JSON
-// envelope OR independently-read Gradle/JUnit evidence, and the scenario's exact expected
-// module/task/outcome identifiers -- the agent's own final-answer text is checked too (decision 8
-// of the design), but only as a secondary, positive-fact requirement layered on top of real
-// evidence, never as the primary or sole signal.
+// what (if anything) actually ran. Three later review rounds (documented inline below, at each
+// affected function) fixed a long tail of regex/keyword-adjacent edge cases in the areas that
+// still parsed free text -- and kept finding MORE of the same class in sharper form, which was the
+// signal that patching individual phrasings could never fully close it. This version removes free
+// prose from the grading path entirely: the agent's final answer must carry one strict,
+// machine-parseable `KMP_EVAL_RESULT` block (see `extractKmpEvalResultBlock`), validated against
+// an exact schema; natural prose remains in the record for human review only, never inspected for
+// grading. Every other check still correlates a tokenized Bash `tool_use`, its own `tool_result`,
+// and an authoritative kmp-test JSON envelope OR independently-read Gradle/JUnit evidence against
+// the scenario's exact expected module/task/outcome identifiers.
 import { tokenize } from './policy-hook.mjs';
 import { classifyTaskExecutionMode } from '../../lib/orchestrators/parallel/result-rollup.js';
 import { findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout } from './stream-parser.mjs';
@@ -42,14 +46,28 @@ export const GRADING_CHECK_NAMES = [
 // ---------------------------------------------------------------------------------------------
 
 /** Classifies one Bash tool_use's raw command string. Returns `{kind:'kmp-test', subcommand,
- * moduleFilter}` | `{kind:'gradle', taskTokens}` | `{kind:'other'}` -- `'other'` covers both a
- * genuinely unrelated command AND one the tokenizer itself rejects (unbalanced quotes --
- * tokenize() returns null per its own contract), since either way it can't be correlated against
- * kmp-test/gradle evidence. `moduleFilter` is the exact value the agent passed to
- * `--module-filter`/`--module-filter=`, if any -- needed because a `no_test_modules` envelope has
- * an EMPTY `modules[]` array (there was nothing to resolve), so the only place the agent's
- * intended target module is directly observable for that outcome is the command itself, not the
- * envelope. */
+ * moduleFilter, isPlanOnly}` | `{kind:'gradle', taskTokens, isPlanOnly}` | `{kind:'other'}` --
+ * `'other'` covers both a genuinely unrelated command AND one the tokenizer itself rejects
+ * (unbalanced quotes -- tokenize() returns null per its own contract), since either way it can't
+ * be correlated against kmp-test/gradle evidence. `moduleFilter` is the exact value the agent
+ * passed to `--module-filter`/`--module-filter=`, if any -- needed because a `no_test_modules`
+ * envelope has an EMPTY `modules[]` array (there was nothing to resolve), so the only place the
+ * agent's intended target module is directly observable for that outcome is the command itself,
+ * not the envelope.
+ *
+ * `isPlanOnly` detects any literal token that makes the invocation report only PLANNED work
+ * without ever actually executing anything: `--dry-run` on either command shape, plus kmp-test's
+ * `--list`/`--list-only` (documented in `lib/cli.js` as exiting before any Gradle dispatch at
+ * all -- semantically identical to `--dry-run` for this purpose, just a different real flag). A
+ * round-6 fresh architecture review reproduced this as a real gap: the file's own `--dry-run`
+ * exclusion (added earlier in round 5) left `--list-only` completely unrecognized, so a
+ * `--list-only` follow-up call after a genuinely correct execution could still become "terminal"
+ * and flip a correct result to a reported failure -- exactly the bug class `--dry-run` exclusion
+ * was already built to prevent, just via a different real flag this file hadn't been told about.
+ * (No Gradle-side analogue exists for `--list`/`--list-only` -- Gradle's own allowed-flag set has
+ * no other plan-only flag beyond `--dry-run`, which is already covered.) Every caller that treats
+ * a command as evidence checks this flag and excludes plan-only attempts entirely -- see
+ * evaluateKmpTestAttempt/evaluateGradleAttempt/classifyJunitProvenance. */
 function classifyBashCommand(command) {
   if (typeof command !== 'string') return { kind: 'other' };
   const tokens = tokenize(command);
@@ -60,11 +78,13 @@ function classifyBashCommand(command) {
       if (tokens[i] === '--module-filter') { moduleFilter = tokens[i + 1] ?? null; i++; }
       else if (tokens[i].startsWith('--module-filter=')) { moduleFilter = tokens[i].slice('--module-filter='.length); }
     }
-    return { kind: 'kmp-test', subcommand: tokens[1] ?? null, moduleFilter };
+    const isPlanOnly = tokens.includes('--dry-run') || tokens.includes('--list') || tokens.includes('--list-only');
+    return { kind: 'kmp-test', subcommand: tokens[1] ?? null, moduleFilter, isPlanOnly };
   }
   if (tokens[0] === './gradlew' || tokens[0] === './gradlew.bat') {
     const taskTokens = tokens.slice(1).filter((t) => !t.startsWith('-'));
-    return { kind: 'gradle', taskTokens };
+    const isPlanOnly = tokens.includes('--dry-run');
+    return { kind: 'gradle', taskTokens, isPlanOnly };
   }
   return { kind: 'other' };
 }
@@ -77,6 +97,11 @@ function classifyBashCommand(command) {
  * false "wrong module" purely from a cosmetic colon-prefix difference. */
 function normalizeModuleName(name) {
   return typeof name === 'string' ? name.replace(/^:/, '') : name;
+}
+
+/** Escapes regex metacharacters in `s` so it can be embedded literally inside a RegExp pattern. */
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -168,18 +193,20 @@ export function extractKmpTestEnvelope(content) {
 
 // ---------------------------------------------------------------------------------------------
 // Per-attempt evaluation -- one entry per Bash tool_use capable of producing target evidence
-// (kmp-test's `parallel` subcommand; a Gradle invocation naming a policy-allowed task). `doctor`/
-// `describe` (kmp-test) are recognized and simply never evaluated here -- auxiliary, never a
-// candidate for target evidence, so a normal doctor-then-parallel session (or a legitimate
-// parallel retry) never trips a false "multiple envelopes" problem the way the deleted PR #372
-// draft's design would have.
+// (kmp-test's `parallel` subcommand, EXECUTED not planned; a Gradle invocation naming a
+// policy-allowed task, EXECUTED not planned). `doctor`/`describe` (kmp-test) are recognized and
+// simply never evaluated here -- auxiliary, never a candidate for target evidence, so a normal
+// doctor-then-parallel session (or a legitimate parallel retry) never trips a false "multiple
+// envelopes" problem the way the deleted PR #372 draft's design would have. A `--dry-run`
+// invocation of either provider is excluded the same way, for the same underlying reason: it
+// reports only what WOULD happen, never what DID.
 // ---------------------------------------------------------------------------------------------
 
 /**
  * Validates one parsed kmp-test envelope as authoritative evidence for a Bash attempt already
  * classified as `kmp-test parallel` -- both semantic correctness (matches the scenario's expected
  * outcome) AND internal coherence (the envelope's own fields don't contradict each other or the
- * command that was actually run). A systematic adversarial pass reproduced four independent ways
+ * command that was actually run). A systematic adversarial pass reproduced five independent ways
  * a purely field-by-field-equals-expected check let an internally incoherent envelope through:
  *
  * 1. `envelope.subcommand` was never checked against the command that was actually classified as
@@ -196,6 +223,22 @@ export function extractKmpTestEnvelope(content) {
  *    one (both are internally self-contradictory: "cleanly determined no tests apply" must not
  *    simultaneously claim per-test-case executions occurred, or carry evidence of a DIFFERENT
  *    failure).
+ * 5. `skipped` was never validated at all, on EITHER outcome_kind branch -- a round-5 review
+ *    reproduced a clean-looking `tests_executed` envelope (correct total/passed/failed/
+ *    individual_total) that ALSO carried a stray non-zero `skipped` count still passing as a
+ *    genuine clean-pass claim. `skipped` is now compared exactly, same as every other counter.
+ *    (Scoped to the kmp-test path only. A round-6 fresh architecture review sharpened WHY the
+ *    Gradle/JUnit-XML evidence path (`matrix-runner.mjs`'s `captureGradleJunitEvidence`) has no
+ *    equivalent check: it isn't merely that a skipped count is unavailable there -- verified
+ *    against the real `lib/parsers/junit-xml.js`, a genuinely `<skipped/>` JUnit testcase counts
+ *    toward that path's own `total` but NOT toward its `failures`, so its `passed = total -
+ *    failures.length` computation silently MISATTRIBUTES a real skip to `passed`. Both shipped
+ *    scenarios have zero real skips (independently re-verified 3x during ground-truth capture),
+ *    so this is currently dormant, not an active false credit -- but it is a real latent gap, not
+ *    just an absent one, and is disclosed precisely as such in the PR body rather than fixed here;
+ *    correcting `captureGradleJunitEvidence` itself would mean extending the shared
+ *    `lib/parsers/junit-xml.js` utility with a dedicated skipped-count accessor, out of scope for
+ *    a grading-correctness pass scoped to `tools/agentic-eval/`.)
  * @returns {boolean}
  */
 function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsError, scenario) {
@@ -223,18 +266,67 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
       && envelope.tests?.total === kt.tests.total
       && envelope.tests?.passed === kt.tests.passed
       && envelope.tests?.failed === kt.tests.failed
+      && envelope.tests?.skipped === kt.tests.skipped
       && envelope.tests?.individual_total === kt.tests.individual_total;
   }
   // `errors.length === 1` (exactly the matching entry, nothing else): a second, unrelated error
-  // entry contradicts "cleanly determined that no tests apply". `individual_total === 0` is the
-  // converse of the tests_executed branch's own check: a no_test_modules claim alongside a stale
-  // non-zero individual_total is just as internally inconsistent as the reverse.
+  // entry contradicts "cleanly determined that no tests apply". `individual_total === 0`/
+  // `skipped === 0` are the converse of the tests_executed branch's own checks: a no_test_modules
+  // claim alongside a stale non-zero counter is just as internally inconsistent as the reverse.
   const matchingErrors = envelope.errors.filter((e) => e && e.code === kt.error_code);
   return envelope.errors.length === 1 && matchingErrors.length === 1
     && envelope.exit_code === kt.exit_code
     && matchingErrors[0].caused_by_filter === kt.caused_by_filter
     && envelope.tests?.total === 0 && envelope.tests?.passed === 0 && envelope.tests?.failed === 0
-    && envelope.tests?.individual_total === 0;
+    && envelope.tests?.skipped === 0 && envelope.tests?.individual_total === 0;
+}
+
+/**
+ * Decides whether a parsed kmp-test envelope can be safely attributed to the scenario's expected
+ * module -- command/envelope coherence AND no unproven multi-module attribution. A round-5 fresh
+ * adversarial review reproduced two distinct gaps in the prior (round-4) design, which searched
+ * `envelope.modules[]` for ANY entry matching the target:
+ *
+ * 1. The command's OWN invoked `--module-filter` was never cross-checked against what the
+ *    envelope itself claims. A command explicitly filtered to `--module-filter app` whose
+ *    envelope nonetheless reported `modules:[{name:"shared"}]` passed as valid `:shared` evidence
+ *    -- even though the command and its own envelope flatly contradict each other (you asked for
+ *    app, you got shared back), which is incoherent regardless of whether the reported module
+ *    happens to match the scenario's real target. This mirrors `validateKmpEnvelopeForAttempt`'s
+ *    existing `envelope.subcommand !== invokedSubcommand` check, generalized to module identity.
+ * 2. Searching a MULTI-entry `modules[]` array for a match let a target module's presence
+ *    anywhere in the array stand in for proof that the AGGREGATE `tests.total/passed/failed`
+ *    counters (compared separately, in `validateKmpEnvelopeForAttempt`) belong to that module
+ *    specifically -- they do not; a `parallel` envelope's top-level `tests` object is a
+ *    project-wide aggregate, not a per-module breakdown, so a multi-module response can never
+ *    safely attribute those numbers to any ONE of its listed modules. `tests_executed` now
+ *    requires `envelope.modules.length === 1` -- the envelope's own module list must resolve to
+ *    EXACTLY the target and nothing else -- before its aggregate counters are trusted at all.
+ *
+ * `no_applicable_tests` has no envelope-side module data to corroborate at all -- `modules[]` is
+ * SUPPOSED to be empty by definition (nothing resolved), but nothing previously verified that. A
+ * round-6 fresh architecture review reproduced this as a real, if lower-severity, asymmetry with
+ * the `tests_executed` branch's own strict check: an envelope whose `modules[]` was NOT empty
+ * (self-contradictory alongside a `no_test_modules` error) still passed as valid evidence as long
+ * as the command's own filter happened to match. `envelope.modules.length === 0` is now required
+ * here too. The target module itself is still identified SOLELY by the command's own explicit
+ * `--module-filter` (there is no non-empty envelope-side module claim to corroborate it against);
+ * a whole-project run (no filter) can never prove a `no_test_modules` result was specifically
+ * about the target module in a multi-module project, so it is not accepted as target-matching
+ * evidence for this outcome_kind either.
+ * @returns {boolean}
+ */
+function computeKmpTestTargetMatch(envelope, classification, scenario) {
+  const targetModule = normalizeModuleName(scenario.expected.module);
+  if (scenario.expected.outcome_kind === 'tests_executed') {
+    if (envelope.modules.length !== 1) return false;
+    const envelopeModule = normalizeModuleName(envelope.modules[0]?.name);
+    if (envelopeModule !== targetModule) return false;
+    if (classification.moduleFilter != null && normalizeModuleName(classification.moduleFilter) !== envelopeModule) return false;
+    return true;
+  }
+  if (envelope.modules.length !== 0) return false;
+  return classification.moduleFilter != null && normalizeModuleName(classification.moduleFilter) === targetModule;
 }
 
 /** @returns {null | {provider:'kmp_test', bashIndex:number, resultIndex:number|null,
@@ -243,25 +335,22 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
 function evaluateKmpTestAttempt(bashResult, scenario) {
   const classification = classifyBashCommand(bashResult.command);
   if (classification.kind !== 'kmp-test' || classification.subcommand !== 'parallel') return null;
+  // A round-5 fresh adversarial review reproduced three real bugs from treating a --dry-run
+  // invocation identically to a real execution: (a) it inflated testInvocationsTotal/retries when
+  // followed by a real run; (b) a real, correct run followed by a LATER --dry-run call became
+  // "terminal" purely by running last, flipping a genuinely correct result to a reported failure;
+  // (c) it could be counted as a JUnit producer (classifyJunitProvenance) and trigger a false
+  // ambiguity, even though a dry-run never actually touches the Gradle task or its JUnit XML.
+  // Excluded here, at the earliest point -- identical treatment to doctor/describe above -- so it
+  // never becomes a candidate attempt for evidence, terminal selection, retries, first_useful_
+  // signal, or JUnit provenance anywhere downstream.
+  if (classification.isPlanOnly) return null;
 
   const envelope = extractKmpTestEnvelope(bashResult.resultContent);
   const malformed = bashResult.resultContent != null && envelope == null;
   const hasEvidence = envelope != null;
 
-  const targetModule = normalizeModuleName(scenario.expected.module);
-  let targetMatches = false;
-  if (hasEvidence) {
-    if (envelope.modules.length > 0) {
-      // A `parallel` run may legitimately cover more than one module (e.g. no --module-filter --
-      // ran every module in the project) -- search the WHOLE list for the scenario's target, not
-      // just the first entry. A round-4 fresh invariant review reproduced a real false negative:
-      // the target module's genuine data sitting at modules[1+] was rejected as "the WRONG module"
-      // purely because modules[0] happened to be a different module first in the array.
-      targetMatches = envelope.modules.some((m) => normalizeModuleName(m?.name) === targetModule);
-    } else if (classification.moduleFilter != null) {
-      targetMatches = normalizeModuleName(classification.moduleFilter) === targetModule;
-    }
-  }
+  const targetMatches = hasEvidence && computeKmpTestTargetMatch(envelope, classification, scenario);
 
   const outcomeMatches = hasEvidence && targetMatches
     && validateKmpEnvelopeForAttempt(envelope, classification.subcommand, bashResult.resultIsError, scenario);
@@ -269,42 +358,74 @@ function evaluateKmpTestAttempt(bashResult, scenario) {
   // Whether this attempt was even ATTEMPTING to check the expected module, independent of
   // whether its response was well-formed -- derived from the INVOKED --module-filter (absent
   // means "every module, including the target"), never from the response content. Distinct from
-  // `targetMatches` (which requires real, parsed evidence) so that `terminal` selection (below,
-  // in gradeScenarioCondition) can tell "a later attempt that never even tried to check the
-  // target module" apart from "a later attempt that DID try, but its response was malformed" --
-  // only the former should be excluded from contention for "terminal."
+  // `targetMatches` (which requires real, coherent, uniquely-attributable evidence) so that
+  // `terminal` selection (below, in gradeScenarioCondition) can tell "a later attempt that never
+  // even tried to check the target module" apart from "a later attempt that DID try, but its
+  // response was malformed or incoherent" -- only the former should be excluded from contention
+  // for "terminal."
+  const targetModule = normalizeModuleName(scenario.expected.module);
   const intendedTargetMatches = classification.moduleFilter == null || normalizeModuleName(classification.moduleFilter) === targetModule;
 
   return { provider: 'kmp_test', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence, malformed, targetMatches, intendedTargetMatches, outcomeMatches };
 }
 
-/** Parses the terminal Gradle build-outcome from possibly-noisy tool_result content: the LAST
- * COMPLETE Gradle footer LINE matching `BUILD SUCCESSFUL`/`BUILD FAILED`, anchored at BOTH the
- * start AND the end of the line (Gradle's own footer is always either the bare phrase or the
- * phrase plus " in <duration>", e.g. "BUILD SUCCESSFUL in 8s", and nothing else legitimately
- * shares its line) -- a systematic adversarial pass reproduced that a start-only anchor accepted
- * "BUILD SUCCESSFUL but this is not a Gradle footer" as a genuine footer, and (worse) let a LATER
- * line merely BEGINNING "BUILD SUCCESSFUL ..." outrank a REAL, earlier `BUILD FAILED in 3s`
- * footer under the "last match wins" rule, flipping an actual failure to a reported success.
- * Tolerates an optional trailing `\r` (CRLF content) and optional trailing whitespace. Taking the
- * LAST matching line (rather than "does either pattern appear ANYWHERE") is what correctly
- * handles an earlier retry's own footer line still sitting earlier in the same accumulated
- * content. Cross-checked against the tool_result's own `resultIsError`, same as before: a
- * contradiction between the text's own last footer and `resultIsError` means the content cannot
- * be trusted -- returns `null` in that case (never silently prefers one signal over the other),
- * same as when no genuine footer line is found at all. Returns 0 (success), 1 (failed), or null
+/** Parses the terminal Gradle build-outcome from possibly-noisy tool_result content: EXACTLY ONE
+ * complete Gradle footer LINE matching `BUILD SUCCESSFUL`/`BUILD FAILED`, anchored at BOTH the
+ * start AND the end of the line, with a real, bounded duration grammar (not free text) after
+ * "in " -- Gradle's own footer is always either the bare phrase or the phrase plus a genuine
+ * duration (`8s`, `1m 30s`, `500ms`), and nothing else legitimately shares its line.
+ *
+ * Two independent fixes from a round-5 fresh adversarial review, both empirically reproduced as
+ * real bugs against the prior (round-3) version:
+ * 1. The prior version accepted ANY trailing text after " in " (`(?: in [^\r\n]+)?`) -- a
+ *    diagnostic sentence shaped exactly like a footer, "BUILD SUCCESSFUL in this diagnostic
+ *    only", passed as genuine evidence. The duration group is now a real, bounded grammar (each
+ *    of hours/minutes/seconds-or-milliseconds independently optional, but at least one unit
+ *    required, so an elided trailing unit -- Gradle's own real "1m" with no seconds shown -- still
+ *    matches, per a round-6 fresh architecture review that reproduced the ORIGINAL all-mandatory-
+ *    trailing-unit grammar rejecting that genuine, already-fixture-evidenced duration shape
+ *    elsewhere in this repo's own test suite) -- text that isn't a real duration no longer
+ *    completes a footer-shaped match at all.
+ * 2. The prior version took the chronologically LAST matching footer line when more than one was
+ *    present in a single tool_result's content (deliberately, to let a genuine retry-within-one-
+ *    command sequence resolve to its real final outcome). A round-5 review reproduced this as
+ *    its own risk: since every OTHER evidence type in this file already treats one tool_result as
+ *    representing exactly one attempt (the whole `bashIndex`/`resultIndex` attribution model),
+ *    silently resolving multiple footer lines within that ONE attempt via "last wins" contradicts
+ *    that same premise -- it cannot be proven which invocation actually produced the SUBSEQUENT
+ *    JUnit XML/exit state the rest of this file's evidence depends on. Now requires EXACTLY one
+ *    footer line; zero or more than one both fail closed as untrustworthy content, the same as a
+ *    kmp-test envelope that doesn't parse at all. (An agent that wants credit for a genuine retry
+ *    must issue it as a SEPARATE Bash tool_use, which this file already handles correctly via the
+ *    existing last-relevant-ATTEMPT rule across attempts, not within one.)
+ *
+ * Tolerates an optional trailing `\r` (CRLF content) and optional trailing whitespace.
+ * Cross-checked against the tool_result's own `resultIsError`, same as before: a contradiction
+ * between the text's own footer and `resultIsError` means the content cannot be trusted -- returns
+ * `null` in that case (never silently prefers one signal over the other), same as when no genuine
+ * footer line is found, or more than one is. Returns 0 (success), 1 (failed), or null
  * (untrustworthy). */
 function parseExactGradleFooter(resultContent, resultIsError) {
-  const FOOTER_LINE_RE = /^[ \t]*BUILD (SUCCESSFUL|FAILED)(?: in [^\r\n]+)?[ \t]*\r?$/gm;
-  let lastMatch = null;
-  for (const m of resultContent.matchAll(FOOTER_LINE_RE)) lastMatch = m;
-  if (lastMatch == null) return null;
-  const lastWasSuccess = lastMatch[1] === 'SUCCESSFUL';
+  // Each unit (hours/minutes/seconds-or-ms) is independently optional, but Gradle always prints
+  // at least one -- ordered longest-alternative-first so a compound duration is matched in full
+  // rather than the engine settling for a shorter prefix (backtracking would still find the full
+  // match either way, but this ordering makes the intent explicit). Seconds-or-ms is REQUIRED
+  // whenever hours/minutes is absent (a bare duration always has SOME unit), but becomes optional
+  // once hours or minutes is already present -- Gradle elides a trailing zero-valued unit (e.g.
+  // "1m", never "1m 0s").
+  const SECONDS_OR_MS_RE = '\\d+(?:\\.\\d+)?(?:ms|s)';
+  const MINUTES_RE = `\\d+m(?:\\s*${SECONDS_OR_MS_RE})?`;
+  const HOURS_RE = `\\d+h(?:\\s*(?:${MINUTES_RE}|${SECONDS_OR_MS_RE}))?`;
+  const DURATION_RE = `(?:${HOURS_RE}|${MINUTES_RE}|${SECONDS_OR_MS_RE})`;
+  const FOOTER_LINE_RE = new RegExp(`^[ \\t]*BUILD (SUCCESSFUL|FAILED)(?: in ${DURATION_RE})?[ \\t]*\\r?$`, 'gm');
+  const matches = [...resultContent.matchAll(FOOTER_LINE_RE)];
+  if (matches.length !== 1) return null;
+  const wasSuccess = matches[0][1] === 'SUCCESSFUL';
   // resultIsError is only ever a MEANINGFUL contradiction signal when it's an explicit true/false
   // observation -- null (never determined) neither confirms nor contradicts either footer.
-  if (resultIsError === true && lastWasSuccess) return null;
-  if (resultIsError === false && !lastWasSuccess) return null;
-  return lastWasSuccess ? 0 : 1;
+  if (resultIsError === true && wasSuccess) return null;
+  if (resultIsError === false && !wasSuccess) return null;
+  return wasSuccess ? 0 : 1;
 }
 
 /** @returns {null | {provider:'gradle', bashIndex:number, resultIndex:number|null,
@@ -313,6 +434,9 @@ function parseExactGradleFooter(resultContent, resultIsError) {
 function evaluateGradleAttempt(bashResult, scenario, gradleJunitEvidence, ambiguousJunitEvidence) {
   const classification = classifyBashCommand(bashResult.command);
   if (classification.kind !== 'gradle') return null;
+  // Same planning-vs-execution exclusion as the kmp-test path above -- a Gradle `--dry-run`
+  // invocation reports only what tasks WOULD run, never their real outcome or any real JUnit XML.
+  if (classification.isPlanOnly) return null;
   const g = scenario.expected.gradle;
   const invokedAllowed = classification.taskTokens.some((t) => g.allowed_invocations.includes(t));
   if (!invokedAllowed) return null;
@@ -339,9 +463,9 @@ function evaluateGradleAttempt(bashResult, scenario, gradleJunitEvidence, ambigu
   const modes = classifyTaskExecutionMode(bashResult.resultContent, '', [g.evidence_task]);
   const mode = modes.get(g.evidence_task) ?? 'no_evidence';
   const observedExitCode = parseExactGradleFooter(bashResult.resultContent, bashResult.resultIsError);
-  // A footer/resultIsError contradiction (or no recognizable footer at all) means the build
-  // outcome itself cannot be trusted -- the Gradle-provider equivalent of the kmp-test provider's
-  // own "content exists but doesn't parse as valid evidence" malformed shape.
+  // A footer/resultIsError contradiction (or no recognizable footer at all, or MORE than one)
+  // means the build outcome itself cannot be trusted -- the Gradle-provider equivalent of the
+  // kmp-test provider's own "content exists but doesn't parse as valid evidence" malformed shape.
   const malformed = observedExitCode == null;
 
   let outcomeMatches = false;
@@ -373,189 +497,93 @@ function evaluateGradleAttempt(bashResult, scenario, gradleJunitEvidence, ambigu
 }
 
 // ---------------------------------------------------------------------------------------------
-// Final-answer text check (decision 8) -- a POSITIVE requirement built from the scenario's own
-// exact, structured identifiers, never a generic keyword scan. Secondary only: this never gates
-// `expectedOutcomeMatched`, only `success` on top of it (decision 13).
+// Final-answer check (decision 8) -- structured, not prose. Three review rounds (round-2 through
+// round-4) kept finding NEW ways free-form prose parsing let a false claim through, or rejected a
+// genuinely correct one: an outcome-adjective denylist that could never enumerate every adjective,
+// a predicate-position negation defeated by inserting one adverb, cross-clause/cross-module
+// binding broken by conjunctions this file hadn't thought to split on yet ("but", then plausibly
+// "and" or others next). A round-4 review concluded (correctly) that splitting prose and hunting
+// for relationships via regex can never close every form of coordination, ellipsis, negation, and
+// subject change -- there is no fixed regex budget that structurally closes an open-ended natural-
+// language surface. This version removes that surface from the grading path entirely: the agent's
+// final answer must carry one strict, uniquely parseable, schema-validated `KMP_EVAL_RESULT` block
+// (required identically of both the current-skill and no-skill conditions, via the scenario's own
+// prompt text). Free prose stays in the record for a human to read later, but never participates
+// in grading -- this check now succeeds or fails purely on whether the block exists, is
+// unambiguous, parses as valid JSON, and exactly matches the scenario's expected module, outcome
+// kind, and (for tests_executed) counts.
 // ---------------------------------------------------------------------------------------------
 
-/** Escapes regex metacharacters in `s` so it can be embedded literally inside a RegExp pattern. */
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const KMP_EVAL_RESULT_BLOCK_RE = /^[ \t]*KMP_EVAL_RESULT[ \t]*\r?\n([\s\S]*?)^[ \t]*KMP_EVAL_RESULT_END[ \t]*\r?$/gm;
+
+/** Locates every `KMP_EVAL_RESULT ... KMP_EVAL_RESULT_END` block in `text` and attempts to parse
+ * the content between the markers as one JSON object. Returns `{found, parsed, ambiguous}`:
+ * `found:false` when no block exists at all; `ambiguous:true` when MORE than one block is present
+ * (the agent wrote two, e.g. second-guessing itself) -- untrustworthy in the same sense a
+ * kmp-test envelope with two conforming candidates is untrustworthy, never resolved by picking
+ * one; `parsed:null` (with `found:true`, `ambiguous:false`) when exactly one block exists but its
+ * content is not valid JSON. */
+function extractKmpEvalResultBlock(text) {
+  if (typeof text !== 'string' || text.length === 0) return { found: false, parsed: null, ambiguous: false };
+  const rawMatches = [...text.matchAll(KMP_EVAL_RESULT_BLOCK_RE)];
+  if (rawMatches.length === 0) return { found: false, parsed: null, ambiguous: false };
+  if (rawMatches.length > 1) return { found: true, parsed: null, ambiguous: true };
+  return { found: true, parsed: tryParseJsonObject(rawMatches[0][1].trim()), ambiguous: false };
 }
 
-/** True iff `identifier` (a module name or a bare token like a test count) appears in `text` as
- * its own standalone token -- bounded by a character OUTSIDE `[A-Za-z0-9_:-]` (or the string edge)
- * on both sides, never merely as a substring. A review pass reproduced a real false positive with
- * plain `.includes()`: `expected.module=':app'` (bare `app`) matched inside "This application has
- * no applicable tests." Plain `\b` alone is not sufficient either for a hyphen-containing
- * identifier (e.g. a Gradle module like `core-network`): `\b` treats `-` itself as a boundary
- * character, so a bare `\bnetwork\b` would incorrectly match the "network" INSIDE "core-network"
- * too. `:` is ALSO in the identifier class -- a second review pass reproduced a real false
- * positive without it: a bare `app` check matched inside a nested Gradle module path like
- * `:foo:app`, since `:` was (wrongly) treated as a legitimate boundary between `foo` and `app`,
- * even though `:foo:app` is a completely different, unrelated nested module. Treating the full
- * `[A-Za-z0-9_:-]` class as "identifier" for boundary purposes closes all three directions at
- * once. */
-function textMentionsIdentifier(text, identifier) {
-  const escaped = escapeRegExp(String(identifier));
-  const re = new RegExp(`(?<![A-Za-z0-9_:-])${escaped}(?![A-Za-z0-9_:-])`);
-  return re.test(text);
-}
+const KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS = new Set(['module', 'outcome_kind', 'total', 'passed', 'failed']);
+const KMP_EVAL_RESULT_NO_APPLICABLE_KEYS = new Set(['module', 'outcome_kind']);
+const KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS = ['total', 'passed', 'failed'];
 
-/** Splits a final-answer text into clause-scoped spans on sentence-ending punctuation, semicolons,
- * and strong contrastive conjunctions (but/however/while/whereas/yet/although/though). Deliberately
- * does NOT split on a BARE comma -- natural prose routinely uses commas WITHIN one semantic clause
- * (e.g. "The :shared module, which is the core library, ran 24 tests"), and over-splitting there
- * would introduce new false negatives. Semicolons and contrastive conjunctions are different: both
- * conventionally join two syntactically-INDEPENDENT clauses, each with its own subject -- exactly
- * the shape a round-4 fresh adversarial pass reproduced as a real false positive when this function
- * only split on `.!?`: "The :app module ran 24 tests, but :shared has no applicable tests." is ONE
- * period-terminated sentence, so (before this fix) the whole thing was ONE clause -- which meant
- * the count-and-"tests" proximity check and the target-module-mention check could each be
- * satisfied by a DIFFERENT half of that one clause (the count near ":app", the module mention near
- * ":shared"), wrongly reading as "the target module ran 24 tests" when the text actually says the
- * OPPOSITE about the target module. Splitting on "but" isolates each half so neither can lend the
- * other's evidence to a subject it was never actually about. */
-function splitIntoClauses(text) {
-  return text.split(/[.!?;]+|\s+\b(?:but|however|while|whereas|yet|although|though)\b\s*/i).map((c) => c.trim()).filter(Boolean);
-}
-
-/** True iff `clause` states that no applicable tests exist -- a POSITIVE, bounded grammar, not a
- * denylist of outcome adjectives (a systematic adversarial pass showed a denylist can never be
- * complete: "successful" wasn't on the original list, and any future adjective would have the
- * same gap). The intervening-word set allowed between the quantifier and "test(s)" is limited to
- * `applicable`/`unit` -- an outcome adjective in PRENOMINAL position ("no failing tests", "no
- * successful tests") therefore never matches this pattern AT ALL, by construction, with no need to
- * enumerate it. The one direction a quantifier-then-noun grammar can't examine is an outcome word
- * appearing AFTER "test(s)" as a predicate ("no tests failing" == tests exist, none are CURRENTLY
- * failing -- the OPPOSITE of "no tests exist"); that direction is still an explicit, bounded
- * denylist, not a broad span scan, since predicate position genuinely has no positive alternative
- * grammar to assert instead. */
-const NO_TESTS_QUANTIFIED_RE = /\b(?:no|zero)\s+(?:applicable\s+|unit\s+)?tests?\b/i;
-const NOT_HAVE_TESTS_RE = /\b(?:does|do)\s+not\s+have\s+(?:any\s+)?(?:applicable\s+|unit\s+)?tests?\b/i;
-const NO_APPLICABLE_RE = /\bno\s+applicable\b/i;
-// A bounded word-gap (not immediate adjacency) between "test(s)" and the outcome participle -- a
-// round-4 fresh adversarial pass reproduced a real false positive from the original immediate-
-// adjacency-only version: "No tests are failing." (a linking verb inserted between "tests" and
-// "failing") did not match `\btests?\s+failing\b`, so it wrongly passed as "no applicable tests"
-// even though it asserts the opposite (tests exist, none are CURRENTLY failing). The bounded gap
-// tolerates a linking verb ("are"/"is"/"were") and a short adverb ("currently") without opening
-// this back up to matching an unrelated, distant mention of an outcome word later in the clause.
-const OUTCOME_PREDICATE_AFTER_TESTS_RE = /\btests?\b(?:\s+\S+){0,3}\s+(?:failing|failed|passing|passed|running|skipped|succeeding|succeeded)\b/i;
-
-function clauseStatesNoApplicableTests(clause) {
-  const positive = NO_TESTS_QUANTIFIED_RE.test(clause) || NOT_HAVE_TESTS_RE.test(clause) || NO_APPLICABLE_RE.test(clause);
-  if (!positive) return false;
-  return !OUTCOME_PREDICATE_AFTER_TESTS_RE.test(clause);
-}
-
-/** True iff `clause` asserts `totalToken` (a test-count integer, as a string) in genuine
- * test-count CONTEXT -- adjacent to a "test(s)" word in either order -- never a bare
- * standalone-token search anywhere in the clause. A systematic adversarial pass reproduced an
- * incidental match: "See line 24 for details" satisfied a bare `textMentionsIdentifier(text,
- * '24')` check with no test-word anywhere nearby (the same failure mode would also accept
- * "v0.24.0" or "24kb"). `.` is included in the token's own boundary class (beyond the usual
- * identifier class) specifically so a decimal-adjacent number like "0.24.0" can never have its
- * "24" segment misread as the standalone count either.
+/** Strictly validates a parsed `KMP_EVAL_RESULT` block against the scenario's own expected
+ * module/outcome/counts -- EXACT key set (no missing, no extra -- an agent hedging with additional
+ * fields is rejected, not silently ignored), exact module identity (boundary-safe via
+ * `normalizeModuleName`, same colon-prefix tolerance as everywhere else in this file), exact
+ * `outcome_kind`, and for `tests_executed`, exact integer total/passed/failed matching the real,
+ * independently-verified ground truth already carried on `scenario.expected.gradle.tests` (the
+ * canonical human-readable `{total,passed,failed}` triple -- the same real-world fact kmp_test's
+ * own `individual_total` records as a single number).
  *
- * Two proximity patterns, not one blanket word-count gap: a TIGHT generic gap (at most 2 words)
- * handles the common direct phrasings ("24 tests passed", "ran 24 tests", "tests: 24"); a WIDER,
- * but STRUCTURALLY anchored gap is tried only when `moduleToken` is supplied, and requires the
- * scenario's OWN module name to be the thing sitting between the count and "test(s)" (e.g. "24 of
- * the :shared module's tests passed"). A round-4 fresh adversarial pass reproduced two opposite
- * bugs from earlier, unanchored designs: a fixed 15-CHARACTER gap rejected that exact genuine
- * answer as a false negative (the module's own name inflates the character distance past the cap,
- * and a character cap has no way to account for module-name length); widening it to a blanket
- * 5-WORD gap fixed that but reopened a false positive this function was already locked against --
- * "...documented on line 24 of the report" sits a similar word-distance from an unrelated "test"
- * mention elsewhere in the same clause. Anchoring the wider gap to the real, expected module name
- * (rather than accepting ANY 5 words) admits the genuine case without reopening the incidental
- * one, since "line 24 of the report" never contains the scenario's own module identifier. */
-function clauseAssertsTestCount(clause, totalToken, moduleToken) {
-  const escaped = escapeRegExp(totalToken);
-  const countTok = `(?<![A-Za-z0-9_:.-])${escaped}(?![A-Za-z0-9_:.-])`;
-  const tightGap = '(?:\\s+\\S+){0,2}\\s+';
-  const countThenTest = new RegExp(`${countTok}${tightGap}tests?\\b`, 'i');
-  const testThenCount = new RegExp(`\\btests?\\b${tightGap}${countTok}`, 'i');
-  if (countThenTest.test(clause) || testThenCount.test(clause)) return true;
-  if (!moduleToken) return false;
-  const escapedModule = escapeRegExp(moduleToken);
-  const moduleConnector = `(?:of\\s+(?:the\\s+)?)?${escapedModule}(?:'s|s')?\\s+(?:module(?:'s|s')?\\s+)?`;
-  const countThenModuleThenTest = new RegExp(`${countTok}\\s+${moduleConnector}tests?\\b`, 'i');
-  const testThenModuleThenCount = new RegExp(`\\btests?\\b\\s+(?:of|for|in)\\s+(?:the\\s+)?${escapedModule}(?:\\s+\\S+){0,2}\\s+${countTok}`, 'i');
-  return countThenModuleThenTest.test(clause) || testThenModuleThenCount.test(clause);
-}
+ * `no_applicable_tests` is a narrow, explicit exception to "exact key set": the scenario prompt
+ * instructs omitting `total`/`passed`/`failed` entirely, but a round-6 fresh architecture review
+ * found this needlessly brittle against a plausible LLM hedge -- an agent that includes them
+ * anyway with genuinely correct all-zero values is substantively right, just more verbose than
+ * asked. Tolerated ONLY as a complete, all-zero triple (never a partial hedge, never any non-zero
+ * value, which would be a real internal contradiction: "no applicable tests" alongside a claimed
+ * non-zero count). This is a single, bounded, explicitly-reasoned rule -- not the start of a new
+ * enumerated-phrasings problem the rest of this file's redesign exists to avoid. */
+function kmpEvalResultBlockMatchesScenario(block, scenario) {
+  if (block == null || typeof block !== 'object' || Array.isArray(block)) return false;
+  const targetModule = normalizeModuleName(scenario.expected.module);
+  if (typeof block.module !== 'string' || normalizeModuleName(block.module) !== targetModule) return false;
+  if (block.outcome_kind !== scenario.expected.outcome_kind) return false;
 
-/** True iff `clause` asserts a test failure -- a bare "fail"/"failed"/"failure"/"failures" NOT
- * itself negated by an adjacent "0"/"no"/"none"/"zero" is treated as asserting the opposite
- * conclusion; narrow, evidence-relative (checked against THIS scenario's own expected
- * zero-failures fact), never a blanket "/fail/i anywhere" scan. "none" is included in the negation
- * set alongside "no" -- a systematic adversarial pass reproduced a false NEGATIVE (a genuinely
- * correct clean-pass answer incorrectly rejected) because `\bno\b` cannot match inside "none" (no
- * word-boundary between "no" and the following "ne"), so "...none failed" was misread as asserting
- * a failure. The suffix alternation is `(s|ed|ures?)?`, not `(s|ed|ure)?` -- a round-4 fresh
- * adversarial pass reproduced a second false NEGATIVE: the plural noun "failures" (e.g. "3
- * failures") never reached a word boundary under the original alternation, since "fail"+"ure"
- * consumed 7 characters and left a trailing "s" that is itself a word character, so `\b` never
- * matched immediately after "failure". */
-function clauseAssertsFailure(clause) {
-  const mentionsFailWord = /\bfail(s|ed|ures?)?\b/i.test(clause);
-  if (!mentionsFailWord) return false;
-  return !/\b(?:0|zero|no|none)\b[^.]{0,20}\bfail/i.test(clause);
-}
-
-/** True iff `clause` BOTH mentions the scenario's expected module AND states the CORRECT
- * conclusion for `scenario.expected.outcome_kind` -- module and conclusion bound in the SAME
- * clause, never checked independently over the whole answer text. A systematic adversarial pass
- * reproduced real cross-clause/cross-module false positives from independent whole-text checks:
- * "The :app module exists. The :shared module has no applicable tests." wrongly satisfied a check
- * for `:app` (the module-mention half matched the first sentence, the outcome half matched the
- * second, about an entirely different module) -- and the mirror case for `tests_executed`. */
-function evaluateOutcomeClauseForModule(clause, scenario, expectedCountToken) {
-  const moduleBare = normalizeModuleName(scenario.expected.module);
-  if (!textMentionsIdentifier(clause, scenario.expected.module) && !textMentionsIdentifier(clause, moduleBare)) return false;
+  const keys = Object.keys(block);
   if (scenario.expected.outcome_kind === 'tests_executed') {
-    return clauseAssertsTestCount(clause, expectedCountToken, scenario.expected.module) && !clauseAssertsFailure(clause);
+    if (keys.length !== KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS.size || keys.some((k) => !KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS.has(k))) return false;
+    const expectedTests = scenario.expected.gradle.tests;
+    return Number.isInteger(block.total) && Number.isInteger(block.passed) && Number.isInteger(block.failed)
+      && block.total === expectedTests.total && block.passed === expectedTests.passed && block.failed === expectedTests.failed;
   }
-  return clauseStatesNoApplicableTests(clause);
+  if (keys.some((k) => !KMP_EVAL_RESULT_NO_APPLICABLE_KEYS.has(k) && !KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS.includes(k))) return false;
+  const presentCountKeys = KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS.filter((k) => keys.includes(k));
+  if (presentCountKeys.length === 0) return true;
+  if (presentCountKeys.length !== KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS.length) return false;
+  return block.total === 0 && block.passed === 0 && block.failed === 0;
 }
 
 function evaluateFinalAnswer(resultEvent, scenario) {
   const text = typeof resultEvent?.result === 'string' ? resultEvent.result : '';
   if (text.length === 0) return { passed: false, detail: 'no final answer text found' };
 
-  const clauses = splitIntoClauses(text);
-  const moduleBare = normalizeModuleName(scenario.expected.module);
-  const clauseMentionsModule = (c) => textMentionsIdentifier(c, scenario.expected.module) || textMentionsIdentifier(c, moduleBare);
-  const anyModuleMention = clauses.some(clauseMentionsModule);
-
-  if (scenario.expected.outcome_kind === 'tests_executed') {
-    // The individual (per-testcase) count is what a human/agent would actually say ("24 tests
-    // passed") -- the kmp-test envelope's task-level `tests.total` is always 1 here (one module
-    // resolves to one task) and would never appear in a natural final answer.
-    const totalToken = String(scenario.expected.kmp_test?.tests?.individual_total ?? scenario.expected.gradle?.tests?.total);
-    if (clauses.some((c) => evaluateOutcomeClauseForModule(c, scenario, totalToken))) {
-      return { passed: true, detail: 'a single clause states the expected module and test count, with no contradicting claim' };
-    }
-    if (!anyModuleMention) return { passed: false, detail: `final answer never mentions the expected module (${scenario.expected.module})` };
-    if (clauses.some((c) => clauseMentionsModule(c) && clauseAssertsFailure(c))) {
-      return { passed: false, detail: 'final answer asserts a failure despite the evidence showing a clean pass' };
-    }
-    return { passed: false, detail: `final answer never states the module and the observed test count (${totalToken}) in the same statement` };
+  const { found, parsed, ambiguous } = extractKmpEvalResultBlock(text);
+  if (!found) return { passed: false, detail: 'final answer contains no KMP_EVAL_RESULT block' };
+  if (ambiguous) return { passed: false, detail: 'final answer contains more than one KMP_EVAL_RESULT block -- ambiguous, not resolved by picking one' };
+  if (parsed == null) return { passed: false, detail: 'the KMP_EVAL_RESULT block did not parse as valid JSON' };
+  if (!kmpEvalResultBlockMatchesScenario(parsed, scenario)) {
+    return { passed: false, detail: 'the KMP_EVAL_RESULT block does not exactly match the expected module/outcome_kind/counts (or carries unexpected/missing keys)' };
   }
-
-  if (clauses.some((c) => evaluateOutcomeClauseForModule(c, scenario, null))) {
-    // fabricatesPassCount stays a whole-text disqualifier -- a fabricated count ANYWHERE in the
-    // answer is suspicious regardless of clause structure, even if a different clause correctly
-    // states no-applicable-tests for the right module.
-    const fabricatesPassCount = /\d+\s*(\/|\s+of\s+)\s*\d+\s+test/i.test(text) || /\d+\s+tests?\s+pass/i.test(text);
-    if (fabricatesPassCount) {
-      return { passed: false, detail: 'final answer fabricates a pass count for a module with no applicable tests' };
-    }
-    return { passed: true, detail: 'a single clause states the expected module has no applicable tests, with no fabricated count' };
-  }
-  if (!anyModuleMention) return { passed: false, detail: `final answer never mentions the expected module (${scenario.expected.module})` };
-  return { passed: false, detail: 'final answer never states, in the same statement as the expected module, that no applicable tests exist' };
+  return { passed: true, detail: 'the KMP_EVAL_RESULT block exactly matches the expected module, outcome_kind, and counts' };
 }
 
 /**
@@ -566,35 +594,31 @@ function evaluateFinalAnswer(resultEvent, scenario) {
  * rounds: two of three evidence types (kmp-test envelope, Gradle footer) bind to their own
  * `tool_result`, but JUnit counts are a single disk snapshot fanned out to every Gradle attempt.
  *
- * Four independent fixes, each empirically reproduced as a real bug against a prior version:
+ * Five independent fixes, each empirically reproduced as a real bug against a prior version:
  * 1. Only meaningful when `scenario.expected.outcome_kind === 'tests_executed'` -- a
  *    `no_applicable_tests` scenario NEVER reads JUnit XML at all (the NO-SOURCE marker is parsed
  *    from each attempt's own stdout instead), so ambiguity in a snapshot nothing consumes must
- *    never block promotion. (Reproduced false positive: two Gradle retries under
- *    `no_applicable_tests` wrongly flagged the whole matrix.)
+ *    never block promotion.
  * 2. Counts a `kmp-test parallel` call as a potential producer alongside a matching Gradle
  *    invocation -- it runs the exact same underlying Gradle test task and writes to the same
  *    JUnit XML path under the hood, so it is just as much a potential producer as a raw Gradle
- *    invocation. (Reproduced false negative: one Gradle attempt + one kmp-test `parallel` attempt,
- *    both plausible producers of the one shared snapshot, undercounted to 1 because only Gradle
- *    invocations were tallied.)
+ *    invocation.
  * 3. The pooled snapshot is ONLY EVER READ by the Gradle-provider evaluation path
  *    (`evaluateGradleAttempt` reads `conditionResult.gradleJunitEvidence` directly) -- the
  *    kmp-test path never reads it at all, since each envelope carries its own self-contained
  *    `individual_total`. So ambiguity of a snapshot that nothing in THIS condition actually
  *    consumes is moot: if no Gradle attempt targeting `allowed_invocations` exists at all, there
- *    is no real consumer to protect, regardless of how many kmp-test `parallel` calls occurred. A
- *    round-4 fresh adversarial pass reproduced a false positive here: a kmp-test-only condition
- *    (first call against the wrong module, second call -- self-contained, correct -- against the
- *    right one) was flagged ambiguous purely from counting BOTH kmp-test calls as producers, even
- *    though no Gradle attempt existed for that ambiguity to ever matter to; per decision 4 this
- *    silently discarded an entire correctly-graded matrix.
+ *    is no real consumer to protect, regardless of how many kmp-test `parallel` calls occurred.
  * 4. Fix 2's kmp-test-producer counting is scoped to the SAME module the scenario targets (a bare
  *    `--module-filter` mismatch, or no filter at all -- which runs every module including the
  *    target -- both handled), mirroring how the Gradle branch is already scoped to
- *    `allowed_invocations` (a specific task) rather than any Gradle invocation whatsoever. A
- *    kmp-test call against a DIFFERENT, unrelated module never touches the target module's Gradle
- *    task or its JUnit XML, so it is not a real potential producer of it.
+ *    `allowed_invocations` (a specific task) rather than any Gradle invocation whatsoever.
+ * 5. Neither producer count considers a plan-only (`--dry-run`, or kmp-test's `--list`/
+ *    `--list-only`) invocation of either provider a producer at all -- a round-5 fresh
+ *    adversarial review reproduced this as a real false positive: a `kmp-test parallel --dry-run`
+ *    call followed by a genuine Gradle execution was flagged ambiguous, even though the dry-run
+ *    call never touches the real Gradle task or writes any real JUnit XML, so it cannot possibly
+ *    be a competing producer of it.
  * @returns {{ambiguous: boolean, producerCount: number}}
  */
 function classifyJunitProvenance(bashResults, scenario) {
@@ -603,7 +627,7 @@ function classifyJunitProvenance(bashResults, scenario) {
   }
   const gradleProducerCount = bashResults.filter((b) => {
     const c = classifyBashCommand(b.command);
-    return c.kind === 'gradle' && c.taskTokens.some((t) => (scenario.expected?.gradle?.allowed_invocations ?? []).includes(t));
+    return c.kind === 'gradle' && !c.isPlanOnly && c.taskTokens.some((t) => (scenario.expected?.gradle?.allowed_invocations ?? []).includes(t));
   }).length;
   // No Gradle-provider attempt exists at all in this condition -- there is no consumer of the
   // pooled snapshot to protect, so ambiguity among kmp-test-only attempts (which never read it) is
@@ -612,7 +636,7 @@ function classifyJunitProvenance(bashResults, scenario) {
   const targetModule = normalizeModuleName(scenario.expected.module);
   const kmpTestProducerCount = bashResults.filter((b) => {
     const c = classifyBashCommand(b.command);
-    if (c.kind !== 'kmp-test' || c.subcommand !== 'parallel') return false;
+    if (c.kind !== 'kmp-test' || c.subcommand !== 'parallel' || c.isPlanOnly) return false;
     if (c.moduleFilter == null) return true; // no filter -- ran every module, including the target
     return normalizeModuleName(c.moduleFilter) === targetModule;
   }).length;
@@ -651,7 +675,9 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   addCheck('no_transcript_structural_issues', structuralIssues.length === 0,
     structuralIssues.length === 0 ? 'no structural issues' : `${structuralIssues.length} issue(s): ${structuralIssues.map((i) => i.type).join(', ')}`);
 
-  // Check 2 -- any policy-allowed command attempted at all (broader than check 4's evidence scope).
+  // Check 2 -- any policy-allowed command attempted at all (broader than check 4's evidence scope;
+  // deliberately does not exclude --dry-run -- a dry-run call is still genuine engagement with the
+  // tool, even though it can never itself count as target evidence below).
   const policyAllowedResults = bashResults.filter((b) => {
     const c = classifyBashCommand(b.command);
     if (c.kind === 'kmp-test') return (scenario.policy?.allowed_kmptest_subcommands ?? []).includes(c.subcommand);
@@ -669,22 +695,24 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     incomplete.map((i) => i.index));
 
   // See classifyJunitProvenance's own doc comment for the full rationale (scoped to
-  // tests_executed only; counts kmp-test parallel attempts as JUnit producers too) -- threaded
-  // into every evaluateGradleAttempt call so the ambiguity fails closed rather than silently
-  // attributing the snapshot to whichever attempt happens to be evaluated.
+  // tests_executed only; counts kmp-test parallel attempts as JUnit producers too; excludes
+  // --dry-run entirely) -- threaded into every evaluateGradleAttempt call so the ambiguity fails
+  // closed rather than silently attributing the snapshot to whichever attempt happens to be
+  // evaluated.
   const { ambiguous: ambiguousJunitEvidence } = classifyJunitProvenance(bashResults, scenario);
 
   // Evaluate every attempt capable of producing target evidence, from either provider, in
-  // transcript order -- "terminal" is the LAST one overall AMONG THOSE THAT AT LEAST ATTEMPTED
-  // the expected module (decision 5's last-relevant-attempt rule, sharpened by a round-4 fresh
-  // invariant review): a retry that fixes an earlier malformed/wrong-OUTCOME attempt on the SAME
-  // module is exactly what "last one wins" is for, and still applies here (both attempts have
-  // intendedTargetMatches:true, so the later one -- even if malformed -- still wins). But a LATER
-  // attempt that never even tried to target the expected module at all (e.g. the agent double-
-  // checking an unrelated module afterward) must not silently become "terminal" just by virtue of
-  // running last -- that would fail an otherwise-correct, complete answer solely because of
-  // unrelated trailing exploration. Falls back to "last of ALL attempts" only when NONE of them
-  // ever targeted the expected module (preserves the single-wrong-module-only failure case).
+  // transcript order -- excludes --dry-run entirely (evaluateKmpTestAttempt/evaluateGradleAttempt
+  // return null for it) -- "terminal" is the LAST one overall AMONG THOSE THAT AT LEAST ATTEMPTED
+  // the expected module (decision 5's last-relevant-attempt rule, sharpened by round-4 review): a
+  // retry that fixes an earlier malformed/wrong-OUTCOME attempt on the SAME module is exactly what
+  // "last one wins" is for, and still applies here (both attempts have intendedTargetMatches:true,
+  // so the later one -- even if malformed -- still wins). But a LATER attempt that never even
+  // tried to target the expected module at all (e.g. the agent double-checking an unrelated module
+  // afterward) must not silently become "terminal" just by virtue of running last -- that would
+  // fail an otherwise-correct, complete answer solely because of unrelated trailing exploration.
+  // Falls back to "last of ALL attempts" only when NONE of them ever targeted the expected module
+  // (preserves the single-wrong-module-only failure case).
   const kmpTestAttempts = bashResults.map((b) => evaluateKmpTestAttempt(b, scenario)).filter(Boolean);
   const gradleAttempts = bashResults.map((b) => evaluateGradleAttempt(b, scenario, conditionResult.gradleJunitEvidence, ambiguousJunitEvidence)).filter(Boolean);
   const allAttempts = [...kmpTestAttempts, ...gradleAttempts].sort((a, b) => a.bashIndex - b.bashIndex);
@@ -733,8 +761,9 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   // expectedOutcomeMatched = check4 && check5 && check6 (decision 13's corrected formula).
   const expectedOutcomeMatched = checks[3].passed && checks[4].passed && checks[5].passed;
 
-  // Check 8 (decision 8) -- positive, specific, secondary; feeds `success` together with
-  // expectedOutcomeMatched, never expectedOutcomeMatched itself.
+  // Check 8 (decision 8) -- structured, not prose (see this file's own header + the block above
+  // evaluateFinalAnswer for the full rationale); positive, specific, secondary; feeds `success`
+  // together with expectedOutcomeMatched, never expectedOutcomeMatched itself.
   const finalAnswer = evaluateFinalAnswer(conditionResult.result, scenario);
   addCheck('final_answer_consistent_with_evidence', finalAnswer.passed, finalAnswer.detail);
 
@@ -749,9 +778,10 @@ export function gradeScenarioCondition(conditionResult, scenario) {
 
   // decision 12: test_invocations_total/retries, computed from the SAME attempt list grading
   // itself already built -- never a second, independently-derived count that could silently
-  // drift from what grading actually saw. testInvocationsTotal counts every attempt capable of
-  // producing target evidence (kmp-test `parallel` or a policy-allowed Gradle task invocation),
-  // across both providers; retries is that count minus one, floored at zero.
+  // drift from what grading actually saw. testInvocationsTotal counts every EXECUTED (never
+  // --dry-run) attempt capable of producing target evidence (kmp-test `parallel` or a
+  // policy-allowed Gradle task invocation), across both providers; retries is that count minus
+  // one, floored at zero.
   const testInvocationsTotal = allAttempts.length;
   const retries = Math.max(0, testInvocationsTotal - 1);
 
@@ -762,14 +792,14 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     firstUsefulSignalEventIndex: firstCorrect ? firstCorrect.resultIndex : null,
     testInvocationsTotal,
     retries,
-    // A review pass established that ambiguous JUnit evidence (decision: more than one Gradle
-    // attempt in this condition could have produced/overwritten it -- see ambiguousJunitEvidence
-    // above) is a HARNESS-INTEGRITY defect, not a legitimate agent outcome: degrading only
-    // outcomeMatches to false let it read as "the agent got it wrong," a valid negative result,
-    // when it actually means "the harness cannot produce trustworthy evidence for this cell at
-    // all." Exposed here so the caller (cmdRun) can surface it onto the run record for
-    // scenarioCellIntegrityOk to block the WHOLE matrix's promotion, matching decision 4's
-    // existing "one bad cell blocks the whole matrix" treatment of every other integrity defect.
+    // A review pass established that ambiguous JUnit evidence (decision: more than one attempt in
+    // this condition could have produced/overwritten it -- see classifyJunitProvenance above) is a
+    // HARNESS-INTEGRITY defect, not a legitimate agent outcome: degrading only outcomeMatches to
+    // false let it read as "the agent got it wrong," a valid negative result, when it actually
+    // means "the harness cannot produce trustworthy evidence for this cell at all." Exposed here
+    // so the caller (cmdRun) can surface it onto the run record for scenarioCellIntegrityOk to
+    // block the WHOLE matrix's promotion, matching decision 4's existing "one bad cell blocks the
+    // whole matrix" treatment of every other integrity defect.
     harnessEvidenceAmbiguous: ambiguousJunitEvidence,
   };
 }

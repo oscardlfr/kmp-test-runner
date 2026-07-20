@@ -54,6 +54,14 @@ echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_n
 KMP_ENVELOPE='{"tool":"kmp-test","schema_version":2,"subcommand":"parallel","version":"0.14.0","project_root":"/fake","exit_code":2,"duration_ms":21,"tests":{"total":0,"passed":0,"failed":0,"skipped":0,"individual_total":0},"modules":[],"skipped":[{"module":"fakemod","reason":"no test source set"}],"coverage":{"tool":"auto","missed_lines":null,"modules_with_kover_plugin":[],"modules_with_jacoco_plugin":[]},"errors":[{"code":"no_test_modules","message":"No modules found matching filter: :fakemod","test_type":"","caused_by_filter":true}],"warnings":[],"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true}}'
 node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{type:'tool_result',content:process.argv[1],tool_use_id:'toolu_fakebash1'}]}}))" "$KMP_ENVELOPE"
 
-FINAL_ANSWER='The :fakemod module has no applicable unit tests -- kmp-test reported no test modules matching that filter.'
+# The trailing KMP_EVAL_RESULT block is what graders.mjs's structured final-answer check (check
+# 8) actually reads -- the prose above it is retained in the record for human review only, never
+# inspected for grading (see graders.mjs's own header comment for why free-prose parsing was
+# removed from the grading path entirely).
+FINAL_ANSWER='The :fakemod module has no applicable unit tests -- kmp-test reported no test modules matching that filter.
+
+KMP_EVAL_RESULT
+{"module": ":fakemod", "outcome_kind": "no_applicable_tests"}
+KMP_EVAL_RESULT_END'
 node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
 exit 0

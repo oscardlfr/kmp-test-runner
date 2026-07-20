@@ -355,17 +355,21 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
 
   if (outcomeKind === 'tests_executed') {
     // Non-negative INTEGER, not just typeof 'number' -- a review pass reproduced total:-1,
-    // passed:1.5, failed:-2 all passing validation under a bare typeof check, and individual_total
-    // (kmp_test-only, optional) went unvalidated entirely. total===passed+failed is checked only
-    // once the individual fields are confirmed well-shaped (comparing potentially-non-numeric
-    // values would be meaningless).
+    // passed:1.5, failed:-2 all passing validation under a bare typeof check, and
+    // individual_total/skipped (both optional -- individual_total is kmp_test-only; skipped is
+    // only meaningfully validated by graders.mjs on the kmp_test path too, since the Gradle/
+    // JUnit-XML capture mechanism doesn't expose a skipped count at all) went unvalidated
+    // entirely. total===passed+failed is checked only once the individual fields are confirmed
+    // well-shaped (comparing potentially-non-numeric values would be meaningless).
     const isNonNegInt = (v) => Number.isInteger(v) && v >= 0;
     const hasIndividualTotal = hasTests && 'individual_total' in provider.tests && provider.tests.individual_total != null;
+    const hasSkipped = hasTests && 'skipped' in provider.tests && provider.tests.skipped != null;
     const testsShapeOk = hasTests
       && isNonNegInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && isNonNegInt(provider.tests.failed)
-      && (!hasIndividualTotal || isNonNegInt(provider.tests.individual_total));
+      && (!hasIndividualTotal || isNonNegInt(provider.tests.individual_total))
+      && (!hasSkipped || isNonNegInt(provider.tests.skipped));
     if (!testsShapeOk) {
-      errors.push({ field: `${field}.tests`, message: 'required (non-negative integer total/passed/failed, and individual_total when present) when outcome_kind is tests_executed' });
+      errors.push({ field: `${field}.tests`, message: 'required (non-negative integer total/passed/failed, and individual_total/skipped when present) when outcome_kind is tests_executed' });
     } else if (provider.tests.total !== provider.tests.passed + provider.tests.failed) {
       errors.push({ field: `${field}.tests`, message: `total (${provider.tests.total}) must equal passed (${provider.tests.passed}) + failed (${provider.tests.failed})` });
     }

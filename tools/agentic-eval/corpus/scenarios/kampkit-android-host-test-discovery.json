@@ -5,7 +5,7 @@
   "project_alias": "kampkit",
   "project_url": "https://github.com/touchlab/KaMPKit",
   "project_commit": "b3a7784fb969a8558b88c80674c8b596944cdab7",
-  "prompt": "This Kotlin Multiplatform project's Android module has unit tests, but I'm not sure the obvious Gradle task actually runs them. Can you find out and run them, then tell me the result?",
+  "prompt": "This Kotlin Multiplatform project's Android module has unit tests, but I'm not sure the obvious Gradle task actually runs them. Can you find out and run them, then tell me the result? Once you know the result, end your reply with a block in exactly this format (substitute the real module path and counts you found; keep the two marker lines exactly as shown, with valid JSON in between):\n\nKMP_EVAL_RESULT\n{\"module\": \"<the Gradle module path you tested>\", \"outcome_kind\": \"tests_executed\", \"total\": <integer>, \"passed\": <integer>, \"failed\": <integer>}\nKMP_EVAL_RESULT_END\n\nIf the module turns out to have no applicable tests instead, use {\"module\": \"<the Gradle module path you tested>\", \"outcome_kind\": \"no_applicable_tests\"} (omit total/passed/failed).",
   "expected_outcome": "The agent discovers and runs the non-obvious Android host-test task for the :shared module and reports the accurate pass/fail count.",
   "policy": {
     "allowed_kmptest_subcommands": ["doctor", "describe", "parallel"],
@@ -15,7 +15,7 @@
     "module": ":shared",
     "outcome_kind": "tests_executed",
     "kmp_test": {
-      "tests": { "total": 1, "passed": 1, "failed": 0, "individual_total": 24 },
+      "tests": { "total": 1, "passed": 1, "failed": 0, "skipped": 0, "individual_total": 24 },
       "exit_code": 0
     },
     "gradle": {
