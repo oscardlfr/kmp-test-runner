@@ -78,6 +78,42 @@ describe('parseArgs', () => {
     expect(args._).toEqual(['corpus', 'validate']);
     expect(args.errors).toEqual([]);
   });
+
+  // A bare --dry-run must never consume the next token as its value -- before BOOLEAN_FLAGS
+  // existed, every --flag (other than --help/-h) required a following value, so a bare
+  // `run --dry-run` would have recorded `--dry-run requires a value` as a hard parse error.
+  it('a boolean flag (--dry-run) does not consume the next token as a value', () => {
+    const args = parseArgs(['run', '--dry-run']);
+    expect(args['dry-run']).toBe(true);
+    expect(args.errors).toEqual([]);
+  });
+
+  it('a boolean flag immediately followed by another flag -- the next flag is parsed normally, not consumed', () => {
+    const args = parseArgs(['run', '--dry-run', '--scenario', 'kampkit-android-host-test-discovery']);
+    expect(args['dry-run']).toBe(true);
+    expect(args.scenario).toBe('kampkit-android-host-test-discovery');
+    expect(args.errors).toEqual([]);
+  });
+
+  it('a boolean flag works regardless of position among value-flags', () => {
+    const args = parseArgs(['run', '--scenario', 'kampkit-no-applicable-tests', '--dry-run', '--repeats', '4']);
+    expect(args['dry-run']).toBe(true);
+    expect(args.scenario).toBe('kampkit-no-applicable-tests');
+    expect(args.repeats).toBe('4');
+    expect(args.errors).toEqual([]);
+  });
+
+  it('a duplicated boolean flag is still an error, not silently accepted twice', () => {
+    const args = parseArgs(['run', '--dry-run', '--dry-run']);
+    expect(args.errors.length).toBeGreaterThan(0);
+    expect(args.errors[0]).toContain('--dry-run');
+    expect(args.errors[0]).toContain('more than once');
+  });
+
+  it('omitting a boolean flag entirely leaves it unset, never defaulted to true', () => {
+    const args = parseArgs(['run', '--scenario', 'kampkit-android-host-test-discovery']);
+    expect(args['dry-run']).toBeUndefined();
+  });
 });
 
 // Regression coverage for a real privacy bug found by an independent review pass:
@@ -137,7 +173,7 @@ describe('validateSubcommandArgs', () => {
   });
 
   it('SUBCOMMAND_SHAPES covers every real subcommand main() actually dispatches', () => {
-    expect(Object.keys(SUBCOMMAND_SHAPES).sort()).toEqual(['aggregate', 'calibrate', 'corpus', 'smoke', 'validate']);
+    expect(Object.keys(SUBCOMMAND_SHAPES).sort()).toEqual(['aggregate', 'calibrate', 'corpus', 'run', 'smoke', 'validate']);
   });
 });
 
@@ -823,10 +859,89 @@ describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {o
 // parameterizable), so this only proves the wiring succeeds against the real, committed corpus
 // -- the underlying content-validation LOGIC (shape, banned terms, activation hints, partition
 // coverage) has its own comprehensive synthetic-failure-case coverage in
-// agentic-eval-schemas.test.js's validateTriggerQueries describe block.
+// agentic-eval-schemas.test.js's validateTriggerQueries describe block. The duplicate-id and
+// filename-match checks below are extracted as standalone pure functions specifically so their
+// NEGATIVE cases are unit-testable with synthetic input, since cmdCorpusValidate() itself always
+// reads the fixed real directory (which has neither duplicates nor mismatches by construction).
 describe('cmdCorpusValidate', () => {
   it('returns 0 (success) against the real, committed corpus', async () => {
     const { cmdCorpusValidate } = await import('../../tools/agentic-eval/cli.mjs');
     expect(cmdCorpusValidate()).toBe(0);
+  });
+});
+
+describe('checkScenarioFilenameMatchesId', () => {
+  it('returns null when the filename matches "${id}.json" exactly', async () => {
+    const { checkScenarioFilenameMatchesId } = await import('../../tools/agentic-eval/cli.mjs');
+    expect(checkScenarioFilenameMatchesId({ id: 'kampkit-example' }, 'kampkit-example.json')).toBeNull();
+  });
+
+  it('returns an error object when the filename diverges from the declared id', async () => {
+    const { checkScenarioFilenameMatchesId } = await import('../../tools/agentic-eval/cli.mjs');
+    const result = checkScenarioFilenameMatchesId({ id: 'kampkit-example' }, 'wrong-name.json');
+    expect(result).toEqual({
+      field: 'id',
+      message: 'filename "wrong-name.json" does not match its own declared id -- expected "kampkit-example.json"',
+    });
+  });
+
+  it('returns null (defers to validateScenario) when id is missing or not a string', async () => {
+    const { checkScenarioFilenameMatchesId } = await import('../../tools/agentic-eval/cli.mjs');
+    expect(checkScenarioFilenameMatchesId({}, 'anything.json')).toBeNull();
+    expect(checkScenarioFilenameMatchesId({ id: 42 }, 'anything.json')).toBeNull();
+    expect(checkScenarioFilenameMatchesId(null, 'anything.json')).toBeNull();
+  });
+});
+
+describe('findDuplicateScenarioIds', () => {
+  it('returns an empty array when every id is unique', async () => {
+    const { findDuplicateScenarioIds } = await import('../../tools/agentic-eval/cli.mjs');
+    const pairs = [
+      { id: 'kampkit-a', file: 'kampkit-a.json' },
+      { id: 'kampkit-b', file: 'kampkit-b.json' },
+    ];
+    expect(findDuplicateScenarioIds(pairs)).toEqual([]);
+  });
+
+  it('flags every re-declaration of an id already seen, attributing it back to the first file', async () => {
+    const { findDuplicateScenarioIds } = await import('../../tools/agentic-eval/cli.mjs');
+    const pairs = [
+      { id: 'kampkit-a', file: 'first.json' },
+      { id: 'kampkit-b', file: 'other.json' },
+      { id: 'kampkit-a', file: 'second.json' },
+    ];
+    const errors = findDuplicateScenarioIds(pairs);
+    expect(errors).toEqual([
+      { field: 'id', message: 'duplicate id "kampkit-a" in second.json -- already declared by first.json' },
+    ]);
+  });
+
+  it('flags a THIRD file re-declaring the same id independently of the second', async () => {
+    const { findDuplicateScenarioIds } = await import('../../tools/agentic-eval/cli.mjs');
+    const pairs = [
+      { id: 'kampkit-a', file: 'first.json' },
+      { id: 'kampkit-a', file: 'second.json' },
+      { id: 'kampkit-a', file: 'third.json' },
+    ];
+    const errors = findDuplicateScenarioIds(pairs);
+    expect(errors).toEqual([
+      { field: 'id', message: 'duplicate id "kampkit-a" in second.json -- already declared by first.json' },
+      { field: 'id', message: 'duplicate id "kampkit-a" in third.json -- already declared by first.json' },
+    ]);
+  });
+
+  it('ignores entries whose id is missing or not a string, without throwing', async () => {
+    const { findDuplicateScenarioIds } = await import('../../tools/agentic-eval/cli.mjs');
+    const pairs = [
+      { id: undefined, file: 'no-id.json' },
+      { id: 42, file: 'numeric-id.json' },
+      { id: 'kampkit-a', file: 'real.json' },
+    ];
+    expect(findDuplicateScenarioIds(pairs)).toEqual([]);
+  });
+
+  it('returns an empty array for an empty input list', async () => {
+    const { findDuplicateScenarioIds } = await import('../../tools/agentic-eval/cli.mjs');
+    expect(findDuplicateScenarioIds([])).toEqual([]);
   });
 });

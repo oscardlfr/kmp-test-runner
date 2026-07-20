@@ -1,7 +1,7 @@
 // tests/vitest/agentic-eval-randomizer.test.js
 // Unit tests for tools/agentic-eval/randomizer.mjs -- seed reproducibility.
 import { describe, it, expect } from 'vitest';
-import { mulberry32, seededShuffle, buildRunMatrix } from '../../tools/agentic-eval/randomizer.mjs';
+import { mulberry32, seededShuffle, buildRunMatrix, buildConditionOrders } from '../../tools/agentic-eval/randomizer.mjs';
 
 describe('mulberry32', () => {
   it('is deterministic: the same seed produces the same sequence', () => {
@@ -74,5 +74,63 @@ describe('buildRunMatrix', () => {
   it('every cell records the seed used', () => {
     const matrix = buildRunMatrix(['s1'], ['no-skill'], 1, 55);
     expect(matrix.every((c) => c.seed === 55)).toBe(true);
+  });
+});
+
+describe('buildConditionOrders', () => {
+  it('returns exactly `repeats` entries', () => {
+    expect(buildConditionOrders(4, 1).length).toBe(4);
+    expect(buildConditionOrders(1, 1).length).toBe(1);
+    expect(buildConditionOrders(7, 1).length).toBe(7);
+  });
+
+  it('every entry is one of the two valid 2-element condition orders', () => {
+    const orders = buildConditionOrders(10, 3);
+    for (const order of orders) {
+      expect(order.length).toBe(2);
+      expect(order).toContain('current-skill');
+      expect(order).toContain('no-skill');
+      expect(order[0]).not.toBe(order[1]);
+    }
+  });
+
+  it('same seed -> identical orders across calls (reproducibility)', () => {
+    const a = buildConditionOrders(6, 42);
+    const b = buildConditionOrders(6, 42);
+    expect(a).toEqual(b);
+  });
+
+  it('adjacent repetitions always alternate (strict alternation, never two-in-a-row the same)', () => {
+    const orders = buildConditionOrders(8, 17);
+    for (let i = 1; i < orders.length; i++) {
+      expect(orders[i][0]).not.toBe(orders[i - 1][0]);
+    }
+  });
+
+  // The load-bearing guarantee (decision 2/15 of the design): a shuffle alone is only unbiased in
+  // EXPECTATION, which does not guarantee realized balance for small repeat counts -- a fair coin
+  // flipped `repeats` times can land the same way every time. This must be a GUARANTEE, checked
+  // across many seeds, not a statistical tendency checked with one lucky seed.
+  describe('realized balance guarantee across many seeds', () => {
+    for (const repeats of [1, 2, 3, 4]) {
+      it(`repeats=${repeats}: every seed 0..199 produces the best-achievable split (exact for even, off-by-one for odd)`, () => {
+        for (let seed = 0; seed < 200; seed++) {
+          const orders = buildConditionOrders(repeats, seed);
+          const currentSkillFirstCount = orders.filter((o) => o[0] === 'current-skill').length;
+          const noSkillFirstCount = repeats - currentSkillFirstCount;
+          const diff = Math.abs(currentSkillFirstCount - noSkillFirstCount);
+          const expectedMaxDiff = repeats % 2 === 0 ? 0 : 1;
+          expect(diff).toBeLessThanOrEqual(expectedMaxDiff);
+        }
+      });
+    }
+  });
+
+  it('different seeds can pick a different starting arm (not hardcoded to always start the same way)', () => {
+    const startingArms = new Set();
+    for (let seed = 0; seed < 50; seed++) {
+      startingArms.add(buildConditionOrders(1, seed)[0][0]);
+    }
+    expect(startingArms.size).toBe(2);
   });
 });

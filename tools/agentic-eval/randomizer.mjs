@@ -44,3 +44,31 @@ export function buildRunMatrix(scenarios, conditions, repeats, seed) {
   const shuffled = seededShuffle(cells, seed);
   return shuffled.map((cell, orderIndex) => ({ ...cell, orderIndex, seed }));
 }
+
+/**
+ * Deterministic condition-order counterbalancing for `repeats` paired trials (one `run`
+ * invocation's `no-skill`/`current-skill` pair, repeated). A shuffle alone (e.g. feeding
+ * buildRunMatrix a 2-valued conditions array and reading off which value landed first per pair)
+ * only gives an UNBIASED order in expectation -- it does not GUARANTEE balance for small repeat
+ * counts, since a fair coin flipped `repeats` times has a real chance of landing the same way every
+ * time. "Counterbalanced" means a controlled, guaranteed split, not a probabilistic tendency.
+ *
+ * Draws exactly ONE seeded random value (which arm starts), then deterministically ALTERNATES
+ * every repetition -- an exact 50/50 split for even `repeats`, an off-by-one split (the best
+ * achievable) for odd `repeats`. Still fully seeded and reproducible: the only randomness is which
+ * arm starts first; whether alternation happens is never left to chance.
+ * @param {number} repeats
+ * @param {number} seed
+ * @returns {Array<['current-skill','no-skill']|['no-skill','current-skill']>} length === repeats;
+ *   orders[i] is the [first, second] condition order for repetition i.
+ */
+export function buildConditionOrders(repeats, seed) {
+  const rng = mulberry32(seed);
+  const startsCurrentSkillFirst = rng() < 0.5;
+  const orders = [];
+  for (let rep = 0; rep < repeats; rep++) {
+    const repStartsCurrentSkillFirst = rep % 2 === 0 ? startsCurrentSkillFirst : !startsCurrentSkillFirst;
+    orders.push(repStartsCurrentSkillFirst ? ['current-skill', 'no-skill'] : ['no-skill', 'current-skill']);
+  }
+  return orders;
+}

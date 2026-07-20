@@ -10,8 +10,19 @@
 // "Never infer missing metrics; store null with a reason": every metric that can be
 // legitimately unavailable is {value: T|null, reason: string|null} -- the validator rejects
 // value:null paired with reason:null.
+import { GRADLE_TASK_ENTRY_RE, KMPTEST_SUBCOMMAND_ENTRY_RE } from './policy-hook.mjs';
+import { GRADING_CHECK_NAMES } from './graders.mjs';
 
-export const CURRENT_RUN_SCHEMA = 1;
+// Run schema went from a single CURRENT_RUN_SCHEMA equality check to explicit per-version
+// dispatch (SUPPORTED_RUN_SCHEMAS / LATEST_RUN_SCHEMA) -- a real bug found on review: a naive
+// bump of the old single constant to 2 would have made validateRun() reject every one of the 8
+// historical schema:1 run records committed by PR #373/#378 at its very first check, before
+// anything else even ran. `LATEST_RUN_SCHEMA` is what every subcommand (calibrate/smoke/run
+// alike) stamps on NEW records going forward; `SUPPORTED_RUN_SCHEMAS` is what validateRun()
+// still accepts, so the 8 historical files keep validating under their original v1 rules
+// unchanged (see the RUN_CANONICAL_FIELDS_V1/_V2 split and validateRun's dispatch, below).
+export const SUPPORTED_RUN_SCHEMAS = [1, 2];
+export const LATEST_RUN_SCHEMA = 2;
 export const CURRENT_SCENARIO_SCHEMA = 1;
 export const CURRENT_AGGREGATE_SCHEMA = 1;
 
@@ -24,7 +35,9 @@ export const TERMINATION_REASON_VALUES = [null, 'timeout', 'error', 'unsupported
 export const PRIVACY_STATUS_VALUES = ['public', 'redacted-private'];
 export const DAEMON_POLICY_VALUES = ['disabled-via-gradle-user-home-properties', 'default', 'unknown'];
 
-const RUN_CANONICAL_FIELDS = [
+// Schema v1 -- unchanged from every historical record's own shape (the 8 files committed by
+// PR #373/#378). Never edit this list; a v1 record must keep validating exactly as it always has.
+const RUN_CANONICAL_FIELDS_V1 = [
   'schema', 'run_id', 'run_kind', 'benchmark_eligible', 'scenario_id', 'query_id', 'condition',
   'skill_source_sha', 'kmp_test_cli_version', 'kmp_test_cli_source_sha',
   'resolved_kmp_test_executable_path', 'model_requested', 'model_resolved', 'session_id_observed',
@@ -39,28 +52,82 @@ const RUN_CANONICAL_FIELDS = [
   'raw_capture_location', 'notes', 'errors',
 ];
 
+// Schema v2 = v1 + grading_checks (structured per-check grading detail, never overloaded into
+// notes/errors) + repetition_index (which trial within a scenario matrix a record belongs to --
+// decision 11's set-equality completeness proof needs this to exist as an actual field, not just
+// be inferred). Every subcommand (calibrate/smoke/run alike) stamps LATEST_RUN_SCHEMA on new
+// records going forward; calibrate/smoke's own records simply report both new fields as
+// legitimately not-applicable (null + reason), the same "never infer, store null with a reason"
+// convention every other optional field in this schema already follows.
+const RUN_CANONICAL_FIELDS_V2 = [...RUN_CANONICAL_FIELDS_V1, 'grading_checks', 'repetition_index'];
+
+function runCanonicalFieldsFor(schema) {
+  return schema === 2 ? RUN_CANONICAL_FIELDS_V2 : RUN_CANONICAL_FIELDS_V1;
+}
+
 // Fields using the {value, reason} nullable-metric shape -- "never infer, store null with a reason".
+// grading_checks is v2-only (schema dispatch below decides whether it's even inspected); listed
+// here unconditionally is harmless since validateNullableMetric is only ever invoked for fields
+// present on the record (`for (const f of NULLABLE_METRIC_FIELDS) if (f in run) ...`).
 const NULLABLE_METRIC_FIELDS = [
   'skill_available', 'skill_invocation_attempted', 'skill_invoked', 'success', 'expected_outcome_matched',
   'first_useful_signal_ms', 'tool_calls_total', 'shell_commands_total', 'test_invocations_total',
-  'retries', 'output_bytes', 'stream_json_bytes', 'human_interventions',
+  'retries', 'output_bytes', 'stream_json_bytes', 'human_interventions', 'grading_checks',
 ];
 
 // Per-field value domain: 'boolean' for status metrics, 'count' for non-negative integer
-// counts/bytes, 'timing' for non-negative (possibly fractional) millisecond values. A
-// non-null value failing its domain (e.g. skill_invoked: "false" as a string, or a negative
-// byte count) passes the {value,reason} shape check but is still wrong data -- validated
-// separately so a malformed value can't silently corrupt grading/aggregation downstream.
+// counts/bytes, 'timing' for non-negative (possibly fractional) millisecond values, 'checks-array'
+// for grading_checks's structured array (decision 14 -- exactly GRADING_CHECK_NAMES, no more, no
+// fewer, no duplicates). A non-null value failing its domain (e.g. skill_invoked: "false" as a
+// string, or a negative byte count) passes the {value,reason} shape check but is still wrong data
+// -- validated separately so a malformed value can't silently corrupt grading/aggregation
+// downstream.
 const NULLABLE_METRIC_KIND = {
   skill_available: 'boolean', skill_invocation_attempted: 'boolean', skill_invoked: 'boolean', success: 'boolean',
   expected_outcome_matched: 'boolean', first_useful_signal_ms: 'timing',
   tool_calls_total: 'count', shell_commands_total: 'count', test_invocations_total: 'count',
   retries: 'count', output_bytes: 'count', stream_json_bytes: 'count', human_interventions: 'count',
   'tokens.input': 'count', 'tokens.output': 'count', 'tokens.cache_read': 'count', 'tokens.cache_creation': 'count',
+  grading_checks: 'checks-array',
 };
 
 function isNullableMetric(m) {
   return m != null && typeof m === 'object' && 'value' in m && 'reason' in m;
+}
+
+/** Validates one grading_checks.value array against the fixed GRADING_CHECK_NAMES set (decision
+ * 14): every name present exactly once, no unrecognized names, `passed` strictly boolean per
+ * entry, `evidence_event_indices` an array of non-negative integers. A grader that silently
+ * dropped a check, or a future edit that renamed one without updating GRADING_CHECK_NAMES, fails
+ * validation immediately instead of silently producing an incomplete/malformed record. */
+function validateGradingChecksArray(value, field, errors) {
+  if (!Array.isArray(value)) {
+    errors.push({ field, message: 'value must be an array' });
+    return;
+  }
+  const seenNames = new Set();
+  for (const [i, entry] of value.entries()) {
+    const label = `${field}[${i}]`;
+    if (entry == null || typeof entry !== 'object') {
+      errors.push({ field: label, message: 'must be an object' });
+      continue;
+    }
+    if (typeof entry.name !== 'string' || !GRADING_CHECK_NAMES.includes(entry.name)) {
+      errors.push({ field: `${label}.name`, message: `must be one of ${GRADING_CHECK_NAMES.join('|')}` });
+    } else if (seenNames.has(entry.name)) {
+      errors.push({ field: `${label}.name`, message: `duplicate check name: ${entry.name}` });
+    } else {
+      seenNames.add(entry.name);
+    }
+    if (typeof entry.passed !== 'boolean') errors.push({ field: `${label}.passed`, message: 'must be a boolean' });
+    if (typeof entry.detail !== 'string') errors.push({ field: `${label}.detail`, message: 'must be a string' });
+    if (!Array.isArray(entry.evidence_event_indices) || entry.evidence_event_indices.some((n) => !Number.isInteger(n) || n < 0)) {
+      errors.push({ field: `${label}.evidence_event_indices`, message: 'must be an array of non-negative integers' });
+    }
+  }
+  for (const name of GRADING_CHECK_NAMES) {
+    if (!seenNames.has(name)) errors.push({ field, message: `missing required check: ${name}` });
+  }
 }
 
 function validateMetricValueDomain(value, kind, field, errors) {
@@ -71,6 +138,8 @@ function validateMetricValueDomain(value, kind, field, errors) {
     errors.push({ field, message: `value must be a non-negative integer` });
   } else if (kind === 'timing' && !(typeof value === 'number' && Number.isFinite(value) && value >= 0)) {
     errors.push({ field, message: `value must be a non-negative finite number` });
+  } else if (kind === 'checks-array') {
+    validateGradingChecksArray(value, field, errors);
   }
 }
 
@@ -113,11 +182,18 @@ export function validateRun(run) {
     return { errors, warnings };
   }
 
+  // Schema-version dispatch (decision 6) -- picks the v1 or v2 field-presence list based on the
+  // record's OWN declared schema, never a single global comparison. This is what lets the 8
+  // historical schema:1 records keep validating exactly as they always have, unaffected by v2's
+  // addition.
+  if (!SUPPORTED_RUN_SCHEMAS.includes(run.schema)) {
+    errors.push({ field: 'schema', message: `expected one of ${SUPPORTED_RUN_SCHEMAS.join('|')}, got ${run.schema}` });
+  }
+  const canonicalFields = runCanonicalFieldsFor(run.schema);
   const keys = new Set(Object.keys(run));
-  for (const f of RUN_CANONICAL_FIELDS) if (!keys.has(f)) errors.push({ field: f, message: 'missing required field' });
-  for (const k of keys) if (!RUN_CANONICAL_FIELDS.includes(k)) warnings.push({ field: k, message: 'unrecognized field' });
+  for (const f of canonicalFields) if (!keys.has(f)) errors.push({ field: f, message: 'missing required field' });
+  for (const k of keys) if (!canonicalFields.includes(k)) warnings.push({ field: k, message: 'unrecognized field' });
 
-  if (run.schema !== CURRENT_RUN_SCHEMA) errors.push({ field: 'schema', message: `expected ${CURRENT_RUN_SCHEMA}, got ${run.schema}` });
   if (typeof run.run_id !== 'string' || run.run_id.length === 0) errors.push({ field: 'run_id', message: 'must be a non-empty string' });
   if (!RUN_KIND_VALUES.includes(run.run_kind)) errors.push({ field: 'run_kind', message: `must be one of ${RUN_KIND_VALUES.join('|')}` });
   if (typeof run.benchmark_eligible !== 'boolean') errors.push({ field: 'benchmark_eligible', message: 'must be a boolean' });
@@ -163,6 +239,36 @@ export function validateRun(run) {
     errors.push({ field: 'skill_invoked', message: 'cannot be true when skill_invocation_attempted is not true' });
   }
 
+  // grading_checks (v2-only field) -- conditionally required, not merely optional: a real,
+  // non-null checks array whenever this IS a schema:2 scenario record (grading genuinely applies
+  // and must have actually run), null+reason for every other run_kind/schema combination
+  // (calibrate/smoke's own v2 records, and any v1 record where the field doesn't exist at all).
+  if (run.schema === 2) {
+    if (run.run_kind === 'scenario') {
+      if (run.grading_checks?.value == null) {
+        errors.push({ field: 'grading_checks', message: 'required (non-null) for a schema:2 run_kind:scenario record -- grading must have actually run' });
+      }
+    } else if (run.grading_checks?.value != null) {
+      errors.push({ field: 'grading_checks', message: `must be null for run_kind "${run.run_kind}" -- grading only applies to scenario records` });
+    }
+  }
+
+  // repetition_index (v2-only field, plain nullable -- like scenario_id, not a {value,reason}
+  // metric) -- required (a real non-negative integer identifying which trial this record belongs
+  // to) for a schema:2 scenario record, null for every other run_kind (no repetition concept
+  // applies). Gated on schema===2 exactly like grading_checks above -- a schema:1 record (even a
+  // hypothetical/test-constructed run_kind:'scenario' one) was never expected to carry this field
+  // at all, since RUN_CANONICAL_FIELDS_V1 doesn't include it; only v2 introduces the concept.
+  if (run.schema === 2) {
+    if (run.run_kind === 'scenario') {
+      if (!(Number.isInteger(run.repetition_index) && run.repetition_index >= 0)) {
+        errors.push({ field: 'repetition_index', message: 'must be a non-negative integer for a schema:2 run_kind:scenario record' });
+      }
+    } else if ('repetition_index' in run && run.repetition_index !== null) {
+      errors.push({ field: 'repetition_index', message: `must be null for run_kind "${run.run_kind}"` });
+    }
+  }
+
   for (const f of NULLABLE_METRIC_FIELDS) if (f in run) validateNullableMetric(run[f], f, errors);
   if ('tokens' in run) validateTokens(run.tokens, errors);
   validateEventRef(run.skill_invocation_event, 'skill_invocation_event', errors);
@@ -202,8 +308,116 @@ export function validateRun(run) {
 
 const SCENARIO_CANONICAL_FIELDS = [
   'schema', 'id', 'family', 'project_alias', 'project_url', 'project_commit', 'prompt',
-  'expected_outcome', 'grader', 'first_useful_signal_predicate', 'tags',
+  'expected_outcome', 'policy', 'expected', 'first_useful_signal_predicate', 'tags',
 ];
+
+const OUTCOME_KIND_VALUES = ['tests_executed', 'no_applicable_tests'];
+const GRADLE_MARKER_VALUES = ['NO-SOURCE'];
+
+/** Validates `policy.{allowed_kmptest_subcommands,allowed_gradle_tasks}` -- the ONLY place a
+ * scenario field is ever interpreted as something that reaches a shell/exec call (decision 9),
+ * so this is the ONLY place scenario validation enforces an executable-content grammar. Reuses
+ * the real policy hook's OWN entry-grammar regexes (imported from policy-hook.mjs, never
+ * duplicated) -- a scenario can never declare a policy shape the hook itself would treat as
+ * malformed. */
+function validatePolicy(policy, errors) {
+  if (policy == null || typeof policy !== 'object') {
+    errors.push({ field: 'policy', message: 'must be an object' });
+    return;
+  }
+  if (!Array.isArray(policy.allowed_kmptest_subcommands) || policy.allowed_kmptest_subcommands.some((s) => typeof s !== 'string' || !KMPTEST_SUBCOMMAND_ENTRY_RE.test(s))) {
+    errors.push({ field: 'policy.allowed_kmptest_subcommands', message: `every entry must match ${KMPTEST_SUBCOMMAND_ENTRY_RE}` });
+  }
+  if (!Array.isArray(policy.allowed_gradle_tasks) || policy.allowed_gradle_tasks.some((s) => typeof s !== 'string' || !GRADLE_TASK_ENTRY_RE.test(s))) {
+    errors.push({ field: 'policy.allowed_gradle_tasks', message: `every entry must match ${GRADLE_TASK_ENTRY_RE}` });
+  }
+}
+
+/** Validates one provider's `expected.kmp_test`/`expected.gradle` contract against the
+ * `outcome_kind`-keyed cross-field invariant (a real bug found on review: the first version of
+ * this invariant FORBADE `exit_code` for `tests_executed`, which would have made a process that
+ * ran the tests successfully but then crashed on some LATER step undetectable -- a stale-but-
+ * still-passing JUnit XML would satisfy `tests` while nothing checked the process's own exit
+ * status). `tests_executed`: `tests` AND `exit_code` (must be exactly 0) are both REQUIRED on
+ * both providers; `error_code`/`caused_by_filter`/`marker` are FORBIDDEN. `no_applicable_tests`:
+ * kmp_test requires `error_code`+`exit_code`+`caused_by_filter`; gradle requires `exit_code`+
+ * `marker`; `tests` is FORBIDDEN on both. No hybrid combination validates either way. */
+function validateProviderContract(provider, contractName, outcomeKind, errors) {
+  const field = `expected.${contractName}`;
+  if (provider == null || typeof provider !== 'object') {
+    errors.push({ field, message: 'must be an object' });
+    return;
+  }
+  const hasTests = 'tests' in provider && provider.tests != null;
+  const hasErrorCode = 'error_code' in provider && provider.error_code != null;
+  const hasCausedByFilter = 'caused_by_filter' in provider && provider.caused_by_filter != null;
+  const hasMarker = 'marker' in provider && provider.marker != null;
+
+  if (outcomeKind === 'tests_executed') {
+    if (!hasTests || typeof provider.tests.total !== 'number' || typeof provider.tests.passed !== 'number' || typeof provider.tests.failed !== 'number') {
+      errors.push({ field: `${field}.tests`, message: 'required (non-negative integer total/passed/failed) when outcome_kind is tests_executed' });
+    }
+    if (provider.exit_code !== 0) errors.push({ field: `${field}.exit_code`, message: 'required and must be exactly 0 when outcome_kind is tests_executed' });
+    if (hasErrorCode) errors.push({ field: `${field}.error_code`, message: 'forbidden when outcome_kind is tests_executed' });
+    if (hasCausedByFilter) errors.push({ field: `${field}.caused_by_filter`, message: 'forbidden when outcome_kind is tests_executed' });
+    if (hasMarker) errors.push({ field: `${field}.marker`, message: 'forbidden when outcome_kind is tests_executed' });
+  } else if (outcomeKind === 'no_applicable_tests') {
+    if (hasTests) errors.push({ field: `${field}.tests`, message: 'forbidden when outcome_kind is no_applicable_tests' });
+    if (contractName === 'kmp_test') {
+      if (typeof provider.error_code !== 'string' || provider.error_code.length === 0) errors.push({ field: `${field}.error_code`, message: 'required when outcome_kind is no_applicable_tests' });
+      if (typeof provider.exit_code !== 'number') errors.push({ field: `${field}.exit_code`, message: 'required when outcome_kind is no_applicable_tests' });
+      if (typeof provider.caused_by_filter !== 'boolean') errors.push({ field: `${field}.caused_by_filter`, message: 'required (boolean) when outcome_kind is no_applicable_tests' });
+    } else {
+      if (typeof provider.exit_code !== 'number') errors.push({ field: `${field}.exit_code`, message: 'required when outcome_kind is no_applicable_tests' });
+      if (!GRADLE_MARKER_VALUES.includes(provider.marker)) errors.push({ field: `${field}.marker`, message: `required, must be one of ${GRADLE_MARKER_VALUES.join('|')}, when outcome_kind is no_applicable_tests` });
+    }
+  }
+}
+
+/** Validates `expected` -- the shared semantic core plus the two per-provider contracts (decision
+ * 3): a scenario's `expected.kmp_test`/`expected.gradle` are never flattened into one shared
+ * shape, since the two providers can disagree not just in value but in KIND for the same real
+ * situation (kmp-test's clean discriminated `no_test_modules` error vs. Gradle actually running a
+ * task that reports `NO-SOURCE`). Also validates the Gradle path's `allowed_invocations`/
+ * `evidence_task` split (decision 3: a policy-permitted lifecycle alias must not be rejected by an
+ * exact-match contract) and its consistency with the scenario's own `policy.allowed_gradle_tasks`
+ * (a real gap found on review: nothing previously stopped `expected` from referencing a Gradle
+ * invocation the scenario's OWN policy would never actually let the agent run). */
+function validateExpected(expected, policy, errors) {
+  if (expected == null || typeof expected !== 'object') {
+    errors.push({ field: 'expected', message: 'must be an object' });
+    return;
+  }
+  if (typeof expected.module !== 'string' || !/^:[A-Za-z0-9_:-]+$/.test(expected.module)) {
+    errors.push({ field: 'expected.module', message: 'must be a colon-prefixed Gradle project path, e.g. ":shared"' });
+  }
+  if (!OUTCOME_KIND_VALUES.includes(expected.outcome_kind)) {
+    errors.push({ field: 'expected.outcome_kind', message: `must be one of ${OUTCOME_KIND_VALUES.join('|')}` });
+  }
+  validateProviderContract(expected.kmp_test, 'kmp_test', expected.outcome_kind, errors);
+
+  const gradle = expected.gradle;
+  if (gradle == null || typeof gradle !== 'object') {
+    errors.push({ field: 'expected.gradle', message: 'must be an object' });
+  } else {
+    const allowedInvocations = Array.isArray(gradle.allowed_invocations) ? gradle.allowed_invocations : null;
+    if (!allowedInvocations || allowedInvocations.length === 0 || allowedInvocations.some((s) => typeof s !== 'string' || !GRADLE_TASK_ENTRY_RE.test(s))) {
+      errors.push({ field: 'expected.gradle.allowed_invocations', message: `must be a non-empty array, every entry matching ${GRADLE_TASK_ENTRY_RE}` });
+    }
+    if (typeof gradle.evidence_task !== 'string' || !GRADLE_TASK_ENTRY_RE.test(gradle.evidence_task)) {
+      errors.push({ field: 'expected.gradle.evidence_task', message: `must match ${GRADLE_TASK_ENTRY_RE}` });
+    } else if (allowedInvocations && !allowedInvocations.includes(gradle.evidence_task)) {
+      errors.push({ field: 'expected.gradle.evidence_task', message: 'must itself be a member of allowed_invocations' });
+    }
+    if (allowedInvocations && policy != null && Array.isArray(policy.allowed_gradle_tasks)) {
+      const notInPolicy = allowedInvocations.filter((t) => !policy.allowed_gradle_tasks.includes(t));
+      if (notInPolicy.length > 0) {
+        errors.push({ field: 'expected.gradle.allowed_invocations', message: `every entry must also be a member of this scenario's own policy.allowed_gradle_tasks -- not in policy: ${notInPolicy.join(', ')}` });
+      }
+    }
+    validateProviderContract(gradle, 'gradle', expected.outcome_kind, errors);
+  }
+}
 
 export function validateScenario(scenario) {
   const errors = [];
@@ -224,11 +438,18 @@ export function validateScenario(scenario) {
   if (typeof scenario.project_url !== 'string' || !/^https:\/\//.test(scenario.project_url)) {
     errors.push({ field: 'project_url', message: 'must be an https URL (public project)' });
   }
+  if (typeof scenario.project_commit !== 'string' || !/^[0-9a-f]{40}$/.test(scenario.project_commit)) {
+    errors.push({ field: 'project_commit', message: 'must be a real 40-hex-character SHA -- never a placeholder like PINNED_AT_EXECUTION_TIME' });
+  }
   if (typeof scenario.prompt !== 'string' || scenario.prompt.length === 0) errors.push({ field: 'prompt', message: 'must be a non-empty string' });
   if (typeof scenario.prompt === 'string' && BANNED_TERMS_RE.test(scenario.prompt)) {
     errors.push({ field: 'prompt', message: 'must not mention kmp-test, the skill name, or the bin path' });
   }
-  if (scenario.grader == null || typeof scenario.grader.kind !== 'string') errors.push({ field: 'grader', message: 'must have a string "kind"' });
+  if (typeof scenario.expected_outcome !== 'string' || scenario.expected_outcome.length === 0) {
+    errors.push({ field: 'expected_outcome', message: 'must be a non-empty string' });
+  }
+  validatePolicy(scenario.policy, errors);
+  validateExpected(scenario.expected, scenario.policy, errors);
   if (scenario.first_useful_signal_predicate == null || typeof scenario.first_useful_signal_predicate.description !== 'string') {
     errors.push({ field: 'first_useful_signal_predicate', message: 'must have a string "description"' });
   }
@@ -414,6 +635,18 @@ export function buildAggregateGroup(runs) {
       const unknown = runs.filter((r) => typeof r[field] !== 'string' || r[field].length === 0);
       if (unknown.length > 0) {
         errors.push({ field, message: `${unknown.length} run(s) have a missing/empty ${field} and cannot be folded into a publishable scenario aggregate -- an unknown value can't be trusted to match another unknown value` });
+      }
+    }
+    // benchmark_eligible:true must depend only on protocol/integrity completeness, NEVER on the
+    // scenario outcome -- a wrong answer, a policy denial along the way, or a declared timeout are
+    // valuable negative benchmark results and must never be filtered out of a publishable
+    // aggregate (that would be survivorship bias). What IS required is that grading genuinely
+    // RAN and produced a real, non-null verdict either way -- `.value` must be strictly boolean,
+    // never `null`, and never required to be `true`.
+    for (const field of ['success', 'expected_outcome_matched']) {
+      const ungraded = runs.filter((r) => typeof r[field]?.value !== 'boolean');
+      if (ungraded.length > 0) {
+        errors.push({ field, message: `${ungraded.length} run(s) have a null/missing ${field}.value and cannot be folded into a publishable scenario aggregate -- benchmark_eligible:true requires grading to have actually produced a real verdict (true OR false), not an absence` });
       }
     }
   }

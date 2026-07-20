@@ -113,12 +113,50 @@ directly self-contradictory. `schemas.mjs` now also rejects that combination at 
   smoke never actually exercised real diagnostic work despite passing its (much narrower) old
   gate. The current prompt names the exact two read-only commands to run, removing the need to
   explore.
-- **`scenario`** / **`corpus-probe`** — accepted in the schema as future `run_kind` values; not
-  produced by anything in this PR. `aggregate.mjs`/`schemas.mjs` refuse to fold any
-  `benchmark_eligible:false` record into a publishable aggregate, so nothing this PR produces can
-  ever be miscounted as measurement data.
+- **`scenario`** — produced by the `run` subcommand: `run --scenario <id> --source-repo-dir
+  <local-clone> --seed <n> [--repeats <n>] [--model <name>] [--dry-run]`. Unlike
+  `calibration`/`smoke`, a scenario run executes a full `2×repeats`-cell matrix (both conditions,
+  `repeats` times each, counterbalanced via `randomizer.mjs`'s `buildConditionOrders` — a
+  guaranteed split across repetitions, not merely a shuffle that's unbiased only in expectation)
+  against one scenario from `corpus/scenarios/` and grades each condition's transcript with
+  `graders.mjs`'s 8 structured, evidence-anchored checks (never a free-text keyword scan — see
+  `graders.mjs`'s own header comment for why that design was rejected once already). `--seed` is
+  always required and never
+  auto-generated, so a `--dry-run` preview can never silently diverge from the real run it
+  previews, and any run is exactly reproducible from its own recorded evidence. `--repeats`
+  defaults to 4 (even, counterbalance-capable by construction); any other positive integer is a
+  valid, explicit choice for development/debugging, just not `benchmark_eligible`-capable (see
+  below). `--dry-run` prints the fully resolved execution plan and returns before touching
+  `--source-repo-dir` or spawning anything. A real run first verifies `--source-repo-dir`'s own
+  `origin` remote matches the scenario's declared `project_url`, its working tree is clean, and
+  the scenario's pinned commit resolves inside it — before any git worktree is ever created from
+  it. `scenarioHardGate()` (harness-integrity only, deliberately never the scenario OUTCOME —
+  a wrong answer, a policy denial, or a legitimate timeout are all valid negative results) blocking
+  on ANY one cell fails the **whole matrix's** promotion; there is no partial write. Each cell
+  otherwise records its own real, non-null `success`/`expected_outcome_matched` (via
+  `gradeScenarioCondition`), `grading_checks` (the full per-check detail), `test_invocations_total`/
+  `retries` (derived from the same attempt list grading itself built), and `cache_state:'cold'`
+  (every cell gets a pristine project + `GRADLE_USER_HOME` baseline — no dependency prewarming, see
+  "Materialization and cleanup" below).
 
-Every record this PR's code can actually produce is `benchmark_eligible: false`.
+  `benchmark_eligible:true` depends **only** on protocol/integrity completeness, **never** on
+  whether the agent's answer was correct: the matrix is genuinely complete (an identity proof over
+  `(repetition_index, condition)` pairs, not a count), every cell's harness integrity held, every
+  record's grading actually executed with real non-null `success`/`expected_outcome_matched`
+  booleans, and the realized starting-condition counts are exactly equal across the batch — an odd
+  `--repeats`, or any other imbalance, can never be eligible by construction. This PR ships exactly
+  two scenarios (`kampkit-android-host-test-discovery`, `kampkit-no-applicable-tests`, both against
+  the pinned KaMPKit commit `smoke` already uses) and zero live scenario records — every number in
+  `corpus/scenarios/*.json` was independently re-verified via direct local CLI/Gradle execution
+  (never through this PR's own `run` command, and never through a live Claude session).
+- **`corpus-probe`** — accepted in the schema as a future `run_kind` value; not produced by
+  anything in this PR.
+
+`aggregate.mjs`/`schemas.mjs` refuse to fold any `benchmark_eligible:false` record into a
+publishable aggregate, so nothing produced by `calibrate`/`smoke` (always `false`) can ever be
+miscounted as measurement data. A `benchmark_eligible:true` scenario record is the first evidence
+shape this harness can produce that is eligible for a future publishable aggregate — but this PR
+itself never runs `run` against a live Claude session, so it commits none.
 
 ## No committable evidence before every gate passes
 
@@ -373,7 +411,9 @@ list` entries after both a passing and a failing run.
 node tools/agentic-eval/cli.mjs --help
 node tools/agentic-eval/cli.mjs calibrate            # explicit-invocation calibration, both conditions
 node tools/agentic-eval/cli.mjs smoke --source-repo-dir <local-clone> --pinned-commit <sha>
-node tools/agentic-eval/cli.mjs corpus validate       # validates trigger-queries.json shape and banned-term rules
+node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
+                                     [--repeats <n>]  # full scenario matrix, --dry-run for a zero-spawn preview
+node tools/agentic-eval/cli.mjs corpus validate       # validates trigger-queries.json AND corpus/scenarios/*.json
 node tools/agentic-eval/cli.mjs validate --run <path> # validates a single run record against RUN_SCHEMA
 node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
 ```
@@ -386,7 +426,7 @@ extra positional argument is a hard error, not silently ignored. The process its
 before that write actually flushes — the same class of bug this harness already fixed once in
 `policy-hook.mjs`'s own write-then-exit ordering.
 
-Both `calibrate` and `smoke` accept `--model <name>` and an optional
+`calibrate`, `smoke`, and `run` all accept `--model <name>` and an optional
 `--private-patterns-file <path>` — supplying the latter loads additional private-project
 redaction rules (via `tools/lib/redact.mjs`'s `loadPrivateRules`) and marks the resulting
 records `privacy_status: 'redacted-private'` instead of `'public'`. This PR's own usage
@@ -514,13 +554,22 @@ above.
 
 ## Explicit limitations
 
-- No full benchmark is executed by this PR; no performance claim is made.
+- No full benchmark is executed by this PR; no performance claim is made — `run` itself is never
+  invoked against a live Claude session here, so this PR commits zero scenario-run evidence.
 - Public-project scenarios only; no private project is referenced.
 - `candidate-skill` is schema-supported but not implemented.
-- Scenario definitions, their fixture projects, and structured (non-keyword) grading are
-  deferred to a follow-up PR — see BACKLOG.md. `corpus/trigger-queries.json` (the natural-trigger
-  query set) remains in scope and is validated by `corpus validate`; nothing in `corpus/scenarios/`
-  exists in this PR.
+- Exactly 2 of the 6 originally-sketched scenarios ship in this PR (`kampkit-android-host-test-
+  discovery`, `kampkit-no-applicable-tests`, both against KaMPKit); `nowinandroid-core-common`,
+  `deterministic-unit-test-failure`, `coverage-threshold-failure`, and
+  `changed-module-verification` remain deferred to a follow-up PR — see BACKLOG.md.
+  `corpus/trigger-queries.json` (the natural-trigger query set) remains separately in scope and is
+  validated by the same `corpus validate` command.
+- The real end-to-end Claude Code `tool_result.content` shape for a live `kmp-test`/`gradle`
+  invocation is still unconfirmed as of this PR — `graders.mjs`'s envelope extraction is
+  defensively designed for that uncertainty (locates a parseable JSON substring within possibly-
+  noisy content, never a bare whole-string parse) using real stdout captured from direct local CLI
+  execution, but that is not the same thing as having observed a genuine live capture. Confirming
+  it is exactly the job of a future live-validation PR, mirroring #373/#378 relative to #372.
 - Wildcard support in `--module-filter`/`--test-filter` is out of scope for the policy hook's
   grammar in this PR (a shell could re-expand an unquoted wildcard after the hook approves it) —
   documented as a future grammar extension.

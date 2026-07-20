@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
+import { LATEST_RUN_SCHEMA } from '../../tools/agentic-eval/schemas.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -113,7 +114,15 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     expect(written.length).toBe(2);
     for (const f of written) {
       const record = JSON.parse(readFileSync(path.join(evidenceDirFor('calibration'), f), 'utf8'));
-      expect(record.schema).toBe(1);
+      // decision 6: every subcommand (calibrate included) stamps LATEST_RUN_SCHEMA on new
+      // records going forward -- calibrate's own grading_checks/repetition_index (v2-only
+      // fields, decisions 11/14) correctly report null+reason, since grading doesn't apply to a
+      // calibration run at all, never "not tracked" (that wording is reserved for genuinely
+      // unmeasured metrics on an applicable record).
+      expect(record.schema).toBe(LATEST_RUN_SCHEMA);
+      expect(record.grading_checks.value).toBeNull();
+      expect(record.grading_checks.reason).toMatch(/not applicable/i);
+      expect(record.repetition_index).toBeNull();
     }
   }, 20000);
 

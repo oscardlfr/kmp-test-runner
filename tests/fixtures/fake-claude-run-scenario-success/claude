@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-run-scenario-success/claude -- deterministic stand-in for the real
+# `claude` CLI, used by tests/vitest/agentic-eval-run-command.test.js to exercise cmdRun's own
+# scenario-matrix orchestration end-to-end (per-cell materialize/reset, grading integration via
+# graders.mjs, atomic N-record promotion) without spending live API budget. Never invoked outside
+# these tests -- production runs always use the real, authenticated `claude` CLI. See
+# fake-claude-success/claude (calibrate/smoke's own fixture) for the shared --plugin-dir-sniffing
+# convention this mirrors.
+#
+# Both conditions attempt the Skill tool (--plugin-dir presence decides confirmed vs. "Unknown
+# skill") and BOTH then run the exact same single Bash call -- `kmp-test parallel --module-filter
+# :fakemod --json` -- reporting a real, well-formed no_test_modules envelope for a module named
+# :fakemod, matching tests/vitest/agentic-eval-run-command.test.js's own synthetic,
+# integration-test-only scenario (its `expected.kmp_test` contract exactly, and its
+# `expected.module`). Whether the skill was "available" doesn't change what command gets run here
+# -- this fixture exists to prove cmdRun's own WIRING works end-to-end for a correct answer in
+# both arms, not to model realistic skill-driven behavioral divergence (that is exactly what a
+# live/corpus-probe run would measure for real, deliberately out of scope for an infrastructure
+# integration test).
+HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  PREV_ARG="$arg"
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
+else
+  PLUGINS='[]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-0001\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"dontAsk\",\"plugins\":$PLUGINS,\"skills\":[],\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+else
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
+fi
+
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test parallel --module-filter :fakemod --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+
+# Built via `node -e` (never manual bash quote-escaping) specifically so the nested JSON envelope
+# survives as a byte-exact string VALUE inside the outer transcript line -- the tool_result's own
+# `content` field must be the literal stdout text a real `kmp-test parallel --json` would have
+# printed, i.e. a JSON-encoded STRING whose PARSED value is this envelope object, not the object
+# itself inlined.
+KMP_ENVELOPE='{"tool":"kmp-test","schema_version":2,"subcommand":"parallel","version":"0.14.0","project_root":"/fake","exit_code":2,"duration_ms":21,"tests":{"total":0,"passed":0,"failed":0,"skipped":0,"individual_total":0},"modules":[],"skipped":[{"module":"fakemod","reason":"no test source set"}],"coverage":{"tool":"auto","missed_lines":null,"modules_with_kover_plugin":[],"modules_with_jacoco_plugin":[]},"errors":[{"code":"no_test_modules","message":"No modules found matching filter: :fakemod","test_type":"","caused_by_filter":true}],"warnings":[],"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true}}'
+node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{type:'tool_result',content:process.argv[1],tool_use_id:'toolu_fakebash1'}]}}))" "$KMP_ENVELOPE"
+
+FINAL_ANSWER='The :fakemod module has no applicable unit tests -- kmp-test reported no test modules matching that filter.'
+node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
+exit 0
