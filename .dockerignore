@@ -1,0 +1,5 @@
+**
+!.dockerignore
+!tools/
+!tools/local-ci/
+!tools/local-ci/**

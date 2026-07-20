@@ -44,6 +44,7 @@
 - `.github/workflows/` — `ci.yml` (8 jobs: build x2, secrets-scan, gradle-plugin-test, installer-e2e x2, decouple-audit, bundle-size), `commit-lint.yml` (Conventional Commits enforcement on PR titles, squash-merge mode), `publish-release.yml` (tag `v*` trigger), `publish-npm.yml` (auto on push to `main` + `workflow_dispatch` fallback) + `publish-gradle.yml` (workflow_dispatch)
 - `BACKLOG.md` — current and queued tasks; check this first
 - `.coderabbit.yaml` — CodeRabbit review config; `auto_review.base_branches` adds `develop` so PRs get auto-reviewed (guarded by `tests/vitest/coderabbit-config.test.js`)
+- `tools/local-ci/` — Docker Linux + native Windows pre-push gate; see `docs/testing/local-ci.md`
 
 ## CRITICAL — Gitflow with develop + auto-publish on main
 
@@ -66,14 +67,32 @@ PR titles MUST conform to Conventional Commits v1.0.0 (enforced by `.github/work
 
 ### Daily workflow (feature → develop)
 
+**Local-first cost gate:** code-changing PRs start as drafts. Consolidate implementation and
+review fixes locally, then run `pwsh -NoProfile -File tools/local-ci/run.ps1 -Lane All` before
+the final candidate push and `gh pr ready`. Draft pushes intentionally skip hosted CI; marking
+the PR ready triggers the full matrix. GitHub Actions confirms the final candidate and must not
+be used as an iterative debugger. If another change is required, return the PR to draft first,
+fix and revalidate locally, then mark it ready again.
+
+**Review-round discipline:** a confirmed review finding is not a reason to push immediately.
+Collect the full review pass, reproduce every finding locally, fix the underlying bug class,
+run focused RED/GREEN tests, and perform one fresh adversarial review of the resulting diff.
+Only after the complete local gate passes should you make one consolidated candidate push and
+mark the PR ready. If hosted-only feedback finds another defect, convert the PR back to draft
+before pushing the consolidated correction. Never spend successive hosted runs discovering
+failures covered by `tools/local-ci/`.
+
 ```bash
 git checkout develop && git pull
 git checkout -b feature/<slug>
 # edit
 git commit -m "type(scope): summary"
 git push -u origin feature/<slug>
-gh pr create --base develop --title "..." --body "..."
-# wait for CI green
+gh pr create --draft --base develop --title "..." --body "..."
+# finish review fixes locally, then run the full local gate
+pwsh -NoProfile -File tools/local-ci/run.ps1 -Lane All
+gh pr ready
+# wait for the single final hosted CI run
 gh pr merge <num> --squash --delete-branch
 git checkout develop && git pull
 ```

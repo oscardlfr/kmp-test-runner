@@ -362,14 +362,14 @@ describe('ci.yml Node 24 upgrade and PR-20b guards', () => {
   it('build job uses Node 24 as primary runtime with npm cache', () => {
     const section = jobSection(wf['ci.yml'], 'build');
     expect(section).not.toBeNull();
-    expect(section).toMatch(/node-version:\s+24/);
+    expect(section).toMatch(/node-version:\s+['"]24\.18\.0['"]/);
     expect(section).toMatch(/cache:\s+'?npm'?/);
   });
 
   it('build job contains Node 18 floor smoke (setup-node + fresh npm ci + vitest run)', () => {
     const section = jobSection(wf['ci.yml'], 'build');
     expect(section).not.toBeNull();
-    expect(section).toMatch(/node-version:\s+18/);
+    expect(section).toMatch(/node-version:\s+['"]18\.20\.8['"]/);
     expect(section).toMatch(/Node 18 smoke/i);
   });
 

@@ -146,3 +146,7 @@ tools/runs/agentic-eval-*/*.json text eol=lf
 # .skills/**/*.sh and scripts/**/*.sh above (CRLF corrupts bash control-flow constructs under
 # Windows git-bash with core.autocrlf=true).
 tests/fixtures/fake-claude-*/claude text eol=lf
+
+# Local Docker CI entrypoints execute under Linux even from Windows worktrees.
+tools/local-ci/**/*.sh text eol=lf
+tests/vitest/local-ci.test.js text eol=lf
