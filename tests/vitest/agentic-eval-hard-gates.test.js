@@ -1289,6 +1289,30 @@ describe('scenarioCellIntegrityOk', () => {
     expect(reason).toContain('terminationOk:false');
   });
 
+  // Review-round-2 fix: ambiguous JUnit evidence (more than one Gradle attempt in a condition
+  // could have produced the single per-condition XML snapshot) is a HARNESS-integrity defect, not
+  // a legitimate agent outcome -- it must block promotion here, not merely degrade that one cell's
+  // outcomeMatches to false (which would let it read as valid negative data).
+  it('isolates junitEvidenceOk -- a record carrying an ambiguous_junit_evidence error fails, even though everything else is clean', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'ambiguous_junit_evidence', message: 'ambiguous' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(false);
+    expect(reason).toContain('junitEvidenceOk:false');
+  });
+
+  it('a record with a DIFFERENT, unrelated error code does not trip junitEvidenceOk', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'raw_capture_location_overridden', message: 'unrelated' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('a record with no errors[] field at all (the common case) does not trip junitEvidenceOk', () => {
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), passConditionResult('no-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
   it('isolates skillSelectionOk -- a foreign Skill call unrelated to kmp-test-runner', () => {
     const cr = passConditionResult('no-skill', {
       events: [

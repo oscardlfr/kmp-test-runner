@@ -25,7 +25,7 @@ const SCENARIO_1 = {
   expected: {
     module: ':shared',
     outcome_kind: 'tests_executed',
-    kmp_test: { task: 'testAndroidHostTest', tests: { total: 1, passed: 1, failed: 0, individual_total: 24 }, exit_code: 0 },
+    kmp_test: { tests: { total: 1, passed: 1, failed: 0, individual_total: 24 }, exit_code: 0 },
     gradle: { allowed_invocations: [':shared:testAndroidHostTest'], evidence_task: ':shared:testAndroidHostTest', tests: { total: 24, passed: 24, failed: 0 }, exit_code: 0 },
   },
   first_useful_signal_predicate: { description: 'first well-formed evidence confirming :shared 24/24' },
@@ -48,7 +48,7 @@ const SCENARIO_2 = {
   expected: {
     module: ':app',
     outcome_kind: 'no_applicable_tests',
-    kmp_test: { task: null, error_code: 'no_test_modules', exit_code: 2, caused_by_filter: true },
+    kmp_test: { error_code: 'no_test_modules', exit_code: 2, caused_by_filter: true },
     gradle: { allowed_invocations: [':app:testDebugUnitTest', ':app:test'], evidence_task: ':app:testDebugUnitTest', exit_code: 0, marker: 'NO-SOURCE' },
   },
   first_useful_signal_predicate: { description: 'first well-formed evidence confirming :app has no applicable tests' },
@@ -489,6 +489,11 @@ describe('gradeScenarioCondition -- adversarial cases a keyword grader would hav
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(false);
     expect(grade.success).toBe(false);
+    // Round-2 review fix: this must be surfaced as a HARNESS-INTEGRITY defect (so cmdRun can block
+    // the whole matrix's promotion via scenarioCellIntegrityOk), not merely degrade outcomeMatches
+    // to false and read as "the agent got it wrong" -- a valid negative result the ambiguity is
+    // NOT.
+    expect(grade.harnessEvidenceAmbiguous).toBe(true);
   });
 
   it('a SINGLE Gradle attempt (no ambiguity) still passes normally -- the ambiguity fix does not regress the ordinary one-attempt case', () => {
@@ -500,6 +505,7 @@ describe('gradeScenarioCondition -- adversarial cases a keyword grader would hav
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);
+    expect(grade.harnessEvidenceAmbiguous).toBe(false);
   });
 
   // Review-fix regression: plain `.includes()` for the bare module name treated "app" as
@@ -522,6 +528,108 @@ describe('gradeScenarioCondition -- adversarial cases a keyword grader would hav
     const grade = gradeScenarioCondition(cr, SCENARIO_2);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
     expect(grade.success).toBe(true);
+  });
+});
+
+// Round-2 review fixes: 3 more P1s + 1 P2, each confirmed by direct reproduction before fixing.
+describe('gradeScenarioCondition -- round-2 review fixes', () => {
+  it('kmp-test path: resultIsError:true alongside an envelope claiming exit_code:0 must fail, never trust the envelope over resultIsError', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS, resultIsError: true }],
+      '24/24 tests passed in the :shared module via testAndroidHostTest.',
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('kmp-test path: an envelope self-contradictorily carrying BOTH a no_test_modules error AND matching passing test counts must fail (tests_executed scenario)', () => {
+    const contradictoryEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
+      modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {},
+      errors: [{ code: 'no_test_modules', message: 'No modules found matching filter: shared', test_type: '', caused_by_filter: true }],
+      warnings: [],
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: contradictoryEnvelope }],
+      '24/24 tests passed in the :shared module via testAndroidHostTest.',
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('kmp-test path: a no_test_modules envelope with NON-zero test counts must fail (no_applicable_tests scenario) -- the converse self-contradiction', () => {
+    const contradictoryEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 2, duration_ms: 21, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 3 },
+      modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: {},
+      errors: [{ code: 'no_test_modules', message: 'No modules found matching filter: app', test_type: '', caused_by_filter: true }],
+      warnings: [],
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: contradictoryEnvelope }],
+      'The :app module has no applicable tests.',
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('scenario 2: "The :foo:app module has no applicable tests" must NOT satisfy the :app mention requirement -- :foo:app is a different, unrelated nested module', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS }],
+      'The :foo:app module has no applicable tests.',
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('scenario 2: "The :app module has no failing tests" must NOT satisfy the no-applicable-tests claim -- it means the OPPOSITE (tests exist, none failed)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS }],
+      'The :app module has no failing tests.',
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('scenario 2: "does not have any tests" (an alternate genuine no-applicable-tests phrasing) still passes -- the adjective guard does not overcorrect', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS }],
+      'The :app module does not have any tests.',
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  it('Gradle path: a diagnostic/warning line merely MENTIONING "BUILD FAILED" mid-sentence (not at line-start) must not be mistaken for the real footer', () => {
+    const withMisleadingDiagnostic = `${GRADLE_SCENARIO1_PASS_STDOUT}\nNote: if you see BUILD FAILED in CI, check your JDK version.\n`;
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: withMisleadingDiagnostic }],
+      '24/24 tests passed for :shared via testAndroidHostTest.',
+      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    // The real footer (BUILD SUCCESSFUL, at line-start) still governs -- the diagnostic mention
+    // mid-sentence must not flip the outcome.
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  it('Gradle path: a genuine SECOND footer line (BUILD FAILED, at its own line-start, after an earlier BUILD SUCCESSFUL) still correctly flips the outcome to failed', () => {
+    const genuineRetryThenFailed = `${GRADLE_SCENARIO1_PASS_STDOUT}\n> Task :shared:testAndroidHostTest FAILED\n\nBUILD FAILED in 2s\n`;
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: genuineRetryThenFailed }],
+      '24/24 tests passed for :shared via testAndroidHostTest.',
+      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(false);
   });
 });
 

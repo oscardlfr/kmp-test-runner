@@ -15,7 +15,6 @@
     "module": ":shared",
     "outcome_kind": "tests_executed",
     "kmp_test": {
-      "task": "testAndroidHostTest",
       "tests": { "total": 1, "passed": 1, "failed": 0, "individual_total": 24 },
       "exit_code": 0
     },

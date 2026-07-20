@@ -733,6 +733,68 @@ describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded ze
   });
 });
 
+// Review-round-2 regression coverage: graders.mjs's gradeScenarioCondition() exposes
+// harnessEvidenceAmbiguous (a HARNESS-integrity defect -- JUnit evidence that cannot be reliably
+// attributed to a specific Gradle attempt), but nothing previously propagated it onto the built
+// run record at all, so scenarioCellIntegrityOk (cli.mjs) had no way to see it and block the whole
+// matrix's promotion.
+describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2 fix)', () => {
+  function fakeScenarioConditionResult() {
+    return {
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      result: { subtype: 'success', is_error: false },
+      invocation: null,
+      hookStats: { hookCallCount: 1, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 1 },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
+      events: [],
+    };
+  }
+  function fakeGradeResult(overrides = {}) {
+    return {
+      expectedOutcomeMatched: false, success: false,
+      checks: [], firstUsefulSignalEventIndex: null,
+      testInvocationsTotal: 2, retries: 1,
+      harnessEvidenceAmbiguous: false,
+      ...overrides,
+    };
+  }
+
+  it('a gradeResult with harnessEvidenceAmbiguous:true produces an ambiguous_junit_evidence error entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-ambiguous-junit',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ harnessEvidenceAmbiguous: true }),
+    });
+    expect(record.errors.some((e) => e.code === 'ambiguous_junit_evidence')).toBe(true);
+  });
+
+  it('a gradeResult with harnessEvidenceAmbiguous:false produces NO ambiguous_junit_evidence entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-ambiguous-junit-clean',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ harnessEvidenceAmbiguous: false }),
+    });
+    expect(record.errors.some((e) => e.code === 'ambiguous_junit_evidence')).toBe(false);
+  });
+
+  it('calibrate/smoke records (runKind !== scenario) never produce this error, regardless of gradeResult', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-ambiguous-junit-calibration',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+    });
+    expect(record.errors.some((e) => e.code === 'ambiguous_junit_evidence')).toBe(false);
+  });
+});
+
 // Regression coverage for a review-round-3 finding: tool_calls_total's new
 // `invocation?.attemptCount ?? 0` computation (replacing a flat 0-or-1) was only exercised at the
 // findSkillInvocation/attemptCount level (agentic-eval-stream-parser.test.js) -- nothing proved

@@ -563,7 +563,7 @@ describe('validateScenario', () => {
       expected: {
         module: ':shared',
         outcome_kind: 'tests_executed',
-        kmp_test: { task: 'testAndroidHostTest', tests: { total: 1, passed: 1, failed: 0, individual_total: 24 }, exit_code: 0 },
+        kmp_test: { tests: { total: 1, passed: 1, failed: 0, individual_total: 24 }, exit_code: 0 },
         gradle: { allowed_invocations: [':shared:testAndroidHostTest'], evidence_task: ':shared:testAndroidHostTest', tests: { total: 24, passed: 24, failed: 0 }, exit_code: 0 },
       },
       first_useful_signal_predicate: { description: 'first mention of test results' },
@@ -578,7 +578,7 @@ describe('validateScenario', () => {
       expected: {
         module: ':app',
         outcome_kind: 'no_applicable_tests',
-        kmp_test: { task: null, error_code: 'no_test_modules', exit_code: 2, caused_by_filter: true },
+        kmp_test: { error_code: 'no_test_modules', exit_code: 2, caused_by_filter: true },
         gradle: { allowed_invocations: [':app:testDebugUnitTest', ':app:test'], evidence_task: ':app:testDebugUnitTest', exit_code: 0, marker: 'NO-SOURCE' },
       },
       policy: {

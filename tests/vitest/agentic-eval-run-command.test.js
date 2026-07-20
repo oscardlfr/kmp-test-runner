@@ -91,7 +91,7 @@ beforeEach(() => {
     expected: {
       module: ':fakemod',
       outcome_kind: 'no_applicable_tests',
-      kmp_test: { task: null, error_code: 'no_test_modules', exit_code: 2, caused_by_filter: true },
+      kmp_test: { error_code: 'no_test_modules', exit_code: 2, caused_by_filter: true },
       gradle: { allowed_invocations: [':fakemod:test'], evidence_task: ':fakemod:test', exit_code: 0, marker: 'NO-SOURCE' },
     },
     first_useful_signal_predicate: { description: 'first well-formed evidence confirming :fakemod has no applicable tests' },
@@ -338,7 +338,7 @@ describe('cmdRun pipeline -- a legitimately timed-out cell is still recorded, ne
       expected: {
         module: ':fakemod',
         outcome_kind: 'no_applicable_tests',
-        kmp_test: { task: null, error_code: 'no_test_modules', exit_code: 2, caused_by_filter: true },
+        kmp_test: { error_code: 'no_test_modules', exit_code: 2, caused_by_filter: true },
         gradle: { allowed_invocations: [':fakemod:test'], evidence_task: ':fakemod:test', exit_code: 0, marker: 'NO-SOURCE' },
       },
       first_useful_signal_predicate: { description: 'irrelevant' },

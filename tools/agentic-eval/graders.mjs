@@ -196,6 +196,17 @@ function evaluateKmpTestAttempt(bashResult, scenario) {
   let outcomeMatches = false;
   if (hasEvidence && targetMatches) {
     const kt = scenario.expected.kmp_test;
+    // A review pass reproduced a real gap: a resultIsError:true tool_result (the Bash call itself
+    // was flagged as failed) alongside an envelope claiming exit_code:0 still graded as a match,
+    // since resultIsError was never consulted at all. Checked in ONLY this one direction --
+    // resultIsError:true contradicting a CLEAN exit_code:0 claim is wrong under any plausible
+    // convention, but the REVERSE (resultIsError:false alongside a non-zero exit_code) is NOT
+    // flagged: kmp-test's own exit codes encode multiple LEGITIMATE non-zero states (exit_code:2/
+    // CONFIG_ERROR for no_test_modules is the CORRECT outcome for the no_applicable_tests
+    // scenario, not a failure), and the real Claude-Code-native is_error convention for a
+    // non-zero CLI exit code remains unconfirmed (decision 10) -- asserting that direction risks
+    // a wrong assumption breaking the legitimate case once this harness runs live.
+    const resultIsErrorContradiction = bashResult.resultIsError === true && envelope.exit_code === 0;
     if (scenario.expected.outcome_kind === 'tests_executed') {
       // `tests.total/passed/failed` alone is a TASK-level count (a module resolves to exactly one
       // Gradle task here, so this is always {1,1,0} on success) -- checking only that would not
@@ -204,16 +215,26 @@ function evaluateKmpTestAttempt(bashResult, scenario) {
       // cache or a not-actually-executed run can still report task-level success). `individual_total`
       // is the real per-test-case count from kmp-test's own JUnit-XML walk, exposed directly on
       // the envelope -- comparing it too is what actually proves real tests ran and passed.
-      outcomeMatches = envelope.exit_code === (kt.exit_code ?? 0)
+      // `envelope.errors.length === 0` closes a second real gap: nothing previously checked that a
+      // "tests executed cleanly" claim wasn't ALSO carrying a no_test_modules-shaped error entry
+      // (a review pass reproduced exactly this self-contradictory envelope still passing).
+      outcomeMatches = !resultIsErrorContradiction
+        && envelope.errors.length === 0
+        && envelope.exit_code === (kt.exit_code ?? 0)
         && envelope.tests?.total === kt.tests.total
         && envelope.tests?.passed === kt.tests.passed
         && envelope.tests?.failed === kt.tests.failed
         && envelope.tests?.individual_total === kt.tests.individual_total;
     } else {
       const matchingError = envelope.errors.find((e) => e && e.code === kt.error_code);
-      outcomeMatches = envelope.exit_code === kt.exit_code
+      // tests.{total,passed,failed} must all be exactly zero -- the converse of the same
+      // self-contradiction check above: a no_test_modules-shaped error claim alongside NON-zero
+      // test counts is just as internally inconsistent as the reverse.
+      outcomeMatches = !resultIsErrorContradiction
+        && envelope.exit_code === kt.exit_code
         && matchingError != null
-        && matchingError.caused_by_filter === kt.caused_by_filter;
+        && matchingError.caused_by_filter === kt.caused_by_filter
+        && envelope.tests?.total === 0 && envelope.tests?.passed === 0 && envelope.tests?.failed === 0;
     }
   }
 
@@ -221,21 +242,27 @@ function evaluateKmpTestAttempt(bashResult, scenario) {
 }
 
 /** Parses the terminal Gradle build-outcome from possibly-noisy tool_result content: the LAST
- * occurrence of either `BUILD SUCCESSFUL` or `BUILD FAILED` (Gradle always prints exactly one such
- * footer as its own last informational line -- taking the LAST occurrence, rather than "does
- * either pattern appear ANYWHERE", is what correctly handles an earlier retry's own footer text
- * still sitting earlier in the same accumulated content). Cross-checked against the tool_result's
- * own `resultIsError`: a review pass reproduced a real gap where `resultIsError:true` (the Bash
- * call itself failed) alongside `BUILD SUCCESSFUL` text appearing anywhere in the content was
- * graded as a genuine success, since `resultIsError` was never consulted at all. A contradiction
- * between the text's own last footer and `resultIsError` means the content cannot be trusted --
- * returns `null` in that case (never silently prefers one signal over the other), same as when
- * neither footer is found at all. Returns 0 (success), 1 (failed), or null (untrustworthy). */
+ * COMPLETE Gradle footer LINE matching `BUILD SUCCESSFUL`/`BUILD FAILED` at the start of its own
+ * line (Gradle always prints exactly one such footer as its own last informational line, e.g.
+ * "BUILD SUCCESSFUL in 8s") -- line-anchored, never a bare substring search: a review pass pointed
+ * out that `lastIndexOf` would misattribute the footer to any LATER diagnostic/log text that
+ * merely MENTIONS either phrase mid-sentence (e.g. a warning quoting it), not just a genuine
+ * second footer. Taking the LAST matching line (rather than "does either pattern appear
+ * ANYWHERE") is what correctly handles an earlier retry's own footer line still sitting earlier
+ * in the same accumulated content. Cross-checked against the tool_result's own `resultIsError`: a
+ * review pass reproduced a real gap where `resultIsError:true` (the Bash call itself failed)
+ * alongside `BUILD SUCCESSFUL` text appearing anywhere in the content was graded as a genuine
+ * success, since `resultIsError` was never consulted at all. A contradiction between the text's
+ * own last footer and `resultIsError` means the content cannot be trusted -- returns `null` in
+ * that case (never silently prefers one signal over the other), same as when neither footer is
+ * found at all. Returns 0 (success), 1 (failed), or null (untrustworthy). */
 function parseGradleBuildOutcome(resultContent, resultIsError) {
-  const successIndex = resultContent.lastIndexOf('BUILD SUCCESSFUL');
-  const failedIndex = resultContent.lastIndexOf('BUILD FAILED');
-  if (successIndex === -1 && failedIndex === -1) return null;
-  const lastWasSuccess = successIndex > failedIndex;
+  const successMatches = [...resultContent.matchAll(/^[ \t]*BUILD SUCCESSFUL\b/gm)];
+  const failedMatches = [...resultContent.matchAll(/^[ \t]*BUILD FAILED\b/gm)];
+  const lastSuccessIndex = successMatches.length > 0 ? successMatches[successMatches.length - 1].index : -1;
+  const lastFailedIndex = failedMatches.length > 0 ? failedMatches[failedMatches.length - 1].index : -1;
+  if (lastSuccessIndex === -1 && lastFailedIndex === -1) return null;
+  const lastWasSuccess = lastSuccessIndex > lastFailedIndex;
   // resultIsError is only ever a MEANINGFUL contradiction signal when it's an explicit true/false
   // observation -- null (never determined) neither confirms nor contradicts either footer.
   if (resultIsError === true && lastWasSuccess) return null;
@@ -314,18 +341,50 @@ function escapeRegExp(s) {
 }
 
 /** True iff `identifier` (a module name or a bare token like a test count) appears in `text` as
- * its own standalone token -- bounded by a character OUTSIDE `[A-Za-z0-9_-]` (or the string edge)
+ * its own standalone token -- bounded by a character OUTSIDE `[A-Za-z0-9_:-]` (or the string edge)
  * on both sides, never merely as a substring. A review pass reproduced a real false positive with
  * plain `.includes()`: `expected.module=':app'` (bare `app`) matched inside "This application has
  * no applicable tests." Plain `\b` alone is not sufficient either for a hyphen-containing
  * identifier (e.g. a Gradle module like `core-network`): `\b` treats `-` itself as a boundary
  * character, so a bare `\bnetwork\b` would incorrectly match the "network" INSIDE "core-network"
- * too. Treating the full `[A-Za-z0-9_-]` class as "identifier" for boundary purposes closes both
- * directions at once. */
+ * too. `:` is ALSO in the identifier class -- a second review pass reproduced a real false
+ * positive without it: a bare `app` check matched inside a nested Gradle module path like
+ * `:foo:app`, since `:` was (wrongly) treated as a legitimate boundary between `foo` and `app`,
+ * even though `:foo:app` is a completely different, unrelated nested module. Treating the full
+ * `[A-Za-z0-9_:-]` class as "identifier" for boundary purposes closes all three directions at
+ * once. */
 function textMentionsIdentifier(text, identifier) {
   const escaped = escapeRegExp(String(identifier));
-  const re = new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`);
+  const re = new RegExp(`(?<![A-Za-z0-9_:-])${escaped}(?![A-Za-z0-9_:-])`);
   return re.test(text);
+}
+
+// Words that describe an OUTCOME of tests that DID run (failed/passed/etc.), never "no tests
+// exist here at all" -- a "no/zero ... test(s)" span containing one of these means the OPPOSITE
+// of a genuine no-applicable-tests claim.
+const NO_TESTS_OUTCOME_ADJECTIVE_RE = /\b(?:failing|failed|failure|passing|passed|broken|skipped)\b/i;
+
+/** True iff `text` states that no applicable tests exist for the module -- narrower than a bare
+ * "no...test" span match. A review pass reproduced a real ambiguity: "The :app module has no
+ * failing tests" (semantically the OPPOSITE claim -- tests exist and none of them failed) matched
+ * the original broad `\bno\b[^.]{0,20}\btest` pattern just as readily as a genuine "no applicable
+ * tests" statement, since the pattern never inspected WHAT sat between "no" and "test". Captures
+ * that span for each candidate pattern and rejects the match if it contains an outcome word
+ * (failing/failed/passing/etc.) -- those describe tests that DID run, never non-existence. */
+function statesNoApplicableTests(text) {
+  const candidatePatterns = [
+    /\bno\b([^.]{0,20})\btest/i,
+    /\bzero\b([^.]{0,20})\btest/i,
+    /\bnot\s+have\b([^.]{0,15})\btest/i,
+  ];
+  for (const re of candidatePatterns) {
+    const m = text.match(re);
+    if (m && !NO_TESTS_OUTCOME_ADJECTIVE_RE.test(m[1])) return true;
+  }
+  // "applicable" itself is unambiguous (always about non-existence, never an outcome claim) --
+  // no adjective guard needed for this specific fallback.
+  if (/\bno\s+applicable\b/i.test(text)) return true;
+  return false;
 }
 
 function evaluateFinalAnswer(resultEvent, scenario) {
@@ -353,8 +412,7 @@ function evaluateFinalAnswer(resultEvent, scenario) {
     return { passed: true, detail: 'final answer states the expected module and test count, with no contradicting claim' };
   }
 
-  const statesNoTests = /\bno\b[^.]{0,20}\btest/i.test(text) || /\bzero\b[^.]{0,20}\btest/i.test(text) || /\bnot\s+have\b[^.]{0,15}\btest/i.test(text) || /\bno\s+applicable\b/i.test(text);
-  if (!statesNoTests) {
+  if (!statesNoApplicableTests(text)) {
     return { passed: false, detail: 'final answer never states that no applicable tests exist for the module' };
   }
   const fabricatesPassCount = /\d+\s*(\/|\s+of\s+)\s*\d+\s+test/i.test(text) || /\d+\s+tests?\s+pass/i.test(text);
@@ -377,7 +435,7 @@ function evaluateFinalAnswer(resultEvent, scenario) {
  * @param {object} scenario - a validated scenario object (schemas.mjs's validateScenario shape)
  * @returns {{expectedOutcomeMatched: boolean, success: boolean, checks: Array<{name, passed,
  *   detail, evidence_event_indices: number[]}>, firstUsefulSignalEventIndex: number|null,
- *   testInvocationsTotal: number, retries: number}}
+ *   testInvocationsTotal: number, retries: number, harnessEvidenceAmbiguous: boolean}}
  */
 export function gradeScenarioCondition(conditionResult, scenario) {
   const checks = [];
@@ -504,5 +562,14 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     firstUsefulSignalEventIndex: firstCorrect ? firstCorrect.resultIndex : null,
     testInvocationsTotal,
     retries,
+    // A review pass established that ambiguous JUnit evidence (decision: more than one Gradle
+    // attempt in this condition could have produced/overwritten it -- see ambiguousJunitEvidence
+    // above) is a HARNESS-INTEGRITY defect, not a legitimate agent outcome: degrading only
+    // outcomeMatches to false let it read as "the agent got it wrong," a valid negative result,
+    // when it actually means "the harness cannot produce trustworthy evidence for this cell at
+    // all." Exposed here so the caller (cmdRun) can surface it onto the run record for
+    // scenarioCellIntegrityOk to block the WHOLE matrix's promotion, matching decision 4's
+    // existing "one bad cell blocks the whole matrix" treatment of every other integrity defect.
+    harnessEvidenceAmbiguous: ambiguousJunitEvidence,
   };
 }

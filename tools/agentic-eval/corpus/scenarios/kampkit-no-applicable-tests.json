@@ -15,7 +15,6 @@
     "module": ":app",
     "outcome_kind": "no_applicable_tests",
     "kmp_test": {
-      "task": null,
       "error_code": "no_test_modules",
       "exit_code": 2,
       "caused_by_filter": true
