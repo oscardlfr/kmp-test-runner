@@ -572,8 +572,13 @@ export function validateScenario(scenario) {
   if (typeof scenario.project_alias !== 'string' || scenario.project_alias.length === 0) {
     errors.push({ field: 'project_alias', message: 'must be a non-empty string' });
   }
-  if (!Array.isArray(scenario.tags) || scenario.tags.length === 0 || scenario.tags.some((t) => !SCENARIO_TAG_VALUES.includes(t))) {
-    errors.push({ field: 'tags', message: `must be a non-empty array, every entry one of ${SCENARIO_TAG_VALUES.join('|')}` });
+  // Exactly ONE entry, not merely "non-empty and every entry valid" -- a fresh review reproduced
+  // ["train","held-out"] and ["train","train"] both passing the old check. `tags` is documented
+  // (above, at its declaration) as the corpus PARTITION a scenario belongs to -- a single-valued
+  // concept by definition, so a scenario contaminating both train and held-out simultaneously (or
+  // declaring a meaningless duplicate) must be rejected, not silently accepted.
+  if (!Array.isArray(scenario.tags) || scenario.tags.length !== 1 || !SCENARIO_TAG_VALUES.includes(scenario.tags[0])) {
+    errors.push({ field: 'tags', message: `must be an array with EXACTLY one entry, one of ${SCENARIO_TAG_VALUES.join('|')}` });
   }
   if (typeof scenario.project_url !== 'string' || !/^https:\/\//.test(scenario.project_url)) {
     errors.push({ field: 'project_url', message: 'must be an https URL (public project)' });

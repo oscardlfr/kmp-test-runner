@@ -289,7 +289,26 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
     // is the real per-test-case count from kmp-test's own JUnit-XML walk -- comparing it too is
     // what actually proves real tests ran and passed. `errors.length === 0`: a "tests executed
     // cleanly" claim must never ALSO carry a no_test_modules-shaped (or any other) error entry.
-    return envelope.errors.length === 0
+    //
+    // A fresh review reproduced this whole branch never validating the envelope's own `parallel`
+    // structure at all -- KMP_TEST_ENVELOPE_REQUIRED_SHAPE doesn't require it, and the dry_run/
+    // list_only coherence check above uses optional chaining (`envelope.parallel?.list_only`),
+    // which silently evaluates to `undefined` (treated as "absent, OK") for ANY non-nullish
+    // `parallel` value that isn't a plain object -- `parallel:1`, `parallel:"list_only"`,
+    // `parallel:[]`, `parallel:{}` all reproduced as full-credit passes. A real `parallel`
+    // subcommand's real dispatch (lib/orchestrators/parallel/result-rollup.js's
+    // buildParallelParsed) ALWAYS constructs `parallel:{test_type, legs:[...], max_workers,
+    // timeout_s}` with at least one leg when tests actually ran -- `legs` is only ever empty on the
+    // `--list-only` early-return path (parallel-orchestrator.js), which is already excluded above
+    // via `list_only`. For `no_applicable_tests`, by contrast, `parallel` is legitimately ABSENT
+    // entirely: the `no_test_modules` early-exit (parallel-orchestrator.js) calls buildJsonReport
+    // before any `parallel` block is ever constructed -- so this structural requirement is scoped
+    // to `tests_executed` only, never applied to the other branch.
+    const parallelBlock = envelope.parallel;
+    const hasValidParallelBlock = parallelBlock != null && typeof parallelBlock === 'object' && !Array.isArray(parallelBlock)
+      && Array.isArray(parallelBlock.legs) && parallelBlock.legs.length >= 1;
+    return hasValidParallelBlock
+      && envelope.errors.length === 0
       && envelope.exit_code === (kt.exit_code ?? 0)
       && envelope.tests?.total === kt.tests.total
       && envelope.tests?.passed === kt.tests.passed

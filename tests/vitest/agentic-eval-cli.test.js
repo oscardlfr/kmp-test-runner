@@ -1027,11 +1027,24 @@ describe('normalizeGitRemoteForComparison', () => {
     expect(withTrailingSlash).toBe(withoutTrailingSlash);
   });
 
-  it('EXACT REPRODUCTION: scheme/host case differences no longer produce a different canonical identity', async () => {
+  it('EXACT REPRODUCTION: scheme/host case differences no longer produce a different canonical identity (path case held IDENTICAL to isolate this from path case-sensitivity)', async () => {
     const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
     const upper = normalizeGitRemoteForComparison('HTTPS://GitHub.com/touchlab/KaMPKit.git');
-    const lower = normalizeGitRemoteForComparison('https://github.com/touchlab/kampkit');
+    const lower = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit');
     expect(upper).toBe(lower);
+  });
+
+  // Round 9: a fresh review reproduced the PRECEDING test conflating scheme/host case-insensitivity
+  // with path case -- it compared 'KaMPKit' against 'kampkit' in the SAME assertion as the
+  // scheme/host case difference, which (given the old implementation lowercased the whole result)
+  // passed for the wrong reason and locked in "path case is ignored" as expected behavior. Most git
+  // hosts treat repository paths as case-SENSITIVE; this tool is not GitHub-specific. Path case must
+  // now be preserved exactly -- only the host is normalized.
+  it('EXACT REPRODUCTION: path case is preserved, NOT normalized -- Team/Repo and team/repo are different repositories', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const a = normalizeGitRemoteForComparison('https://example.com/Team/Repo');
+    const b = normalizeGitRemoteForComparison('https://example.com/team/repo');
+    expect(a).not.toBe(b);
   });
 
   it('regression guard: the bare SSH shorthand (git@host:org/repo) still canonicalizes to the same identity as HTTPS', async () => {

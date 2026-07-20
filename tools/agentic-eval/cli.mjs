@@ -1560,14 +1560,21 @@ function loadScenarioById(scenarioId) {
  * Anything else (an unrecognized scheme) falls through to the same trim-only normalization as
  * before, so this is strictly additive -- it never makes an already-passing comparison stricter. */
 function normalizeGitRemoteForComparison(url) {
+  // Lowercase ONLY the host (scheme/host case never changes identity) -- a fresh review reproduced
+  // this blanket-lowercasing the ENTIRE result including the org/repo PATH, so
+  // `example.com/Team/Repo` and `example.com/team/repo` compared equal even though most git hosts
+  // treat repository paths as case-SENSITIVE (this tool is not GitHub-specific -- project_url is
+  // any https:// URL -- and even where a host happens to be case-insensitive in practice, silently
+  // conflating two case-distinct paths risks masking a genuinely different repository). Path case
+  // is now preserved exactly.
   const trimmed = url.trim().replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
   const sshShortMatch = /^[\w.-]+@([^:/]+):\/?(.+)$/i.exec(trimmed);
-  if (sshShortMatch) return `${sshShortMatch[1]}/${sshShortMatch[2]}`.toLowerCase();
+  if (sshShortMatch) return `${sshShortMatch[1].toLowerCase()}/${sshShortMatch[2]}`;
   const sshUriMatch = /^ssh:\/\/(?:[\w.-]+@)?([^/]+)\/(.+)$/i.exec(trimmed);
-  if (sshUriMatch) return `${sshUriMatch[1]}/${sshUriMatch[2]}`.toLowerCase();
+  if (sshUriMatch) return `${sshUriMatch[1].toLowerCase()}/${sshUriMatch[2]}`;
   const httpMatch = /^https?:\/\/([^/]+)\/(.+)$/i.exec(trimmed);
-  if (httpMatch) return `${httpMatch[1]}/${httpMatch[2]}`.toLowerCase();
-  return trimmed.toLowerCase();
+  if (httpMatch) return `${httpMatch[1].toLowerCase()}/${httpMatch[2]}`;
+  return trimmed;
 }
 
 /**

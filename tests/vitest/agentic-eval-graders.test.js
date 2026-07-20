@@ -121,11 +121,16 @@ const SCENARIO_2_CORRECT_ANSWER = kmpEvalResultText(
   { module: ':app', outcome_kind: 'no_applicable_tests' },
 );
 
+// `parallel` mirrors the real shape buildParallelParsed constructs for a genuine dispatch
+// (lib/orchestrators/parallel/result-rollup.js) -- a fresh review reproduced this canonical
+// "correct" fixture NOT reflecting real production shape at all (parallel entirely absent), which
+// would have silently defeated the new parallel.legs[] structural requirement below.
 const KMP_TEST_ENVELOPE_SCENARIO1_PASS = JSON.stringify({
   tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
   project_root: 'C:\\fake', exit_code: 0, duration_ms: 13169,
   tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
   modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
+  parallel: { test_type: 'androidUnit', legs: [{ test_type: 'androidUnit', task: ':shared:testAndroidHostTest', exit_code: 0 }], max_workers: 4, timeout_s: 900 },
 });
 
 const KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS = JSON.stringify({
@@ -1485,9 +1490,122 @@ describe('gradeScenarioCondition -- round-8: execution-mode coherence must fail 
       exit_code: 0, duration_ms: 100, dry_run: false,
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
+      parallel: { test_type: 'androidUnit', legs: [{ test_type: 'androidUnit', task: ':shared:testAndroidHostTest', exit_code: 0 }], max_workers: 4, timeout_s: 900 },
     });
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: explicitFalseDryRunEnvelope }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+});
+
+// Round 9: a fresh review reproduced a malformed/absent `parallel` structure getting FULL CREDIT
+// for a tests_executed scenario. KMP_TEST_ENVELOPE_REQUIRED_SHAPE never required `parallel` at
+// all, and the round-7/8 dry_run/list_only coherence check uses optional chaining
+// (`envelope.parallel?.list_only`), which silently evaluates to `undefined` -- treated as "absent,
+// OK" -- for ANY non-nullish `parallel` value that isn't a plain object with a `list_only`
+// property, not just a genuinely-absent one.
+describe('gradeScenarioCondition -- round-9: tests_executed requires a real, well-formed parallel.legs[] block, not just absence of a bad list_only', () => {
+  function envelopeWithParallel(parallelValue) {
+    return JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100, parallel: parallelValue,
+      tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
+      modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
+    });
+  }
+
+  function envelopeWithParallelOmitted() {
+    const full = JSON.parse(envelopeWithParallel({}));
+    delete full.parallel;
+    return JSON.stringify(full);
+  }
+
+  const malformedCases = [
+    ['absent entirely', envelopeWithParallelOmitted()],
+    ['the NUMBER 1', envelopeWithParallel(1)],
+    ['the STRING "list_only"', envelopeWithParallel('list_only')],
+    ['an EMPTY ARRAY', envelopeWithParallel([])],
+    ['an EMPTY OBJECT (no legs at all)', envelopeWithParallel({})],
+    ['the BOOLEAN false', envelopeWithParallel(false)],
+  ];
+
+  it('EXACT REPRODUCTION: parallel absent entirely -- previously accepted, must now be rejected', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: malformedCases[0][1] }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('EXACT REPRODUCTION: parallel is the NUMBER 1 -- previously accepted, must now be rejected', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: malformedCases[1][1] }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('EXACT REPRODUCTION: parallel is the STRING "list_only" -- previously accepted, must now be rejected', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: malformedCases[2][1] }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('EXACT REPRODUCTION: parallel is an EMPTY ARRAY -- previously accepted, must now be rejected', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: malformedCases[3][1] }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('EXACT REPRODUCTION: parallel is an EMPTY OBJECT (structurally present, but no legs at all) -- previously accepted, must now be rejected', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: malformedCases[4][1] }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('EXACT REPRODUCTION: parallel is the BOOLEAN false -- previously accepted, must now be rejected', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: malformedCases[5][1] }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('parallel legitimately absent under no_applicable_tests -- the no_test_modules early-exit never constructs a parallel block, must still pass', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS }],
+      SCENARIO_2_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  it('regression guard: a real, well-formed parallel.legs[] block (the ordinary case) still passes normally', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS }],
       SCENARIO_1_CORRECT_ANSWER,
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);

@@ -1067,6 +1067,26 @@ describe('validateScenario', () => {
       const { errors } = validateScenario(baseScenario({ tags: ['held-out'] }));
       expect(errors.some((e) => e.field === 'tags')).toBe(false);
     });
+
+    // Round 9: a fresh review reproduced tags NOT guaranteeing an exclusive train/held-out
+    // partition -- ["train","held-out"] (contaminating both partitions at once) and
+    // ["train","train"] (a meaningless duplicate) both previously passed with zero errors, despite
+    // tags being documented as THE corpus partition a scenario belongs to -- a single-valued
+    // concept by definition.
+    it('EXACT REPRODUCTION: rejects tags containing BOTH train and held-out simultaneously', () => {
+      const { errors } = validateScenario(baseScenario({ tags: ['train', 'held-out'] }));
+      expect(errors.some((e) => e.field === 'tags')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: rejects tags with a duplicate entry (["train","train"])', () => {
+      const { errors } = validateScenario(baseScenario({ tags: ['train', 'train'] }));
+      expect(errors.some((e) => e.field === 'tags')).toBe(true);
+    });
+
+    it('regression guard: a single-entry tags array for each known value still validates cleanly', () => {
+      expect(validateScenario(baseScenario({ tags: ['train'] })).errors.some((e) => e.field === 'tags')).toBe(false);
+      expect(validateScenario(baseScenario({ tags: ['held-out'] })).errors.some((e) => e.field === 'tags')).toBe(false);
+    });
   });
 });
 
