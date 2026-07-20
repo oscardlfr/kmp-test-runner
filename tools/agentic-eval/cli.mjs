@@ -1548,16 +1548,26 @@ function loadScenarioById(scenarioId) {
  * (`git@github.com:org/repo.git`) was rejected as "wrong local clone" purely because it was
  * compared literally against the scenario's declared HTTPS `project_url`
  * (`https://github.com/org/repo`), even though both name the exact same remote repository.
- * Recognizes the SSH `git@host:path` form and the `http(s)://host/path` form; anything else
- * (an unrecognized scheme) falls through to the same trim-only normalization as before, so this
- * is strictly additive -- it never makes an already-passing comparison stricter. */
+ * Recognizes three real-world forms -- the SSH shorthand `git@host:path`, the `ssh://[user@]host/
+ * path` URI form (a DIFFERENT form from the shorthand: a slash after the host, not a colon), and
+ * `http(s)://host/path` -- comparing case-insensitively (host/scheme case never changes identity).
+ * A further review reproduced two more real false rejections against this same function: (1) it
+ * never recognized `ssh://` URLs at all, only the bare shorthand; (2) trailing-slash stripping ran
+ * BEFORE `.git`-suffix stripping, so `https://host/org/repo.git/` (a trailing slash AFTER `.git`)
+ * never matched `/\.git$/` (the string's true end was `/`, not `t`) and kept its `.git` suffix,
+ * producing a canonical form that didn't match the same remote's slash-free spelling. Reordered:
+ * strip trailing slashes FIRST, then `.git`, then trailing slashes again (harmless if none remain).
+ * Anything else (an unrecognized scheme) falls through to the same trim-only normalization as
+ * before, so this is strictly additive -- it never makes an already-passing comparison stricter. */
 function normalizeGitRemoteForComparison(url) {
-  const trimmed = url.trim().replace(/\.git$/, '').replace(/\/+$/, '');
-  const sshMatch = /^[\w-]+@([^:]+):(.+)$/.exec(trimmed);
-  if (sshMatch) return `${sshMatch[1]}/${sshMatch[2]}`;
-  const httpMatch = /^https?:\/\/([^/]+)\/(.+)$/.exec(trimmed);
-  if (httpMatch) return `${httpMatch[1]}/${httpMatch[2]}`;
-  return trimmed;
+  const trimmed = url.trim().replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+  const sshShortMatch = /^[\w.-]+@([^:/]+):\/?(.+)$/i.exec(trimmed);
+  if (sshShortMatch) return `${sshShortMatch[1]}/${sshShortMatch[2]}`.toLowerCase();
+  const sshUriMatch = /^ssh:\/\/(?:[\w.-]+@)?([^/]+)\/(.+)$/i.exec(trimmed);
+  if (sshUriMatch) return `${sshUriMatch[1]}/${sshUriMatch[2]}`.toLowerCase();
+  const httpMatch = /^https?:\/\/([^/]+)\/(.+)$/i.exec(trimmed);
+  if (httpMatch) return `${httpMatch[1]}/${httpMatch[2]}`.toLowerCase();
+  return trimmed.toLowerCase();
 }
 
 /**
@@ -1903,4 +1913,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };
+export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };

@@ -1425,6 +1425,77 @@ describe('gradeScenarioCondition -- round-7: envelope execution/plan-mode must a
   });
 });
 
+// Round 8: a fresh review reproduced the round-7 execution-mode coherence check failing OPEN on a
+// wrong-typed value -- `envelope.dry_run === true` only rejects the LITERAL boolean `true`;
+// `dry_run:"true"` (string) or `dry_run:1` (number) still semantically claim plan-only mode but
+// were not `=== true`, so the old check silently accepted them. Fixed as a fail-closed allowlist:
+// the ONLY acceptable states are "field absent" or "field explicitly false".
+describe('gradeScenarioCondition -- round-8: execution-mode coherence must fail closed on a wrong-typed value, not just literal true', () => {
+  it('EXACT REPRODUCTION: envelope.dry_run is the STRING "true" (not the boolean) -- previously accepted, must now be rejected', () => {
+    const wrongTypeDryRunEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100, dry_run: 'true',
+      tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
+      modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: wrongTypeDryRunEnvelope }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('EXACT REPRODUCTION: envelope.dry_run is the NUMBER 1 (not the boolean) -- previously accepted, must now be rejected', () => {
+    const numericDryRunEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100, dry_run: 1,
+      tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
+      modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: numericDryRunEnvelope }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('EXACT REPRODUCTION: envelope.parallel.list_only is the STRING "true" (not the boolean) -- previously accepted, must now be rejected', () => {
+    const wrongTypeListOnlyEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100, parallel: { test_type: 'auto', list_only: 'true', legs: [] },
+      tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
+      modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: wrongTypeListOnlyEnvelope }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('regression guard: envelope.dry_run explicitly false (a real, well-typed value) still passes normally', () => {
+    const explicitFalseDryRunEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100, dry_run: false,
+      tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
+      modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: explicitFalseDryRunEnvelope }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+});
+
 describe('gradeScenarioCondition -- round-7: envelope schema_version must match the CURRENT envelope schema exactly', () => {
   it('an envelope claiming a DIFFERENT schema_version (e.g. a stale/older value) is not trusted as a kmp-test envelope at all -- extraction fails, the attempt is malformed', () => {
     const wrongSchemaVersionEnvelope = JSON.stringify({

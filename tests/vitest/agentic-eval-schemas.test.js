@@ -919,6 +919,102 @@ describe('validateScenario', () => {
     });
   });
 
+  // Round 8: a fresh review reproduced the oracle still open in a sharper form -- individual_total
+  // (the real per-test-case count) was merely non-negative, so total:1 (task-level)/
+  // individual_total:0 both passed shape validation, letting a kmp-test envelope claim "the task
+  // ran" while separately claiming "zero individual tests executed". Worse, nothing ever required
+  // kmp_test.individual_total to agree with gradle.tests.total -- the two providers' own counts of
+  // the SAME real test run could silently diverge in a scenario file with zero errors.
+  describe('round 8: kmp_test.tests.individual_total must be POSITIVE and must equal gradle.tests.total; skipped must be exactly 0', () => {
+    it('EXACT REPRODUCTION: individual_total:0 (a task ran, but zero individual tests) is rejected -- previously merely required non-negative', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, individual_total: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: kmp_test.individual_total (24) disagreeing with gradle.tests.total (25) is rejected -- previously no cross-provider check existed at all', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests = { ...s.expected.gradle.tests, total: 25, passed: 25 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests.individual_total')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: the combined attack -- kmp_test.individual_total:0 alongside gradle.tests.total:24 -- is rejected both by the positivity check and the cross-provider check', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, individual_total: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests.individual_total')).toBe(true);
+    });
+
+    it('kmp_test.tests.skipped:1 (non-zero) is rejected -- the Gradle/JUnit-XML path can never corroborate a non-zero skip claim', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, skipped: 1 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('regression guard: individual_total equal to gradle.tests.total and skipped:0 (the real, shipped scenario shape) still validates cleanly', () => {
+      const { errors } = validateScenario(baseScenario());
+      expect(errors.filter((e) => e.field.startsWith('expected.kmp_test') || e.field.startsWith('expected.gradle'))).toEqual([]);
+    });
+  });
+
+  // Round 8: a fresh review reproduced unrecognized fields on `expected`/`expected.kmp_test`/
+  // `expected.gradle`/their `.tests` objects being silently accepted rather than rejected --
+  // including a FORBIDDEN field explicitly set to `null` (e.g. `tests.skipped: null`), which the
+  // old `'k' in obj && obj.k != null` presence pattern treated as absent, silently skipping the
+  // forbidden-field check entirely.
+  describe('round 8: closed key sets on expected/kmp_test/gradle -- unrecognized fields (including forbidden fields explicitly set to null) are rejected', () => {
+    it('EXACT REPRODUCTION: a resurrected expected.kmp_test.task field is rejected -- previously silently accepted', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.task = ':wrong:test';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.task')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: an unrecognized expected.gradle.tests.flaky counter is rejected -- previously silently accepted', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests.flaky = 99;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.flaky')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: expected.gradle.tests.skipped explicitly set to null still triggers the forbidden-field check -- previously the `!= null` presence pattern silently treated this as absent', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests.skipped = null;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.skipped')).toBe(true);
+    });
+
+    it('an unrecognized top-level key on expected itself is rejected', () => {
+      const s = baseScenario();
+      s.expected.extra_field = 'unexpected';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.extra_field')).toBe(true);
+    });
+
+    it('an unrecognized key on expected.kmp_test for a no_applicable_tests contract is rejected', () => {
+      const s = baseScenarioNoTests();
+      s.expected.kmp_test.unexpected_field = 'x';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.unexpected_field')).toBe(true);
+    });
+
+    it('an unrecognized key on expected.gradle for a no_applicable_tests contract is rejected', () => {
+      const s = baseScenarioNoTests();
+      s.expected.gradle.unexpected_field = 'x';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.unexpected_field')).toBe(true);
+    });
+
+    it('regression guard: well-formed tests_executed and no_applicable_tests scenarios with no extra keys anywhere still validate cleanly', () => {
+      expect(validateScenario(baseScenario()).errors).toEqual([]);
+      expect(validateScenario(baseScenarioNoTests()).errors).toEqual([]);
+    });
+  });
+
   // A fresh review reproduced tests_executed contracts legitimately claiming {total:0,...} --
   // self-contradictory (if outcome_kind is tests_executed, at least one test ran by definition),
   // and indistinguishable at the schema level from an absent-XML false positive (fixed separately

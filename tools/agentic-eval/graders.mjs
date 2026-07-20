@@ -262,8 +262,15 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
   // mis-correlated evidence -- a command with no --dry-run/--list-only in its own text, paired
   // (whether by a caching bug, a mismatched tool_result, or anything else) with an envelope that
   // itself claims plan-only mode, must not be trusted just because its counts happen to coincide.
-  if (envelope.dry_run === true) return false;
-  if (envelope.parallel?.list_only === true) return false;
+  // A fresh review reproduced this failing OPEN on a wrong-typed value: `envelope.dry_run === true`
+  // only rejects the LITERAL boolean `true` -- `dry_run:"true"` (string) or `dry_run:1` (number)
+  // still semantically claim plan-only mode but are not `=== true`, so the old check silently let
+  // them through. Fixed as a fail-closed allowlist: the ONLY acceptable states are "field absent" (a
+  // real envelope for an actual execution never sets dry_run at all -- see
+  // lib/envelope/builder.js's buildJsonReport) or "field explicitly false". Anything else -- any
+  // truthy-or-not wrong-typed value -- is rejected, not just literal `true`.
+  if (envelope.dry_run !== undefined && envelope.dry_run !== false) return false;
+  if (envelope.parallel?.list_only !== undefined && envelope.parallel?.list_only !== false) return false;
   // resultIsError:true contradicting a CLEAN exit_code:0 claim is wrong under any plausible
   // convention, but the REVERSE (resultIsError:false alongside a non-zero exit_code) is NOT
   // flagged: kmp-test's own exit codes encode multiple LEGITIMATE non-zero states (exit_code:2/

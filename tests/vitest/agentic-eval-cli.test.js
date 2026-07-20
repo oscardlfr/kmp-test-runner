@@ -1007,3 +1007,51 @@ describe('findDuplicateScenarioIds', () => {
     expect(findDuplicateScenarioIds([])).toEqual([]);
   });
 });
+
+// Round 8: a fresh review reproduced this function still rejecting two more real remote-URL forms
+// after round 7's original SSH-shorthand/HTTPS fix, AND noted zero regression tests existed for it
+// at all despite round 7 claiming every new behavior was verified RED->GREEN -- an accurate
+// correction: this function specifically had no direct unit coverage until now.
+describe('normalizeGitRemoteForComparison', () => {
+  it('EXACT REPRODUCTION: the ssh:// URI form (distinct from the git@host:path shorthand) now canonicalizes to the same identity as the HTTPS form', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const ssh = normalizeGitRemoteForComparison('ssh://git@github.com/touchlab/KaMPKit.git');
+    const https = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit');
+    expect(ssh).toBe(https);
+  });
+
+  it('EXACT REPRODUCTION: a trailing slash AFTER .git no longer defeats .git-suffix stripping', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const withTrailingSlash = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit.git/');
+    const withoutTrailingSlash = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit');
+    expect(withTrailingSlash).toBe(withoutTrailingSlash);
+  });
+
+  it('EXACT REPRODUCTION: scheme/host case differences no longer produce a different canonical identity', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const upper = normalizeGitRemoteForComparison('HTTPS://GitHub.com/touchlab/KaMPKit.git');
+    const lower = normalizeGitRemoteForComparison('https://github.com/touchlab/kampkit');
+    expect(upper).toBe(lower);
+  });
+
+  it('regression guard: the bare SSH shorthand (git@host:org/repo) still canonicalizes to the same identity as HTTPS', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const ssh = normalizeGitRemoteForComparison('git@github.com:touchlab/KaMPKit.git');
+    const https = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit');
+    expect(ssh).toBe(https);
+  });
+
+  it('a genuinely different repository does NOT canonicalize to the same identity', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const a = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit');
+    const b = normalizeGitRemoteForComparison('https://github.com/touchlab/other-repo');
+    expect(a).not.toBe(b);
+  });
+
+  it('a genuinely different host does NOT canonicalize to the same identity', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const a = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit');
+    const b = normalizeGitRemoteForComparison('https://gitlab.com/touchlab/KaMPKit');
+    expect(a).not.toBe(b);
+  });
+});

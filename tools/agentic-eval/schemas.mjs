@@ -319,6 +319,31 @@ const GRADLE_MARKER_VALUES = ['NO-SOURCE'];
 // passed `validateScenario()` with zero errors.
 const SCENARIO_TAG_VALUES = ['train', 'held-out'];
 
+// Exact, closed key sets for `expected` and its per-provider/outcome_kind contracts (a real gap
+// found on review: `expected.kmp_test.task=':wrong:test'` and `expected.gradle.tests.flaky=99` both
+// previously validated with zero errors -- unrecognized fields were silently accepted rather than
+// rejected). Enforced via `rejectUnrecognizedKeys`, below, which reads `Object.keys()` -- NOT the
+// `'k' in obj && obj.k != null` presence pattern used elsewhere in this file for OPTIONAL fields --
+// specifically so a forbidden key explicitly set to `null` (e.g. `expected.gradle.tests.skipped:
+// null`) is still caught: `Object.keys({skipped: null})` reports `skipped` as present regardless of
+// its value, while the old `!= null` presence check would have silently treated it as absent.
+const EXPECTED_TOP_LEVEL_KEYS = ['module', 'outcome_kind', 'kmp_test', 'gradle'];
+const KMP_TEST_CONTRACT_KEYS_TESTS_EXECUTED = ['tests', 'exit_code'];
+const KMP_TEST_CONTRACT_KEYS_NO_APPLICABLE = ['error_code', 'exit_code', 'caused_by_filter'];
+const GRADLE_CONTRACT_KEYS_TESTS_EXECUTED = ['allowed_invocations', 'evidence_task', 'tests', 'exit_code'];
+const GRADLE_CONTRACT_KEYS_NO_APPLICABLE = ['allowed_invocations', 'evidence_task', 'exit_code', 'marker'];
+const KMP_TEST_TESTS_SHAPE_KEYS = ['total', 'passed', 'failed', 'individual_total', 'skipped'];
+const GRADLE_TESTS_SHAPE_KEYS = ['total', 'passed', 'failed'];
+
+function rejectUnrecognizedKeys(obj, allowedKeys, field, errors) {
+  if (obj == null || typeof obj !== 'object' || Array.isArray(obj)) return;
+  for (const k of Object.keys(obj)) {
+    if (!allowedKeys.includes(k)) {
+      errors.push({ field: `${field}.${k}`, message: `unrecognized field -- only ${allowedKeys.join(', ')} allowed on ${field}` });
+    }
+  }
+}
+
 /** Validates `policy.{allowed_kmptest_subcommands,allowed_gradle_tasks}` -- the ONLY place a
  * scenario field is ever interpreted as something that reaches a shell/exec call (decision 9),
  * so this is the ONLY place scenario validation enforces an executable-content grammar. Reuses
@@ -381,6 +406,15 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
     errors.push({ field, message: 'must be an object' });
     return;
   }
+  // Exact, closed key set for the provider object itself -- see this constants block's own doc
+  // comment. Applied before the branch-specific checks below so an unrecognized field (e.g. a
+  // resurrected `task`) is always reported regardless of what else is wrong.
+  if (outcomeKind === 'tests_executed') {
+    rejectUnrecognizedKeys(provider, contractName === 'kmp_test' ? KMP_TEST_CONTRACT_KEYS_TESTS_EXECUTED : GRADLE_CONTRACT_KEYS_TESTS_EXECUTED, field, errors);
+  } else if (outcomeKind === 'no_applicable_tests') {
+    rejectUnrecognizedKeys(provider, contractName === 'kmp_test' ? KMP_TEST_CONTRACT_KEYS_NO_APPLICABLE : GRADLE_CONTRACT_KEYS_NO_APPLICABLE, field, errors);
+  }
+
   const hasTests = 'tests' in provider && provider.tests != null;
   const hasErrorCode = 'error_code' in provider && provider.error_code != null;
   const hasCausedByFilter = 'caused_by_filter' in provider && provider.caused_by_filter != null;
@@ -394,26 +428,34 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
     // well-shaped (comparing potentially-non-numeric values would be meaningless).
     const isNonNegInt = (v) => Number.isInteger(v) && v >= 0;
     const isPositiveInt = (v) => Number.isInteger(v) && v >= 1;
-    const hasIndividualTotal = hasTests && 'individual_total' in provider.tests && provider.tests.individual_total != null;
-    const hasSkipped = hasTests && 'skipped' in provider.tests && provider.tests.skipped != null;
     let testsShapeOk;
     if (contractName === 'kmp_test') {
       // kmp-test's own real envelope always reports all five counters for a genuine `parallel`
       // run -- REQUIRE all five, not merely validate-if-present, so a scenario (and an
       // intentionally-incomplete matching envelope) can never vacuously "agree" by both omitting
       // a counter the grader is supposed to check (see this function's own doc comment, finding 1).
+      // `individual_total` must be POSITIVE (>=1), not merely non-negative -- a further review
+      // reproduced `total:1` (task-level) paired with `individual_total:0` both passing under the
+      // old non-negative check, letting a kmp-test envelope claim "the task ran" while separately
+      // claiming "zero individual tests executed" -- directly self-contradictory. `skipped` must
+      // be EXACTLY 0 -- the Gradle/JUnit-XML path can never corroborate a non-zero skip claim
+      // (gradle's own contract forbids the field entirely, below), so a kmp_test contract asserting
+      // skipped>0 would be permanently unverifiable by construction.
+      rejectUnrecognizedKeys(provider.tests, KMP_TEST_TESTS_SHAPE_KEYS, `${field}.tests`, errors);
       testsShapeOk = hasTests
         && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && isNonNegInt(provider.tests.failed)
-        && isNonNegInt(provider.tests.individual_total) && isNonNegInt(provider.tests.skipped);
+        && isPositiveInt(provider.tests.individual_total) && provider.tests.skipped === 0;
       if (!testsShapeOk) {
-        errors.push({ field: `${field}.tests`, message: 'required (positive integer total; non-negative integer passed/failed/individual_total/skipped -- ALL five required for kmp_test) when outcome_kind is tests_executed' });
+        errors.push({ field: `${field}.tests`, message: 'required (positive integer total/individual_total; non-negative integer passed/failed; skipped must be exactly 0 -- the Gradle/JUnit-XML path can never verify a non-zero skip claim) when outcome_kind is tests_executed' });
       }
     } else {
       // Gradle/JUnit-XML: individual_total/skipped are FORBIDDEN, not merely unvalidated -- the
       // capture mechanism genuinely cannot verify either today (see this function's own doc
-      // comment, finding 1, and graders.mjs's disclosed limitation on skipped specifically).
-      if (hasIndividualTotal) errors.push({ field: `${field}.tests.individual_total`, message: 'forbidden on the gradle contract -- the JUnit-XML capture path cannot verify it' });
-      if (hasSkipped) errors.push({ field: `${field}.tests.skipped`, message: 'forbidden on the gradle contract -- the JUnit-XML capture path cannot verify it' });
+      // comment, finding 1, and graders.mjs's disclosed limitation on skipped specifically). The
+      // exact-key-set check above already rejects them (and catches a forbidden field explicitly
+      // set to `null`, which the old `!= null` presence check silently missed); no separate
+      // hasIndividualTotal/hasSkipped check is needed.
+      rejectUnrecognizedKeys(provider.tests, GRADLE_TESTS_SHAPE_KEYS, `${field}.tests`, errors);
       testsShapeOk = hasTests && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && isNonNegInt(provider.tests.failed);
       if (!testsShapeOk) {
         errors.push({ field: `${field}.tests`, message: 'required (positive integer total; non-negative integer passed/failed) when outcome_kind is tests_executed' });
@@ -453,6 +495,7 @@ function validateExpected(expected, policy, errors) {
     errors.push({ field: 'expected', message: 'must be an object' });
     return;
   }
+  rejectUnrecognizedKeys(expected, EXPECTED_TOP_LEVEL_KEYS, 'expected', errors);
   if (typeof expected.module !== 'string' || !/^:[A-Za-z0-9_:-]+$/.test(expected.module)) {
     errors.push({ field: 'expected.module', message: 'must be a colon-prefixed Gradle project path, e.g. ":shared"' });
   }
@@ -481,6 +524,32 @@ function validateExpected(expected, policy, errors) {
       }
     }
     validateProviderContract(gradle, 'gradle', expected.outcome_kind, errors);
+  }
+
+  // Cross-provider consistency -- a real gap found on review: kmp_test.tests.individual_total (the
+  // real per-test-case count from kmp-test's own JUnit-XML walk) and gradle.tests.total (the same
+  // real test run's count, independently derived by matrix-runner.mjs's own JUnit-XML capture)
+  // describe the SAME underlying test execution and must agree. Without this check, a scenario
+  // could declare kmp_test.individual_total:0 alongside gradle.tests.total:24 -- both values would
+  // pass their OWN provider's shape validation independently, and because graders.mjs's
+  // kmpEvalResultBlockMatchesScenario checks the agent's KMP_EVAL_RESULT block against
+  // expected.gradle.tests specifically (never against whichever provider's evidence was actually
+  // terminal), a kmp-test attempt reporting individual_total:0 (matching a permissive kmp_test
+  // contract) could sit alongside an agent's block claiming total:24 (matching gradle.tests.total)
+  // -- a direct, gradeable-as-success self-contradiction. Forcing the two scenario-authored
+  // constants to agree closes this at the source: with individual_total forced to equal
+  // gradle.tests.total always, there is only ever one canonical number to satisfy, so an envelope
+  // and a block that each independently "match their own expected constant" can no longer diverge.
+  if (expected.outcome_kind === 'tests_executed'
+    && expected.kmp_test != null && typeof expected.kmp_test === 'object' && expected.kmp_test.tests != null
+    && typeof expected.kmp_test.tests.individual_total === 'number'
+    && gradle != null && typeof gradle === 'object' && gradle.tests != null
+    && typeof gradle.tests.total === 'number'
+    && expected.kmp_test.tests.individual_total !== gradle.tests.total) {
+    errors.push({
+      field: 'expected.kmp_test.tests.individual_total',
+      message: `must equal expected.gradle.tests.total (${gradle.tests.total}) -- both describe the same real test execution's count and must not diverge`,
+    });
   }
 }
 
