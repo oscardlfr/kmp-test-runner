@@ -654,13 +654,16 @@ function buildRunRecord({
         ? [{ code: 'raw_capture_location_overridden', message: 'KMP_EVAL_RUNS_ROOT was set to a non-default root for this run -- the raw transcript may not be covered by the default .gitignore pattern; verify manually before staging anything from that location' }]
         : []),
       // A review pass established this is a HARNESS-INTEGRITY defect, not a legitimate agent
-      // outcome: JUnit XML is captured once per condition, so more than one Gradle attempt
-      // targeting the scenario's allowed invocations within this condition means that one
-      // snapshot cannot be reliably attributed to any specific attempt. Surfaced here (not just
+      // outcome: JUnit XML is captured once per condition, so more than one attempt CAPABLE of
+      // producing it -- a Gradle invocation targeting the scenario's allowed invocations, OR a
+      // `kmp-test parallel` call (which runs the same underlying Gradle test task under the hood)
+      // -- within this condition means that one snapshot cannot be reliably attributed to any
+      // specific attempt (see graders.mjs's classifyJunitProvenance for the full rationale,
+      // including why this only applies to tests_executed scenarios). Surfaced here (not just
       // degraded to outcomeMatches:false) so scenarioCellIntegrityOk can block the WHOLE matrix's
       // promotion, matching decision 4's existing treatment of every other integrity defect.
       ...(isScenario && gradeResult?.harnessEvidenceAmbiguous
-        ? [{ code: 'ambiguous_junit_evidence', message: 'more than one Gradle attempt in this condition targeted the scenario\'s allowed invocations -- the single per-condition JUnit XML snapshot cannot be reliably attributed to any specific attempt' }]
+        ? [{ code: 'ambiguous_junit_evidence', message: 'more than one attempt in this condition (a Gradle invocation and/or a kmp-test parallel call) could have produced the scenario\'s JUnit evidence -- the single per-condition JUnit XML snapshot cannot be reliably attributed to any specific attempt' }]
         : []),
     ],
   };
@@ -1267,10 +1270,11 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
  * `'error'` termination (an external kill/spawn failure -- a harness-trustworthiness signal); a
  * clean run or a declared `'timeout'` both pass. `junitEvidenceOk` is a review-fix addition: an
  * `ambiguous_junit_evidence` error on the record (buildRunRecord, from graders.mjs's own
- * `harnessEvidenceAmbiguous`) means more than one Gradle attempt in this condition could have
- * produced the single per-condition JUnit XML snapshot -- a genuine HARNESS defect (the harness
- * cannot produce trustworthy evidence for this cell at all), not a legitimate agent outcome, so it
- * blocks here rather than merely degrading that one cell's outcomeMatches to false.
+ * `harnessEvidenceAmbiguous`) means more than one attempt in this condition -- a Gradle invocation
+ * and/or a kmp-test `parallel` call -- could have produced the single per-condition JUnit XML
+ * snapshot -- a genuine HARNESS defect (the harness cannot produce trustworthy evidence for this
+ * cell at all), not a legitimate agent outcome, so it blocks here rather than merely degrading
+ * that one cell's outcomeMatches to false.
  */
 function scenarioCellIntegrityOk(record, conditionResult) {
   const expectSkillAvailable = record.condition === 'current-skill';
