@@ -13,6 +13,11 @@ import {
   findSkillInvocation,
   findForeignSkillUses,
   findBashToolUses,
+  findBashToolUsesWithResults,
+  findTranscriptStructuralIssues,
+  findTranscriptStructuralIssuesToleratingTimeout,
+  findIncompleteToolResults,
+  findIncompleteToolResultsToleratingTimeout,
   countHookEvents,
   computeByteMetrics,
   extractTokenUsage,
@@ -404,5 +409,142 @@ describe('deriveFirstUsefulSignalMs -- index-to-ms derivation is the only place 
     expect(ms).not.toBeNull();
     expect(ms).toBeGreaterThanOrEqual(0);
     expect(ms).toBeLessThan(1000); // event index 2, ~1ms apart -- must be small, not a huge negative number
+  });
+});
+
+// Local synthetic-event helpers, matching agentic-eval-hard-gates.test.js's own established shape
+// exactly (both files construct the same real stream-json event shapes; duplicating the tiny
+// helpers here keeps this file independently readable without a cross-file import).
+function bashToolUseEvent(id, command) {
+  return { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', id, input: { command } }] } };
+}
+function toolResultEvent(id, { isError = false, content = 'ok' } = {}) {
+  return { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content, is_error: isError, tool_use_id: id }] } };
+}
+function initEventStub() {
+  return { type: 'system', subtype: 'init' };
+}
+function resultEventStub() {
+  return { type: 'result', subtype: 'success' };
+}
+
+describe('findBashToolUsesWithResults -- resultIndex/resultContent (additive fields)', () => {
+  it('exposes the correlated tool_result event index and raw content when a result was found', () => {
+    const events = [
+      initEventStub(),
+      bashToolUseEvent('t1', 'kmp-test parallel --json'),
+      toolResultEvent('t1', { content: '{"tool":"kmp-test"}' }),
+      resultEventStub(),
+    ];
+    const [entry] = findBashToolUsesWithResults(events);
+    expect(entry.resultFound).toBe(true);
+    expect(entry.resultIndex).toBe(2);
+    expect(entry.resultContent).toBe('{"tool":"kmp-test"}');
+  });
+
+  it('resultIndex/resultContent are both null when no result was found -- never undefined, never a guess', () => {
+    const events = [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json'), resultEventStub()];
+    const [entry] = findBashToolUsesWithResults(events);
+    expect(entry.resultFound).toBe(false);
+    expect(entry.resultIndex).toBeNull();
+    expect(entry.resultContent).toBeNull();
+  });
+
+  it('existing fields (command/resultFound/resultIsError) are unchanged by the addition', () => {
+    const events = [initEventStub(), bashToolUseEvent('t1', './gradlew :app:test'), toolResultEvent('t1', { isError: true, content: 'BUILD FAILED' }), resultEventStub()];
+    const [entry] = findBashToolUsesWithResults(events);
+    expect(entry.command).toBe('./gradlew :app:test');
+    expect(entry.resultFound).toBe(true);
+    expect(entry.resultIsError).toBe(true);
+  });
+});
+
+describe('findTranscriptStructuralIssuesToleratingTimeout', () => {
+  // A transcript that ends right after a completed Bash call, with no terminal `result` event at
+  // all -- exactly what a process killed by spawnCondition's own timeout looks like.
+  function timedOutTranscript() {
+    return [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json'), toolResultEvent('t1', { content: '{"exit_code":0}' })];
+  }
+
+  it('a legitimate timeout (terminated:true, reason:timeout) tolerates the missing result_count issue', () => {
+    const issues = findTranscriptStructuralIssuesToleratingTimeout(timedOutTranscript(), { terminated: true, terminationReason: 'timeout' });
+    expect(issues).toEqual([]);
+  });
+
+  it('the SAME missing-result transcript is still reported when terminated is false (not a timeout at all)', () => {
+    const issues = findTranscriptStructuralIssuesToleratingTimeout(timedOutTranscript(), { terminated: false, terminationReason: null });
+    expect(issues.some((i) => i.type === 'result_count')).toBe(true);
+  });
+
+  it('the SAME missing-result transcript is still reported when terminated is true but the reason is "error", not "timeout"', () => {
+    const issues = findTranscriptStructuralIssuesToleratingTimeout(timedOutTranscript(), { terminated: true, terminationReason: 'error' });
+    expect(issues.some((i) => i.type === 'result_count')).toBe(true);
+  });
+
+  it('result_count > 1 (a genuinely different problem) is never tolerated, even under a real timeout', () => {
+    const events = [initEventStub(), resultEventStub(), resultEventStub()]; // two result events -- never explainable by a timeout
+    const issues = findTranscriptStructuralIssuesToleratingTimeout(events, { terminated: true, terminationReason: 'timeout' });
+    expect(issues.some((i) => i.type === 'result_count' && i.count === 2)).toBe(true);
+  });
+
+  // A genuinely corrupted transcript that ALSO happens to lack a result event must still fail --
+  // for its OTHER reasons -- even under a claimed timeout. A timeout excuses only the ONE specific
+  // symptom it actually causes, never a blanket pass on every structural check at once.
+  it('a genuinely corrupted transcript (duplicate init) that also lacks a result event still fails, even under a real timeout', () => {
+    const events = [initEventStub(), initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json')];
+    const issues = findTranscriptStructuralIssuesToleratingTimeout(events, { terminated: true, terminationReason: 'timeout' });
+    expect(issues.some((i) => i.type === 'init_count' && i.count === 2)).toBe(true);
+    // The missing-result issue itself IS still tolerated -- only the duplicate-init issue survives.
+    expect(issues.some((i) => i.type === 'result_count')).toBe(false);
+  });
+
+  it('a clean, complete transcript (no timeout needed) reports zero issues regardless of the flags passed', () => {
+    const events = [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json'), toolResultEvent('t1'), resultEventStub()];
+    expect(findTranscriptStructuralIssuesToleratingTimeout(events, { terminated: false, terminationReason: null })).toEqual([]);
+  });
+});
+
+describe('findIncompleteToolResultsToleratingTimeout', () => {
+  it('a legitimate timeout mid-Bash-call (one incomplete result, which IS the last tool_use) is tolerated', () => {
+    const events = [
+      initEventStub(),
+      bashToolUseEvent('t1', 'kmp-test doctor --json'),
+      toolResultEvent('t1'),
+      bashToolUseEvent('t2', 'kmp-test parallel --json'), // killed mid-flight -- no tool_result ever arrives
+    ];
+    const incomplete = findIncompleteToolResultsToleratingTimeout(events, { terminated: true, terminationReason: 'timeout' });
+    expect(incomplete).toEqual([]);
+  });
+
+  it('the SAME mid-call transcript is still reported when terminated is false (not a timeout at all)', () => {
+    const events = [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json')];
+    const incomplete = findIncompleteToolResultsToleratingTimeout(events, { terminated: false, terminationReason: null });
+    expect(incomplete.length).toBe(1);
+  });
+
+  it('two incomplete tool_use calls are never tolerated, even under a real timeout -- one abrupt kill cannot explain two', () => {
+    const events = [initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), bashToolUseEvent('t2', 'kmp-test parallel --json')];
+    const incomplete = findIncompleteToolResultsToleratingTimeout(events, { terminated: true, terminationReason: 'timeout' });
+    expect(incomplete.length).toBe(2);
+  });
+
+  // An incomplete result that ISN'T the last tool_use in the transcript means a LATER call
+  // somehow completed while an EARLIER one never did -- impossible for a real single-threaded
+  // transcript to produce via a simple abrupt kill, so this is genuine corruption, not a timeout.
+  it('an incomplete result that is NOT the last tool_use is never tolerated, even under a real timeout', () => {
+    const events = [
+      initEventStub(),
+      bashToolUseEvent('t1', 'kmp-test doctor --json'), // never gets a result -- but is NOT the last tool_use below
+      bashToolUseEvent('t2', 'kmp-test parallel --json'),
+      toolResultEvent('t2'),
+    ];
+    const incomplete = findIncompleteToolResultsToleratingTimeout(events, { terminated: true, terminationReason: 'timeout' });
+    expect(incomplete.length).toBe(1);
+    expect(incomplete[0].id).toBe('t1');
+  });
+
+  it('a timeout AFTER every command already completed (zero incomplete results) is the trivial happy path', () => {
+    const events = [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json'), toolResultEvent('t1')];
+    expect(findIncompleteToolResultsToleratingTimeout(events, { terminated: true, terminationReason: 'timeout' })).toEqual([]);
   });
 });

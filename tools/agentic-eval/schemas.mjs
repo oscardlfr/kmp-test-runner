@@ -10,8 +10,20 @@
 // "Never infer missing metrics; store null with a reason": every metric that can be
 // legitimately unavailable is {value: T|null, reason: string|null} -- the validator rejects
 // value:null paired with reason:null.
+import { GRADLE_TASK_ENTRY_RE, KMPTEST_SUBCOMMAND_ENTRY_RE } from './policy-hook.mjs';
+import { GRADING_CHECK_NAMES } from './graders.mjs';
+import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 
-export const CURRENT_RUN_SCHEMA = 1;
+// Run schema went from a single CURRENT_RUN_SCHEMA equality check to explicit per-version
+// dispatch (SUPPORTED_RUN_SCHEMAS / LATEST_RUN_SCHEMA) -- a real bug found on review: a naive
+// bump of the old single constant to 2 would have made validateRun() reject every one of the 8
+// historical schema:1 run records committed by PR #373/#378 at its very first check, before
+// anything else even ran. `LATEST_RUN_SCHEMA` is what every subcommand (calibrate/smoke/run
+// alike) stamps on NEW records going forward; `SUPPORTED_RUN_SCHEMAS` is what validateRun()
+// still accepts, so the 8 historical files keep validating under their original v1 rules
+// unchanged (see the RUN_CANONICAL_FIELDS_V1/_V2 split and validateRun's dispatch, below).
+export const SUPPORTED_RUN_SCHEMAS = [1, 2];
+export const LATEST_RUN_SCHEMA = 2;
 export const CURRENT_SCENARIO_SCHEMA = 1;
 export const CURRENT_AGGREGATE_SCHEMA = 1;
 
@@ -24,7 +36,9 @@ export const TERMINATION_REASON_VALUES = [null, 'timeout', 'error', 'unsupported
 export const PRIVACY_STATUS_VALUES = ['public', 'redacted-private'];
 export const DAEMON_POLICY_VALUES = ['disabled-via-gradle-user-home-properties', 'default', 'unknown'];
 
-const RUN_CANONICAL_FIELDS = [
+// Schema v1 -- unchanged from every historical record's own shape (the 8 files committed by
+// PR #373/#378). Never edit this list; a v1 record must keep validating exactly as it always has.
+const RUN_CANONICAL_FIELDS_V1 = [
   'schema', 'run_id', 'run_kind', 'benchmark_eligible', 'scenario_id', 'query_id', 'condition',
   'skill_source_sha', 'kmp_test_cli_version', 'kmp_test_cli_source_sha',
   'resolved_kmp_test_executable_path', 'model_requested', 'model_resolved', 'session_id_observed',
@@ -39,28 +53,82 @@ const RUN_CANONICAL_FIELDS = [
   'raw_capture_location', 'notes', 'errors',
 ];
 
+// Schema v2 = v1 + grading_checks (structured per-check grading detail, never overloaded into
+// notes/errors) + repetition_index (which trial within a scenario matrix a record belongs to --
+// decision 11's set-equality completeness proof needs this to exist as an actual field, not just
+// be inferred). Every subcommand (calibrate/smoke/run alike) stamps LATEST_RUN_SCHEMA on new
+// records going forward; calibrate/smoke's own records simply report both new fields as
+// legitimately not-applicable (null + reason), the same "never infer, store null with a reason"
+// convention every other optional field in this schema already follows.
+const RUN_CANONICAL_FIELDS_V2 = [...RUN_CANONICAL_FIELDS_V1, 'grading_checks', 'repetition_index'];
+
+function runCanonicalFieldsFor(schema) {
+  return schema === 2 ? RUN_CANONICAL_FIELDS_V2 : RUN_CANONICAL_FIELDS_V1;
+}
+
 // Fields using the {value, reason} nullable-metric shape -- "never infer, store null with a reason".
+// grading_checks is v2-only (schema dispatch below decides whether it's even inspected); listed
+// here unconditionally is harmless since validateNullableMetric is only ever invoked for fields
+// present on the record (`for (const f of NULLABLE_METRIC_FIELDS) if (f in run) ...`).
 const NULLABLE_METRIC_FIELDS = [
   'skill_available', 'skill_invocation_attempted', 'skill_invoked', 'success', 'expected_outcome_matched',
   'first_useful_signal_ms', 'tool_calls_total', 'shell_commands_total', 'test_invocations_total',
-  'retries', 'output_bytes', 'stream_json_bytes', 'human_interventions',
+  'retries', 'output_bytes', 'stream_json_bytes', 'human_interventions', 'grading_checks',
 ];
 
 // Per-field value domain: 'boolean' for status metrics, 'count' for non-negative integer
-// counts/bytes, 'timing' for non-negative (possibly fractional) millisecond values. A
-// non-null value failing its domain (e.g. skill_invoked: "false" as a string, or a negative
-// byte count) passes the {value,reason} shape check but is still wrong data -- validated
-// separately so a malformed value can't silently corrupt grading/aggregation downstream.
+// counts/bytes, 'timing' for non-negative (possibly fractional) millisecond values, 'checks-array'
+// for grading_checks's structured array (decision 14 -- exactly GRADING_CHECK_NAMES, no more, no
+// fewer, no duplicates). A non-null value failing its domain (e.g. skill_invoked: "false" as a
+// string, or a negative byte count) passes the {value,reason} shape check but is still wrong data
+// -- validated separately so a malformed value can't silently corrupt grading/aggregation
+// downstream.
 const NULLABLE_METRIC_KIND = {
   skill_available: 'boolean', skill_invocation_attempted: 'boolean', skill_invoked: 'boolean', success: 'boolean',
   expected_outcome_matched: 'boolean', first_useful_signal_ms: 'timing',
   tool_calls_total: 'count', shell_commands_total: 'count', test_invocations_total: 'count',
   retries: 'count', output_bytes: 'count', stream_json_bytes: 'count', human_interventions: 'count',
   'tokens.input': 'count', 'tokens.output': 'count', 'tokens.cache_read': 'count', 'tokens.cache_creation': 'count',
+  grading_checks: 'checks-array',
 };
 
 function isNullableMetric(m) {
   return m != null && typeof m === 'object' && 'value' in m && 'reason' in m;
+}
+
+/** Validates one grading_checks.value array against the fixed GRADING_CHECK_NAMES set (decision
+ * 14): every name present exactly once, no unrecognized names, `passed` strictly boolean per
+ * entry, `evidence_event_indices` an array of non-negative integers. A grader that silently
+ * dropped a check, or a future edit that renamed one without updating GRADING_CHECK_NAMES, fails
+ * validation immediately instead of silently producing an incomplete/malformed record. */
+function validateGradingChecksArray(value, field, errors) {
+  if (!Array.isArray(value)) {
+    errors.push({ field, message: 'value must be an array' });
+    return;
+  }
+  const seenNames = new Set();
+  for (const [i, entry] of value.entries()) {
+    const label = `${field}[${i}]`;
+    if (entry == null || typeof entry !== 'object') {
+      errors.push({ field: label, message: 'must be an object' });
+      continue;
+    }
+    if (typeof entry.name !== 'string' || !GRADING_CHECK_NAMES.includes(entry.name)) {
+      errors.push({ field: `${label}.name`, message: `must be one of ${GRADING_CHECK_NAMES.join('|')}` });
+    } else if (seenNames.has(entry.name)) {
+      errors.push({ field: `${label}.name`, message: `duplicate check name: ${entry.name}` });
+    } else {
+      seenNames.add(entry.name);
+    }
+    if (typeof entry.passed !== 'boolean') errors.push({ field: `${label}.passed`, message: 'must be a boolean' });
+    if (typeof entry.detail !== 'string') errors.push({ field: `${label}.detail`, message: 'must be a string' });
+    if (!Array.isArray(entry.evidence_event_indices) || entry.evidence_event_indices.some((n) => !Number.isInteger(n) || n < 0)) {
+      errors.push({ field: `${label}.evidence_event_indices`, message: 'must be an array of non-negative integers' });
+    }
+  }
+  for (const name of GRADING_CHECK_NAMES) {
+    if (!seenNames.has(name)) errors.push({ field, message: `missing required check: ${name}` });
+  }
 }
 
 function validateMetricValueDomain(value, kind, field, errors) {
@@ -71,6 +139,8 @@ function validateMetricValueDomain(value, kind, field, errors) {
     errors.push({ field, message: `value must be a non-negative integer` });
   } else if (kind === 'timing' && !(typeof value === 'number' && Number.isFinite(value) && value >= 0)) {
     errors.push({ field, message: `value must be a non-negative finite number` });
+  } else if (kind === 'checks-array') {
+    validateGradingChecksArray(value, field, errors);
   }
 }
 
@@ -113,11 +183,18 @@ export function validateRun(run) {
     return { errors, warnings };
   }
 
+  // Schema-version dispatch (decision 6) -- picks the v1 or v2 field-presence list based on the
+  // record's OWN declared schema, never a single global comparison. This is what lets the 8
+  // historical schema:1 records keep validating exactly as they always have, unaffected by v2's
+  // addition.
+  if (!SUPPORTED_RUN_SCHEMAS.includes(run.schema)) {
+    errors.push({ field: 'schema', message: `expected one of ${SUPPORTED_RUN_SCHEMAS.join('|')}, got ${run.schema}` });
+  }
+  const canonicalFields = runCanonicalFieldsFor(run.schema);
   const keys = new Set(Object.keys(run));
-  for (const f of RUN_CANONICAL_FIELDS) if (!keys.has(f)) errors.push({ field: f, message: 'missing required field' });
-  for (const k of keys) if (!RUN_CANONICAL_FIELDS.includes(k)) warnings.push({ field: k, message: 'unrecognized field' });
+  for (const f of canonicalFields) if (!keys.has(f)) errors.push({ field: f, message: 'missing required field' });
+  for (const k of keys) if (!canonicalFields.includes(k)) warnings.push({ field: k, message: 'unrecognized field' });
 
-  if (run.schema !== CURRENT_RUN_SCHEMA) errors.push({ field: 'schema', message: `expected ${CURRENT_RUN_SCHEMA}, got ${run.schema}` });
   if (typeof run.run_id !== 'string' || run.run_id.length === 0) errors.push({ field: 'run_id', message: 'must be a non-empty string' });
   if (!RUN_KIND_VALUES.includes(run.run_kind)) errors.push({ field: 'run_kind', message: `must be one of ${RUN_KIND_VALUES.join('|')}` });
   if (typeof run.benchmark_eligible !== 'boolean') errors.push({ field: 'benchmark_eligible', message: 'must be a boolean' });
@@ -163,6 +240,36 @@ export function validateRun(run) {
     errors.push({ field: 'skill_invoked', message: 'cannot be true when skill_invocation_attempted is not true' });
   }
 
+  // grading_checks (v2-only field) -- conditionally required, not merely optional: a real,
+  // non-null checks array whenever this IS a schema:2 scenario record (grading genuinely applies
+  // and must have actually run), null+reason for every other run_kind/schema combination
+  // (calibrate/smoke's own v2 records, and any v1 record where the field doesn't exist at all).
+  if (run.schema === 2) {
+    if (run.run_kind === 'scenario') {
+      if (run.grading_checks?.value == null) {
+        errors.push({ field: 'grading_checks', message: 'required (non-null) for a schema:2 run_kind:scenario record -- grading must have actually run' });
+      }
+    } else if (run.grading_checks?.value != null) {
+      errors.push({ field: 'grading_checks', message: `must be null for run_kind "${run.run_kind}" -- grading only applies to scenario records` });
+    }
+  }
+
+  // repetition_index (v2-only field, plain nullable -- like scenario_id, not a {value,reason}
+  // metric) -- required (a real non-negative integer identifying which trial this record belongs
+  // to) for a schema:2 scenario record, null for every other run_kind (no repetition concept
+  // applies). Gated on schema===2 exactly like grading_checks above -- a schema:1 record (even a
+  // hypothetical/test-constructed run_kind:'scenario' one) was never expected to carry this field
+  // at all, since RUN_CANONICAL_FIELDS_V1 doesn't include it; only v2 introduces the concept.
+  if (run.schema === 2) {
+    if (run.run_kind === 'scenario') {
+      if (!(Number.isInteger(run.repetition_index) && run.repetition_index >= 0)) {
+        errors.push({ field: 'repetition_index', message: 'must be a non-negative integer for a schema:2 run_kind:scenario record' });
+      }
+    } else if ('repetition_index' in run && run.repetition_index !== null) {
+      errors.push({ field: 'repetition_index', message: `must be null for run_kind "${run.run_kind}"` });
+    }
+  }
+
   for (const f of NULLABLE_METRIC_FIELDS) if (f in run) validateNullableMetric(run[f], f, errors);
   if ('tokens' in run) validateTokens(run.tokens, errors);
   validateEventRef(run.skill_invocation_event, 'skill_invocation_event', errors);
@@ -202,8 +309,281 @@ export function validateRun(run) {
 
 const SCENARIO_CANONICAL_FIELDS = [
   'schema', 'id', 'family', 'project_alias', 'project_url', 'project_commit', 'prompt',
-  'expected_outcome', 'grader', 'first_useful_signal_predicate', 'tags',
+  'expected_outcome', 'policy', 'expected', 'first_useful_signal_predicate', 'tags',
 ];
+
+const OUTCOME_KIND_VALUES = ['tests_executed', 'no_applicable_tests'];
+const GRADLE_MARKER_VALUES = ['NO-SOURCE'];
+// Mirrors TRIGGER_QUERY_PARTITION_VALUES's own train/held-out split for a conceptually identical
+// purpose (which corpus subset a scenario belongs to) -- a fresh review reproduced `tags` never
+// being validated at all: `"train"` (a bare string, not an array) and `null` `project_alias` both
+// passed `validateScenario()` with zero errors.
+const SCENARIO_TAG_VALUES = ['train', 'held-out'];
+
+// Exact, closed key sets for `expected` and its per-provider/outcome_kind contracts (a real gap
+// found on review: `expected.kmp_test.task=':wrong:test'` and `expected.gradle.tests.flaky=99` both
+// previously validated with zero errors -- unrecognized fields were silently accepted rather than
+// rejected). Enforced via `rejectUnrecognizedKeys`, below, which reads `Object.keys()` -- NOT the
+// `'k' in obj && obj.k != null` presence pattern used elsewhere in this file for OPTIONAL fields --
+// specifically so a forbidden key explicitly set to `null` (e.g. `expected.gradle.tests.skipped:
+// null`) is still caught: `Object.keys({skipped: null})` reports `skipped` as present regardless of
+// its value, while the old `!= null` presence check would have silently treated it as absent.
+const EXPECTED_TOP_LEVEL_KEYS = ['module', 'outcome_kind', 'kmp_test', 'gradle'];
+const KMP_TEST_CONTRACT_KEYS_TESTS_EXECUTED = ['tests', 'exit_code'];
+const KMP_TEST_CONTRACT_KEYS_NO_APPLICABLE = ['error_code', 'exit_code', 'caused_by_filter'];
+const GRADLE_CONTRACT_KEYS_TESTS_EXECUTED = ['allowed_invocations', 'evidence_task', 'tests', 'exit_code'];
+const GRADLE_CONTRACT_KEYS_NO_APPLICABLE = ['allowed_invocations', 'evidence_task', 'exit_code', 'marker'];
+const KMP_TEST_TESTS_SHAPE_KEYS = ['total', 'passed', 'failed', 'individual_total', 'skipped'];
+const GRADLE_TESTS_SHAPE_KEYS = ['total', 'passed', 'failed'];
+
+function rejectUnrecognizedKeys(obj, allowedKeys, field, errors) {
+  if (obj == null || typeof obj !== 'object' || Array.isArray(obj)) return;
+  for (const k of Object.keys(obj)) {
+    if (!allowedKeys.includes(k)) {
+      errors.push({ field: `${field}.${k}`, message: `unrecognized field -- only ${allowedKeys.join(', ')} allowed on ${field}` });
+    }
+  }
+}
+
+/** Validates `policy.{allowed_kmptest_subcommands,allowed_gradle_tasks}` -- the ONLY place a
+ * scenario field is ever interpreted as something that reaches a shell/exec call (decision 9),
+ * so this is the ONLY place scenario validation enforces an executable-content grammar. Reuses
+ * the real policy hook's OWN entry-grammar regexes (imported from policy-hook.mjs, never
+ * duplicated) -- a scenario can never declare a policy shape the hook itself would treat as
+ * malformed. */
+function validatePolicy(policy, errors) {
+  if (policy == null || typeof policy !== 'object') {
+    errors.push({ field: 'policy', message: 'must be an object' });
+    return;
+  }
+  if (!Array.isArray(policy.allowed_kmptest_subcommands) || policy.allowed_kmptest_subcommands.some((s) => typeof s !== 'string' || !KMPTEST_SUBCOMMAND_ENTRY_RE.test(s))) {
+    errors.push({ field: 'policy.allowed_kmptest_subcommands', message: `every entry must match ${KMPTEST_SUBCOMMAND_ENTRY_RE}` });
+  }
+  if (!Array.isArray(policy.allowed_gradle_tasks) || policy.allowed_gradle_tasks.some((s) => typeof s !== 'string' || !GRADLE_TASK_ENTRY_RE.test(s))) {
+    errors.push({ field: 'policy.allowed_gradle_tasks', message: `every entry must match ${GRADLE_TASK_ENTRY_RE}` });
+  }
+}
+
+/** Validates one provider's `expected.kmp_test`/`expected.gradle` contract against the
+ * `outcome_kind`-keyed cross-field invariant (a real bug found on review: the first version of
+ * this invariant FORBADE `exit_code` for `tests_executed`, which would have made a process that
+ * ran the tests successfully but then crashed on some LATER step undetectable -- a stale-but-
+ * still-passing JUnit XML would satisfy `tests` while nothing checked the process's own exit
+ * status). `tests_executed`: `tests` AND `exit_code` (must be exactly 0) are both REQUIRED on
+ * both providers; `error_code`/`caused_by_filter`/`marker` are FORBIDDEN. `no_applicable_tests`:
+ * kmp_test requires `error_code`+`exit_code`+`caused_by_filter`; gradle requires `exit_code`+
+ * `marker`; `tests` is FORBIDDEN on both. No hybrid combination validates either way.
+ *
+ * A fresh review reproduced two further gaps, both closed with genuinely PROVIDER-SPECIFIC
+ * contracts rather than one shared shape:
+ * 1. `individual_total`/`skipped` were optional-if-present on BOTH providers, with no distinction
+ *    between them -- but `graders.mjs`'s Gradle-path evaluation (`evaluateGradleAttempt`) never
+ *    reads either field at all (the JUnit-XML capture mechanism, `matrix-runner.mjs`'s
+ *    `captureGradleJunitEvidence`, cannot verify them). A scenario file could declare completely
+ *    FALSE values for `expected.gradle.tests.skipped`/`individual_total` and neither the schema
+ *    nor the grader would ever notice -- confirmed by direct reproduction (`skipped:99,
+ *    individual_total:999` added to a real scenario's gradle contract: zero validation errors,
+ *    grading still `success:true`). Worse, because they were merely OPTIONAL (not required) on
+ *    the kmp_test side too, omitting them from BOTH the scenario file AND an incomplete envelope
+ *    let `graders.mjs`'s own `envelope.tests?.skipped === kt.tests.skipped` comparison pass
+ *    VACUOUSLY (`undefined === undefined`), silently defeating the very check that field exists
+ *    to enforce. Fixed: `kmp_test` now REQUIRES all five counters (`total`, `passed`, `failed`,
+ *    `individual_total`, `skipped`) -- an absent counter is a schema error, never a silent
+ *    vacuous match. `gradle` now FORBIDS `individual_total`/`skipped` entirely -- an unenforced
+ *    claim a scenario author can never even accidentally make, mirroring how the earlier
+ *    unenforced `kmp_test.task` claim was retired rather than left as decoration.
+ * 2. `total` only required a non-negative integer (`>= 0`), so a `tests_executed` contract could
+ *    legitimately claim `{total:0, passed:0, failed:0}` -- a self-contradictory claim (if
+ *    `outcome_kind` is `tests_executed`, by definition at least one test ran; zero tests executed
+ *    is a `no_applicable_tests` claim, not a degenerate `tests_executed` one) that also happens to
+ *    exactly match what an ABSENT JUnit-XML directory produces (see `matrix-runner.mjs`'s
+ *    `captureGradleJunitEvidence`, fixed separately to distinguish "no XML at all" from "real XML
+ *    showing zero"). `total` is now required to be a POSITIVE integer (`>= 1`) for `tests_executed`
+ *    on both providers -- closing the schema-level half of that finding; `passed`/`failed`
+ *    individually may still legitimately be zero. */
+function validateProviderContract(provider, contractName, outcomeKind, errors) {
+  const field = `expected.${contractName}`;
+  if (provider == null || typeof provider !== 'object') {
+    errors.push({ field, message: 'must be an object' });
+    return;
+  }
+  // Exact, closed key set for the provider object itself -- see this constants block's own doc
+  // comment. Applied before the branch-specific checks below so an unrecognized field (e.g. a
+  // resurrected `task`) is always reported regardless of what else is wrong.
+  if (outcomeKind === 'tests_executed') {
+    rejectUnrecognizedKeys(provider, contractName === 'kmp_test' ? KMP_TEST_CONTRACT_KEYS_TESTS_EXECUTED : GRADLE_CONTRACT_KEYS_TESTS_EXECUTED, field, errors);
+  } else if (outcomeKind === 'no_applicable_tests') {
+    rejectUnrecognizedKeys(provider, contractName === 'kmp_test' ? KMP_TEST_CONTRACT_KEYS_NO_APPLICABLE : GRADLE_CONTRACT_KEYS_NO_APPLICABLE, field, errors);
+  }
+
+  const hasTests = 'tests' in provider && provider.tests != null;
+  const hasErrorCode = 'error_code' in provider && provider.error_code != null;
+  const hasCausedByFilter = 'caused_by_filter' in provider && provider.caused_by_filter != null;
+  const hasMarker = 'marker' in provider && provider.marker != null;
+
+  if (outcomeKind === 'tests_executed') {
+    // Non-negative INTEGER, not just typeof 'number' -- a review pass reproduced total:-1,
+    // passed:1.5, failed:-2 all passing validation under a bare typeof check. `total` specifically
+    // must be POSITIVE (>=1), not merely non-negative -- see this function's own doc comment,
+    // finding 2. total===passed+failed is checked only once the individual fields are confirmed
+    // well-shaped (comparing potentially-non-numeric values would be meaningless).
+    const isNonNegInt = (v) => Number.isInteger(v) && v >= 0;
+    const isPositiveInt = (v) => Number.isInteger(v) && v >= 1;
+    let testsShapeOk;
+    if (contractName === 'kmp_test') {
+      // kmp-test's own real envelope always reports all five counters for a genuine `parallel`
+      // run -- REQUIRE all five, not merely validate-if-present, so a scenario (and an
+      // intentionally-incomplete matching envelope) can never vacuously "agree" by both omitting
+      // a counter the grader is supposed to check (see this function's own doc comment, finding 1).
+      // `individual_total` must be POSITIVE (>=1), not merely non-negative -- a further review
+      // reproduced `total:1` (task-level) paired with `individual_total:0` both passing under the
+      // old non-negative check, letting a kmp-test envelope claim "the task ran" while separately
+      // claiming "zero individual tests executed" -- directly self-contradictory. `skipped` must
+      // be EXACTLY 0 -- the Gradle/JUnit-XML path can never corroborate a non-zero skip claim
+      // (gradle's own contract forbids the field entirely, below), so a kmp_test contract asserting
+      // skipped>0 would be permanently unverifiable by construction. `failed` must ALSO be EXACTLY
+      // 0 -- a Docker/local-ci audit reproduced the same class of self-contradiction the exit_code
+      // check below already exists to prevent: `tests_executed` unconditionally REQUIRES
+      // `exit_code:0` (a real kmp-test envelope with `classifyExitCode`'s own `testsFailed>0 ->
+      // TEST_FAIL(1)` rule can never have both), but nothing previously stopped a scenario from
+      // declaring `failed:1` (or any positive count) alongside that forced clean exit_code -- an
+      // impossible real-world combination. `tests_executed` as currently modeled represents "ran
+      // and all passed" specifically; a future "ran with real failures" outcome would need its own
+      // distinctly-named outcome_kind, not a hybrid of this one.
+      rejectUnrecognizedKeys(provider.tests, KMP_TEST_TESTS_SHAPE_KEYS, `${field}.tests`, errors);
+      testsShapeOk = hasTests
+        && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && provider.tests.failed === 0
+        && isPositiveInt(provider.tests.individual_total) && provider.tests.skipped === 0;
+      if (!testsShapeOk) {
+        errors.push({ field: `${field}.tests`, message: 'required (positive integer total/individual_total; non-negative integer passed; failed and skipped must be exactly 0 -- tests_executed represents a clean, all-passing run, coherent with the exit_code:0 requirement below) when outcome_kind is tests_executed' });
+      }
+    } else {
+      // Gradle/JUnit-XML: individual_total/skipped are FORBIDDEN, not merely unvalidated -- the
+      // capture mechanism genuinely cannot verify either today (see this function's own doc
+      // comment, finding 1, and graders.mjs's disclosed limitation on skipped specifically). The
+      // exact-key-set check above already rejects them (and catches a forbidden field explicitly
+      // set to `null`, which the old `!= null` presence check silently missed); no separate
+      // hasIndividualTotal/hasSkipped check is needed. `failed` must be EXACTLY 0 for the identical
+      // reason as the kmp_test branch above -- coherent with the forced exit_code:0 below.
+      rejectUnrecognizedKeys(provider.tests, GRADLE_TESTS_SHAPE_KEYS, `${field}.tests`, errors);
+      testsShapeOk = hasTests && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && provider.tests.failed === 0;
+      if (!testsShapeOk) {
+        errors.push({ field: `${field}.tests`, message: 'required (positive integer total; non-negative integer passed; failed must be exactly 0) when outcome_kind is tests_executed' });
+      }
+    }
+    if (testsShapeOk && provider.tests.total !== provider.tests.passed + provider.tests.failed) {
+      errors.push({ field: `${field}.tests`, message: `total (${provider.tests.total}) must equal passed (${provider.tests.passed}) + failed (${provider.tests.failed})` });
+    }
+    if (provider.exit_code !== 0) errors.push({ field: `${field}.exit_code`, message: 'required and must be exactly 0 when outcome_kind is tests_executed' });
+    if (hasErrorCode) errors.push({ field: `${field}.error_code`, message: 'forbidden when outcome_kind is tests_executed' });
+    if (hasCausedByFilter) errors.push({ field: `${field}.caused_by_filter`, message: 'forbidden when outcome_kind is tests_executed' });
+    if (hasMarker) errors.push({ field: `${field}.marker`, message: 'forbidden when outcome_kind is tests_executed' });
+  } else if (outcomeKind === 'no_applicable_tests') {
+    if (hasTests) errors.push({ field: `${field}.tests`, message: 'forbidden when outcome_kind is no_applicable_tests' });
+    if (contractName === 'kmp_test') {
+      // A Docker/local-ci audit reproduced this oracle as too permissive: error_code:"anything",
+      // exit_code:1.5, and a caused_by_filter/exit_code combination with no real relationship at
+      // all all passed with zero validation errors. The ONLY real error code this harness models
+      // for no_applicable_tests is 'no_test_modules' (lib/orchestrators/parallel-orchestrator.js's
+      // no_test_modules early-exit) -- tightened to that exact value rather than "any non-empty
+      // string". `exit_code` must be a real integer, AND must be the EXACT value
+      // classifyExitCode (lib/envelope/exit-codes.js, the same function production itself uses to
+      // decide the real envelope's exit code) derives from `caused_by_filter` -- not merely typed
+      // correctly, but coherent with the documented caused_by_filter->exit_code relationship
+      // (caused_by_filter:true -> CONFIG_ERROR(2), caused_by_filter:false -> ENV_ERROR(3)).
+      if (provider.error_code !== 'no_test_modules') errors.push({ field: `${field}.error_code`, message: `must be exactly 'no_test_modules' when outcome_kind is no_applicable_tests -- the only real error code this harness models for it` });
+      if (typeof provider.caused_by_filter !== 'boolean') {
+        errors.push({ field: `${field}.caused_by_filter`, message: 'required (boolean) when outcome_kind is no_applicable_tests' });
+        if (!Number.isInteger(provider.exit_code)) errors.push({ field: `${field}.exit_code`, message: 'must be a real integer when outcome_kind is no_applicable_tests' });
+      } else {
+        const expectedExitCode = classifyExitCode([{ code: 'no_test_modules', caused_by_filter: provider.caused_by_filter }]);
+        if (provider.exit_code !== expectedExitCode) {
+          errors.push({ field: `${field}.exit_code`, message: `must be ${expectedExitCode} (${expectedExitCode === EXIT.CONFIG_ERROR ? 'CONFIG_ERROR' : 'ENV_ERROR'}) given caused_by_filter:${provider.caused_by_filter} -- classifyExitCode's own real mapping, not merely a well-typed integer` });
+        }
+      }
+    } else {
+      // A genuine NO-SOURCE result is, by definition, a SUCCESSFUL gradle build (no source means
+      // nothing to run, not a build failure) -- BUILD SUCCESSFUL, exit 0, confirmed directly
+      // against both this PR's own real ground-truth capture and the shipped
+      // kampkit-no-applicable-tests.json scenario. Tightened from "any well-typed number"
+      // (previously admitted -7) to the one real value this outcome can produce.
+      if (provider.exit_code !== 0) errors.push({ field: `${field}.exit_code`, message: 'must be exactly 0 when outcome_kind is no_applicable_tests -- a genuine NO-SOURCE result is always a successful gradle build' });
+      if (!GRADLE_MARKER_VALUES.includes(provider.marker)) errors.push({ field: `${field}.marker`, message: `required, must be one of ${GRADLE_MARKER_VALUES.join('|')}, when outcome_kind is no_applicable_tests` });
+    }
+  }
+}
+
+/** Validates `expected` -- the shared semantic core plus the two per-provider contracts (decision
+ * 3): a scenario's `expected.kmp_test`/`expected.gradle` are never flattened into one shared
+ * shape, since the two providers can disagree not just in value but in KIND for the same real
+ * situation (kmp-test's clean discriminated `no_test_modules` error vs. Gradle actually running a
+ * task that reports `NO-SOURCE`). Also validates the Gradle path's `allowed_invocations`/
+ * `evidence_task` split (decision 3: a policy-permitted lifecycle alias must not be rejected by an
+ * exact-match contract) and its consistency with the scenario's own `policy.allowed_gradle_tasks`
+ * (a real gap found on review: nothing previously stopped `expected` from referencing a Gradle
+ * invocation the scenario's OWN policy would never actually let the agent run). */
+function validateExpected(expected, policy, errors) {
+  if (expected == null || typeof expected !== 'object') {
+    errors.push({ field: 'expected', message: 'must be an object' });
+    return;
+  }
+  rejectUnrecognizedKeys(expected, EXPECTED_TOP_LEVEL_KEYS, 'expected', errors);
+  if (typeof expected.module !== 'string' || !/^:[A-Za-z0-9_:-]+$/.test(expected.module)) {
+    errors.push({ field: 'expected.module', message: 'must be a colon-prefixed Gradle project path, e.g. ":shared"' });
+  }
+  if (!OUTCOME_KIND_VALUES.includes(expected.outcome_kind)) {
+    errors.push({ field: 'expected.outcome_kind', message: `must be one of ${OUTCOME_KIND_VALUES.join('|')}` });
+  }
+  validateProviderContract(expected.kmp_test, 'kmp_test', expected.outcome_kind, errors);
+
+  const gradle = expected.gradle;
+  if (gradle == null || typeof gradle !== 'object') {
+    errors.push({ field: 'expected.gradle', message: 'must be an object' });
+  } else {
+    const allowedInvocations = Array.isArray(gradle.allowed_invocations) ? gradle.allowed_invocations : null;
+    if (!allowedInvocations || allowedInvocations.length === 0 || allowedInvocations.some((s) => typeof s !== 'string' || !GRADLE_TASK_ENTRY_RE.test(s))) {
+      errors.push({ field: 'expected.gradle.allowed_invocations', message: `must be a non-empty array, every entry matching ${GRADLE_TASK_ENTRY_RE}` });
+    }
+    if (typeof gradle.evidence_task !== 'string' || !GRADLE_TASK_ENTRY_RE.test(gradle.evidence_task)) {
+      errors.push({ field: 'expected.gradle.evidence_task', message: `must match ${GRADLE_TASK_ENTRY_RE}` });
+    } else if (allowedInvocations && !allowedInvocations.includes(gradle.evidence_task)) {
+      errors.push({ field: 'expected.gradle.evidence_task', message: 'must itself be a member of allowed_invocations' });
+    }
+    if (allowedInvocations && policy != null && Array.isArray(policy.allowed_gradle_tasks)) {
+      const notInPolicy = allowedInvocations.filter((t) => !policy.allowed_gradle_tasks.includes(t));
+      if (notInPolicy.length > 0) {
+        errors.push({ field: 'expected.gradle.allowed_invocations', message: `every entry must also be a member of this scenario's own policy.allowed_gradle_tasks -- not in policy: ${notInPolicy.join(', ')}` });
+      }
+    }
+    validateProviderContract(gradle, 'gradle', expected.outcome_kind, errors);
+  }
+
+  // Cross-provider consistency -- a real gap found on review: kmp_test.tests.individual_total (the
+  // real per-test-case count from kmp-test's own JUnit-XML walk) and gradle.tests.total (the same
+  // real test run's count, independently derived by matrix-runner.mjs's own JUnit-XML capture)
+  // describe the SAME underlying test execution and must agree. Without this check, a scenario
+  // could declare kmp_test.individual_total:0 alongside gradle.tests.total:24 -- both values would
+  // pass their OWN provider's shape validation independently, and because graders.mjs's
+  // kmpEvalResultBlockMatchesScenario checks the agent's KMP_EVAL_RESULT block against
+  // expected.gradle.tests specifically (never against whichever provider's evidence was actually
+  // terminal), a kmp-test attempt reporting individual_total:0 (matching a permissive kmp_test
+  // contract) could sit alongside an agent's block claiming total:24 (matching gradle.tests.total)
+  // -- a direct, gradeable-as-success self-contradiction. Forcing the two scenario-authored
+  // constants to agree closes this at the source: with individual_total forced to equal
+  // gradle.tests.total always, there is only ever one canonical number to satisfy, so an envelope
+  // and a block that each independently "match their own expected constant" can no longer diverge.
+  if (expected.outcome_kind === 'tests_executed'
+    && expected.kmp_test != null && typeof expected.kmp_test === 'object' && expected.kmp_test.tests != null
+    && typeof expected.kmp_test.tests.individual_total === 'number'
+    && gradle != null && typeof gradle === 'object' && gradle.tests != null
+    && typeof gradle.tests.total === 'number'
+    && expected.kmp_test.tests.individual_total !== gradle.tests.total) {
+    errors.push({
+      field: 'expected.kmp_test.tests.individual_total',
+      message: `must equal expected.gradle.tests.total (${gradle.tests.total}) -- both describe the same real test execution's count and must not diverge`,
+    });
+  }
+}
 
 export function validateScenario(scenario) {
   const errors = [];
@@ -221,14 +601,32 @@ export function validateScenario(scenario) {
   if (!FAMILY_VALUES.includes(scenario.family) || scenario.family === 'trigger-only') {
     errors.push({ field: 'family', message: 'must be test-only or coverage for a scenario' });
   }
+  if (typeof scenario.project_alias !== 'string' || scenario.project_alias.length === 0) {
+    errors.push({ field: 'project_alias', message: 'must be a non-empty string' });
+  }
+  // Exactly ONE entry, not merely "non-empty and every entry valid" -- a fresh review reproduced
+  // ["train","held-out"] and ["train","train"] both passing the old check. `tags` is documented
+  // (above, at its declaration) as the corpus PARTITION a scenario belongs to -- a single-valued
+  // concept by definition, so a scenario contaminating both train and held-out simultaneously (or
+  // declaring a meaningless duplicate) must be rejected, not silently accepted.
+  if (!Array.isArray(scenario.tags) || scenario.tags.length !== 1 || !SCENARIO_TAG_VALUES.includes(scenario.tags[0])) {
+    errors.push({ field: 'tags', message: `must be an array with EXACTLY one entry, one of ${SCENARIO_TAG_VALUES.join('|')}` });
+  }
   if (typeof scenario.project_url !== 'string' || !/^https:\/\//.test(scenario.project_url)) {
     errors.push({ field: 'project_url', message: 'must be an https URL (public project)' });
+  }
+  if (typeof scenario.project_commit !== 'string' || !/^[0-9a-f]{40}$/.test(scenario.project_commit)) {
+    errors.push({ field: 'project_commit', message: 'must be a real 40-hex-character SHA -- never a placeholder like PINNED_AT_EXECUTION_TIME' });
   }
   if (typeof scenario.prompt !== 'string' || scenario.prompt.length === 0) errors.push({ field: 'prompt', message: 'must be a non-empty string' });
   if (typeof scenario.prompt === 'string' && BANNED_TERMS_RE.test(scenario.prompt)) {
     errors.push({ field: 'prompt', message: 'must not mention kmp-test, the skill name, or the bin path' });
   }
-  if (scenario.grader == null || typeof scenario.grader.kind !== 'string') errors.push({ field: 'grader', message: 'must have a string "kind"' });
+  if (typeof scenario.expected_outcome !== 'string' || scenario.expected_outcome.length === 0) {
+    errors.push({ field: 'expected_outcome', message: 'must be a non-empty string' });
+  }
+  validatePolicy(scenario.policy, errors);
+  validateExpected(scenario.expected, scenario.policy, errors);
   if (scenario.first_useful_signal_predicate == null || typeof scenario.first_useful_signal_predicate.description !== 'string') {
     errors.push({ field: 'first_useful_signal_predicate', message: 'must have a string "description"' });
   }
@@ -414,6 +812,18 @@ export function buildAggregateGroup(runs) {
       const unknown = runs.filter((r) => typeof r[field] !== 'string' || r[field].length === 0);
       if (unknown.length > 0) {
         errors.push({ field, message: `${unknown.length} run(s) have a missing/empty ${field} and cannot be folded into a publishable scenario aggregate -- an unknown value can't be trusted to match another unknown value` });
+      }
+    }
+    // benchmark_eligible:true must depend only on protocol/integrity completeness, NEVER on the
+    // scenario outcome -- a wrong answer, a policy denial along the way, or a declared timeout are
+    // valuable negative benchmark results and must never be filtered out of a publishable
+    // aggregate (that would be survivorship bias). What IS required is that grading genuinely
+    // RAN and produced a real, non-null verdict either way -- `.value` must be strictly boolean,
+    // never `null`, and never required to be `true`.
+    for (const field of ['success', 'expected_outcome_matched']) {
+      const ungraded = runs.filter((r) => typeof r[field]?.value !== 'boolean');
+      if (ungraded.length > 0) {
+        errors.push({ field, message: `${ungraded.length} run(s) have a null/missing ${field}.value and cannot be folded into a publishable scenario aggregate -- benchmark_eligible:true requires grading to have actually produced a real verdict (true OR false), not an absence` });
       }
     }
   }

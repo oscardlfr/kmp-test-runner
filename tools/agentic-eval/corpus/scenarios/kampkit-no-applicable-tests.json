@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "id": "kampkit-no-applicable-tests",
+  "family": "test-only",
+  "project_alias": "kampkit",
+  "project_url": "https://github.com/touchlab/KaMPKit",
+  "project_commit": "b3a7784fb969a8558b88c80674c8b596944cdab7",
+  "prompt": "Can you run the tests for the module that only contains resource/asset files in this project, and tell me what happened? Once you know the result, end your reply with a block in exactly this format (substitute the real module path and counts you found; keep the two marker lines exactly as shown, with valid JSON in between):\n\nKMP_EVAL_RESULT\n{\"module\": \"<the Gradle module path you tested>\", \"outcome_kind\": \"tests_executed\", \"total\": <integer>, \"passed\": <integer>, \"failed\": <integer>}\nKMP_EVAL_RESULT_END\n\nIf the module turns out to have no applicable tests instead, use {\"module\": \"<the Gradle module path you tested>\", \"outcome_kind\": \"no_applicable_tests\"} (omit total/passed/failed).",
+  "expected_outcome": "The agent correctly reports that the :app module has no applicable unit tests.",
+  "policy": {
+    "allowed_kmptest_subcommands": ["doctor", "describe", "parallel"],
+    "allowed_gradle_tasks": [":app:tasks", ":app:testDebugUnitTest", ":app:test"]
+  },
+  "expected": {
+    "module": ":app",
+    "outcome_kind": "no_applicable_tests",
+    "kmp_test": {
+      "error_code": "no_test_modules",
+      "exit_code": 2,
+      "caused_by_filter": true
+    },
+    "gradle": {
+      "allowed_invocations": [":app:testDebugUnitTest", ":app:test"],
+      "evidence_task": ":app:testDebugUnitTest",
+      "exit_code": 0,
+      "marker": "NO-SOURCE"
+    }
+  },
+  "first_useful_signal_predicate": {
+    "description": "first well-formed evidence confirming :app has no applicable tests"
+  },
+  "tags": ["train"]
+}

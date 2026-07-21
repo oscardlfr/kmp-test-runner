@@ -23,7 +23,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { calibrationHardGate, smokeHardGate } from '../../tools/agentic-eval/cli.mjs';
+import { calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate } from '../../tools/agentic-eval/cli.mjs';
 
 function bashToolUseEvent(id, command) {
   return { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', id, input: { command } }] } };
@@ -1195,4 +1195,232 @@ describe('smokeHardGate', () => {
     expect(reason).toContain('transcriptStructureOk:false');
   });
 
+});
+
+// scenarioCellIntegrityOk/scenarioHardGate (decision 4 of the design): harness-integrity ONLY,
+// never the scenario OUTCOME (that's graders.mjs's job) -- a wrong answer, a policy denial, or a
+// declared timeout must all still PASS this gate, since they're legitimate data, not harness
+// defects. Same isolated-synthetic-input testing philosophy as calibrationHardGate/smokeHardGate
+// above.
+describe('scenarioCellIntegrityOk', () => {
+  function passRecord(condition, overrides = {}) {
+    return {
+      condition,
+      skill_available: { value: condition === 'current-skill', reason: null },
+      ...overrides,
+    };
+  }
+  function passConditionResult(condition, overrides = {}) {
+    const isCurrentSkill = condition === 'current-skill';
+    return {
+      init: {
+        model: 'claude-sonnet-5-fake-resolved',
+        plugins: isCurrentSkill ? KMP_TEST_RUNNER_PLUGIN : [],
+        tools: ['Bash', 'Skill'],
+        mcp_servers: [],
+        permissionMode: 'dontAsk',
+      },
+      snapshotDir: isCurrentSkill ? FAKE_SNAPSHOT_DIR : null,
+      hookStats: { everyCallHooked: true, hookAllowCount: 1, hookDenyCount: 0 },
+      events: [
+        initEventStub(),
+        bashToolUseEvent('toolu_1', 'kmp-test parallel --module-filter shared --json'),
+        toolResultEvent('toolu_1'),
+        resultEventStub(),
+      ],
+      malformedLines: [],
+      spawnResult: { terminated: false, terminationReason: null },
+      ...overrides,
+    };
+  }
+
+  it('passes for a clean no-skill cell', () => {
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), passConditionResult('no-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('passes for a clean current-skill cell', () => {
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('current-skill'), passConditionResult('current-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('isolates availabilityOk -- a no-skill cell whose environment shows the skill as available', () => {
+    const record = passRecord('no-skill', { skill_available: { value: true, reason: null } });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(false);
+    expect(reason).toContain('availabilityOk:false');
+  });
+
+  // The key distinguishing behavior from smoke's stricter gate: a policy DENIAL is the hook
+  // working as intended and must never disqualify a cell, only the MECHANISM (every call actually
+  // reached the hook) matters here.
+  it('a policy denial (hook_deny_count > 0) does NOT fail hookAccountingOk -- only mechanism integrity (everyCallHooked) does', () => {
+    const cr = passConditionResult('no-skill', { hookStats: { everyCallHooked: true, hookAllowCount: 0, hookDenyCount: 1 } });
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr);
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('isolates hookAccountingOk -- a Bash call that never reached the hook at all (mechanism failure)', () => {
+    const cr = passConditionResult('no-skill', { hookStats: { everyCallHooked: false, hookAllowCount: 1, hookDenyCount: 0 } });
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr);
+    expect(ok).toBe(false);
+    expect(reason).toContain('hookAccountingOk:false');
+  });
+
+  // A declared timeout is legitimate data (decision 7) -- must pass, using the timeout-tolerant
+  // structural checks.
+  it('a legitimate timeout (terminated:true, reason:timeout) still passes -- structural checks are timeout-tolerant', () => {
+    const cr = passConditionResult('no-skill', {
+      events: [initEventStub(), bashToolUseEvent('toolu_1', 'kmp-test parallel --json')], // no result, no terminal result event
+      spawnResult: { terminated: true, terminationReason: 'timeout' },
+    });
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr);
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('isolates terminationOk -- an "error" termination (not timeout) is a harness-trustworthiness signal and fails', () => {
+    const cr = passConditionResult('no-skill', { spawnResult: { terminated: true, terminationReason: 'error' } });
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr);
+    expect(ok).toBe(false);
+    expect(reason).toContain('terminationOk:false');
+  });
+
+  // Review-round-2 fix: ambiguous JUnit evidence (more than one Gradle attempt in a condition
+  // could have produced the single per-condition XML snapshot) is a HARNESS-integrity defect, not
+  // a legitimate agent outcome -- it must block promotion here, not merely degrade that one cell's
+  // outcomeMatches to false (which would let it read as valid negative data).
+  it('isolates junitEvidenceOk -- a record carrying an ambiguous_junit_evidence error fails, even though everything else is clean', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'ambiguous_junit_evidence', message: 'ambiguous' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(false);
+    expect(reason).toContain('junitEvidenceOk:false');
+  });
+
+  it('a record with a DIFFERENT, unrelated error code does not trip junitEvidenceOk', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'raw_capture_location_overridden', message: 'unrelated' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('a record with no errors[] field at all (the common case) does not trip junitEvidenceOk', () => {
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), passConditionResult('no-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  // Round 10 (systematic-closure pass): the identical HARNESS-integrity treatment applied to a
+  // malformed parallel.legs[] structure -- a fresh review found this was previously laundered
+  // only through expected_outcome_matched:false, reading as a legitimate negative result rather
+  // than "the tool's own JSON output cannot be trusted at all."
+  it('isolates parallelEvidenceOk -- a record carrying a malformed_parallel_evidence error fails, even though everything else is clean', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'malformed_parallel_evidence', message: 'incoherent' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(false);
+    expect(reason).toContain('parallelEvidenceOk:false');
+  });
+
+  it('a record with a DIFFERENT, unrelated error code does not trip parallelEvidenceOk', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'raw_capture_location_overridden', message: 'unrelated' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  // Round 11 (Docker/local-ci audit): the identical HARNESS-integrity treatment applied to a real
+  // JUnit XML the harness could not fully trust (a genuine <skipped> testcase, or an oversized/
+  // unreadable file) -- a fresh review found matrix-runner.mjs's captureGradleJunitEvidence
+  // previously miscounted a skip as a pass, which would have laundered a real evidence-completeness
+  // gap through expected_outcome_matched alone, exactly the mistake junitEvidenceOk/
+  // parallelEvidenceOk already exist to avoid for their own respective evidence shapes.
+  it('isolates junitSkipEvidenceOk -- a record carrying an unreliable_gradle_junit_evidence error fails, even though everything else is clean', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'unreliable_gradle_junit_evidence', message: 'skip/anomaly' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(false);
+    expect(reason).toContain('junitSkipEvidenceOk:false');
+  });
+
+  it('a record with a DIFFERENT, unrelated error code does not trip junitSkipEvidenceOk', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'raw_capture_location_overridden', message: 'unrelated' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('a record with no errors[] field at all (the common case) does not trip junitSkipEvidenceOk', () => {
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), passConditionResult('no-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('isolates skillSelectionOk -- a foreign Skill call unrelated to kmp-test-runner', () => {
+    const cr = passConditionResult('no-skill', {
+      events: [
+        initEventStub(),
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: 'some-other-skill' } }] } },
+        resultEventStub(),
+      ],
+    });
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr);
+    expect(ok).toBe(false);
+    expect(reason).toContain('skillSelectionOk:false');
+  });
+});
+
+describe('scenarioHardGate', () => {
+  function cell(condition, repetitionIndex, integrityOverrides = {}) {
+    const record = {
+      condition, repetition_index: repetitionIndex,
+      skill_available: { value: condition === 'current-skill', reason: null },
+    };
+    const isCurrentSkill = condition === 'current-skill';
+    const conditionResult = {
+      init: { plugins: isCurrentSkill ? KMP_TEST_RUNNER_PLUGIN : [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      snapshotDir: isCurrentSkill ? FAKE_SNAPSHOT_DIR : null,
+      hookStats: { everyCallHooked: true, hookAllowCount: 1, hookDenyCount: 0 },
+      events: [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json'), toolResultEvent('t1'), resultEventStub()],
+      malformedLines: [],
+      spawnResult: { terminated: false, terminationReason: null },
+      ...integrityOverrides,
+    };
+    return { record, conditionResult };
+  }
+
+  it('passes when every cell is harness-integrity-clean', () => {
+    const cells = [cell('current-skill', 0), cell('no-skill', 0), cell('current-skill', 1), cell('no-skill', 1)];
+    const { ok, reason } = scenarioHardGate(cells.map((c) => c.record), cells.map((c) => c.conditionResult));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('one bad cell blocks the WHOLE batch -- never a partial pass', () => {
+    const badCell = cell('no-skill', 1, { hookStats: { everyCallHooked: false, hookAllowCount: 1, hookDenyCount: 0 } });
+    const cells = [cell('current-skill', 0), cell('no-skill', 0), cell('current-skill', 1), badCell];
+    const { ok, reason } = scenarioHardGate(cells.map((c) => c.record), cells.map((c) => c.conditionResult));
+    expect(ok).toBe(false);
+    expect(reason).toContain('failed for 1/4 cell(s)');
+  });
+
+  it('identifies WHICH cell failed (repetition + condition), not just an aggregate boolean', () => {
+    const badCell = cell('no-skill', 1, { hookStats: { everyCallHooked: false, hookAllowCount: 1, hookDenyCount: 0 } });
+    const cells = [cell('current-skill', 0), cell('no-skill', 0), cell('current-skill', 1), badCell];
+    const { reason } = scenarioHardGate(cells.map((c) => c.record), cells.map((c) => c.conditionResult));
+    expect(reason).toContain('repetition 1');
+    expect(reason).toContain('condition no-skill');
+  });
+
+  // The load-bearing distinction (decision 4): scenarioHardGate never looks at
+  // success/expected_outcome_matched at all -- a "wrong answer" cell with otherwise-clean
+  // integrity passes this gate exactly like a "right answer" cell would.
+  it('does not inspect scenario outcome at all -- a cell is judged purely on integrity, regardless of any outcome-shaped fields present', () => {
+    const wrongAnswerCell = cell('current-skill', 0, {});
+    wrongAnswerCell.record.success = { value: false, reason: null };
+    wrongAnswerCell.record.expected_outcome_matched = { value: false, reason: null };
+    const { ok } = scenarioHardGate([wrongAnswerCell.record], [wrongAnswerCell.conditionResult]);
+    expect(ok).toBe(true);
+  });
 });

@@ -73,14 +73,16 @@ export function isSkillAvailable(initEvent, skillName) {
 /** The tool_result for a given tool_use id, found by scanning forward from fromIndex.
  * `is_error` is the real field name confirmed on a live "Unknown skill" transcript
  * (content: "<tool_use_error>Unknown skill: ...</tool_use_error>", is_error: true,
- * tool_use_id: "..."). */
+ * tool_use_id: "..."). `content` is exposed alongside index/isError (not extracted separately by
+ * callers) so a single lookup gives both the correlation metadata AND the raw payload a grader
+ * would parse -- findBashToolUsesWithResults is the current consumer of the content field. */
 function findToolResultById(events, toolUseId, fromIndex) {
   for (let i = fromIndex; i < events.length; i++) {
     const ev = events[i];
     if (ev.type !== 'user') continue;
     for (const c of ev.message?.content ?? []) {
       if (c.type === 'tool_result' && c.tool_use_id === toolUseId) {
-        return { index: i, isError: c.is_error === true };
+        return { index: i, isError: c.is_error === true, content: c.content ?? null };
       }
     }
   }
@@ -406,15 +408,90 @@ export function findIncompleteToolResults(events) {
   return out;
 }
 
+/** Every `tool_use` block's own event index, any name -- the shared scan
+ * findIncompleteToolResultsToleratingTimeout needs to determine whether a single incomplete result
+ * is genuinely the LAST activity in the transcript (causally compatible with an abrupt kill) or
+ * merely the last INCOMPLETE one (which could still be followed by a later, completed call --
+ * itself a sign of corruption, not a timeout, since a real single-threaded transcript can't have a
+ * later call finish while an earlier one is still unresolved). */
+function allToolUseIndices(events) {
+  const indices = [];
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type !== 'assistant') continue;
+    for (const c of ev.message?.content ?? []) {
+      if (c.type === 'tool_use') indices.push(i);
+    }
+  }
+  return indices;
+}
+
+/**
+ * findTranscriptStructuralIssues, but tolerant of the ONE specific symptom a legitimate timeout
+ * causes: a missing terminal `result` event (the process was killed mid-stream, before Claude Code
+ * had a chance to emit it). `terminated`/`terminationReason` come from the harness's OWN kill logic
+ * (condition-launcher.mjs's spawnCondition), never inferred from the transcript itself -- that's
+ * the authoritative signal a timeout genuinely happened, independent of what the JSONL looks like.
+ * Only filters a `result_count` issue whose count is exactly 0, and only when
+ * `terminated===true && terminationReason==='timeout'`; `result_count > 1` (a genuinely different,
+ * still-blocking problem) is never filtered regardless of timeout status. Every OTHER issue type
+ * (missing/duplicate init, duplicate/orphan tool_use<->tool_result ids, init not first) remains
+ * fully blocking under a timeout exactly as without one -- a timeout excuses only the one specific,
+ * structurally-expected absence it actually causes, nothing else, so a GENUINELY corrupted
+ * transcript that happens to also lack a result event is not let through by coincidence.
+ */
+export function findTranscriptStructuralIssuesToleratingTimeout(events, { terminated, terminationReason }) {
+  const issues = findTranscriptStructuralIssues(events);
+  const isLegitimateTimeout = terminated === true && terminationReason === 'timeout';
+  if (!isLegitimateTimeout) return issues;
+  return issues.filter((issue) => !(issue.type === 'result_count' && issue.count === 0));
+}
+
+/**
+ * findIncompleteToolResults, but tolerant of the ONE specific symptom a legitimate timeout causes:
+ * a tool_use whose result never arrived because the process was killed mid-call. Tolerates AT MOST
+ * ONE incomplete result, and only when it is the chronologically LAST tool_use in the entire
+ * transcript (any name) -- an incomplete result that ISN'T the last tool_use, or more than one
+ * incomplete result, indicates genuine corruption (not explainable by a single abrupt kill) and
+ * remains fully blocking regardless of timeout status. Same `terminated`/`terminationReason`
+ * authority as findTranscriptStructuralIssuesToleratingTimeout -- never inferred from the
+ * transcript.
+ */
+export function findIncompleteToolResultsToleratingTimeout(events, { terminated, terminationReason }) {
+  const incomplete = findIncompleteToolResults(events);
+  const isLegitimateTimeout = terminated === true && terminationReason === 'timeout';
+  if (!isLegitimateTimeout) return incomplete;
+  if (incomplete.length !== 1) return incomplete;
+  const allIndices = allToolUseIndices(events);
+  const lastToolUseIndex = allIndices.length > 0 ? Math.max(...allIndices) : null;
+  if (incomplete[0].index !== lastToolUseIndex) return incomplete;
+  return [];
+}
+
 /** Every Bash tool_use, each correlated with its OWN tool_result outcome (mirrors
  * findSkillInvocation's attempted-vs-confirmed correlation, generalized to every Bash call).
  * Needed to verify not just THAT commands ran, but that each one's own result was not an error,
  * and exactly WHICH commands ran -- "the agent invoked Bash twice" alone doesn't prove it ran
- * the two SPECIFIC expected commands, or that either one actually succeeded. */
+ * the two SPECIFIC expected commands, or that either one actually succeeded.
+ *
+ * `resultIndex`/`resultContent` (additive -- every existing field is unchanged) are what a grader
+ * needs beyond the boolean resultFound/resultIsError summary: `resultIndex` is the event index a
+ * "first correlated authoritative outcome event" (first_useful_signal) is ultimately derived from
+ * (via deriveFirstUsefulSignalMs, never computed as a timestamp here); `resultContent` is the raw
+ * tool_result payload a grader parses as a kmp-test JSON envelope or Gradle/JUnit evidence -- both
+ * `null` when no result was found, exactly mirroring resultIsError's existing null-when-absent
+ * convention. */
 export function findBashToolUsesWithResults(events) {
   return findBashToolUses(events).map((u) => {
     const result = u.id != null ? findToolResultById(events, u.id, u.index + 1) : null;
-    return { ...u, command: u.input?.command ?? null, resultFound: result != null, resultIsError: result ? result.isError : null };
+    return {
+      ...u,
+      command: u.input?.command ?? null,
+      resultFound: result != null,
+      resultIsError: result ? result.isError : null,
+      resultIndex: result ? result.index : null,
+      resultContent: result ? result.content : null,
+    };
   });
 }
 

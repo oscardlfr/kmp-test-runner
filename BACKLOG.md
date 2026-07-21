@@ -662,23 +662,50 @@
   picked up automatically by the existing required `build` job -- no new CI job. No
   runtime/wet validation applicable (repo-review config only, not CLI behavior).
 
-- **`tools/agentic-eval/` corpus scenarios + graders (deferred from PR #372, surfaced 2026-07-18
-  during independent review).** PR #372 ships the reproducible skill-evaluation harness
+- **`tools/agentic-eval/` corpus scenarios + graders — 2 of 6 scenarios + `graders.mjs` + `run`
+  subcommand implemented, PR open (not yet merged) (deferred from PR #372, surfaced 2026-07-18
+  during independent review).** PR #372 shipped the reproducible skill-evaluation harness
   FOUNDATION only: isolation (fresh temp fixtures, narrow env allowlist, the `PreToolUse` policy
   hook), schemas, the trigger-queries corpus, and one bounded `calibrate` + `smoke` run against a
-  single hardcoded prompt. It deliberately does NOT include the 6 scenario definitions originally
+  single hardcoded prompt. It deliberately did NOT include the 6 scenario definitions originally
   sketched in that PR's plan (`kampkit-android-host-test-discovery`,
   `kampkit-no-applicable-tests`, `nowinandroid-core-common`, `deterministic-unit-test-failure`,
-  `coverage-threshold-failure`, `changed-module-verification`) or `graders.mjs` (deterministic,
-  index-returning grader + first-useful-signal predicate per scenario id) — both referenced as
-  future work by `tests/vitest/agentic-eval-corpus.test.js`'s own header comment and by
-  `docs/agentic-usage-measurement.md`'s "Registry relationship" section, but neither existed as a
-  tracked BACKLOG item until now. **Proposed shape (not started):** one JSON scenario file per
-  entry above under `tools/agentic-eval/corpus/scenarios/` (id, family, project alias + public URL
-  + pinned commit, prompt, expected_outcome, grader spec, first-useful-signal predicate spec) +
-  `graders.mjs` implementing one pure function per scenario id, wired through `cli.mjs run` (not
-  yet a subcommand). Own PR(s), small increments preferred over one large one — milestone
-  unassigned, user's call on timing and on how many scenarios ship per PR.
+  `coverage-threshold-failure`, `changed-module-verification`) or `graders.mjs` — both referenced
+  as future work by `tests/vitest/agentic-eval-corpus.test.js`'s own header comment and by
+  `docs/agentic-usage-measurement.md`'s "Registry relationship" section.
+  **This PR ships exactly 2 of the 6**, both against the same pinned KaMPKit commit `smoke`
+  already uses (`b3a7784fb969a8558b88c80674c8b596944cdab7`), independently re-verified live
+  (3× each, cold `GRADLE_USER_HOME`, no dependency prewarming) rather than copied from a prior
+  measurement round:
+  - `kampkit-android-host-test-discovery` — `outcome_kind:tests_executed`, `:shared`'s non-obvious
+    `testAndroidHostTest` task, 24/24 tests pass across both providers (kmp-test JSON + raw
+    Gradle/JUnit-XML).
+  - `kampkit-no-applicable-tests` — `outcome_kind:no_applicable_tests`, `:app`, kmp-test's
+    `no_test_modules` discriminator vs. Gradle's own `NO-SOURCE` status line on
+    `:app:testDebugUnitTest` (also reachable via the `:app:test` lifecycle alias).
+
+  New `tools/agentic-eval/graders.mjs`: 8 named, structurally-anchored checks correlating a
+  tokenized Bash `tool_use`, its `tool_result`, and an authoritative kmp-test JSON envelope or
+  independently-read Gradle/JUnit evidence against the scenario's exact expected module/task/
+  outcome — no free-text keyword matching (the exact reason the original PR #372 draft,
+  commit `3f81208`, was rejected on its first review pass). New `tools/agentic-eval/
+  matrix-runner.mjs` (scenario-matrix orchestration: shared-resource acquisition once per matrix,
+  per-cell materialize/reset) and `randomizer.mjs`'s new `buildConditionOrders` (genuine
+  counterbalancing — a guaranteed split across repetitions, not merely an unbiased-in-expectation
+  shuffle). New `run` subcommand: `run --scenario <id> --source-repo-dir <local-clone> --seed <n>
+  [--repeats <n>] [--model <name>] [--dry-run]`, atomically promoting the whole `2×repeats`-record
+  matrix via `finalizeAndWriteMatrixRecords` — one bad cell's harness-integrity failure blocks the
+  WHOLE batch, never a partial write; `benchmark_eligible:true` depends only on protocol/integrity
+  completeness (decision 15's realized starting-condition balance check included), never on
+  whether the agent's answer was actually correct.
+
+  Infrastructure-only PR: zero live Claude/API calls, zero committed benchmark results — every
+  scenario-run record this PR's own code CAN produce still requires a real live invocation, which
+  is explicitly out of scope here (a future live-validation PR, mirroring #373/#378 relative to
+  #372).
+  **Still deferred**: `nowinandroid-core-common`, `deterministic-unit-test-failure`,
+  `coverage-threshold-failure`, `changed-module-verification` — own PR(s), small increments
+  preferred over one large one — milestone unassigned, user's call on timing.
 - ✅ **`KMP_EVAL_RUNS_ROOT` real-world scope — SHIPPED in #372 itself (2026-07-18, closed across
   three independent-review rounds).** The env var is a test-only escape hatch so vitest never
   writes to (or cleans up inside) the real `tools/runs/` tree — nothing stops an operator from

@@ -3,7 +3,7 @@
 // Real subprocess end-to-end coverage (calibrate/smoke against fake claude) lives in
 // agentic-eval-cli-integration.test.js -- this file is for fast, in-process logic that doesn't
 // need a child process.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
@@ -78,6 +78,42 @@ describe('parseArgs', () => {
     expect(args._).toEqual(['corpus', 'validate']);
     expect(args.errors).toEqual([]);
   });
+
+  // A bare --dry-run must never consume the next token as its value -- before BOOLEAN_FLAGS
+  // existed, every --flag (other than --help/-h) required a following value, so a bare
+  // `run --dry-run` would have recorded `--dry-run requires a value` as a hard parse error.
+  it('a boolean flag (--dry-run) does not consume the next token as a value', () => {
+    const args = parseArgs(['run', '--dry-run']);
+    expect(args['dry-run']).toBe(true);
+    expect(args.errors).toEqual([]);
+  });
+
+  it('a boolean flag immediately followed by another flag -- the next flag is parsed normally, not consumed', () => {
+    const args = parseArgs(['run', '--dry-run', '--scenario', 'kampkit-android-host-test-discovery']);
+    expect(args['dry-run']).toBe(true);
+    expect(args.scenario).toBe('kampkit-android-host-test-discovery');
+    expect(args.errors).toEqual([]);
+  });
+
+  it('a boolean flag works regardless of position among value-flags', () => {
+    const args = parseArgs(['run', '--scenario', 'kampkit-no-applicable-tests', '--dry-run', '--repeats', '4']);
+    expect(args['dry-run']).toBe(true);
+    expect(args.scenario).toBe('kampkit-no-applicable-tests');
+    expect(args.repeats).toBe('4');
+    expect(args.errors).toEqual([]);
+  });
+
+  it('a duplicated boolean flag is still an error, not silently accepted twice', () => {
+    const args = parseArgs(['run', '--dry-run', '--dry-run']);
+    expect(args.errors.length).toBeGreaterThan(0);
+    expect(args.errors[0]).toContain('--dry-run');
+    expect(args.errors[0]).toContain('more than once');
+  });
+
+  it('omitting a boolean flag entirely leaves it unset, never defaulted to true', () => {
+    const args = parseArgs(['run', '--scenario', 'kampkit-android-host-test-discovery']);
+    expect(args['dry-run']).toBeUndefined();
+  });
 });
 
 // Regression coverage for a real privacy bug found by an independent review pass:
@@ -137,7 +173,7 @@ describe('validateSubcommandArgs', () => {
   });
 
   it('SUBCOMMAND_SHAPES covers every real subcommand main() actually dispatches', () => {
-    expect(Object.keys(SUBCOMMAND_SHAPES).sort()).toEqual(['aggregate', 'calibrate', 'corpus', 'smoke', 'validate']);
+    expect(Object.keys(SUBCOMMAND_SHAPES).sort()).toEqual(['aggregate', 'calibrate', 'corpus', 'run', 'smoke', 'validate']);
   });
 });
 
@@ -697,6 +733,144 @@ describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded ze
   });
 });
 
+// Review-round-2 regression coverage: graders.mjs's gradeScenarioCondition() exposes
+// harnessEvidenceAmbiguous (a HARNESS-integrity defect -- JUnit evidence that cannot be reliably
+// attributed to a specific Gradle attempt), but nothing previously propagated it onto the built
+// run record at all, so scenarioCellIntegrityOk (cli.mjs) had no way to see it and block the whole
+// matrix's promotion.
+describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2 fix)', () => {
+  function fakeScenarioConditionResult() {
+    return {
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      result: { subtype: 'success', is_error: false },
+      invocation: null,
+      hookStats: { hookCallCount: 1, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 1 },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
+      events: [],
+    };
+  }
+  function fakeGradeResult(overrides = {}) {
+    return {
+      expectedOutcomeMatched: false, success: false,
+      checks: [], firstUsefulSignalEventIndex: null,
+      testInvocationsTotal: 2, retries: 1,
+      harnessEvidenceAmbiguous: false,
+      parallelEvidenceMalformed: false,
+      gradleJunitEvidenceUnreliable: false,
+      ...overrides,
+    };
+  }
+
+  it('a gradeResult with harnessEvidenceAmbiguous:true produces an ambiguous_junit_evidence error entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-ambiguous-junit',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ harnessEvidenceAmbiguous: true }),
+    });
+    expect(record.errors.some((e) => e.code === 'ambiguous_junit_evidence')).toBe(true);
+  });
+
+  it('a gradeResult with harnessEvidenceAmbiguous:false produces NO ambiguous_junit_evidence entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-ambiguous-junit-clean',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ harnessEvidenceAmbiguous: false }),
+    });
+    expect(record.errors.some((e) => e.code === 'ambiguous_junit_evidence')).toBe(false);
+  });
+
+  it('calibrate/smoke records (runKind !== scenario) never produce this error, regardless of gradeResult', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-ambiguous-junit-calibration',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+    });
+    expect(record.errors.some((e) => e.code === 'ambiguous_junit_evidence')).toBe(false);
+  });
+
+  // Round 10 (systematic-closure pass): the identical propagation gap existed for
+  // parallelEvidenceMalformed (a genuinely incoherent parallel.legs[] structure on the terminal
+  // kmp-test attempt) -- a fresh review found nothing surfaced it onto the run record either,
+  // so scenarioCellIntegrityOk had no way to see it and block promotion.
+  it('a gradeResult with parallelEvidenceMalformed:true produces a malformed_parallel_evidence error entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-malformed-parallel',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ parallelEvidenceMalformed: true }),
+    });
+    expect(record.errors.some((e) => e.code === 'malformed_parallel_evidence')).toBe(true);
+  });
+
+  it('a gradeResult with parallelEvidenceMalformed:false produces NO malformed_parallel_evidence entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-malformed-parallel-clean',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ parallelEvidenceMalformed: false }),
+    });
+    expect(record.errors.some((e) => e.code === 'malformed_parallel_evidence')).toBe(false);
+  });
+
+  it('calibrate/smoke records (runKind !== scenario) never produce malformed_parallel_evidence, regardless of gradeResult', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-malformed-parallel-calibration',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+    });
+    expect(record.errors.some((e) => e.code === 'malformed_parallel_evidence')).toBe(false);
+  });
+
+  // Round 11 (Docker/local-ci audit): the identical propagation gap existed for
+  // gradleJunitEvidenceUnreliable (a real JUnit XML with a genuine <skipped> testcase, or an
+  // oversized/unreadable file) -- a fresh review found matrix-runner.mjs's
+  // captureGradleJunitEvidence already returned a harness-integrity signal for this, but nothing
+  // propagated it onto the run record, so scenarioCellIntegrityOk had no way to see it and block
+  // promotion (exactly the same class of gap the two error codes above were fixed for).
+  it('a gradeResult with gradleJunitEvidenceUnreliable:true produces an unreliable_gradle_junit_evidence error entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-unreliable-gradle-junit',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ gradleJunitEvidenceUnreliable: true }),
+    });
+    expect(record.errors.some((e) => e.code === 'unreliable_gradle_junit_evidence')).toBe(true);
+  });
+
+  it('a gradeResult with gradleJunitEvidenceUnreliable:false produces NO unreliable_gradle_junit_evidence entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-unreliable-gradle-junit-clean',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ gradleJunitEvidenceUnreliable: false }),
+    });
+    expect(record.errors.some((e) => e.code === 'unreliable_gradle_junit_evidence')).toBe(false);
+  });
+
+  it('calibrate/smoke records (runKind !== scenario) never produce unreliable_gradle_junit_evidence, regardless of gradeResult', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'smoke', scenarioId: 'test-unreliable-gradle-junit-smoke',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+    });
+    expect(record.errors.some((e) => e.code === 'unreliable_gradle_junit_evidence')).toBe(false);
+  });
+});
+
 // Regression coverage for a review-round-3 finding: tool_calls_total's new
 // `invocation?.attemptCount ?? 0` computation (replacing a flat 0-or-1) was only exercised at the
 // findSkillInvocation/attemptCount level (agentic-eval-stream-parser.test.js) -- nothing proved
@@ -823,10 +997,238 @@ describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {o
 // parameterizable), so this only proves the wiring succeeds against the real, committed corpus
 // -- the underlying content-validation LOGIC (shape, banned terms, activation hints, partition
 // coverage) has its own comprehensive synthetic-failure-case coverage in
-// agentic-eval-schemas.test.js's validateTriggerQueries describe block.
+// agentic-eval-schemas.test.js's validateTriggerQueries describe block. The duplicate-id and
+// filename-match checks below are extracted as standalone pure functions specifically so their
+// NEGATIVE cases are unit-testable with synthetic input, since cmdCorpusValidate() itself always
+// reads the fixed real directory (which has neither duplicates nor mismatches by construction).
 describe('cmdCorpusValidate', () => {
   it('returns 0 (success) against the real, committed corpus', async () => {
     const { cmdCorpusValidate } = await import('../../tools/agentic-eval/cli.mjs');
     expect(cmdCorpusValidate()).toBe(0);
+  });
+});
+
+// EXACT REPRODUCTION (manual review of the systematic-closure pass): cmdCorpusValidate's own
+// JSON.parse('.map()') let one malformed scenario file's throw propagate all the way to main()'s
+// global catch (a stack trace + exit 2), aborting validation of every OTHER file -- fails closed,
+// but contradicts corpus validate's whole purpose (report every file's status). Fixed by extracting
+// the per-file parse (loadScenarioFile) and the per-entry validation loop (validateLoadedScenarios)
+// as their own pure, synthetic-input-testable functions, since cmdCorpusValidate() itself always
+// reads the fixed real corpus/scenarios/ directory (see its own describe block above).
+describe('loadScenarioFile', () => {
+  let dir;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = null;
+  });
+
+  it('returns {file, scenario} for a real, valid JSON file', async () => {
+    const { loadScenarioFile } = await import('../../tools/agentic-eval/cli.mjs');
+    dir = mkdtempSync(path.join(os.tmpdir(), 'aec-load-scenario-'));
+    writeFileSync(path.join(dir, 'good.json'), JSON.stringify({ id: 'kampkit-a' }));
+    expect(loadScenarioFile(dir, 'good.json')).toEqual({ file: 'good.json', scenario: { id: 'kampkit-a' } });
+  });
+
+  it('EXACT REPRODUCTION: returns {file, parseError} for malformed JSON, never throws', async () => {
+    const { loadScenarioFile } = await import('../../tools/agentic-eval/cli.mjs');
+    dir = mkdtempSync(path.join(os.tmpdir(), 'aec-load-scenario-'));
+    writeFileSync(path.join(dir, 'bad.json'), '{ this is not valid JSON');
+    let result;
+    expect(() => { result = loadScenarioFile(dir, 'bad.json'); }).not.toThrow();
+    expect(result.file).toBe('bad.json');
+    expect(typeof result.parseError).toBe('string');
+    expect(result.scenario).toBeUndefined();
+  });
+});
+
+describe('validateLoadedScenarios', () => {
+  it('EXACT REPRODUCTION: one entry\'s parseError does not prevent the OTHER entries, valid or invalid, from being fully validated and reported', async () => {
+    const { validateLoadedScenarios } = await import('../../tools/agentic-eval/cli.mjs');
+    // Deliberately minimal/schema-invalid "good" scenarios -- this test isolates ONLY "did every
+    // OTHER entry still go through the real validateScenario() path and get its own reported
+    // result," never "does a fully schema-valid scenario pass" (already covered by
+    // cmdCorpusValidate's own "returns 0 against the real corpus" test above).
+    const loaded = [
+      { file: 'a.json', scenario: { id: 'kampkit-a' } },
+      { file: 'b-corrupt.json', parseError: 'Unexpected token } in JSON at position 3' },
+      { file: 'c.json', scenario: { id: 'kampkit-c' } },
+    ];
+    const result = validateLoadedScenarios(loaded);
+    expect(result.ok).toBe(false); // b-corrupt.json alone must fail the whole command
+    // Nothing was silently skipped -- one result per input entry, same length, same order.
+    expect(result.results.map((r) => r.file)).toEqual(['a.json', 'b-corrupt.json', 'c.json']);
+    const byFile = Object.fromEntries(result.results.map((r) => [r.file, r]));
+    expect(byFile['b-corrupt.json'].ok).toBe(false);
+    expect(byFile['b-corrupt.json'].message).toContain('invalid JSON');
+    expect(byFile['b-corrupt.json'].message).toContain('Unexpected token');
+    // a.json/c.json went through the REAL validateScenario() path (proven by their own real
+    // schema errors appearing), never treated as a parse failure themselves.
+    expect(byFile['a.json'].message).not.toContain('invalid JSON');
+    expect(byFile['c.json'].message).not.toContain('invalid JSON');
+  });
+
+  it('a duplicate id between two VALID-SHAPED entries is still attributed correctly when a THIRD entry has a parseError', async () => {
+    const { validateLoadedScenarios } = await import('../../tools/agentic-eval/cli.mjs');
+    const loaded = [
+      { file: 'first.json', scenario: { id: 'kampkit-dup' } },
+      { file: 'broken.json', parseError: 'Unexpected end of JSON input' },
+      { file: 'second.json', scenario: { id: 'kampkit-dup' } },
+    ];
+    const result = validateLoadedScenarios(loaded);
+    const byFile = Object.fromEntries(result.results.map((r) => [r.file, r]));
+    // Messages are JSON.stringify'd error arrays, so quotes around the id are backslash-escaped --
+    // matched without the surrounding quote characters to stay robust to that encoding.
+    expect(byFile['second.json'].message).toContain('duplicate id');
+    expect(byFile['second.json'].message).toContain('kampkit-dup');
+    expect(byFile['second.json'].message).toContain('already declared by first.json');
+    expect(byFile['first.json'].message).not.toContain('duplicate');
+    expect(byFile['broken.json'].message).toContain('invalid JSON');
+  });
+});
+
+describe('checkScenarioFilenameMatchesId', () => {
+  it('returns null when the filename matches "${id}.json" exactly', async () => {
+    const { checkScenarioFilenameMatchesId } = await import('../../tools/agentic-eval/cli.mjs');
+    expect(checkScenarioFilenameMatchesId({ id: 'kampkit-example' }, 'kampkit-example.json')).toBeNull();
+  });
+
+  it('returns an error object when the filename diverges from the declared id', async () => {
+    const { checkScenarioFilenameMatchesId } = await import('../../tools/agentic-eval/cli.mjs');
+    const result = checkScenarioFilenameMatchesId({ id: 'kampkit-example' }, 'wrong-name.json');
+    expect(result).toEqual({
+      field: 'id',
+      message: 'filename "wrong-name.json" does not match its own declared id -- expected "kampkit-example.json"',
+    });
+  });
+
+  it('returns null (defers to validateScenario) when id is missing or not a string', async () => {
+    const { checkScenarioFilenameMatchesId } = await import('../../tools/agentic-eval/cli.mjs');
+    expect(checkScenarioFilenameMatchesId({}, 'anything.json')).toBeNull();
+    expect(checkScenarioFilenameMatchesId({ id: 42 }, 'anything.json')).toBeNull();
+    expect(checkScenarioFilenameMatchesId(null, 'anything.json')).toBeNull();
+  });
+});
+
+describe('findDuplicateScenarioIds', () => {
+  it('returns an empty array when every id is unique', async () => {
+    const { findDuplicateScenarioIds } = await import('../../tools/agentic-eval/cli.mjs');
+    const pairs = [
+      { id: 'kampkit-a', file: 'kampkit-a.json' },
+      { id: 'kampkit-b', file: 'kampkit-b.json' },
+    ];
+    expect(findDuplicateScenarioIds(pairs)).toEqual([]);
+  });
+
+  it('flags every re-declaration of an id already seen, attributing it back to the first file', async () => {
+    const { findDuplicateScenarioIds } = await import('../../tools/agentic-eval/cli.mjs');
+    const pairs = [
+      { id: 'kampkit-a', file: 'first.json' },
+      { id: 'kampkit-b', file: 'other.json' },
+      { id: 'kampkit-a', file: 'second.json' },
+    ];
+    const errors = findDuplicateScenarioIds(pairs);
+    expect(errors).toEqual([
+      { field: 'id', file: 'second.json', message: 'duplicate id "kampkit-a" in second.json -- already declared by first.json' },
+    ]);
+  });
+
+  it('flags a THIRD file re-declaring the same id independently of the second', async () => {
+    const { findDuplicateScenarioIds } = await import('../../tools/agentic-eval/cli.mjs');
+    const pairs = [
+      { id: 'kampkit-a', file: 'first.json' },
+      { id: 'kampkit-a', file: 'second.json' },
+      { id: 'kampkit-a', file: 'third.json' },
+    ];
+    const errors = findDuplicateScenarioIds(pairs);
+    expect(errors).toEqual([
+      { field: 'id', file: 'second.json', message: 'duplicate id "kampkit-a" in second.json -- already declared by first.json' },
+      { field: 'id', file: 'third.json', message: 'duplicate id "kampkit-a" in third.json -- already declared by first.json' },
+    ]);
+  });
+
+  it('returns `file` structurally so a caller can attribute an error to its owning file by direct equality, not by parsing the message', async () => {
+    const { findDuplicateScenarioIds } = await import('../../tools/agentic-eval/cli.mjs');
+    const pairs = [
+      { id: 'kampkit-a', file: 'first.json' },
+      { id: 'kampkit-a', file: 'second.json' },
+    ];
+    const [error] = findDuplicateScenarioIds(pairs);
+    expect(error.file).toBe('second.json');
+  });
+
+  it('ignores entries whose id is missing or not a string, without throwing', async () => {
+    const { findDuplicateScenarioIds } = await import('../../tools/agentic-eval/cli.mjs');
+    const pairs = [
+      { id: undefined, file: 'no-id.json' },
+      { id: 42, file: 'numeric-id.json' },
+      { id: 'kampkit-a', file: 'real.json' },
+    ];
+    expect(findDuplicateScenarioIds(pairs)).toEqual([]);
+  });
+
+  it('returns an empty array for an empty input list', async () => {
+    const { findDuplicateScenarioIds } = await import('../../tools/agentic-eval/cli.mjs');
+    expect(findDuplicateScenarioIds([])).toEqual([]);
+  });
+});
+
+// Round 8: a fresh review reproduced this function still rejecting two more real remote-URL forms
+// after round 7's original SSH-shorthand/HTTPS fix, AND noted zero regression tests existed for it
+// at all despite round 7 claiming every new behavior was verified RED->GREEN -- an accurate
+// correction: this function specifically had no direct unit coverage until now.
+describe('normalizeGitRemoteForComparison', () => {
+  it('EXACT REPRODUCTION: the ssh:// URI form (distinct from the git@host:path shorthand) now canonicalizes to the same identity as the HTTPS form', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const ssh = normalizeGitRemoteForComparison('ssh://git@github.com/touchlab/KaMPKit.git');
+    const https = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit');
+    expect(ssh).toBe(https);
+  });
+
+  it('EXACT REPRODUCTION: a trailing slash AFTER .git no longer defeats .git-suffix stripping', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const withTrailingSlash = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit.git/');
+    const withoutTrailingSlash = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit');
+    expect(withTrailingSlash).toBe(withoutTrailingSlash);
+  });
+
+  it('EXACT REPRODUCTION: scheme/host case differences no longer produce a different canonical identity (path case held IDENTICAL to isolate this from path case-sensitivity)', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const upper = normalizeGitRemoteForComparison('HTTPS://GitHub.com/touchlab/KaMPKit.git');
+    const lower = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit');
+    expect(upper).toBe(lower);
+  });
+
+  // Round 9: a fresh review reproduced the PRECEDING test conflating scheme/host case-insensitivity
+  // with path case -- it compared 'KaMPKit' against 'kampkit' in the SAME assertion as the
+  // scheme/host case difference, which (given the old implementation lowercased the whole result)
+  // passed for the wrong reason and locked in "path case is ignored" as expected behavior. Most git
+  // hosts treat repository paths as case-SENSITIVE; this tool is not GitHub-specific. Path case must
+  // now be preserved exactly -- only the host is normalized.
+  it('EXACT REPRODUCTION: path case is preserved, NOT normalized -- Team/Repo and team/repo are different repositories', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const a = normalizeGitRemoteForComparison('https://example.com/Team/Repo');
+    const b = normalizeGitRemoteForComparison('https://example.com/team/repo');
+    expect(a).not.toBe(b);
+  });
+
+  it('regression guard: the bare SSH shorthand (git@host:org/repo) still canonicalizes to the same identity as HTTPS', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const ssh = normalizeGitRemoteForComparison('git@github.com:touchlab/KaMPKit.git');
+    const https = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit');
+    expect(ssh).toBe(https);
+  });
+
+  it('a genuinely different repository does NOT canonicalize to the same identity', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const a = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit');
+    const b = normalizeGitRemoteForComparison('https://github.com/touchlab/other-repo');
+    expect(a).not.toBe(b);
+  });
+
+  it('a genuinely different host does NOT canonicalize to the same identity', async () => {
+    const { normalizeGitRemoteForComparison } = await import('../../tools/agentic-eval/cli.mjs');
+    const a = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit');
+    const b = normalizeGitRemoteForComparison('https://gitlab.com/touchlab/KaMPKit');
+    expect(a).not.toBe(b);
   });
 });

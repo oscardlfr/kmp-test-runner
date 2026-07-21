@@ -1,18 +1,26 @@
 // tests/vitest/agentic-eval-schemas.test.js
 // Unit tests for tools/agentic-eval/schemas.mjs.
 import { describe, it, expect } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
-  CURRENT_RUN_SCHEMA,
+  SUPPORTED_RUN_SCHEMAS,
+  LATEST_RUN_SCHEMA,
   validateRun,
   validateScenario,
   validateTriggerQueries,
   buildAggregateGroup,
   HARD_PARTITION_FIELDS,
 } from '../../tools/agentic-eval/schemas.mjs';
+import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 function baseRun(overrides = {}) {
   return {
-    schema: CURRENT_RUN_SCHEMA,
+    schema: 1,
     run_id: 'calibration-no-skill-abcd1234',
     run_kind: 'calibration',
     benchmark_eligible: false,
@@ -370,7 +378,174 @@ describe('validateRun', () => {
   });
 });
 
+// Decision 6: a real bug found on review -- naively bumping a single CURRENT_RUN_SCHEMA constant
+// to 2 would have made validateRun() reject every historical schema:1 record at its very first
+// check. This is the fix: explicit per-version dispatch, proven both synthetically (this describe
+// block) and against the actual 8 committed files (the next describe block).
+describe('schema v1/v2 dispatch (decision 6)', () => {
+  it('SUPPORTED_RUN_SCHEMAS accepts both 1 and 2; LATEST_RUN_SCHEMA is 2', () => {
+    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2]);
+    expect(LATEST_RUN_SCHEMA).toBe(2);
+  });
+
+  it('a schema:1 record WITHOUT grading_checks/repetition_index still validates cleanly -- those fields are never required for v1', () => {
+    const run = baseRun({ schema: 1 });
+    expect('grading_checks' in run).toBe(false);
+    expect('repetition_index' in run).toBe(false);
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  it('a schema:1 record is rejected if it DOES carry grading_checks -- v1\'s canonical field list has no such field, so its presence is unrecognized/malformed for that version', () => {
+    const run = { ...baseRun({ schema: 1 }), grading_checks: { value: null, reason: 'x' } };
+    const { warnings } = validateRun(run);
+    expect(warnings.some((w) => w.field === 'grading_checks')).toBe(true);
+  });
+
+  it('a schema:2 calibration record requires grading_checks/repetition_index present but null (not applicable)', () => {
+    const run = {
+      ...baseRun({ schema: 2, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+    };
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  it('a schema:2 scenario record REQUIRES a non-null grading_checks.value -- grading must have actually run', () => {
+    const run = {
+      ...baseRun({ schema: 2, run_kind: 'scenario', benchmark_eligible: true }),
+      grading_checks: { value: null, reason: 'not applicable' },
+      repetition_index: 0,
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'grading_checks')).toBe(true);
+  });
+
+  it('a schema:2 scenario record REQUIRES a non-negative integer repetition_index', () => {
+    const run = {
+      ...baseRun({ schema: 2, run_kind: 'scenario', benchmark_eligible: true }),
+      grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), reason: null },
+      repetition_index: null,
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'repetition_index')).toBe(true);
+  });
+
+  it('a non-scenario schema:2 record REJECTS a non-null repetition_index -- no repetition concept applies', () => {
+    const run = {
+      ...baseRun({ schema: 2, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: 0,
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'repetition_index')).toBe(true);
+  });
+
+  it('a fully well-formed schema:2 scenario record validates cleanly', () => {
+    const run = {
+      ...baseRun({ schema: 2, run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'kampkit-android-host-test-discovery' }),
+      grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [1, 2] })), reason: null },
+      repetition_index: 0,
+    };
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  describe('grading_checks canonical 8-name-set (decision 14)', () => {
+    function fullGradingChecks(overrides = {}) {
+      const checks = GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] }));
+      return { value: checks, reason: null, ...overrides };
+    }
+    function scenarioRunWith(gradingChecksValue) {
+      return {
+        ...baseRun({ schema: 2, run_kind: 'scenario', benchmark_eligible: true }),
+        grading_checks: { value: gradingChecksValue, reason: null },
+        repetition_index: 0,
+      };
+    }
+
+    it('accepts exactly the 8 canonical names, each once', () => {
+      const { errors } = validateRun(scenarioRunWith(fullGradingChecks().value));
+      expect(errors.filter((e) => e.field.startsWith('grading_checks'))).toEqual([]);
+    });
+
+    it('rejects a missing check name', () => {
+      const checks = fullGradingChecks().value.filter((c) => c.name !== 'no_provider_contradiction');
+      const { errors } = validateRun(scenarioRunWith(checks));
+      expect(errors.some((e) => e.field === 'grading_checks' && e.message.includes('no_provider_contradiction'))).toBe(true);
+    });
+
+    it('rejects an unrecognized extra check name', () => {
+      const checks = [...fullGradingChecks().value, { name: 'made_up_check', passed: true, detail: 'x', evidence_event_indices: [] }];
+      const { errors } = validateRun(scenarioRunWith(checks));
+      expect(errors.some((e) => e.field.endsWith('.name'))).toBe(true);
+    });
+
+    it('rejects a duplicate check name', () => {
+      const checks = fullGradingChecks().value;
+      checks[1] = { ...checks[0] }; // duplicate the first name into the second slot
+      const { errors } = validateRun(scenarioRunWith(checks));
+      expect(errors.some((e) => e.message.includes('duplicate check name'))).toBe(true);
+    });
+
+    it('rejects a non-boolean passed field', () => {
+      const checks = fullGradingChecks().value;
+      checks[0] = { ...checks[0], passed: 'yes' };
+      const { errors } = validateRun(scenarioRunWith(checks));
+      expect(errors.some((e) => e.field.endsWith('.passed'))).toBe(true);
+    });
+
+    it('rejects a non-array evidence_event_indices', () => {
+      const checks = fullGradingChecks().value;
+      checks[0] = { ...checks[0], evidence_event_indices: 3 };
+      const { errors } = validateRun(scenarioRunWith(checks));
+      expect(errors.some((e) => e.field.endsWith('.evidence_event_indices'))).toBe(true);
+    });
+
+    it('rejects a negative evidence_event_indices entry', () => {
+      const checks = fullGradingChecks().value;
+      checks[0] = { ...checks[0], evidence_event_indices: [-1] };
+      const { errors } = validateRun(scenarioRunWith(checks));
+      expect(errors.some((e) => e.field.endsWith('.evidence_event_indices'))).toBe(true);
+    });
+  });
+});
+
+// Explicit backward-validation proof (task requirement): loads and validates all 8 historical
+// PR #373/#378 run records BY THEIR EXACT COMMITTED PATH ON DISK, proving the v1 path genuinely
+// still passes -- not merely "the validator code looks backward-compatible" by inspection.
+describe('backward validation of every PR #373/#378 committed run record', () => {
+  const HISTORICAL_RUN_RECORD_PATHS = [
+    'tools/runs/agentic-eval-calibration/calibration-current-skill-286d46d9.json',
+    'tools/runs/agentic-eval-calibration/calibration-no-skill-83e03ae5.json',
+    'tools/runs/agentic-eval-smoke/smoke-current-skill-a3cd7530.json',
+    'tools/runs/agentic-eval-smoke/smoke-no-skill-a4990a7b.json',
+    'tools/runs/agentic-eval-calibration/calibration-current-skill-a557bea6.json',
+    'tools/runs/agentic-eval-calibration/calibration-no-skill-4b88b7da.json',
+    'tools/runs/agentic-eval-smoke/smoke-current-skill-00dd1291.json',
+    'tools/runs/agentic-eval-smoke/smoke-no-skill-e9c6ef18.json',
+  ];
+
+  it('all 8 files exist at their exact committed paths', () => {
+    for (const relPath of HISTORICAL_RUN_RECORD_PATHS) {
+      expect(readdirSync(path.dirname(path.join(REPO_ROOT, relPath)))).toContain(path.basename(relPath));
+    }
+  });
+
+  for (const relPath of HISTORICAL_RUN_RECORD_PATHS) {
+    it(`${relPath} validates cleanly under the (unchanged) v1 path`, () => {
+      const record = JSON.parse(readFileSync(path.join(REPO_ROOT, relPath), 'utf8'));
+      expect(record.schema).toBe(1);
+      const { errors } = validateRun(record);
+      expect(errors).toEqual([]);
+    });
+  }
+});
+
 describe('validateScenario', () => {
+  const REAL_SHA = 'b3a7784fb969a8558b88c80674c8b596944cdab7';
+
   function baseScenario(overrides = {}) {
     return {
       schema: 1,
@@ -378,18 +553,49 @@ describe('validateScenario', () => {
       family: 'test-only',
       project_alias: 'sample',
       project_url: 'https://github.com/example/sample',
-      project_commit: 'abc123',
+      project_commit: REAL_SHA,
       prompt: 'Run the tests for this project.',
       expected_outcome: 'Tests run and results are reported.',
-      grader: { kind: 'text-contains' },
+      policy: {
+        allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel'],
+        allowed_gradle_tasks: [':shared:tasks', ':shared:testAndroidHostTest'],
+      },
+      expected: {
+        module: ':shared',
+        outcome_kind: 'tests_executed',
+        kmp_test: { tests: { total: 1, passed: 1, failed: 0, individual_total: 24, skipped: 0 }, exit_code: 0 },
+        gradle: { allowed_invocations: [':shared:testAndroidHostTest'], evidence_task: ':shared:testAndroidHostTest', tests: { total: 24, passed: 24, failed: 0 }, exit_code: 0 },
+      },
       first_useful_signal_predicate: { description: 'first mention of test results' },
       tags: ['train'],
       ...overrides,
     };
   }
 
-  it('accepts a well-formed scenario', () => {
+  function baseScenarioNoTests(overrides = {}) {
+    return baseScenario({
+      id: 'sample-no-test-scenario',
+      expected: {
+        module: ':app',
+        outcome_kind: 'no_applicable_tests',
+        kmp_test: { error_code: 'no_test_modules', exit_code: 2, caused_by_filter: true },
+        gradle: { allowed_invocations: [':app:testDebugUnitTest', ':app:test'], evidence_task: ':app:testDebugUnitTest', exit_code: 0, marker: 'NO-SOURCE' },
+      },
+      policy: {
+        allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel'],
+        allowed_gradle_tasks: [':app:tasks', ':app:testDebugUnitTest', ':app:test'],
+      },
+      ...overrides,
+    });
+  }
+
+  it('accepts a well-formed tests_executed scenario', () => {
     const { errors } = validateScenario(baseScenario());
+    expect(errors).toEqual([]);
+  });
+
+  it('accepts a well-formed no_applicable_tests scenario', () => {
+    const { errors } = validateScenario(baseScenarioNoTests());
     expect(errors).toEqual([]);
   });
 
@@ -417,6 +623,531 @@ describe('validateScenario', () => {
     const { errors } = validateScenario(baseScenario({ family: 'trigger-only' }));
     expect(errors.some((e) => e.field === 'family')).toBe(true);
   });
+
+  describe('project_commit -- no placeholders, ever', () => {
+    it('rejects the literal placeholder that caused the original PR #372 draft to be rejected', () => {
+      const { errors } = validateScenario(baseScenario({ project_commit: 'PINNED_AT_EXECUTION_TIME' }));
+      expect(errors.some((e) => e.field === 'project_commit')).toBe(true);
+    });
+
+    it('rejects a short/abbreviated SHA -- must be the full 40 hex characters', () => {
+      const { errors } = validateScenario(baseScenario({ project_commit: 'b3a7784' }));
+      expect(errors.some((e) => e.field === 'project_commit')).toBe(true);
+    });
+
+    it('rejects a non-hex string of the right length', () => {
+      const { errors } = validateScenario(baseScenario({ project_commit: 'g'.repeat(40) }));
+      expect(errors.some((e) => e.field === 'project_commit')).toBe(true);
+    });
+
+    it('accepts a real, full 40-hex-character SHA', () => {
+      const { errors } = validateScenario(baseScenario({ project_commit: REAL_SHA }));
+      expect(errors.filter((e) => e.field === 'project_commit')).toEqual([]);
+    });
+  });
+
+  describe('policy -- the only fields ever validated against an executable-content grammar (decision 9)', () => {
+    it('rejects a kmp-test subcommand entry not matching the real policy hook grammar', () => {
+      const { errors } = validateScenario(baseScenario({ policy: { allowed_kmptest_subcommands: ['Doctor'], allowed_gradle_tasks: [] } }));
+      expect(errors.some((e) => e.field === 'policy.allowed_kmptest_subcommands')).toBe(true);
+    });
+
+    it('rejects a gradle task entry containing shell metacharacters', () => {
+      const { errors } = validateScenario(baseScenario({ policy: { allowed_kmptest_subcommands: ['doctor'], allowed_gradle_tasks: [':app:test; rm -rf /'] } }));
+      expect(errors.some((e) => e.field === 'policy.allowed_gradle_tasks')).toBe(true);
+    });
+
+    it('rejects a non-array policy field', () => {
+      const { errors } = validateScenario(baseScenario({ policy: { allowed_kmptest_subcommands: 'doctor', allowed_gradle_tasks: [] } }));
+      expect(errors.some((e) => e.field === 'policy.allowed_kmptest_subcommands')).toBe(true);
+    });
+
+    it('accepts an empty allowed_gradle_tasks array -- "no raw gradle commands needed" is valid', () => {
+      const { errors } = validateScenario(baseScenario({
+        policy: { allowed_kmptest_subcommands: ['doctor', 'parallel'], allowed_gradle_tasks: [] },
+        expected: { ...baseScenario().expected, gradle: undefined },
+      }));
+      // (gradle contract itself still required -- this only proves the policy array can be empty)
+      expect(errors.filter((e) => e.field === 'policy.allowed_gradle_tasks')).toEqual([]);
+    });
+  });
+
+  describe('prose fields are never swept for metacharacters (decision 9) -- only policy is', () => {
+    it('a prompt containing punctuation/parens/question-marks that would fail a blanket sweep still validates', () => {
+      const { errors } = validateScenario(baseScenario({ prompt: 'Can you check (carefully!) whether tests exist here? Report back w/ counts, please.' }));
+      expect(errors.filter((e) => e.field === 'prompt')).toEqual([]);
+    });
+
+    it('an expected_outcome containing similar punctuation still validates', () => {
+      const { errors } = validateScenario(baseScenario({ expected_outcome: 'Agent finds & runs the right task; reports pass/fail (accurately).' }));
+      expect(errors).toEqual([]);
+    });
+  });
+
+  describe('expected -- outcome_kind-keyed cross-field invariant (no hybrid records)', () => {
+    it('rejects tests_executed missing tests on kmp_test', () => {
+      const s = baseScenario();
+      delete s.expected.kmp_test.tests;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('rejects tests_executed missing exit_code (the real bug found on review -- exit_code must be REQUIRED, not forbidden)', () => {
+      const s = baseScenario();
+      delete s.expected.kmp_test.exit_code;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.exit_code')).toBe(true);
+    });
+
+    // Round 11 (Docker/local-ci audit): tests_executed already unconditionally requires
+    // exit_code:0, but nothing previously stopped a scenario from ALSO declaring a positive
+    // `failed` count -- a real-world-impossible combination (classifyExitCode's own
+    // testsFailed>0 -> TEST_FAIL(1) rule means a real envelope can never have both). Coherent with
+    // the exit_code:0 requirement above: tests_executed represents a clean, all-passing run.
+    it('EXACT REPRODUCTION: rejects kmp_test.tests.failed > 0 alongside the required exit_code:0 (impossible combination)', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, total: 2, passed: 1, failed: 1 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: rejects gradle.tests.failed > 0 alongside the required exit_code:0 (impossible combination)', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests = { ...s.expected.gradle.tests, total: 25, passed: 24, failed: 1 };
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, individual_total: 25 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests')).toBe(true);
+    });
+
+    it('rejects tests_executed with a non-zero exit_code -- a "tests executed" claim requires a clean process exit', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.exit_code = 1;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.exit_code')).toBe(true);
+    });
+
+    it('rejects tests_executed with a forbidden error_code present (hybrid record)', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.error_code = 'no_test_modules';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.error_code')).toBe(true);
+    });
+
+    it('rejects tests_executed with a forbidden gradle marker present (hybrid record)', () => {
+      const s = baseScenario();
+      s.expected.gradle.marker = 'NO-SOURCE';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.marker')).toBe(true);
+    });
+
+    it('rejects no_applicable_tests missing kmp_test.error_code/exit_code/caused_by_filter', () => {
+      const s = baseScenarioNoTests();
+      delete s.expected.kmp_test.error_code;
+      delete s.expected.kmp_test.caused_by_filter;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.error_code')).toBe(true);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.caused_by_filter')).toBe(true);
+    });
+
+    it('rejects no_applicable_tests missing gradle.marker', () => {
+      const s = baseScenarioNoTests();
+      delete s.expected.gradle.marker;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.marker')).toBe(true);
+    });
+
+    it('rejects no_applicable_tests with a forbidden tests object present on either provider (hybrid record)', () => {
+      const s = baseScenarioNoTests();
+      s.expected.kmp_test.tests = { total: 0, passed: 0, failed: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    // Round 11 (Docker/local-ci audit): a fresh review reproduced this oracle as too permissive --
+    // error_code:"anything", kmp_test.exit_code:1.5, and gradle.exit_code:-7 all previously passed
+    // with zero validation errors.
+    it('EXACT REPRODUCTION: rejects an arbitrary kmp_test.error_code instead of the one real value (no_test_modules)', () => {
+      const s = baseScenarioNoTests();
+      s.expected.kmp_test.error_code = 'anything';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.error_code')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: rejects kmp_test.exit_code as a non-integer (1.5)', () => {
+      const s = baseScenarioNoTests();
+      s.expected.kmp_test.exit_code = 1.5;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.exit_code')).toBe(true);
+    });
+
+    it('rejects kmp_test.exit_code incoherent with caused_by_filter (caused_by_filter:true requires CONFIG_ERROR(2), not ENV_ERROR(3))', () => {
+      const s = baseScenarioNoTests();
+      s.expected.kmp_test.caused_by_filter = true;
+      s.expected.kmp_test.exit_code = 3;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.exit_code')).toBe(true);
+    });
+
+    it('accepts kmp_test.exit_code:3 (ENV_ERROR) when caused_by_filter:false, the other real coherent variant', () => {
+      const s = baseScenarioNoTests();
+      s.expected.kmp_test.caused_by_filter = false;
+      s.expected.kmp_test.exit_code = 3;
+      const { errors } = validateScenario(s);
+      expect(errors.filter((e) => e.field.startsWith('expected.kmp_test'))).toEqual([]);
+    });
+
+    it('EXACT REPRODUCTION: rejects gradle.exit_code:-7 -- a genuine NO-SOURCE result is always a successful (exit 0) gradle build', () => {
+      const s = baseScenarioNoTests();
+      s.expected.gradle.exit_code = -7;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.exit_code')).toBe(true);
+    });
+
+    it('rejects an unrecognized outcome_kind', () => {
+      const { errors } = validateScenario(baseScenario({ expected: { ...baseScenario().expected, outcome_kind: 'something-else' } }));
+      expect(errors.some((e) => e.field === 'expected.outcome_kind')).toBe(true);
+    });
+
+    it('rejects a gradle marker value outside the fixed enum', () => {
+      const s = baseScenarioNoTests();
+      s.expected.gradle.marker = 'SOMETHING-ELSE';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.marker')).toBe(true);
+    });
+
+    // Review-fix regression: the docstring already claimed "non-negative integer
+    // total/passed/failed" but the code only checked `typeof === 'number'` -- total:-1,
+    // passed:1.5, failed:-2 all passed validation with zero errors under the old check.
+    describe('tests.{total,passed,failed,individual_total} must be non-negative INTEGERS, not merely typeof number', () => {
+      it('rejects a negative total', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: -1, passed: 1, failed: 0, individual_total: 24 };
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      });
+
+      it('rejects a fractional passed', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: 1, passed: 1.5, failed: 0, individual_total: 24 };
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      });
+
+      it('rejects a negative failed', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: 1, passed: 1, failed: -2, individual_total: 24 };
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      });
+
+      it('rejects a negative individual_total (present, but never validated by the old code)', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: 1, passed: 1, failed: 0, individual_total: -24 };
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      });
+
+      it('rejects a fractional individual_total', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: 1, passed: 1, failed: 0, individual_total: 24.5 };
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      });
+
+      it('the EXACT adversarial repro from review (total:-1, passed:1.5, failed:-2) produces at least one error, not zero', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: -1, passed: 1.5, failed: -2, individual_total: 24 };
+        const { errors } = validateScenario(s);
+        expect(errors.length).toBeGreaterThan(0);
+      });
+
+      it('still accepts well-formed non-negative integers (the fix does not regress the happy path)', () => {
+        const { errors } = validateScenario(baseScenario());
+        expect(errors.filter((e) => e.field === 'expected.kmp_test.tests')).toEqual([]);
+      });
+    });
+
+    describe('tests.total must equal passed + failed (arithmetic consistency invariant)', () => {
+      it('rejects total that does not equal passed + failed', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: 10, passed: 1, failed: 0, individual_total: 24 };
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      });
+
+      it('accepts total that correctly equals passed + failed', () => {
+        const s = baseScenario();
+        s.expected.kmp_test.tests = { total: 1, passed: 1, failed: 0, individual_total: 24, skipped: 0 };
+        const { errors } = validateScenario(s);
+        expect(errors.filter((e) => e.field === 'expected.kmp_test.tests')).toEqual([]);
+      });
+
+      it('applies the same invariant to the gradle provider', () => {
+        const s = baseScenario();
+        s.expected.gradle.tests = { total: 24, passed: 20, failed: 0 }; // 20 != 24
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.gradle.tests')).toBe(true);
+      });
+    });
+  });
+
+  describe('expected.gradle -- allowed_invocations/evidence_task consistency (decisions 3/round-4)', () => {
+    it('rejects evidence_task not being a member of allowed_invocations', () => {
+      const s = baseScenarioNoTests();
+      s.expected.gradle.evidence_task = ':app:someOtherTask';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.evidence_task')).toBe(true);
+    });
+
+    it('rejects an allowed_invocations entry that is not also in the scenario\'s own policy.allowed_gradle_tasks', () => {
+      const s = baseScenarioNoTests();
+      s.expected.gradle.allowed_invocations = [':app:testDebugUnitTest', ':app:test', ':app:somethingNotInPolicy'];
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.allowed_invocations')).toBe(true);
+    });
+
+    it('accepts the real lifecycle-alias shape (both the direct task and :app:test in allowed_invocations, both in policy)', () => {
+      const { errors } = validateScenario(baseScenarioNoTests());
+      expect(errors).toEqual([]);
+    });
+
+    it('rejects an empty allowed_invocations array', () => {
+      const s = baseScenarioNoTests();
+      s.expected.gradle.allowed_invocations = [];
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.allowed_invocations')).toBe(true);
+    });
+  });
+
+  it('rejects an id containing a path-traversal shape', () => {
+    const { errors } = validateScenario(baseScenario({ id: '../../etc/passwd' }));
+    expect(errors.some((e) => e.field === 'id')).toBe(true);
+  });
+
+  it('rejects a module not shaped like a colon-prefixed Gradle project path', () => {
+    const { errors } = validateScenario(baseScenario({ expected: { ...baseScenario().expected, module: 'shared' } }));
+    expect(errors.some((e) => e.field === 'expected.module')).toBe(true);
+  });
+
+  // A fresh review reproduced the oracle accepting ground truth the grader itself never
+  // verifies: `skipped`/`individual_total` were optional-if-present on BOTH providers, but
+  // graders.mjs's Gradle-path evaluation never reads either field at all (the JUnit-XML capture
+  // mechanism can't verify them). Provider-specific contracts close this: kmp_test REQUIRES all
+  // five counters; gradle FORBIDS the two it can't verify.
+  describe('provider-specific tests contracts (a fresh review reproduced an unenforced oracle)', () => {
+    it('EXACT REPRODUCTION: adding skipped:99/individual_total:999 to a real gradle contract now fails validation -- previously accepted with zero errors', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests = { ...s.expected.gradle.tests, skipped: 99, individual_total: 999 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.skipped')).toBe(true);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.individual_total')).toBe(true);
+    });
+
+    it('gradle contract with ONLY skipped present (no individual_total) is still rejected', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests = { ...s.expected.gradle.tests, skipped: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.skipped')).toBe(true);
+    });
+
+    it('gradle contract with ONLY individual_total present (no skipped) is still rejected', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests = { ...s.expected.gradle.tests, individual_total: 24 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.individual_total')).toBe(true);
+    });
+
+    it('kmp_test contract MISSING skipped is rejected (was merely optional before -- an absent counter on both scenario and envelope let the comparison pass vacuously)', () => {
+      const s = baseScenario();
+      const { skipped, ...withoutSkipped } = s.expected.kmp_test.tests;
+      s.expected.kmp_test.tests = withoutSkipped;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('kmp_test contract MISSING individual_total is rejected', () => {
+      const s = baseScenario();
+      const { individual_total, ...withoutIndividualTotal } = s.expected.kmp_test.tests;
+      s.expected.kmp_test.tests = withoutIndividualTotal;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('regression guard: a kmp_test contract with all five counters present and well-formed still validates cleanly', () => {
+      const { errors } = validateScenario(baseScenario());
+      expect(errors.filter((e) => e.field.startsWith('expected.kmp_test'))).toEqual([]);
+    });
+  });
+
+  // Round 8: a fresh review reproduced the oracle still open in a sharper form -- individual_total
+  // (the real per-test-case count) was merely non-negative, so total:1 (task-level)/
+  // individual_total:0 both passed shape validation, letting a kmp-test envelope claim "the task
+  // ran" while separately claiming "zero individual tests executed". Worse, nothing ever required
+  // kmp_test.individual_total to agree with gradle.tests.total -- the two providers' own counts of
+  // the SAME real test run could silently diverge in a scenario file with zero errors.
+  describe('round 8: kmp_test.tests.individual_total must be POSITIVE and must equal gradle.tests.total; skipped must be exactly 0', () => {
+    it('EXACT REPRODUCTION: individual_total:0 (a task ran, but zero individual tests) is rejected -- previously merely required non-negative', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, individual_total: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: kmp_test.individual_total (24) disagreeing with gradle.tests.total (25) is rejected -- previously no cross-provider check existed at all', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests = { ...s.expected.gradle.tests, total: 25, passed: 25 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests.individual_total')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: the combined attack -- kmp_test.individual_total:0 alongside gradle.tests.total:24 -- is rejected both by the positivity check and the cross-provider check', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, individual_total: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests.individual_total')).toBe(true);
+    });
+
+    it('kmp_test.tests.skipped:1 (non-zero) is rejected -- the Gradle/JUnit-XML path can never corroborate a non-zero skip claim', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, skipped: 1 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('regression guard: individual_total equal to gradle.tests.total and skipped:0 (the real, shipped scenario shape) still validates cleanly', () => {
+      const { errors } = validateScenario(baseScenario());
+      expect(errors.filter((e) => e.field.startsWith('expected.kmp_test') || e.field.startsWith('expected.gradle'))).toEqual([]);
+    });
+  });
+
+  // Round 8: a fresh review reproduced unrecognized fields on `expected`/`expected.kmp_test`/
+  // `expected.gradle`/their `.tests` objects being silently accepted rather than rejected --
+  // including a FORBIDDEN field explicitly set to `null` (e.g. `tests.skipped: null`), which the
+  // old `'k' in obj && obj.k != null` presence pattern treated as absent, silently skipping the
+  // forbidden-field check entirely.
+  describe('round 8: closed key sets on expected/kmp_test/gradle -- unrecognized fields (including forbidden fields explicitly set to null) are rejected', () => {
+    it('EXACT REPRODUCTION: a resurrected expected.kmp_test.task field is rejected -- previously silently accepted', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.task = ':wrong:test';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.task')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: an unrecognized expected.gradle.tests.flaky counter is rejected -- previously silently accepted', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests.flaky = 99;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.flaky')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: expected.gradle.tests.skipped explicitly set to null still triggers the forbidden-field check -- previously the `!= null` presence pattern silently treated this as absent', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests.skipped = null;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.skipped')).toBe(true);
+    });
+
+    it('an unrecognized top-level key on expected itself is rejected', () => {
+      const s = baseScenario();
+      s.expected.extra_field = 'unexpected';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.extra_field')).toBe(true);
+    });
+
+    it('an unrecognized key on expected.kmp_test for a no_applicable_tests contract is rejected', () => {
+      const s = baseScenarioNoTests();
+      s.expected.kmp_test.unexpected_field = 'x';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.unexpected_field')).toBe(true);
+    });
+
+    it('an unrecognized key on expected.gradle for a no_applicable_tests contract is rejected', () => {
+      const s = baseScenarioNoTests();
+      s.expected.gradle.unexpected_field = 'x';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.unexpected_field')).toBe(true);
+    });
+
+    it('regression guard: well-formed tests_executed and no_applicable_tests scenarios with no extra keys anywhere still validate cleanly', () => {
+      expect(validateScenario(baseScenario()).errors).toEqual([]);
+      expect(validateScenario(baseScenarioNoTests()).errors).toEqual([]);
+    });
+  });
+
+  // A fresh review reproduced tests_executed contracts legitimately claiming {total:0,...} --
+  // self-contradictory (if outcome_kind is tests_executed, at least one test ran by definition),
+  // and indistinguishable at the schema level from an absent-XML false positive (fixed separately
+  // in matrix-runner.mjs's captureGradleJunitEvidence).
+  describe('tests_executed requires a POSITIVE total, not merely non-negative (a fresh review reproduced total:0 as schema-legal)', () => {
+    it('rejects kmp_test.tests.total:0 for a tests_executed contract', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.tests = { total: 0, passed: 0, failed: 0, individual_total: 0, skipped: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('rejects gradle.tests.total:0 for a tests_executed contract', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests = { total: 0, passed: 0, failed: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests')).toBe(true);
+    });
+  });
+
+  // A fresh review reproduced project_alias:null and tags:"train" (a bare string, not an array)
+  // both passing validateScenario() with zero errors.
+  describe('project_alias / tags metadata validation (a fresh review reproduced these as entirely unvalidated)', () => {
+    it('rejects project_alias:null', () => {
+      const { errors } = validateScenario(baseScenario({ project_alias: null }));
+      expect(errors.some((e) => e.field === 'project_alias')).toBe(true);
+    });
+
+    it('rejects project_alias as an empty string', () => {
+      const { errors } = validateScenario(baseScenario({ project_alias: '' }));
+      expect(errors.some((e) => e.field === 'project_alias')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: rejects tags as a bare string ("train") instead of an array', () => {
+      const { errors } = validateScenario(baseScenario({ tags: 'train' }));
+      expect(errors.some((e) => e.field === 'tags')).toBe(true);
+    });
+
+    it('rejects an empty tags array', () => {
+      const { errors } = validateScenario(baseScenario({ tags: [] }));
+      expect(errors.some((e) => e.field === 'tags')).toBe(true);
+    });
+
+    it('rejects a tag value outside the known enum', () => {
+      const { errors } = validateScenario(baseScenario({ tags: ['not-a-real-tag'] }));
+      expect(errors.some((e) => e.field === 'tags')).toBe(true);
+    });
+
+    it('accepts a well-formed tags array (regression guard)', () => {
+      const { errors } = validateScenario(baseScenario({ tags: ['held-out'] }));
+      expect(errors.some((e) => e.field === 'tags')).toBe(false);
+    });
+
+    // Round 9: a fresh review reproduced tags NOT guaranteeing an exclusive train/held-out
+    // partition -- ["train","held-out"] (contaminating both partitions at once) and
+    // ["train","train"] (a meaningless duplicate) both previously passed with zero errors, despite
+    // tags being documented as THE corpus partition a scenario belongs to -- a single-valued
+    // concept by definition.
+    it('EXACT REPRODUCTION: rejects tags containing BOTH train and held-out simultaneously', () => {
+      const { errors } = validateScenario(baseScenario({ tags: ['train', 'held-out'] }));
+      expect(errors.some((e) => e.field === 'tags')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: rejects tags with a duplicate entry (["train","train"])', () => {
+      const { errors } = validateScenario(baseScenario({ tags: ['train', 'train'] }));
+      expect(errors.some((e) => e.field === 'tags')).toBe(true);
+    });
+
+    it('regression guard: a single-entry tags array for each known value still validates cleanly', () => {
+      expect(validateScenario(baseScenario({ tags: ['train'] })).errors.some((e) => e.field === 'tags')).toBe(false);
+      expect(validateScenario(baseScenario({ tags: ['held-out'] })).errors.some((e) => e.field === 'tags')).toBe(false);
+    });
+  });
 });
 
 describe('buildAggregateGroup -- Fairness Contract as code', () => {
@@ -430,6 +1161,7 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
       repo_commit: 'c5c0661852f7c9da145ef56892048e706216a6ce',
       daemon_policy: 'disabled-via-gradle-user-home-properties', env_allowlist_profile: 'narrow',
       skill_invoked: { value: false, reason: null }, success: { value: true, reason: null },
+      expected_outcome_matched: { value: true, reason: null },
       ...overrides,
     };
   }
