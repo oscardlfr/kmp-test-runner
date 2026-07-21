@@ -27,27 +27,88 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { resolveRejectedDiagnosticsDir, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
 import { assertCleanOrThrowObject } from './privacy.mjs';
-import { RUN_KIND_VALUES, CONDITION_VALUES } from './schemas.mjs';
+import { RUN_KIND_VALUES, CONDITION_VALUES, PLATFORM_VALUES, PRIVACY_STATUS_VALUES } from './schemas.mjs';
 
 export const REJECTION_DIAGNOSTICS_SCHEMA = 1;
 
 const FOREIGN_SKILL_SUMMARY_FIELDS = ['rejected', 'confirmed', 'incomplete'];
+// claude_code_version (round-7 audit finding -- "procedencia forense incompleta"): each transcript's
+// OWN reported CLI version, like model_resolved -- can legitimately differ or be null per cell
+// independently (a broken capture never reached its init event), so it lives here, not among the
+// batch-wide fields below.
 const CELL_CANONICAL_FIELDS = [
   'run_id', 'condition', 'repetition_index', 'order_index', 'skill_source_sha', 'model_resolved',
-  'failed_checks', 'foreign_skill_summary',
+  'claude_code_version', 'failed_checks', 'foreign_skill_summary',
 ];
-// scenario_id/project_alias/project_commit/project_url/seed/policy_sha256 (round-6 audit finding
-// -- "diagnostic provenance"): reproducing or even just understanding WHERE/WHEN a rejection
-// happened needs more than repo_commit (the HARNESS's own commit) and model_requested -- which
-// scenario was running, which external project/commit was measured, the seed/policy that produced
-// this exact matrix. Mirrors buildRunRecord's own field names exactly (never re-derived, only
-// read off the already-built records the caller has in scope) so there is no second, drifting
-// vocabulary for the same facts.
+// scenario_id/project_alias/project_commit/seed/policy_sha256/platform/privacy_status (round-6/7
+// audit findings -- "diagnostic provenance"): reproducing or even just understanding WHERE/WHEN a
+// rejection happened needs more than repo_commit (the HARNESS's own commit) and model_requested --
+// which scenario was running, which external project/commit was measured, the seed/policy that
+// produced this exact matrix, which host platform ran it, whether privacy redaction was even
+// active. Mirrors buildRunRecord's own field names exactly (never re-derived, only read off the
+// already-built records the caller has in scope) so there is no second, drifting vocabulary for
+// the same facts.
+//
+// project_url is DELIBERATELY ABSENT here (round-7 audit finding -- privacy): unlike
+// project_alias/project_commit, which identify a project/revision without being a directly
+// clickable/shareable link, a committed project_url would put a real external repository address
+// into the SAME committed tier every other field here is safe-by-construction for. Present only in
+// the local, gitignored tier (see buildRejectionDiagnostics's own doc comment) -- the safer of the
+// two options this round's audit offered, and the one that needs no new conditional enforcement
+// logic to get right.
 const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS = [
   'schema', 'rejection_id', 'timestamp', 'run_kind', 'run_ids', 'model_requested', 'repo_commit',
-  'scenario_id', 'project_alias', 'project_commit', 'project_url', 'seed', 'policy_sha256',
-  'cells', 'foreign_skill_summary',
+  'scenario_id', 'project_alias', 'project_commit', 'seed', 'policy_sha256', 'platform',
+  'privacy_status', 'cells', 'foreign_skill_summary',
 ];
+
+/**
+ * Round-7 audit finding ("la procedencia por tipo de run no está realmente cerrada"): the
+ * pre-fix check accepted "null OR a non-empty string" for project_alias/project_commit and "null
+ * OR an integer" for seed UNCONDITIONALLY -- a scenario row with every project_* field AND seed
+ * set to null validated with zero errors, exactly as cleanly as a genuinely-nullish
+ * calibration row. Each run_kind has exactly one legitimate shape, mirroring what buildRunRecord
+ * itself actually produces for that run_kind (verified directly against cli.mjs, not assumed):
+ *   - calibration: project_alias is the FIXED literal 'calibration-project' (buildRunRecord's own
+ *     default parameter value when the caller passes nothing -- cmdCalibrate never overrides it);
+ *     project_commit null (no external project); seed null (no repetition concept).
+ *   - smoke: project_alias/project_commit are REAL, non-empty values (points at whatever project
+ *     the operator ran smoke against); seed null (no repetition concept).
+ *   - scenario: project_alias/project_commit REAL; seed a real integer (the actual --seed used).
+ *   - corpus-probe: not produced by anything in this codebase yet (accepted in RUN_KIND_VALUES as
+ *     a reserved future value only) -- its real shape is genuinely unknown, so this explicitly
+ *     fails closed rather than silently falling through to "anything goes" the way a missing
+ *     switch arm would.
+ * Explicit if-chain (never a bare fallthrough) -- run_kind's own validity is checked separately by
+ * the caller; an already-invalid run_kind is skipped here rather than cascading into a wall of
+ * confusing "wrong shape" errors on top of the "unrecognized run_kind" error it already produced.
+ * @returns {Array<{field: string, message: string}>}
+ */
+function validateProvenanceForRunKind(row) {
+  const errors = [];
+  if (!RUN_KIND_VALUES.includes(row.run_kind)) return errors;
+  const realProject = (v) => typeof v === 'string' && v.length > 0;
+  if (row.run_kind === 'calibration') {
+    if (row.project_alias !== 'calibration-project') {
+      errors.push({ field: 'project_alias', message: `must be exactly 'calibration-project' for run_kind:'calibration'` });
+    }
+    if (row.project_commit !== null) errors.push({ field: 'project_commit', message: `must be null for run_kind:'calibration' -- no external project is involved` });
+    if (row.seed !== null) errors.push({ field: 'seed', message: `must be null for run_kind:'calibration' -- no repetition concept applies` });
+  } else if (row.run_kind === 'smoke') {
+    if (!realProject(row.project_alias)) errors.push({ field: 'project_alias', message: `must be a real, non-empty string for run_kind:'smoke' -- points at whatever project smoke ran against` });
+    if (!realProject(row.project_commit)) errors.push({ field: 'project_commit', message: `must be a real, non-empty string for run_kind:'smoke'` });
+    if (row.seed !== null) errors.push({ field: 'seed', message: `must be null for run_kind:'smoke' -- no repetition concept applies` });
+  } else if (row.run_kind === 'scenario') {
+    if (!realProject(row.project_alias)) errors.push({ field: 'project_alias', message: `must be a real, non-empty string for run_kind:'scenario'` });
+    if (!realProject(row.project_commit)) errors.push({ field: 'project_commit', message: `must be a real, non-empty string for run_kind:'scenario'` });
+    if (!Number.isInteger(row.seed)) errors.push({ field: 'seed', message: `must be an integer for run_kind:'scenario'` });
+  } else {
+    // run_kind:'corpus-probe' (or any future RUN_KIND_VALUES addition this function hasn't been
+    // taught about yet) -- fail closed rather than silently accepting an unvalidated shape.
+    errors.push({ field: 'run_kind', message: `provenance validation is not yet defined for run_kind:'${row.run_kind}'` });
+  }
+  return errors;
+}
 
 function validateForeignSkillSummary(summary, fieldPrefix) {
   const errors = [];
@@ -98,21 +159,11 @@ export function validateRejectionRow(row) {
   if (typeof row.repo_commit !== 'string' || row.repo_commit.length === 0) errors.push({ field: 'repo_commit', message: 'must be a non-empty string' });
   // scenario_id is a real, non-empty value for EVERY run_kind (buildRunRecord always populates it
   // -- calibrate/smoke use a fixed descriptive id like 'calibration-explicit-invocation', never
-  // null), unlike project_alias/project_commit/project_url/seed below, which are genuinely
-  // nullable (no external project is involved for calibrate/smoke).
+  // null).
   if (typeof row.scenario_id !== 'string' || row.scenario_id.length === 0) errors.push({ field: 'scenario_id', message: 'must be a non-empty string' });
-  if (!(row.project_alias === null || (typeof row.project_alias === 'string' && row.project_alias.length > 0))) {
-    errors.push({ field: 'project_alias', message: 'must be null (calibrate/smoke) or a non-empty string (scenario)' });
-  }
-  if (!(row.project_commit === null || (typeof row.project_commit === 'string' && row.project_commit.length > 0))) {
-    errors.push({ field: 'project_commit', message: 'must be null (calibrate/smoke) or a non-empty string (scenario)' });
-  }
-  if (!(row.project_url === null || (typeof row.project_url === 'string' && row.project_url.length > 0))) {
-    errors.push({ field: 'project_url', message: 'must be null (calibrate/smoke) or a non-empty string (scenario)' });
-  }
-  if (!(row.seed === null || Number.isInteger(row.seed))) {
-    errors.push({ field: 'seed', message: 'must be null (calibrate/smoke) or an integer (scenario)' });
-  }
+  if (!PLATFORM_VALUES.includes(row.platform)) errors.push({ field: 'platform', message: `must be one of ${PLATFORM_VALUES.join('|')}` });
+  if (!PRIVACY_STATUS_VALUES.includes(row.privacy_status)) errors.push({ field: 'privacy_status', message: `must be one of ${PRIVACY_STATUS_VALUES.join('|')}` });
+  errors.push(...validateProvenanceForRunKind(row));
   if (typeof row.policy_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(row.policy_sha256)) {
     errors.push({ field: 'policy_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
   }
@@ -177,6 +228,9 @@ export function validateRejectionRow(row) {
       if (!(cell.model_resolved === null || (typeof cell.model_resolved === 'string' && cell.model_resolved.length > 0))) {
         errors.push({ field: `cells[${i}].model_resolved`, message: 'must be null (no init event captured) or a non-empty string' });
       }
+      if (!(cell.claude_code_version === null || (typeof cell.claude_code_version === 'string' && cell.claude_code_version.length > 0))) {
+        errors.push({ field: `cells[${i}].claude_code_version`, message: 'must be null (no init event captured) or a non-empty string' });
+      }
       if (!Array.isArray(cell.failed_checks) || cell.failed_checks.some((c) => typeof c !== 'string' || c.length === 0)) {
         errors.push({ field: `cells[${i}].failed_checks`, message: 'must be an array of non-empty strings' });
       } else if (cell.failed_checks.length > 0) {
@@ -232,12 +286,16 @@ export function validateRejectionRow(row) {
  * @param {string} runKind
  * @param {object[]} records - the already-built run records for this batch (2 for calibrate/
  *   smoke as [recordA, recordB]; N for a scenario matrix) -- each already carries its own
- *   run_id/condition/repetition_index/order_index/skill_source_sha/model_resolved/repo_commit/
- *   model_requested/scenario_id/project_alias/project_commit/project_url/seed/policy_sha256/
- *   foreign_skill_summary (schema v3, populated by buildRunRecord regardless of whether the
- *   batch is ultimately accepted or rejected).
+ *   run_id/run_kind/condition/repetition_index/order_index/skill_source_sha/model_resolved/
+ *   claude_code_version/repo_commit/model_requested/scenario_id/project_alias/project_commit/
+ *   project_url/seed/policy_sha256/platform/privacy_status/foreign_skill_summary (schema v3,
+ *   populated by buildRunRecord regardless of whether the batch is ultimately accepted or
+ *   rejected).
  * @param {Record<string, string[]>} failedChecksByRunId - each record's own run_id -> the named
- *   checks that failed for THAT record/side specifically.
+ *   checks that failed for THAT record/side specifically. Round-7 audit finding ("atribución por
+ *   celda todavía fail-open"): must have EXACTLY the same key set as records[].run_id -- no
+ *   missing (a real cell's failure reason silently vanishing), no extra (a stale/mistyped key
+ *   pointing at a run_id that isn't actually part of this batch).
  * @param {Record<string, string[]>} [foreignSkillNamesByRunId] - each record's own run_id -> the
  *   real (never-committed) foreign skillArg names attempted, for the local-only tier. Optional --
  *   if omitted, the local tier simply carries no extra names (still privacy-safe either way).
@@ -246,15 +304,42 @@ export function buildRejectionDiagnostics({ runKind, records, failedChecksByRunI
   if (!Array.isArray(records) || records.length === 0) {
     throw new Error('buildRejectionDiagnostics: records must be a non-empty array');
   }
+  // Round-7 audit finding ("atribución por celda todavía fail-open"): the caller's OWN runKind
+  // parameter was never actually cross-checked against what each record itself declares --
+  // records built as one run_kind (e.g. wrongly assembled from a DIFFERENT code path, or a
+  // caller-side typo passing the wrong records array) could silently masquerade as another,
+  // reproduced directly: calibration-shaped records passed through with runKind:'smoke' validated
+  // cleanly before this check existed.
+  for (const r of records) {
+    if (r.run_kind !== runKind) {
+      throw new Error(`buildRejectionDiagnostics: runKind ('${runKind}') does not match record ${r.run_id}'s own run_kind ('${r.run_kind}') -- records from a different run_kind must never be attributed to this batch`);
+    }
+  }
+  // Round-7 audit finding (same section): failedChecksByRunId[missingKey] ?? [] silently treated
+  // an ABSENT key exactly like a genuinely-empty (all-passed) cell -- a caller-side bug (wrong
+  // run_id, a typo, an incomplete map) could make a REAL failure disappear without a trace, and
+  // the "at least one cell has a real failed_checks" invariant (validateRejectionRow) could still
+  // be satisfied by a DIFFERENT cell, masking the gap entirely. Exact set-equality, not "every
+  // record has an entry" (which alone wouldn't catch a stale extra key left over from a refactor).
+  const recordRunIds = new Set(records.map((r) => r.run_id));
+  const failedChecksKeys = new Set(Object.keys(failedChecksByRunId));
+  const missingFromMap = [...recordRunIds].filter((id) => !failedChecksKeys.has(id));
+  const extraInMap = [...failedChecksKeys].filter((id) => !recordRunIds.has(id));
+  if (missingFromMap.length > 0 || extraInMap.length > 0) {
+    throw new Error(`buildRejectionDiagnostics: failedChecksByRunId's keys must exactly match records[].run_id (missing: ${JSON.stringify(missingFromMap)}, extra/stale: ${JSON.stringify(extraInMap)})`);
+  }
   // Round-5 audit finding: never silently collapse to the first record's value without checking
   // agreement -- a real disagreement here would mean records from different harness invocations
   // got mixed together by mistake, which should be structurally impossible and must fail loudly,
-  // not be handled gracefully by guessing. Round-6 audit finding ("diagnostic provenance") widened
-  // this from just repo_commit/model_requested to every batch-wide identity/provenance field a
-  // human would need to locate or reproduce the rejected run: which scenario, which external
-  // project/commit, the seed, and the policy hash. All are read directly off buildRunRecord's own
-  // field names (never re-derived) -- see this function's own doc comment.
-  const BATCH_WIDE_FIELDS = ['repo_commit', 'model_requested', 'scenario_id', 'project_alias', 'project_commit', 'project_url', 'seed', 'policy_sha256'];
+  // not be handled gracefully by guessing. Round-6/7 audit findings ("diagnostic provenance")
+  // widened this from just repo_commit/model_requested to every batch-wide identity/provenance
+  // field a human would need to locate or reproduce the rejected run: which scenario, which
+  // external project/commit, the seed, the policy hash, the host platform, whether privacy
+  // redaction was active. project_url is checked here too (batch-wide, same as project_alias/
+  // project_commit) but deliberately NOT included in the committed record -- see
+  // REJECTION_DIAGNOSTICS_CANONICAL_FIELDS's own comment for the privacy rationale. All are read
+  // directly off buildRunRecord's own field names (never re-derived).
+  const BATCH_WIDE_FIELDS = ['repo_commit', 'model_requested', 'scenario_id', 'project_alias', 'project_commit', 'project_url', 'seed', 'policy_sha256', 'platform', 'privacy_status'];
   const batchWide = {};
   for (const field of BATCH_WIDE_FIELDS) {
     const values = new Set(records.map((r) => r[field]));
@@ -263,6 +348,7 @@ export function buildRejectionDiagnostics({ runKind, records, failedChecksByRunI
     }
     batchWide[field] = [...values][0];
   }
+  const { project_url: projectUrl, ...committedBatchWide } = batchWide;
 
   const cells = records.map((r) => ({
     run_id: r.run_id,
@@ -271,6 +357,7 @@ export function buildRejectionDiagnostics({ runKind, records, failedChecksByRunI
     order_index: r.order_index,
     skill_source_sha: r.skill_source_sha,
     model_resolved: r.model_resolved,
+    claude_code_version: r.claude_code_version,
     failed_checks: failedChecksByRunId[r.run_id] ?? [],
     foreign_skill_summary: r.foreign_skill_summary,
   }));
@@ -288,16 +375,19 @@ export function buildRejectionDiagnostics({ runKind, records, failedChecksByRunI
     timestamp: new Date().toISOString(),
     run_kind: runKind,
     run_ids: cells.map((c) => c.run_id),
-    ...batchWide,
+    ...committedBatchWide,
     cells,
     foreign_skill_summary: foreignSkillSummary,
   };
 
-  // Local-only tier: same base shape, PLUS real (deduplicated, sorted) foreign skill names per
-  // cell -- never present in `committed`. Structured detail only, deliberately never the full raw
-  // transcript (BACKLOG.md's originating text: "explicitly no raw transcript").
+  // Local-only tier: same base shape, PLUS project_url (batch-wide -- see
+  // REJECTION_DIAGNOSTICS_CANONICAL_FIELDS's own comment for why it's absent from `committed`) and
+  // real (deduplicated, sorted) foreign skill names per cell -- never present in `committed`.
+  // Structured detail only, deliberately never the full raw transcript (BACKLOG.md's originating
+  // text: "explicitly no raw transcript").
   const local = {
     ...committed,
+    project_url: projectUrl,
     cells: cells.map((c) => ({
       ...c,
       foreign_skill_names: [...new Set(foreignSkillNamesByRunId[c.run_id] ?? [])].sort(),

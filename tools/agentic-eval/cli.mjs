@@ -1410,14 +1410,29 @@ async function cmdCalibrate(args) {
   }
   const { computePolicySha256 } = await import('./policy-config.mjs');
   const templateDir = join(__dirname, 'fixtures', 'calibration-project');
-  const conditionPair = await runConditionPair({
-    prompt: 'Use the kmp-test-runner skill to check this project.',
-    model,
-    allowedGradleTasks: ['build'],
-    allowedKmpTestSubcommands: ['doctor', 'parallel'],
-    materializeFixture: (existingDir) => materializeCalibrationProject({ templateDir, existingDir }),
-    cleanupFixture: (fixtureDir) => rmSync(fixtureDir, { recursive: true, force: true }),
-  });
+  // Round-7 audit finding: this call sat OUTSIDE the try block below, unguarded -- any exception
+  // during resource acquisition or session spawning (acquireSharedEvalResources' own real
+  // mkdtempSync/git-materialize calls, both genuinely capable of throwing under resource pressure
+  // or a transient git/filesystem hiccup) would escape uncaught all the way to main()'s own
+  // top-level catch, exiting 2 with a raw stack trace instead of this command's own clean "FAILED:
+  // <reason>" / exit 1 contract every OTHER failure path here already uses. Not proven to be THE
+  // root cause of any specific CI failure (never reproduced locally despite real attempts across
+  // both platforms, isolated and full-suite, plain and CPU-constrained), but it is a genuine,
+  // structurally-real gap independent of that -- closing it is correct regardless.
+  let conditionPair;
+  try {
+    conditionPair = await runConditionPair({
+      prompt: 'Use the kmp-test-runner skill to check this project.',
+      model,
+      allowedGradleTasks: ['build'],
+      allowedKmpTestSubcommands: ['doctor', 'parallel'],
+      materializeFixture: (existingDir) => materializeCalibrationProject({ templateDir, existingDir }),
+      cleanupFixture: (fixtureDir) => rmSync(fixtureDir, { recursive: true, force: true }),
+    });
+  } catch (err) {
+    console.error(`CALIBRATION FAILED: session acquisition/spawn threw before any condition completed: ${err.stack || err.message}`);
+    return 1;
+  }
   try {
     const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = conditionPair;
     const policySha256 = computePolicySha256();
@@ -1570,23 +1585,32 @@ async function cmdSmoke(args) {
   const scenarioId = `${projectAlias}-android-host-test-discovery`;
   const projectUrl = resolveGitRemoteUrl(sourceRepoDir);
   const { computePolicySha256 } = await import('./policy-config.mjs');
-  const conditionPair = await runConditionPair({
-    // Explicit and directive on purpose: smoke exists to prove the pipeline works end-to-end
-    // with REAL diagnostic work in both arms, not to test whether the skill triggers naturally
-    // (that is a corpus-probe concern, deliberately out of scope here). An earlier, open-ended
-    // prompt ("check whether this project's test setup is healthy") drove the agent toward
-    // general exploration (ls/pwd/git status/find/cat) that the policy hook's narrow grammar
-    // correctly denies by design -- 11/13 and 6/6 calls were denied in that run, meaning the
-    // agent never actually got to do the diagnostic work smoke exists to prove. Naming the exact
-    // two read-only commands removes the need to explore.
-    prompt: "Run `kmp-test doctor --json` in this project directory, then run `kmp-test describe --json`. Based only on their output, tell me whether the test setup looks healthy. Do not run any other commands or tools.",
-    model,
-    allowedGradleTasks: [],
-    allowedKmpTestSubcommands: ['doctor', 'describe'],
-    materializeFixture: (existingWorktreeDir) => materializeScenarioProject({ sourceRepoDir, pinnedCommit, existingWorktreeDir }),
-    cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
-    timeoutMs: 180000,
-  });
+  // Round-7 audit finding: see cmdCalibrate's identical rationale -- resource acquisition must
+  // never be allowed to throw uncaught past this command's own "FAILED: <reason>" / exit 1
+  // contract.
+  let conditionPair;
+  try {
+    conditionPair = await runConditionPair({
+      // Explicit and directive on purpose: smoke exists to prove the pipeline works end-to-end
+      // with REAL diagnostic work in both arms, not to test whether the skill triggers naturally
+      // (that is a corpus-probe concern, deliberately out of scope here). An earlier, open-ended
+      // prompt ("check whether this project's test setup is healthy") drove the agent toward
+      // general exploration (ls/pwd/git status/find/cat) that the policy hook's narrow grammar
+      // correctly denies by design -- 11/13 and 6/6 calls were denied in that run, meaning the
+      // agent never actually got to do the diagnostic work smoke exists to prove. Naming the exact
+      // two read-only commands removes the need to explore.
+      prompt: "Run `kmp-test doctor --json` in this project directory, then run `kmp-test describe --json`. Based only on their output, tell me whether the test setup looks healthy. Do not run any other commands or tools.",
+      model,
+      allowedGradleTasks: [],
+      allowedKmpTestSubcommands: ['doctor', 'describe'],
+      materializeFixture: (existingWorktreeDir) => materializeScenarioProject({ sourceRepoDir, pinnedCommit, existingWorktreeDir }),
+      cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
+      timeoutMs: 180000,
+    });
+  } catch (err) {
+    console.error(`SMOKE FAILED: session acquisition/spawn threw before any condition completed: ${err.stack || err.message}`);
+    return 1;
+  }
   try {
     const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = conditionPair;
     const policySha256 = computePolicySha256();
@@ -1832,16 +1856,25 @@ async function cmdRun(args) {
   }
 
   const { computePolicySha256 } = await import('./policy-config.mjs');
-  const matrix = await runScenarioMatrix({
-    scenario, repeats, seed, model,
-    allowedGradleTasks: scenario.policy.allowed_gradle_tasks,
-    allowedKmpTestSubcommands: scenario.policy.allowed_kmptest_subcommands,
-    repoRoot: REPO_ROOT, pinnedSkillSha: PINNED_SKILL_SHA, runPluginValidator,
-    materializeFixture: (existingWorktreeDir) => materializeScenarioProject({ sourceRepoDir, pinnedCommit: scenario.project_commit, existingWorktreeDir }),
-    cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
-    targetSkillName: TARGET_SKILL_NAME,
-    timeoutMs: 600000,
-  });
+  // Round-7 audit finding: see cmdCalibrate's identical rationale -- resource acquisition must
+  // never be allowed to throw uncaught past this command's own "RUN FAILED: <reason>" / exit 1
+  // contract.
+  let matrix;
+  try {
+    matrix = await runScenarioMatrix({
+      scenario, repeats, seed, model,
+      allowedGradleTasks: scenario.policy.allowed_gradle_tasks,
+      allowedKmpTestSubcommands: scenario.policy.allowed_kmptest_subcommands,
+      repoRoot: REPO_ROOT, pinnedSkillSha: PINNED_SKILL_SHA, runPluginValidator,
+      materializeFixture: (existingWorktreeDir) => materializeScenarioProject({ sourceRepoDir, pinnedCommit: scenario.project_commit, existingWorktreeDir }),
+      cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
+      targetSkillName: TARGET_SKILL_NAME,
+      timeoutMs: 600000,
+    });
+  } catch (err) {
+    console.error(`RUN FAILED: matrix resource acquisition/spawn threw before any cell completed: ${err.stack || err.message}`);
+    return 1;
+  }
   try {
     const policySha256 = computePolicySha256();
     const records = [];

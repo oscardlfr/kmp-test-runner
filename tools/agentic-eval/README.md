@@ -364,24 +364,42 @@ circular import either module living inside `cli.mjs` would create.
   matches `rejected` the same way it matches `scenario`/`smoke`/`calibration`, so no new
   `.gitignore` entry was needed.
 - **Shape**: `{schema, rejection_id, timestamp, run_kind, run_ids, model_requested, repo_commit,
-  scenario_id, project_alias, project_commit, project_url, seed, policy_sha256, cells,
-  foreign_skill_summary}`. The provenance fields (`scenario_id` through `policy_sha256`) mirror
-  `buildRunRecord()`'s own field names exactly (read directly off the already-built records, never
-  re-derived) — `scenario_id`/`policy_sha256` are real, non-empty on every run_kind;
-  `project_alias`/`project_commit`/`project_url`/`seed` are `null` for calibrate/smoke (no external
-  project involved) and real values for scenario. `cells` covers **every** cell in the rejected
-  batch, not only the failing ones (a scenario matrix's "one bad cell blocks the whole batch" design
-  makes every cell relevant context) — each cell carries its own
-  `run_id`/`condition`/`repetition_index`/`order_index` (both `null` for calibrate/smoke, both real
-  non-negative integers for scenario — enforced *together*, tied to the record's own `run_kind`, not
-  independently permissive)/`skill_source_sha` (`null` for no-skill, the real SHA for
-  current-skill)/`model_resolved` (`null` only when no init event was ever captured)/
+  scenario_id, project_alias, project_commit, seed, policy_sha256, platform, privacy_status, cells,
+  foreign_skill_summary}`. The provenance fields mirror `buildRunRecord()`'s own field names
+  exactly (read directly off the already-built records, never re-derived), each tied to the
+  record's own `run_kind` rather than accepted in any shape unconditionally
+  (`validateRejectionRow()` enforces this per run_kind, not just "null or a string"):
+  - `calibration`: `project_alias` is the fixed literal `'calibration-project'`
+    (`buildRunRecord()`'s own default, never null), `project_commit`/`seed` `null` (no external
+    project or repetition concept applies).
+  - `smoke`: `project_alias`/`project_commit` real, non-empty values (points at whatever project
+    smoke actually ran against); `seed` `null` (no repetition concept applies).
+  - `scenario`: `project_alias`/`project_commit` real, non-empty values; `seed` a real integer (the
+    actual `--seed` used for that matrix).
+
+  `project_url` is deliberately **not** in this list — see "Privacy" below. `cells` covers
+  **every** cell in the rejected batch, not only the failing ones (a scenario matrix's "one bad
+  cell blocks the whole batch" design makes every cell relevant context) — each cell carries its
+  own `run_id`/`condition`/`repetition_index`/`order_index` (both `null` for calibrate/smoke, both
+  real non-negative integers for scenario — enforced *together*, tied to the record's own
+  `run_kind`)/`skill_source_sha` (`null` for no-skill, the real SHA for current-skill)/
+  `model_resolved`/`claude_code_version` (each `null` only when no init event was ever captured)/
   `failed_checks`/`foreign_skill_summary`. The top-level `foreign_skill_summary` is always the
   field-by-field sum across `cells[]` — `validateRejectionRow()` enforces this, never letting it
   drift into an independent second source of truth — `run_ids` must always exactly equal the set of
   `cells[].run_id`, and **at least one** cell must carry a non-empty `failed_checks`: a diagnostic
   whose cells are *all* `failed_checks:[]` records no cause anywhere and is itself rejected as
   malformed (a "rejection" with nothing to explain it isn't a real rejection).
+  `buildRejectionDiagnostics()` itself fails closed the same way: `runKind` must match every
+  contributing record's own `run_kind`, and `failedChecksByRunId`'s keys must exactly match
+  `records[].run_id` (no missing key silently reading as "nothing failed here", no stale/extra key
+  from a different batch).
+- **Privacy — `project_url`**: present in the **local-only** tier (top-level, batch-wide,
+  alongside `project_alias`/`project_commit` in spirit) but deliberately **absent** from the
+  committed tier — unlike `project_alias`/`project_commit`, which identify a project/revision
+  without being a directly clickable/shareable link, a committed `project_url` would put a real
+  external repository address into the same committed tier every other field here is
+  safe-by-construction for.
 - **Write ordering**: validate the original object → redact (`assertCleanOrThrowObject`) → validate
   the *redacted* object again → promote — the identical ordering `finalizeAndWriteRecords()` itself
   uses for real evidence (see above), so a redaction rule that would corrupt a required field's

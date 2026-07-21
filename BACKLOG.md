@@ -96,8 +96,9 @@
 
 ### 📋 QUEUED follow-ups (next sessions)
 
-- ✅ **Rejected `agentic-eval` hard-gate runs leave no auditable trace** — SHIPPED
-  (`feature/agentic-foreign-skill-diagnostics`, 2026-07-21). Surfaced 2026-07-19 during the calibration
+- 🚧 **Rejected `agentic-eval` hard-gate runs leave no auditable trace** — IN PROGRESS, PR #382
+  (`feature/agentic-foreign-skill-diagnostics`) open against `develop`, not yet merged — do not
+  mark SHIPPED until it lands. Surfaced 2026-07-19 during the calibration
   no-skill-arm contract fix; motivated further by a real live scenario-matrix run
   (`kampkit-android-host-test-discovery`, 2026-07-21) that was correctly rejected for a
   since-fixed over-broad reason and left nothing beyond a terse stderr line. New
@@ -110,8 +111,8 @@
   Schema/location/retention (all previously undecided) resolved: never keyed like real evidence
   (`RUN_KIND_VALUES` never includes `'rejected'`), categorical `foreign_skill_summary` counts only
   in the committed tier (never a raw skill name), full `git check-ignore`-verified gitignore
-  coverage via the *existing* `agentic-eval-*/raw/**` rule (no new rule needed). Shipped alongside
-  (same PR, directly related): result-aware foreign-skill classification
+  coverage via the *existing* `agentic-eval-*/raw/**` rule (no new rule needed). Included in the
+  same PR (directly related): result-aware foreign-skill classification
   (`classifyForeignSkillUses`) so a scenario's REJECTED foreign-skill attempt is no longer treated
   as contamination (calibrate/smoke's contract is unchanged); a new schema v3 `foreign_skill_summary`
   field on every accepted record so this signal isn't lost even when a batch IS accepted;

@@ -31,7 +31,7 @@
 //   node tools/check-executable-fixtures.mjs    # exit 0 on pass, exit 1 on violation
 //   npm run check-executable-fixtures
 //
-// Exports: EXECUTABLE_FIXTURE_PATTERN, parseLsFilesStage, findExecutableBitViolations (for unit tests)
+// Exports: EXECUTABLE_FIXTURE_PATTERN, parseLsFilesStageLine, findExecutableBitViolations (for unit tests)
 
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';

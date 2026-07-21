@@ -218,6 +218,24 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     expect(readdirSync(isolatedTmp)).toEqual([]);
   }, 20000);
 
+  // Round-7 audit finding: a resource-acquisition failure BEFORE any Claude session even spawns
+  // (runConditionPair's own await sat outside cmdCalibrate's try block) previously escaped
+  // uncaught all the way to main()'s top-level catch -- exit 2 with a raw stack trace, never this
+  // command's own "CALIBRATION FAILED: <reason>" / exit 1 contract every OTHER failure path here
+  // already honors. TEMP/TMP/TMPDIR pointed at a non-existent directory forces
+  // acquireSharedEvalResources' own real mkdtempSync call to throw, deterministically, without
+  // needing to reproduce the original (never-confirmed) CI-only trigger.
+  it('a resource-acquisition failure (mkdtempSync throwing on a broken TEMP dir) fails cleanly with exit 1, never an uncaught exit 2', () => {
+    const brokenTemp = path.join(isolatedTmp, 'this-directory-does-not-exist');
+    const env = { ...fakeClaudeEnv('success'), TEMP: brokenTemp, TMP: brokenTemp, TMPDIR: brokenTemp };
+    const result = runCli(['calibrate', '--model', 'fake-model-x'], env);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CALIBRATION FAILED');
+    expect(result.stderr).toContain('session acquisition/spawn threw');
+    // Never the raw, unhandled "agentic-eval: <stack>" shape main()'s own top-level catch writes.
+    expect(result.stderr).not.toMatch(/^agentic-eval:/m);
+  }, 20000);
+
   // Uses 'unexpected-tool', not 'no-tool-use' -- the latter is now a legitimate PASS scenario
   // (see the flipped test above), so this cleanup-on-failure test needs a fixture that still
   // genuinely fails calibrate for a reason unrelated to the invocation contract.

@@ -22,25 +22,57 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const CLI_PATH = path.join(REPO_ROOT, 'tools', 'agentic-eval', 'cli.mjs');
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 
+// Defaults represent a genuine run_kind:'calibration' record -- project_alias is the FIXED
+// 'calibration-project' literal (buildRunRecord's own default parameter value, never null; see
+// validateProvenanceForRunKind's own doc comment), project_commit/seed null (no external
+// project/repetition concept for calibration). A caller building a 'smoke'/'scenario' record must
+// override run_kind AND all four project_*/seed fields together via `overrides` -- see
+// smokeRecord()/scenarioRecord() below for the pre-built variants.
 function record(overrides = {}) {
   return {
     run_id: 'calibration-no-skill-aaaa1111',
+    run_kind: 'calibration',
     condition: 'no-skill',
     repetition_index: null,
     order_index: null,
     skill_source_sha: null,
     model_resolved: 'claude-sonnet-5-fake-resolved',
+    claude_code_version: '1.2.3-fake',
     repo_commit: 'c'.repeat(40),
     model_requested: 'fake-model-x',
     scenario_id: 'calibration-explicit-invocation',
-    project_alias: null,
+    project_alias: 'calibration-project',
     project_commit: null,
     project_url: null,
     seed: null,
     policy_sha256: 'a'.repeat(64),
+    platform: 'linux',
+    privacy_status: 'public',
     foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
     ...overrides,
   };
+}
+
+// A genuine run_kind:'smoke' record -- project_alias/project_commit are REAL (smoke always points
+// at an actual external project), seed null (no repetition concept for smoke either).
+function smokeRecord(overrides = {}) {
+  return record({
+    run_kind: 'smoke', scenario_id: 'smoke-explicit-invocation',
+    project_alias: 'kampkit', project_commit: 'd'.repeat(40), project_url: 'https://github.com/example/kampkit',
+    ...overrides,
+  });
+}
+
+// A genuine run_kind:'scenario' record -- project_alias/project_commit REAL, seed a real integer,
+// repetition_index/order_index real non-negative integers (scenario is the one run_kind where
+// these concepts apply at all).
+function scenarioRecord(overrides = {}) {
+  return record({
+    run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery',
+    project_alias: 'kampkit', project_commit: 'd'.repeat(40), project_url: 'https://github.com/example/kampkit',
+    seed: 5, repetition_index: 0, order_index: 0,
+    ...overrides,
+  });
 }
 
 describe('buildRejectionDiagnostics -- pure construction', () => {
@@ -70,7 +102,7 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
     const { local } = buildRejectionDiagnostics({
       runKind: 'calibration',
       records: [r],
-      failedChecksByRunId: {},
+      failedChecksByRunId: { [r.run_id]: [] },
       foreignSkillNamesByRunId: { [r.run_id]: ['zeta', 'alpha', 'zeta', 'alpha'] },
     });
     expect(local.cells[0].foreign_skill_names).toEqual(['alpha', 'zeta']);
@@ -79,17 +111,17 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
   it('sums foreign_skill_summary across every cell into the top-level total', () => {
     const a = record({ foreign_skill_summary: { rejected: 2, confirmed: 0, incomplete: 1 } });
     const b = record({ run_id: 'calibration-current-skill-cccc3333', condition: 'current-skill', foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 } });
-    const { committed } = buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: {} });
+    const { committed } = buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } });
     expect(committed.foreign_skill_summary).toEqual({ rejected: 2, confirmed: 1, incomplete: 1 });
   });
 
   it('includes every cell, not only ones with failed_checks -- scenario batches need the whole matrix as context', () => {
-    const clean = record({ run_id: 'scenario-no-skill-dddd4444', repetition_index: 0 });
-    const failing = record({ run_id: 'scenario-current-skill-eeee5555', condition: 'current-skill', repetition_index: 0, skill_source_sha: 'b'.repeat(40) });
+    const clean = scenarioRecord({ run_id: 'scenario-no-skill-dddd4444' });
+    const failing = scenarioRecord({ run_id: 'scenario-current-skill-eeee5555', condition: 'current-skill', skill_source_sha: 'b'.repeat(40) });
     const { committed } = buildRejectionDiagnostics({
       runKind: 'scenario',
       records: [clean, failing],
-      failedChecksByRunId: { [failing.run_id]: ['toolResultsCompleteOk'] },
+      failedChecksByRunId: { [clean.run_id]: [], [failing.run_id]: ['toolResultsCompleteOk'] },
     });
     expect(committed.cells.length).toBe(2);
     expect(committed.cells.find((c) => c.run_id === clean.run_id).failed_checks).toEqual([]);
@@ -98,57 +130,92 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
   it('throws (never silently picks one) when contributing records disagree on repo_commit', () => {
     const a = record({ repo_commit: 'c'.repeat(40) });
     const b = record({ run_id: 'calibration-current-skill-ffff6666', repo_commit: 'd'.repeat(40) });
-    expect(() => buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: {} })).toThrow(/disagree on repo_commit/);
+    expect(() => buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } })).toThrow(/disagree on repo_commit/);
   });
 
   it('throws (never silently picks one) when contributing records disagree on model_requested', () => {
     const a = record({ model_requested: 'model-x' });
     const b = record({ run_id: 'calibration-current-skill-ffff7777', model_requested: 'model-y' });
-    expect(() => buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: {} })).toThrow(/disagree on model_requested/);
+    expect(() => buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } })).toThrow(/disagree on model_requested/);
   });
 
   // Round-6 audit finding ("diagnostic provenance"): the disagreement check generalized from a
-  // hardcoded repo_commit/model_requested pair to a shared BATCH_WIDE_FIELDS loop covering 8
+  // hardcoded repo_commit/model_requested pair to a shared BATCH_WIDE_FIELDS loop covering 10
   // fields -- this proves the loop actually reaches a field OTHER than the original two, not just
   // that the two pre-existing checks still work by coincidence of being first in the list.
   it('throws (never silently picks one) when contributing records disagree on scenario_id', () => {
-    const a = record({ scenario_id: 'kampkit-android-host-test-discovery' });
-    const b = record({ run_id: 'scenario-current-skill-gggg8888', scenario_id: 'kampkit-no-applicable-tests' });
-    expect(() => buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: {} })).toThrow(/disagree on scenario_id/);
+    const a = scenarioRecord({ scenario_id: 'kampkit-android-host-test-discovery' });
+    const b = scenarioRecord({ run_id: 'scenario-current-skill-gggg8888', condition: 'current-skill', skill_source_sha: 'b'.repeat(40), scenario_id: 'kampkit-no-applicable-tests' });
+    expect(() => buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } })).toThrow(/disagree on scenario_id/);
   });
 
   it('throws when contributing records disagree on seed (a scenario-only field, still checked)', () => {
-    const a = record({ seed: 1 });
-    const b = record({ run_id: 'scenario-current-skill-hhhh9999', seed: 2 });
-    expect(() => buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: {} })).toThrow(/disagree on seed/);
+    const a = scenarioRecord({ seed: 1 });
+    const b = scenarioRecord({ run_id: 'scenario-current-skill-hhhh9999', condition: 'current-skill', skill_source_sha: 'b'.repeat(40), seed: 2 });
+    expect(() => buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } })).toThrow(/disagree on seed/);
   });
 
-  // Round-6 audit finding ("diagnostic provenance"): every new field must actually reach the
-  // output, not just pass the disagreement check silently -- proves order_index/model_resolved
-  // (per-cell) and the 6 new batch-wide fields all land in `committed`, read directly off the
-  // records (buildRunRecord's own field names), never re-derived.
-  it('populates order_index/model_resolved per cell, and every new batch-wide provenance field, from the records', () => {
-    const a = record({
-      order_index: 0, model_resolved: 'claude-sonnet-5-2026-06-01', scenario_id: 'kampkit-android-host-test-discovery',
-      project_alias: 'kampkit', project_commit: 'd'.repeat(40), project_url: 'https://github.com/example/kampkit', seed: 7,
-      policy_sha256: 'b'.repeat(64), repetition_index: 0,
+  // Round-7 audit finding ("atribución por celda todavía fail-open"): runKind must match every
+  // record's OWN run_kind -- proves calibration-shaped records can no longer masquerade as a
+  // smoke batch just because the caller's runKind parameter says so.
+  it('throws when runKind does not match a record\'s own run_kind', () => {
+    const a = record(); // run_kind: 'calibration'
+    const b = record({ run_id: 'calibration-current-skill-jjjj2222', condition: 'current-skill' });
+    expect(() => buildRejectionDiagnostics({ runKind: 'smoke', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } }))
+      .toThrow(/runKind \('smoke'\) does not match record .+'s own run_kind \('calibration'\)/);
+  });
+
+  // Round-7 audit finding (same section): failedChecksByRunId must have EXACTLY the same key set
+  // as records[].run_id -- reproduces the user's own repro shape (a key silently missing from the
+  // map) as a dedicated, isolated test.
+  it('throws when failedChecksByRunId is missing a key for one of the records', () => {
+    const a = record();
+    const b = record({ run_id: 'calibration-current-skill-kkkk3333', condition: 'current-skill' });
+    expect(() => buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: ['skillSelectionOk'] } }))
+      .toThrow(/failedChecksByRunId's keys must exactly match records\[\]\.run_id \(missing: \["calibration-current-skill-kkkk3333"\]/);
+  });
+
+  it('throws when failedChecksByRunId has a stale/extra key not present in records', () => {
+    const a = record();
+    expect(() => buildRejectionDiagnostics({ runKind: 'calibration', records: [a], failedChecksByRunId: { [a.run_id]: ['skillSelectionOk'], 'stale-run-id-from-a-different-batch': ['x'] } }))
+      .toThrow(/extra\/stale: \["stale-run-id-from-a-different-batch"\]/);
+  });
+
+  // Round-6/7 audit findings ("diagnostic provenance"): every new field must actually reach the
+  // output, not just pass the disagreement check silently -- proves order_index/model_resolved/
+  // claude_code_version (per-cell) and every new batch-wide provenance field land correctly,
+  // INCLUDING project_url landing in `local` but NOT `committed` (the round-7 privacy finding).
+  it('populates order_index/model_resolved/claude_code_version per cell, and every new batch-wide provenance field, from the records', () => {
+    const a = scenarioRecord({
+      order_index: 0, model_resolved: 'claude-sonnet-5-2026-06-01', claude_code_version: '2.0.0-fake',
+      scenario_id: 'kampkit-android-host-test-discovery', project_alias: 'kampkit', project_commit: 'd'.repeat(40),
+      project_url: 'https://github.com/example/kampkit', seed: 7, policy_sha256: 'b'.repeat(64),
+      platform: 'linux', privacy_status: 'redacted-private',
     });
-    const b = record({
+    const b = scenarioRecord({
       run_id: 'scenario-current-skill-iiii0000', condition: 'current-skill', skill_source_sha: 'a'.repeat(40),
-      order_index: 1, model_resolved: 'claude-sonnet-5-2026-06-01', scenario_id: 'kampkit-android-host-test-discovery',
-      project_alias: 'kampkit', project_commit: 'd'.repeat(40), project_url: 'https://github.com/example/kampkit', seed: 7,
-      policy_sha256: 'b'.repeat(64), repetition_index: 0,
+      order_index: 1, model_resolved: 'claude-sonnet-5-2026-06-01', claude_code_version: '2.0.0-fake',
+      scenario_id: 'kampkit-android-host-test-discovery', project_alias: 'kampkit', project_commit: 'd'.repeat(40),
+      project_url: 'https://github.com/example/kampkit', seed: 7, policy_sha256: 'b'.repeat(64),
+      platform: 'linux', privacy_status: 'redacted-private',
     });
-    const { committed } = buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: ['toolResultsCompleteOk'] } });
+    const { committed, local } = buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: ['toolResultsCompleteOk'], [b.run_id]: [] } });
     expect(committed.scenario_id).toBe('kampkit-android-host-test-discovery');
     expect(committed.project_alias).toBe('kampkit');
     expect(committed.project_commit).toBe('d'.repeat(40));
-    expect(committed.project_url).toBe('https://github.com/example/kampkit');
     expect(committed.seed).toBe(7);
     expect(committed.policy_sha256).toBe('b'.repeat(64));
+    expect(committed.platform).toBe('linux');
+    expect(committed.privacy_status).toBe('redacted-private');
     expect(committed.cells[0].order_index).toBe(0);
     expect(committed.cells[1].order_index).toBe(1);
     expect(committed.cells[0].model_resolved).toBe('claude-sonnet-5-2026-06-01');
+    expect(committed.cells[0].claude_code_version).toBe('2.0.0-fake');
+    // project_url: never in committed (round-7 privacy finding), present at the LOCAL tier's
+    // TOP level (batch-wide, like project_alias/project_commit) -- not re-derived per cell.
+    expect('project_url' in committed).toBe(false);
+    expect(JSON.stringify(committed)).not.toContain('github.com/example/kampkit');
+    expect(local.project_url).toBe('https://github.com/example/kampkit');
     // The record built from `committed` is itself schema-valid -- the strongest possible proof
     // that every new field landed in a shape validateRejectionRow actually accepts.
     expect(validateRejectionRow(committed).errors).toEqual([]);
@@ -157,8 +224,8 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
 
 describe('validateRejectionRow -- schema validation', () => {
   function validRow(overrides = {}) {
-    const cellA = { run_id: 'r1', condition: 'no-skill', repetition_index: null, order_index: null, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 } };
-    const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 } };
+    const cellA = { run_id: 'r1', condition: 'no-skill', repetition_index: null, order_index: null, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 } };
+    const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 } };
     return {
       schema: REJECTION_DIAGNOSTICS_SCHEMA,
       rejection_id: '11111111-1111-1111-1111-111111111111',
@@ -168,11 +235,14 @@ describe('validateRejectionRow -- schema validation', () => {
       model_requested: 'fake-model-x',
       repo_commit: 'c'.repeat(40),
       scenario_id: 'calibration-explicit-invocation',
-      project_alias: null,
+      // Matches validateProvenanceForRunKind's own fixed calibration shape -- project_alias is
+      // NEVER null for a real record (buildRunRecord's own default), only project_commit/seed are.
+      project_alias: 'calibration-project',
       project_commit: null,
-      project_url: null,
       seed: null,
       policy_sha256: 'a'.repeat(64),
+      platform: 'linux',
+      privacy_status: 'public',
       cells: [cellA, cellB],
       foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 },
       ...overrides,
@@ -289,7 +359,7 @@ describe('validateRejectionRow -- schema validation', () => {
     });
 
     it('rejects a null repetition_index AND null order_index on a run_kind:scenario row', () => {
-      const row = validRow({ run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery', project_alias: 'kampkit', project_commit: 'd'.repeat(40), project_url: 'https://github.com/example/kampkit', seed: 5 });
+      const row = validRow({ run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery', project_alias: 'kampkit', project_commit: 'd'.repeat(40), seed: 5 });
       row.cells[0] = { ...row.cells[0], repetition_index: null, order_index: null };
       const { errors } = validateRejectionRow(row);
       expect(errors.some((e) => e.field === 'cells[0].repetition_index' && e.message.includes("run_kind:'scenario'"))).toBe(true);
@@ -297,7 +367,7 @@ describe('validateRejectionRow -- schema validation', () => {
     });
 
     it('accepts a real non-negative repetition_index/order_index on a run_kind:scenario row', () => {
-      const row = validRow({ run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery', project_alias: 'kampkit', project_commit: 'd'.repeat(40), project_url: 'https://github.com/example/kampkit', seed: 5 });
+      const row = validRow({ run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery', project_alias: 'kampkit', project_commit: 'd'.repeat(40), seed: 5 });
       row.cells = row.cells.map((c, i) => ({ ...c, repetition_index: 0, order_index: i }));
       const { errors } = validateRejectionRow(row);
       expect(errors.filter((e) => e.field.includes('repetition_index') || e.field.includes('order_index'))).toEqual([]);
@@ -313,7 +383,7 @@ describe('validateRejectionRow -- schema validation', () => {
     });
   });
 
-  describe('provenance fields (round-6 audit finding: scenario_id/project_*/seed/policy_sha256)', () => {
+  describe('provenance fields (round-6/7 audit findings: scenario_id/project_*/seed/policy_sha256/platform/privacy_status)', () => {
     it('rejects a missing scenario_id', () => {
       const row = validRow();
       delete row.scenario_id;
@@ -327,23 +397,99 @@ describe('validateRejectionRow -- schema validation', () => {
       expect(errors.some((e) => e.field === 'policy_sha256')).toBe(true);
     });
 
-    it('rejects an empty-string project_alias (must be null or a REAL non-empty string, never empty)', () => {
+    it('rejects an unrecognized platform', () => {
+      const row = validRow({ platform: 'not-a-real-platform' });
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'platform')).toBe(true);
+    });
+
+    it('rejects an unrecognized privacy_status', () => {
+      const row = validRow({ privacy_status: 'not-a-real-status' });
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'privacy_status')).toBe(true);
+    });
+
+    it('rejects an empty-string project_alias on a calibration row (must be exactly \'calibration-project\')', () => {
       const row = validRow({ project_alias: '' });
       const { errors } = validateRejectionRow(row);
       expect(errors.some((e) => e.field === 'project_alias')).toBe(true);
     });
 
-    it('accepts a real scenario\'s project_alias/project_commit/project_url/seed (non-null)', () => {
-      const row = validRow({ run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery', project_alias: 'kampkit', project_commit: 'd'.repeat(40), project_url: 'https://github.com/example/kampkit', seed: 5 });
-      row.cells = row.cells.map((c, i) => ({ ...c, repetition_index: 0, order_index: i }));
-      const { errors } = validateRejectionRow(row);
-      expect(errors.filter((e) => e.field.startsWith('project_') || e.field === 'seed')).toEqual([]);
-    });
+    // Round-7 audit finding ("la procedencia por tipo de run no está realmente cerrada"): each
+    // run_kind's provenance shape tested BOTH ways -- its own genuine shape accepted cleanly, and
+    // every OTHER run_kind's shape (or an all-null one) explicitly rejected. The scenario case is
+    // the user's own literal reproduction: a scenario diagnostic with every project_* field AND
+    // seed left null previously validated with ZERO errors, indistinguishable from a genuinely
+    // nullish calibration row.
+    describe('run_kind-specific provenance shape', () => {
+      it('accepts calibration\'s own fixed shape (project_alias:"calibration-project", project_commit/seed null)', () => {
+        const { errors } = validateRejectionRow(validRow());
+        expect(errors.filter((e) => e.field === 'project_alias' || e.field === 'project_commit' || e.field === 'seed')).toEqual([]);
+      });
 
-    it('rejects a non-integer seed', () => {
-      const row = validRow({ seed: 'five' });
-      const { errors } = validateRejectionRow(row);
-      expect(errors.some((e) => e.field === 'seed')).toBe(true);
+      it('rejects a calibration row with a real (non-fixed) project_alias -- not just "any non-null string"', () => {
+        const row = validRow({ project_alias: 'some-other-project' });
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'project_alias' && e.message.includes("'calibration-project'"))).toBe(true);
+      });
+
+      it('rejects a calibration row with a non-null project_commit', () => {
+        const row = validRow({ project_commit: 'd'.repeat(40) });
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'project_commit')).toBe(true);
+      });
+
+      it('rejects a calibration row with a non-null seed', () => {
+        const row = validRow({ seed: 3 });
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'seed')).toBe(true);
+      });
+
+      it('accepts smoke\'s own real-project shape (project_alias/project_commit non-null, seed null)', () => {
+        const row = validRow({ run_kind: 'smoke', scenario_id: 'smoke-explicit-invocation', project_alias: 'kampkit', project_commit: 'd'.repeat(40) });
+        const { errors } = validateRejectionRow(row);
+        expect(errors.filter((e) => e.field === 'project_alias' || e.field === 'project_commit' || e.field === 'seed')).toEqual([]);
+      });
+
+      it('rejects a smoke row with a null project_alias/project_commit', () => {
+        const row = validRow({ run_kind: 'smoke', scenario_id: 'smoke-explicit-invocation' }); // project_alias/project_commit still calibration's null-ish/fixed defaults
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'project_commit')).toBe(true);
+      });
+
+      it('accepts scenario\'s own real-project shape (project_alias/project_commit non-null, seed a real integer)', () => {
+        const row = validRow({ run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery', project_alias: 'kampkit', project_commit: 'd'.repeat(40), seed: 5 });
+        row.cells = row.cells.map((c, i) => ({ ...c, repetition_index: 0, order_index: i }));
+        const { errors } = validateRejectionRow(row);
+        expect(errors.filter((e) => e.field === 'project_alias' || e.field === 'project_commit' || e.field === 'seed')).toEqual([]);
+      });
+
+      // THE USER'S OWN REPRODUCTION, verbatim: a scenario diagnostic with project_alias,
+      // project_commit, AND seed all null must NOT validate cleanly -- this is the exact case that
+      // silently passed before this round's fix.
+      it('rejects a scenario row with project_alias/project_commit/seed ALL null (the exact reported repro)', () => {
+        const row = validRow({ run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery', project_alias: null, project_commit: null, seed: null });
+        row.cells = row.cells.map((c, i) => ({ ...c, repetition_index: 0, order_index: i }));
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'project_alias')).toBe(true);
+        expect(errors.some((e) => e.field === 'project_commit')).toBe(true);
+        expect(errors.some((e) => e.field === 'seed')).toBe(true);
+      });
+
+      it('rejects a scenario row with a non-integer seed', () => {
+        const row = validRow({ run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery', project_alias: 'kampkit', project_commit: 'd'.repeat(40), seed: 'five' });
+        row.cells = row.cells.map((c, i) => ({ ...c, repetition_index: 0, order_index: i }));
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'seed')).toBe(true);
+      });
+
+      // corpus-probe: reserved for a future run_kind never actually produced by this codebase --
+      // must fail closed (an explicit, named error), never silently accept an unvalidated shape.
+      it('fails closed on run_kind:corpus-probe -- provenance shape genuinely undefined, not "anything goes"', () => {
+        const row = validRow({ run_kind: 'corpus-probe' });
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'run_kind' && e.message.includes('not yet defined'))).toBe(true);
+      });
     });
   });
 });
@@ -364,14 +510,15 @@ describe('writeRejectedRunDiagnostics -- validate -> redact -> revalidate orderi
 
   it('a redaction rule that mangles rejection_id out of its required UUID shape is caught by revalidation, never promoted', () => {
     const r = record();
+    const r2 = record({ run_id: 'calibration-current-skill-bbbb2222', condition: 'current-skill', skill_source_sha: 'a'.repeat(40) });
     const { committed, local } = buildRejectionDiagnostics({
       runKind: 'calibration',
-      records: [r, record({ run_id: 'calibration-current-skill-bbbb2222', condition: 'current-skill', skill_source_sha: 'a'.repeat(40) })],
+      records: [r, r2],
       // At least one real failed check -- an empty failedChecksByRunId would produce
       // failed_checks:[] on every cell, itself now a distinct validation failure ("rechazo sin
       // causa" -- see the dedicated describe block below), which would trip THIS test for the
       // wrong reason entirely.
-      failedChecksByRunId: { [r.run_id]: ['skillSelectionOk'] },
+      failedChecksByRunId: { [r.run_id]: ['skillSelectionOk'], [r2.run_id]: [] },
     });
     // The ORIGINAL (pre-redaction) record is genuinely valid -- confirms any throw below comes
     // from the redaction step corrupting it, not from a pre-existing malformed input.
@@ -403,10 +550,11 @@ describe('writeRejectedRunDiagnostics -- validate -> redact -> revalidate orderi
 describe('writeRejectedRunDiagnostics -- return shape (round-6 audit finding: "localización del diagnóstico")', () => {
   it('returns {outDir, rejectionId, relativePath}, with relativePath pointing at the actual written file, relative to RUNS_ROOT', () => {
     const r = record();
+    const r2 = record({ run_id: 'calibration-current-skill-jjjj1111', condition: 'current-skill', skill_source_sha: 'a'.repeat(40) });
     const { committed, local } = buildRejectionDiagnostics({
       runKind: 'calibration',
-      records: [r, record({ run_id: 'calibration-current-skill-jjjj1111', condition: 'current-skill', skill_source_sha: 'a'.repeat(40) })],
-      failedChecksByRunId: { [r.run_id]: ['skillSelectionOk'] },
+      records: [r, r2],
+      failedChecksByRunId: { [r.run_id]: ['skillSelectionOk'], [r2.run_id]: [] },
     });
     const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aerd-return-shape-'));
     try {
@@ -449,6 +597,17 @@ describe('writeRejectedRunDiagnostics -- wired into cli.mjs end-to-end (real sub
   it('a real calibrate rejection writes exactly one committed + one raw rejection-diagnostics file, and nothing under the real evidence directory', () => {
     runsRootFor((runsRoot) => {
       const r = spawnSync('node', [CLI_PATH, 'calibrate', '--model', 'fake-model-x'], { env: fakeClaudeEnv('foreign-skill', runsRoot), encoding: 'utf8', timeout: 20000 });
+      // Round-7 audit finding: a bare expect(r.status).toBe(1) gives no diagnostic surface at all
+      // when it fails -- status alone doesn't distinguish a normal exit(2) (cmdCalibrate's own
+      // top-level uncaught-exception handler, see cli.mjs's `main().catch()`) from a signal kill
+      // or a spawn-level error. Report every dimension BEFORE the plain assertion, so a future CI
+      // failure of this exact test carries the actual error/stack, not just a number mismatch.
+      if (r.status !== 1) {
+        throw new Error(
+          `expected calibrate to exit 1, got status=${r.status} signal=${r.signal} ` +
+          `error=${r.error ? (r.error.stack || r.error.message) : 'none'}\n--- stdout ---\n${r.stdout}\n--- stderr ---\n${r.stderr}`,
+        );
+      }
       expect(r.status).toBe(1);
       expect(r.stderr).toContain('CALIBRATION FAILED');
 
@@ -464,6 +623,25 @@ describe('writeRejectedRunDiagnostics -- wired into cli.mjs end-to-end (real sub
       expect(committed.cells.length).toBe(2);
       expect(JSON.stringify(committed)).not.toContain('totally-unrelated-skill'); // no raw skill name
 
+      // Round-7 audit finding ("procedencia forense incompleta" / "no está realmente cerrada"):
+      // every new provenance field actually flows through the REAL end-to-end pipeline, not just
+      // synthetic unit tests -- calibration's own fixed shape, platform/privacy_status/
+      // claude_code_version populated from the real transcript, and project_url correctly ABSENT
+      // from the committed tier specifically (present only in `local`, checked further below).
+      expect(committed.scenario_id).toBe('calibration-explicit-invocation');
+      expect(committed.project_alias).toBe('calibration-project');
+      expect(committed.project_commit).toBeNull();
+      expect(committed.seed).toBeNull();
+      expect(typeof committed.policy_sha256).toBe('string');
+      expect(committed.policy_sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(['windows', 'macos', 'linux', 'not-recorded']).toContain(committed.platform);
+      expect(['public', 'redacted-private']).toContain(committed.privacy_status);
+      expect('project_url' in committed).toBe(false);
+      for (const cell of committed.cells) {
+        expect(typeof cell.model_resolved).toBe('string');
+        expect(typeof cell.claude_code_version).toBe('string');
+      }
+
       // "Localización del diagnóstico" (round-6 audit finding): the CLI's own stderr must point a
       // human at the actual file it just wrote -- checked against the REAL committed.rejection_id
       // (read back off disk above), not merely "some UUID-shaped string appears in stderr".
@@ -472,6 +650,10 @@ describe('writeRejectedRunDiagnostics -- wired into cli.mjs end-to-end (real sub
 
       const local = JSON.parse(readFileSync(path.join(rejectedDir, 'raw', rawFiles[0]), 'utf8'));
       expect(local.cells.some((c) => c.foreign_skill_names?.includes('totally-unrelated-skill'))).toBe(true);
+      // project_url: null for a REAL calibration run (no external project) -- still present as a
+      // key at the local tier's top level (the committed tier omits the key entirely).
+      expect('project_url' in local).toBe(true);
+      expect(local.project_url).toBeNull();
 
       // Never wrote anything to the real, committable calibration evidence location.
       const realEvidenceDir = path.join(runsRoot, 'agentic-eval-calibration');
