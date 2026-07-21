@@ -28,7 +28,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { spawnGradle } from '../../lib/orchestrators/orchestrator-utils.js';
-import { setConsoleMode } from '../../lib/runners/console-mode.js';
+import { setConsoleMode, getConsoleMode } from '../../lib/runners/console-mode.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -116,10 +116,13 @@ describe('Phase 1 — spawnGradle must deliver args literally (RED before fix)',
   // BEFORE applying the fix, so every run of this suite is itself the
   // regression proof that the fix holds even under a hostile incoming
   // environment, not just a coincidentally-clean one.
+  let originalMode;
   let originalKmpColorMode;
   let originalNoColor;
 
   beforeAll(() => {
+    // Captured BEFORE any mutation below — the true pre-existing state.
+    originalMode = getConsoleMode();
     originalKmpColorMode = process.env.KMP_COLOR_MODE;
     originalNoColor = process.env.NO_COLOR;
     // Simulate the worst-case leaked/ambient state first...
@@ -130,11 +133,21 @@ describe('Phase 1 — spawnGradle must deliver args literally (RED before fix)',
   });
 
   afterAll(() => {
+    // Ordering matters: setConsoleMode() itself writes process.env.
+    // KMP_COLOR_MODE as a side effect, so restoring the module-level mode
+    // FIRST and fixing up the env vars to their true captured values LAST
+    // means nothing after this can clobber the restoration again (the same
+    // ordering bug this fix's own first version had — caught before merge).
+    setConsoleMode(originalMode);
     if (originalKmpColorMode === undefined) delete process.env.KMP_COLOR_MODE;
     else process.env.KMP_COLOR_MODE = originalKmpColorMode;
     if (originalNoColor === undefined) delete process.env.NO_COLOR;
     else process.env.NO_COLOR = originalNoColor;
-    setConsoleMode('auto');
+    // Locks the restoration contract in place — if this ordering regresses
+    // again, this suite fails closed instead of silently leaking 'always'.
+    expect(getConsoleMode()).toBe(originalMode);
+    expect(process.env.KMP_COLOR_MODE).toBe(originalKmpColorMode);
+    expect(process.env.NO_COLOR).toBe(originalNoColor);
   });
 
   for (const testArg of METACHAR_MATRIX) {

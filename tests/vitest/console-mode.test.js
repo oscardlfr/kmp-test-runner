@@ -13,9 +13,10 @@ import { spawnGradle } from '../../lib/orchestrators/orchestrator-utils.js';
 import { consumeColorFlag } from '../../lib/parsers/argv.js';
 import { effectiveGradleArgs } from './_spawn-helpers.js';
 
-// Captured before any test in this file mutates it, so afterAll can restore the
-// exact original state (including "never set at all") rather than assuming
-// some fixed default.
+// Captured before any test in this file mutates anything, so afterAll can
+// restore the exact original state (including "never set at all") rather
+// than assuming some fixed default.
+const ORIGINAL_MODE = getConsoleMode();
 const ORIGINAL_KMP_COLOR_MODE = process.env.KMP_COLOR_MODE;
 
 beforeEach(() => {
@@ -37,12 +38,26 @@ afterAll(() => {
   // spawn, misread by that file's literal-argv-delivery assertions as
   // corruption. Confirmed as the exact mechanism behind a real cross-file
   // failure reproduced independently via KMP_COLOR_MODE=never alone.
+  //
+  // Ordering matters: setConsoleMode() itself writes process.env.
+  // KMP_COLOR_MODE as a side effect (see lib/runners/console-mode.js), so
+  // restoring the env var BEFORE calling setConsoleMode('auto') — this
+  // block's first, buggy version — gets that restoration silently
+  // overwritten back to 'auto' by the very call meant to clean up. Fixed by
+  // restoring the module-level mode FIRST (whatever it is, that call's own
+  // env side effect doesn't matter yet), THEN fixing up the env var to its
+  // true captured original value (which may be "never set at all") last, so
+  // nothing after it can clobber it again.
+  setConsoleMode(ORIGINAL_MODE);
   if (ORIGINAL_KMP_COLOR_MODE === undefined) {
     delete process.env.KMP_COLOR_MODE;
   } else {
     process.env.KMP_COLOR_MODE = ORIGINAL_KMP_COLOR_MODE;
   }
-  setConsoleMode('auto');
+  // Locks the restoration contract in place — if this ordering regresses
+  // again, this suite fails closed instead of silently leaking 'auto'.
+  expect(getConsoleMode()).toBe(ORIGINAL_MODE);
+  expect(process.env.KMP_COLOR_MODE).toBe(ORIGINAL_KMP_COLOR_MODE);
 });
 
 describe('console-mode / shouldInjectConsolePlain', () => {
