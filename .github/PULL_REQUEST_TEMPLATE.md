@@ -43,6 +43,7 @@ What test coverage was added/updated? CI must stay green:
 Per CONTRIBUTING.md: every change needs tests. SH ↔ PS1 parity is enforced.
 -->
 
+- [ ] Full local gate (`pwsh -NoProfile -File tools/local-ci/run.ps1 -Lane All`) before ready-for-review
 - [ ] vitest (`npm test`)
 - [ ] bats (`npx bats tests/bats/ tests/installer/`) — if shell scripts touched
 - [ ] Pester — if PS1 scripts touched

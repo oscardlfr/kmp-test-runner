@@ -66,6 +66,15 @@ Follow the conventions in [`CLAUDE.md`](CLAUDE.md) (the project's instructions f
 
 ### 3. Run checks locally
 
+On Windows, the canonical pre-push validation is the Docker Linux plus native Windows gate:
+
+```powershell
+pwsh -NoProfile -File tools/local-ci/run.ps1 -Lane All
+```
+
+See [`docs/testing/local-ci.md`](docs/testing/local-ci.md) for prerequisites, covered surfaces,
+and focused diagnostic lanes. The commands below remain useful for targeted development.
+
 ```bash
 # Quick validation
 npm test                                       # vitest
@@ -109,14 +118,20 @@ Rules: description starts lowercase, no trailing period, ≤72 chars (warning at
 
 Target `develop` (never `main` directly — `main` only accepts release PRs from `develop`).
 
-CI runs automatically:
-- `build (ubuntu-latest)`, `build (windows-latest)`, `build (macos-latest)` — npm + vitest
+Open code-changing PRs as drafts. Finish review fixes and the full local gate before marking the
+PR ready; `ready_for_review` starts the hosted matrix. Draft pushes retain the security/privacy
+checks but defer the expensive cross-platform jobs.
+
+When the draft is marked ready, CI runs automatically:
+- `build (ubuntu-latest)`, `build (windows-latest)` — npm + vitest
 - `secrets-scan` — TruffleHog
 - `gradle-plugin-test` — Gradle TestKit (9 tests)
-- `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `installer-e2e (macos-latest)` — full install/uninstall round-trip with version verification
+- `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)` — full install/uninstall round-trip with version verification
 - `Commit Lint` — Conventional Commits validation on the PR title
+- `decouple-audit`, `bundle-size`, `skills-validate` — privacy, package-size, and skill/plugin gates
 
-All 7 required (the 3 macOS variants are informational). Merge is squash-only.
+All 10 are required. macOS validation is manually dispatched to control hosted-runner cost. Merge
+is squash-only.
 
 ## What Can You Contribute?
 

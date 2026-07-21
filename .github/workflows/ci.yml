@@ -4,6 +4,7 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+    types: [opened, synchronize, reopened, ready_for_review]
 # Cancel in-progress CI for the same PR when a new commit is pushed.
 # Push-to-develop/main runs are isolated (keyed by run_id) and are never
 # cancelled — each push run completes independently.
@@ -38,7 +39,13 @@ jobs:
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
+          PR_IS_DRAFT: ${{ github.event.pull_request.draft }}
         run: |
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ "${PR_IS_DRAFT}" = "true" ]; then
+            echo "Draft PR -- hosted heavy matrix deferred until ready_for_review"
+            echo "heavy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -n "$PR_BASE_SHA" ]; then
             BASE="$PR_BASE_SHA"
           elif [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
@@ -76,6 +83,9 @@ jobs:
             echo "Grep failed with exit $GREP_EXIT — defaulting to heavy=true (safe)"
             echo "heavy=true" >> "$GITHUB_OUTPUT"
           fi
+      - name: Draft privacy audit (tools/decouple-audit.mjs)
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
+        run: node tools/decouple-audit.mjs
 
   build:
     needs: decide
@@ -90,7 +100,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 24
+          node-version: '24.18.0'
           cache: 'npm'
           cache-dependency-path: package-lock.json
       - run: npm ci
@@ -141,7 +151,7 @@ jobs:
       # npm ci runs fresh under Node 18 — node_modules from Node 24 are not reused.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 18
+          node-version: '18.20.8'
       - name: Node 18 smoke — npm ci under Node 18
         run: npm ci
       - name: Node 18 smoke — vitest run on declared-minimum Node (engines.node >=18)
@@ -158,7 +168,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 24
+          node-version: '24.18.0'
       - name: Verify version pins are in sync (tools/sync-versions.js --check)
         run: node tools/sync-versions.js --check
       - name: Validate required-checks manifest (schema)
@@ -180,35 +190,40 @@ jobs:
         with:
           extra_args: --only-verified
   decouple-audit:
-    # Always runs — privacy gate is non-negotiable, even on docs-only PRs.
+    # Always enforced: draft PRs run this audit inside `decide` to reuse its
+    # runner; ready PRs and branch pushes use this dedicated required job.
     # Fails on any committed text matching the maintainer's PRIVATE_PATTERNS
     # registry (private project / module names, home-directory paths, etc.).
     # See `tools/decouple-audit.mjs` and CLAUDE.md "Decouple from L0".
     runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 24
+          node-version: '24.18.0'
       - name: Decouple-from-L0 audit (tools/decouple-audit.mjs)
         run: node tools/decouple-audit.mjs
   bundle-size:
-    # Always runs — guards against accidental tarball growth from refactors
+    # Runs on ready PRs and branch pushes. Draft pushes defer it to the final
+    # local gate. Guards against accidental tarball growth from refactors
     # that pull in heavy transitive deps or unintended file inclusions.
     # Fails when the would-be-published tarball or unpacked size exceeds
     # the named-constant budgets in tools/check-bundle-size.mjs.
     runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 24
+          node-version: '24.18.0'
       - name: Bundle-size budget gate (tools/check-bundle-size.mjs)
         run: node tools/check-bundle-size.mjs
   skills-validate:
-    # Always runs — content quality gate for the agentskills.io-conformant
+    # Runs on ready PRs and branch pushes. Draft pushes defer it to the final
+    # local gate. Content quality gate for the agentskills.io-conformant
     # bundled skill at .skills/kmp-test-runner/. Catches frontmatter typos,
     # naming-rule violations, and reference-chain breakage. Cheap (~5s)
     # so no decide-gating.
@@ -219,12 +234,13 @@ jobs:
     # sub-train). Same job, same required check — no new branch-protection
     # update needed. See `tools/validate-plugin.mjs` for the rule list.
     runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 24
+          node-version: '24.18.0'
       - name: Validate agent skill (npx skills-ref@0.1.5)
         run: npx -y skills-ref@0.1.5 validate .skills/kmp-test-runner/
       - name: Validate Claude Code plugin manifest (tools/validate-plugin.mjs)
@@ -242,7 +258,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 24
+          node-version: '24.18.0'
           cache: 'npm'
           cache-dependency-path: package-lock.json
       - name: Build local artifact (Linux)
@@ -303,7 +319,7 @@ jobs:
   # (workflow_dispatch). None are required checks.
   report-skipped-as-success:
     needs: decide
-    if: needs.decide.outputs.heavy != 'true'
+    if: needs.decide.outputs.heavy != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft != true)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
