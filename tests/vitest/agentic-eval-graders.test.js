@@ -136,8 +136,12 @@ const SCENARIO_2_CORRECT_ANSWER = kmpEvalResultText(
 // "production-real" fixture in this file, even though buildParallelParsed sets
 // `envelope.isolated` UNCONDITIONALLY (never omitted) on both the success path and every
 // early-exit branch, including the no_test_modules exit KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS
-// models. Currently inert (the grader never reads `isolated`), so this closes a realism gap in
-// these fixtures' own documented claim, not a behavioral one.
+// models. A Docker/local-ci audit closed the behavioral half of this gap too:
+// validateParallelEvidence now validates BOTH `isolated` and `parallel.max_workers`/`timeout_s`
+// against these exact policy-coherent values (see graders.mjs's EXPECTED_ISOLATED_FIELD/
+// EXPECTED_MAX_WORKERS/EXPECTED_TIMEOUT_S) -- every fixture in this file that previously used
+// max_workers:4/timeout_s:900 (plausible-looking placeholders, never checked against the real
+// flag-less defaults) was updated to the real ones (0/600) for the same reason.
 const DEFAULT_ISOLATED_FIELD = { enabled: false, cache_dir: null, kept: false, locked: true };
 
 const KMP_TEST_ENVELOPE_SCENARIO1_PASS = JSON.stringify({
@@ -152,7 +156,7 @@ const KMP_TEST_ENVELOPE_SCENARIO1_PASS = JSON.stringify({
       execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
       cascade_detected: false, retry_fired: false,
     }],
-    max_workers: 4, timeout_s: 900,
+    max_workers: 0, timeout_s: 600,
   },
   isolated: DEFAULT_ISOLATED_FIELD,
 });
@@ -1522,7 +1526,7 @@ describe('gradeScenarioCondition -- round-8: execution-mode coherence must fail 
           execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
           cascade_detected: false, retry_fired: false,
         }],
-        max_workers: 4, timeout_s: 900,
+        max_workers: 0, timeout_s: 600,
       },
       isolated: DEFAULT_ISOLATED_FIELD,
     });
@@ -1664,15 +1668,15 @@ describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes th
     execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
     cascade_detected: false, retry_fired: false,
   };
-  const GOOD_PARALLEL = { test_type: 'auto', legs: [GOOD_LEG], max_workers: 4, timeout_s: 900 };
+  const GOOD_PARALLEL = { test_type: 'auto', legs: [GOOD_LEG], max_workers: 0, timeout_s: 600 };
   const DEFAULT_COMMAND = 'kmp-test parallel --module-filter shared --json';
 
-  function buildEnvelope({ parallel = GOOD_PARALLEL, tests = { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 }, errors = [] } = {}) {
+  function buildEnvelope({ parallel = GOOD_PARALLEL, tests = { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 }, errors = [], isolated = DEFAULT_ISOLATED_FIELD } = {}) {
     return JSON.stringify({
       tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests,
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors, warnings: [],
-      parallel,
+      parallel, isolated,
     });
   }
 
@@ -1721,26 +1725,26 @@ describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes th
     // the SUM of every leg's own execution buckets accounts for the envelope's own task count.
     ['EXACT REPRODUCTION: execution.fresh:999 while envelope.tests.total stays 1 (impossible bucket cardinality)', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ ...GOOD_LEG, execution: { ...GOOD_LEG.execution, fresh: 999 } }] } })],
     ['EXACT REPRODUCTION: wrong leg test_type (leg says androidUnit, top-level and command both say implicit auto)', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ ...GOOD_LEG, test_type: 'androidUnit' }] } })],
-    ['impossible: top-level test_type "all" with only 1 leg (legsForAll always produces >= 3)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'common' }], max_workers: 4, timeout_s: 900 } })],
+    ['impossible: top-level test_type "all" with only 1 leg (legsForAll always produces >= 3)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'common' }], max_workers: 0, timeout_s: 600 } })],
     ['impossible: top-level test_type "auto" with 2 legs (a non-all dispatch always has exactly 1 leg)', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [GOOD_LEG, { ...GOOD_LEG }] } })],
-    ['impossible: a leg itself claims test_type "all" (legsForAll never dispatches a literal "all" leg)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'all' }, { ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'desktop' }] } })],
-    ['malformed multi-leg: two good concrete legs plus one null leg under test_type "all"', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'desktop' }, null] } })],
-    ['EXACT REPRODUCTION: explicit command/envelope --test-type mismatch (command says androidUnit, envelope says jvm)', DEFAULT_COMMAND.replace('--json', '--test-type androidUnit --json'), buildEnvelope({ parallel: { test_type: 'jvm', legs: [{ ...GOOD_LEG, test_type: 'jvm' }], max_workers: 4, timeout_s: 900 } })],
-    ['command omits --test-type (implicit auto) but envelope claims a specific type', DEFAULT_COMMAND, buildEnvelope({ parallel: { test_type: 'androidUnit', legs: [{ ...GOOD_LEG, test_type: 'androidUnit' }], max_workers: 4, timeout_s: 900 } })],
+    ['impossible: a leg itself claims test_type "all" (legsForAll never dispatches a literal "all" leg)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'all' }, { ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'desktop' }], max_workers: 0, timeout_s: 600 } })],
+    ['malformed multi-leg: two good concrete legs plus one null leg under test_type "all"', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'desktop' }, null], max_workers: 0, timeout_s: 600 } })],
+    ['EXACT REPRODUCTION: explicit command/envelope --test-type mismatch (command says androidUnit, envelope says jvm)', DEFAULT_COMMAND.replace('--json', '--test-type androidUnit --json'), buildEnvelope({ parallel: { test_type: 'jvm', legs: [{ ...GOOD_LEG, test_type: 'jvm' }], max_workers: 0, timeout_s: 600 } })],
+    ['command omits --test-type (implicit auto) but envelope claims a specific type', DEFAULT_COMMAND, buildEnvelope({ parallel: { test_type: 'androidUnit', legs: [{ ...GOOD_LEG, test_type: 'androidUnit' }], max_workers: 0, timeout_s: 600 } })],
     // EXACT REPRODUCTION (independent contract review): a duplicated leg type standing in for a
     // MISSING one -- legsForAll (lib/orchestrators/parallel/dispatch.js) can never produce a
     // repeated leg type in any environment, so membership-per-leg alone (without a distinctness
     // check) previously accepted this as valid "all" evidence.
-    ['EXACT REPRODUCTION: "all" dispatch with a DUPLICATE leg type standing in for a missing one (common repeated, androidUnit never dispatched)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'desktop' }], max_workers: 4, timeout_s: 900 } })],
+    ['EXACT REPRODUCTION: "all" dispatch with a DUPLICATE leg type standing in for a missing one (common repeated, androidUnit never dispatched)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'desktop' }], max_workers: 0, timeout_s: 600 } })],
     // EXACT REPRODUCTION (round-2 contract review): distinctness alone doesn't validate the
     // surviving SET is one legsForAll can actually produce -- legsForAll always includes
     // common/desktop/androidUnit unconditionally; a distinct, all-valid-membership set missing
     // all three (standing in with OTHER valid-but-conditional types instead) is still impossible.
-    ['EXACT REPRODUCTION: "all" dispatch missing all 3 unconditional leg types (androidInstrumented/ios/macos only -- common/desktop/androidUnit never dispatched)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'androidInstrumented' }, { ...GOOD_LEG, test_type: 'ios' }, { ...GOOD_LEG, test_type: 'macos' }], max_workers: 4, timeout_s: 900 } })],
+    ['EXACT REPRODUCTION: "all" dispatch missing all 3 unconditional leg types (androidInstrumented/ios/macos only -- common/desktop/androidUnit never dispatched)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'androidInstrumented' }, { ...GOOD_LEG, test_type: 'ios' }, { ...GOOD_LEG, test_type: 'macos' }], max_workers: 0, timeout_s: 600 } })],
     // EXACT REPRODUCTION (round-2 contract review): ios/macos are only ever added TOGETHER as a
     // pair (macOS host only) -- never one without the other. A set with exactly one of the two is
     // impossible regardless of platform/env-var state.
-    ['EXACT REPRODUCTION: "all" dispatch with ios present but macos absent (legsForAll only ever adds them as a pair)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'desktop' }, { ...GOOD_LEG, test_type: 'androidUnit' }, { ...GOOD_LEG, test_type: 'ios' }], max_workers: 4, timeout_s: 900 } })],
+    ['EXACT REPRODUCTION: "all" dispatch with ios present but macos absent (legsForAll only ever adds them as a pair)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'common' }, { ...GOOD_LEG, test_type: 'desktop' }, { ...GOOD_LEG, test_type: 'androidUnit' }, { ...GOOD_LEG, test_type: 'ios' }], max_workers: 0, timeout_s: 600 } })],
   ];
 
   it.each(ADVERSARIAL_MATRIX)('rejects: %s', (_name, command, envelopeJson) => {
@@ -1756,7 +1760,7 @@ describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes th
   });
 
   it('regression guard: production-real explicit single test-type (command and envelope both say androidUnit) still passes', () => {
-    const envelope = buildEnvelope({ parallel: { test_type: 'androidUnit', legs: [{ ...GOOD_LEG, test_type: 'androidUnit' }], max_workers: 4, timeout_s: 900 } });
+    const envelope = buildEnvelope({ parallel: { test_type: 'androidUnit', legs: [{ ...GOOD_LEG, test_type: 'androidUnit' }], max_workers: 0, timeout_s: 600 } });
     const grade = gradeCommand(DEFAULT_COMMAND.replace('--json', '--test-type androidUnit --json'), envelope);
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);
@@ -1788,7 +1792,7 @@ describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes th
     // project with android+ios+macos+jvm source sets and platform stubbing, out of scope for this
     // structural unit test.)
     const legs = ['common', 'desktop', 'androidUnit'].map((t) => ({ ...GOOD_LEG, test_type: t }));
-    const envelope = buildEnvelope({ tests: { total: 3, passed: 3, failed: 0, skipped: 0, individual_total: 24 }, parallel: { test_type: 'all', legs, max_workers: 4, timeout_s: 900 } });
+    const envelope = buildEnvelope({ tests: { total: 3, passed: 3, failed: 0, skipped: 0, individual_total: 24 }, parallel: { test_type: 'all', legs, max_workers: 0, timeout_s: 600 } });
     const grade = gradeCommand(DEFAULT_COMMAND.replace('--json', '--test-type all --json'), envelope, scenario1WithTaskCount(3));
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);
@@ -1798,7 +1802,7 @@ describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes th
     // The full legsForAll output when nothing is skipped: the 3 unconditional legs plus
     // androidInstrumented (skipAdb=false) plus BOTH ios and macos together (macOS host).
     const legs = ['common', 'desktop', 'androidUnit', 'androidInstrumented', 'ios', 'macos'].map((t) => ({ ...GOOD_LEG, test_type: t }));
-    const envelope = buildEnvelope({ tests: { total: 6, passed: 6, failed: 0, skipped: 0, individual_total: 24 }, parallel: { test_type: 'all', legs, max_workers: 4, timeout_s: 900 } });
+    const envelope = buildEnvelope({ tests: { total: 6, passed: 6, failed: 0, skipped: 0, individual_total: 24 }, parallel: { test_type: 'all', legs, max_workers: 0, timeout_s: 600 } });
     const grade = gradeCommand(DEFAULT_COMMAND.replace('--json', '--test-type all --json'), envelope, scenario1WithTaskCount(6));
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);
@@ -1822,7 +1826,7 @@ describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes th
   // shipped scenarios.
   it('EXACT REPRODUCTION: a genuinely matching no_test_modules envelope with a malformed parallel block ({legs:[null]}) tacked on is rejected, not silently accepted', () => {
     const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS);
-    envelope.parallel = { test_type: 'auto', legs: [null], max_workers: 4, timeout_s: 900 };
+    envelope.parallel = { test_type: 'auto', legs: [null], max_workers: 0, timeout_s: 600 };
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter app --json', resultContent: JSON.stringify(envelope) }],
       SCENARIO_2_CORRECT_ANSWER,
@@ -1841,7 +1845,7 @@ describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes th
         execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
         cascade_detected: false, retry_fired: false,
       }],
-      max_workers: 4, timeout_s: 900,
+      max_workers: 0, timeout_s: 600,
     };
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter app --json', resultContent: JSON.stringify(envelope) }],
@@ -1877,7 +1881,8 @@ describe('validateParallelEvidence -- direct unit tests (isolates leg/aggregate 
   function envelopeWithTestsFailed(testsFailed, legOverride) {
     return {
       tests: { failed: testsFailed, total: 1 },
-      parallel: { test_type: 'auto', legs: [{ ...GOOD_LEG, ...legOverride }], max_workers: 4, timeout_s: 900 },
+      parallel: { test_type: 'auto', legs: [{ ...GOOD_LEG, ...legOverride }], max_workers: 0, timeout_s: 600 },
+      isolated: DEFAULT_ISOLATED_FIELD,
     };
   }
 
@@ -1903,6 +1908,77 @@ describe('validateParallelEvidence -- direct unit tests (isolates leg/aggregate 
     const envelope = envelopeWithTestsFailed(0, {});
     expect(validateParallelEvidence(envelope, null)).toBe(true);
   });
+
+  // Round 11 (Docker/local-ci audit, P1 blocker): buildParallelParsed (result-rollup.js:373)
+  // unconditionally emits parallel.max_workers/timeout_s and the sibling top-level envelope.isolated
+  // -- reproduced directly against 8442ed0 that NONE of the three were ever validated: a missing
+  // max_workers, a wrong-typed timeout_s, and a missing isolated all passed as authoritative
+  // evidence, meaning an incomplete or fabricated envelope could still become benchmark_eligible:true.
+  const GOOD_ISOLATED = { enabled: false, cache_dir: null, kept: false, locked: true };
+  function envelopeWithParallelOverride(parallelOverride, { isolated = GOOD_ISOLATED } = {}) {
+    return {
+      tests: { failed: 0, total: 1 },
+      parallel: { test_type: 'auto', legs: [GOOD_LEG], max_workers: 0, timeout_s: 600, ...parallelOverride },
+      isolated,
+    };
+  }
+
+  it('EXACT REPRODUCTION: missing max_workers is rejected, not silently accepted', () => {
+    const envelope = envelopeWithParallelOverride({ max_workers: undefined });
+    delete envelope.parallel.max_workers;
+    expect(validateParallelEvidence(envelope, null)).toBe(false);
+  });
+
+  it('EXACT REPRODUCTION: a wrong-typed timeout_s (string) is rejected', () => {
+    const envelope = envelopeWithParallelOverride({ timeout_s: '600' });
+    expect(validateParallelEvidence(envelope, null)).toBe(false);
+  });
+
+  it('EXACT REPRODUCTION: missing isolated entirely is rejected', () => {
+    const envelope = envelopeWithParallelOverride({});
+    delete envelope.isolated;
+    expect(validateParallelEvidence(envelope, null)).toBe(false);
+  });
+
+  it('a well-typed but policy-incoherent max_workers (4, not the real flag-less default 0) is rejected -- neither scenario\'s policy permits --max-workers', () => {
+    const envelope = envelopeWithParallelOverride({ max_workers: 4 });
+    expect(validateParallelEvidence(envelope, null)).toBe(false);
+  });
+
+  it('a well-typed but policy-incoherent timeout_s (900, not the real flag-less default 600) is rejected -- neither scenario\'s policy permits --timeout', () => {
+    const envelope = envelopeWithParallelOverride({ timeout_s: 900 });
+    expect(validateParallelEvidence(envelope, null)).toBe(false);
+  });
+
+  it('a negative max_workers is rejected', () => {
+    const envelope = envelopeWithParallelOverride({ max_workers: -1 });
+    expect(validateParallelEvidence(envelope, null)).toBe(false);
+  });
+
+  it('an extra, unrecognized key on parallel is rejected -- buildParallelParsed constructs exactly 4 keys, never more', () => {
+    const envelope = envelopeWithParallelOverride({ injected_bogus_field: 'x' });
+    expect(validateParallelEvidence(envelope, null)).toBe(false);
+  });
+
+  it('isolated.enabled:true is rejected -- neither scenario\'s policy ever permits --isolated', () => {
+    const envelope = envelopeWithParallelOverride({}, { isolated: { ...GOOD_ISOLATED, enabled: true } });
+    expect(validateParallelEvidence(envelope, null)).toBe(false);
+  });
+
+  it('a wrong-typed isolated.cache_dir (number, not string|null) is rejected', () => {
+    const envelope = envelopeWithParallelOverride({}, { isolated: { ...GOOD_ISOLATED, cache_dir: 123 } });
+    expect(validateParallelEvidence(envelope, null)).toBe(false);
+  });
+
+  it('an extra, unrecognized key on isolated is rejected -- buildIsolatedField constructs exactly 4 keys, never more', () => {
+    const envelope = envelopeWithParallelOverride({}, { isolated: { ...GOOD_ISOLATED, extra: true } });
+    expect(validateParallelEvidence(envelope, null)).toBe(false);
+  });
+
+  it('regression guard: production-real max_workers:0/timeout_s:600/isolated all present and policy-coherent still validates', () => {
+    const envelope = envelopeWithParallelOverride({});
+    expect(validateParallelEvidence(envelope, null)).toBe(true);
+  });
 });
 
 describe('gradeScenarioCondition -- round-10: malformed parallel evidence is a HARNESS-INTEGRITY signal, not a plain negative result', () => {
@@ -1921,8 +1997,9 @@ describe('gradeScenarioCondition -- round-10: malformed parallel evidence is a H
       parallel: {
         test_type: 'auto',
         legs: [{ test_type: 'auto', exit_code: 0, cascade_detected: false, retry_fired: false, execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0 } }],
-        max_workers: 4, timeout_s: 900,
+        max_workers: 0, timeout_s: 600,
       },
+      isolated: DEFAULT_ISOLATED_FIELD,
     });
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: envelope }],
@@ -1943,7 +2020,8 @@ describe('gradeScenarioCondition -- round-10: malformed parallel evidence is a H
       exit_code: 0, duration_ms: 100,
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 20 }, // wrong count (expected 24), otherwise clean
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
-      parallel: { test_type: 'auto', legs: [GOOD_LEG], max_workers: 4, timeout_s: 900 },
+      parallel: { test_type: 'auto', legs: [GOOD_LEG], max_workers: 0, timeout_s: 600 },
+      isolated: DEFAULT_ISOLATED_FIELD,
     });
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: envelope }],
@@ -1962,6 +2040,24 @@ describe('gradeScenarioCondition -- round-10: malformed parallel evidence is a H
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.parallelEvidenceMalformed).toBe(false);
+  });
+
+  // P1 blocker (Docker/local-ci audit): proves the NEW max_workers/timeout_s/isolated invariants
+  // are wired through the SAME harness-integrity mechanism as every other parallel-evidence
+  // coherence check above -- an incomplete envelope (missing max_workers here) must set
+  // parallelEvidenceMalformed:true end-to-end through the real grading pipeline, not merely fail a
+  // direct, isolated validateParallelEvidence() unit call.
+  it('EXACT REPRODUCTION: a well-shaped outer envelope missing parallel.max_workers sets parallelEvidenceMalformed:true end-to-end, not just expectedOutcomeMatched:false', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
+    delete envelope.parallel.max_workers;
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.parallelEvidenceMalformed).toBe(true);
   });
 });
 

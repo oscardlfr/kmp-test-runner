@@ -281,6 +281,51 @@ const ENVELOPE_TEST_TYPE_VALUES = [...TEST_TYPE_VALUES, 'auto'];
 // leg, never booleans, always non-negative integers.
 const EXECUTION_MODE_KEYS = ['fresh', 'up_to_date', 'from_cache', 'no_source', 'skipped_by_gradle', 'failed', 'no_evidence'];
 
+// The exact, closed key set `result-rollup.js`'s buildParallelParsed constructs `envelope.parallel`
+// with -- test_type/legs/max_workers/timeout_s, unconditionally, every real invocation (verified
+// directly against that function's own literal object construction). A Docker/local-ci audit found
+// validateParallelEvidence checked test_type/legs but never max_workers/timeout_s at all, so a
+// missing max_workers, a wrong-typed timeout_s, or an extra fabricated key all validated clean.
+const PARALLEL_BLOCK_KEYS = ['test_type', 'legs', 'max_workers', 'timeout_s'];
+
+// `buildIsolatedField` (lib/orchestrators/orchestrator-utils.js)'s exact, closed return shape --
+// always these 4 keys, every real invocation (the disabled/no-op case collapses to a stable shape
+// rather than omitting the field, per that function's own doc comment). Same audit finding as
+// PARALLEL_BLOCK_KEYS above: envelope.isolated (a TOP-LEVEL envelope field, a sibling of `parallel`,
+// not nested inside it -- confirmed directly against buildParallelParsed's own object literal) was
+// never validated at all.
+const ISOLATED_FIELD_KEYS = ['enabled', 'cache_dir', 'kept', 'locked'];
+
+// Both shipped scenarios' policy blocks permit only `kmp-test parallel`/`doctor` and a bounded
+// Gradle task list -- neither allows --max-workers, --timeout, or any --isolated* flag. Confirmed
+// directly against production defaults (lib/orchestrators/parallel/dispatch.js's argument-parsing
+// defaults: maxWorkers:0, timeout:600) and buildIsolatedField's disabled-case composition (called
+// with enabled:false, cacheDir:null from parseIsolatedArgs's own unset defaults; kept:false since
+// isolatedKept short-circuits on !enabled; locked:true since `!isolatedFlags.noLock` is true when
+// noLock's own default, false, is never overridden) -- a real, policy-compliant envelope for either
+// scenario can only ever carry exactly these values. Not a general claim about every possible
+// kmp-test invocation; scoped to what THIS harness's own policy ever permits an agent to run.
+const EXPECTED_MAX_WORKERS = 0;
+const EXPECTED_TIMEOUT_S = 600;
+const EXPECTED_ISOLATED_FIELD = Object.freeze({ enabled: false, cache_dir: null, kept: false, locked: true });
+
+/** Validates `envelope.isolated` against `buildIsolatedField`'s exact closed shape AND this
+ * harness's own policy-coherent disabled defaults (neither scenario's policy ever permits an
+ * `--isolated*` flag, so a real, policy-compliant envelope can only ever carry the one disabled
+ * shape a real orchestrator run produces when isolation was never requested). */
+function isPolicyCoherentIsolatedField(isolatedField) {
+  if (isolatedField == null || typeof isolatedField !== 'object' || Array.isArray(isolatedField)) return false;
+  if (Object.keys(isolatedField).length !== ISOLATED_FIELD_KEYS.length) return false;
+  if (typeof isolatedField.enabled !== 'boolean') return false;
+  if (isolatedField.cache_dir !== null && typeof isolatedField.cache_dir !== 'string') return false;
+  if (typeof isolatedField.kept !== 'boolean') return false;
+  if (typeof isolatedField.locked !== 'boolean') return false;
+  return isolatedField.enabled === EXPECTED_ISOLATED_FIELD.enabled
+    && isolatedField.cache_dir === EXPECTED_ISOLATED_FIELD.cache_dir
+    && isolatedField.kept === EXPECTED_ISOLATED_FIELD.kept
+    && isolatedField.locked === EXPECTED_ISOLATED_FIELD.locked;
+}
+
 /** Validates one `parallel.legs[]` entry against the exact, complete production shape
  * (`lib/orchestrators/parallel-orchestrator.js`'s per-leg dispatch loop): `test_type` (string),
  * `exit_code` (integer), `execution` (a plain object with EXACTLY the 7 `EXECUTION_MODE_KEYS`,
@@ -339,10 +384,21 @@ function isWellFormedParallelLeg(leg) {
  * envelope SELF-consistency check, independent of what any particular scenario expects -- the
  * caller separately compares the (now-validated-coherent) top-level counters against the
  * scenario's own expected values.
+ *
+ * Also validates `envelope.parallel`'s own key set (`test_type`/`legs`/`max_workers`/`timeout_s`,
+ * exactly -- `buildParallelParsed`'s literal construction) and the sibling top-level
+ * `envelope.isolated` field, both against this harness's policy-coherent defaults (neither
+ * scenario's policy ever permits `--max-workers`/`--timeout`/`--isolated*`) -- a Docker/local-ci
+ * audit found neither was validated at all, so a missing `max_workers` or a fabricated `isolated`
+ * shape both passed as authoritative evidence.
  */
 export function validateParallelEvidence(envelope, invokedTestType) {
   const parallelBlock = envelope.parallel;
   if (parallelBlock == null || typeof parallelBlock !== 'object' || Array.isArray(parallelBlock)) return false;
+  // Exact, closed key set (PARALLEL_BLOCK_KEYS) -- a missing max_workers, an extra fabricated key,
+  // or any other deviation from buildParallelParsed's own literal 4-key construction is impossible
+  // real evidence, regardless of whether test_type/legs individually look plausible.
+  if (Object.keys(parallelBlock).length !== PARALLEL_BLOCK_KEYS.length) return false;
 
   const topTestType = parallelBlock.test_type;
   if (typeof topTestType !== 'string' || !ENVELOPE_TEST_TYPE_VALUES.includes(topTestType)) return false;
@@ -351,6 +407,18 @@ export function validateParallelEvidence(envelope, invokedTestType) {
   if (topTestType !== expectedTopTestType) return false;
 
   if (!Array.isArray(parallelBlock.legs) || parallelBlock.legs.length === 0) return false;
+
+  // max_workers/timeout_s -- required non-negative integers, AND policy-coherent (see
+  // EXPECTED_MAX_WORKERS/EXPECTED_TIMEOUT_S's own doc comment for the production-confirmed
+  // derivation). A Docker/local-ci audit found these were never validated at all -- a missing
+  // max_workers or a wrong-typed timeout_s both passed as authoritative evidence.
+  if (!Number.isInteger(parallelBlock.max_workers) || parallelBlock.max_workers < 0) return false;
+  if (!Number.isInteger(parallelBlock.timeout_s) || parallelBlock.timeout_s < 0) return false;
+  if (parallelBlock.max_workers !== EXPECTED_MAX_WORKERS || parallelBlock.timeout_s !== EXPECTED_TIMEOUT_S) return false;
+
+  // envelope.isolated -- same audit finding, for the sibling top-level field neither scenario's
+  // policy ever permits an agent to actually enable (see isPolicyCoherentIsolatedField).
+  if (!isPolicyCoherentIsolatedField(envelope.isolated)) return false;
 
   if (topTestType === 'all') {
     if (parallelBlock.legs.length < MIN_LEGS_FOR_ALL) return false;
@@ -378,21 +446,26 @@ export function validateParallelEvidence(envelope, invokedTestType) {
 
   // Per-leg exit-code/failed coherence -- a follow-up review reproduced `leg.exit_code:99`
   // (well-typed, but arbitrary) passing full credit alongside an otherwise-clean leg. Derived
-  // directly from classifyTaskResults/recordLegResults (result-rollup.js), not invented: a task is
-  // ONLY ever classified 'failed' either via a literal "TASK FAILED" match in gradle's own output
-  // (which gradle only ever prints when its OWN process also exits non-zero) or via the
-  // defense-in-depth branch, whose OWN trigger condition explicitly requires `legExit !== 0` --
-  // so `execution.failed > 0` ALWAYS implies a non-zero leg exit_code, for every real path. The
-  // converse holds too: a leg with zero dispatched tasks is short-circuited to `exit:0` before
-  // gradle is ever spawned (parallel-orchestrator.js), and a leg that dispatches tasks with NONE
-  // failed has no code path that produces a non-zero gradle process exit (the defense-in-depth
-  // branch that could otherwise account for a non-task-level failure is itself gated on
-  // `legExit !== 0`, so `legExit === 0` with a dispatched task that's never even mentioned in
-  // output still classifies 'passed', not 'failed' -- a pre-existing production characteristic
-  // this validator doesn't change, and one that keeps `execution.failed:0` consistent with
-  // `exit_code:0` either way). Deliberately does NOT constrain exit_code to a small enumerated
-  // domain (a raw gradle process status can legitimately be any integer) -- only checks it agrees
-  // with THIS leg's own failed count.
+  // directly from classifyTaskResults/recordLegResults (result-rollup.js): a task is classified
+  // 'failed' either via a literal "TASK FAILED" match in gradle's own output, or via the
+  // defense-in-depth branch, whose own trigger condition requires `legExit !== 0` -- so
+  // `execution.failed > 0` implies a non-zero leg exit_code for every task-level failure path this
+  // orchestrator's own classification logic models. Deliberately does NOT constrain exit_code to a
+  // small enumerated domain (a raw gradle process status can legitimately be any integer) -- only
+  // checks it agrees with THIS leg's own failed count.
+  //
+  // IMPORTANT (correction from a fresh review): this is a CONSERVATIVE BENCHMARK-INTEGRITY POLICY
+  // for this eval harness, not a claimed universal production invariant. A real Gradle process can
+  // in principle complete the target task cleanly and still exit non-zero afterward (e.g. a build
+  // finalizer, a listener, or a daemon-level failure unrelated to any tracked task) -- a case this
+  // validator cannot rule out from reading the orchestrator's source alone, and one never observed
+  // in this harness's own real invocations. The check stays fail-closed on any mismatch (rejecting
+  // an ambiguous leg is the safe default for benchmark evidence), but does not claim the
+  // exit_code!==0-with-failed:0 combination is impossible in production generally -- a rollup that
+  // legitimately hit this shape would currently read as "malformed" here, not as "a genuine, if
+  // unusual, negative result." Disclosed as a known limitation (see this PR's own "Known
+  // limitations" section) and tracked as a separate follow-up, not a product-code fix -- out of
+  // scope for this eval-harness-only pass.
   if (!parallelBlock.legs.every((leg) => (leg.exit_code === 0) === (leg.execution.failed === 0))) return false;
 
   // Global cardinality -- a follow-up review reproduced `execution.fresh:999` alongside
