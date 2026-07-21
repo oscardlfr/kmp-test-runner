@@ -1331,6 +1331,32 @@ describe('scenarioCellIntegrityOk', () => {
     expect(reason).toBeNull();
   });
 
+  // Round 11 (Docker/local-ci audit): the identical HARNESS-integrity treatment applied to a real
+  // JUnit XML the harness could not fully trust (a genuine <skipped> testcase, or an oversized/
+  // unreadable file) -- a fresh review found matrix-runner.mjs's captureGradleJunitEvidence
+  // previously miscounted a skip as a pass, which would have laundered a real evidence-completeness
+  // gap through expected_outcome_matched alone, exactly the mistake junitEvidenceOk/
+  // parallelEvidenceOk already exist to avoid for their own respective evidence shapes.
+  it('isolates junitSkipEvidenceOk -- a record carrying an unreliable_gradle_junit_evidence error fails, even though everything else is clean', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'unreliable_gradle_junit_evidence', message: 'skip/anomaly' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(false);
+    expect(reason).toContain('junitSkipEvidenceOk:false');
+  });
+
+  it('a record with a DIFFERENT, unrelated error code does not trip junitSkipEvidenceOk', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'raw_capture_location_overridden', message: 'unrelated' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('a record with no errors[] field at all (the common case) does not trip junitSkipEvidenceOk', () => {
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), passConditionResult('no-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
   it('isolates skillSelectionOk -- a foreign Skill call unrelated to kmp-test-runner', () => {
     const cr = passConditionResult('no-skill', {
       events: [

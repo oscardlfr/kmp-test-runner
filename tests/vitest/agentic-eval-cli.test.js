@@ -759,6 +759,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       testInvocationsTotal: 2, retries: 1,
       harnessEvidenceAmbiguous: false,
       parallelEvidenceMalformed: false,
+      gradleJunitEvidenceUnreliable: false,
       ...overrides,
     };
   }
@@ -829,6 +830,44 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       modelRequested: 'fake-model',
     });
     expect(record.errors.some((e) => e.code === 'malformed_parallel_evidence')).toBe(false);
+  });
+
+  // Round 11 (Docker/local-ci audit): the identical propagation gap existed for
+  // gradleJunitEvidenceUnreliable (a real JUnit XML with a genuine <skipped> testcase, or an
+  // oversized/unreadable file) -- a fresh review found matrix-runner.mjs's
+  // captureGradleJunitEvidence already returned a harness-integrity signal for this, but nothing
+  // propagated it onto the run record, so scenarioCellIntegrityOk had no way to see it and block
+  // promotion (exactly the same class of gap the two error codes above were fixed for).
+  it('a gradeResult with gradleJunitEvidenceUnreliable:true produces an unreliable_gradle_junit_evidence error entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-unreliable-gradle-junit',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ gradleJunitEvidenceUnreliable: true }),
+    });
+    expect(record.errors.some((e) => e.code === 'unreliable_gradle_junit_evidence')).toBe(true);
+  });
+
+  it('a gradeResult with gradleJunitEvidenceUnreliable:false produces NO unreliable_gradle_junit_evidence entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-unreliable-gradle-junit-clean',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ gradleJunitEvidenceUnreliable: false }),
+    });
+    expect(record.errors.some((e) => e.code === 'unreliable_gradle_junit_evidence')).toBe(false);
+  });
+
+  it('calibrate/smoke records (runKind !== scenario) never produce unreliable_gradle_junit_evidence, regardless of gradeResult', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'smoke', scenarioId: 'test-unreliable-gradle-junit-smoke',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+    });
+    expect(record.errors.some((e) => e.code === 'unreliable_gradle_junit_evidence')).toBe(false);
   });
 });
 

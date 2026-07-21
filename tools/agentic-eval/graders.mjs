@@ -376,6 +376,39 @@ export function validateParallelEvidence(envelope, invokedTestType) {
     if (!isWellFormedParallelLeg(parallelBlock.legs[0]) || parallelBlock.legs[0].test_type !== topTestType) return false;
   }
 
+  // Per-leg exit-code/failed coherence -- a follow-up review reproduced `leg.exit_code:99`
+  // (well-typed, but arbitrary) passing full credit alongside an otherwise-clean leg. Derived
+  // directly from classifyTaskResults/recordLegResults (result-rollup.js), not invented: a task is
+  // ONLY ever classified 'failed' either via a literal "TASK FAILED" match in gradle's own output
+  // (which gradle only ever prints when its OWN process also exits non-zero) or via the
+  // defense-in-depth branch, whose OWN trigger condition explicitly requires `legExit !== 0` --
+  // so `execution.failed > 0` ALWAYS implies a non-zero leg exit_code, for every real path. The
+  // converse holds too: a leg with zero dispatched tasks is short-circuited to `exit:0` before
+  // gradle is ever spawned (parallel-orchestrator.js), and a leg that dispatches tasks with NONE
+  // failed has no code path that produces a non-zero gradle process exit (the defense-in-depth
+  // branch that could otherwise account for a non-task-level failure is itself gated on
+  // `legExit !== 0`, so `legExit === 0` with a dispatched task that's never even mentioned in
+  // output still classifies 'passed', not 'failed' -- a pre-existing production characteristic
+  // this validator doesn't change, and one that keeps `execution.failed:0` consistent with
+  // `exit_code:0` either way). Deliberately does NOT constrain exit_code to a small enumerated
+  // domain (a raw gradle process status can legitimately be any integer) -- only checks it agrees
+  // with THIS leg's own failed count.
+  if (!parallelBlock.legs.every((leg) => (leg.exit_code === 0) === (leg.execution.failed === 0))) return false;
+
+  // Global cardinality -- a follow-up review reproduced `execution.fresh:999` alongside
+  // `envelope.tests.total:1` passing full credit. Every task dispatched by ANY leg falls into
+  // EXACTLY one of that leg's own 7 execution buckets (summarizeExecutionModes/recordLegResults,
+  // result-rollup.js) AND increments the envelope's own top-level `tests.total` exactly once, in
+  // the same per-task loop -- so the SUM of every bucket, across every leg, must equal
+  // `envelope.tests.total` exactly. A leg claiming far more (or fewer) tasks in its own buckets
+  // than the envelope's own total task count is impossible real evidence, regardless of whether
+  // any individual counter or the failed-specific sum (below) happens to look plausible.
+  const bucketsTotalSum = parallelBlock.legs.reduce(
+    (sum, leg) => sum + EXECUTION_MODE_KEYS.reduce((legSum, k) => legSum + leg.execution[k], 0),
+    0,
+  );
+  if (bucketsTotalSum !== envelope.tests?.total) return false;
+
   const legsFailedSum = parallelBlock.legs.reduce((sum, leg) => sum + leg.execution.failed, 0);
   return legsFailedSum === envelope.tests?.failed;
 }
@@ -854,7 +887,7 @@ function classifyJunitProvenance(bashResults, scenario) {
  * @returns {{expectedOutcomeMatched: boolean, success: boolean, checks: Array<{name, passed,
  *   detail, evidence_event_indices: number[]}>, firstUsefulSignalEventIndex: number|null,
  *   testInvocationsTotal: number, retries: number, harnessEvidenceAmbiguous: boolean,
- *   parallelEvidenceMalformed: boolean}}
+ *   parallelEvidenceMalformed: boolean, gradleJunitEvidenceUnreliable: boolean}}
  */
 export function gradeScenarioCondition(conditionResult, scenario) {
   const checks = [];
@@ -897,6 +930,17 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   // closed rather than silently attributing the snapshot to whichever attempt happens to be
   // evaluated.
   const { ambiguous: ambiguousJunitEvidence } = classifyJunitProvenance(bashResults, scenario);
+
+  // The identical HARNESS-INTEGRITY treatment as ambiguousJunitEvidence/parallelEvidenceMalformed,
+  // for a different evidence-completeness problem: matrix-runner.mjs's captureGradleJunitEvidence
+  // returns `{harnessIntegrityIssue:true, reason}` (never a false pass/fail count) when the real
+  // JUnit XML shows a genuine `<skipped>` testcase (this evidence path has no way to correctly
+  // account for it -- see that function's own doc comment) or a file this walk could not fully
+  // read (oversized or a read error). Left unwired, this would already degrade a Gradle attempt's
+  // own outcomeMatches to false (the shape lacks `.total`/`.passed`/`.failed`), but that reads as a
+  // legitimate negative result, not "the harness cannot produce trustworthy evidence for this cell
+  // at all" -- exactly the mistake the other two harness-integrity signals already exist to avoid.
+  const gradleJunitEvidenceUnreliable = conditionResult.gradleJunitEvidence?.harnessIntegrityIssue === true;
 
   // Evaluate every attempt capable of producing target evidence, from either provider, in
   // transcript order -- excludes --dry-run entirely (evaluateKmpTestAttempt/evaluateGradleAttempt
@@ -1011,5 +1055,9 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     // previously laundered only through expectedOutcomeMatched:false, which reads as a legitimate
     // negative result rather than "the tool's own JSON output cannot be trusted at all."
     parallelEvidenceMalformed: terminal?.parallelEvidenceInvalid === true,
+    // The identical HARNESS-INTEGRITY treatment for a JUnit-XML evidence-completeness problem
+    // (a genuine skip this evidence path cannot correctly count, or a file it could not fully
+    // read) -- see captureGradleJunitEvidence's own doc comment (matrix-runner.mjs).
+    gradleJunitEvidenceUnreliable,
   };
 }

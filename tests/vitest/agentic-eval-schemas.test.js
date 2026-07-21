@@ -699,6 +699,26 @@ describe('validateScenario', () => {
       expect(errors.some((e) => e.field === 'expected.kmp_test.exit_code')).toBe(true);
     });
 
+    // Round 11 (Docker/local-ci audit): tests_executed already unconditionally requires
+    // exit_code:0, but nothing previously stopped a scenario from ALSO declaring a positive
+    // `failed` count -- a real-world-impossible combination (classifyExitCode's own
+    // testsFailed>0 -> TEST_FAIL(1) rule means a real envelope can never have both). Coherent with
+    // the exit_code:0 requirement above: tests_executed represents a clean, all-passing run.
+    it('EXACT REPRODUCTION: rejects kmp_test.tests.failed > 0 alongside the required exit_code:0 (impossible combination)', () => {
+      const s = baseScenario();
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, total: 2, passed: 1, failed: 1 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: rejects gradle.tests.failed > 0 alongside the required exit_code:0 (impossible combination)', () => {
+      const s = baseScenario();
+      s.expected.gradle.tests = { ...s.expected.gradle.tests, total: 25, passed: 24, failed: 1 };
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, individual_total: 25 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests')).toBe(true);
+    });
+
     it('rejects tests_executed with a non-zero exit_code -- a "tests executed" claim requires a clean process exit', () => {
       const s = baseScenario();
       s.expected.kmp_test.exit_code = 1;
@@ -741,6 +761,46 @@ describe('validateScenario', () => {
       s.expected.kmp_test.tests = { total: 0, passed: 0, failed: 0 };
       const { errors } = validateScenario(s);
       expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    // Round 11 (Docker/local-ci audit): a fresh review reproduced this oracle as too permissive --
+    // error_code:"anything", kmp_test.exit_code:1.5, and gradle.exit_code:-7 all previously passed
+    // with zero validation errors.
+    it('EXACT REPRODUCTION: rejects an arbitrary kmp_test.error_code instead of the one real value (no_test_modules)', () => {
+      const s = baseScenarioNoTests();
+      s.expected.kmp_test.error_code = 'anything';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.error_code')).toBe(true);
+    });
+
+    it('EXACT REPRODUCTION: rejects kmp_test.exit_code as a non-integer (1.5)', () => {
+      const s = baseScenarioNoTests();
+      s.expected.kmp_test.exit_code = 1.5;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.exit_code')).toBe(true);
+    });
+
+    it('rejects kmp_test.exit_code incoherent with caused_by_filter (caused_by_filter:true requires CONFIG_ERROR(2), not ENV_ERROR(3))', () => {
+      const s = baseScenarioNoTests();
+      s.expected.kmp_test.caused_by_filter = true;
+      s.expected.kmp_test.exit_code = 3;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.exit_code')).toBe(true);
+    });
+
+    it('accepts kmp_test.exit_code:3 (ENV_ERROR) when caused_by_filter:false, the other real coherent variant', () => {
+      const s = baseScenarioNoTests();
+      s.expected.kmp_test.caused_by_filter = false;
+      s.expected.kmp_test.exit_code = 3;
+      const { errors } = validateScenario(s);
+      expect(errors.filter((e) => e.field.startsWith('expected.kmp_test'))).toEqual([]);
+    });
+
+    it('EXACT REPRODUCTION: rejects gradle.exit_code:-7 -- a genuine NO-SOURCE result is always a successful (exit 0) gradle build', () => {
+      const s = baseScenarioNoTests();
+      s.expected.gradle.exit_code = -7;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.exit_code')).toBe(true);
     });
 
     it('rejects an unrecognized outcome_kind', () => {

@@ -229,15 +229,46 @@ export async function runSingleCondition({ condition, materializeFixture, previo
  * (imported from the same shared `lib/parsers/junit-xml.js` utility, not reimplemented) purely to
  * detect whether at least one real XML file exists for this task, before trusting the counts
  * `junitTestCountFor`/`junitTestFailuresFor` compute from those same files.
- * @returns {{total: number, passed: number, failed: number}|null}
+ *
+ * Also returns `{harnessIntegrityIssue:true, reason}` (never a false pass/fail count) when the
+ * real XML shows something this evidence path cannot correctly account for -- a fresh review found
+ * `passed = total - failures.length` silently misattributes a genuine `<skipped>` testcase to
+ * `passed` (confirmed against the real `lib/parsers/junit-xml.js`: skipped cases are counted in
+ * `total` by `junitTestCountFor`'s bare `<testcase\b` scan, but never appear in
+ * `junitTestFailuresFor`'s output, since `extractTestcaseFailures` only matches `<failure>`/
+ * `<error>` children). A skip, an oversized XML the walk had to skip entirely (`onOversized`), or a
+ * file that exists but could not be read (`onReadError`) are all evidence-COMPLETENESS problems,
+ * not a legitimate agent outcome -- the caller (`gradeScenarioCondition`) surfaces this as a
+ * HARNESS-INTEGRITY defect that blocks the whole matrix's promotion, the same treatment already
+ * given to ambiguous JUnit provenance and incoherent `parallel.legs[]` evidence, rather than
+ * letting a miscounted total silently become benchmark-eligible data.
+ * @returns {{total: number, passed: number, failed: number}|{harnessIntegrityIssue: true, reason: string}|null}
  */
 export function captureGradleJunitEvidence(fixtureDir, scenario) {
   if (scenario.expected?.outcome_kind !== 'tests_executed') return null;
   const evidenceTask = scenario.expected?.gradle?.evidence_task;
   if (!evidenceTask) return null;
   let anyXmlFound = false;
-  forEachJunitXml(fixtureDir, evidenceTask, 0, () => { anyXmlFound = true; });
+  let hasSkippedTestcase = false;
+  const anomalies = [];
+  forEachJunitXml(fixtureDir, evidenceTask, 0, (xml) => {
+    anyXmlFound = true;
+    if (/<skipped\b/.test(xml)) hasSkippedTestcase = true;
+  }, {
+    onOversized: (info) => anomalies.push(info),
+    onReadError: (info) => anomalies.push(info),
+  });
+  // An oversized/unreadable file is itself proof that a relevant XML file existed for this task --
+  // `onOversized`/`onReadError` fire INSTEAD of the visit callback (forEachJunitXml `continue`s past
+  // it), never alongside it, so `anyXmlFound` stays false for a fixture dir containing ONLY such a
+  // file. Checking this BEFORE the `!anyXmlFound` early-return is required, not just an ordering
+  // preference: reversed, a directory with one oversized file and nothing else would silently read
+  // as "no evidence at all" (null), discarding the anomaly entirely -- exactly the same class of
+  // evidence-completeness bug this function exists to eliminate, one level up in its own new code
+  // (caught by a discriminating test, not inferred).
+  if (anomalies.length > 0) return { harnessIntegrityIssue: true, reason: 'junit_xml_read_anomaly' };
   if (!anyXmlFound) return null;
+  if (hasSkippedTestcase) return { harnessIntegrityIssue: true, reason: 'skipped_testcase_unsupported' };
   const total = junitTestCountFor(fixtureDir, evidenceTask, 0);
   const failures = junitTestFailuresFor(fixtureDir, evidenceTask, 0);
   return { total, passed: total - failures.length, failed: failures.length };

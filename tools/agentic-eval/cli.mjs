@@ -683,6 +683,13 @@ function buildRunRecord({
       ...(isScenario && gradeResult?.parallelEvidenceMalformed
         ? [{ code: 'malformed_parallel_evidence', message: 'the terminal kmp-test parallel attempt\'s own parallel.legs[] structure is internally incoherent (malformed leg shape, wrong test-type correlation, or a leg/top-level failure-count contradiction) -- the tool\'s own JSON output cannot be trusted as genuine evidence of what happened' }]
         : []),
+      // The identical HARNESS-INTEGRITY treatment for a JUnit-XML evidence-completeness problem:
+      // matrix-runner.mjs's captureGradleJunitEvidence found a genuine skip this evidence path
+      // cannot correctly count, or a file it could not fully read (oversized or a read error) --
+      // never a legitimate agent outcome, so it must block promotion here too.
+      ...(isScenario && gradeResult?.gradleJunitEvidenceUnreliable
+        ? [{ code: 'unreliable_gradle_junit_evidence', message: 'the JUnit XML captured for this condition contains a genuine skipped testcase (this evidence path cannot correctly account for it) or a file that could not be fully read -- the counts derived from it cannot be trusted as genuine evidence of what happened' }]
+        : []),
     ],
   };
 }
@@ -1297,6 +1304,9 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
  * `parallelEvidenceMalformed`) -- the terminal kmp-test attempt's own `parallel.legs[]` structure
  * was internally incoherent, a systematic-closure review found this was previously laundered only
  * through expected_outcome_matched:false (a valid negative result the incoherence is NOT).
+ * `junitSkipEvidenceOk` is the identical treatment for an `unreliable_gradle_junit_evidence` error
+ * (buildRunRecord, from graders.mjs's own `gradleJunitEvidenceUnreliable`) -- a genuine skipped
+ * testcase or an unreadable/oversized XML file this evidence path cannot correctly count.
  */
 function scenarioCellIntegrityOk(record, conditionResult) {
   const expectSkillAvailable = record.condition === 'current-skill';
@@ -1315,13 +1325,14 @@ function scenarioCellIntegrityOk(record, conditionResult) {
   const terminationOk = conditionResult.spawnResult.terminated === false || conditionResult.spawnResult.terminationReason === 'timeout';
   const junitEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'ambiguous_junit_evidence');
   const parallelEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'malformed_parallel_evidence');
+  const junitSkipEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'unreliable_gradle_junit_evidence');
 
   const ok = availabilityOk && pluginProfileOk && pluginSnapshotBindingOk && skillSelectionOk && initOk
     && toolProfileOk && noUnexpectedToolsOk && hookAccountingOk && cleanTranscriptOk && transcriptStructureOk
-    && toolResultsCompleteOk && terminationOk && junitEvidenceOk && parallelEvidenceOk;
+    && toolResultsCompleteOk && terminationOk && junitEvidenceOk && parallelEvidenceOk && junitSkipEvidenceOk;
   return {
     ok,
-    reason: ok ? null : `availabilityOk:${availabilityOk} pluginProfileOk:${pluginProfileOk} pluginSnapshotBindingOk:${pluginSnapshotBindingOk} skillSelectionOk:${skillSelectionOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} hookAccountingOk:${hookAccountingOk} cleanTranscriptOk:${cleanTranscriptOk} transcriptStructureOk:${transcriptStructureOk} toolResultsCompleteOk:${toolResultsCompleteOk} terminationOk:${terminationOk} junitEvidenceOk:${junitEvidenceOk} parallelEvidenceOk:${parallelEvidenceOk}`,
+    reason: ok ? null : `availabilityOk:${availabilityOk} pluginProfileOk:${pluginProfileOk} pluginSnapshotBindingOk:${pluginSnapshotBindingOk} skillSelectionOk:${skillSelectionOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} hookAccountingOk:${hookAccountingOk} cleanTranscriptOk:${cleanTranscriptOk} transcriptStructureOk:${transcriptStructureOk} toolResultsCompleteOk:${toolResultsCompleteOk} terminationOk:${terminationOk} junitEvidenceOk:${junitEvidenceOk} parallelEvidenceOk:${parallelEvidenceOk} junitSkipEvidenceOk:${junitSkipEvidenceOk}`,
   };
 }
 

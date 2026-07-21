@@ -105,3 +105,73 @@ describe('captureGradleJunitEvidence -- absent XML vs. real XML reporting zero, 
     expect(evidence).toBeNull();
   });
 });
+
+// Round 11 (Docker/local-ci audit): a fresh review reproduced `passed = total - failures.length`
+// silently misattributing a genuine <skipped> testcase to `passed` -- documented as a known
+// limitation, but not acceptable for evidence that can end up benchmark_eligible:true. Fixed to
+// detect a skip (or an unreadable/oversized XML file) and return {harnessIntegrityIssue:true,
+// reason} instead of a miscounted total, so the caller (graders.mjs) can treat it as a
+// HARNESS-INTEGRITY defect that blocks the whole matrix, never a false pass/fail count.
+describe('captureGradleJunitEvidence -- skip/anomaly detection (never a false pass/fail count)', () => {
+  it('EXACT REPRODUCTION: a real XML with one pass and one skipped testcase previously produced {total:2,passed:2,failed:0} -- now returns a harness-integrity signal instead', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-matrix-runner-junit-'));
+    writeXml(workDir, 'shared', 'testAndroidHostTest', 'A', [
+      '<testsuite name="A" tests="2">',
+      '  <testcase name="ok" classname="com.x.A" time="0.1"/>',
+      '  <testcase name="skippedOne" classname="com.x.A" time="0.0">',
+      '    <skipped/>',
+      '  </testcase>',
+      '</testsuite>',
+    ].join('\n'));
+    const evidence = captureGradleJunitEvidence(workDir, SCENARIO_1);
+    expect(evidence).toEqual({ harnessIntegrityIssue: true, reason: 'skipped_testcase_unsupported' });
+  });
+
+  it('a self-closing <skipped/> testcase (no separate pass) is also detected', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-matrix-runner-junit-'));
+    writeXml(workDir, 'shared', 'testAndroidHostTest', 'A', [
+      '<testsuite name="A" tests="1">',
+      '  <testcase name="skippedOnly" classname="com.x.A" time="0.0"><skipped/></testcase>',
+      '</testsuite>',
+    ].join('\n'));
+    const evidence = captureGradleJunitEvidence(workDir, SCENARIO_1);
+    expect(evidence).toEqual({ harnessIntegrityIssue: true, reason: 'skipped_testcase_unsupported' });
+  });
+
+  it('an oversized XML file (exceeds the real forEachJunitXml size cap) is reported as a read anomaly, never silently undercounted', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-matrix-runner-junit-'));
+    const taskDir = path.join(workDir, 'shared', 'build', 'test-results', 'testAndroidHostTest');
+    mkdirSync(taskDir, { recursive: true });
+    // DEFAULT_JUNIT_XML_MAX_MB is 32 -- write something larger via a padded <system-out>.
+    const padding = 'x'.repeat(33 * 1024 * 1024);
+    writeFileSync(path.join(taskDir, 'TEST-Huge.xml'), `<testsuite><testcase name="a" classname="com.x.A"><system-out>${padding}</system-out></testcase></testsuite>`, 'utf8');
+    const evidence = captureGradleJunitEvidence(workDir, SCENARIO_1);
+    expect(evidence).toEqual({ harnessIntegrityIssue: true, reason: 'junit_xml_read_anomaly' });
+  });
+
+  it('regression guard: a real failure with NO skip and NO anomaly still returns the real counts, unaffected by the skip/anomaly detection', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-matrix-runner-junit-'));
+    writeXml(workDir, 'shared', 'testAndroidHostTest', 'A', [
+      '<testsuite name="A" tests="2">',
+      '  <testcase name="ok" classname="com.x.A" time="0.1"/>',
+      '  <testcase name="boom" classname="com.x.A" time="0.1">',
+      '    <failure type="org.opentest4j.AssertionFailedError" message="expected &lt;1&gt; but was &lt;2&gt;">stack</failure>',
+      '  </testcase>',
+      '</testsuite>',
+    ].join('\n'));
+    const evidence = captureGradleJunitEvidence(workDir, SCENARIO_1);
+    expect(evidence).toEqual({ total: 2, passed: 1, failed: 1 });
+  });
+
+  it('regression guard: a real, genuinely clean run (all real passes, no skips) still returns the real counts', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-matrix-runner-junit-'));
+    writeXml(workDir, 'shared', 'testAndroidHostTest', 'A', [
+      '<testsuite name="A" tests="2">',
+      '  <testcase name="a" classname="com.x.A" time="0.1"/>',
+      '  <testcase name="b" classname="com.x.A" time="0.1"/>',
+      '</testsuite>',
+    ].join('\n'));
+    const evidence = captureGradleJunitEvidence(workDir, SCENARIO_1);
+    expect(evidence).toEqual({ total: 2, passed: 2, failed: 0 });
+  });
+});

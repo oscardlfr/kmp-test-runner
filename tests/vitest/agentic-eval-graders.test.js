@@ -1676,9 +1676,9 @@ describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes th
     });
   }
 
-  function gradeCommand(command, envelopeJson) {
+  function gradeCommand(command, envelopeJson, scenario = SCENARIO_1) {
     const cr = buildConditionResult([{ command, resultContent: envelopeJson }], SCENARIO_1_CORRECT_ANSWER);
-    return gradeScenarioCondition(cr, SCENARIO_1);
+    return gradeScenarioCondition(cr, scenario);
   }
 
   // [name, command, envelopeJson] -- every entry must be rejected (expectedOutcomeMatched:false).
@@ -1710,6 +1710,16 @@ describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes th
     // instead covered by direct, isolated unit tests against validateParallelEvidence itself, see
     // the 'validateParallelEvidence -- direct unit tests' describe block below.
     ['EXACT REPRODUCTION: a failed leg contradicts a clean top-level tests.failed:0', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ ...GOOD_LEG, exit_code: 1, execution: { ...GOOD_LEG.execution, fresh: 0, failed: 1 } }] } })],
+    // EXACT REPRODUCTION (Docker/local-ci audit, round 11): leg.exit_code is an arbitrary non-zero
+    // value (99) while execution.failed stays 0 -- nothing previously checked whether a leg's own
+    // exit status agrees with its own failed-task count. Deliberately NOT testing "is 99 outside
+    // some enumerated domain" (a raw gradle process exit code can legitimately be any integer) --
+    // only that it's incoherent with a leg claiming zero failures.
+    ['EXACT REPRODUCTION: leg.exit_code is non-zero (99) while execution.failed stays 0 (exit-code/failed-count incoherence)', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ ...GOOD_LEG, exit_code: 99 }] } })],
+    // EXACT REPRODUCTION (Docker/local-ci audit, round 11): a single execution bucket (fresh:999)
+    // vastly exceeds the envelope's own top-level tests.total:1 -- nothing previously checked that
+    // the SUM of every leg's own execution buckets accounts for the envelope's own task count.
+    ['EXACT REPRODUCTION: execution.fresh:999 while envelope.tests.total stays 1 (impossible bucket cardinality)', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ ...GOOD_LEG, execution: { ...GOOD_LEG.execution, fresh: 999 } }] } })],
     ['EXACT REPRODUCTION: wrong leg test_type (leg says androidUnit, top-level and command both say implicit auto)', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [{ ...GOOD_LEG, test_type: 'androidUnit' }] } })],
     ['impossible: top-level test_type "all" with only 1 leg (legsForAll always produces >= 3)', DEFAULT_COMMAND.replace('--json', '--test-type all --json'), buildEnvelope({ parallel: { test_type: 'all', legs: [{ ...GOOD_LEG, test_type: 'common' }], max_workers: 4, timeout_s: 900 } })],
     ['impossible: top-level test_type "auto" with 2 legs (a non-all dispatch always has exactly 1 leg)', DEFAULT_COMMAND, buildEnvelope({ parallel: { ...GOOD_PARALLEL, legs: [GOOD_LEG, { ...GOOD_LEG }] } })],
@@ -1752,6 +1762,22 @@ describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes th
     expect(grade.success).toBe(true);
   });
 
+  // The global bucket-cardinality invariant (validateParallelEvidence: sum of every leg's own
+  // execution buckets across the WHOLE parallel.legs[] array must equal envelope.tests.total)
+  // means a multi-leg envelope's tests.total must scale with the leg count -- each GOOD_LEG
+  // contributes exactly 1 dispatched task to its own bucket sum. SCENARIO_1's real kmp_test
+  // contract expects exactly 1 (the real KaMPKit scenario is a single-task dispatch), so these
+  // multi-leg structural tests need their OWN scenario-level expectation, not SCENARIO_1 verbatim.
+  function scenario1WithTaskCount(taskCount) {
+    return {
+      ...SCENARIO_1,
+      expected: {
+        ...SCENARIO_1.expected,
+        kmp_test: { ...SCENARIO_1.expected.kmp_test, tests: { ...SCENARIO_1.expected.kmp_test.tests, total: taskCount, passed: taskCount } },
+      },
+    };
+  }
+
   it('regression guard: production-real multi-leg "all" dispatch (3 concrete legs, none literally "all") still passes', () => {
     // Hand-authored to the exact contract extracted from legsForAll (lib/orchestrators/parallel/
     // dispatch.js): 'common'/'desktop'/'androidUnit' are the 3 unconditional legs it always
@@ -1762,8 +1788,8 @@ describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes th
     // project with android+ios+macos+jvm source sets and platform stubbing, out of scope for this
     // structural unit test.)
     const legs = ['common', 'desktop', 'androidUnit'].map((t) => ({ ...GOOD_LEG, test_type: t }));
-    const envelope = buildEnvelope({ parallel: { test_type: 'all', legs, max_workers: 4, timeout_s: 900 } });
-    const grade = gradeCommand(DEFAULT_COMMAND.replace('--json', '--test-type all --json'), envelope);
+    const envelope = buildEnvelope({ tests: { total: 3, passed: 3, failed: 0, skipped: 0, individual_total: 24 }, parallel: { test_type: 'all', legs, max_workers: 4, timeout_s: 900 } });
+    const grade = gradeCommand(DEFAULT_COMMAND.replace('--json', '--test-type all --json'), envelope, scenario1WithTaskCount(3));
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);
   });
@@ -1772,8 +1798,8 @@ describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes th
     // The full legsForAll output when nothing is skipped: the 3 unconditional legs plus
     // androidInstrumented (skipAdb=false) plus BOTH ios and macos together (macOS host).
     const legs = ['common', 'desktop', 'androidUnit', 'androidInstrumented', 'ios', 'macos'].map((t) => ({ ...GOOD_LEG, test_type: t }));
-    const envelope = buildEnvelope({ parallel: { test_type: 'all', legs, max_workers: 4, timeout_s: 900 } });
-    const grade = gradeCommand(DEFAULT_COMMAND.replace('--json', '--test-type all --json'), envelope);
+    const envelope = buildEnvelope({ tests: { total: 6, passed: 6, failed: 0, skipped: 0, individual_total: 24 }, parallel: { test_type: 'all', legs, max_workers: 4, timeout_s: 900 } });
+    const grade = gradeCommand(DEFAULT_COMMAND.replace('--json', '--test-type all --json'), envelope, scenario1WithTaskCount(6));
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);
   });
@@ -1844,9 +1870,13 @@ describe('validateParallelEvidence -- direct unit tests (isolates leg/aggregate 
     cascade_detected: false, retry_fired: false,
   };
 
+  // `total: 1` matches every GOOD_LEG-based fixture's own bucket-cardinality convention (a single
+  // clean task) -- required so the new global cardinality invariant (sum of every leg's execution
+  // buckets must equal envelope.tests.total) doesn't spuriously reject these cases for a reason
+  // unrelated to what each one is actually isolating.
   function envelopeWithTestsFailed(testsFailed, legOverride) {
     return {
-      tests: { failed: testsFailed },
+      tests: { failed: testsFailed, total: 1 },
       parallel: { test_type: 'auto', legs: [{ ...GOOD_LEG, ...legOverride }], max_workers: 4, timeout_s: 900 },
     };
   }
@@ -1932,6 +1962,78 @@ describe('gradeScenarioCondition -- round-10: malformed parallel evidence is a H
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.parallelEvidenceMalformed).toBe(false);
+  });
+});
+
+// Round 11 (Docker/local-ci audit): matrix-runner.mjs's captureGradleJunitEvidence now returns
+// {harnessIntegrityIssue:true, reason} instead of a miscounted {total,passed,failed} when the real
+// JUnit XML contains a genuine <skipped> testcase or could not be fully read. gradeScenarioCondition
+// must surface this as its own top-level harness-integrity signal (gradleJunitEvidenceUnreliable),
+// mirroring parallelEvidenceMalformed above -- never silently folded into a plain
+// expectedOutcomeMatched:false, which cli.mjs's scenarioCellIntegrityOk could not distinguish from
+// an ordinary wrong-answer negative result.
+describe('gradeScenarioCondition -- round-11: unreliable Gradle JUnit evidence (skip/anomaly) is a HARNESS-INTEGRITY signal, not a plain negative result', () => {
+  it('EXACT REPRODUCTION: gradleJunitEvidence carries a skipped-testcase harness-integrity issue -- sets gradleJunitEvidenceUnreliable:true, and the outcome check still fails closed (never a false pass from the stale total/passed shape)', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT }],
+      SCENARIO_1_CORRECT_ANSWER,
+      { gradleJunitEvidence: { harnessIntegrityIssue: true, reason: 'skipped_testcase_unsupported' } },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.gradleJunitEvidenceUnreliable).toBe(true);
+  });
+
+  it('EXACT REPRODUCTION (read-anomaly variant): gradleJunitEvidence carries an oversized/unreadable-XML issue -- also sets gradleJunitEvidenceUnreliable:true', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT }],
+      SCENARIO_1_CORRECT_ANSWER,
+      { gradleJunitEvidence: { harnessIntegrityIssue: true, reason: 'junit_xml_read_anomaly' } },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.gradleJunitEvidenceUnreliable).toBe(true);
+  });
+
+  it('regression guard: gradleJunitEvidence:null (never captured at all, the pre-existing "no evidence" case) does NOT trip gradleJunitEvidenceUnreliable -- that is a distinct, already-covered failure mode', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT }],
+      SCENARIO_1_CORRECT_ANSWER,
+      { gradleJunitEvidence: null },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.gradleJunitEvidenceUnreliable).toBe(false);
+  });
+
+  it('regression guard: a genuinely clean gradleJunitEvidence snapshot has gradleJunitEvidenceUnreliable:false', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT }],
+      SCENARIO_1_CORRECT_ANSWER,
+      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.gradleJunitEvidenceUnreliable).toBe(false);
+  });
+
+  it('a kmp-test-only condition (no Gradle attempt at all) never trips gradleJunitEvidenceUnreliable, regardless of what conditionResult.gradleJunitEvidence happens to hold', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS }],
+      SCENARIO_1_CORRECT_ANSWER,
+      { gradleJunitEvidence: { harnessIntegrityIssue: true, reason: 'skipped_testcase_unsupported' } },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    // The kmp-test path derives its own outcome from individual_total, never from
+    // conditionResult.gradleJunitEvidence -- but the flag itself is computed unconditionally from
+    // the raw signal, so a stray/unrelated harness-integrity issue on the Gradle side still surfaces
+    // here even though this condition never actually depended on it for its own outcome. This is
+    // intentional: matrix-runner.mjs only computes gradleJunitEvidence at all for tests_executed
+    // scenarios with a declared evidence_task, so a non-null value here is never spurious noise from
+    // an unrelated scenario shape.
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.gradleJunitEvidenceUnreliable).toBe(true);
   });
 });
 

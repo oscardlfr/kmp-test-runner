@@ -12,6 +12,7 @@
 // value:null paired with reason:null.
 import { GRADLE_TASK_ENTRY_RE, KMPTEST_SUBCOMMAND_ENTRY_RE } from './policy-hook.mjs';
 import { GRADING_CHECK_NAMES } from './graders.mjs';
+import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 
 // Run schema went from a single CURRENT_RUN_SCHEMA equality check to explicit per-version
 // dispatch (SUPPORTED_RUN_SCHEMAS / LATEST_RUN_SCHEMA) -- a real bug found on review: a naive
@@ -440,13 +441,21 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
       // claiming "zero individual tests executed" -- directly self-contradictory. `skipped` must
       // be EXACTLY 0 -- the Gradle/JUnit-XML path can never corroborate a non-zero skip claim
       // (gradle's own contract forbids the field entirely, below), so a kmp_test contract asserting
-      // skipped>0 would be permanently unverifiable by construction.
+      // skipped>0 would be permanently unverifiable by construction. `failed` must ALSO be EXACTLY
+      // 0 -- a Docker/local-ci audit reproduced the same class of self-contradiction the exit_code
+      // check below already exists to prevent: `tests_executed` unconditionally REQUIRES
+      // `exit_code:0` (a real kmp-test envelope with `classifyExitCode`'s own `testsFailed>0 ->
+      // TEST_FAIL(1)` rule can never have both), but nothing previously stopped a scenario from
+      // declaring `failed:1` (or any positive count) alongside that forced clean exit_code -- an
+      // impossible real-world combination. `tests_executed` as currently modeled represents "ran
+      // and all passed" specifically; a future "ran with real failures" outcome would need its own
+      // distinctly-named outcome_kind, not a hybrid of this one.
       rejectUnrecognizedKeys(provider.tests, KMP_TEST_TESTS_SHAPE_KEYS, `${field}.tests`, errors);
       testsShapeOk = hasTests
-        && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && isNonNegInt(provider.tests.failed)
+        && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && provider.tests.failed === 0
         && isPositiveInt(provider.tests.individual_total) && provider.tests.skipped === 0;
       if (!testsShapeOk) {
-        errors.push({ field: `${field}.tests`, message: 'required (positive integer total/individual_total; non-negative integer passed/failed; skipped must be exactly 0 -- the Gradle/JUnit-XML path can never verify a non-zero skip claim) when outcome_kind is tests_executed' });
+        errors.push({ field: `${field}.tests`, message: 'required (positive integer total/individual_total; non-negative integer passed; failed and skipped must be exactly 0 -- tests_executed represents a clean, all-passing run, coherent with the exit_code:0 requirement below) when outcome_kind is tests_executed' });
       }
     } else {
       // Gradle/JUnit-XML: individual_total/skipped are FORBIDDEN, not merely unvalidated -- the
@@ -454,11 +463,12 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
       // comment, finding 1, and graders.mjs's disclosed limitation on skipped specifically). The
       // exact-key-set check above already rejects them (and catches a forbidden field explicitly
       // set to `null`, which the old `!= null` presence check silently missed); no separate
-      // hasIndividualTotal/hasSkipped check is needed.
+      // hasIndividualTotal/hasSkipped check is needed. `failed` must be EXACTLY 0 for the identical
+      // reason as the kmp_test branch above -- coherent with the forced exit_code:0 below.
       rejectUnrecognizedKeys(provider.tests, GRADLE_TESTS_SHAPE_KEYS, `${field}.tests`, errors);
-      testsShapeOk = hasTests && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && isNonNegInt(provider.tests.failed);
+      testsShapeOk = hasTests && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && provider.tests.failed === 0;
       if (!testsShapeOk) {
-        errors.push({ field: `${field}.tests`, message: 'required (positive integer total; non-negative integer passed/failed) when outcome_kind is tests_executed' });
+        errors.push({ field: `${field}.tests`, message: 'required (positive integer total; non-negative integer passed; failed must be exactly 0) when outcome_kind is tests_executed' });
       }
     }
     if (testsShapeOk && provider.tests.total !== provider.tests.passed + provider.tests.failed) {
@@ -471,11 +481,33 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
   } else if (outcomeKind === 'no_applicable_tests') {
     if (hasTests) errors.push({ field: `${field}.tests`, message: 'forbidden when outcome_kind is no_applicable_tests' });
     if (contractName === 'kmp_test') {
-      if (typeof provider.error_code !== 'string' || provider.error_code.length === 0) errors.push({ field: `${field}.error_code`, message: 'required when outcome_kind is no_applicable_tests' });
-      if (typeof provider.exit_code !== 'number') errors.push({ field: `${field}.exit_code`, message: 'required when outcome_kind is no_applicable_tests' });
-      if (typeof provider.caused_by_filter !== 'boolean') errors.push({ field: `${field}.caused_by_filter`, message: 'required (boolean) when outcome_kind is no_applicable_tests' });
+      // A Docker/local-ci audit reproduced this oracle as too permissive: error_code:"anything",
+      // exit_code:1.5, and a caused_by_filter/exit_code combination with no real relationship at
+      // all all passed with zero validation errors. The ONLY real error code this harness models
+      // for no_applicable_tests is 'no_test_modules' (lib/orchestrators/parallel-orchestrator.js's
+      // no_test_modules early-exit) -- tightened to that exact value rather than "any non-empty
+      // string". `exit_code` must be a real integer, AND must be the EXACT value
+      // classifyExitCode (lib/envelope/exit-codes.js, the same function production itself uses to
+      // decide the real envelope's exit code) derives from `caused_by_filter` -- not merely typed
+      // correctly, but coherent with the documented caused_by_filter->exit_code relationship
+      // (caused_by_filter:true -> CONFIG_ERROR(2), caused_by_filter:false -> ENV_ERROR(3)).
+      if (provider.error_code !== 'no_test_modules') errors.push({ field: `${field}.error_code`, message: `must be exactly 'no_test_modules' when outcome_kind is no_applicable_tests -- the only real error code this harness models for it` });
+      if (typeof provider.caused_by_filter !== 'boolean') {
+        errors.push({ field: `${field}.caused_by_filter`, message: 'required (boolean) when outcome_kind is no_applicable_tests' });
+        if (!Number.isInteger(provider.exit_code)) errors.push({ field: `${field}.exit_code`, message: 'must be a real integer when outcome_kind is no_applicable_tests' });
+      } else {
+        const expectedExitCode = classifyExitCode([{ code: 'no_test_modules', caused_by_filter: provider.caused_by_filter }]);
+        if (provider.exit_code !== expectedExitCode) {
+          errors.push({ field: `${field}.exit_code`, message: `must be ${expectedExitCode} (${expectedExitCode === EXIT.CONFIG_ERROR ? 'CONFIG_ERROR' : 'ENV_ERROR'}) given caused_by_filter:${provider.caused_by_filter} -- classifyExitCode's own real mapping, not merely a well-typed integer` });
+        }
+      }
     } else {
-      if (typeof provider.exit_code !== 'number') errors.push({ field: `${field}.exit_code`, message: 'required when outcome_kind is no_applicable_tests' });
+      // A genuine NO-SOURCE result is, by definition, a SUCCESSFUL gradle build (no source means
+      // nothing to run, not a build failure) -- BUILD SUCCESSFUL, exit 0, confirmed directly
+      // against both this PR's own real ground-truth capture and the shipped
+      // kampkit-no-applicable-tests.json scenario. Tightened from "any well-typed number"
+      // (previously admitted -7) to the one real value this outcome can produce.
+      if (provider.exit_code !== 0) errors.push({ field: `${field}.exit_code`, message: 'must be exactly 0 when outcome_kind is no_applicable_tests -- a genuine NO-SOURCE result is always a successful gradle build' });
       if (!GRADLE_MARKER_VALUES.includes(provider.marker)) errors.push({ field: `${field}.marker`, message: `required, must be one of ${GRADLE_MARKER_VALUES.join('|')}, when outcome_kind is no_applicable_tests` });
     }
   }

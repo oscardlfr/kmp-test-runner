@@ -8,7 +8,7 @@
 // the same technique tests/vitest/parallel-orchestrator.test.js already uses for its own coverage)
 // to capture a byte-for-byte real envelope, then feeds it through the grader unmodified.
 import { describe, it, expect, afterEach } from 'vitest';
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runParallel } from '../../lib/orchestrators/parallel-orchestrator.js';
@@ -43,16 +43,26 @@ function makeSyntheticProject() {
 // walk reads (`<module>/build/test-results/<taskShortName>/TEST-*.xml`, confirmed directly against
 // tests/vitest/parallel-orchestrator.test.js's own junitTestCountFor coverage) -- so
 // `state.tests.individual_total` is computed by the REAL production JUnit-XML walk, not injected
-// by this test. Called from WITHIN the spawn stub (below), not before runParallel() starts: the
-// real staleness guard (result-rollup.js's recordLegResults) discards any TEST-*.xml whose mtime
-// predates `state.runStartMs` for a 'fresh' execution mode (only up_to_date/from_cache bypass it)
-// -- writing it synchronously inside the stubbed gradle invocation mimics gradle producing fresh
-// output as it "runs", giving the file a real mtime after the run started.
+// by this test. The real staleness guard (result-rollup.js's recordLegResults) discards any
+// TEST-*.xml whose mtime predates `state.runStartMs` for a 'fresh' execution mode (only
+// up_to_date/from_cache bypass it) -- an earlier version of this fixture relied on writing the
+// file synchronously inside the stubbed gradle invocation (after runStartMs was captured) to give
+// it a real mtime "after the run started," but a live Docker Node 18/24 run found this
+// intermittently non-deterministic: filesystem mtime resolution/rounding can put the write's real
+// mtime AT OR BEFORE runStartMs even though it happens strictly after in wall-clock terms,
+// especially across container filesystem layers (individual_total came back 0 instead of 24 on
+// repetition 2 under Node 18, repetition 1 under Node 24). Stamping an explicit, safely-future
+// mtime (mirrors the repository's established writeStaleJunitXml pattern in
+// parallel-orchestrator.test.js, inverted from past to future) removes the race entirely rather
+// than relying on wall-clock ordering.
 function writeRealJunitXml(projectRoot, moduleName, taskShortName, testcaseCount) {
   const taskDir = path.join(projectRoot, moduleName, 'build', 'test-results', taskShortName);
   mkdirSync(taskDir, { recursive: true });
   const testcases = Array.from({ length: testcaseCount }, (_, i) => `<testcase classname="com.example.Fake" name="test${i}"/>`).join('');
-  writeFileSync(path.join(taskDir, 'TEST-com.example.FakeTest.xml'), `<testsuite>${testcases}</testsuite>`);
+  const filePath = path.join(taskDir, 'TEST-com.example.FakeTest.xml');
+  writeFileSync(filePath, `<testsuite>${testcases}</testsuite>`);
+  const future = Math.floor(Date.now() / 1000) + 3600;
+  utimesSync(filePath, future, future);
 }
 
 function makeSpawnStub(taskFullPath, { projectRoot, moduleName, taskShortName, testcaseCount }) {
