@@ -195,7 +195,13 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // fixture would pass the gate outright and write evidence for a run that actually invoked a
   // DIFFERENT skill entirely. Proves the fix is wired up end-to-end (real stream-json parsing,
   // not just the synthetic unit tests in agentic-eval-hard-gates.test.js) and writes NO evidence.
-  it('foreign-skill scenario: A calling an unrelated Skill is rejected (evidence-contamination bypass) and writes NO evidence', () => {
+  //
+  // Round-5 audit correction: this fixture's foreign-skill tool_result has no `is_error` key, so
+  // it's a CONFIRMED foreign invocation (not "rejected" as this test was previously titled) --
+  // see the fixture's own header comment. calibrationHardGate's contract is unchanged by the
+  // result-aware classifier PR, so this correctly still fails regardless of the confirmed/
+  // rejected distinction; the title now says what's actually being tested.
+  it('foreign-skill scenario: A calling an unrelated Skill that gets CONFIRMED is rejected by the gate (evidence-contamination bypass) and writes NO evidence', () => {
     const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('foreign-skill'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('CALIBRATION FAILED');

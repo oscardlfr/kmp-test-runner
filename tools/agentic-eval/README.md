@@ -64,6 +64,30 @@ record could show `skill_available:false` and `skill_invoked:true` in the *same 
 directly self-contradictory. `schemas.mjs` now also rejects that combination at the schema level
 (`skill_invoked:true` requires `skill_invocation_attempted:true`).
 
+### Result-aware FOREIGN skill classification (scenario only)
+
+The same attempted/confirmed distinction applies to a `Skill` call targeting something *other*
+than `kmp-test-runner` — `stream-parser.mjs`'s `classifyForeignSkillUses()` (a thin wrapper around
+`findForeignSkillUses()`, mirroring `findBashToolUsesWithResults()`'s identical correlation
+pattern) classifies each foreign call as one of three states, never conflated:
+
+- **rejected** — a real, correlated `tool_result` with `is_error:true` (the "Unknown skill" shape).
+- **confirmed** — a real, correlated `tool_result` with `is_error:false` — including when
+  `is_error` is absent from the `tool_result` entirely, which per the documented `tool_result`
+  contract also means success, not an unknown/incomplete state.
+- **missing/incomplete** — no correlated `tool_result` found anywhere in the transcript at all
+  (`resultIsError:null`) — a broken capture, not a demonstrated outcome either way.
+
+For a **scenario**'s naturally-prompted transcript, a REJECTED foreign attempt is measured agent
+behavior, not contamination — the model exploring what's available and getting told "no" is not
+evidence-contamination the way a CONFIRMED foreign invocation is. `calibration`/`smoke` keep their
+original, unrelaxed contract unchanged (`findForeignSkillUses()`, plain and argument-only, still
+fails on ANY foreign call regardless of outcome) — their explicit-invocation prompts don't carry
+the same "the agent is naturally exploring" premise a scenario prompt does, and relaxing them
+would need its own independently-argued case. See "Run kinds" below for exactly how this changes
+`scenarioCellIntegrityOk()`'s checks, and "Rejected-run diagnostics" for what gets recorded when a
+matrix is rejected anyway.
+
 ## Run kinds
 
 - **`calibration`** — explicit-invocation only (the prompt directly asks for the skill by name).
@@ -148,11 +172,27 @@ directly self-contradictory. `schemas.mjs` now also rejects that combination at 
   `(repetition_index, condition)` pairs, not a count), every cell's harness integrity held, every
   record's grading actually executed with real non-null `success`/`expected_outcome_matched`
   booleans, and the realized starting-condition counts are exactly equal across the batch — an odd
-  `--repeats`, or any other imbalance, can never be eligible by construction. This PR ships exactly
-  two scenarios (`kampkit-android-host-test-discovery`, `kampkit-no-applicable-tests`, both against
-  the pinned KaMPKit commit `smoke` already uses) and zero live scenario records — every number in
-  `corpus/scenarios/*.json` was independently re-verified via direct local CLI/Gradle execution
-  (never through this PR's own `run` command, and never through a live Claude session).
+  `--repeats`, or any other imbalance, can never be eligible by construction.
+
+  `scenarioCellIntegrityOk()`'s own `skillSelectionOk` is **result-aware**
+  (`classifyForeignSkillUses()`, see "Result-aware FOREIGN skill classification" above), splitting
+  the old single check into two: `skillSelectionOk` now fails only on a CONFIRMED foreign
+  invocation (a REJECTED attempt no longer blocks promotion), and a new, separate
+  `foreignSkillToolResultsCompleteOk` fails on a missing/incomplete foreign result — deliberately
+  **not** delegated to the neighboring timeout-tolerant `toolResultsCompleteOk` (which can excuse
+  exactly one incomplete tool_use if it's the chronologically last one before a genuine timeout) —
+  a foreign Skill call's own incompleteness fails closed unconditionally, with no timeout
+  exception. Every accepted record (any run_kind, schema v3+) also carries a `foreign_skill_summary:
+  {rejected, confirmed, incomplete}` field — categorized counts only, never the raw skill name —
+  so a rejected-but-harmless foreign attempt on an otherwise-clean, ACCEPTED cell still leaves a
+  real trace of having happened, instead of disappearing the moment it stops being treated as
+  contamination.
+
+  This PR ships exactly two scenarios (`kampkit-android-host-test-discovery`,
+  `kampkit-no-applicable-tests`, both against the pinned KaMPKit commit `smoke` already uses) and
+  zero live scenario records — every number in `corpus/scenarios/*.json` was independently
+  re-verified via direct local CLI/Gradle execution (never through this PR's own `run` command, and
+  never through a live Claude session).
 - **`corpus-probe`** — accepted in the schema as a future `run_kind` value; not produced by
   anything in this PR.
 
@@ -294,6 +334,60 @@ scenario genuinely trips more than one sub-check at once — e.g. zero commands 
 both `realWorkOk` and `exactCommandsOk`, since neither can be satisfied by zero commands — that's
 disclosed as the same underlying fact tripping two named checks, not presented as single-cause
 isolation.
+
+## Rejected-run diagnostics
+
+A hard-gate rejection (any run_kind) previously wrote **zero** evidence anywhere — nothing beyond
+the terse stderr `reason` line, gone the moment the terminal/log is. `rejection-diagnostics.mjs`
+closes that gap with a small, privacy-safe, two-tier record written at the exact point
+`finalizeAndWriteRecords()`/`finalizeAndWriteMatrixRecords()` would otherwise just return
+`{ok:false}` — kept in its own module (schema + construction + writing together), not `cli.mjs`,
+both to avoid growing an already-large file further and because it needs the atomic-write
+primitives `evidence-io.mjs` exports (see below) while `cli.mjs` needs to call *into* it — a
+circular import either module living inside `cli.mjs` would create.
+
+- **Location**: `tools/runs/agentic-eval-rejected/` — deliberately not shaped like the real
+  evidence directories (`agentic-eval-<run_kind>/`, keyed by the closed `RUN_KIND_VALUES` set,
+  which never includes `'rejected'`), so `aggregate`/`validate` can never confuse a rejection
+  record with real evidence. One file **per rejection** (a fresh, full `randomUUID()`
+  `rejection_id`, not an 8-hex-char slice like `run_id`), not a shared append-only log — closer in
+  nature to the real per-record evidence files than to `measurement-registry.jsonl`'s long-lived
+  queryable-table use case, and closes a real partial-write concern a shared log would reopen.
+- **Two tiers, same `rejection_id`**: `<rejection_id>.json` (committed) carries only categorized
+  `foreign_skill_summary` counts, `failed_checks` names, and identity/provenance fields — never a
+  raw skill name or any transcript content. `raw/<rejection_id>.json` (local-only) adds real,
+  deduplicated `foreign_skill_names` per cell for operator debugging — still never the full raw
+  transcript (that stays exactly where it always did, gitignored under each run_kind's own
+  `agentic-eval-<kind>/raw/`, and is never produced at all on a hard-gate rejection in the first
+  place — see "No committable evidence before every gate passes" above). `raw/` here is covered by
+  the *existing* `.gitignore:` `tools/runs/agentic-eval-*/raw/**` rule — the `*` wildcard already
+  matches `rejected` the same way it matches `scenario`/`smoke`/`calibration`, so no new
+  `.gitignore` entry was needed.
+- **Shape**: `{schema, rejection_id, timestamp, run_kind, run_ids, model_requested, repo_commit,
+  cells, foreign_skill_summary}`, where `cells` covers **every** cell in the rejected batch, not
+  only the failing ones (a scenario matrix's "one bad cell blocks the whole batch" design makes
+  every cell relevant context) — each cell carries its own `run_id`/`condition`/`repetition_index`
+  (`null` for calibrate/smoke)/`skill_source_sha` (`null` for no-skill, the real SHA for
+  current-skill)/`failed_checks`/`foreign_skill_summary`. The top-level `foreign_skill_summary` is
+  always the field-by-field sum across `cells[]` — `validateRejectionRow()` enforces this, never
+  letting it drift into an independent second source of truth — and `run_ids` must always exactly
+  equal the set of `cells[].run_id`.
+- **Write ordering**: validate the original object → redact (`assertCleanOrThrowObject`) → validate
+  the *redacted* object again → promote — the identical ordering `finalizeAndWriteRecords()` itself
+  uses for real evidence (see above), so a redaction rule that would corrupt a required field's
+  shape is caught before promotion, not after.
+- **Atomicity**: reuses `evidence-io.mjs`'s `promoteTargetsAtomically()` — the exact same
+  exception-safe, collision-safe mechanism every other evidence write in this harness already uses
+  (write-to-`.tmp-<random>`-then-`linkSync`, rolling back only what the current call itself
+  created). This is **not** crash-safe against a hard kill between two sequential `linkSync` calls
+  — a pre-existing, already-accepted property of the mechanism, not a new weakness; see
+  `evidence-io.mjs`'s own doc comment for the precise contract.
+- **Scope**: fires only on the actual hard-gate-failure branch, for all three run kinds
+  (`calibrate`/`smoke`/`run`) — not the other early-return reasons in either finalize function
+  (schema-invalid, `dirty_measured_code`, `dirty_harness_tooling`, stale `policy_sha256`,
+  privacy-check-throw, or — matrix path only — an incomplete matrix). A diagnostics-write failure
+  is caught and surfaced as a separate `diagnosticsWriteError` field/stderr note — it never masks
+  the original rejection reason or exit code.
 
 ## Isolation
 
@@ -467,24 +561,37 @@ metrics, non-negative integer for counts/bytes, non-negative number for timings)
 shape-valid-but-wrong value (e.g. `skill_invoked: {value: "false", reason: null}`, a string
 instead of a boolean) previously passed validation silently.
 
+Run-record schema is versioned per-field-list, dispatched by an explicit if-chain (never a bare
+ternary, which silently falls an unrecognized/future schema number through to v1) —
+`SUPPORTED_RUN_SCHEMAS` is every version `validateRun()` still accepts (so historical committed
+records never need retroactive edits); `LATEST_RUN_SCHEMA` is what every subcommand stamps on new
+records going forward. v2 added `grading_checks`/`repetition_index` (scenario-only); **v3** adds
+`foreign_skill_summary` — required, non-nullable, on **every** run_kind (not scenario-only, since
+it's always computable from the transcript even when empty) — and every v2 semantic rule is
+inherited via `>=` gates, not re-declared, so a v3 record can't silently skip validation a v2
+record would have been subject to.
+
 ## Fairness Contract
 
 `aggregate.mjs`/`schemas.mjs` refuse to fold runs into one aggregate unless they agree on every
 `HARD_PARTITION_FIELDS` key: `scenario_id`, `condition`, `family`, `run_kind`, `cache_state`,
 `project_commit`, `model_resolved`, `platform`, `skill_source_sha`, `policy_sha256`,
 `kmp_test_cli_source_sha`, `daemon_policy`, `env_allowlist_profile`, `policy_allowed_gradle_tasks`,
-`policy_allowed_kmptest_subcommands`, `claude_code_version` — beyond the original guards (a
-re-pinned scenario commit, a different resolved model, host platform, skill snapshot, policy-hook
-version, or harness code version), the next three guard against silently averaging across a
-different environment-isolation profile or a materially different command-policy CONFIGURATION —
-`policy_sha256` only captures `policy-hook.mjs`'s own source code, not the caller-supplied
-allowed-task/subcommand lists it's configured with, which change what a run was actually permitted
-to do just as materially as the hook's code does; `claude_code_version` guards against silently
-averaging across a different Claude Code CLI release, which can change event shapes or tool
-behavior independent of anything this harness itself controls — aggregation additionally requires
-it to be a concrete, non-empty string (not just present), since two runs both carrying `null` for
-an unknown CLI version can't be trusted to actually agree with one another. The two
-`policy_allowed_*` fields are arrays; `buildAggregateGroup()`'s
+`policy_allowed_kmptest_subcommands`, `claude_code_version`, `schema` — beyond the original guards
+(a re-pinned scenario commit, a different resolved model, host platform, skill snapshot,
+policy-hook version, or harness code version), the next three guard against silently averaging
+across a different environment-isolation profile or a materially different command-policy
+CONFIGURATION — `policy_sha256` only captures `policy-hook.mjs`'s own source code, not the
+caller-supplied allowed-task/subcommand lists it's configured with, which change what a run was
+actually permitted to do just as materially as the hook's code does; `claude_code_version` guards
+against silently averaging across a different Claude Code CLI release, which can change event
+shapes or tool behavior independent of anything this harness itself controls — aggregation
+additionally requires it to be a concrete, non-empty string (not just present), since two runs
+both carrying `null` for an unknown CLI version can't be trusted to actually agree with one
+another. `schema` guards against silently averaging a v2 record (no `foreign_skill_summary`)
+together with a v3 one (has it) — different schema versions carry different measured fields, so
+they're never comparable data by definition. The two `policy_allowed_*` fields are arrays;
+`buildAggregateGroup()`'s
 mixing-check compares them by their `JSON.stringify()` representation, not by object reference —
 two runs with structurally identical arrays as separate object instances are correctly treated as
 matching, not spuriously rejected as "mixed". The bucket key itself is built via `JSON.stringify()`

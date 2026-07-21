@@ -96,18 +96,28 @@
 
 ### 📋 QUEUED follow-ups (next sessions)
 
-- **Rejected `agentic-eval` hard-gate runs leave no auditable trace (BACKLOG CANDIDATE — surfaced
-  2026-07-19 during the calibration no-skill-arm contract fix).** `calibrationHardGate`/
-  `smokeHardGate` failures currently write zero evidence anywhere — `finalizeAndWriteRecords`
-  (`tools/agentic-eval/cli.mjs`) only writes on success, so a rejected run leaves nothing beyond
-  the terse stderr `reason` string once the terminal/log is gone. Proposed shape (not started):
-  retain minimal metadata only for a rejected run — timestamp, `run_kind`, which named sub-checks
-  failed, `model_requested`, `skill_source_sha` — explicitly no raw transcript and no
-  private/content-bearing fields, and never written into the same location/schema as accepted
-  evidence, so `aggregate`/`validate` can never confuse a rejected-run record with a real one.
-  Schema shape and retention policy (where, how long, committed vs. local-only) are undecided.
-  Its own small follow-up PR — deliberately not implemented as part of the contract fix that
-  surfaced it (kept narrow, no live calls).
+- ✅ **Rejected `agentic-eval` hard-gate runs leave no auditable trace** — SHIPPED
+  (`feature/agentic-foreign-skill-diagnostics`, 2026-07-21). Surfaced 2026-07-19 during the calibration
+  no-skill-arm contract fix; motivated further by a real live scenario-matrix run
+  (`kampkit-android-host-test-discovery`, 2026-07-21) that was correctly rejected for a
+  since-fixed over-broad reason and left nothing beyond a terse stderr line. New
+  `tools/agentic-eval/rejection-diagnostics.mjs`: a privacy-safe, two-tier (`agentic-eval-rejected/
+  <rejection_id>.json` committed + `raw/<rejection_id>.json` local-only), per-cell-attributed
+  record, written at the exact `if (!gate.ok)` branch in both `finalizeAndWriteRecords` and
+  `finalizeAndWriteMatrixRecords`, for all three run kinds. Reuses `evidence-io.mjs`'s existing
+  atomic-write primitives (new module, extracted from `cli.mjs`, avoiding a circular import) rather
+  than inventing new persistence — no shared append-only log, one file per rejection instead.
+  Schema/location/retention (all previously undecided) resolved: never keyed like real evidence
+  (`RUN_KIND_VALUES` never includes `'rejected'`), categorical `foreign_skill_summary` counts only
+  in the committed tier (never a raw skill name), full `git check-ignore`-verified gitignore
+  coverage via the *existing* `agentic-eval-*/raw/**` rule (no new rule needed). Shipped alongside
+  (same PR, directly related): result-aware foreign-skill classification
+  (`classifyForeignSkillUses`) so a scenario's REJECTED foreign-skill attempt is no longer treated
+  as contamination (calibrate/smoke's contract is unchanged); a new schema v3 `foreign_skill_summary`
+  field on every accepted record so this signal isn't lost even when a batch IS accepted;
+  `HARD_PARTITION_FIELDS` gains `schema` so `aggregate` can never mix schema versions. See
+  `tools/agentic-eval/README.md`'s "Result-aware FOREIGN skill classification" and "Rejected-run
+  diagnostics" sections for the full design.
 - **FULL-REPO AUDIT REMEDIATION v3.2 — active execution queue.** Source of truth:
   `docs/audits/full-repo-audit-improvement-plan-v3.2.md`; fresh-session handoff prompt:
   `docs/audits/claude-code-audit-corrections-prompt.md`. This supersedes the loose

@@ -12,6 +12,7 @@ import {
   isSkillAvailable,
   findSkillInvocation,
   findForeignSkillUses,
+  classifyForeignSkillUses,
   findBashToolUses,
   findBashToolUsesWithResults,
   findTranscriptStructuralIssues,
@@ -278,6 +279,84 @@ describe('findForeignSkillUses -- detects Skill calls NOT targeting the expected
   it('never flags a Bash call -- scoped to Skill tool_use blocks only', () => {
     const events = [{ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'kmp-test doctor --json' } }] } }];
     expect(findForeignSkillUses(events, 'kmp-test-runner')).toEqual([]);
+  });
+});
+
+// Result-aware foreign-Skill classification: a real live scenario run failed its hard gate purely
+// because findForeignSkillUses is input-argument-only (see above) -- it cannot distinguish a
+// REJECTED foreign attempt (harmless, measurable agent behavior) from a CONFIRMED one (genuine
+// contamination) or a missing/incomplete result (a broken capture). classifyForeignSkillUses adds
+// that distinction on top, mirroring findSkillInvocation's/findBashToolUsesWithResults' identical
+// tri-state correlation pattern.
+describe('classifyForeignSkillUses -- result-aware foreign-Skill classification', () => {
+  function foreignToolUse(id, skillArg) {
+    const input = skillArg === undefined ? {} : { skill: skillArg };
+    return { type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Skill', input }] } };
+  }
+  function toolResultEvent(id, isError) {
+    return { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: isError, content: isError ? '<tool_use_error>Unknown skill: some-other-skill</tool_use_error>' : 'ok' }] } };
+  }
+
+  it('returns [] when there are no foreign Skill calls (mirrors findForeignSkillUses exactly)', () => {
+    const events = [foreignToolUse('toolu_1', 'kmp-test-runner')];
+    expect(classifyForeignSkillUses(events, 'kmp-test-runner')).toEqual([]);
+  });
+
+  it('classifies a rejected foreign attempt (is_error:true) -- confirmed:false, resultIsError:true', () => {
+    const events = [foreignToolUse('toolu_1', 'some-other-skill'), toolResultEvent('toolu_1', true)];
+    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner');
+    expect(entry.skillArg).toBe('some-other-skill');
+    expect(entry.resultIsError).toBe(true);
+    expect(entry.confirmed).toBe(false);
+  });
+
+  it('classifies a confirmed foreign invocation via explicit is_error:false -- confirmed:true', () => {
+    const events = [foreignToolUse('toolu_1', 'some-other-skill'), toolResultEvent('toolu_1', false)];
+    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner');
+    expect(entry.resultIsError).toBe(false);
+    expect(entry.confirmed).toBe(true);
+  });
+
+  // Round-1 audit finding: findToolResultById's isError check is `c.is_error === true` -- an
+  // ABSENT is_error key (not just an explicit false) also reads as isError:false, matching the
+  // documented tool_result contract where a missing is_error means success. Must be proven
+  // directly with its own fixture shape, not merely assumed from the explicit-false case above.
+  it('classifies a confirmed foreign invocation when is_error is absent entirely -- also confirmed:true', () => {
+    const events = [
+      foreignToolUse('toolu_1', 'some-other-skill'),
+      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'some real skill output' }] } },
+    ];
+    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner');
+    expect(entry.resultIsError).toBe(false);
+    expect(entry.confirmed).toBe(true);
+  });
+
+  it('classifies a missing/incomplete result (no correlated tool_result at all) -- resultIsError:null, confirmed:false', () => {
+    const events = [foreignToolUse('toolu_1', 'some-other-skill')];
+    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner');
+    expect(entry.resultIsError).toBeNull();
+    expect(entry.confirmed).toBe(false);
+  });
+
+  it('a tool_use with no id cannot be correlated, so it is always classified as incomplete', () => {
+    const events = [{ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', input: { skill: 'some-other-skill' } }] } }];
+    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner');
+    expect(entry.resultIsError).toBeNull();
+    expect(entry.confirmed).toBe(false);
+  });
+
+  it('classifies multiple foreign calls independently -- no aggregation across attempts (unlike findSkillInvocation)', () => {
+    const events = [
+      foreignToolUse('toolu_1', 'skill-a'), toolResultEvent('toolu_1', true), // rejected
+      foreignToolUse('toolu_2', 'skill-b'), toolResultEvent('toolu_2', false), // confirmed
+      foreignToolUse('toolu_3', 'skill-c'), // incomplete -- no result attached
+    ];
+    const results = classifyForeignSkillUses(events, 'kmp-test-runner');
+    expect(results.length).toBe(3);
+    expect(results.map((r) => r.skillArg)).toEqual(['skill-a', 'skill-b', 'skill-c']);
+    expect(results[0]).toMatchObject({ resultIsError: true, confirmed: false });
+    expect(results[1]).toMatchObject({ resultIsError: false, confirmed: true });
+    expect(results[2]).toMatchObject({ resultIsError: null, confirmed: false });
   });
 });
 

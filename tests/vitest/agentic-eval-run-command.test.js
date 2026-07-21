@@ -288,6 +288,44 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
     expect(listEvidenceFiles('scenario')).toEqual([]);
   }, 30000);
 
+  // The closest possible reproduction of the real live-scenario-matrix incident that motivated
+  // this PR (see fake-claude-run-foreign-skill-rejected/claude's own header comment): a REJECTED
+  // ("Unknown skill") foreign Skill attempt, alongside otherwise-correct diagnostic work, must no
+  // longer block the whole matrix's promotion.
+  it('a REJECTED foreign-skill attempt (is_error:true), otherwise clean, promotes the WHOLE matrix successfully end-to-end', () => {
+    // --repeats 2 (even), not 1 -- benchmark_eligible additionally requires balanced realized
+    // current-skill-first/no-skill-first start counts (decision 15), which is structurally
+    // impossible for an odd --repeats regardless of anything else in the matrix.
+    const result = runCli(runArgs(['--seed', '5', '--repeats', '2']), fakeClaudeEnv('run-foreign-skill-rejected'), 30000);
+    expect(result.status).toBe(0);
+    expect(result.parsed).not.toBeNull();
+    const { records } = result.parsed;
+    expect(records.length).toBe(4);
+    expect(listEvidenceFiles('scenario').length).toBe(4);
+    for (const record of records) {
+      expect(record.benchmark_eligible).toBe(true);
+      expect(record.expected_outcome_matched.value).toBe(true);
+      // foreign_skill_summary (schema v3, populated end-to-end by buildRunRecord): exactly one
+      // rejected foreign attempt, zero confirmed, zero incomplete -- proving B3's field
+      // population works through the real subprocess path, not just in unit tests.
+      expect(record.foreign_skill_summary).toEqual({ rejected: 1, confirmed: 0, incomplete: 0 });
+      // tool_calls_total (A3's fix): 1 Bash call + 1 kmp-test-runner Skill attempt + 1 foreign
+      // Skill attempt = 3 -- proving the foreign attempt is no longer silently uncounted.
+      expect(record.tool_calls_total.value).toBe(3);
+    }
+  }, 30000);
+
+  // The companion negative case (see fake-claude-run-foreign-skill-confirmed/claude's own header
+  // comment): a genuinely CONFIRMED foreign invocation must still block the whole matrix, exactly
+  // as any foreign contamination did before this PR -- only the REJECTED case was relaxed.
+  it('a CONFIRMED foreign-skill invocation (is_error:false) still blocks the WHOLE matrix -- zero records written for ANY cell', () => {
+    const result = runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('run-foreign-skill-confirmed'), 30000);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/RUN FAILED/);
+    expect(result.stderr).toContain('skillSelectionOk:false');
+    expect(listEvidenceFiles('scenario')).toEqual([]);
+  }, 30000);
+
   it('leaves no registered git worktree behind after a passing run (removeScenarioWorktree ran)', () => {
     const result = runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('run-scenario-success'), 30000);
     expect(result.status).toBe(0);

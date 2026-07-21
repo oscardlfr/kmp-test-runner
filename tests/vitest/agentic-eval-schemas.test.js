@@ -382,10 +382,10 @@ describe('validateRun', () => {
 // to 2 would have made validateRun() reject every historical schema:1 record at its very first
 // check. This is the fix: explicit per-version dispatch, proven both synthetically (this describe
 // block) and against the actual 8 committed files (the next describe block).
-describe('schema v1/v2 dispatch (decision 6)', () => {
-  it('SUPPORTED_RUN_SCHEMAS accepts both 1 and 2; LATEST_RUN_SCHEMA is 2', () => {
-    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2]);
-    expect(LATEST_RUN_SCHEMA).toBe(2);
+describe('schema v1/v2/v3 dispatch (decision 6, extended for v3 -- foreign_skill_summary)', () => {
+  it('SUPPORTED_RUN_SCHEMAS accepts 1, 2, and 3; LATEST_RUN_SCHEMA is 3', () => {
+    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3]);
+    expect(LATEST_RUN_SCHEMA).toBe(3);
   });
 
   it('a schema:1 record WITHOUT grading_checks/repetition_index still validates cleanly -- those fields are never required for v1', () => {
@@ -447,6 +447,113 @@ describe('schema v1/v2 dispatch (decision 6)', () => {
       ...baseRun({ schema: 2, run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'kampkit-android-host-test-discovery' }),
       grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [1, 2] })), reason: null },
       repetition_index: 0,
+    };
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  // foreign_skill_summary (v3-introduced field) -- mirrors the v1-without-grading_checks/
+  // v1-rejected-with-grading_checks pair immediately above, one schema level up.
+  it('a schema:2 record WITHOUT foreign_skill_summary still validates cleanly -- the field is never required below v3', () => {
+    const run = {
+      ...baseRun({ schema: 2, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+    };
+    expect('foreign_skill_summary' in run).toBe(false);
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  it('a schema:2 record is rejected if it DOES carry foreign_skill_summary -- introduced in v3, forbidden below it', () => {
+    const run = {
+      ...baseRun({ schema: 2, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+    };
+    const { errors, warnings } = validateRun(run);
+    // Two independent signals fire for the same malformed field: the generic canonical-fields
+    // mechanism (unrecognized-for-v2 -- a warning, same as the v1/grading_checks precedent above)
+    // AND foreign_skill_summary's OWN schema-gate gets to its `else if` branch and pushes a
+    // dedicated ERROR, since a v2 record carrying it is self-contradictory relative to its own
+    // declared schema version, not merely an unknown extra field.
+    expect(warnings.some((w) => w.field === 'foreign_skill_summary')).toBe(true);
+    expect(errors.some((e) => e.field === 'foreign_skill_summary')).toBe(true);
+  });
+
+  // Inheritance proof (round-4 audit finding: this is the actual bug class the `>= 2` fix guards
+  // against -- must be proven directly against a real schema:3 record, not assumed from the
+  // schema:2 tests above still passing). Mirrors the schema:2-scenario-REQUIRES tests exactly, one
+  // schema level up.
+  it('a schema:3 scenario record REQUIRES a non-null grading_checks.value -- v2 semantics inherited, not just v2 fields', () => {
+    const run = {
+      ...baseRun({ schema: 3, run_kind: 'scenario', benchmark_eligible: true }),
+      grading_checks: { value: null, reason: 'not applicable' },
+      repetition_index: 0,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'grading_checks')).toBe(true);
+  });
+
+  it('a schema:3 scenario record REQUIRES a non-negative integer repetition_index -- v2 semantics inherited, not just v2 fields', () => {
+    const run = {
+      ...baseRun({ schema: 3, run_kind: 'scenario', benchmark_eligible: true }),
+      grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), reason: null },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'repetition_index')).toBe(true);
+  });
+
+  it('a schema:3 record REQUIRES foreign_skill_summary as a non-null object -- unlike grading_checks/repetition_index, applies to EVERY run_kind, not just scenario', () => {
+    const run = { ...baseRun({ schema: 3, run_kind: 'calibration' }), grading_checks: { value: null, reason: 'not applicable for run_kind calibration' }, repetition_index: null };
+    expect('foreign_skill_summary' in run).toBe(false);
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'foreign_skill_summary')).toBe(true);
+  });
+
+  it('a schema:3 record REJECTS a foreign_skill_summary with the wrong key set', () => {
+    const run = {
+      ...baseRun({ schema: 3, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0 }, // missing incomplete
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'foreign_skill_summary')).toBe(true);
+  });
+
+  it('a schema:3 record REJECTS a foreign_skill_summary with a negative or non-integer count', () => {
+    const run = {
+      ...baseRun({ schema: 3, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: -1, confirmed: 0, incomplete: 0 },
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'foreign_skill_summary.rejected')).toBe(true);
+  });
+
+  it('a fully well-formed schema:3 calibration record (all-zero foreign_skill_summary -- the common case) validates cleanly', () => {
+    const run = {
+      ...baseRun({ schema: 3, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+    };
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  it('a fully well-formed schema:3 scenario record (a real REJECTED foreign attempt counted) validates cleanly', () => {
+    const run = {
+      ...baseRun({ schema: 3, run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'kampkit-android-host-test-discovery' }),
+      grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [1, 2] })), reason: null },
+      repetition_index: 0,
+      foreign_skill_summary: { rejected: 1, confirmed: 0, incomplete: 0 },
     };
     const { errors } = validateRun(run);
     expect(errors).toEqual([]);
@@ -1291,12 +1398,20 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
     expect(group.group_key.policy_sha256).toBe('a'.repeat(64));
   });
 
-  it('HARD_PARTITION_FIELDS includes env_allowlist_profile/policy_allowed_gradle_tasks/policy_allowed_kmptest_subcommands', () => {
+  it('HARD_PARTITION_FIELDS includes env_allowlist_profile/policy_allowed_gradle_tasks/policy_allowed_kmptest_subcommands/schema', () => {
     expect(HARD_PARTITION_FIELDS).toContain('env_allowlist_profile');
     expect(HARD_PARTITION_FIELDS).toContain('policy_allowed_gradle_tasks');
     expect(HARD_PARTITION_FIELDS).toContain('policy_allowed_kmptest_subcommands');
     expect(HARD_PARTITION_FIELDS).toContain('claude_code_version');
-    expect(HARD_PARTITION_FIELDS.length).toBe(16);
+    // schema (round-5 audit finding): without this, aggregate could silently fold schema:2
+    // evidence (no foreign_skill_summary) together with schema:3 evidence (has it).
+    expect(HARD_PARTITION_FIELDS).toContain('schema');
+    expect(HARD_PARTITION_FIELDS.length).toBe(17);
+  });
+
+  it('refuses to mix schema within one aggregate group -- a schema:2 record (no foreign_skill_summary) must never fold in with a schema:3 record (has it)', () => {
+    const { errors } = buildAggregateGroup([run({ run_id: 'r1', schema: 2 }), run({ run_id: 'r2', schema: 3 })]);
+    expect(errors.some((e) => e.field === 'schema')).toBe(true);
   });
 
   it('refuses to mix policy_allowed_gradle_tasks within one aggregate group (a materially different command policy)', () => {
