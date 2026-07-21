@@ -2,7 +2,7 @@
 // Tests for lib/runners/console-mode.js + the spawnGradle injection hook
 // added in v0.10 #1.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 
 import {
   setConsoleMode,
@@ -13,9 +13,35 @@ import { spawnGradle } from '../../lib/orchestrators/orchestrator-utils.js';
 import { consumeColorFlag } from '../../lib/parsers/argv.js';
 import { effectiveGradleArgs } from './_spawn-helpers.js';
 
+// Captured before any test in this file mutates it, so afterAll can restore the
+// exact original state (including "never set at all") rather than assuming
+// some fixed default.
+const ORIGINAL_KMP_COLOR_MODE = process.env.KMP_COLOR_MODE;
+
 beforeEach(() => {
   // Reset to the default for every test — module-level state would otherwise
   // leak across cases.
+  setConsoleMode('auto');
+});
+
+afterAll(() => {
+  // setConsoleMode('never') in this file's own last-declared test (the
+  // "--console plain (space form)" idempotency case) left process.env.
+  // KMP_COLOR_MODE='never' and the module-level _mode in that state with
+  // nothing to reset it — beforeEach only guards test-to-test isolation
+  // WITHIN this file. Vitest can run multiple test files in the same worker
+  // process, and lib/runners/console-mode.js reads process.env.KMP_COLOR_MODE
+  // once at module-load time — so a file that imports it fresh after this one
+  // (e.g. windows-metachar.test.js, which calls the real spawnGradle) would
+  // silently inherit 'never' and get --console=plain auto-injected into every
+  // spawn, misread by that file's literal-argv-delivery assertions as
+  // corruption. Confirmed as the exact mechanism behind a real cross-file
+  // failure reproduced independently via KMP_COLOR_MODE=never alone.
+  if (ORIGINAL_KMP_COLOR_MODE === undefined) {
+    delete process.env.KMP_COLOR_MODE;
+  } else {
+    process.env.KMP_COLOR_MODE = ORIGINAL_KMP_COLOR_MODE;
+  }
   setConsoleMode('auto');
 });
 
