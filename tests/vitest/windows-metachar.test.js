@@ -28,6 +28,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { spawnGradle } from '../../lib/orchestrators/orchestrator-utils.js';
+import { setConsoleMode, getConsoleMode } from '../../lib/runners/console-mode.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -91,6 +92,64 @@ function resolveShell() {
 // After the fix (whichever candidate is chosen), they go GREEN.
 // ---------------------------------------------------------------------------
 describe('Phase 1 — spawnGradle must deliver args literally (RED before fix)', () => {
+  // This describe block is the only one that calls the real spawnGradle() (every
+  // other block spawns java.exe/PowerShell directly), so it is the only one
+  // exposed to spawnGradle's own defensive `--console=plain` auto-injection
+  // (lib/runners/console-mode.js#shouldInjectConsolePlain, called with no
+  // arguments — it reads live process.env/module state at call time). That
+  // injection is legitimate production behavior (docs/testing note it exists
+  // specifically for piped/captured output and NO_COLOR-respecting terminals),
+  // but this suite's assertions assume spawnGradle's effective argv is EXACTLY
+  // [ECHO_ARGS_MJS, testArg] — a real, unrelated cross-file test-hygiene gap
+  // (console-mode.test.js's own last test previously left process.env.
+  // KMP_COLOR_MODE='never' behind with nothing to reset it — now fixed there
+  // too) let that assumption silently break whenever this file happened to run
+  // after console-mode.test.js in the same vitest worker, or whenever NO_COLOR
+  // was already set in the ambient shell (both independently confirmed to
+  // reproduce the exact same 8 failures, with zero relation to Node version).
+  //
+  // Fixed here at the point of use: force mode:'always' for the whole block,
+  // which is the one shouldInjectConsolePlain() branch that short-circuits
+  // BEFORE its NO_COLOR/isTTY checks — deterministically immune to every known
+  // trigger, not just the one leak vector above. beforeAll additionally
+  // simulates the worst known real leak (KMP_COLOR_MODE=never) plus NO_COLOR
+  // BEFORE applying the fix, so every run of this suite is itself the
+  // regression proof that the fix holds even under a hostile incoming
+  // environment, not just a coincidentally-clean one.
+  let originalMode;
+  let originalKmpColorMode;
+  let originalNoColor;
+
+  beforeAll(() => {
+    // Captured BEFORE any mutation below — the true pre-existing state.
+    originalMode = getConsoleMode();
+    originalKmpColorMode = process.env.KMP_COLOR_MODE;
+    originalNoColor = process.env.NO_COLOR;
+    // Simulate the worst-case leaked/ambient state first...
+    process.env.KMP_COLOR_MODE = 'never';
+    process.env.NO_COLOR = '1';
+    // ...then apply the real fix, proving it overrides even that.
+    setConsoleMode('always');
+  });
+
+  afterAll(() => {
+    // Ordering matters: setConsoleMode() itself writes process.env.
+    // KMP_COLOR_MODE as a side effect, so restoring the module-level mode
+    // FIRST and fixing up the env vars to their true captured values LAST
+    // means nothing after this can clobber the restoration again (the same
+    // ordering bug this fix's own first version had — caught before merge).
+    setConsoleMode(originalMode);
+    if (originalKmpColorMode === undefined) delete process.env.KMP_COLOR_MODE;
+    else process.env.KMP_COLOR_MODE = originalKmpColorMode;
+    if (originalNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = originalNoColor;
+    // Locks the restoration contract in place — if this ordering regresses
+    // again, this suite fails closed instead of silently leaking 'always'.
+    expect(getConsoleMode()).toBe(originalMode);
+    expect(process.env.KMP_COLOR_MODE).toBe(originalKmpColorMode);
+    expect(process.env.NO_COLOR).toBe(originalNoColor);
+  });
+
   for (const testArg of METACHAR_MATRIX) {
     it(`literal: ${JSON.stringify(testArg)}`, () => {
       if (process.platform !== 'win32') return;

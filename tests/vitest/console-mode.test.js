@@ -2,7 +2,7 @@
 // Tests for lib/runners/console-mode.js + the spawnGradle injection hook
 // added in v0.10 #1.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 
 import {
   setConsoleMode,
@@ -13,10 +13,51 @@ import { spawnGradle } from '../../lib/orchestrators/orchestrator-utils.js';
 import { consumeColorFlag } from '../../lib/parsers/argv.js';
 import { effectiveGradleArgs } from './_spawn-helpers.js';
 
+// Captured before any test in this file mutates anything, so afterAll can
+// restore the exact original state (including "never set at all") rather
+// than assuming some fixed default.
+const ORIGINAL_MODE = getConsoleMode();
+const ORIGINAL_KMP_COLOR_MODE = process.env.KMP_COLOR_MODE;
+
 beforeEach(() => {
   // Reset to the default for every test — module-level state would otherwise
   // leak across cases.
   setConsoleMode('auto');
+});
+
+afterAll(() => {
+  // setConsoleMode('never') in this file's own last-declared test (the
+  // "--console plain (space form)" idempotency case) left process.env.
+  // KMP_COLOR_MODE='never' and the module-level _mode in that state with
+  // nothing to reset it — beforeEach only guards test-to-test isolation
+  // WITHIN this file. Vitest can run multiple test files in the same worker
+  // process, and lib/runners/console-mode.js reads process.env.KMP_COLOR_MODE
+  // once at module-load time — so a file that imports it fresh after this one
+  // (e.g. windows-metachar.test.js, which calls the real spawnGradle) would
+  // silently inherit 'never' and get --console=plain auto-injected into every
+  // spawn, misread by that file's literal-argv-delivery assertions as
+  // corruption. Confirmed as the exact mechanism behind a real cross-file
+  // failure reproduced independently via KMP_COLOR_MODE=never alone.
+  //
+  // Ordering matters: setConsoleMode() itself writes process.env.
+  // KMP_COLOR_MODE as a side effect (see lib/runners/console-mode.js), so
+  // restoring the env var BEFORE calling setConsoleMode('auto') — this
+  // block's first, buggy version — gets that restoration silently
+  // overwritten back to 'auto' by the very call meant to clean up. Fixed by
+  // restoring the module-level mode FIRST (whatever it is, that call's own
+  // env side effect doesn't matter yet), THEN fixing up the env var to its
+  // true captured original value (which may be "never set at all") last, so
+  // nothing after it can clobber it again.
+  setConsoleMode(ORIGINAL_MODE);
+  if (ORIGINAL_KMP_COLOR_MODE === undefined) {
+    delete process.env.KMP_COLOR_MODE;
+  } else {
+    process.env.KMP_COLOR_MODE = ORIGINAL_KMP_COLOR_MODE;
+  }
+  // Locks the restoration contract in place — if this ordering regresses
+  // again, this suite fails closed instead of silently leaking 'auto'.
+  expect(getConsoleMode()).toBe(ORIGINAL_MODE);
+  expect(process.env.KMP_COLOR_MODE).toBe(ORIGINAL_KMP_COLOR_MODE);
 });
 
 describe('console-mode / shouldInjectConsolePlain', () => {
