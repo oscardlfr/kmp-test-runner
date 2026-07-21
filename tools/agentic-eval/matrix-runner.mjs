@@ -168,43 +168,6 @@ export async function runSingleCondition({ condition, materializeFixture, previo
 }
 
 /**
- * Orchestrates a full scenario matrix: acquires shared resources ONCE, gets a reproducible
- * EXECUTION order for the `repeats` repetition slots from buildRunMatrix (honoring the task
- * brief's literal "execute cells from buildRunMatrix()") and a genuinely counterbalanced
- * per-repetition condition order from buildConditionOrders, builds baseArgv ONCE from the
- * scenario's own prompt (a matrix is scoped to exactly one scenario -- `run`'s `--scenario` is
- * required and singular), then runs every repetition's pair strictly sequentially, visiting
- * repetitions in buildRunMatrix's shuffled slot order and, within each repetition, the two
- * conditions in buildConditionOrders' data-driven order. "Which repetition runs in which
- * time-slot" (shuffle-derived) is deliberately decoupled from "which condition goes first within
- * a repetition" (deterministic alternation) -- buildRunMatrix is called with a single-element
- * `scenarios`/`conditions` array (`['trial']`, an opaque placeholder -- the condition axis itself
- * is NOT what's being shuffled here, buildConditionOrders owns that), so its only real effect is
- * permuting WHICH repetition index executes at each of the `repeats` time-slots; `order_index`
- * assigned to each resulting record still reflects true execution order (0..2*repeats-1
- * contiguous), never buildRunMatrix's own repeats-length orderIndex. Every cell gets a fresh
- * materialize/reset -- "every cell gets an equivalent pristine project and Gradle-state baseline."
- * @param {object} opts
- * @param {{prompt: string}} opts.scenario
- * @param {number} opts.repeats
- * @param {number} opts.seed
- * @param {string} opts.model
- * @param {string[]} opts.allowedGradleTasks
- * @param {string[]} opts.allowedKmpTestSubcommands
- * @param {string} opts.repoRoot
- * @param {string} opts.pinnedSkillSha
- * @param {Function} opts.runPluginValidator
- * @param {string} opts.settingsPath - unused directly here; acquireSharedEvalResources builds its
- *   own, kept out of this signature (callers never pass it in).
- * @param {(previousFixtureDir: string|undefined) => {fixtureDir: string}} opts.materializeFixture
- * @param {(fixtureDir: string) => void|Promise<void>} [opts.cleanupFixture] - called once at the end.
- * @param {string} opts.targetSkillName
- * @param {number} opts.timeoutMs
- * @returns {Promise<{cellResults: Array<{repetitionIndex: number, orderIndex: number, seed: number,
- *   conditionResult: object}>, snapshotDir: string, daemonPolicy: string, allowedGradleTasks: string[],
- *   allowedKmpTestSubcommands: string[], cleanup: () => Promise<string[]>}>}
- */
-/**
  * Snapshots the real JUnit XML for the scenario's declared `expected.gradle.evidence_task`
  * immediately after a condition finishes executing, before the NEXT cell's `git clean -fdx` reset
  * deletes it. Deliberately called unconditionally (sinceMs=0, "whatever's there right now") rather
@@ -274,6 +237,43 @@ export function captureGradleJunitEvidence(fixtureDir, scenario) {
   return { total, passed: total - failures.length, failed: failures.length };
 }
 
+/**
+ * Orchestrates a full scenario matrix: acquires shared resources ONCE, gets a reproducible
+ * EXECUTION order for the `repeats` repetition slots from buildRunMatrix (honoring the task
+ * brief's literal "execute cells from buildRunMatrix()") and a genuinely counterbalanced
+ * per-repetition condition order from buildConditionOrders, builds baseArgv ONCE from the
+ * scenario's own prompt (a matrix is scoped to exactly one scenario -- `run`'s `--scenario` is
+ * required and singular), then runs every repetition's pair strictly sequentially, visiting
+ * repetitions in buildRunMatrix's shuffled slot order and, within each repetition, the two
+ * conditions in buildConditionOrders' data-driven order. "Which repetition runs in which
+ * time-slot" (shuffle-derived) is deliberately decoupled from "which condition goes first within
+ * a repetition" (deterministic alternation) -- buildRunMatrix is called with a single-element
+ * `scenarios`/`conditions` array (`['trial']`, an opaque placeholder -- the condition axis itself
+ * is NOT what's being shuffled here, buildConditionOrders owns that), so its only real effect is
+ * permuting WHICH repetition index executes at each of the `repeats` time-slots; `order_index`
+ * assigned to each resulting record still reflects true execution order (0..2*repeats-1
+ * contiguous), never buildRunMatrix's own repeats-length orderIndex. Every cell gets a fresh
+ * materialize/reset -- "every cell gets an equivalent pristine project and Gradle-state baseline."
+ * @param {object} opts
+ * @param {{prompt: string}} opts.scenario
+ * @param {number} opts.repeats
+ * @param {number} opts.seed
+ * @param {string} opts.model
+ * @param {string[]} opts.allowedGradleTasks
+ * @param {string[]} opts.allowedKmpTestSubcommands
+ * @param {string} opts.repoRoot
+ * @param {string} opts.pinnedSkillSha
+ * @param {Function} opts.runPluginValidator
+ * @param {string} opts.settingsPath - unused directly here; acquireSharedEvalResources builds its
+ *   own, kept out of this signature (callers never pass it in).
+ * @param {(previousFixtureDir: string|undefined) => {fixtureDir: string}} opts.materializeFixture
+ * @param {(fixtureDir: string) => void|Promise<void>} [opts.cleanupFixture] - called once at the end.
+ * @param {string} opts.targetSkillName
+ * @param {number} opts.timeoutMs
+ * @returns {Promise<{cellResults: Array<{repetitionIndex: number, orderIndex: number, seed: number,
+ *   conditionResult: object}>, snapshotDir: string, daemonPolicy: string, allowedGradleTasks: string[],
+ *   allowedKmpTestSubcommands: string[], cleanup: () => Promise<string[]>}>}
+ */
 export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetSkillName, timeoutMs }) {
   const shared = await acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator });
   const { registerCleanup, runCleanup } = shared;

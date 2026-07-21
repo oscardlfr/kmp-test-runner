@@ -3,7 +3,7 @@
 // Real subprocess end-to-end coverage (calibrate/smoke against fake claude) lives in
 // agentic-eval-cli-integration.test.js -- this file is for fast, in-process logic that doesn't
 // need a child process.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
@@ -1008,6 +1008,84 @@ describe('cmdCorpusValidate', () => {
   });
 });
 
+// EXACT REPRODUCTION (manual review of the systematic-closure pass): cmdCorpusValidate's own
+// JSON.parse('.map()') let one malformed scenario file's throw propagate all the way to main()'s
+// global catch (a stack trace + exit 2), aborting validation of every OTHER file -- fails closed,
+// but contradicts corpus validate's whole purpose (report every file's status). Fixed by extracting
+// the per-file parse (loadScenarioFile) and the per-entry validation loop (validateLoadedScenarios)
+// as their own pure, synthetic-input-testable functions, since cmdCorpusValidate() itself always
+// reads the fixed real corpus/scenarios/ directory (see its own describe block above).
+describe('loadScenarioFile', () => {
+  let dir;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = null;
+  });
+
+  it('returns {file, scenario} for a real, valid JSON file', async () => {
+    const { loadScenarioFile } = await import('../../tools/agentic-eval/cli.mjs');
+    dir = mkdtempSync(path.join(os.tmpdir(), 'aec-load-scenario-'));
+    writeFileSync(path.join(dir, 'good.json'), JSON.stringify({ id: 'kampkit-a' }));
+    expect(loadScenarioFile(dir, 'good.json')).toEqual({ file: 'good.json', scenario: { id: 'kampkit-a' } });
+  });
+
+  it('EXACT REPRODUCTION: returns {file, parseError} for malformed JSON, never throws', async () => {
+    const { loadScenarioFile } = await import('../../tools/agentic-eval/cli.mjs');
+    dir = mkdtempSync(path.join(os.tmpdir(), 'aec-load-scenario-'));
+    writeFileSync(path.join(dir, 'bad.json'), '{ this is not valid JSON');
+    let result;
+    expect(() => { result = loadScenarioFile(dir, 'bad.json'); }).not.toThrow();
+    expect(result.file).toBe('bad.json');
+    expect(typeof result.parseError).toBe('string');
+    expect(result.scenario).toBeUndefined();
+  });
+});
+
+describe('validateLoadedScenarios', () => {
+  it('EXACT REPRODUCTION: one entry\'s parseError does not prevent the OTHER entries, valid or invalid, from being fully validated and reported', async () => {
+    const { validateLoadedScenarios } = await import('../../tools/agentic-eval/cli.mjs');
+    // Deliberately minimal/schema-invalid "good" scenarios -- this test isolates ONLY "did every
+    // OTHER entry still go through the real validateScenario() path and get its own reported
+    // result," never "does a fully schema-valid scenario pass" (already covered by
+    // cmdCorpusValidate's own "returns 0 against the real corpus" test above).
+    const loaded = [
+      { file: 'a.json', scenario: { id: 'kampkit-a' } },
+      { file: 'b-corrupt.json', parseError: 'Unexpected token } in JSON at position 3' },
+      { file: 'c.json', scenario: { id: 'kampkit-c' } },
+    ];
+    const result = validateLoadedScenarios(loaded);
+    expect(result.ok).toBe(false); // b-corrupt.json alone must fail the whole command
+    // Nothing was silently skipped -- one result per input entry, same length, same order.
+    expect(result.results.map((r) => r.file)).toEqual(['a.json', 'b-corrupt.json', 'c.json']);
+    const byFile = Object.fromEntries(result.results.map((r) => [r.file, r]));
+    expect(byFile['b-corrupt.json'].ok).toBe(false);
+    expect(byFile['b-corrupt.json'].message).toContain('invalid JSON');
+    expect(byFile['b-corrupt.json'].message).toContain('Unexpected token');
+    // a.json/c.json went through the REAL validateScenario() path (proven by their own real
+    // schema errors appearing), never treated as a parse failure themselves.
+    expect(byFile['a.json'].message).not.toContain('invalid JSON');
+    expect(byFile['c.json'].message).not.toContain('invalid JSON');
+  });
+
+  it('a duplicate id between two VALID-SHAPED entries is still attributed correctly when a THIRD entry has a parseError', async () => {
+    const { validateLoadedScenarios } = await import('../../tools/agentic-eval/cli.mjs');
+    const loaded = [
+      { file: 'first.json', scenario: { id: 'kampkit-dup' } },
+      { file: 'broken.json', parseError: 'Unexpected end of JSON input' },
+      { file: 'second.json', scenario: { id: 'kampkit-dup' } },
+    ];
+    const result = validateLoadedScenarios(loaded);
+    const byFile = Object.fromEntries(result.results.map((r) => [r.file, r]));
+    // Messages are JSON.stringify'd error arrays, so quotes around the id are backslash-escaped --
+    // matched without the surrounding quote characters to stay robust to that encoding.
+    expect(byFile['second.json'].message).toContain('duplicate id');
+    expect(byFile['second.json'].message).toContain('kampkit-dup');
+    expect(byFile['second.json'].message).toContain('already declared by first.json');
+    expect(byFile['first.json'].message).not.toContain('duplicate');
+    expect(byFile['broken.json'].message).toContain('invalid JSON');
+  });
+});
+
 describe('checkScenarioFilenameMatchesId', () => {
   it('returns null when the filename matches "${id}.json" exactly', async () => {
     const { checkScenarioFilenameMatchesId } = await import('../../tools/agentic-eval/cli.mjs');
@@ -1050,7 +1128,7 @@ describe('findDuplicateScenarioIds', () => {
     ];
     const errors = findDuplicateScenarioIds(pairs);
     expect(errors).toEqual([
-      { field: 'id', message: 'duplicate id "kampkit-a" in second.json -- already declared by first.json' },
+      { field: 'id', file: 'second.json', message: 'duplicate id "kampkit-a" in second.json -- already declared by first.json' },
     ]);
   });
 
@@ -1063,9 +1141,19 @@ describe('findDuplicateScenarioIds', () => {
     ];
     const errors = findDuplicateScenarioIds(pairs);
     expect(errors).toEqual([
-      { field: 'id', message: 'duplicate id "kampkit-a" in second.json -- already declared by first.json' },
-      { field: 'id', message: 'duplicate id "kampkit-a" in third.json -- already declared by first.json' },
+      { field: 'id', file: 'second.json', message: 'duplicate id "kampkit-a" in second.json -- already declared by first.json' },
+      { field: 'id', file: 'third.json', message: 'duplicate id "kampkit-a" in third.json -- already declared by first.json' },
     ]);
+  });
+
+  it('returns `file` structurally so a caller can attribute an error to its owning file by direct equality, not by parsing the message', async () => {
+    const { findDuplicateScenarioIds } = await import('../../tools/agentic-eval/cli.mjs');
+    const pairs = [
+      { id: 'kampkit-a', file: 'first.json' },
+      { id: 'kampkit-a', file: 'second.json' },
+    ];
+    const [error] = findDuplicateScenarioIds(pairs);
+    expect(error.file).toBe('second.json');
   });
 
   it('ignores entries whose id is missing or not a string, without throwing', async () => {

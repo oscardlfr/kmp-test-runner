@@ -1824,12 +1824,73 @@ function findDuplicateScenarioIds(idFilePairs) {
   for (const { id, file } of idFilePairs) {
     if (typeof id !== 'string') continue;
     if (seenIds.has(id)) {
-      errors.push({ field: 'id', message: `duplicate id "${id}" in ${file} -- already declared by ${seenIds.get(id)}` });
+      // `file` is returned structurally (not just embedded in `message`) so callers can attribute
+      // this error back to its owning file by direct equality -- a fresh review found the previous
+      // shape forced the caller to parse ownership back out of the human-readable message via a
+      // brittle `.includes(\`in ${file} \`)` substring match.
+      errors.push({ field: 'id', file, message: `duplicate id "${id}" in ${file} -- already declared by ${seenIds.get(id)}` });
     } else {
       seenIds.set(id, file);
     }
   }
   return errors;
+}
+
+/** Reads and parses one scenario file, returning `{file, scenario}` on success or `{file,
+ * parseError}` on invalid JSON -- never throws. Extracted as its own function (rather than inline
+ * in a `.map()`, which let one file's throw abort the whole command) so cmdCorpusValidate's
+ * "malformed JSON degrades to its own deterministic per-file error, never aborts validation of the
+ * others" contract is unit-testable with a real synthetic temp file, since cmdCorpusValidate()
+ * itself always reads the fixed, real corpus/scenarios/ directory. */
+function loadScenarioFile(scenariosDir, file) {
+  try {
+    return { file, scenario: JSON.parse(readFileSync(join(scenariosDir, file), 'utf8')) };
+  } catch (err) {
+    return { file, parseError: err.message };
+  }
+}
+
+/** Validates every already-loaded scenario entry (`{file, scenario}` on successful parse, or
+ * `{file, parseError}` -- see `loadScenarioFile`) against the corpus's shape/duplicate-id/
+ * filename rules. Pure and synthetic-input-testable (unlike cmdCorpusValidate itself, which always
+ * reads the fixed real corpus/scenarios/ directory) -- specifically proves one entry's own
+ * `parseError` never prevents any OTHER entry, valid or invalid, from being fully validated and
+ * reported, closing a gap a fresh review found: the previous single `.map()` let one malformed
+ * scenario file's `JSON.parse` throw propagate all the way to `main()`'s global catch (a stack
+ * trace + exit 2), aborting validation of every other file, including ones that would have parsed
+ * and validated cleanly. `parseError` entries are excluded from `findDuplicateScenarioIds`'s input
+ * (no `scenario.id` exists to compare) and from the later per-entry validation (nothing to
+ * validate).
+ * @returns {{ok: boolean, results: Array<{file: string, ok: boolean, message: string}>}}
+ */
+function validateLoadedScenarios(loaded) {
+  const duplicateIdErrors = findDuplicateScenarioIds(
+    loaded.filter((l) => !l.parseError).map(({ file, scenario }) => ({ id: scenario?.id, file })),
+  );
+  let ok = true;
+  const results = [];
+  for (const entry of loaded) {
+    const { file } = entry;
+    if (entry.parseError) {
+      results.push({ file, ok: false, message: `${file}: invalid JSON -- ${entry.parseError}` });
+      ok = false;
+      continue;
+    }
+    const { scenario } = entry;
+    const { errors } = validateScenario(scenario);
+    const filenameError = checkScenarioFilenameMatchesId(scenario, file);
+    if (filenameError) errors.push(filenameError);
+    for (const dupError of duplicateIdErrors) {
+      if (dupError.file === file) errors.push(dupError);
+    }
+    if (errors.length > 0) {
+      results.push({ file, ok: false, message: `${file}: ${JSON.stringify(errors)}` });
+      ok = false;
+    } else {
+      results.push({ file, ok: true, message: `${file}: OK` });
+    }
+  }
+  return { ok, results };
 }
 
 function cmdCorpusValidate() {
@@ -1838,22 +1899,12 @@ function cmdCorpusValidate() {
   let ok = true;
   if (existsSync(scenariosDir)) {
     const scenarioFiles = readdirSync(scenariosDir).filter((f) => f.endsWith('.json'));
-    const loaded = scenarioFiles.map((file) => ({ file, scenario: JSON.parse(readFileSync(join(scenariosDir, file), 'utf8')) }));
-    const duplicateIdErrors = findDuplicateScenarioIds(loaded.map(({ file, scenario }) => ({ id: scenario?.id, file })));
-    for (const { file, scenario } of loaded) {
-      const { errors } = validateScenario(scenario);
-      const filenameError = checkScenarioFilenameMatchesId(scenario, file);
-      if (filenameError) errors.push(filenameError);
-      for (const dupError of duplicateIdErrors) {
-        if (dupError.message.includes(`in ${file} `)) errors.push(dupError);
-      }
-      if (errors.length > 0) {
-        console.error(`${file}: ${JSON.stringify(errors)}`);
-        ok = false;
-      } else {
-        console.log(`${file}: OK`);
-      }
+    const loaded = scenarioFiles.map((file) => loadScenarioFile(scenariosDir, file));
+    const scenarioResult = validateLoadedScenarios(loaded);
+    for (const { ok: entryOk, message } of scenarioResult.results) {
+      if (entryOk) console.log(message); else console.error(message);
     }
+    ok = scenarioResult.ok;
   }
   const triggerPath = join(corpusDir, 'trigger-queries.json');
   if (existsSync(triggerPath)) {
@@ -1946,4 +1997,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };
+export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };
