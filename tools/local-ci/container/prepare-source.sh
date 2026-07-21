@@ -33,6 +33,13 @@ prepare_source() {
     # DrvFs reports broad executable bits and a Windows checkout may contain CRLF. Re-indexing
     # with autocrlf=input creates canonical blobs; cloning them on Linux reapplies eol attributes
     # exactly as a hosted Linux checkout would.
+    #
+    # This shebang-sniff intentionally IGNORES the real git-tracked mode -- it derives its own,
+    # then the git add -A below re-stages from THAT, overwriting whatever the source repo actually
+    # had committed. A tool that wants to verify the TRUE tracked executable bit (e.g.
+    # tools/check-executable-fixtures.mjs) must run against a real checkout (windows-gate.ps1, or
+    # CI's own actions/checkout) -- running it in THIS container after this point would always see
+    # the heuristic's own correction, never the bug it exists to catch.
     find "${staging_root}" -type f -exec chmod 0644 {} +
     while IFS= read -r -d '' file; do
         if [[ "$(head -c 2 "${file}")" == '#!' ]]; then

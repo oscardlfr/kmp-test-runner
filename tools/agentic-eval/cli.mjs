@@ -28,7 +28,10 @@
 // No committable evidence is ever written before ALL of: schema validation, a fresh
 // policy_sha256 match against the CURRENT policy-hook.mjs, the privacy fail-closed check
 // (assertCleanOrThrow), and the run-kind's hard acceptance gate all pass -- see
-// finalizeAndWriteRecords(). Any failure writes nothing and reports why.
+// finalizeAndWriteRecords(). Any failure writes no run evidence and reports why -- a hard-gate
+// failure specifically ALSO writes a separate, privacy-safe rejection diagnostic (never a run
+// record, never confusable with real evidence by aggregate/validate) -- see
+// rejection-diagnostics.mjs.
 import { readFileSync, readdirSync, existsSync, rmSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -795,7 +798,10 @@ function writeRunMatrixRecordEvidence(runKind, records, conditionResults, redact
  * privacy check, verified before writeRunRecordEvidence is ever called (not after -- an earlier
  * version wrote all four files first and only checked the path afterward, so a private-patterns
  * rule matching only the runs-root path itself could report {ok:false} after real evidence was
- * already on disk). Any failure returns {ok:false, reason} and writes nothing.
+ * already on disk). Any failure returns {ok:false, reason} and writes no run evidence -- the one
+ * exception is the hard-gate-failure branch specifically, which additionally writes a separate,
+ * privacy-safe rejection diagnostic (see rejection-diagnostics.mjs); every OTHER failure reason
+ * (schema-invalid, dirty tree, stale policy, privacy-check-throw) writes literally nothing.
  */
 /**
  * Extracted as a named, independently-testable function specifically so BOTH branches of this
@@ -883,8 +889,13 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
   if (!gate.ok) {
     // Privacy-safe rejected-run diagnostics (closes BACKLOG.md's "leave no auditable trace" gap)
     // -- a diagnostics-write failure must never mask the ORIGINAL rejection reason or crash the
-    // caller; caught and surfaced as a separate field instead.
+    // caller; caught and surfaced as a separate field instead. rejectionId/diagnosticsRelativePath
+    // stay null unless the write actually succeeded -- round-6 audit finding ("localización del
+    // diagnóstico"): a caller must be able to tell a human WHERE a successfully-written diagnostic
+    // landed, not just that no error was thrown.
     let diagnosticsWriteError = null;
+    let rejectionId = null;
+    let diagnosticsRelativePath = null;
     try {
       const failedChecksByRunId = { [recordA.run_id]: gate.failedChecksA ?? [], [recordB.run_id]: gate.failedChecksB ?? [] };
       const foreignSkillNamesByRunId = {
@@ -892,11 +903,11 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
         [recordB.run_id]: classifyForeignSkillUses(runB.events, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null),
       };
       const diagnostics = buildRejectionDiagnostics({ runKind, records: [recordA, recordB], failedChecksByRunId, foreignSkillNamesByRunId });
-      writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride });
+      ({ rejectionId, relativePath: diagnosticsRelativePath } = writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride }));
     } catch (err) {
       diagnosticsWriteError = err.message;
     }
-    return { ok: false, reason: gate.reason, diagnosticsWriteError };
+    return { ok: false, reason: gate.reason, diagnosticsWriteError, rejectionId, diagnosticsRelativePath };
   }
   // The evidence directory path itself can carry the real OS username (this repo may be checked
   // out under e.g. C:\Users\<name>\...). Verified BEFORE anything is written: an earlier version
@@ -904,7 +915,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
   // private-patterns rule matching only the (possibly KMP_EVAL_RUNS_ROOT-overridden) runs-root
   // path itself -- never the record content, which was already verified clean above -- could
   // report {ok:false} after real evidence and raw transcripts were already committed to disk,
-  // contradicting this function's own "any failure returns {ok:false} and writes nothing"
+  // contradicting this function's own "any failure returns {ok:false} and writes no run evidence"
   // contract. `outDir` stays the REAL, navigable path (a caller may legitimately need it, e.g. a
   // test asserting a file exists there) -- `redactedOutDir` is the separate, display-safe value
   // for anything printed to a terminal. A single raw path string (never JSON-serialized), so the
@@ -1083,18 +1094,22 @@ async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResult
     // -- gate.cellResults (scenarioHardGate's own new field) already correlates every cell to its
     // own failedChecks, so this is pure reshaping, never a second gate re-run. A diagnostics-write
     // failure must never mask the ORIGINAL rejection reason or crash the caller.
+    // rejectionId/diagnosticsRelativePath stay null unless the write actually succeeded -- see the
+    // pair-based finalizeAndWriteRecords' identical rationale.
     let diagnosticsWriteError = null;
+    let rejectionId = null;
+    let diagnosticsRelativePath = null;
     try {
       const failedChecksByRunId = Object.fromEntries((gate.cellResults ?? []).map((c) => [c.runId, c.failedChecks]));
       const foreignSkillNamesByRunId = Object.fromEntries(
         records.map((r, i) => [r.run_id, classifyForeignSkillUses(conditionResults[i].events, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null)]),
       );
       const diagnostics = buildRejectionDiagnostics({ runKind, records, failedChecksByRunId, foreignSkillNamesByRunId });
-      writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride });
+      ({ rejectionId, relativePath: diagnosticsRelativePath } = writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride }));
     } catch (err) {
       diagnosticsWriteError = err.message;
     }
-    return { ok: false, reason: gate.reason, diagnosticsWriteError };
+    return { ok: false, reason: gate.reason, diagnosticsWriteError, rejectionId, diagnosticsRelativePath };
   }
   const outDir = resolveEvidenceOutDir(runKind, runsRootOverride);
   let redactedOutDir;
@@ -1419,6 +1434,7 @@ async function cmdCalibrate(args) {
     if (!result.ok) {
       console.error(`CALIBRATION FAILED: ${result.reason}`);
       if (result.diagnosticsWriteError) console.error(`(rejected-run diagnostics were NOT written: ${result.diagnosticsWriteError})`);
+      else if (result.rejectionId) console.error(`(rejected-run diagnostics written: ${result.diagnosticsRelativePath}, rejection_id ${result.rejectionId})`);
       return 1;
     }
     console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.redactedOutDir }, null, 2));
@@ -1591,6 +1607,7 @@ async function cmdSmoke(args) {
     if (!result.ok) {
       console.error(`SMOKE FAILED: ${result.reason}`);
       if (result.diagnosticsWriteError) console.error(`(rejected-run diagnostics were NOT written: ${result.diagnosticsWriteError})`);
+      else if (result.rejectionId) console.error(`(rejected-run diagnostics written: ${result.diagnosticsRelativePath}, rejection_id ${result.rejectionId})`);
       return 1;
     }
     console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.redactedOutDir }, null, 2));
@@ -1855,6 +1872,7 @@ async function cmdRun(args) {
     if (!result.ok) {
       console.error(`RUN FAILED: ${result.reason}`);
       if (result.diagnosticsWriteError) console.error(`(rejected-run diagnostics were NOT written: ${result.diagnosticsWriteError})`);
+      else if (result.rejectionId) console.error(`(rejected-run diagnostics written: ${result.diagnosticsRelativePath}, rejection_id ${result.rejectionId})`);
       return 1;
     }
     console.log(JSON.stringify({ records: result.redactedRecords, evidenceDir: result.redactedOutDir }, null, 2));

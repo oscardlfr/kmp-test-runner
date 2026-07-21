@@ -27,9 +27,17 @@ function record(overrides = {}) {
     run_id: 'calibration-no-skill-aaaa1111',
     condition: 'no-skill',
     repetition_index: null,
+    order_index: null,
     skill_source_sha: null,
+    model_resolved: 'claude-sonnet-5-fake-resolved',
     repo_commit: 'c'.repeat(40),
     model_requested: 'fake-model-x',
+    scenario_id: 'calibration-explicit-invocation',
+    project_alias: null,
+    project_commit: null,
+    project_url: null,
+    seed: null,
+    policy_sha256: 'a'.repeat(64),
     foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
     ...overrides,
   };
@@ -98,12 +106,59 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
     const b = record({ run_id: 'calibration-current-skill-ffff7777', model_requested: 'model-y' });
     expect(() => buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: {} })).toThrow(/disagree on model_requested/);
   });
+
+  // Round-6 audit finding ("diagnostic provenance"): the disagreement check generalized from a
+  // hardcoded repo_commit/model_requested pair to a shared BATCH_WIDE_FIELDS loop covering 8
+  // fields -- this proves the loop actually reaches a field OTHER than the original two, not just
+  // that the two pre-existing checks still work by coincidence of being first in the list.
+  it('throws (never silently picks one) when contributing records disagree on scenario_id', () => {
+    const a = record({ scenario_id: 'kampkit-android-host-test-discovery' });
+    const b = record({ run_id: 'scenario-current-skill-gggg8888', scenario_id: 'kampkit-no-applicable-tests' });
+    expect(() => buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: {} })).toThrow(/disagree on scenario_id/);
+  });
+
+  it('throws when contributing records disagree on seed (a scenario-only field, still checked)', () => {
+    const a = record({ seed: 1 });
+    const b = record({ run_id: 'scenario-current-skill-hhhh9999', seed: 2 });
+    expect(() => buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: {} })).toThrow(/disagree on seed/);
+  });
+
+  // Round-6 audit finding ("diagnostic provenance"): every new field must actually reach the
+  // output, not just pass the disagreement check silently -- proves order_index/model_resolved
+  // (per-cell) and the 6 new batch-wide fields all land in `committed`, read directly off the
+  // records (buildRunRecord's own field names), never re-derived.
+  it('populates order_index/model_resolved per cell, and every new batch-wide provenance field, from the records', () => {
+    const a = record({
+      order_index: 0, model_resolved: 'claude-sonnet-5-2026-06-01', scenario_id: 'kampkit-android-host-test-discovery',
+      project_alias: 'kampkit', project_commit: 'd'.repeat(40), project_url: 'https://github.com/example/kampkit', seed: 7,
+      policy_sha256: 'b'.repeat(64), repetition_index: 0,
+    });
+    const b = record({
+      run_id: 'scenario-current-skill-iiii0000', condition: 'current-skill', skill_source_sha: 'a'.repeat(40),
+      order_index: 1, model_resolved: 'claude-sonnet-5-2026-06-01', scenario_id: 'kampkit-android-host-test-discovery',
+      project_alias: 'kampkit', project_commit: 'd'.repeat(40), project_url: 'https://github.com/example/kampkit', seed: 7,
+      policy_sha256: 'b'.repeat(64), repetition_index: 0,
+    });
+    const { committed } = buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: ['toolResultsCompleteOk'] } });
+    expect(committed.scenario_id).toBe('kampkit-android-host-test-discovery');
+    expect(committed.project_alias).toBe('kampkit');
+    expect(committed.project_commit).toBe('d'.repeat(40));
+    expect(committed.project_url).toBe('https://github.com/example/kampkit');
+    expect(committed.seed).toBe(7);
+    expect(committed.policy_sha256).toBe('b'.repeat(64));
+    expect(committed.cells[0].order_index).toBe(0);
+    expect(committed.cells[1].order_index).toBe(1);
+    expect(committed.cells[0].model_resolved).toBe('claude-sonnet-5-2026-06-01');
+    // The record built from `committed` is itself schema-valid -- the strongest possible proof
+    // that every new field landed in a shape validateRejectionRow actually accepts.
+    expect(validateRejectionRow(committed).errors).toEqual([]);
+  });
 });
 
 describe('validateRejectionRow -- schema validation', () => {
   function validRow(overrides = {}) {
-    const cellA = { run_id: 'r1', condition: 'no-skill', repetition_index: null, skill_source_sha: null, failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 } };
-    const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, skill_source_sha: 'a'.repeat(40), failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 } };
+    const cellA = { run_id: 'r1', condition: 'no-skill', repetition_index: null, order_index: null, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 } };
+    const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 } };
     return {
       schema: REJECTION_DIAGNOSTICS_SCHEMA,
       rejection_id: '11111111-1111-1111-1111-111111111111',
@@ -112,6 +167,12 @@ describe('validateRejectionRow -- schema validation', () => {
       run_ids: ['r1', 'r2'],
       model_requested: 'fake-model-x',
       repo_commit: 'c'.repeat(40),
+      scenario_id: 'calibration-explicit-invocation',
+      project_alias: null,
+      project_commit: null,
+      project_url: null,
+      seed: null,
+      policy_sha256: 'a'.repeat(64),
       cells: [cellA, cellB],
       foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 },
       ...overrides,
@@ -187,6 +248,104 @@ describe('validateRejectionRow -- schema validation', () => {
     const { errors } = validateRejectionRow(row);
     expect(errors.some((e) => e.field === 'cells[0].repetition_index')).toBe(true);
   });
+
+  // "Rechazo sin causa" (round-6 audit finding): a rejection diagnostic every one of whose cells
+  // carries failed_checks:[] records no cause anywhere -- structurally indistinguishable from a
+  // rejection that never actually happened. validRow()'s own cellA already has one real failed
+  // check ('skillSelectionOk'), so this test explicitly empties BOTH cells to isolate the invariant.
+  it('rejects a row where EVERY cell has empty failed_checks -- a rejection with no recorded cause', () => {
+    const row = validRow();
+    row.cells = row.cells.map((c) => ({ ...c, failed_checks: [] }));
+    const { errors } = validateRejectionRow(row);
+    expect(errors.some((e) => e.field === 'cells' && e.message.includes('no recorded failure'))).toBe(true);
+  });
+
+  it('accepts a row where only ONE cell (not all) has a real failed check', () => {
+    const row = validRow();
+    row.cells[0] = { ...row.cells[0], failed_checks: ['skillSelectionOk'] };
+    row.cells[1] = { ...row.cells[1], failed_checks: [] };
+    const { errors } = validateRejectionRow(row);
+    expect(errors.filter((e) => e.field === 'cells')).toEqual([]);
+  });
+
+  // "Coherencia con run_kind" (round-6 audit finding): the pre-fix shape check ("null OR a
+  // non-negative integer") accepted EITHER shape for ANY run_kind -- a calibration/smoke row could
+  // carry a real repetition_index/order_index (repetition/order concepts don't apply outside
+  // run_kind:'scenario' at all), or a scenario row could carry null (silently discarding which
+  // repetition/position a cell actually was). Both directions proven explicitly, for both fields.
+  describe('repetition_index/order_index coherence with run_kind', () => {
+    it('rejects a non-null repetition_index on a run_kind:calibration row (validRow default)', () => {
+      const row = validRow();
+      row.cells[0] = { ...row.cells[0], repetition_index: 0 };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].repetition_index' && e.message.includes("run_kind:'calibration'"))).toBe(true);
+    });
+
+    it('rejects a non-null order_index on a run_kind:smoke row', () => {
+      const row = validRow({ run_kind: 'smoke' });
+      row.cells[0] = { ...row.cells[0], order_index: 0 };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].order_index')).toBe(true);
+    });
+
+    it('rejects a null repetition_index AND null order_index on a run_kind:scenario row', () => {
+      const row = validRow({ run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery', project_alias: 'kampkit', project_commit: 'd'.repeat(40), project_url: 'https://github.com/example/kampkit', seed: 5 });
+      row.cells[0] = { ...row.cells[0], repetition_index: null, order_index: null };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].repetition_index' && e.message.includes("run_kind:'scenario'"))).toBe(true);
+      expect(errors.some((e) => e.field === 'cells[0].order_index')).toBe(true);
+    });
+
+    it('accepts a real non-negative repetition_index/order_index on a run_kind:scenario row', () => {
+      const row = validRow({ run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery', project_alias: 'kampkit', project_commit: 'd'.repeat(40), project_url: 'https://github.com/example/kampkit', seed: 5 });
+      row.cells = row.cells.map((c, i) => ({ ...c, repetition_index: 0, order_index: i }));
+      const { errors } = validateRejectionRow(row);
+      expect(errors.filter((e) => e.field.includes('repetition_index') || e.field.includes('order_index'))).toEqual([]);
+    });
+
+    // An unrecognized run_kind is already reported on its own field -- must not ALSO cascade into
+    // a wall of misleading repetition_index/order_index errors for every cell (the coherence check
+    // is gated on run_kind being a KNOWN value first).
+    it('does not cascade repetition_index/order_index errors when run_kind itself is unrecognized', () => {
+      const row = validRow({ run_kind: 'not-a-real-kind' });
+      const { errors } = validateRejectionRow(row);
+      expect(errors.filter((e) => e.field.includes('repetition_index') || e.field.includes('order_index'))).toEqual([]);
+    });
+  });
+
+  describe('provenance fields (round-6 audit finding: scenario_id/project_*/seed/policy_sha256)', () => {
+    it('rejects a missing scenario_id', () => {
+      const row = validRow();
+      delete row.scenario_id;
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'scenario_id')).toBe(true);
+    });
+
+    it('rejects a malformed policy_sha256 (not a 64-char lowercase hex string)', () => {
+      const row = validRow({ policy_sha256: 'not-a-real-hash' });
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'policy_sha256')).toBe(true);
+    });
+
+    it('rejects an empty-string project_alias (must be null or a REAL non-empty string, never empty)', () => {
+      const row = validRow({ project_alias: '' });
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'project_alias')).toBe(true);
+    });
+
+    it('accepts a real scenario\'s project_alias/project_commit/project_url/seed (non-null)', () => {
+      const row = validRow({ run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery', project_alias: 'kampkit', project_commit: 'd'.repeat(40), project_url: 'https://github.com/example/kampkit', seed: 5 });
+      row.cells = row.cells.map((c, i) => ({ ...c, repetition_index: 0, order_index: i }));
+      const { errors } = validateRejectionRow(row);
+      expect(errors.filter((e) => e.field.startsWith('project_') || e.field === 'seed')).toEqual([]);
+    });
+
+    it('rejects a non-integer seed', () => {
+      const row = validRow({ seed: 'five' });
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'seed')).toBe(true);
+    });
+  });
 });
 
 // validate -> redact -> revalidate ordering (round-5 audit finding, C2's own doc comment):
@@ -208,7 +367,11 @@ describe('writeRejectedRunDiagnostics -- validate -> redact -> revalidate orderi
     const { committed, local } = buildRejectionDiagnostics({
       runKind: 'calibration',
       records: [r, record({ run_id: 'calibration-current-skill-bbbb2222', condition: 'current-skill', skill_source_sha: 'a'.repeat(40) })],
-      failedChecksByRunId: {},
+      // At least one real failed check -- an empty failedChecksByRunId would produce
+      // failed_checks:[] on every cell, itself now a distinct validation failure ("rechazo sin
+      // causa" -- see the dedicated describe block below), which would trip THIS test for the
+      // wrong reason entirely.
+      failedChecksByRunId: { [r.run_id]: ['skillSelectionOk'] },
     });
     // The ORIGINAL (pre-redaction) record is genuinely valid -- confirms any throw below comes
     // from the redaction step corrupting it, not from a pre-existing malformed input.
@@ -227,6 +390,39 @@ describe('writeRejectedRunDiagnostics -- validate -> redact -> revalidate orderi
     } finally {
       rmSync(runsRoot, { recursive: true, force: true });
       rmSync(path.join(privatePatternsFile, '..'), { recursive: true, force: true });
+    }
+  });
+});
+
+// "Localización del diagnóstico" (round-6 audit finding): the old contract returned a bare
+// `outDir` string, telling a caller WHERE the committed-tier DIRECTORY is but nothing about the
+// specific FILE just written or its own id -- a caller had no way to point a human at what
+// actually happened. relativePath is relative to RUNS_ROOT (never the absolute filesystem path
+// -- see this module's own doc comment) specifically so it's safe to print without a further
+// privacy pass.
+describe('writeRejectedRunDiagnostics -- return shape (round-6 audit finding: "localización del diagnóstico")', () => {
+  it('returns {outDir, rejectionId, relativePath}, with relativePath pointing at the actual written file, relative to RUNS_ROOT', () => {
+    const r = record();
+    const { committed, local } = buildRejectionDiagnostics({
+      runKind: 'calibration',
+      records: [r, record({ run_id: 'calibration-current-skill-jjjj1111', condition: 'current-skill', skill_source_sha: 'a'.repeat(40) })],
+      failedChecksByRunId: { [r.run_id]: ['skillSelectionOk'] },
+    });
+    const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aerd-return-shape-'));
+    try {
+      const result = writeRejectedRunDiagnostics({ committed, local }, { runsRootOverride: runsRoot });
+      expect(result.rejectionId).toBe(committed.rejection_id);
+      expect(result.outDir).toBe(path.join(runsRoot, 'agentic-eval-rejected'));
+      // Never an absolute path -- path.isAbsolute is the direct, platform-correct check (a raw
+      // string-prefix comparison would be wrong on Windows, where an absolute path can start with
+      // a drive letter, not always a leading slash).
+      expect(path.isAbsolute(result.relativePath)).toBe(false);
+      expect(result.relativePath).toBe(path.join('agentic-eval-rejected', `${committed.rejection_id}.json`));
+      // The relative path genuinely resolves to the real, just-written file -- not merely a
+      // plausible-looking string.
+      expect(existsSync(path.join(runsRoot, result.relativePath))).toBe(true);
+    } finally {
+      rmSync(runsRoot, { recursive: true, force: true });
     }
   });
 });
@@ -267,6 +463,12 @@ describe('writeRejectedRunDiagnostics -- wired into cli.mjs end-to-end (real sub
       expect(committed.run_kind).toBe('calibration');
       expect(committed.cells.length).toBe(2);
       expect(JSON.stringify(committed)).not.toContain('totally-unrelated-skill'); // no raw skill name
+
+      // "Localización del diagnóstico" (round-6 audit finding): the CLI's own stderr must point a
+      // human at the actual file it just wrote -- checked against the REAL committed.rejection_id
+      // (read back off disk above), not merely "some UUID-shaped string appears in stderr".
+      expect(r.stderr).toContain(`rejection_id ${committed.rejection_id}`);
+      expect(r.stderr).toContain(`agentic-eval-rejected${path.sep}${committedFiles[0]}`);
 
       const local = JSON.parse(readFileSync(path.join(rejectedDir, 'raw', rawFiles[0]), 'utf8'));
       expect(local.cells.some((c) => c.foreign_skill_names?.includes('totally-unrelated-skill'))).toBe(true);

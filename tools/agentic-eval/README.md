@@ -364,14 +364,24 @@ circular import either module living inside `cli.mjs` would create.
   matches `rejected` the same way it matches `scenario`/`smoke`/`calibration`, so no new
   `.gitignore` entry was needed.
 - **Shape**: `{schema, rejection_id, timestamp, run_kind, run_ids, model_requested, repo_commit,
-  cells, foreign_skill_summary}`, where `cells` covers **every** cell in the rejected batch, not
-  only the failing ones (a scenario matrix's "one bad cell blocks the whole batch" design makes
-  every cell relevant context) — each cell carries its own `run_id`/`condition`/`repetition_index`
-  (`null` for calibrate/smoke)/`skill_source_sha` (`null` for no-skill, the real SHA for
-  current-skill)/`failed_checks`/`foreign_skill_summary`. The top-level `foreign_skill_summary` is
-  always the field-by-field sum across `cells[]` — `validateRejectionRow()` enforces this, never
-  letting it drift into an independent second source of truth — and `run_ids` must always exactly
-  equal the set of `cells[].run_id`.
+  scenario_id, project_alias, project_commit, project_url, seed, policy_sha256, cells,
+  foreign_skill_summary}`. The provenance fields (`scenario_id` through `policy_sha256`) mirror
+  `buildRunRecord()`'s own field names exactly (read directly off the already-built records, never
+  re-derived) — `scenario_id`/`policy_sha256` are real, non-empty on every run_kind;
+  `project_alias`/`project_commit`/`project_url`/`seed` are `null` for calibrate/smoke (no external
+  project involved) and real values for scenario. `cells` covers **every** cell in the rejected
+  batch, not only the failing ones (a scenario matrix's "one bad cell blocks the whole batch" design
+  makes every cell relevant context) — each cell carries its own
+  `run_id`/`condition`/`repetition_index`/`order_index` (both `null` for calibrate/smoke, both real
+  non-negative integers for scenario — enforced *together*, tied to the record's own `run_kind`, not
+  independently permissive)/`skill_source_sha` (`null` for no-skill, the real SHA for
+  current-skill)/`model_resolved` (`null` only when no init event was ever captured)/
+  `failed_checks`/`foreign_skill_summary`. The top-level `foreign_skill_summary` is always the
+  field-by-field sum across `cells[]` — `validateRejectionRow()` enforces this, never letting it
+  drift into an independent second source of truth — `run_ids` must always exactly equal the set of
+  `cells[].run_id`, and **at least one** cell must carry a non-empty `failed_checks`: a diagnostic
+  whose cells are *all* `failed_checks:[]` records no cause anywhere and is itself rejected as
+  malformed (a "rejection" with nothing to explain it isn't a real rejection).
 - **Write ordering**: validate the original object → redact (`assertCleanOrThrowObject`) → validate
   the *redacted* object again → promote — the identical ordering `finalizeAndWriteRecords()` itself
   uses for real evidence (see above), so a redaction rule that would corrupt a required field's
@@ -387,7 +397,11 @@ circular import either module living inside `cli.mjs` would create.
   (schema-invalid, `dirty_measured_code`, `dirty_harness_tooling`, stale `policy_sha256`,
   privacy-check-throw, or — matrix path only — an incomplete matrix). A diagnostics-write failure
   is caught and surfaced as a separate `diagnosticsWriteError` field/stderr note — it never masks
-  the original rejection reason or exit code.
+  the original rejection reason or exit code. On a **successful** write, `cmdCalibrate`/`cmdSmoke`/
+  `cmdRun` print the diagnostic's own `rejection_id` and a path *relative to* `RUNS_ROOT` (e.g.
+  `agentic-eval-rejected/<uuid>.json`, never an absolute filesystem path — safe to print without a
+  further privacy pass) — a caller previously had no way to locate a successfully-written
+  diagnostic short of listing the directory by hand.
 
 ## Isolation
 

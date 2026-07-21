@@ -32,9 +32,20 @@ import { RUN_KIND_VALUES, CONDITION_VALUES } from './schemas.mjs';
 export const REJECTION_DIAGNOSTICS_SCHEMA = 1;
 
 const FOREIGN_SKILL_SUMMARY_FIELDS = ['rejected', 'confirmed', 'incomplete'];
-const CELL_CANONICAL_FIELDS = ['run_id', 'condition', 'repetition_index', 'skill_source_sha', 'failed_checks', 'foreign_skill_summary'];
+const CELL_CANONICAL_FIELDS = [
+  'run_id', 'condition', 'repetition_index', 'order_index', 'skill_source_sha', 'model_resolved',
+  'failed_checks', 'foreign_skill_summary',
+];
+// scenario_id/project_alias/project_commit/project_url/seed/policy_sha256 (round-6 audit finding
+// -- "diagnostic provenance"): reproducing or even just understanding WHERE/WHEN a rejection
+// happened needs more than repo_commit (the HARNESS's own commit) and model_requested -- which
+// scenario was running, which external project/commit was measured, the seed/policy that produced
+// this exact matrix. Mirrors buildRunRecord's own field names exactly (never re-derived, only
+// read off the already-built records the caller has in scope) so there is no second, drifting
+// vocabulary for the same facts.
 const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS = [
   'schema', 'rejection_id', 'timestamp', 'run_kind', 'run_ids', 'model_requested', 'repo_commit',
+  'scenario_id', 'project_alias', 'project_commit', 'project_url', 'seed', 'policy_sha256',
   'cells', 'foreign_skill_summary',
 ];
 
@@ -85,6 +96,26 @@ export function validateRejectionRow(row) {
   if (!RUN_KIND_VALUES.includes(row.run_kind)) errors.push({ field: 'run_kind', message: `must be one of ${RUN_KIND_VALUES.join('|')}` });
   if (typeof row.model_requested !== 'string' || row.model_requested.length === 0) errors.push({ field: 'model_requested', message: 'must be a non-empty string' });
   if (typeof row.repo_commit !== 'string' || row.repo_commit.length === 0) errors.push({ field: 'repo_commit', message: 'must be a non-empty string' });
+  // scenario_id is a real, non-empty value for EVERY run_kind (buildRunRecord always populates it
+  // -- calibrate/smoke use a fixed descriptive id like 'calibration-explicit-invocation', never
+  // null), unlike project_alias/project_commit/project_url/seed below, which are genuinely
+  // nullable (no external project is involved for calibrate/smoke).
+  if (typeof row.scenario_id !== 'string' || row.scenario_id.length === 0) errors.push({ field: 'scenario_id', message: 'must be a non-empty string' });
+  if (!(row.project_alias === null || (typeof row.project_alias === 'string' && row.project_alias.length > 0))) {
+    errors.push({ field: 'project_alias', message: 'must be null (calibrate/smoke) or a non-empty string (scenario)' });
+  }
+  if (!(row.project_commit === null || (typeof row.project_commit === 'string' && row.project_commit.length > 0))) {
+    errors.push({ field: 'project_commit', message: 'must be null (calibrate/smoke) or a non-empty string (scenario)' });
+  }
+  if (!(row.project_url === null || (typeof row.project_url === 'string' && row.project_url.length > 0))) {
+    errors.push({ field: 'project_url', message: 'must be null (calibrate/smoke) or a non-empty string (scenario)' });
+  }
+  if (!(row.seed === null || Number.isInteger(row.seed))) {
+    errors.push({ field: 'seed', message: 'must be null (calibrate/smoke) or an integer (scenario)' });
+  }
+  if (typeof row.policy_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(row.policy_sha256)) {
+    errors.push({ field: 'policy_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
+  }
 
   const runIdsOk = Array.isArray(row.run_ids) && row.run_ids.every((id) => typeof id === 'string' && id.length > 0);
   if (!runIdsOk) errors.push({ field: 'run_ids', message: 'must be an array of non-empty strings' });
@@ -95,6 +126,16 @@ export function validateRejectionRow(row) {
   } else {
     const cellAllowedKeys = new Set(CELL_CANONICAL_FIELDS);
     const seenRunIds = new Set();
+    // round-6 audit finding ("rechazo sin causa"): a rejection diagnostic whose cells[] ALL carry
+    // failed_checks:[] represents a rejection with no recorded cause anywhere in the record -- the
+    // per-cell shape check above only confirms each ARRAY is well-formed, never that the batch as
+    // a whole actually explains itself. Tracked across the loop, asserted once after it.
+    let anyCellHasFailedCheck = false;
+    // run_kind is validated independently above (may itself be malformed) -- coherence here is
+    // gated on it actually being a real, recognized value, so a bad run_kind doesn't ALSO cascade
+    // into a wall of misleading repetition_index/order_index errors for every cell.
+    const runKindIsScenario = row.run_kind === 'scenario';
+    const runKindKnown = RUN_KIND_VALUES.includes(row.run_kind);
     for (const [i, cell] of row.cells.entries()) {
       if (cell == null || typeof cell !== 'object' || Array.isArray(cell)) {
         errors.push({ field: `cells[${i}]`, message: 'must be an object' });
@@ -110,16 +151,41 @@ export function validateRejectionRow(row) {
         seenRunIds.add(cell.run_id);
       }
       if (!CONDITION_VALUES.includes(cell.condition)) errors.push({ field: `cells[${i}].condition`, message: `must be one of ${CONDITION_VALUES.join('|')}` });
-      if (!(cell.repetition_index === null || (Number.isInteger(cell.repetition_index) && cell.repetition_index >= 0))) {
-        errors.push({ field: `cells[${i}].repetition_index`, message: 'must be null (calibrate/smoke) or a non-negative integer (scenario)' });
+      // repetition_index/order_index tied to run_kind (round-6 audit finding: "coherencia con
+      // run_kind") -- the PRE-fix shape check ("null OR a non-negative integer") let a
+      // calibration/smoke row carry a real repetition_index, or a scenario row carry null, neither
+      // of which can happen from a genuine buildRunRecord() output (repetition/order concepts only
+      // exist for run_kind:'scenario' -- see buildRunRecord's own `isScenario ? x : null` gating).
+      if (runKindKnown) {
+        const wantsInteger = runKindIsScenario;
+        for (const field of ['repetition_index', 'order_index']) {
+          const value = cell[field];
+          const ok = wantsInteger ? (Number.isInteger(value) && value >= 0) : value === null;
+          if (!ok) {
+            errors.push({
+              field: `cells[${i}].${field}`,
+              message: wantsInteger
+                ? `must be a non-negative integer for run_kind:'scenario'`
+                : `must be null for run_kind:'${row.run_kind}' -- repetition/order only apply to run_kind:'scenario'`,
+            });
+          }
+        }
       }
       if (!(cell.skill_source_sha === null || (typeof cell.skill_source_sha === 'string' && cell.skill_source_sha.length > 0))) {
         errors.push({ field: `cells[${i}].skill_source_sha`, message: 'must be null (no-skill) or a non-empty string (current-skill)' });
       }
+      if (!(cell.model_resolved === null || (typeof cell.model_resolved === 'string' && cell.model_resolved.length > 0))) {
+        errors.push({ field: `cells[${i}].model_resolved`, message: 'must be null (no init event captured) or a non-empty string' });
+      }
       if (!Array.isArray(cell.failed_checks) || cell.failed_checks.some((c) => typeof c !== 'string' || c.length === 0)) {
         errors.push({ field: `cells[${i}].failed_checks`, message: 'must be an array of non-empty strings' });
+      } else if (cell.failed_checks.length > 0) {
+        anyCellHasFailedCheck = true;
       }
       errors.push(...validateForeignSkillSummary(cell.foreign_skill_summary, `cells[${i}].foreign_skill_summary`));
+    }
+    if (!anyCellHasFailedCheck) {
+      errors.push({ field: 'cells', message: 'at least one cell must have a non-empty failed_checks -- a rejection diagnostic with no recorded failure anywhere is not a real rejection' });
     }
     if (runIdsOk) {
       const runIdsSet = new Set(row.run_ids);
@@ -166,7 +232,8 @@ export function validateRejectionRow(row) {
  * @param {string} runKind
  * @param {object[]} records - the already-built run records for this batch (2 for calibrate/
  *   smoke as [recordA, recordB]; N for a scenario matrix) -- each already carries its own
- *   run_id/condition/repetition_index/skill_source_sha/repo_commit/model_requested/
+ *   run_id/condition/repetition_index/order_index/skill_source_sha/model_resolved/repo_commit/
+ *   model_requested/scenario_id/project_alias/project_commit/project_url/seed/policy_sha256/
  *   foreign_skill_summary (schema v3, populated by buildRunRecord regardless of whether the
  *   batch is ultimately accepted or rejected).
  * @param {Record<string, string[]>} failedChecksByRunId - each record's own run_id -> the named
@@ -182,21 +249,28 @@ export function buildRejectionDiagnostics({ runKind, records, failedChecksByRunI
   // Round-5 audit finding: never silently collapse to the first record's value without checking
   // agreement -- a real disagreement here would mean records from different harness invocations
   // got mixed together by mistake, which should be structurally impossible and must fail loudly,
-  // not be handled gracefully by guessing.
-  const repoCommits = new Set(records.map((r) => r.repo_commit));
-  const modelsRequested = new Set(records.map((r) => r.model_requested));
-  if (repoCommits.size !== 1) {
-    throw new Error(`buildRejectionDiagnostics: records disagree on repo_commit (${JSON.stringify([...repoCommits])}) -- should be structurally impossible within one harness invocation`);
-  }
-  if (modelsRequested.size !== 1) {
-    throw new Error(`buildRejectionDiagnostics: records disagree on model_requested (${JSON.stringify([...modelsRequested])}) -- should be structurally impossible within one harness invocation`);
+  // not be handled gracefully by guessing. Round-6 audit finding ("diagnostic provenance") widened
+  // this from just repo_commit/model_requested to every batch-wide identity/provenance field a
+  // human would need to locate or reproduce the rejected run: which scenario, which external
+  // project/commit, the seed, and the policy hash. All are read directly off buildRunRecord's own
+  // field names (never re-derived) -- see this function's own doc comment.
+  const BATCH_WIDE_FIELDS = ['repo_commit', 'model_requested', 'scenario_id', 'project_alias', 'project_commit', 'project_url', 'seed', 'policy_sha256'];
+  const batchWide = {};
+  for (const field of BATCH_WIDE_FIELDS) {
+    const values = new Set(records.map((r) => r[field]));
+    if (values.size !== 1) {
+      throw new Error(`buildRejectionDiagnostics: records disagree on ${field} (${JSON.stringify([...values])}) -- should be structurally impossible within one harness invocation`);
+    }
+    batchWide[field] = [...values][0];
   }
 
   const cells = records.map((r) => ({
     run_id: r.run_id,
     condition: r.condition,
     repetition_index: r.repetition_index,
+    order_index: r.order_index,
     skill_source_sha: r.skill_source_sha,
+    model_resolved: r.model_resolved,
     failed_checks: failedChecksByRunId[r.run_id] ?? [],
     foreign_skill_summary: r.foreign_skill_summary,
   }));
@@ -214,8 +288,7 @@ export function buildRejectionDiagnostics({ runKind, records, failedChecksByRunI
     timestamp: new Date().toISOString(),
     run_kind: runKind,
     run_ids: cells.map((c) => c.run_id),
-    model_requested: [...modelsRequested][0],
-    repo_commit: [...repoCommits][0],
+    ...batchWide,
     cells,
     foreign_skill_summary: foreignSkillSummary,
   };
@@ -246,7 +319,9 @@ export function buildRejectionDiagnostics({ runKind, records, failedChecksByRunI
  * harness (test isolation via KMP_EVAL_RUNS_ROOT).
  * @param {{committed: object, local: object}} diagnostics - buildRejectionDiagnostics's own return
  * @param {{privatePatternsFile?: string, runsRootOverride?: string}} [opts]
- * @returns {string} outDir
+ * @returns {{outDir: string, rejectionId: string, relativePath: string}} relativePath is relative
+ *   to RUNS_ROOT (never an absolute filesystem path), safe to print directly without a further
+ *   privacy check.
  */
 export function writeRejectedRunDiagnostics({ committed, local }, { privatePatternsFile, runsRootOverride } = {}) {
   const { errors: originalErrors } = validateRejectionRow(committed);
@@ -277,10 +352,19 @@ export function writeRejectedRunDiagnostics({ committed, local }, { privatePatte
   if (!isRawDirSafeFromAccidentalCommit(rawDir, runsRootOverride)) {
     throw new Error(`refusing to write rejection diagnostics: ${rawDir} is inside this repo's worktree but not covered by .gitignore -- would risk an accidental commit of local-only data`);
   }
+  const committedFilename = `${committed.rejection_id}.json`;
   const targets = [
-    [join(outDir, `${committed.rejection_id}.json`), redactedCommittedText],
-    [join(rawDir, `${committed.rejection_id}.json`), redactedLocalText],
+    [join(outDir, committedFilename), redactedCommittedText],
+    [join(rawDir, committedFilename), redactedLocalText],
   ];
   promoteTargetsAtomically(targets, rawDir);
-  return outDir;
+  // relativePath is relative to RUNS_ROOT (not an absolute filesystem path) SPECIFICALLY so it is
+  // safe to print without a separate privacy-redaction pass -- round-6 audit finding ("localización
+  // del diagnóstico"): the CLI previously never told an operator WHERE a written diagnostic landed
+  // or its own id, meaning it could be written successfully yet remain undiscoverable in practice.
+  // resolveRejectedDiagnosticsDir always resolves to `<runsRoot>/agentic-eval-rejected`, so this is
+  // structurally constant regardless of the (possibly test-isolated) runsRootOverride value --
+  // avoided by construction rather than by trusting a redaction rule to catch every absolute-path
+  // shape.
+  return { outDir, rejectionId: committed.rejection_id, relativePath: join('agentic-eval-rejected', committedFilename) };
 }
