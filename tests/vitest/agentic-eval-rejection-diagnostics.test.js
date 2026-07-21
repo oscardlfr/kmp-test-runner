@@ -610,6 +610,13 @@ describe('writeRejectedRunDiagnostics -- wired into cli.mjs end-to-end (real sub
       }
       expect(r.status).toBe(1);
       expect(r.stderr).toContain('CALIBRATION FAILED');
+      // Same rationale as the status check above -- if the diagnostics write itself failed (any
+      // OTHER early-return reason never even attempts it; a genuine write throw is caught and
+      // surfaced as "were NOT written"), fail here with the FULL reason instead of a bare ENOENT
+      // three lines down when the directory this assumes exists never got created.
+      if (!r.stderr.includes('rejected-run diagnostics written:')) {
+        throw new Error(`expected a successful diagnostics write, got stderr:\n${r.stderr}`);
+      }
 
       const rejectedDir = path.join(runsRoot, 'agentic-eval-rejected');
       const committedFiles = readdirSync(rejectedDir).filter((f) => f.endsWith('.json'));
