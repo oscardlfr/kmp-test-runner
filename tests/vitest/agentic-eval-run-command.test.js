@@ -278,6 +278,10 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
       expect(record.test_invocations_total.value).toBe(1);
       expect(record.retries.value).toBe(0);
       expect(record.benchmark_eligible).toBe(true);
+      // A scenario record must never carry a note that contradicts benchmark_eligible:true --
+      // asserted by exact string equality, not merely "doesn't contain the old phrase", so a
+      // broken replacement can't slip through.
+      expect(record.notes).toBe('Scenario run -- benchmark_eligible reflects protocol/integrity completeness, not answer correctness; see grading_checks and success for the actual outcome.');
     }
   }, 60000);
 

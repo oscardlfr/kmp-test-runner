@@ -642,7 +642,12 @@ function buildRunRecord({
     // prevent -- so an override is disclosed generically (see dirty_harness_tooling's identical
     // content-free-disclosure precedent), never printed verbatim.
     raw_capture_location: RUNS_ROOT_IS_DEFAULT ? `tools/runs/agentic-eval-${runKind}/raw/` : '(KMP_EVAL_RUNS_ROOT override -- see errors[])',
-    notes: 'Foundation-harness run; not a benchmark result.',
+    // isScenario-conditioned like every other sibling field in this function -- a scenario
+    // record's benchmark_eligible can legitimately be true, so its note must never claim "not a
+    // benchmark result" (that claim only holds for calibrate/smoke's foundation-harness runs).
+    notes: isScenario
+      ? 'Scenario run -- benchmark_eligible reflects protocol/integrity completeness, not answer correctness; see grading_checks and success for the actual outcome.'
+      : 'Foundation-harness run; not a benchmark result.',
     // grading_checks (decision 14, v2-only): the full structured per-check detail from
     // gradeScenarioCondition, never overloaded into notes/errors. calibrate/smoke report
     // null+reason -- grading doesn't apply to them at all, not merely "not tracked".
