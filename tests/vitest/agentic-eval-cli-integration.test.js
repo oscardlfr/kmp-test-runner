@@ -123,6 +123,9 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
       expect(record.grading_checks.value).toBeNull();
       expect(record.grading_checks.reason).toMatch(/not applicable/i);
       expect(record.repetition_index).toBeNull();
+      // Regression lock: calibrate/smoke's notes must stay EXACTLY this foundation-harness
+      // string, unchanged by the scenario-specific notes branch added alongside this test.
+      expect(record.notes).toBe('Foundation-harness run; not a benchmark result.');
     }
   }, 20000);
 
