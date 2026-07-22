@@ -454,14 +454,18 @@ describe('attributeCondition -- an incoherent decision value (neither allow nor 
 // granularity. Every case uses the SAME single, LAST relevant attempt under a genuine timeout
 // termination; cases (c)-(f) are direct regression tests for round 5's "the timeout exception was
 // too broad" finding (an earlier revision skipped ALL checks for the trailing attempt under
-// timeout, not just a genuinely-missing record).
+// timeout, not just a genuinely-missing record). Every fixture below sets `resultFound: false`
+// explicitly (real bashResults entries always carry this field -- see
+// findBashToolUsesWithResults) to genuinely represent "this specific Bash call has no correlated
+// tool_result at all," the precise, narrower condition a later adversarial review (P1b) required --
+// see the dedicated "resultFound" describe block below for the regression proof itself.
 describe('attributeCondition -- round-5 narrowed timeout tolerance: ONLY a genuinely absent record is tolerated', () => {
   const TIMEOUT_INFO = { terminated: true, terminationReason: 'timeout' };
 
   it('(a) last attempt, genuine timeout, decision record entirely ABSENT -- tolerated, captureIncomplete stays false', () => {
     const dir = makeEvidenceDir();
     try {
-      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD }];
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: false }];
       const result = attributeCondition(dir, SCENARIO, bashResults, TIMEOUT_INFO);
       expect(result.captureIncomplete).toBe(false);
       expect(result.decisionByAttempt.get('t1')).toBeNull();
@@ -473,7 +477,7 @@ describe('attributeCondition -- round-5 narrowed timeout tolerance: ONLY a genui
   it('contrast for (a): the SAME missing-decision shape WITHOUT a genuine timeout termination is NOT tolerated -- proves the tolerance is genuinely timeout-gated, not unconditional', () => {
     const dir = makeEvidenceDir();
     try {
-      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD }];
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: false }];
       const result = attributeCondition(dir, SCENARIO, bashResults, { terminated: false, terminationReason: null });
       expect(result.captureIncomplete).toBe(true);
     } finally {
@@ -485,7 +489,7 @@ describe('attributeCondition -- round-5 narrowed timeout tolerance: ONLY a genui
     const dir = makeEvidenceDir();
     try {
       writeDecision(dir, 't1', 'allow', GRADLE_CMD);
-      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD }];
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: false }];
       const result = attributeCondition(dir, SCENARIO, bashResults, TIMEOUT_INFO);
       expect(result.captureIncomplete).toBe(false);
       expect(result.perAttemptJunit.has('t1')).toBe(false);
@@ -498,7 +502,7 @@ describe('attributeCondition -- round-5 narrowed timeout tolerance: ONLY a genui
     const dir = makeEvidenceDir();
     try {
       writeDecision(dir, 't1', 'allow', GRADLE_CMD);
-      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD }];
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: false }];
       const result = attributeCondition(dir, SCENARIO, bashResults, { terminated: false, terminationReason: null });
       expect(result.captureIncomplete).toBe(true);
     } finally {
@@ -510,7 +514,7 @@ describe('attributeCondition -- round-5 narrowed timeout tolerance: ONLY a genui
     const dir = makeEvidenceDir();
     try {
       writeAnomaly(dir, 't1', 'duplicate_decision_write');
-      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD }];
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: false }];
       const result = attributeCondition(dir, SCENARIO, bashResults, TIMEOUT_INFO);
       expect(result.captureIncomplete).toBe(true);
     } finally {
@@ -522,7 +526,7 @@ describe('attributeCondition -- round-5 narrowed timeout tolerance: ONLY a genui
     const dir = makeEvidenceDir();
     try {
       writeDecision(dir, 't1', 'maybe', GRADLE_CMD);
-      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD }];
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: false }];
       const result = attributeCondition(dir, SCENARIO, bashResults, TIMEOUT_INFO);
       expect(result.captureIncomplete).toBe(true);
     } finally {
@@ -535,7 +539,7 @@ describe('attributeCondition -- round-5 narrowed timeout tolerance: ONLY a genui
     try {
       writeDecision(dir, 't1', 'allow', GRADLE_CMD);
       writeEvidence(dir, 't1', GRADLE_CMD, { status: 'integrity_error', reason: 'junit_xml_read_anomaly' });
-      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD }];
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: false }];
       const result = attributeCondition(dir, SCENARIO, bashResults, TIMEOUT_INFO);
       expect(result.unreliable).toBe(true);
     } finally {
@@ -547,7 +551,7 @@ describe('attributeCondition -- round-5 narrowed timeout tolerance: ONLY a genui
     const dir = makeEvidenceDir();
     try {
       writeDecision(dir, 't1', 'allow', './gradlew.bat :shared:testAndroidHostTest --console=plain --SOMETHING-ELSE');
-      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD }];
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: false }];
       const result = attributeCondition(dir, SCENARIO, bashResults, TIMEOUT_INFO);
       expect(result.captureIncomplete).toBe(true);
     } finally {
@@ -562,8 +566,8 @@ describe('attributeCondition -- round-5 narrowed timeout tolerance: ONLY a genui
       writeDecision(dir, 't2', 'allow', GRADLE_CMD); // t2 (index 2) is the last relevant attempt, complete.
       writeEvidence(dir, 't2', GRADLE_CMD, { status: 'ok', junit: { total: 1, passed: 1, failed: 0 } });
       const bashResults = [
-        { index: 1, id: 't1', command: GRADLE_CMD },
-        { index: 2, id: 't2', command: GRADLE_CMD },
+        { index: 1, id: 't1', command: GRADLE_CMD, resultFound: false },
+        { index: 2, id: 't2', command: GRADLE_CMD, resultFound: true },
       ];
       const result = attributeCondition(dir, SCENARIO, bashResults, TIMEOUT_INFO);
       expect(result.captureIncomplete).toBe(true);
@@ -584,10 +588,11 @@ describe('attributeCondition -- round-5 narrowed timeout tolerance: ONLY a genui
       // t1 and t2 share index 5 (a same-turn dispatch) -- under the OLD index-based tolerance check
       // BOTH would satisfy "b.index === lastRelevantIndexValue" and BOTH would be excused for a
       // missing decision, leaving captureIncomplete FALSE even though t1's own capture genuinely
-      // never happened. Neither has any decision record at all.
+      // never happened. Neither has any decision record at all; both genuinely lack a tool_result
+      // (a real same-turn kill-mid-flight shape).
       const bashResults = [
-        { index: 5, id: 't1', command: GRADLE_CMD },
-        { index: 5, id: 't2', command: './gradlew.bat :shared:testAndroidHostTest --console=plain --rerun-tasks' },
+        { index: 5, id: 't1', command: GRADLE_CMD, resultFound: false },
+        { index: 5, id: 't2', command: './gradlew.bat :shared:testAndroidHostTest --console=plain --rerun-tasks', resultFound: false },
       ];
       const result = attributeCondition(dir, SCENARIO, bashResults, TIMEOUT_INFO);
       // t2 (the true last entry in array order) is correctly tolerated for its missing decision.
@@ -595,6 +600,53 @@ describe('attributeCondition -- round-5 narrowed timeout tolerance: ONLY a genui
       // t1 (shares the same .index value, but is NOT the true last entry) is NOT tolerated --
       // its own missing decision still sets captureIncomplete.
       expect(result.captureIncomplete).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// P1b regression (a fresh adversarial review found this real, confirmed defect): the trailing-
+// timeout tolerance previously checked ONLY "is this the last relevant attempt AND did the whole
+// CONDITION end in a timeout" -- never whether THIS SPECIFIC Bash call itself genuinely lacks a
+// tool_result. A session-wide timeout can kill a LATER step (e.g. final-answer generation) after
+// the last relevant Bash call already completed normally -- reproduced directly: an attempt with
+// resultFound:true but a genuinely missing sidecar (an unrelated harness capture bug) incorrectly
+// read as captureIncomplete:false. Fixed by additionally requiring `b.resultFound === false`,
+// mirroring findIncompleteToolResultsToleratingTimeout's own convention elsewhere in this codebase.
+describe('attributeCondition -- P1b: the timeout tolerance requires the SPECIFIC last attempt to genuinely lack a tool_result, not just a condition-wide timeout', () => {
+  it('EXACT REPRODUCTION: last relevant attempt genuinely COMPLETED (resultFound:true) but its decision record is entirely absent, under a genuine session-wide timeout -- NOT tolerated, captureIncomplete:true', () => {
+    const dir = makeEvidenceDir();
+    try {
+      // No decision record written at all for t1 -- but t1's own tool_result IS present (resultFound
+      // true), simulating a LATER step (not this Bash call) being the one the timeout actually killed.
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: true }];
+      const result = attributeCondition(dir, SCENARIO, bashResults, { terminated: true, terminationReason: 'timeout' });
+      expect(result.captureIncomplete).toBe(true);
+      expect(result.decisionByAttempt.get('t1')).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('EXACT REPRODUCTION (evidence variant): last relevant attempt genuinely COMPLETED, decision found "allow", but its evidence record is entirely absent, under a genuine session-wide timeout -- NOT tolerated, captureIncomplete:true', () => {
+    const dir = makeEvidenceDir();
+    try {
+      writeDecision(dir, 't1', 'allow', GRADLE_CMD);
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: true }];
+      const result = attributeCondition(dir, SCENARIO, bashResults, { terminated: true, terminationReason: 'timeout' });
+      expect(result.captureIncomplete).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('contrast: the IDENTICAL shape (last attempt, missing decision, genuine timeout) but with resultFound:false (the Bash call itself genuinely has no tool_result) IS tolerated -- proves the new resultFound check is genuinely gating, not accidentally always blocking', () => {
+    const dir = makeEvidenceDir();
+    try {
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: false }];
+      const result = attributeCondition(dir, SCENARIO, bashResults, { terminated: true, terminationReason: 'timeout' });
+      expect(result.captureIncomplete).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -769,13 +821,70 @@ describe('attributeCondition -- wrong-module kmp-test parallel attempts still ge
     }
   });
 
-  it('a wrong-module kmp-test parallel attempt with NO decision record at all stays entirely untracked (undefined, not null) -- a missing decision here is never itself a harness-integrity signal', () => {
+  // EXACT REPRODUCTION (a fresh adversarial review found this real, confirmed P1 defect): the four
+  // tests below each construct one of the FOUR ways a wrong-module attempt's decision sidecar can
+  // be untrustworthy -- absent, incoherent, tombstoned, or command-mismatched. An earlier revision
+  // of the decision-only pass only ever SET decisionByAttempt for a fully coherent record, leaving
+  // it entirely unset (`.get()` returns `undefined`) in all four of these cases. Since `undefined`
+  // is graders.mjs's own reserved signal for "the mechanism was never enabled for this condition at
+  // all" (which never gates), and evaluateKmpTestAttempt evaluates ANY non-plan-only `parallel`
+  // attempt regardless of module BEFORE its own deny/null gate, an attempt whose own decision
+  // status the harness could not even verify silently passed that gate -- phantom-counted as a real
+  // execution in testInvocationsTotal/retries, a documented, publishable metric. Each case here
+  // must now resolve to explicit `null` (never bare `undefined`), which DOES correctly gate.
+  it('(i) a wrong-module kmp-test parallel attempt with NO decision record at all resolves to null (not undefined) -- correctly excludable downstream, never phantom-countable', () => {
     const dir = makeEvidenceDir();
     try {
       const wrongModuleCmd = 'kmp-test parallel --module-filter app --json';
       const bashResults = [{ index: 1, id: 't1', command: wrongModuleCmd }];
       const result = attributeCondition(dir, SCENARIO, bashResults);
-      expect(result.decisionByAttempt.has('t1')).toBe(false);
+      expect(result.decisionByAttempt.has('t1')).toBe(true);
+      expect(result.decisionByAttempt.get('t1')).toBeNull();
+      // Still never a harness-integrity signal for the TARGET module -- this attempt was never a
+      // candidate producer of :shared's own evidence.
+      expect(result.captureIncomplete).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('(ii) a wrong-module kmp-test parallel attempt whose decision record EXISTS but is INCOHERENT (neither allow nor deny) also resolves to null', () => {
+    const dir = makeEvidenceDir();
+    try {
+      const wrongModuleCmd = 'kmp-test parallel --module-filter app --json';
+      writeDecision(dir, 't1', 'maybe', wrongModuleCmd);
+      const bashResults = [{ index: 1, id: 't1', command: wrongModuleCmd }];
+      const result = attributeCondition(dir, SCENARIO, bashResults);
+      expect(result.decisionByAttempt.get('t1')).toBeNull();
+      expect(result.captureIncomplete).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('(iii) a wrong-module kmp-test parallel attempt with an anomalies/ tombstone (a duplicate-write collision) also resolves to null', () => {
+    const dir = makeEvidenceDir();
+    try {
+      const wrongModuleCmd = 'kmp-test parallel --module-filter app --json';
+      writeDecision(dir, 't1', 'allow', wrongModuleCmd); // a decision exists...
+      writeAnomaly(dir, 't1', 'duplicate_decision_write'); // ...but a tombstone also exists for it
+      const bashResults = [{ index: 1, id: 't1', command: wrongModuleCmd }];
+      const result = attributeCondition(dir, SCENARIO, bashResults);
+      expect(result.decisionByAttempt.get('t1')).toBeNull();
+      expect(result.captureIncomplete).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('(iv) a wrong-module kmp-test parallel attempt whose decision record\'s OWN stored command differs from the transcript command also resolves to null', () => {
+    const dir = makeEvidenceDir();
+    try {
+      const wrongModuleCmd = 'kmp-test parallel --module-filter app --json';
+      writeDecision(dir, 't1', 'allow', 'kmp-test parallel --module-filter app --json --SOMETHING-ELSE');
+      const bashResults = [{ index: 1, id: 't1', command: wrongModuleCmd }];
+      const result = attributeCondition(dir, SCENARIO, bashResults);
+      expect(result.decisionByAttempt.get('t1')).toBeNull();
       expect(result.captureIncomplete).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });

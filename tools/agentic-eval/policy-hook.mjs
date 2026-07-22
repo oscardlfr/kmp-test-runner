@@ -27,7 +27,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sha256Hex, writeSidecarRecord } from './junit-evidence-io.mjs';
 
 const DENY_REASON = 'Command not permitted by evaluation harness policy.';
 const ALLOW_REASON = 'Command permitted by evaluation harness policy.';
@@ -342,8 +341,20 @@ function writeAndExit(output) {
  * strictly AFTER `output` has already been computed, and its own try/catch swallows every failure.
  * A no-op entirely when KMP_EVAL_JUNIT_EVIDENCE_DIR is unset (calibrate/smoke/no_applicable_tests
  * never set it, so this hook's behavior there is unchanged).
+ *
+ * `junit-evidence-io.mjs` (and its own `evidence-io.mjs` dependency) is imported LAZILY, via a
+ * dynamic `import()` reached only AFTER the cheap `KMP_EVAL_JUNIT_EVIDENCE_DIR` check above -- an
+ * EXACT REPRODUCTION a fresh adversarial review found: an earlier revision imported it statically
+ * at the top of this file, so EVERY PreToolUse invocation (this hook runs on literally every Bash
+ * call) paid that module's resolution cost regardless of whether this mechanism was ever enabled,
+ * contradicting `condition-launcher.mjs`'s own documented "no ... timing drift for those [disabled]
+ * run kinds" claim. Making this function `async` to support the dynamic import is safe here: its
+ * only caller (`runAsHook`'s `'end'` handler) already computes `output` and clears the hard-timeout
+ * timer before calling this, and `writeAndExit` is only ever invoked AFTER this promise settles --
+ * this function's own try/catch still swallows every failure, so an await never risks leaking an
+ * exception into the caller.
  */
-export function recordDecisionSideEffect(raw, output, env = process.env) {
+export async function recordDecisionSideEffect(raw, output, env = process.env) {
   try {
     const evidenceDirRaw = env.KMP_EVAL_JUNIT_EVIDENCE_DIR;
     if (!evidenceDirRaw) return;
@@ -372,6 +383,7 @@ export function recordDecisionSideEffect(raw, output, env = process.env) {
     } catch {
       return;
     }
+    const { sha256Hex, writeSidecarRecord } = await import('./junit-evidence-io.mjs');
     const idHash = sha256Hex(toolUseId);
     writeSidecarRecord(
       path.join(evidenceDirReal, 'decisions'), idHash, { decision, command },
@@ -400,12 +412,12 @@ function runAsHook() {
       if (!finished) { finished = true; clearTimeout(timer); writeAndExit(denyOutput()); }
     }
   });
-  process.stdin.on('end', () => {
+  process.stdin.on('end', async () => {
     if (finished) return;
     finished = true;
     clearTimeout(timer);
     const output = decide(raw);
-    recordDecisionSideEffect(raw, output);
+    await recordDecisionSideEffect(raw, output);
     writeAndExit(output);
   });
   process.stdin.on('error', () => {

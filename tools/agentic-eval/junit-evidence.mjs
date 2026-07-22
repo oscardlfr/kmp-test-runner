@@ -141,21 +141,31 @@ export function countEvidenceTaskJunit(fixtureRoot, evidenceTask) {
  * data looks fine). The ONLY tolerance: for the single *last* relevant attempt (by transcript order
  * -- identity, never an index comparison, for the same reason the map keys above are identity-based:
  * two attempts sharing the max `.index` would otherwise BOTH read as "the last one"), when the
- * condition was terminated by a genuine timeout, a decision record (or, if a decision of `'allow'`
- * was found, an evidence record) that is entirely ABSENT-OR-UNREADABLE (`readSidecarRecord`'s own
- * contract never distinguishes the two -- an unreadable record is exactly as untrustworthy as a
- * missing one) is tolerated -- nothing else about that same attempt gets a pass: an anomaly
- * tombstone, a decision record that EXISTS but is incoherent, a command cross-check mismatch, or an
- * evidence record showing `integrity_error` all unconditionally block, timeout or not.
+ * condition was terminated by a genuine timeout **and this specific Bash call itself genuinely has
+ * no correlated `tool_result` at all** (`b.resultFound === false` -- mirroring
+ * `findIncompleteToolResultsToleratingTimeout`'s own convention elsewhere in this codebase; a
+ * session-wide timeout can kill a LATER step after the last relevant Bash call already completed
+ * normally, so "the condition timed out" alone is never sufficient), a decision record (or, if a
+ * decision of `'allow'` was found, an evidence record) that is entirely ABSENT-OR-UNREADABLE
+ * (`readSidecarRecord`'s own contract never distinguishes the two -- an unreadable record is
+ * exactly as untrustworthy as a missing one) is tolerated -- nothing else about that same attempt
+ * gets a pass: a completed attempt's own missing sidecar, an anomaly tombstone, a decision record
+ * that EXISTS but is incoherent, a command cross-check mismatch, or an evidence record showing
+ * `integrity_error` all unconditionally block, timeout or not.
  *
  * A `kmp-test parallel` attempt targeting a *different* module than the scenario expects is
  * intentionally excluded from `relevant` above (it is not a candidate producer of the *target*
  * module's evidence) but graders.mjs's own `evaluateKmpTestAttempt` still evaluates it (deferring
  * its own target-match check to after its deny/null gate, so a wrong-module-only condition can
  * still fall back to "the last attempt overall" for terminal selection). A separate, decision-only
- * pass below additionally records such an attempt's real decision when one exists, so a genuinely
- * denied wrong-module attempt is correctly excluded by that same deny/null gate downstream, rather
- * than silently phantom-counted as a real execution -- this pass never touches
+ * pass below additionally resolves such an attempt to an explicit `'allow'`/`'deny'`/`null` --
+ * **never left as bare `undefined`**, which is graders.mjs's own reserved signal for "the
+ * mechanism was never enabled for this condition at all" and therefore never gates. A missing,
+ * incoherent, tombstoned, or command-mismatched decision on a wrong-module attempt now resolves to
+ * `null` (mirroring the identical handling the main loop above already applies to relevant
+ * attempts), correctly excluding it via the same deny/null gate -- an earlier revision only ever
+ * set this map for a fully coherent record, silently phantom-counting an unverifiable wrong-module
+ * attempt as a real execution in `testInvocationsTotal`/`retries`. This pass never touches
  * `perAttemptJunit`/`captureIncomplete`/`unreliable` (a wrong-module attempt's own capture
  * completeness says nothing about the target module's evidence trustworthiness).
  * @param {string} evidenceDir - KMP_EVAL_JUNIT_EVIDENCE_DIR for this condition
@@ -211,7 +221,17 @@ export function attributeCondition(evidenceDir, scenario, bashResults, terminati
   for (const { b, c } of relevant) {
     const idHash = sha256Hex(b.id);
     const isGradle = isRelevantGradleInvocation(c, allowedInvocations);
-    const isTrailingUnderTimeout = terminated && terminationReason === 'timeout' && b.id === lastRelevantAttemptId;
+    // EXACT REPRODUCTION (a fresh adversarial review found this): the tolerance previously checked
+    // only "is this the last relevant attempt AND did the whole condition end in a timeout" --
+    // never whether THIS SPECIFIC Bash call actually lacks a tool_result. A session-wide timeout
+    // can kill a LATER step (e.g. final-answer generation) after the last relevant Bash call
+    // already completed normally (a real tool_result present) -- reproduced directly: an attempt
+    // with resultFound:true but a genuinely missing sidecar (an unrelated harness capture bug)
+    // incorrectly read as captureIncomplete:false. Fixed by requiring b.resultFound === false too,
+    // mirroring findIncompleteToolResultsToleratingTimeout's own convention elsewhere in this
+    // codebase (only a tool_use with NO correlated tool_result is ever timeout-tolerated) -- a
+    // completed attempt missing its sidecar is a genuine harness-capture failure, timeout or not.
+    const isTrailingUnderTimeout = terminated && terminationReason === 'timeout' && b.id === lastRelevantAttemptId && b.resultFound === false;
 
     if (anomalyIds.has(idHash)) {
       // A duplicate-write anomaly ALWAYS blocks -- never timeout-tolerant, never silently ignored.
@@ -269,16 +289,39 @@ export function attributeCondition(evidenceDir, scenario, bashResults, terminati
 
   // Decision-only pass for a kmp-test-parallel attempt targeting a DIFFERENT module -- see this
   // function's own doc comment for the full rationale. Never touches perAttemptJunit/
-  // captureIncomplete/unreliable; only fills in a real 'allow'/'deny' where graders.mjs's own,
-  // module-agnostic relevance check would otherwise see no decision data at all (`undefined`,
-  // which never gates) for an attempt that, in fact, executed or was denied.
+  // captureIncomplete/unreliable (its own capture completeness says nothing about the TARGET
+  // module's evidence trustworthiness) -- but EVERY such attempt gets an explicit, coherent
+  // resolution ('allow'/'deny'/null), never left as bare `undefined`.
+  //
+  // EXACT REPRODUCTION (a fresh adversarial review found this, reproduced against the code before
+  // this fix): `undefined` is graders.mjs's OWN signal for "the mechanism was never enabled for
+  // this condition at all" (see evaluateKmpTestAttempt's parameter doc) -- it deliberately never
+  // gates. An earlier version of this pass only ever SET the map for a fully coherent record,
+  // leaving it unset (reads back as `undefined`) for a missing, incoherent, tombstoned, or
+  // command-mismatched decision on a WRONG-MODULE attempt. Since graders.mjs's own
+  // evaluateKmpTestAttempt evaluates ANY non-plan-only `parallel` attempt regardless of module
+  // BEFORE its target-match check, that `undefined` silently passed its deny/null gate -- an
+  // attempt whose own decision status the harness could not even verify (denied? a capture bug?)
+  // was phantom-counted as a real execution in testInvocationsTotal/retries, with
+  // captureIncomplete staying false throughout (correctly -- its incompleteness says nothing about
+  // the TARGET module's own evidence). Concretely reproducible: a potentially-denied :app call
+  // followed by a clean :shared pass previously produced success:true, captureIncomplete:false,
+  // testInvocationsTotal:2, retries:1 -- silent corruption of a documented, publishable metric.
+  // Fixed by resolving every non-plan-only kmp-test-parallel attempt to an explicit 'allow'/
+  // 'deny'/null, mirroring the SAME missing/incoherent/tombstone/mismatch handling the main loop
+  // above already applies to relevant attempts -- `null` (not `undefined`) correctly excludes it
+  // via the identical deny/null gate, without ever touching the whole-condition integrity flags.
   for (const { b, c } of classified) {
     if (decisionByAttempt.has(b.id)) continue; // already handled above (a relevant attempt)
     if (c.kind !== 'kmp-test' || c.subcommand !== 'parallel' || c.isPlanOnly) continue;
-    const decisionRecord = readSidecarRecord(decisionsDir, sha256Hex(b.id));
-    if (decisionRecord != null && (decisionRecord.decision === 'allow' || decisionRecord.decision === 'deny') && decisionRecord.command === b.command) {
-      decisionByAttempt.set(b.id, decisionRecord.decision);
+    const idHash = sha256Hex(b.id);
+    if (anomalyIds.has(idHash)) { decisionByAttempt.set(b.id, null); continue; }
+    const decisionRecord = readSidecarRecord(decisionsDir, idHash);
+    if (decisionRecord == null || (decisionRecord.decision !== 'allow' && decisionRecord.decision !== 'deny') || decisionRecord.command !== b.command) {
+      decisionByAttempt.set(b.id, null);
+      continue;
     }
+    decisionByAttempt.set(b.id, decisionRecord.decision);
   }
 
   return { perAttemptJunit, decisionByAttempt, ambiguousJunitEvidence, captureIncomplete, unreliable };
