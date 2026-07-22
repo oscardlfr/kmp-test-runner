@@ -10,9 +10,11 @@ import {
   findInitEvent,
   findResultEvent,
   isSkillAvailable,
+  isTargetSkillReference,
   findSkillInvocation,
   findForeignSkillUses,
   classifyForeignSkillUses,
+  hasExpectedPluginProfile,
   findBashToolUses,
   findBashToolUsesWithResults,
   findTranscriptStructuralIssues,
@@ -76,8 +78,118 @@ describe('parseStreamJsonl', () => {
   });
 });
 
+// isTargetSkillReference is the ONE place that decides whether a Skill tool_use's `input.skill`
+// refers to the logical target skill (pluginName, skillName) -- see stream-parser.mjs's own doc
+// comment for the full rationale. pluginName/skillName are tested here with DIFFERENT literal
+// values (not just this harness's own coincidental 'kmp-test-runner'/'kmp-test-runner' pair)
+// specifically to prove the canonical form is genuinely `${pluginName}:${skillName}`, never
+// derived by assuming the two always coincide.
+describe('isTargetSkillReference -- closed allowlist for the two accepted skill-identity forms', () => {
+  it('accepts the bare skill name', () => {
+    expect(isTargetSkillReference('my-skill', 'my-plugin', 'my-skill')).toBe(true);
+  });
+
+  it('accepts the canonical plugin-namespaced form, built from the SEPARATE plugin/skill names', () => {
+    expect(isTargetSkillReference('my-plugin:my-skill', 'my-plugin', 'my-skill')).toBe(true);
+  });
+
+  it('this harness\'s own coincidental case (plugin and skill share one literal value) still works', () => {
+    expect(isTargetSkillReference('kmp-test-runner', 'kmp-test-runner', 'kmp-test-runner')).toBe(true);
+    expect(isTargetSkillReference('kmp-test-runner:kmp-test-runner', 'kmp-test-runner', 'kmp-test-runner')).toBe(true);
+  });
+
+  it('rejects the skill name doubled on itself -- proves the canonical form is NOT derived as ${skillName}:${skillName}', () => {
+    expect(isTargetSkillReference('my-skill:my-skill', 'my-plugin', 'my-skill')).toBe(false);
+  });
+
+  it('rejects the plugin name doubled on itself -- proves the canonical form is NOT derived as ${pluginName}:${pluginName}', () => {
+    expect(isTargetSkillReference('my-plugin:my-plugin', 'my-plugin', 'my-skill')).toBe(false);
+  });
+
+  it('rejects a foreign namespace prefix', () => {
+    expect(isTargetSkillReference('evil:kmp-test-runner', 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+  });
+
+  it('rejects a DIFFERENT skill from the SAME plugin', () => {
+    expect(isTargetSkillReference('kmp-test-runner:some-other-skill', 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+  });
+
+  it('rejects a casing variant of the bare form', () => {
+    expect(isTargetSkillReference('Kmp-Test-Runner', 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+  });
+
+  it('rejects a casing variant of the namespaced form', () => {
+    expect(isTargetSkillReference('KMP-TEST-RUNNER:KMP-TEST-RUNNER', 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+  });
+
+  it('rejects leading/trailing whitespace', () => {
+    expect(isTargetSkillReference(' kmp-test-runner', 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+    expect(isTargetSkillReference('kmp-test-runner ', 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+    expect(isTargetSkillReference('kmp-test-runner: kmp-test-runner', 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+  });
+
+  it('rejects a double/nested namespace, prefixed', () => {
+    expect(isTargetSkillReference('a:kmp-test-runner:kmp-test-runner', 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+  });
+
+  it('rejects a double/nested namespace, suffixed', () => {
+    expect(isTargetSkillReference('kmp-test-runner:kmp-test-runner:extra', 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+  });
+
+  it('rejects non-string skillArg values (undefined, null, number, object)', () => {
+    expect(isTargetSkillReference(undefined, 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+    expect(isTargetSkillReference(null, 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+    expect(isTargetSkillReference(42, 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+    expect(isTargetSkillReference({ toString: () => 'kmp-test-runner' }, 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+  });
+
+  it('rejects an empty string', () => {
+    expect(isTargetSkillReference('', 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
+  });
+
+  // P2 (post-#385 review): fails closed on a misconfigured IDENTITY too, not just a malformed
+  // skillArg -- without this, a caller accidentally passing pluginName:undefined would silently
+  // match a wire value literally containing the string "undefined" (JS's own template-literal
+  // coercion turns `${undefined}:foo` into the real string 'undefined:foo'), and skillName:''
+  // would match an empty-string skillArg. No real call site does this today, but the exported
+  // function's own contract promises a closed allowlist regardless of caller correctness.
+  describe('fails closed when pluginName/skillName themselves are misconfigured', () => {
+    it('an undefined pluginName never matches, even a wire value literally containing "undefined"', () => {
+      expect(isTargetSkillReference('undefined:kmp-test-runner', undefined, 'kmp-test-runner')).toBe(false);
+      expect(isTargetSkillReference('kmp-test-runner', undefined, 'kmp-test-runner')).toBe(false);
+    });
+
+    it('a null pluginName never matches, even a wire value literally containing "null"', () => {
+      expect(isTargetSkillReference('null:kmp-test-runner', null, 'kmp-test-runner')).toBe(false);
+    });
+
+    it('an undefined skillName never matches, even a wire value literally containing "undefined"', () => {
+      expect(isTargetSkillReference('kmp-test-runner:undefined', 'kmp-test-runner', undefined)).toBe(false);
+      expect(isTargetSkillReference('undefined', 'kmp-test-runner', undefined)).toBe(false);
+    });
+
+    it('a null skillName never matches, even a wire value literally containing "null"', () => {
+      expect(isTargetSkillReference('null', 'kmp-test-runner', null)).toBe(false);
+    });
+
+    it('an empty-string skillName never matches an empty-string skillArg', () => {
+      expect(isTargetSkillReference('', 'kmp-test-runner', '')).toBe(false);
+    });
+
+    it('an empty-string pluginName never matches the bare-colon namespaced form', () => {
+      expect(isTargetSkillReference(':kmp-test-runner', '', 'kmp-test-runner')).toBe(false);
+    });
+
+    it('both identities misconfigured at once still returns false, never throws', () => {
+      expect(isTargetSkillReference('anything', undefined, undefined)).toBe(false);
+      expect(isTargetSkillReference('anything', null, null)).toBe(false);
+      expect(isTargetSkillReference('anything', '', '')).toBe(false);
+    });
+  });
+});
+
 describe('skill availability and invocation detection (real captured event shapes)', () => {
-  it('current-skill fixture: skill is available in init.plugins', () => {
+  it('current-skill fixture: plugin is available in init.plugins', () => {
     const { events } = parseStreamJsonl(currentSkillRaw);
     const init = findInitEvent(events);
     expect(isSkillAvailable(init, 'kmp-test-runner')).toBe(true);
@@ -85,7 +197,7 @@ describe('skill availability and invocation detection (real captured event shape
 
   it('current-skill fixture: a real Skill tool_use event is found and CONFIRMED (matching, non-error tool_result)', () => {
     const { events } = parseStreamJsonl(currentSkillRaw);
-    const invocation = findSkillInvocation(events, 'kmp-test-runner');
+    const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
     expect(invocation).not.toBeNull();
     expect(invocation.type).toBe('assistant.tool_use.Skill');
     expect(typeof invocation.index).toBe('number');
@@ -94,7 +206,7 @@ describe('skill availability and invocation detection (real captured event shape
     expect(invocation.resultIsError).toBe(false);
   });
 
-  it('no-skill fixture: skill is absent from init.plugins', () => {
+  it('no-skill fixture: plugin is absent from init.plugins', () => {
     const { events } = parseStreamJsonl(noSkillRaw);
     const init = findInitEvent(events);
     expect(isSkillAvailable(init, 'kmp-test-runner')).toBe(false);
@@ -102,12 +214,89 @@ describe('skill availability and invocation detection (real captured event shape
 
   it('no-skill fixture: no Skill tool_use event is found', () => {
     const { events } = parseStreamJsonl(noSkillRaw);
-    expect(findSkillInvocation(events, 'kmp-test-runner')).toBeNull();
+    expect(findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner')).toBeNull();
   });
 
   it('does not match a differently-named skill', () => {
     const { events } = parseStreamJsonl(currentSkillRaw);
-    expect(findSkillInvocation(events, 'some-other-skill')).toBeNull();
+    expect(findSkillInvocation(events, 'some-other-skill', 'some-other-skill')).toBeNull();
+  });
+
+  // The real, confirmed shape from a live 2026-07-22 rejection: Claude Code 2.1.217 invoked this
+  // harness's own target skill via its plugin-namespaced identity, not the bare form every prior
+  // fixture/live capture happened to use.
+  describe('the plugin-namespaced form is a genuine target-skill invocation, not a different skill', () => {
+    it('is found and CONFIRMED exactly like the bare form', () => {
+      const events = [
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_ns1', name: 'Skill', input: { skill: 'kmp-test-runner:kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_ns1', is_error: false, content: 'real skill output' }] } },
+      ];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
+      expect(invocation).not.toBeNull();
+      expect(invocation.attempted).toBe(true);
+      expect(invocation.confirmed).toBe(true);
+      expect(invocation.resultIsError).toBe(false);
+    });
+
+    it('a namespaced attempt that gets rejected ("Unknown skill") is attempted but NOT confirmed -- same as the bare form', () => {
+      const events = [
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_ns2', name: 'Skill', input: { skill: 'kmp-test-runner:kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_ns2', is_error: true, content: '<tool_use_error>Unknown skill: kmp-test-runner:kmp-test-runner</tool_use_error>' }] } },
+      ];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
+      expect(invocation.attempted).toBe(true);
+      expect(invocation.confirmed).toBe(false);
+      expect(invocation.resultIsError).toBe(true);
+    });
+
+    it('the namespaced form is never classified as a foreign skill', () => {
+      const events = [
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_ns3', name: 'Skill', input: { skill: 'kmp-test-runner:kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_ns3', is_error: false, content: 'ok' }] } },
+      ];
+      expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner')).toEqual([]);
+    });
+
+    it('a mixed bare-then-namespaced retry sequence aggregates BOTH attempts toward the same logical skill', () => {
+      const events = [
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_mix1', name: 'Skill', input: { skill: 'kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_mix1', is_error: true, content: '<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>' }] } },
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_mix2', name: 'Skill', input: { skill: 'kmp-test-runner:kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_mix2', is_error: false, content: 'ok' }] } },
+      ];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
+      expect(invocation.attemptCount).toBe(2);
+      expect(invocation.confirmed).toBe(true);
+    });
+
+    it('a mixed namespaced-then-bare retry sequence also aggregates both, order-independent', () => {
+      const events = [
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_mix3', name: 'Skill', input: { skill: 'kmp-test-runner:kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_mix3', is_error: true, content: '<tool_use_error>Unknown skill</tool_use_error>' }] } },
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_mix4', name: 'Skill', input: { skill: 'kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_mix4', is_error: false, content: 'ok' }] } },
+      ];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
+      expect(invocation.attemptCount).toBe(2);
+      expect(invocation.confirmed).toBe(true);
+    });
+
+    // A no-skill condition (plugin never loaded) is still free to have the model TRY the
+    // namespaced form -- Claude Code itself returns a real "Unknown skill" error either way, since
+    // neither form resolves when the plugin isn't loaded. Must be proven directly, mirroring the
+    // existing bare-form "Unknown skill" regression coverage above.
+    it('no-skill condition: an attempted namespaced invocation still correctly receives a real "Unknown skill" error', () => {
+      const events = [
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_noskill_ns', name: 'Skill', input: { skill: 'kmp-test-runner:kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_noskill_ns', is_error: true, content: '<tool_use_error>Unknown skill: kmp-test-runner:kmp-test-runner</tool_use_error>' }] } },
+      ];
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
+      expect(invocation.attempted).toBe(true);
+      expect(invocation.confirmed).toBe(false);
+      expect(invocation.resultIsError).toBe(true);
+      // Still never classified as a foreign/contaminating call, even though it was rejected.
+      expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner')).toEqual([]);
+    });
   });
 
   // Regression coverage for a real bug found by an independent review pass: a version of this
@@ -126,7 +315,7 @@ describe('skill availability and invocation detection (real captured event shape
         toolUseEvent('toolu_regression0001'),
         { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: '<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>', is_error: true, tool_use_id: 'toolu_regression0001' }] } },
       ];
-      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
       expect(invocation.attempted).toBe(true);
       expect(invocation.confirmed).toBe(false);
       expect(invocation.resultIsError).toBe(true);
@@ -134,7 +323,7 @@ describe('skill availability and invocation detection (real captured event shape
 
     it('an attempted invocation with no matching tool_result yet is NOT assumed confirmed', () => {
       const events = [toolUseEvent('toolu_regression0002')];
-      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
       expect(invocation.attempted).toBe(true);
       expect(invocation.confirmed).toBe(false);
       expect(invocation.resultIsError).toBeNull();
@@ -145,7 +334,7 @@ describe('skill availability and invocation detection (real captured event shape
         toolUseEvent('toolu_regression0003'),
         { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'unrelated', tool_use_id: 'toolu_some_other_call' }] } },
       ];
-      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
       expect(invocation.confirmed).toBe(false);
     });
 
@@ -154,7 +343,7 @@ describe('skill availability and invocation detection (real captured event shape
         { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', input: { skill: 'kmp-test-runner' } }] } },
         { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'ok', tool_use_id: 'toolu_unrelated' }] } },
       ];
-      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
       expect(invocation.attempted).toBe(true);
       expect(invocation.confirmed).toBe(false);
     });
@@ -180,7 +369,7 @@ describe('skill availability and invocation detection (real captured event shape
         toolUseEvent('toolu_try1'), toolResultEvent('toolu_try1', true),
         toolUseEvent('toolu_try2'), toolResultEvent('toolu_try2', false),
       ];
-      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
       expect(invocation.attempted).toBe(true);
       expect(invocation.confirmed).toBe(true);
       expect(invocation.attemptCount).toBe(2);
@@ -194,7 +383,7 @@ describe('skill availability and invocation detection (real captured event shape
         toolUseEvent('toolu_try1'), toolResultEvent('toolu_try1', false),
         toolUseEvent('toolu_try2'), toolResultEvent('toolu_try2', true),
       ];
-      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
       expect(invocation.confirmed).toBe(true);
       expect(invocation.attemptCount).toBe(2);
     });
@@ -204,14 +393,14 @@ describe('skill availability and invocation detection (real captured event shape
         toolUseEvent('toolu_try1'), toolResultEvent('toolu_try1', true),
         toolUseEvent('toolu_try2'), toolResultEvent('toolu_try2', true),
       ];
-      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
       expect(invocation.confirmed).toBe(false);
       expect(invocation.attemptCount).toBe(2);
     });
 
     it('a single attempt still reports attemptCount:1 (no regression on the common case)', () => {
       const events = [toolUseEvent('toolu_only'), toolResultEvent('toolu_only', false)];
-      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
       expect(invocation.attemptCount).toBe(1);
     });
 
@@ -220,7 +409,7 @@ describe('skill availability and invocation detection (real captured event shape
         toolUseEvent('toolu_try1'), toolResultEvent('toolu_try1', false),
         toolUseEvent('toolu_try2', 'some-other-skill'), toolResultEvent('toolu_try2', false),
       ];
-      const invocation = findSkillInvocation(events, 'kmp-test-runner');
+      const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
       expect(invocation.attemptCount).toBe(1);
     });
   });
@@ -229,9 +418,9 @@ describe('skill availability and invocation detection (real captured event shape
 // Regression coverage for a real gap an independent review pass demonstrated against the relaxed
 // calibration contract: findUnexpectedToolUses only checks the tool NAME (Bash/Skill), never a
 // Skill call's own `input.skill` argument -- a transcript that called Skill with some OTHER skill
-// name entirely passes it outright, while findSkillInvocation(events, 'kmp-test-runner') simply
-// never matches that call (scoped to kmp-test-runner only), so a foreign skill invocation is
-// invisible to skill_invocation_attempted/skill_invoked and could silently coexist with
+// name entirely passes it outright, while findSkillInvocation(events, pluginName, skillName)
+// simply never matches that call (scoped to the target skill only), so a foreign skill invocation
+// is invisible to skill_invocation_attempted/skill_invoked and could silently coexist with
 // attempted:false/invoked:false for the expected skill.
 describe('findForeignSkillUses -- detects Skill calls NOT targeting the expected skill', () => {
   function skillToolUse(skillArg) {
@@ -239,46 +428,71 @@ describe('findForeignSkillUses -- detects Skill calls NOT targeting the expected
     return { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_x', name: 'Skill', input }] } };
   }
 
-  it('returns empty for a transcript with only matching-skill calls', () => {
+  it('returns empty for a transcript with only matching-skill calls (bare form)', () => {
     const events = [skillToolUse('kmp-test-runner')];
-    expect(findForeignSkillUses(events, 'kmp-test-runner')).toEqual([]);
+    expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner')).toEqual([]);
+  });
+
+  it('returns empty for a transcript with only matching-skill calls (canonical namespaced form)', () => {
+    const events = [skillToolUse('kmp-test-runner:kmp-test-runner')];
+    expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner')).toEqual([]);
   });
 
   it('returns empty for a transcript with no Skill calls at all', () => {
     const events = [{ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'x' } }] } }];
-    expect(findForeignSkillUses(events, 'kmp-test-runner')).toEqual([]);
+    expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner')).toEqual([]);
   });
 
   it('flags a Skill call targeting a completely different skill name', () => {
     const events = [skillToolUse('some-other-skill')];
-    const foreign = findForeignSkillUses(events, 'kmp-test-runner');
+    const foreign = findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner');
     expect(foreign.length).toBe(1);
     expect(foreign[0].skillArg).toBe('some-other-skill');
   });
 
+  it('flags a foreign namespace prefix', () => {
+    const events = [skillToolUse('evil:kmp-test-runner')];
+    expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner').length).toBe(1);
+  });
+
+  it('flags a DIFFERENT skill from the SAME plugin -- namespace prefix alone is not sufficient', () => {
+    const events = [skillToolUse('kmp-test-runner:some-other-skill-in-this-plugin')];
+    expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner').length).toBe(1);
+  });
+
+  it('flags a casing variant', () => {
+    const events = [skillToolUse('KMP-TEST-RUNNER:KMP-TEST-RUNNER')];
+    expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner').length).toBe(1);
+  });
+
+  it('flags a double/nested namespace', () => {
+    const events = [skillToolUse('kmp-test-runner:kmp-test-runner:extra')];
+    expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner').length).toBe(1);
+  });
+
   it('flags a Skill call with a missing input.skill', () => {
     const events = [skillToolUse(undefined)];
-    expect(findForeignSkillUses(events, 'kmp-test-runner').length).toBe(1);
+    expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner').length).toBe(1);
   });
 
   it('flags a Skill call with a non-string (malformed) input.skill', () => {
     const events = [skillToolUse(42)];
-    expect(findForeignSkillUses(events, 'kmp-test-runner').length).toBe(1);
+    expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner').length).toBe(1);
   });
 
   it('flags a Skill call with an empty-string input.skill', () => {
     const events = [skillToolUse('')];
-    expect(findForeignSkillUses(events, 'kmp-test-runner').length).toBe(1);
+    expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner').length).toBe(1);
   });
 
   it('flags EVERY foreign call, not just the first, when several are present', () => {
     const events = [skillToolUse('other-1'), skillToolUse('kmp-test-runner'), skillToolUse('other-2')];
-    expect(findForeignSkillUses(events, 'kmp-test-runner').length).toBe(2);
+    expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner').length).toBe(2);
   });
 
   it('never flags a Bash call -- scoped to Skill tool_use blocks only', () => {
     const events = [{ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'kmp-test doctor --json' } }] } }];
-    expect(findForeignSkillUses(events, 'kmp-test-runner')).toEqual([]);
+    expect(findForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner')).toEqual([]);
   });
 });
 
@@ -299,12 +513,17 @@ describe('classifyForeignSkillUses -- result-aware foreign-Skill classification'
 
   it('returns [] when there are no foreign Skill calls (mirrors findForeignSkillUses exactly)', () => {
     const events = [foreignToolUse('toolu_1', 'kmp-test-runner')];
-    expect(classifyForeignSkillUses(events, 'kmp-test-runner')).toEqual([]);
+    expect(classifyForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner')).toEqual([]);
+  });
+
+  it('returns [] for the canonical namespaced form too', () => {
+    const events = [foreignToolUse('toolu_1', 'kmp-test-runner:kmp-test-runner')];
+    expect(classifyForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner')).toEqual([]);
   });
 
   it('classifies a rejected foreign attempt (is_error:true) -- confirmed:false, resultIsError:true', () => {
     const events = [foreignToolUse('toolu_1', 'some-other-skill'), toolResultEvent('toolu_1', true)];
-    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner');
+    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner');
     expect(entry.skillArg).toBe('some-other-skill');
     expect(entry.resultIsError).toBe(true);
     expect(entry.confirmed).toBe(false);
@@ -312,7 +531,7 @@ describe('classifyForeignSkillUses -- result-aware foreign-Skill classification'
 
   it('classifies a confirmed foreign invocation via explicit is_error:false -- confirmed:true', () => {
     const events = [foreignToolUse('toolu_1', 'some-other-skill'), toolResultEvent('toolu_1', false)];
-    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner');
+    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner');
     expect(entry.resultIsError).toBe(false);
     expect(entry.confirmed).toBe(true);
   });
@@ -326,21 +545,21 @@ describe('classifyForeignSkillUses -- result-aware foreign-Skill classification'
       foreignToolUse('toolu_1', 'some-other-skill'),
       { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'some real skill output' }] } },
     ];
-    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner');
+    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner');
     expect(entry.resultIsError).toBe(false);
     expect(entry.confirmed).toBe(true);
   });
 
   it('classifies a missing/incomplete result (no correlated tool_result at all) -- resultIsError:null, confirmed:false', () => {
     const events = [foreignToolUse('toolu_1', 'some-other-skill')];
-    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner');
+    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner');
     expect(entry.resultIsError).toBeNull();
     expect(entry.confirmed).toBe(false);
   });
 
   it('a tool_use with no id cannot be correlated, so it is always classified as incomplete', () => {
     const events = [{ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', input: { skill: 'some-other-skill' } }] } }];
-    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner');
+    const [entry] = classifyForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner');
     expect(entry.resultIsError).toBeNull();
     expect(entry.confirmed).toBe(false);
   });
@@ -351,12 +570,27 @@ describe('classifyForeignSkillUses -- result-aware foreign-Skill classification'
       foreignToolUse('toolu_2', 'skill-b'), toolResultEvent('toolu_2', false), // confirmed
       foreignToolUse('toolu_3', 'skill-c'), // incomplete -- no result attached
     ];
-    const results = classifyForeignSkillUses(events, 'kmp-test-runner');
+    const results = classifyForeignSkillUses(events, 'kmp-test-runner', 'kmp-test-runner');
     expect(results.length).toBe(3);
     expect(results.map((r) => r.skillArg)).toEqual(['skill-a', 'skill-b', 'skill-c']);
     expect(results[0]).toMatchObject({ resultIsError: true, confirmed: false });
     expect(results[1]).toMatchObject({ resultIsError: false, confirmed: true });
     expect(results[2]).toMatchObject({ resultIsError: null, confirmed: false });
+  });
+});
+
+// hasExpectedPluginProfile's expectedPluginName is the PLUGIN's own identity (plugins[].name),
+// never the skill's -- confirmed with a plugin/skill pair whose names genuinely differ, mirroring
+// isTargetSkillReference's own separate-identity proof above.
+describe('hasExpectedPluginProfile -- matches on plugin identity, not skill identity', () => {
+  it('matches when exactly one plugin is loaded under its own (possibly skill-differing) name', () => {
+    const init = { plugins: [{ name: 'my-plugin', path: '/fake', source: 'fake' }] };
+    expect(hasExpectedPluginProfile(init, 'my-plugin', true)).toBe(true);
+  });
+
+  it('does not match against the skill name when it differs from the plugin name', () => {
+    const init = { plugins: [{ name: 'my-plugin', path: '/fake', source: 'fake' }] };
+    expect(hasExpectedPluginProfile(init, 'my-skill', true)).toBe(false);
   });
 });
 

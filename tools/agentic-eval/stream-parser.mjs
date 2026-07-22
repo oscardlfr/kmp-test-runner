@@ -62,12 +62,15 @@ export function findResultEvent(events) {
   return events.find((e) => e.type === 'result') ?? null;
 }
 
-/** Skill availability from the init event's `plugins[]` array -- NOT `skills[]`, which lists
+/** Plugin availability from the init event's `plugins[]` array -- NOT `skills[]`, which lists
  * an unrelated, ambient set of bundled/managed skills present identically regardless of
- * --plugin-dir (confirmed empirically during Step 1). */
-export function isSkillAvailable(initEvent, skillName) {
+ * --plugin-dir (confirmed empirically during Step 1). `pluginName` is the PLUGIN's own name (from
+ * its plugin.json), matched against `plugins[].name` -- a genuinely different identity from the
+ * SKILL's own name, even though this harness's plugin and skill happen to share one string value
+ * (see isTargetSkillReference's doc comment for why the two are modeled separately). */
+export function isSkillAvailable(initEvent, pluginName) {
   if (initEvent == null || !Array.isArray(initEvent.plugins)) return false;
-  return initEvent.plugins.some((p) => p.name === skillName);
+  return initEvent.plugins.some((p) => p.name === pluginName);
 }
 
 /** The tool_result for a given tool_use id, found by scanning forward from fromIndex.
@@ -87,6 +90,44 @@ function findToolResultById(events, toolUseId, fromIndex) {
     }
   }
   return null;
+}
+
+/**
+ * Whether `skillArg` (a Skill tool_use's own `input.skill` string) refers to the logical target
+ * skill identified by (pluginName, skillName). A plugin-supplied skill is addressable on the wire
+ * two ways: its bare skill name (the historical/legacy form this harness originally assumed was
+ * the only one), or Claude Code's plugin-namespaced form `${pluginName}:${skillName}` -- the
+ * canonical identity for any plugin-loaded skill per Claude Code's plugin/skill documentation
+ * (plugin.json's own `name` field supplies the namespace prefix), not a version-specific quirk.
+ * Confirmed live 2026-07-22: a real Claude Code 2.1.217 session invoked this harness's own target
+ * skill via `kmp-test-runner:kmp-test-runner`, which the harness's exact-bare-match predicate
+ * (the pre-fix version of this function's callers) wrongly classified as a foreign skill.
+ *
+ * `pluginName` and `skillName` are deliberately SEPARATE parameters, never derived from one
+ * another (e.g. never `${skillName}:${skillName}`) -- this harness's own plugin and skill happen
+ * to share the literal string "kmp-test-runner", but that is a fact about THIS harness's specific
+ * plugin.json, not a property this function may assume. A caller whose plugin and skill names
+ * genuinely differ gets the correct canonical form for free.
+ *
+ * A closed, exact-string allowlist of precisely these two forms -- deliberately never a
+ * prefix/suffix/regex/case-insensitive match, so none of the following are ever silently accepted
+ * as the target: a foreign namespace (`evil:kmp-test-runner`), a DIFFERENT skill from the SAME
+ * plugin (`kmp-test-runner:some-other-skill-in-this-plugin`), a casing variant, leading/trailing
+ * whitespace, or a double/nested namespace (`kmp-test-runner:kmp-test-runner:extra`).
+ *
+ * Fails closed on a misconfigured IDENTITY too, not just a malformed `skillArg` -- `pluginName`/
+ * `skillName` must themselves be non-empty strings, or this always returns false regardless of
+ * `skillArg`. Without this, a caller accidentally passing `pluginName:undefined` would silently
+ * match a wire value literally containing the string "undefined" as its namespace prefix (JS's
+ * own template-literal coercion), and a caller passing `skillName:''` would match an empty-string
+ * `skillArg` -- this function's exported contract promises a closed allowlist, not just "correct
+ * when called correctly."
+ */
+export function isTargetSkillReference(skillArg, pluginName, skillName) {
+  if (typeof skillArg !== 'string') return false;
+  if (typeof pluginName !== 'string' || pluginName.length === 0) return false;
+  if (typeof skillName !== 'string' || skillName.length === 0) return false;
+  return skillArg === skillName || skillArg === `${pluginName}:${skillName}`;
 }
 
 /**
@@ -114,13 +155,13 @@ function findToolResultById(events, toolUseId, fromIndex) {
  * callers for `tool_calls_total`, which must count every attempt, not just presence/absence).
  * @returns {{attempted: true, confirmed: boolean, attemptCount: number, type: string, index: number, receiptNs: bigint, input: object, resultIsError: boolean|null} | null}
  */
-export function findSkillInvocation(events, skillName) {
+export function findSkillInvocation(events, pluginName, skillName) {
   const matches = [];
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     if (ev.type !== 'assistant') continue;
     for (const c of ev.message?.content ?? []) {
-      if (c.type !== 'tool_use' || c.name !== 'Skill' || c.input?.skill !== skillName) continue;
+      if (c.type !== 'tool_use' || c.name !== 'Skill' || !isTargetSkillReference(c.input?.skill, pluginName, skillName)) continue;
       const result = c.id != null ? findToolResultById(events, c.id, i + 1) : null;
       matches.push({
         type: 'assistant.tool_use.Skill',
@@ -152,22 +193,23 @@ export function findSkillInvocation(events, skillName) {
 }
 
 /**
- * Every Skill tool_use block across the WHOLE transcript whose `input.skill` does NOT exactly
- * match `expectedSkillName` -- including a missing or non-string `input.skill`. Distinct from
- * findUnexpectedToolUses, which only checks the tool NAME (Bash/Skill) and has no visibility into
- * a Skill call's own arguments: "Skill" is itself an allowed tool name regardless of which skill
- * it targets, so a transcript that invoked Skill with some OTHER skill name entirely passes
- * findUnexpectedToolUses outright. Meanwhile findSkillInvocation(events, expectedSkillName)
- * simply never matches that call -- it's scoped to expectedSkillName only -- so an unrelated/
- * foreign skill invocation is invisible to skill_invocation_attempted/skill_invoked and can
- * silently coexist with attempted:false/invoked:false for the expected skill. Regression coverage
- * for a real gap an independent review pass demonstrated against the relaxed calibration contract
- * (a no-skill arm that never attempts kmp-test-runner can now legitimately show
- * attempted:false/invoked:false -- without this check, a transcript that instead called some
- * OTHER skill would show the exact same attempted:false/invoked:false for kmp-test-runner, and
- * pass unnoticed, potentially writing contaminated evidence).
+ * Every Skill tool_use block across the WHOLE transcript whose `input.skill` does NOT refer to the
+ * logical target skill (pluginName, skillName), per isTargetSkillReference's closed allowlist --
+ * including a missing or non-string `input.skill`. Distinct from findUnexpectedToolUses, which
+ * only checks the tool NAME (Bash/Skill) and has no visibility into a Skill call's own arguments:
+ * "Skill" is itself an allowed tool name regardless of which skill it targets, so a transcript
+ * that invoked Skill with some OTHER skill name entirely passes findUnexpectedToolUses outright.
+ * Meanwhile findSkillInvocation(events, pluginName, skillName) simply never matches that call --
+ * it's scoped to the target skill only -- so an unrelated/foreign skill invocation is invisible to
+ * skill_invocation_attempted/skill_invoked and can silently coexist with
+ * attempted:false/invoked:false for the expected skill. Regression coverage for a real gap an
+ * independent review pass demonstrated against the relaxed calibration contract (a no-skill arm
+ * that never attempts kmp-test-runner can now legitimately show attempted:false/invoked:false --
+ * without this check, a transcript that instead called some OTHER skill would show the exact same
+ * attempted:false/invoked:false for kmp-test-runner, and pass unnoticed, potentially writing
+ * contaminated evidence).
  */
-export function findForeignSkillUses(events, expectedSkillName) {
+export function findForeignSkillUses(events, pluginName, skillName) {
   const out = [];
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
@@ -175,7 +217,7 @@ export function findForeignSkillUses(events, expectedSkillName) {
     for (const c of ev.message?.content ?? []) {
       if (c.type !== 'tool_use' || c.name !== 'Skill') continue;
       const skillArg = c.input?.skill;
-      if (typeof skillArg !== 'string' || skillArg.length === 0 || skillArg !== expectedSkillName) {
+      if (!isTargetSkillReference(skillArg, pluginName, skillName)) {
         out.push({ index: i, receiptNs: ev._receiptNs, id: c.id, skillArg: typeof skillArg === 'string' ? skillArg : null });
       }
     }
@@ -205,8 +247,8 @@ export function findForeignSkillUses(events, expectedSkillName) {
  * tool_result contract where an absent `is_error` also means success -- means a CONFIRMED foreign
  * invocation. `confirmed` is true only in that last case.
  */
-export function classifyForeignSkillUses(events, expectedSkillName) {
-  return findForeignSkillUses(events, expectedSkillName).map((u) => {
+export function classifyForeignSkillUses(events, pluginName, skillName) {
+  return findForeignSkillUses(events, pluginName, skillName).map((u) => {
     const result = u.id != null ? findToolResultById(events, u.id, u.index + 1) : null;
     return {
       ...u,
@@ -274,19 +316,22 @@ export function hasExpectedToolProfile(initEvent, allowedToolNames) {
 /**
  * True only if the init event's OWN declared `plugins[]` array exactly matches what THIS
  * condition should have loaded -- zero plugins when the skill should be unavailable, or exactly
- * one plugin named `expectedSkillName` (no duplicates, no extras) when it should be available.
- * Regression coverage for a real gap an independent review pass demonstrated: neither
- * `isSkillAvailable` (only checks the target skill is present SOMEWHERE in the array) nor
- * `hasExpectedToolProfile` (validates tools/mcp_servers/permissionMode but never inspects
- * `plugins` at all) catches an unexpected THIRD-PARTY plugin coexisting alongside -- or instead
- * of -- the intended one. A no-skill condition secretly carrying some other loaded plugin, or a
- * current-skill condition carrying extra unexpected plugins, isn't genuinely isolated, even
- * though `skill_available` for the TARGET skill still happens to read correctly.
+ * one plugin named `expectedPluginName` (no duplicates, no extras) when it should be available.
+ * `expectedPluginName` is the PLUGIN's own identity (matched against `plugins[].name`, the init
+ * event's plugin manifest) -- never the skill's own identity, even though this harness's plugin
+ * and skill share one literal string value (see isTargetSkillReference's doc comment). Regression
+ * coverage for a real gap an independent review pass demonstrated: neither `isSkillAvailable`
+ * (only checks the target plugin is present SOMEWHERE in the array) nor `hasExpectedToolProfile`
+ * (validates tools/mcp_servers/permissionMode but never inspects `plugins` at all) catches an
+ * unexpected THIRD-PARTY plugin coexisting alongside -- or instead of -- the intended one. A
+ * no-skill condition secretly carrying some other loaded plugin, or a current-skill condition
+ * carrying extra unexpected plugins, isn't genuinely isolated, even though `skill_available` for
+ * the TARGET skill still happens to read correctly.
  */
-export function hasExpectedPluginProfile(initEvent, expectedSkillName, skillShouldBeLoaded) {
+export function hasExpectedPluginProfile(initEvent, expectedPluginName, skillShouldBeLoaded) {
   if (initEvent == null || !Array.isArray(initEvent.plugins)) return false;
   if (!skillShouldBeLoaded) return initEvent.plugins.length === 0;
-  return initEvent.plugins.length === 1 && initEvent.plugins[0]?.name === expectedSkillName;
+  return initEvent.plugins.length === 1 && initEvent.plugins[0]?.name === expectedPluginName;
 }
 
 /**

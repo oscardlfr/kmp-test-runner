@@ -132,6 +132,24 @@ describe('calibrationHardGate', () => {
     expect(reason).toBeNull();
   });
 
+  // Required final coverage (post-#385 review): B's REAL event stream confirming the invocation
+  // via the plugin-namespaced wire form must still pass -- skillSelectionOkB reads runBResult's
+  // own events (re-scanning the transcript), independently of passB()'s record-level defaults.
+  it('B confirming the invocation via the plugin-namespaced wire form still passes -- not classified as foreign', () => {
+    const runB = passRunResult({
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+      events: [
+        initEventStub(),
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: 'kmp-test-runner:kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', is_error: false, content: 'real skill output' }] } },
+        resultEventStub(),
+      ],
+    });
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
   it('isolates currentInvocationOk -- B never confirms invocation (the real "Unknown skill" shape: attempted but not invoked)', () => {
     const b = passB({ skill_invoked: { value: false, reason: 'attempted but not confirmed' } });
     const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
@@ -746,6 +764,58 @@ describe('smokeHardGate', () => {
     expect(reason).toBeNull();
   });
 
+  // P1 (post-#385 review): same gap, same fix, as scenarioCellIntegrityOk's identical new tests
+  // above -- A's plugin is never loaded, but a CONFIRMED invocation (now correctly recognized as
+  // the target skill under either wire form, never foreign) is real evidence contamination that
+  // skillSelectionOk alone no longer catches. B is deliberately exempt (see this function's own
+  // doc comment -- skill_invoked is never required for B).
+  it('A (no-skill) with a CONFIRMED Skill call (bare form) is real evidence contamination -- ok:false', () => {
+    const a = passA({ skill_invoked: { value: true, reason: null } });
+    const runA = passRunResult({
+      events: [
+        initEventStub(),
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: 'kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', is_error: false, content: 'real skill output' }] } },
+        resultEventStub(),
+      ],
+    });
+    const { ok, reason } = smokeHardGate(a, passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    expect(reason).toContain('noSkillSafetyOk:false');
+  });
+
+  it('A (no-skill) with a CONFIRMED Skill call (plugin-namespaced form) is real evidence contamination -- ok:false', () => {
+    const a = passA({ skill_invoked: { value: true, reason: null } });
+    const runA = passRunResult({
+      events: [
+        initEventStub(),
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: 'kmp-test-runner:kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', is_error: false, content: 'real skill output' }] } },
+        resultEventStub(),
+      ],
+    });
+    const { ok, reason } = smokeHardGate(a, passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(false);
+    expect(reason).toContain('noSkillSafetyOk:false');
+  });
+
+  it('A (no-skill) with a REJECTED Skill call ("Unknown skill", either wire form) still passes -- valid, measured behavior', () => {
+    for (const skillArg of ['kmp-test-runner', 'kmp-test-runner:kmp-test-runner']) {
+      const a = passA({ skill_invoked: { value: false, reason: null } });
+      const runA = passRunResult({
+        events: [
+          initEventStub(),
+          { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: skillArg } }] } },
+          { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', is_error: true, content: `<tool_use_error>Unknown skill: ${skillArg}</tool_use_error>` }] } },
+          resultEventStub(),
+        ],
+      });
+      const { ok, reason } = smokeHardGate(a, passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+      expect(ok).toBe(true);
+      expect(reason).toBeNull();
+    }
+  });
+
   it('isolates availabilityOk -- A shows the skill as available (breaks the no-skill/current-skill contrast)', () => {
     const a = passA({ skill_available: { value: true, reason: null } });
     const { ok, reason } = smokeHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
@@ -1270,10 +1340,14 @@ describe('smokeHardGate', () => {
 // defects. Same isolated-synthetic-input testing philosophy as calibrationHardGate/smokeHardGate
 // above.
 describe('scenarioCellIntegrityOk', () => {
+  // skill_invoked defaults to false regardless of condition -- current-skill is exempt from
+  // noSkillSafetyOk (see the check itself), so its value doesn't affect that check either way;
+  // no-skill's clean baseline genuinely needs false to pass.
   function passRecord(condition, overrides = {}) {
     return {
       condition,
       skill_available: { value: condition === 'current-skill', reason: null },
+      skill_invoked: { value: false, reason: null },
       ...overrides,
     };
   }
@@ -1311,6 +1385,80 @@ describe('scenarioCellIntegrityOk', () => {
     const { ok, reason } = scenarioCellIntegrityOk(passRecord('current-skill'), passConditionResult('current-skill'));
     expect(ok).toBe(true);
     expect(reason).toBeNull();
+  });
+
+  // RED proof (pre-fix, confirmed against a real 2026-07-22 live rejection): a current-skill
+  // cell's ONLY Skill call used Claude Code's plugin-namespaced form (kmp-test-runner:kmp-test-runner,
+  // per plugin.json's own documented addressing scheme), not the bare form -- a genuine invocation
+  // of the harness's own target skill, wrongly classified as confirmed foreign-skill contamination.
+  it('a current-skill cell whose ONLY Skill call uses the plugin-namespaced form is a genuine target-skill invocation, not foreign contamination', () => {
+    const cr = passConditionResult('current-skill', {
+      events: [
+        initEventStub(),
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: 'kmp-test-runner:kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', is_error: false, content: 'real skill output' }] } },
+        resultEventStub(),
+      ],
+    });
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('current-skill'), cr);
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  // P1 (post-#385 review): now that isTargetSkillReference correctly recognizes BOTH the bare and
+  // plugin-namespaced forms as the target skill (never foreign), skillSelectionOk alone no longer
+  // catches a no-skill cell whose Skill call was genuinely CONFIRMED -- real evidence
+  // contamination (an environmental same-named skill, or a Claude Code inconsistency), mirroring
+  // exactly why calibrationHardGate has its own noSkillSafetyOk. Proven for BOTH accepted wire
+  // forms -- the bare form was always a real invocation (this bug predates #385); the namespaced
+  // form is newly a real invocation as of #385's own fix.
+  it('a no-skill cell whose Skill call is CONFIRMED (bare form) is real evidence contamination -- ok:false', () => {
+    const cr = passConditionResult('no-skill', {
+      events: [
+        initEventStub(),
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: 'kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', is_error: false, content: 'real skill output' }] } },
+        resultEventStub(),
+      ],
+    });
+    const record = passRecord('no-skill', { skill_invoked: { value: true, reason: null } });
+    const { ok, reason } = scenarioCellIntegrityOk(record, cr);
+    expect(ok).toBe(false);
+    expect(reason).toContain('noSkillSafetyOk:false');
+  });
+
+  it('a no-skill cell whose Skill call is CONFIRMED (plugin-namespaced form) is real evidence contamination -- ok:false', () => {
+    const cr = passConditionResult('no-skill', {
+      events: [
+        initEventStub(),
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: 'kmp-test-runner:kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', is_error: false, content: 'real skill output' }] } },
+        resultEventStub(),
+      ],
+    });
+    const record = passRecord('no-skill', { skill_invoked: { value: true, reason: null } });
+    const { ok, reason } = scenarioCellIntegrityOk(record, cr);
+    expect(ok).toBe(false);
+    expect(reason).toContain('noSkillSafetyOk:false');
+  });
+
+  it('a no-skill cell whose Skill call is REJECTED ("Unknown skill", either wire form) is still valid, measured agent behavior -- ok:true', () => {
+    for (const skillArg of ['kmp-test-runner', 'kmp-test-runner:kmp-test-runner']) {
+      const cr = passConditionResult('no-skill', {
+        events: [
+          initEventStub(),
+          { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: skillArg } }] } },
+          { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', is_error: true, content: `<tool_use_error>Unknown skill: ${skillArg}</tool_use_error>` }] } },
+          resultEventStub(),
+        ],
+      });
+      // A rejected attempt never confirms the invocation -- skill_invoked stays false, matching
+      // what findSkillInvocation would really report for this transcript.
+      const record = passRecord('no-skill', { skill_invoked: { value: false, reason: null } });
+      const { ok, reason } = scenarioCellIntegrityOk(record, cr);
+      expect(ok).toBe(true);
+      expect(reason).toBeNull();
+    }
   });
 
   it('isolates availabilityOk -- a no-skill cell whose environment shows the skill as available', () => {
@@ -1529,6 +1677,7 @@ describe('scenarioHardGate', () => {
     const record = {
       condition, repetition_index: repetitionIndex,
       skill_available: { value: condition === 'current-skill', reason: null },
+      skill_invoked: { value: false, reason: null },
     };
     const isCurrentSkill = condition === 'current-skill';
     const conditionResult = {

@@ -445,10 +445,19 @@ const SMOKE_EXPECTED_COMMANDS = [
 // session from one that regressed to a wider tool/MCP/permission profile.
 const EXPECTED_TOOL_NAMES = new Set(['Bash', 'Skill']);
 
-// The ONLY skill name findSkillInvocation/findForeignSkillUses ever target -- a single shared
-// constant so every call site (buildRunRecord's own attempted/invoked/tool_calls_total
-// derivation, and both hard gates' skillSelectionOk check) can never drift out of agreement with
-// each other on what "the expected skill" actually is.
+// The ONLY plugin/skill identity findSkillInvocation/findForeignSkillUses/isSkillAvailable/
+// hasExpectedPluginProfile ever target -- two single shared constants (never collapsed into one)
+// so every call site (buildRunRecord's own attempted/invoked/tool_calls_total derivation, both
+// hard gates' skillSelectionOk/pluginProfileOk checks) can never drift out of agreement with each
+// other on what "the expected skill" actually is. Kept as two DISTINCT constants -- one for the
+// plugin's own identity (plugin.json's `name`, what initEvent.plugins[].name reports), one for the
+// skill's own identity within that plugin (what a bare Skill invocation's `input.skill` uses, and
+// the suffix of Claude Code's plugin-namespaced `${pluginName}:${skillName}` addressing form) --
+// even though this harness's own plugin and skill happen to share one literal string value. See
+// stream-parser.mjs's isTargetSkillReference for the full rationale: deriving the namespaced form
+// as `${TARGET_SKILL_NAME}:${TARGET_SKILL_NAME}` would have worked today by coincidence but
+// conflated two genuinely different identities.
+const TARGET_PLUGIN_NAME = 'kmp-test-runner';
 const TARGET_SKILL_NAME = 'kmp-test-runner';
 
 /**
@@ -501,7 +510,7 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
         condition, materializeFixture, previousFixtureDir: fixtureDir, cleanupFixtureOnce,
         resetGradleToSnapshot: shared.resetGradleToSnapshot, kmpEvalTempHome: shared.kmpEvalTempHome,
         sharedEnv: shared.sharedEnv, baseArgv, snapshotDir: shared.snapshotDir,
-        targetSkillName: TARGET_SKILL_NAME, timeoutMs,
+        targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, timeoutMs,
         junitEvidenceEnabled: false,
       });
       fixtureDir = conditionResult.fixtureDir;
@@ -535,7 +544,7 @@ function buildRunRecord({
   const notApplicableReason = `${runKind} run -- no scenario grader applies`;
   // Computed once, shared by tool_calls_total (below) and foreign_skill_summary (schema V3) --
   // never re-derived twice from the same transcript.
-  const foreignSkillUses = classifyForeignSkillUses(conditionResult.events, TARGET_SKILL_NAME);
+  const foreignSkillUses = classifyForeignSkillUses(conditionResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME);
   const foreignSkillSummary = {
     rejected: foreignSkillUses.filter((u) => u.resultIsError === true).length,
     confirmed: foreignSkillUses.filter((u) => u.confirmed === true).length,
@@ -581,7 +590,7 @@ function buildRunRecord({
     started_at: startedAt.toISOString(),
     ended_at: endedAt.toISOString(),
     wall_clock_ms: endedAt.getTime() - startedAt.getTime(),
-    skill_available: nullableMetric(isSkillAvailable(init, TARGET_SKILL_NAME)),
+    skill_available: nullableMetric(isSkillAvailable(init, TARGET_PLUGIN_NAME)),
     skill_invocation_attempted: nullableMetric(invocation != null),
     skill_invoked: nullableMetric(invocation?.confirmed ?? false),
     skill_invocation_event: invocation ? { type: invocation.type, index: invocation.index } : null,
@@ -927,8 +936,8 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
     try {
       const failedChecksByRunId = { [recordA.run_id]: gate.failedChecksA ?? [], [recordB.run_id]: gate.failedChecksB ?? [] };
       const foreignSkillNamesByRunId = {
-        [recordA.run_id]: classifyForeignSkillUses(runA.events, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null),
-        [recordB.run_id]: classifyForeignSkillUses(runB.events, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null),
+        [recordA.run_id]: classifyForeignSkillUses(runA.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null),
+        [recordB.run_id]: classifyForeignSkillUses(runB.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null),
       };
       const diagnostics = buildRejectionDiagnostics({ runKind, records: [recordA, recordB], failedChecksByRunId, foreignSkillNamesByRunId });
       ({ rejectionId, relativePath: diagnosticsRelativePath } = writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride }));
@@ -1130,7 +1139,7 @@ async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResult
     try {
       const failedChecksByRunId = Object.fromEntries((gate.cellResults ?? []).map((c) => [c.runId, c.failedChecks]));
       const foreignSkillNamesByRunId = Object.fromEntries(
-        records.map((r, i) => [r.run_id, classifyForeignSkillUses(conditionResults[i].events, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null)]),
+        records.map((r, i) => [r.run_id, classifyForeignSkillUses(conditionResults[i].events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null)]),
       );
       const diagnostics = buildRejectionDiagnostics({ runKind, records, failedChecksByRunId, foreignSkillNamesByRunId });
       ({ rejectionId, relativePath: diagnosticsRelativePath } = writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride }));
@@ -1223,15 +1232,15 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   // Deliberately still the plain, argument-only findForeignSkillUses (not the result-aware
   // classifyForeignSkillUses used by scenarioCellIntegrityOk below) -- calibration's contract is
   // untouched by this change; ANY foreign Skill call, rejected or not, still fails this check.
-  const skillSelectionOkA = findForeignSkillUses(runAResult.events, TARGET_SKILL_NAME).length === 0;
-  const skillSelectionOkB = findForeignSkillUses(runBResult.events, TARGET_SKILL_NAME).length === 0;
+  const skillSelectionOkA = findForeignSkillUses(runAResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).length === 0;
+  const skillSelectionOkB = findForeignSkillUses(runBResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).length === 0;
   // Regression coverage for a real gap an independent review pass demonstrated: neither
   // isSkillAvailable nor hasExpectedToolProfile ever inspects the init event's OWN plugins[]
   // array -- an unexpected third-party plugin loaded alongside (or instead of) the intended one
   // went completely undetected. A must load exactly zero plugins; B must load exactly one,
   // named kmp-test-runner -- no duplicates, no extras.
-  const pluginProfileOkA = hasExpectedPluginProfile(runAResult.init, TARGET_SKILL_NAME, false);
-  const pluginProfileOkB = hasExpectedPluginProfile(runBResult.init, TARGET_SKILL_NAME, true);
+  const pluginProfileOkA = hasExpectedPluginProfile(runAResult.init, TARGET_PLUGIN_NAME, false);
+  const pluginProfileOkB = hasExpectedPluginProfile(runBResult.init, TARGET_PLUGIN_NAME, true);
   // Regression coverage for a real evidence-contamination bypass an independent review pass
   // demonstrated: pluginProfileOk only checks the loaded plugin's NAME, never its path -- a
   // same-named "kmp-test-runner" plugin loaded from a completely unrelated directory satisfied
@@ -1322,10 +1331,12 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
  * Per-cell harness-integrity check for a single scenario matrix cell -- deliberately built ONLY
  * from harness-integrity sub-checks already proven reusable, never from the scenario OUTCOME
  * (that's graders.mjs's job, reported separately on success/expected_outcome_matched, and must
- * never gate promotion -- decision 4). Explicitly omits calibration's noSkillSafetyOk/
- * currentInvocationOk (those prove skill-invocation MECHANICS under calibration's own explicit
- * "use the skill" prompt -- for a natural scenario prompt, whether the agent invokes the skill at
- * all is part of what's being MEASURED, not a harness precondition) and smoke's processOk/
+ * never gate promotion -- decision 4). Adopts calibration's noSkillSafetyOk (a confirmed no-skill
+ * invocation is real evidence-contamination regardless of prompt shape -- see the check's own
+ * comment) but explicitly omits calibration's currentInvocationOk (proves skill-invocation
+ * MECHANICS under calibration's own explicit "use the skill" prompt -- for a natural scenario
+ * prompt, whether the agent invokes the skill at all is part of what's being MEASURED, not a
+ * harness precondition) and smoke's processOk/
  * resultOk/exactCommandsOk/realWorkOk (those encode "proved equivalent diagnostic work," which
  * doesn't transfer to a scenario where a wrong answer, or a correct answer via a different valid
  * tool sequence, is legitimate data, not a harness defect). hookAccountingOk checks MECHANISM
@@ -1371,9 +1382,19 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
 function scenarioCellIntegrityOk(record, conditionResult) {
   const expectSkillAvailable = record.condition === 'current-skill';
   const availabilityOk = record.skill_available.value === expectSkillAvailable;
-  const pluginProfileOk = hasExpectedPluginProfile(conditionResult.init, TARGET_SKILL_NAME, expectSkillAvailable);
+  // Post-#385 review finding: a no-skill condition's plugin is never loaded (availabilityOk/
+  // pluginProfileOk already prove this), but a CONFIRMED invocation could still slip through some
+  // OTHER route (an environmental same-named skill, a Claude Code inconsistency) -- now that
+  // isTargetSkillReference correctly recognizes both the bare and plugin-namespaced forms as the
+  // TARGET skill, skillSelectionOk (which only catches a FOREIGN invocation) no longer catches
+  // this. A confirmed no-skill invocation is real evidence-contamination, mirroring
+  // calibrationHardGate's own noSkillSafetyOk exactly. current-skill is deliberately exempt --
+  // whether the skill triggers naturally on a scenario prompt is part of what's being MEASURED,
+  // not a harness precondition (unchanged from this function's original design).
+  const noSkillSafetyOk = expectSkillAvailable || record.skill_invoked.value === false;
+  const pluginProfileOk = hasExpectedPluginProfile(conditionResult.init, TARGET_PLUGIN_NAME, expectSkillAvailable);
   const pluginSnapshotBindingOk = !expectSkillAvailable || isPluginBoundToSnapshot(conditionResult.init, conditionResult.snapshotDir);
-  const foreignSkillUses = classifyForeignSkillUses(conditionResult.events, TARGET_SKILL_NAME);
+  const foreignSkillUses = classifyForeignSkillUses(conditionResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME);
   const skillSelectionOk = !foreignSkillUses.some((u) => u.confirmed === true);
   const foreignSkillToolResultsCompleteOk = !foreignSkillUses.some((u) => u.resultIsError === null);
   const initOk = conditionResult.init != null;
@@ -1396,7 +1417,8 @@ function scenarioCellIntegrityOk(record, conditionResult) {
   const junitCaptureCompleteOk = !(record.errors ?? []).some((e) => e.code === 'junit_evidence_capture_incomplete');
 
   const evaluation = evaluateNamedChecks([
-    ['availabilityOk', availabilityOk], ['pluginProfileOk', pluginProfileOk],
+    ['availabilityOk', availabilityOk], ['noSkillSafetyOk', noSkillSafetyOk],
+    ['pluginProfileOk', pluginProfileOk],
     ['pluginSnapshotBindingOk', pluginSnapshotBindingOk], ['skillSelectionOk', skillSelectionOk],
     ['foreignSkillToolResultsCompleteOk', foreignSkillToolResultsCompleteOk], ['initOk', initOk],
     ['toolProfileOk', toolProfileOk], ['noUnexpectedToolsOk', noUnexpectedToolsOk],
@@ -1506,9 +1528,12 @@ async function cmdCalibrate(args) {
 /**
  * Smoke's hard gate, extracted as a named, independently-testable function for the same reason
  * as calibrationHardGate. Requires EQUIVALENT REAL WORK in both arms -- not just skill
- * availability. skill_invoked is deliberately NOT required (whether the skill triggers
- * naturally on this prompt is an open question for a future corpus-probe run, not something
- * smoke should presuppose).
+ * availability. For B (current-skill), skill_invoked is deliberately NOT required (whether the
+ * skill triggers naturally on this prompt is an open question for a future corpus-probe run, not
+ * something smoke should presuppose). For A (no-skill), skill_invoked IS required to be false
+ * (noSkillSafetyOk, post-#385 review addition, mirrors calibrationHardGate's identical check) --
+ * a genuinely CONFIRMED invocation in the arm whose plugin was never loaded is real evidence
+ * contamination, not an open measurement question.
  *
  * Computed per-side (A/B) via evaluateNamedChecks and combined as `evalA.ok && evalB.ok` --
  * mathematically identical to a single flat AND of all 15 checks, so this restructure changes
@@ -1517,17 +1542,24 @@ async function cmdCalibrate(args) {
 function smokeHardGate(a, b, runAResult, runBResult) {
   const availabilityOkA = a.skill_available.value === false;
   const availabilityOkB = b.skill_available.value === true;
+  // Post-#385 review finding, mirrors scenarioCellIntegrityOk's identical new check and
+  // calibrationHardGate's own noSkillSafetyOk -- A's plugin is never loaded, but a CONFIRMED
+  // invocation (now correctly recognized as the target skill under either wire form, never
+  // foreign) is real evidence contamination that skillSelectionOk alone no longer catches. B is
+  // deliberately exempt -- see this function's own doc comment on skill_invoked never being
+  // required for B.
+  const noSkillSafetyOkA = a.skill_invoked.value === false;
   // See calibrationHardGate's identical check and doc comment -- noUnexpectedToolsOk only checks
   // the tool NAME (Bash/Skill), never a Skill call's own `input.skill` argument, so this closes
   // the same gap here: neither condition may contain a Skill call targeting anything other than
   // kmp-test-runner. Deliberately still the plain, argument-only findForeignSkillUses -- smoke's
   // contract is untouched by this change.
-  const skillSelectionOkA = findForeignSkillUses(runAResult.events, TARGET_SKILL_NAME).length === 0;
-  const skillSelectionOkB = findForeignSkillUses(runBResult.events, TARGET_SKILL_NAME).length === 0;
+  const skillSelectionOkA = findForeignSkillUses(runAResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).length === 0;
+  const skillSelectionOkB = findForeignSkillUses(runBResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).length === 0;
   // See calibrationHardGate's identical check and doc comment -- neither isSkillAvailable nor
   // hasExpectedToolProfile ever inspects the init event's own plugins[] array.
-  const pluginProfileOkA = hasExpectedPluginProfile(runAResult.init, TARGET_SKILL_NAME, false);
-  const pluginProfileOkB = hasExpectedPluginProfile(runBResult.init, TARGET_SKILL_NAME, true);
+  const pluginProfileOkA = hasExpectedPluginProfile(runAResult.init, TARGET_PLUGIN_NAME, false);
+  const pluginProfileOkB = hasExpectedPluginProfile(runBResult.init, TARGET_PLUGIN_NAME, true);
   // See calibrationHardGate's identical check and doc comment -- pluginProfileOk never checks
   // the loaded plugin's own path, only its name/count.
   const pluginSnapshotBindingOk = isPluginBoundToSnapshot(runBResult.init, runBResult.snapshotDir);
@@ -1576,7 +1608,8 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   const toolResultsCompleteOkB = findIncompleteToolResults(runBResult.events).length === 0;
 
   const checksA = [
-    ['availabilityOk', availabilityOkA], ['skillSelectionOk', skillSelectionOkA],
+    ['availabilityOk', availabilityOkA], ['noSkillSafetyOk', noSkillSafetyOkA],
+    ['skillSelectionOk', skillSelectionOkA],
     ['pluginProfileOk', pluginProfileOkA], ['initOk', initOkA], ['toolProfileOk', toolProfileOkA],
     ['noUnexpectedToolsOk', noUnexpectedToolsOkA], ['processOk', processOkA],
     ['resultOk', resultOkA], ['hookAccountingOk', hookAccountingOkA],
@@ -1912,6 +1945,7 @@ async function cmdRun(args) {
       repoRoot: REPO_ROOT, pinnedSkillSha: PINNED_SKILL_SHA, runPluginValidator,
       materializeFixture: (existingWorktreeDir) => materializeScenarioProject({ sourceRepoDir, pinnedCommit: scenario.project_commit, existingWorktreeDir }),
       cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
+      targetPluginName: TARGET_PLUGIN_NAME,
       targetSkillName: TARGET_SKILL_NAME,
       timeoutMs: 600000,
     });

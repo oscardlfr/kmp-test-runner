@@ -285,6 +285,39 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
     }
   }, 60000);
 
+  // Full end-to-end reproduction of a real, confirmed 2026-07-22 live rejection: the current-skill
+  // condition's ONLY Skill call used Claude Code's plugin-namespaced identity
+  // (kmp-test-runner:kmp-test-runner), which the pre-fix stream-parser.mjs classified as confirmed
+  // foreign-skill contamination, rejecting the whole matrix (0/4 records written). This proves the
+  // fix through the REAL pipeline (real spawn, real stream-json parsing, real classification, real
+  // hard-gate/record promotion) -- not just at the stream-parser unit level
+  // (agentic-eval-stream-parser.test.js) or the synthetic hard-gate level
+  // (agentic-eval-hard-gates.test.js), both of which also cover this fix directly.
+  it('the plugin-namespaced Skill invocation form promotes cleanly end-to-end -- matches the real 2026-07-22 rejection shape, now fixed', () => {
+    const result = runCli(runArgs(['--seed', '13', '--repeats', '2']), fakeClaudeEnv('run-scenario-success-namespaced-skill'), 60000);
+    expect(result.status).toBe(0);
+    expect(result.parsed).not.toBeNull();
+    const { records } = result.parsed;
+    expect(records.length).toBe(4);
+
+    const currentSkillRecords = records.filter((r) => r.condition === 'current-skill');
+    const noSkillRecords = records.filter((r) => r.condition === 'no-skill');
+    expect(currentSkillRecords.length).toBe(2);
+    expect(noSkillRecords.length).toBe(2);
+
+    for (const record of currentSkillRecords) {
+      // The namespaced invocation is correctly recognized as the TARGET skill -- not just "didn't
+      // trip the foreign-skill check", but genuinely attempted/invoked/confirmed.
+      expect(record.skill_invocation_attempted.value).toBe(true);
+      expect(record.skill_invoked.value).toBe(true);
+      expect(record.foreign_skill_summary).toEqual({ rejected: 0, confirmed: 0, incomplete: 0 });
+      expect(record.benchmark_eligible).toBe(true);
+    }
+    for (const record of noSkillRecords) {
+      expect(record.benchmark_eligible).toBe(true);
+    }
+  }, 60000);
+
   it('a harness-integrity failure (malformed transcript) blocks the WHOLE matrix -- zero records written for ANY cell', () => {
     const result = runCli(runArgs(['--seed', '1', '--repeats', '1']), fakeClaudeEnv('malformed'), 30000);
     expect(result.status).toBe(1);
