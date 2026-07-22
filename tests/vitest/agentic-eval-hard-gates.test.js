@@ -1424,6 +1424,48 @@ describe('scenarioCellIntegrityOk', () => {
     expect(reason).toBeNull();
   });
 
+  // "bind junit evidence to authoritative attempts" fix: junit_evidence_capture_incomplete is a
+  // capture-MECHANISM failure (a missing/incoherent decision/evidence record, a command cross-check
+  // mismatch, or a duplicate-write anomaly on some relevant attempt) -- distinct from, and never
+  // merged with, ambiguous_junit_evidence (a proven same-turn conflict) or
+  // unreliable_gradle_junit_evidence (real-but-untrustworthy XML). Each gets its own independently-
+  // toggleable check so a caller can tell precisely which of the three failed.
+  it('isolates junitCaptureCompleteOk -- a record carrying a junit_evidence_capture_incomplete error fails, even though everything else is clean', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'junit_evidence_capture_incomplete', message: 'missing decision record' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(false);
+    expect(reason).toContain('junitCaptureCompleteOk:false');
+  });
+
+  it('a record with a DIFFERENT, unrelated error code does not trip junitCaptureCompleteOk', () => {
+    const record = passRecord('no-skill', { errors: [{ code: 'raw_capture_location_overridden', message: 'unrelated' }] });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  it('a record with no errors[] field at all (the common case) does not trip junitCaptureCompleteOk', () => {
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), passConditionResult('no-skill'));
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
+  // junit_evidence_capture_incomplete and ambiguous_junit_evidence are two INDEPENDENT checks --
+  // both codes present on the same record must fail BOTH junitCaptureCompleteOk and junitEvidenceOk
+  // simultaneously, never conflated into one.
+  it('junit_evidence_capture_incomplete and ambiguous_junit_evidence on the SAME record independently fail their own respective checks', () => {
+    const record = passRecord('no-skill', {
+      errors: [
+        { code: 'junit_evidence_capture_incomplete', message: 'missing decision record' },
+        { code: 'ambiguous_junit_evidence', message: 'ambiguous' },
+      ],
+    });
+    const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
+    expect(ok).toBe(false);
+    expect(reason).toContain('junitCaptureCompleteOk:false');
+    expect(reason).toContain('junitEvidenceOk:false');
+  });
+
   // Result-aware foreign-skill classification (see stream-parser.mjs's classifyForeignSkillUses):
   // this fixture's foreign Skill call has NO correlated tool_result anywhere in the transcript --
   // that is the MISSING/INCOMPLETE case, not a confirmed contamination. Previously (when

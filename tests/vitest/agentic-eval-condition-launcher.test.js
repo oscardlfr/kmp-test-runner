@@ -240,4 +240,56 @@ describe('buildPolicySettingsFile', () => {
     expect(content.hooks.PreToolUse[0].matcher).toBe('Bash');
     expect(content.hooks.PreToolUse[0].hooks[0].command).toContain('policy-hook.mjs');
   });
+
+  // Round-4 fix (the headline finding of this PR's own final review round): registering the new
+  // JUnit-evidence hooks must be CONDITIONAL on junitEvidenceEnabled, not merely internally inert --
+  // calibrate/smoke/no_applicable_tests must produce a settings.json Claude Code cannot tell apart
+  // from before this mechanism existed at all (no extra hook subprocess spawn, no extra
+  // hook_started/hook_response transcript lines).
+  describe('junitEvidenceEnabled gating -- byte-identical when false/omitted, additive when true', () => {
+    it('omitting the option produces the exact same hooks shape as passing {junitEvidenceEnabled:false} explicitly', () => {
+      const pathDefault = buildPolicySettingsFile();
+      const pathExplicitFalse = buildPolicySettingsFile({ junitEvidenceEnabled: false });
+      try {
+        const contentDefault = JSON.parse(readFileSync(pathDefault, 'utf8'));
+        const contentExplicitFalse = JSON.parse(readFileSync(pathExplicitFalse, 'utf8'));
+        expect(contentDefault).toEqual(contentExplicitFalse);
+      } finally {
+        rmSync(join(pathDefault, '..'), { recursive: true, force: true });
+        rmSync(join(pathExplicitFalse, '..'), { recursive: true, force: true });
+      }
+    });
+
+    it('junitEvidenceEnabled:false (or omitted) produces hooks with ONLY the PreToolUse entry -- no PostToolUse/PostToolUseFailure keys at all', () => {
+      const settingsPath = buildPolicySettingsFile({ junitEvidenceEnabled: false });
+      try {
+        const content = JSON.parse(readFileSync(settingsPath, 'utf8'));
+        expect(Object.keys(content.hooks)).toEqual(['PreToolUse']);
+      } finally {
+        rmSync(join(settingsPath, '..'), { recursive: true, force: true });
+      }
+    });
+
+    it('junitEvidenceEnabled:true adds exactly PostToolUse and PostToolUseFailure, both wiring junit-evidence-hook.mjs on matcher "Bash", while the sole PreToolUse entry is preserved unchanged', () => {
+      const pathWithout = buildPolicySettingsFile({ junitEvidenceEnabled: false });
+      const pathWith = buildPolicySettingsFile({ junitEvidenceEnabled: true });
+      try {
+        const contentWithout = JSON.parse(readFileSync(pathWithout, 'utf8'));
+        const contentWith = JSON.parse(readFileSync(pathWith, 'utf8'));
+
+        expect(contentWith.hooks.PreToolUse).toEqual(contentWithout.hooks.PreToolUse);
+        expect(Object.keys(contentWith.hooks).sort()).toEqual(['PostToolUse', 'PostToolUseFailure', 'PreToolUse']);
+
+        for (const eventName of ['PostToolUse', 'PostToolUseFailure']) {
+          expect(contentWith.hooks[eventName]).toHaveLength(1);
+          expect(contentWith.hooks[eventName][0].matcher).toBe('Bash');
+          expect(contentWith.hooks[eventName][0].hooks[0].command).toContain('junit-evidence-hook.mjs');
+          expect(contentWith.hooks[eventName][0].hooks[0].command).not.toContain('policy-hook.mjs');
+        }
+      } finally {
+        rmSync(join(pathWithout, '..'), { recursive: true, force: true });
+        rmSync(join(pathWith, '..'), { recursive: true, force: true });
+      }
+    });
+  });
 });

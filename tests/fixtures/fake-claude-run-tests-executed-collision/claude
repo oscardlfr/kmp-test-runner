@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-run-tests-executed-collision/claude -- deterministic stand-in for the
+# real `claude` CLI, proving the round-5 fail-closed fix end to end: a duplicate sidecar write
+# (the disclosed PostToolUse/PostToolUseFailure double-fire uncertainty junit-evidence-hook.mjs's
+# own header comment documents) AND a tombstone write that ALSO fails must still result in the
+# condition being correctly and safely rejected -- never a falsely-valid record surviving. Never
+# invoked outside tests/vitest/agentic-eval-run-command.test.js; production runs always use the
+# real, authenticated `claude` CLI.
+#
+# write_sidecar below reimplements junit-evidence-io.mjs's writeSidecarRecord collision-handling
+# recipe (existsSync pre-check -> remove-on-collision -> best-effort tombstone, itself subject to
+# the SAME existsSync pre-check) using plain Node built-ins, rather than importing the production
+# module directly -- matrix-runner.mjs's buildSharedEnv() deliberately builds a NARROW, allowlisted
+# env for this subprocess (the same reason HOME/USERPROFILE are excluded), so a test-only env var
+# naming a module path cannot reach this process. junit-evidence-io.mjs's own real behavior (using
+# its own actual promoteTargetsAtomically/linkSync-based atomicity) is separately and directly
+# proven via genuine, unmocked filesystem collisions by agentic-eval-junit-evidence-io.test.js;
+# this fixture only needs the SAME OBSERVABLE outcome for attributeCondition's READ side to
+# consume, which this reimplementation reproduces exactly (a pre-existing target is always
+# removed, and a tombstone write that finds its own target already occupied silently no-ops,
+# never overwriting it).
+#
+# Exactly one real Gradle attempt (a clean pass) appears in the transcript, but this script writes
+# its OWN sidecar records TWICE for both the decision AND the evidence record of that SAME
+# tool_use_id, reproducing a genuine double-fire. Since both collisions share ONE
+# anomalies/<idHash>.json tombstone path (keyed only by tool_use_id, not by record kind, exactly
+# like the real mechanism), the FIRST collision's (decision) tombstone write lands first and
+# genuinely occupies that path -- so the SECOND collision's (evidence) own attempt to write ITS
+# tombstone then fails for real (a genuine pre-existing-file collision, not simulated).
+write_sidecar() {
+  local kind="$1" toolUseId="$2" recordJson="$3"
+  node -e '
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const [kind, toolUseId, recordJson] = process.argv.slice(1);
+const idHash = crypto.createHash("sha256").update(toolUseId).digest("hex");
+const evidenceDir = process.env.KMP_EVAL_JUNIT_EVIDENCE_DIR;
+const dir = path.join(evidenceDir, kind);
+const anomaliesDir = path.join(evidenceDir, "anomalies");
+fs.mkdirSync(dir, { recursive: true });
+const target = path.join(dir, idHash + ".json");
+if (fs.existsSync(target)) {
+  try { fs.unlinkSync(target); } catch {}
+  fs.mkdirSync(anomaliesDir, { recursive: true });
+  const tombstoneTarget = path.join(anomaliesDir, idHash + ".json");
+  if (!fs.existsSync(tombstoneTarget)) {
+    fs.writeFileSync(tombstoneTarget, JSON.stringify({ reason: `duplicate_${kind === "decisions" ? "decision" : "evidence"}_write` }));
+  }
+  // else: a DIFFERENT collision already occupies the tombstone path -- this write fails closed
+  // (silently, matching writeSidecarRecord own catch-and-ignore around its own tombstone attempt).
+} else {
+  fs.writeFileSync(target, recordJson);
+}
+' -- "$kind" "$toolUseId" "$recordJson"
+}
+
+HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  PREV_ARG="$arg"
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
+else
+  PLUGINS='[]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-0001\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"dontAsk\",\"plugins\":$PLUGINS,\"skills\":[],\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakecollision1","name":"Bash","input":{"command":"./gradlew.bat :fakemod:test --console=plain","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+
+# First decision write -- clean, no collision yet.
+write_sidecar decisions toolu_fakecollision1 '{"decision":"allow","command":"./gradlew.bat :fakemod:test --console=plain"}'
+# Second decision write for the SAME id -- collides; removes the record above, then WINS the
+# anomalies/<id>.json tombstone (nothing occupies it yet).
+write_sidecar decisions toolu_fakecollision1 '{"decision":"allow","command":"./gradlew.bat :fakemod:test --console=plain"}'
+# First evidence write -- clean, no collision yet.
+write_sidecar evidence toolu_fakecollision1 '{"command":"./gradlew.bat :fakemod:test --console=plain","status":"ok","junit":{"total":2,"passed":2,"failed":0}}'
+# Second evidence write for the SAME id -- collides; removes the record above, then tries to write
+# ITS OWN tombstone to the SAME anomalies/<id>.json path -- already occupied by the decision
+# collision's tombstone above, so THIS tombstone write genuinely fails closed, exactly the round-5
+# "collision + tombstone-write failure" case.
+write_sidecar evidence toolu_fakecollision1 '{"command":"./gradlew.bat :fakemod:test --console=plain","status":"ok","junit":{"total":2,"passed":2,"failed":0}}'
+
+GRADLE_PASS_STDOUT='> Task :fakemod:test
+
+BUILD SUCCESSFUL in 1s
+2 actionable tasks: 2 executed
+'
+node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{type:'tool_result',content:process.argv[1],tool_use_id:'toolu_fakecollision1'}]}}))" "$GRADLE_PASS_STDOUT"
+
+FINAL_ANSWER='2/2 tests passed in the :fakemod module.
+
+KMP_EVAL_RESULT
+{"module": ":fakemod", "outcome_kind": "tests_executed", "total": 2, "passed": 2, "failed": 0}
+KMP_EVAL_RESULT_END'
+node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
+exit 0

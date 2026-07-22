@@ -477,6 +477,11 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
   const shared = await acquireSharedEvalResources({
     allowedGradleTasks, allowedKmpTestSubcommands, repoRoot: REPO_ROOT,
     pinnedSkillSha: PINNED_SKILL_SHA, runPluginValidator,
+    // calibrate/smoke never enable JUnit-evidence attribution -- explicit here (not merely relying
+    // on the default) so a future reader sees this is a deliberate exclusion, not an oversight.
+    // buildPolicySettingsFile's own output is byte-for-byte identical to before this mechanism
+    // existed whenever this is false.
+    junitEvidenceEnabled: false,
   });
   const { registerCleanup, runCleanup } = shared;
 
@@ -497,6 +502,7 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
         resetGradleToSnapshot: shared.resetGradleToSnapshot, kmpEvalTempHome: shared.kmpEvalTempHome,
         sharedEnv: shared.sharedEnv, baseArgv, snapshotDir: shared.snapshotDir,
         targetSkillName: TARGET_SKILL_NAME, timeoutMs,
+        junitEvidenceEnabled: false,
       });
       fixtureDir = conditionResult.fixtureDir;
       return conditionResult;
@@ -685,17 +691,17 @@ function buildRunRecord({
       ...(!RUNS_ROOT_IS_DEFAULT
         ? [{ code: 'raw_capture_location_overridden', message: 'KMP_EVAL_RUNS_ROOT was set to a non-default root for this run -- the raw transcript may not be covered by the default .gitignore pattern; verify manually before staging anything from that location' }]
         : []),
-      // A review pass established this is a HARNESS-INTEGRITY defect, not a legitimate agent
-      // outcome: JUnit XML is captured once per condition, so more than one attempt CAPABLE of
-      // producing it -- a Gradle invocation targeting the scenario's allowed invocations, OR a
-      // `kmp-test parallel` call (which runs the same underlying Gradle test task under the hood)
-      // -- within this condition means that one snapshot cannot be reliably attributed to any
-      // specific attempt (see graders.mjs's classifyJunitProvenance for the full rationale,
-      // including why this only applies to tests_executed scenarios). Surfaced here (not just
-      // degraded to outcomeMatches:false) so scenarioCellIntegrityOk can block the WHOLE matrix's
+      // Per-attempt JUnit-evidence attribution (tools/agentic-eval "bind junit evidence to
+      // authoritative attempts" fix): JUnit XML is now captured per-attempt, keyed by tool_use_id,
+      // never a single pooled per-condition snapshot. ambiguous_junit_evidence now means a
+      // TRANSCRIPT-PROVEN same-assistant-turn conflict -- two relevant, policy-allowed producers
+      // (a Gradle invocation and/or a kmp-test parallel call) dispatched in the same batch
+      // (bashResults[i].index shared), so neither one's evidence can be trusted (they may have
+      // raced on the same on-disk files). A genuine HARNESS-INTEGRITY defect, not a legitimate
+      // agent outcome -- surfaced here so scenarioCellIntegrityOk can block the WHOLE matrix's
       // promotion, matching decision 4's existing treatment of every other integrity defect.
       ...(isScenario && gradeResult?.harnessEvidenceAmbiguous
-        ? [{ code: 'ambiguous_junit_evidence', message: 'more than one attempt in this condition (a Gradle invocation and/or a kmp-test parallel call) could have produced the scenario\'s JUnit evidence -- the single per-condition JUnit XML snapshot cannot be reliably attributed to any specific attempt' }]
+        ? [{ code: 'ambiguous_junit_evidence', message: 'two or more policy-allowed producers (a Gradle invocation and/or a kmp-test parallel call) were dispatched in the same assistant turn in this condition -- their JUnit evidence cannot be reliably attributed to either specific attempt' }]
         : []),
       // A systematic-closure review found the identical HARNESS-INTEGRITY treatment applies here:
       // a genuinely incoherent parallel.legs[] structure on the terminal attempt (malformed leg
@@ -707,12 +713,29 @@ function buildRunRecord({
       ...(isScenario && gradeResult?.parallelEvidenceMalformed
         ? [{ code: 'malformed_parallel_evidence', message: 'the terminal kmp-test parallel attempt\'s own parallel.legs[] structure is internally incoherent (malformed leg shape, wrong test-type correlation, or a leg/top-level failure-count contradiction) -- the tool\'s own JSON output cannot be trusted as genuine evidence of what happened' }]
         : []),
-      // The identical HARNESS-INTEGRITY treatment for a JUnit-XML evidence-completeness problem:
-      // matrix-runner.mjs's captureGradleJunitEvidence found a genuine skip this evidence path
-      // cannot correctly count, or a file it could not fully read (oversized or a read error) --
-      // never a legitimate agent outcome, so it must block promotion here too.
+      // The identical HARNESS-INTEGRITY treatment for a per-attempt JUnit-XML evidence-completeness
+      // problem: junit-evidence.mjs's countEvidenceTaskJunit found a genuine skip this evidence
+      // path cannot correctly count, an oversized/unreadable file, or the capture bounds were
+      // exceeded, on some relevant Gradle attempt in this condition -- never a legitimate agent
+      // outcome, so it must block promotion here too. Distinct from -- and never merged with --
+      // junit_evidence_capture_incomplete below.
       ...(isScenario && gradeResult?.gradleJunitEvidenceUnreliable
-        ? [{ code: 'unreliable_gradle_junit_evidence', message: 'the JUnit XML captured for this condition contains a genuine skipped testcase (this evidence path cannot correctly account for it) or a file that could not be fully read -- the counts derived from it cannot be trusted as genuine evidence of what happened' }]
+        ? [{ code: 'unreliable_gradle_junit_evidence', message: 'the JUnit XML captured for a relevant Gradle attempt in this condition contains a genuine skipped testcase (this evidence path cannot correctly account for it), a file that could not be fully read or was oversized, or exceeded the capture bounds -- the counts derived from it cannot be trusted as genuine evidence of what happened' }]
+        : []),
+      // NEW (this fix): a capture-MECHANISM failure, distinct from ambiguity (a proven conflict) and
+      // from unreliable evidence (real XML that isn't trustworthy) -- some relevant attempt (Gradle
+      // OR kmp-test parallel, in either provider) has no decision record at all, a decision record
+      // that exists but is incoherent, a command cross-check mismatch, a duplicate-write anomaly, or
+      // (for an allowed Gradle attempt specifically) no evidence record at all. Computed by scanning
+      // EVERY relevant attempt in the condition, not only whichever one later becomes terminal --
+      // a missing/broken capture mechanism on an earlier attempt can silently corrupt
+      // test_invocations_total/retries/first_useful_signal_ms even when the terminal attempt's own
+      // data looks fine. The one tolerance: the single last relevant attempt, when this condition
+      // was terminated by a genuine timeout, may have a record that is entirely absent (never a
+      // tombstone, an incoherent value, a command mismatch, or an integrity_error status, all of
+      // which block unconditionally regardless of timeout).
+      ...(isScenario && gradeResult?.gradleJunitEvidenceCaptureIncomplete
+        ? [{ code: 'junit_evidence_capture_incomplete', message: 'the JUnit-evidence-attribution mechanism itself failed for at least one relevant attempt in this condition (a missing or incoherent decision/evidence record, a command cross-check mismatch, or a duplicate-write anomaly) -- this is a harness capture-mechanism failure, never a legitimate agent outcome' }]
         : []),
     ],
   };
@@ -1308,9 +1331,10 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
  * `'error'` termination (an external kill/spawn failure -- a harness-trustworthiness signal); a
  * clean run or a declared `'timeout'` both pass. `junitEvidenceOk` is a review-fix addition: an
  * `ambiguous_junit_evidence` error on the record (buildRunRecord, from graders.mjs's own
- * `harnessEvidenceAmbiguous`) means more than one attempt in this condition -- a Gradle invocation
- * and/or a kmp-test `parallel` call -- could have produced the single per-condition JUnit XML
- * snapshot -- a genuine HARNESS defect (the harness cannot produce trustworthy evidence for this
+ * `harnessEvidenceAmbiguous`) means a TRANSCRIPT-PROVEN same-assistant-turn conflict -- two or more
+ * policy-allowed producers (a Gradle invocation and/or a kmp-test `parallel` call) were dispatched
+ * in the same turn, so their JUnit evidence cannot be reliably attributed to either specific
+ * attempt -- a genuine HARNESS defect (the harness cannot produce trustworthy evidence for this
  * cell at all), not a legitimate agent outcome, so it blocks here rather than merely degrading
  * that one cell's outcomeMatches to false. `parallelEvidenceOk` is the identical treatment for a
  * `malformed_parallel_evidence` error (buildRunRecord, from graders.mjs's own
@@ -1318,8 +1342,16 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
  * was internally incoherent, a systematic-closure review found this was previously laundered only
  * through expected_outcome_matched:false (a valid negative result the incoherence is NOT).
  * `junitSkipEvidenceOk` is the identical treatment for an `unreliable_gradle_junit_evidence` error
- * (buildRunRecord, from graders.mjs's own `gradleJunitEvidenceUnreliable`) -- a genuine skipped
- * testcase or an unreadable/oversized XML file this evidence path cannot correctly count.
+ * (buildRunRecord, from graders.mjs's own `gradleJunitEvidenceUnreliable`) -- an allowed Gradle
+ * attempt's own JUnit XML contains a genuine skipped testcase this evidence path cannot correctly
+ * count, or is unreadable/oversized/over the capture bounds. `junitCaptureCompleteOk` is the
+ * identical HARNESS-integrity treatment for a `junit_evidence_capture_incomplete` error
+ * (buildRunRecord, from graders.mjs's own `gradleJunitEvidenceCaptureIncomplete`) -- distinct from
+ * both of the above: the attribution MECHANISM itself failed for some relevant attempt in the
+ * condition (any provider) -- a missing/incoherent decision or evidence record, a command
+ * cross-check mismatch, or a duplicate-write anomaly -- scanned across every relevant attempt, not
+ * only whichever one later becomes terminal (see junit-evidence.mjs's attributeCondition for the
+ * full rationale).
  *
  * `skillSelectionOk`/`foreignSkillToolResultsCompleteOk` are result-aware (classifyForeignSkillUses,
  * not the plain findForeignSkillUses calibration/smoke still use): for a scenario's naturally-
@@ -1351,6 +1383,12 @@ function scenarioCellIntegrityOk(record, conditionResult) {
   const junitEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'ambiguous_junit_evidence');
   const parallelEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'malformed_parallel_evidence');
   const junitSkipEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'unreliable_gradle_junit_evidence');
+  // Per-attempt JUnit-evidence-attribution mechanism ("bind junit evidence to authoritative
+  // attempts" fix): junit_evidence_capture_incomplete is a DISTINCT, never-merged code from
+  // ambiguous_junit_evidence -- a capture-mechanism failure (a missing/incoherent decision record
+  // for any relevant attempt, or a missing Gradle evidence record) is a different problem from a
+  // proven same-turn concurrency conflict, and each gets its own independently-toggleable check.
+  const junitCaptureCompleteOk = !(record.errors ?? []).some((e) => e.code === 'junit_evidence_capture_incomplete');
 
   const evaluation = evaluateNamedChecks([
     ['availabilityOk', availabilityOk], ['pluginProfileOk', pluginProfileOk],
@@ -1361,6 +1399,7 @@ function scenarioCellIntegrityOk(record, conditionResult) {
     ['transcriptStructureOk', transcriptStructureOk], ['toolResultsCompleteOk', toolResultsCompleteOk],
     ['terminationOk', terminationOk], ['junitEvidenceOk', junitEvidenceOk],
     ['parallelEvidenceOk', parallelEvidenceOk], ['junitSkipEvidenceOk', junitSkipEvidenceOk],
+    ['junitCaptureCompleteOk', junitCaptureCompleteOk],
   ]);
   return { ok: evaluation.ok, reason: evaluation.reason, failedChecks: evaluation.failedChecks };
 }

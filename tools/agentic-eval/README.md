@@ -188,6 +188,79 @@ matrix is rejected anyway.
   real trace of having happened, instead of disappearing the moment it stops being treated as
   contamination.
 
+  **JUnit-evidence attribution, per attempt, keyed by `tool_use_id`.** A `tests_executed`
+  scenario condition can involve **multiple Bash attempts** (a first, wrong/failed try; a
+  corrected retry). Earlier, JUnit-XML evidence for the raw-Gradle path was captured **once per
+  condition, after every attempt had already run**, then handed identically to every
+  Gradle-classified attempt during grading — a pooled snapshot that could never say *which*
+  attempt actually produced it, and a genuinely ambiguous case (two policy-allowed producers) could
+  only be resolved by rejecting the whole condition outright. `junit-evidence.mjs`'s
+  `attributeCondition()` replaces this with real per-attempt correlation:
+  - **Decision records** (`decisions/<sha256(tool_use_id)>.json = {decision, command}`), written by
+    `policy-hook.mjs`'s existing `decide()` result via a new `recordDecisionSideEffect()` call —
+    `decide()` itself is untouched; no JUnit XML is read here at all.
+  - **Evidence records** (`evidence/<sha256(tool_use_id)>.json = {command, status, junit?, reason?}`),
+    written by a new, additive `junit-evidence-hook.mjs`, registered on `PostToolUse`/
+    `PostToolUseFailure` (matcher `Bash`) — the only two new hook registrations this mechanism
+    needs, and registered **conditionally**: `condition-launcher.mjs`'s `buildPolicySettingsFile()`
+    only adds them when the scenario's `outcome_kind` is `tests_executed`; for
+    `calibrate`/`smoke`/`no_applicable_tests` the produced `settings.json` is byte-for-byte
+    identical to before this mechanism existed, so those paths spawn no extra hook subprocess and
+    carry no extra `hook_started`/`hook_response` transcript lines. `status` is one of `'ok'`
+    (with `{total,passed,failed}`), `'no_xml'` (the walk found nothing — a legitimate,
+    non-integrity observation), or `'integrity_error'` (real XML that isn't trustworthy: a genuine
+    `<skipped>` testcase this evidence path can't correctly count, an oversized/unreadable file, or
+    the aggregate capture bounds were exceeded) — never "well-formed XML," since this evidence path
+    is a regex-based extraction contract, not a full XML validator. The underlying read
+    (`countEvidenceTaskJunit()`) is genuinely single-pass (one `forEachJunitXml` call; an aggregate
+    cap can only stop that function's own visitor by throwing a private sentinel, since
+    `forEachJunitXml` ignores whatever its visitor returns), bounded by two fixed, documented
+    limits: **2000 files** and **64 MiB** aggregate bytes per capture (twice
+    `lib/parsers/junit-xml.js`'s own 32 MiB per-file cap — sized to catch "many small files whose
+    total is huge," the gap the per-file guard alone can't close).
+  - **A transcript-grounded concurrency proof, not a filesystem lock.** `bashResults[i].index` is
+    the containing `assistant` event's own array index — two Bash calls dispatched in the *same*
+    turn share it, and Claude Code cannot generate a second assistant turn with new tool calls
+    before the first turn's own tool results are back, so different-index attempts are always
+    safely sequential relative to each other. Grouping *relevant*, `decision:'allow'` attempts by
+    `.index` and flagging any group of more than one is a proof, not an inferred-from-order guess —
+    two clean, SEQUENTIAL retries (different index) now correctly attribute and pass; only a
+    genuine same-turn dispatch trips the whole-condition `ambiguous_junit_evidence` error.
+  - **Relevance is `allowed_invocations` membership, never an exact `evidence_task` match** — a
+    policy-permitted Gradle lifecycle alias (e.g. `:app:test` when `evidence_task` is
+    `:app:testDebugUnitTest`) still counts, since real Gradle behavior prints the underlying leaf
+    task's own status line as part of its dependency chain regardless of which allowed invocation
+    the agent actually typed. The XML itself is still always read from `evidence_task`'s own
+    directory — this only decides which commands are *tracked*.
+  - **A whole-condition instrumentation-integrity scan, across every relevant attempt — not just
+    `terminal`.** This is deliberately unlike `parallelEvidenceMalformed` (below), which describes
+    the *product's* own evidence quality and is correctly superseded by a later clean retry: a
+    missing/broken *capture mechanism* on an EARLIER attempt (a decision record that never got
+    written, a Gradle attempt whose evidence capture silently failed) can corrupt
+    `test_invocations_total`/`retries`/`first_useful_signal_ms` — all computed across every
+    attempt — even when the attempt that ends up `terminal` looks completely clean. Surfaced as
+    `junit_evidence_capture_incomplete`, independent of `ambiguous_junit_evidence` and of
+    `unreliable_gradle_junit_evidence` (an allowed Gradle attempt's own evidence read as
+    `integrity_error`) — each is its own `scenarioCellIntegrityOk` check
+    (`junitCaptureCompleteOk`/`junitEvidenceOk`/`junitSkipEvidenceOk`) so a caller can tell exactly
+    which failed. The **only** tolerance: for the single *last* relevant attempt, when the
+    condition was terminated by a genuine timeout, a record that is entirely **absent** is
+    tolerated — a duplicate-write anomaly tombstone, an incoherent decision value, a command
+    cross-check mismatch, or an `integrity_error` status on that same attempt all still block
+    unconditionally, timeout or not.
+  - **A duplicate sidecar write (a real, reachable case: which of `PostToolUse`/
+    `PostToolUseFailure` a non-zero-exit Bash command routes through is not pinned down from
+    documentation alone, and this mechanism treats both identically) fails closed, never silently
+    overwrites.** `junit-evidence-io.mjs`'s `writeSidecarRecord()` detects the collision via the
+    same atomic `promoteTargetsAtomically` primitive every other evidence write in this harness
+    already uses; on collision its PRIMARY recovery is to remove the pre-existing, now-ambiguous
+    target outright (the worst case becomes "no record at all," unconditionally flagged
+    `junit_evidence_capture_incomplete` by every reader) — an `anomalies/<id>.json` tombstone is
+    then written as a best-effort diagnostic on top, never the other way around: even if that
+    tombstone write ALSO fails (its own target already occupied by an unrelated collision, a real
+    case since decision- and evidence-collisions share one tombstone path keyed only by
+    `tool_use_id`), the target removal above has already made the outcome safe.
+
   This PR ships exactly two scenarios (`kampkit-android-host-test-discovery`,
   `kampkit-no-applicable-tests`, both against the pinned KaMPKit commit `smoke` already uses) and
   zero live scenario records — every number in `corpus/scenarios/*.json` was independently
@@ -720,6 +793,11 @@ above.
   and cleanup" above) — the isolation guarantee (byte-identical reset between conditions) holds
   regardless, but real Gradle invocations inside a measured session will resolve dependencies
   from a cold cache every time.
+- Whether a non-zero-exit Bash command routes through `PostToolUse` or `PostToolUseFailure` is not
+  pinned down from documentation alone (see "JUnit-evidence attribution" above) — `junit-evidence-
+  hook.mjs` treats both identically, and the design is robust either way (a genuine double-fire is
+  caught via the shared `anomalies/` tombstone channel, never silently overwritten). Confirming
+  precisely which event Claude Code actually dispatches requires a live capture, out of scope here.
 - `docs/agentic-usage-measurement.md` is intentionally not edited by this PR even though its
   "Registry relationship" section is effectively fulfilled here — cross-linking it is reasonable
   follow-up, flagged in the PR body.

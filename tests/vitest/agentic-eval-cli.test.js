@@ -869,6 +869,57 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
     });
     expect(record.errors.some((e) => e.code === 'unreliable_gradle_junit_evidence')).toBe(false);
   });
+
+  // "bind junit evidence to authoritative attempts" fix: junit_evidence_capture_incomplete is a
+  // capture-MECHANISM failure (a missing/incoherent decision/evidence record, a command cross-check
+  // mismatch, or a duplicate-write anomaly on some relevant attempt in this condition) -- an
+  // independent propagation gap from ambiguous_junit_evidence/unreliable_gradle_junit_evidence
+  // above, never merged with either.
+  it('a gradeResult with gradleJunitEvidenceCaptureIncomplete:true produces a junit_evidence_capture_incomplete error entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-junit-capture-incomplete',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ gradleJunitEvidenceCaptureIncomplete: true }),
+    });
+    expect(record.errors.some((e) => e.code === 'junit_evidence_capture_incomplete')).toBe(true);
+  });
+
+  it('a gradeResult with gradleJunitEvidenceCaptureIncomplete:false produces NO junit_evidence_capture_incomplete entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-junit-capture-incomplete-clean',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ gradleJunitEvidenceCaptureIncomplete: false }),
+    });
+    expect(record.errors.some((e) => e.code === 'junit_evidence_capture_incomplete')).toBe(false);
+  });
+
+  it('calibrate/smoke records (runKind !== scenario) never produce junit_evidence_capture_incomplete, regardless of gradeResult', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-junit-capture-incomplete-calibration',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+    });
+    expect(record.errors.some((e) => e.code === 'junit_evidence_capture_incomplete')).toBe(false);
+  });
+
+  // Independence proof: harnessEvidenceAmbiguous:true and gradleJunitEvidenceCaptureIncomplete:true
+  // together on the SAME gradeResult produce BOTH error codes, never one masking the other.
+  it('harnessEvidenceAmbiguous and gradleJunitEvidenceCaptureIncomplete both true on the SAME gradeResult produce BOTH error codes independently', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-junit-both-codes',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResult({ harnessEvidenceAmbiguous: true, gradleJunitEvidenceCaptureIncomplete: true }),
+    });
+    expect(record.errors.some((e) => e.code === 'ambiguous_junit_evidence')).toBe(true);
+    expect(record.errors.some((e) => e.code === 'junit_evidence_capture_incomplete')).toBe(true);
+  });
 });
 
 // Regression coverage for a review-round-3 finding: tool_calls_total's new

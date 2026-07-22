@@ -76,13 +76,38 @@ function toolResultEvent(id, content, isError = false) {
   return { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content, is_error: isError, tool_use_id: id }] } };
 }
 
-/** Builds a full conditionResult from a list of {command, resultContent, resultIsError} steps
- * plus a final answer string -- computes bashResults the same shape
- * findBashToolUsesWithResults() produces (index/resultIndex/resultContent), by hand, so these
- * tests don't need parseStreamJsonl in the loop. */
-function buildConditionResult(steps, finalAnswerText, { terminated = false, terminationReason = null, gradleJunitEvidence = null, dropFinalResultEvent = false } = {}) {
+/** Builds a full conditionResult from a list of steps plus a final answer string -- computes
+ * bashResults the same shape findBashToolUsesWithResults() produces (index/resultIndex/
+ * resultContent), by hand, so these tests don't need parseStreamJsonl in the loop.
+ *
+ * Each step is `{command, resultContent, resultIsError, decision, evidence}`: `decision` is this
+ * attempt's own resolved policy decision (default `'allow'` -- most tests here exercise grading
+ * logic, not the decision-recording mechanism itself, which has its own dedicated
+ * agentic-eval-junit-evidence.test.js; pass `'deny'` or `null` explicitly to exercise those
+ * specific paths). `evidence` is this attempt's own resolved JUnit-evidence status (only
+ * meaningful for a Gradle-classified step) -- `{status:'ok', junit:{total,passed,failed}}` |
+ * `{status:'no_xml'}` | `{status:'integrity_error', reason}` | `{status:'conflict'}` | omitted
+ * entirely (no evidence record at all). This directly encodes junit-evidence.mjs's
+ * attributeCondition() OUTPUT shape (perAttemptJunit/decisionByAttempt, keyed by each step's own
+ * `id` -- a real, adversarial-review-confirmed fix: an earlier revision keyed these by `bashIndex`,
+ * which collapsed two same-turn attempts sharing one index into a single map slot) rather than the
+ * INPUT steps that would produce it -- attributeCondition's own correlation logic (concurrency
+ * detection, timeout tolerance, sidecar-record reading) has its own dedicated test file and is
+ * never re-derived here, avoiding any risk of the two diverging.
+ *
+ * The three whole-condition flags (`ambiguousJunitEvidence`/`captureIncomplete`/`unreliable`) are
+ * accepted as explicit top-level options for the same reason -- a test that wants to verify
+ * gradeScenarioCondition's OWN consumption of a proven conflict (say) sets it directly, rather
+ * than trying to construct a same-assistant-turn transcript shape that would make
+ * attributeCondition derive it independently. */
+function buildConditionResult(steps, finalAnswerText, {
+  terminated = false, terminationReason = null, dropFinalResultEvent = false,
+  ambiguousJunitEvidence = false, captureIncomplete = false, unreliable = false,
+} = {}) {
   const events = [initEventStub()];
   const bashResults = [];
+  const decisionByAttempt = new Map();
+  const perAttemptJunit = new Map();
   for (const step of steps) {
     const id = `t${bashResults.length + 1}`;
     const bashIndex = events.length;
@@ -97,13 +122,21 @@ function buildConditionResult(steps, finalAnswerText, { terminated = false, term
       resultFound: resultIndex != null, resultIsError: resultIndex != null ? (step.resultIsError ?? false) : null,
       resultIndex, resultContent: resultIndex != null ? step.resultContent : null,
     });
+    decisionByAttempt.set(id, step.decision === undefined ? 'allow' : step.decision);
+    if (step.evidence !== undefined) perAttemptJunit.set(id, step.evidence);
   }
   if (!dropFinalResultEvent) events.push(resultEventStub(finalAnswerText));
   return {
     events, bashResults, result: dropFinalResultEvent ? null : { result: finalAnswerText },
     spawnResult: { terminated, terminationReason },
-    gradleJunitEvidence,
+    junitAttribution: { perAttemptJunit, decisionByAttempt, ambiguousJunitEvidence, captureIncomplete, unreliable },
   };
+}
+
+/** Shorthand for the common case: a Gradle step whose evidence should read as a clean, matching
+ * `tests_executed` pass -- `{status:'ok', junit:{total,passed,failed}}`. */
+function okJunit(total, passed, failed) {
+  return { status: 'ok', junit: { total, passed, failed } };
 }
 
 /** Builds a realistic final-answer string: some natural prose (never inspected for grading) plus
@@ -257,9 +290,8 @@ describe('gradeScenarioCondition -- scenario 1 (:shared, tests_executed) happy p
 
   it('gradle path (direct evidence_task invocation): exact match -> full pass', () => {
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(24, 24, 0) }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(true);
@@ -384,12 +416,11 @@ describe('gradeScenarioCondition -- decision 5: retry tolerance, last-relevant-a
 });
 
 describe('gradeScenarioCondition -- decision 13: provider contradiction is diagnostic-only, never gates the verdict', () => {
-  // Uses SCENARIO_2 (no_applicable_tests), not SCENARIO_1 -- classifyJunitProvenance's fix (see
-  // its own doc comment) means a K+G pair under `tests_executed` is now CORRECTLY flagged
-  // ambiguous, so that shape is no longer a valid "both providers cleanly agree" fixture for
-  // tests_executed. no_applicable_tests never consumes JUnit evidence at all, so K+G there is
-  // never ambiguous -- exactly what this test needs to isolate check 7's own diagnostic-only
-  // behavior.
+  // Uses SCENARIO_2 (no_applicable_tests), not SCENARIO_1 -- no_applicable_tests never consumes
+  // JUnit evidence at all (junit-evidence.mjs's attributeCondition is never even enabled for it),
+  // so this shape stays a clean, unambiguous "both providers cleanly agree" fixture regardless of
+  // how many producers are involved -- exactly what this test needs to isolate check 7's own
+  // diagnostic-only behavior.
   it('agent uses both providers and they AGREE (both correct) -> no_provider_contradiction passes, doesn\'t affect success', () => {
     const cr = buildConditionResult(
       [
@@ -408,10 +439,9 @@ describe('gradeScenarioCondition -- decision 13: provider contradiction is diagn
     const cr = buildConditionResult(
       [
         { command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS }, // says pass
-        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: wrongGradleStdout, resultIsError: true }, // says fail -- terminal attempt
+        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: wrongGradleStdout, resultIsError: true, evidence: okJunit(24, 20, 4) }, // says fail -- terminal attempt
       ],
       'Not sure what happened -- results were inconsistent.',
-      { gradleJunitEvidence: { total: 24, passed: 20, failed: 4 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'no_provider_contradiction').passed).toBe(false);
@@ -486,42 +516,69 @@ describe('gradeScenarioCondition -- structural/evidence adversarial cases (evide
 
   it('a Gradle attempt with resultIsError:true, despite BUILD SUCCESSFUL text present, must fail (never silently trusts the text over resultIsError)', () => {
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, resultIsError: true }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, resultIsError: true, evidence: okJunit(24, 24, 0) }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(false);
     expect(grade.success).toBe(false);
   });
 
-  // Review-fix regression: JUnit XML is captured ONCE per condition (after the whole cell
-  // finishes), never per-attempt -- if MORE than one Gradle attempt targets the scenario's allowed
-  // invocations within a single condition, that one snapshot cannot be reliably attributed to any
-  // SPECIFIC attempt. Must fail closed rather than silently attributing it to both/either.
-  it('two Gradle attempts in the same condition targeting the evidence task -- JUnit evidence is ambiguous, must fail closed even though both attempts look clean', () => {
+  // Round-4 fix: two attempts sharing the SAME transcript index (a genuine same-assistant-turn
+  // concurrent dispatch -- the only shape junit-evidence.mjs's attributeCondition treats as a real
+  // conflict) each have their own evidence resolved to {status:'conflict'} and the whole condition
+  // is flagged harnessEvidenceAmbiguous:true. buildConditionResult's own step loop always assigns a
+  // fresh transcript index per step (see its doc comment), so a genuine same-turn dispatch cannot
+  // be constructed here -- attributeCondition's own concurrency-detection logic has its dedicated
+  // coverage in agentic-eval-junit-evidence.test.js. This test instead faithfully reproduces
+  // attributeCondition's OUTPUT for that case (both the whole-condition flag AND each conflicting
+  // attempt's own {status:'conflict'} evidence) to verify gradeScenarioCondition's OWN consumption
+  // of it: the terminal attempt's own evidence correctly reads as not-ok (so expectedOutcomeMatched
+  // is false), AND the harness-integrity flag is surfaced independently for cmdRun/
+  // scenarioCellIntegrityOk to block the whole matrix's promotion on.
+  it('a proven same-turn JUnit-evidence conflict fails closed on both the per-attempt outcome AND the whole-condition harness-integrity flag', () => {
     const cr = buildConditionResult(
       [
-        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT },
-        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain --rerun-tasks', resultContent: GRADLE_SCENARIO1_PASS_STDOUT },
+        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: { status: 'conflict' } },
+        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain --rerun-tasks', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: { status: 'conflict' } },
       ],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
+      { ambiguousJunitEvidence: true },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(false);
     expect(grade.success).toBe(false);
     // This must be surfaced as a HARNESS-INTEGRITY defect (so cmdRun can block the whole matrix's
     // promotion via scenarioCellIntegrityOk), not merely degrade outcomeMatches to false and read
-    // as "the agent got it wrong" -- a valid negative result the ambiguity is NOT.
+    // as "the agent got it wrong" -- a valid negative result the conflict is NOT.
     expect(grade.harnessEvidenceAmbiguous).toBe(true);
   });
 
-  it('a SINGLE Gradle attempt (no ambiguity) still passes normally -- the ambiguity fix does not regress the ordinary one-attempt case', () => {
+  // Direct regression proof for round-4's fix: two GENUINELY SEQUENTIAL (different transcript
+  // index) Gradle attempts targeting the same evidence task are no longer conflated into a pooled,
+  // condition-wide ambiguity just because there are two of them -- each attempt's own evidence is
+  // now attributed independently (keyed by tool_use_id), so two clean, non-conflicting retries
+  // correctly attribute and pass, exactly like a single attempt does. This corrects the OLD test
+  // pinned to the bug's own over-broad compensating mitigation (any 2+ producers => ambiguous), not
+  // a weakening of coverage for the new code.
+  it('two SEQUENTIAL (different-index, non-conflicting) Gradle attempts both attribute correctly and pass -- no longer conflated into a false ambiguity', () => {
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT }],
+      [
+        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(24, 24, 0) },
+        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain --rerun-tasks', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(24, 24, 0) },
+      ],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+    expect(grade.harnessEvidenceAmbiguous).toBe(false);
+  });
+
+  it('a SINGLE Gradle attempt (no ambiguity) still passes normally -- the attribution fix does not regress the ordinary one-attempt case', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(24, 24, 0) }],
+      SCENARIO_1_CORRECT_ANSWER,
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(true);
@@ -578,9 +635,8 @@ describe('gradeScenarioCondition -- envelope self-contradiction (review-round-2/
   it('Gradle path: a diagnostic/warning line merely MENTIONING "BUILD FAILED" mid-sentence (not at line-start) must not be mistaken for the real footer', () => {
     const withMisleadingDiagnostic = `${GRADLE_SCENARIO1_PASS_STDOUT}\nNote: if you see BUILD FAILED in CI, check your JDK version.\n`;
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: withMisleadingDiagnostic }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: withMisleadingDiagnostic, evidence: okJunit(24, 24, 0) }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     // The real footer (BUILD SUCCESSFUL, at line-start, the ONLY genuine footer line) still
@@ -616,15 +672,35 @@ describe('gradeScenarioCondition -- timeout tolerance integration', () => {
 // findings from that round; the round's prose-parsing-specific findings (predicate-position
 // negation, an unenumerable outcome-adjective denylist, cross-clause binding) were removed in
 // round 5 as obsolete -- they tested a mechanism (free-prose parsing) that no longer exists.
-describe('gradeScenarioCondition -- round-3 mandatory reproduction 1: K+G JUnit-ambiguity false NEGATIVE', () => {
-  it('one kmp-test parallel attempt + one Gradle attempt, both individually clean and agreeing, under tests_executed -> harnessEvidenceAmbiguous must be TRUE (both are real producers of the one pooled JUnit snapshot)', () => {
+describe('gradeScenarioCondition -- round-3 mandatory reproduction 1: K+G provider mix, sequential (not same-turn)', () => {
+  it('one kmp-test parallel attempt + one Gradle attempt, both individually clean and agreeing, sequential (different transcript index) under tests_executed -> attributes correctly, no longer a false ambiguity', () => {
     const cr = buildConditionResult(
       [
         { command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS },
-        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT },
+        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(24, 24, 0) },
       ],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.harnessEvidenceAmbiguous).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+  });
+
+  // Mirrors the sibling test above but for a genuine same-assistant-turn concurrent dispatch across
+  // TWO DIFFERENT providers (kmp-test parallel + Gradle) -- see the G+G conflict test's own doc
+  // comment (above, in the previous describe block) for why buildConditionResult's sequential step
+  // construction cannot reproduce the input shape directly, and why faithfully reproducing
+  // attributeCondition's OUTPUT (the whole-condition flag plus the conflicting Gradle attempt's own
+  // {status:'conflict'} evidence) is the correct way to test gradeScenarioCondition's consumption of
+  // it in isolation.
+  it('a kmp-test attempt and a Gradle attempt sharing the SAME transcript index (genuine same-turn dispatch) IS a real conflict -- harnessEvidenceAmbiguous must be true', () => {
+    const cr = buildConditionResult(
+      [
+        { command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS },
+        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: { status: 'conflict' } },
+      ],
+      SCENARIO_1_CORRECT_ANSWER,
+      { ambiguousJunitEvidence: true },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.harnessEvidenceAmbiguous).toBe(true);
@@ -690,9 +766,8 @@ describe('gradeScenarioCondition -- round-3 mandatory reproduction 8 + round-4: 
   it('"BUILD SUCCESSFUL but this is not a Gradle footer" (starts like a real footer, but is not a complete footer line) must not be accepted as evidence', () => {
     const fakeFooterOnly = `> Task :shared:testAndroidHostTest\n\nBUILD SUCCESSFUL but this is not a Gradle footer\n21 actionable tasks: 21 executed\n`;
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: fakeFooterOnly }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: fakeFooterOnly, evidence: okJunit(24, 24, 0) }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
@@ -702,9 +777,8 @@ describe('gradeScenarioCondition -- round-3 mandatory reproduction 8 + round-4: 
   it('a fake line-start "BUILD SUCCESSFUL ..." sentence followed by a REAL, complete "BUILD FAILED in 2s" footer -- exactly one REAL footer line exists, so it correctly governs', () => {
     const fakeSuccessThenRealFailure = `BUILD SUCCESSFUL but this is not a Gradle footer\n> Task :shared:testAndroidHostTest FAILED\n\nBUILD FAILED in 2s\n`;
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: fakeSuccessThenRealFailure }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: fakeSuccessThenRealFailure, evidence: okJunit(24, 24, 0) }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(false);
@@ -737,9 +811,8 @@ describe('gradeScenarioCondition -- round-3 dimension-matrix coverage (Gradle fo
   it('Gradle content with NO footer line at all (truncated/incomplete output) is malformed, not silently coerced to a pass or fail', () => {
     const noFooterAtAll = `> Task :shared:compileAndroidHostTest UP-TO-DATE\n> Task :shared:testAndroidHostTest\n21 actionable tasks: 21 executed\n`;
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: noFooterAtAll }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: noFooterAtAll, evidence: okJunit(24, 24, 0) }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
@@ -760,18 +833,21 @@ describe('gradeScenarioCondition -- round-3 dimension-matrix coverage (Gradle fo
     const cr = {
       events, bashResults, result: { result: SCENARIO_1_CORRECT_ANSWER },
       spawnResult: { terminated: false, terminationReason: null },
-      gradleJunitEvidence: { total: 24, passed: 24, failed: 0 },
+      junitAttribution: {
+        perAttemptJunit: new Map([['t1', okJunit(24, 24, 0)]]),
+        decisionByAttempt: new Map([['t1', 'allow']]),
+        ambiguousJunitEvidence: false, captureIncomplete: false, unreliable: false,
+      },
     };
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);
   });
 
-  it('tests_executed: a single (non-ambiguous) Gradle attempt with an otherwise-clean footer but gradleJunitEvidence:null (never captured) must fail closed, not pass on the footer alone', () => {
+  it('tests_executed: a single (non-ambiguous) Gradle attempt with an otherwise-clean footer but no resolved evidence at all (never captured) must fail closed, not pass on the footer alone', () => {
     const cr = buildConditionResult(
       [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: null },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.harnessEvidenceAmbiguous).toBe(false); // exactly one producer -- not an ambiguity case
@@ -788,8 +864,8 @@ describe('gradeScenarioCondition -- round-3 dimension-matrix coverage (Gradle fo
 // round 5 replaced it with a stricter requirement (see the "command/envelope module coherence"
 // group below). The "but"/semicolon clause-splitting fix was superseded entirely by removing
 // prose parsing from the grading path.
-describe('gradeScenarioCondition -- round-4: classifyJunitProvenance module-scoping + dry-run-free producer counting', () => {
-  it('kmp-test-only condition (wrong module, then the right one) with ZERO Gradle attempts anywhere -- must NOT be ambiguous, since nothing in this condition ever reads the pooled Gradle-JUnit snapshot', () => {
+describe('gradeScenarioCondition -- round-4 (superseded by round-5 per-attempt attribution): module-scoping + dry-run-free producer counting', () => {
+  it('kmp-test-only condition (wrong module, then the right one) with ZERO Gradle attempts anywhere -- must NOT be ambiguous, since nothing in this condition is even classified as a Gradle-relevant attempt', () => {
     const cr = buildConditionResult(
       [
         { command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS },
@@ -815,18 +891,18 @@ describe('gradeScenarioCondition -- round-4: classifyJunitProvenance module-scop
     expect(grade.harnessEvidenceAmbiguous).toBe(false);
   });
 
-  it('kmp-test (wrong module) + kmp-test (right module) + a real Gradle attempt on the right module -- IS still correctly ambiguous (a real Gradle-path consumer exists, and the on-target kmp-test call is a real potential producer alongside it)', () => {
+  it('kmp-test (wrong module) + kmp-test (right module) + a real Gradle attempt on the right module, all SEQUENTIAL (different transcript index) -- no longer ambiguous; each attempt attributes independently and the terminal (Gradle) attempt governs', () => {
     const cr = buildConditionResult(
       [
         { command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS },
         { command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS },
-        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT },
+        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(24, 24, 0) },
       ],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
-    expect(grade.harnessEvidenceAmbiguous).toBe(true);
+    expect(grade.harnessEvidenceAmbiguous).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(true);
   });
 });
 
@@ -875,17 +951,16 @@ describe('gradeScenarioCondition -- round-4: terminal-attempt selection distingu
 });
 
 describe('gradeScenarioCondition -- round-4 dimension-matrix coverage (provider ordering, explicit harnessEvidenceAmbiguous coverage, check-1 independently failed)', () => {
-  it('Gradle-FIRST, kmp-test-SECOND ordering (the mirror of the only-ever-tested kmp-test-first ordering) is handled the same way', () => {
+  it('Gradle-FIRST, kmp-test-SECOND ordering (the mirror of the only-ever-tested kmp-test-first ordering) is handled the same way -- sequential, different-index attempts are not ambiguous', () => {
     const cr = buildConditionResult(
       [
-        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT },
+        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(24, 24, 0) },
         { command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS },
       ],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
-    expect(grade.harnessEvidenceAmbiguous).toBe(true);
+    expect(grade.harnessEvidenceAmbiguous).toBe(false);
   });
 
   it('kmp-test-only condition (single attempt) under tests_executed -- harnessEvidenceAmbiguous is explicitly false (no second producer of any kind)', () => {
@@ -922,7 +997,7 @@ describe('gradeScenarioCondition -- round-4 dimension-matrix coverage (provider 
     const duplicateInitEvents = [initEventStub(), initEventStub(), resultEventStub('irrelevant')];
     const cr = {
       events: duplicateInitEvents, bashResults: [], result: { result: 'irrelevant' },
-      spawnResult: { terminated: false, terminationReason: null }, gradleJunitEvidence: null,
+      spawnResult: { terminated: false, terminationReason: null },
     };
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'no_transcript_structural_issues').passed).toBe(false);
@@ -971,10 +1046,9 @@ describe('gradeScenarioCondition -- round-5: planning (--dry-run) vs execution',
     const cr = buildConditionResult(
       [
         { command: 'kmp-test parallel --module-filter shared --dry-run --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS },
-        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT },
+        { command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(24, 24, 0) },
       ],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.harnessEvidenceAmbiguous).toBe(false);
@@ -1204,9 +1278,8 @@ describe('gradeScenarioCondition -- round-5: Gradle footer requires a REAL durat
   it('"BUILD SUCCESSFUL in this diagnostic only" (footer-shaped, but not a real duration) must not be accepted as evidence', () => {
     const fakeDuration = `> Task :shared:testAndroidHostTest\n\nBUILD SUCCESSFUL in this diagnostic only\n`;
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: fakeDuration }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: fakeDuration, evidence: okJunit(24, 24, 0) }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
@@ -1216,9 +1289,8 @@ describe('gradeScenarioCondition -- round-5: Gradle footer requires a REAL durat
   it('regression guard: a genuine COMPOUND duration ("1m 30s") is still accepted, not just bare seconds', () => {
     const compoundDuration = `> Task :shared:compileAndroidHostTest UP-TO-DATE\n> Task :shared:testAndroidHostTest\n\nBUILD SUCCESSFUL in 1m 30s\n21 actionable tasks: 21 executed\n`;
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: compoundDuration }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: compoundDuration, evidence: okJunit(24, 24, 0) }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(true);
@@ -1230,9 +1302,8 @@ describe('gradeScenarioCondition -- round-5: more than one Gradle footer line wi
   it('a genuine SECOND footer line (BUILD FAILED, at its own line-start, after an earlier BUILD SUCCESSFUL) within the SAME tool_result content is now ambiguous evidence, not a "the later one wins" resolution -- one tool_result represents one attempt, and two footer lines within it cannot both be that attempt\'s real outcome', () => {
     const genuineRetryThenFailed = `${GRADLE_SCENARIO1_PASS_STDOUT}\n> Task :shared:testAndroidHostTest FAILED\n\nBUILD FAILED in 2s\n`;
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: genuineRetryThenFailed }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: genuineRetryThenFailed, evidence: okJunit(24, 24, 0) }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
@@ -1242,9 +1313,8 @@ describe('gradeScenarioCondition -- round-5: more than one Gradle footer line wi
   it('two footer lines that happen to AGREE (both BUILD SUCCESSFUL) are STILL ambiguous -- the rule is "exactly one", not "the values must differ"', () => {
     const twoAgreeingFooters = `${GRADLE_SCENARIO1_PASS_STDOUT}\n> Task :shared:testAndroidHostTest UP-TO-DATE\n\nBUILD SUCCESSFUL in 1s\n`;
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: twoAgreeingFooters }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: twoAgreeingFooters, evidence: okJunit(24, 24, 0) }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
@@ -1360,9 +1430,8 @@ describe('gradeScenarioCondition -- round-6: Gradle footer duration grammar hand
   it('"BUILD SUCCESSFUL in 1m" (bare minutes, no trailing seconds shown -- a real duration shape Gradle actually prints, already evidenced elsewhere in this repo\'s own test fixtures) must be accepted', () => {
     const elidedSecondsDuration = `> Task :shared:compileAndroidHostTest UP-TO-DATE\n> Task :shared:testAndroidHostTest\n\nBUILD SUCCESSFUL in 1m\n21 actionable tasks: 21 executed\n`;
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: elidedSecondsDuration }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: elidedSecondsDuration, evidence: okJunit(24, 24, 0) }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(true);
@@ -2061,19 +2130,22 @@ describe('gradeScenarioCondition -- round-10: malformed parallel evidence is a H
   });
 });
 
-// Round 11 (Docker/local-ci audit): matrix-runner.mjs's captureGradleJunitEvidence now returns
+// Round 11 (Docker/local-ci audit): matrix-runner.mjs's captureGradleJunitEvidence used to return
 // {harnessIntegrityIssue:true, reason} instead of a miscounted {total,passed,failed} when the real
-// JUnit XML contains a genuine <skipped> testcase or could not be fully read. gradeScenarioCondition
-// must surface this as its own top-level harness-integrity signal (gradleJunitEvidenceUnreliable),
-// mirroring parallelEvidenceMalformed above -- never silently folded into a plain
-// expectedOutcomeMatched:false, which cli.mjs's scenarioCellIntegrityOk could not distinguish from
-// an ordinary wrong-answer negative result.
+// JUnit XML contained a genuine <skipped> testcase or could not be fully read -- computed ONCE per
+// condition and applied unconditionally, regardless of whether a Gradle attempt was even present.
+// junit-evidence.mjs's attributeCondition replaces this entirely: an unreliable read is now this
+// SPECIFIC attempt's own `{status:'integrity_error', reason}` evidence (never a pooled snapshot),
+// and the whole-condition gradleJunitEvidenceUnreliable flag is scanned only across attempts
+// actually classified as relevant Gradle invocations in THIS condition -- a kmp-test-only condition
+// can no longer spuriously trip it (see the last test below, a direct regression proof that this old
+// bug is fixed, not merely re-described).
 describe('gradeScenarioCondition -- round-11: unreliable Gradle JUnit evidence (skip/anomaly) is a HARNESS-INTEGRITY signal, not a plain negative result', () => {
-  it('EXACT REPRODUCTION: gradleJunitEvidence carries a skipped-testcase harness-integrity issue -- sets gradleJunitEvidenceUnreliable:true, and the outcome check still fails closed (never a false pass from the stale total/passed shape)', () => {
+  it('EXACT REPRODUCTION: a Gradle attempt whose own evidence carries a skipped-testcase harness-integrity issue -- sets gradleJunitEvidenceUnreliable:true, and the outcome check still fails closed (never a false pass from a stale total/passed shape)', () => {
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: { status: 'integrity_error', reason: 'skipped_testcase_unsupported' } }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { harnessIntegrityIssue: true, reason: 'skipped_testcase_unsupported' } },
+      { unreliable: true },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
@@ -2081,55 +2153,48 @@ describe('gradeScenarioCondition -- round-11: unreliable Gradle JUnit evidence (
     expect(grade.gradleJunitEvidenceUnreliable).toBe(true);
   });
 
-  it('EXACT REPRODUCTION (read-anomaly variant): gradleJunitEvidence carries an oversized/unreadable-XML issue -- also sets gradleJunitEvidenceUnreliable:true', () => {
+  it('EXACT REPRODUCTION (read-anomaly variant): a Gradle attempt whose own evidence carries an oversized/unreadable-XML issue -- also sets gradleJunitEvidenceUnreliable:true', () => {
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: { status: 'integrity_error', reason: 'junit_xml_read_anomaly' } }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { harnessIntegrityIssue: true, reason: 'junit_xml_read_anomaly' } },
+      { unreliable: true },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(false);
     expect(grade.gradleJunitEvidenceUnreliable).toBe(true);
   });
 
-  it('regression guard: gradleJunitEvidence:null (never captured at all, the pre-existing "no evidence" case) does NOT trip gradleJunitEvidenceUnreliable -- that is a distinct, already-covered failure mode', () => {
+  it('regression guard: evidence entirely absent (never captured at all, the pre-existing "no evidence" case) does NOT trip gradleJunitEvidenceUnreliable -- that is a distinct, already-covered failure mode (captureIncomplete)', () => {
     const cr = buildConditionResult(
       [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: null },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(false);
     expect(grade.gradleJunitEvidenceUnreliable).toBe(false);
   });
 
-  it('regression guard: a genuinely clean gradleJunitEvidence snapshot has gradleJunitEvidenceUnreliable:false', () => {
+  it('regression guard: a genuinely clean evidence snapshot has gradleJunitEvidenceUnreliable:false', () => {
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT }],
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(24, 24, 0) }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { total: 24, passed: 24, failed: 0 } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.gradleJunitEvidenceUnreliable).toBe(false);
   });
 
-  it('a kmp-test-only condition (no Gradle attempt at all) never trips gradleJunitEvidenceUnreliable, regardless of what conditionResult.gradleJunitEvidence happens to hold', () => {
+  it('a kmp-test-only condition (no Gradle attempt at all) never trips gradleJunitEvidenceUnreliable -- fixed, not merely re-described, from the old pooled-snapshot behavior (see this describe block\'s own header comment)', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS }],
       SCENARIO_1_CORRECT_ANSWER,
-      { gradleJunitEvidence: { harnessIntegrityIssue: true, reason: 'skipped_testcase_unsupported' } },
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
-    // The kmp-test path derives its own outcome from individual_total, never from
-    // conditionResult.gradleJunitEvidence -- but the flag itself is computed unconditionally from
-    // the raw signal, so a stray/unrelated harness-integrity issue on the Gradle side still surfaces
-    // here even though this condition never actually depended on it for its own outcome. This is
-    // intentional: matrix-runner.mjs only computes gradleJunitEvidence at all for tests_executed
-    // scenarios with a declared evidence_task, so a non-null value here is never spurious noise from
-    // an unrelated scenario shape.
+    // junit-evidence.mjs's attributeCondition only scans attempts it actually classified as
+    // relevant Gradle invocations in THIS condition -- there are none here, so unreliable stays
+    // false regardless of what an unrelated scenario/condition might have recorded.
     expect(grade.expectedOutcomeMatched).toBe(true);
-    expect(grade.gradleJunitEvidenceUnreliable).toBe(true);
+    expect(grade.gradleJunitEvidenceUnreliable).toBe(false);
   });
 });
 

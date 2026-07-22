@@ -3,8 +3,9 @@
 //
 // tools/agentic-eval/graders.mjs -- deterministic, structured, evidence-anchored scenario
 // graders. Pure functions over already-collected transcript + JUnit-evidence data (see
-// matrix-runner.mjs's captureGradleJunitEvidence for where the latter comes from) -- never an LLM
-// judge, never a broad free-text keyword scan as the primary signal.
+// junit-evidence.mjs's attributeCondition, called once per condition by matrix-runner.mjs's
+// runScenarioMatrix, for where the latter comes from) -- never an LLM judge, never a broad
+// free-text keyword scan as the primary signal.
 //
 // A first version of this file (deleted before ever shipping, commit 3f81208) was rejected on
 // review for exactly one, verbatim reason: "six scenario-specific graders using broad keyword
@@ -20,11 +21,11 @@
 // grading. Every other check still correlates a tokenized Bash `tool_use`, its own `tool_result`,
 // and an authoritative kmp-test JSON envelope OR independently-read Gradle/JUnit evidence against
 // the scenario's exact expected module/task/outcome identifiers.
-import { tokenize } from './policy-hook.mjs';
 import { classifyTaskExecutionMode } from '../../lib/orchestrators/parallel/result-rollup.js';
 import { findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout } from './stream-parser.mjs';
 import { ENVELOPE_SCHEMA_VERSION } from '../../lib/envelope/exit-codes.js';
 import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
+import { classifyBashCommand, normalizeModuleName } from './command-classify.mjs';
 
 /** The fixed, canonical set of check names every gradeScenarioCondition() result's `checks` array
  * must contain -- exactly these 8, no more, no fewer, enforced by schemas.mjs's validateRun() for
@@ -42,72 +43,14 @@ export const GRADING_CHECK_NAMES = [
 ];
 
 // ---------------------------------------------------------------------------------------------
-// Command classification -- reuses policy-hook.mjs's OWN tokenizer, never a second, potentially
-// divergent parser. Grading correlates against the exact same grammar the policy hook enforced
-// live.
+// Command classification -- classifyBashCommand/normalizeModuleName now live in
+// command-classify.mjs (relocated verbatim, imported above), shared with junit-evidence.mjs and
+// junit-evidence-hook.mjs so the JUnit-evidence-attribution mechanism never re-implements the
+// grammar a third time. That module imports only `tokenize` from policy-hook.mjs -- never
+// `GRADLE_LEADING_TOKENS`/`tokenize` itself relocated out of policy-hook.mjs, so `policy_sha256`
+// (computed over policy-hook.mjs's own bytes only) still covers every byte of the grammar that
+// actually drives the allow/deny decision.
 // ---------------------------------------------------------------------------------------------
-
-/** Classifies one Bash tool_use's raw command string. Returns `{kind:'kmp-test', subcommand,
- * moduleFilter, isPlanOnly}` | `{kind:'gradle', taskTokens, isPlanOnly}` | `{kind:'other'}` --
- * `'other'` covers both a genuinely unrelated command AND one the tokenizer itself rejects
- * (unbalanced quotes -- tokenize() returns null per its own contract), since either way it can't
- * be correlated against kmp-test/gradle evidence. `moduleFilter` is the exact value the agent
- * passed to `--module-filter`/`--module-filter=`, if any -- needed because a `no_test_modules`
- * envelope has an EMPTY `modules[]` array (there was nothing to resolve), so the only place the
- * agent's intended target module is directly observable for that outcome is the command itself,
- * not the envelope.
- *
- * `isPlanOnly` detects any literal token that makes the invocation report only PLANNED work
- * without ever actually executing anything: `--dry-run` on either command shape, plus kmp-test's
- * `--list`/`--list-only` (documented in `lib/cli.js` as exiting before any Gradle dispatch at
- * all -- semantically identical to `--dry-run` for this purpose, just a different real flag). A
- * round-6 fresh architecture review reproduced this as a real gap: the file's own `--dry-run`
- * exclusion (added earlier in round 5) left `--list-only` completely unrecognized, so a
- * `--list-only` follow-up call after a genuinely correct execution could still become "terminal"
- * and flip a correct result to a reported failure -- exactly the bug class `--dry-run` exclusion
- * was already built to prevent, just via a different real flag this file hadn't been told about.
- * (No Gradle-side analogue exists for `--list`/`--list-only` -- Gradle's own allowed-flag set has
- * no other plan-only flag beyond `--dry-run`, which is already covered.) Every caller that treats
- * a command as evidence checks this flag and excludes plan-only attempts entirely -- see
- * evaluateKmpTestAttempt/evaluateGradleAttempt/classifyJunitProvenance. */
-function classifyBashCommand(command) {
-  if (typeof command !== 'string') return { kind: 'other' };
-  const tokens = tokenize(command);
-  if (tokens == null || tokens.length === 0) return { kind: 'other' };
-  if (tokens[0] === 'kmp-test') {
-    let moduleFilter = null;
-    // `testType` is the LITERAL value the command itself passed to `--test-type`, or `null` if
-    // the flag is absent entirely (an implicit-`auto` dispatch). Needed for
-    // `validateParallelEvidence`'s command/envelope test-type correlation (a systematic-closure
-    // pass reproduced a real gap: nothing previously cross-checked the invoked `--test-type`
-    // against the envelope's own `parallel.test_type`/per-leg `test_type` fields at all).
-    let testType = null;
-    for (let i = 1; i < tokens.length; i++) {
-      if (tokens[i] === '--module-filter') { moduleFilter = tokens[i + 1] ?? null; i++; }
-      else if (tokens[i].startsWith('--module-filter=')) { moduleFilter = tokens[i].slice('--module-filter='.length); }
-      else if (tokens[i] === '--test-type') { testType = tokens[i + 1] ?? null; i++; }
-      else if (tokens[i].startsWith('--test-type=')) { testType = tokens[i].slice('--test-type='.length); }
-    }
-    const isPlanOnly = tokens.includes('--dry-run') || tokens.includes('--list') || tokens.includes('--list-only');
-    return { kind: 'kmp-test', subcommand: tokens[1] ?? null, moduleFilter, testType, isPlanOnly };
-  }
-  if (tokens[0] === './gradlew' || tokens[0] === './gradlew.bat') {
-    const taskTokens = tokens.slice(1).filter((t) => !t.startsWith('-'));
-    const isPlanOnly = tokens.includes('--dry-run');
-    return { kind: 'gradle', taskTokens, isPlanOnly };
-  }
-  return { kind: 'other' };
-}
-
-/** A Gradle-project-path-shaped module identifier, normalized to bare-no-leading-colon form for
- * comparison -- kmp-test's own `--json` output is internally inconsistent about this (`parallel`'s
- * `modules[].name` is bare, e.g. `"shared"`; `describe`'s is colon-prefixed, e.g. `":shared"`),
- * and an agent typing `--module-filter` may reasonably use either form too (both were observed in
- * real prior sessions against this exact project). Comparing normalized on both sides avoids a
- * false "wrong module" purely from a cosmetic colon-prefix difference. */
-function normalizeModuleName(name) {
-  return typeof name === 'string' ? name.replace(/^:/, '') : name;
-}
 
 /** Escapes regex metacharacters in `s` so it can be embedded literally inside a RegExp pattern. */
 function escapeRegExp(s) {
@@ -244,18 +187,15 @@ export function extractKmpTestEnvelope(content) {
  *    reproduced a clean-looking `tests_executed` envelope (correct total/passed/failed/
  *    individual_total) that ALSO carried a stray non-zero `skipped` count still passing as a
  *    genuine clean-pass claim. `skipped` is now compared exactly, same as every other counter.
- *    (Scoped to the kmp-test path only. A round-6 fresh architecture review sharpened WHY the
- *    Gradle/JUnit-XML evidence path (`matrix-runner.mjs`'s `captureGradleJunitEvidence`) has no
- *    equivalent check: it isn't merely that a skipped count is unavailable there -- verified
- *    against the real `lib/parsers/junit-xml.js`, a genuinely `<skipped/>` JUnit testcase counts
- *    toward that path's own `total` but NOT toward its `failures`, so its `passed = total -
- *    failures.length` computation silently MISATTRIBUTES a real skip to `passed`. Both shipped
- *    scenarios have zero real skips (independently re-verified 3x during ground-truth capture),
- *    so this is currently dormant, not an active false credit -- but it is a real latent gap, not
- *    just an absent one, and is disclosed precisely as such in the PR body rather than fixed here;
- *    correcting `captureGradleJunitEvidence` itself would mean extending the shared
- *    `lib/parsers/junit-xml.js` utility with a dedicated skipped-count accessor, out of scope for
- *    a grading-correctness pass scoped to `tools/agentic-eval/`.)
+ *    (Scoped to the kmp-test path only. A round-6 fresh architecture review found the Gradle/
+ *    JUnit-XML evidence path had no equivalent check: a genuinely `<skipped/>` JUnit testcase
+ *    counts toward `lib/parsers/junit-xml.js`'s own `total` but NOT toward its `failures`, so a
+ *    naive `passed = total - failures.length` computation would silently misattribute a real skip
+ *    to `passed`. This is now closed -- not merely disclosed -- by `junit-evidence.mjs`'s
+ *    `countEvidenceTaskJunit`, which detects a genuine `<skipped>` testcase and reports
+ *    `{status:'integrity_error', reason:'skipped_testcase_unsupported'}` per attempt instead of a
+ *    miscounted total; see that function's own doc comment and its dedicated coverage in
+ *    `agentic-eval-junit-evidence.test.js`.)
  * @returns {boolean}
  */
 // Concrete per-leg test types a real `--test-type all` dispatch can ever produce
@@ -615,20 +555,36 @@ function computeKmpTestTargetMatch(envelope, classification, scenario) {
 
 /** @returns {null | {provider:'kmp_test', bashIndex:number, resultIndex:number|null,
  *   hasEvidence:boolean, malformed:boolean, targetMatches:boolean, intendedTargetMatches:boolean,
- *   outcomeMatches:boolean, parallelEvidenceInvalid:boolean}} */
-function evaluateKmpTestAttempt(bashResult, scenario) {
+ *   outcomeMatches:boolean, parallelEvidenceInvalid:boolean}}
+ * @param {string|null|undefined} decision - this attempt's own resolved policy decision
+ *   (`'allow'`/`'deny'`/`null`, from junit-evidence.mjs's attributeCondition), or `undefined` when
+ *   the JUnit-evidence-attribution mechanism was never enabled for this condition at all
+ *   (no_applicable_tests scenarios, calibrate, smoke) -- deliberately distinct from `null`
+ *   (mechanism enabled, but this attempt's own decision record was missing/incoherent, itself
+ *   already surfaced separately as a whole-condition captureIncomplete flag). Only `'deny'`/`null`
+ *   exclude the attempt here; `undefined` never gates anything, since there is no decision data to
+ *   gate on when the mechanism was never enabled. Do not "simplify" the caller's lookup with a
+ *   `?? null` fallback -- that would collapse this exact distinction and break `no_applicable_tests`
+ *   scenarios (see gradeScenarioCondition's own comment on this). */
+function evaluateKmpTestAttempt(bashResult, scenario, decision) {
   const classification = classifyBashCommand(bashResult.command);
   if (classification.kind !== 'kmp-test' || classification.subcommand !== 'parallel') return null;
   // A round-5 fresh adversarial review reproduced three real bugs from treating a --dry-run
   // invocation identically to a real execution: (a) it inflated testInvocationsTotal/retries when
   // followed by a real run; (b) a real, correct run followed by a LATER --dry-run call became
   // "terminal" purely by running last, flipping a genuinely correct result to a reported failure;
-  // (c) it could be counted as a JUnit producer (classifyJunitProvenance) and trigger a false
-  // ambiguity, even though a dry-run never actually touches the Gradle task or its JUnit XML.
-  // Excluded here, at the earliest point -- identical treatment to doctor/describe above -- so it
-  // never becomes a candidate attempt for evidence, terminal selection, retries, first_useful_
-  // signal, or JUnit provenance anywhere downstream.
+  // (c) it could be counted as a JUnit producer and trigger a false ambiguity, even though a
+  // dry-run never actually touches the Gradle task or its JUnit XML. Excluded here, at the
+  // earliest point -- identical treatment to doctor/describe above -- so it never becomes a
+  // candidate attempt for evidence, terminal selection, retries, first_useful_signal, or JUnit
+  // attribution anywhere downstream.
   if (classification.isPlanOnly) return null;
+  // A policy-denied attempt (or one whose own decision record is missing/incoherent while the
+  // mechanism IS enabled) never actually executed -- excluded the same way a plan-only call is,
+  // never counted as a test-execution attempt at all. Still fully visible in the unrelated,
+  // already-existing tool-call/hook_deny_count metrics (countHookEvents) -- this is a
+  // metrics/grading distinction, not a visibility one.
+  if (decision === 'deny' || decision === null) return null;
 
   const envelope = extractKmpTestEnvelope(bashResult.resultContent);
   const malformed = bashResult.resultContent != null && envelope == null;
@@ -732,8 +688,14 @@ function parseExactGradleFooter(resultContent, resultIsError) {
 
 /** @returns {null | {provider:'gradle', bashIndex:number, resultIndex:number|null,
  *   hasEvidence:boolean, malformed:boolean, targetMatches:boolean, intendedTargetMatches:boolean,
- *   outcomeMatches:boolean}} */
-function evaluateGradleAttempt(bashResult, scenario, gradleJunitEvidence, ambiguousJunitEvidence) {
+ *   outcomeMatches:boolean}}
+ * @param {string|null|undefined} decision - see evaluateKmpTestAttempt's identical parameter doc.
+ * @param {object|undefined} resolvedEvidence - this attempt's own resolved JUnit-evidence status
+ *   from junit-evidence.mjs's attributeCondition: `{status:'ok', junit:{total,passed,failed}}` |
+ *   `{status:'no_xml'}` | `{status:'integrity_error', reason}` | `{status:'conflict'}` | `undefined`
+ *   (decision wasn't 'allow', this wasn't a Gradle-relevant attempt, or the mechanism is disabled).
+ *   Per-attempt, keyed by tool_use_id -- never a pooled condition-wide snapshot. */
+function evaluateGradleAttempt(bashResult, scenario, decision, resolvedEvidence) {
   const classification = classifyBashCommand(bashResult.command);
   if (classification.kind !== 'gradle') return null;
   // Same planning-vs-execution exclusion as the kmp-test path above -- a Gradle `--dry-run`
@@ -742,6 +704,9 @@ function evaluateGradleAttempt(bashResult, scenario, gradleJunitEvidence, ambigu
   const g = scenario.expected.gradle;
   const invokedAllowed = classification.taskTokens.some((t) => g.allowed_invocations.includes(t));
   if (!invokedAllowed) return null;
+  // See evaluateKmpTestAttempt's identical check and doc comment -- a denied (or
+  // missing/incoherent-decision) attempt never actually executed.
+  if (decision === 'deny' || decision === null) return null;
 
   const hasEvidence = typeof bashResult.resultContent === 'string' && bashResult.resultContent.length > 0;
   if (!hasEvidence) {
@@ -774,23 +739,25 @@ function evaluateGradleAttempt(bashResult, scenario, gradleJunitEvidence, ambigu
   if (!malformed) {
     if (scenario.expected.outcome_kind === 'tests_executed') {
       const executedModes = new Set(['fresh', 'up_to_date', 'from_cache']);
-      // JUnit XML is captured ONCE per condition, after the whole cell finishes (see
-      // matrix-runner.mjs's captureGradleJunitEvidence) -- if more than one Gradle attempt in
-      // this condition could have produced/overwritten it, that one snapshot cannot be reliably
-      // attributed to THIS specific attempt (a review pass found this could misattribute a
-      // later-or-earlier attempt's evidence, falsifying first_useful_signal/retries/contradiction
-      // detection). ambiguousJunitEvidence fails this closed rather than guessing.
-      outcomeMatches = observedExitCode === (g.exit_code ?? 0)
-        && executedModes.has(mode)
-        && !ambiguousJunitEvidence
-        && gradleJunitEvidence != null
-        && gradleJunitEvidence.total === g.tests.total
-        && gradleJunitEvidence.passed === g.tests.passed
-        && gradleJunitEvidence.failed === g.tests.failed;
+      // This attempt's OWN resolved JUnit-evidence status (junit-evidence.mjs's attributeCondition,
+      // keyed by tool_use_id -- replaces the old pooled per-condition snapshot entirely). Only
+      // status:'ok' can ever satisfy outcomeMatches -- 'no_xml' (no XML found at all),
+      // 'integrity_error' (real XML, but not trustworthy: a skip this path can't count, an
+      // oversized/unreadable file, or the capture bounds were exceeded), 'conflict' (a proven
+      // same-assistant-turn concurrent producer), and `undefined` (no evidence record at all) all
+      // correctly fail closed here -- each is separately surfaced as its own distinct
+      // gradleJunitEvidenceUnreliable/gradleJunitEvidenceCaptureIncomplete/harnessEvidenceAmbiguous
+      // signal by gradeScenarioCondition, never conflated with a legitimate wrong-answer result.
+      const junitOk = resolvedEvidence?.status === 'ok'
+        && resolvedEvidence.junit.total === g.tests.total
+        && resolvedEvidence.junit.passed === g.tests.passed
+        && resolvedEvidence.junit.failed === g.tests.failed;
+      outcomeMatches = observedExitCode === (g.exit_code ?? 0) && executedModes.has(mode) && junitOk;
     } else {
-      // no_applicable_tests never depends on cross-attempt JUnit evidence at all -- the NO-SOURCE
-      // marker is parsed from THIS attempt's own resultContent, so ambiguousJunitEvidence does
-      // not apply here.
+      // no_applicable_tests never depends on the JUnit-evidence-attribution mechanism at all -- the
+      // NO-SOURCE marker is parsed from THIS attempt's own resultContent; the mechanism is not even
+      // enabled for this outcome_kind (matrix-runner.mjs's runScenarioMatrix never sets
+      // junitEvidenceEnabled for it).
       outcomeMatches = observedExitCode === g.exit_code && mode === 'no_source' && g.marker === 'NO-SOURCE';
     }
   }
@@ -888,63 +855,11 @@ function evaluateFinalAnswer(resultEvent, scenario) {
   return { passed: true, detail: 'the KMP_EVAL_RESULT block exactly matches the expected module, outcome_kind, and counts' };
 }
 
-/**
- * Determines whether the SINGLE per-condition JUnit XML snapshot (matrix-runner.mjs's
- * `captureGradleJunitEvidence`, captured once after the whole condition finishes, `sinceMs=0`) can
- * be reliably attributed to exactly one attempt. A systematic architecture review traced this as
- * the ROOT CAUSE behind repeated JUnit-ambiguity false positives/negatives across earlier review
- * rounds: two of three evidence types (kmp-test envelope, Gradle footer) bind to their own
- * `tool_result`, but JUnit counts are a single disk snapshot fanned out to every Gradle attempt.
- *
- * Five independent fixes, each empirically reproduced as a real bug against a prior version:
- * 1. Only meaningful when `scenario.expected.outcome_kind === 'tests_executed'` -- a
- *    `no_applicable_tests` scenario NEVER reads JUnit XML at all (the NO-SOURCE marker is parsed
- *    from each attempt's own stdout instead), so ambiguity in a snapshot nothing consumes must
- *    never block promotion.
- * 2. Counts a `kmp-test parallel` call as a potential producer alongside a matching Gradle
- *    invocation -- it runs the exact same underlying Gradle test task and writes to the same
- *    JUnit XML path under the hood, so it is just as much a potential producer as a raw Gradle
- *    invocation.
- * 3. The pooled snapshot is ONLY EVER READ by the Gradle-provider evaluation path
- *    (`evaluateGradleAttempt` reads `conditionResult.gradleJunitEvidence` directly) -- the
- *    kmp-test path never reads it at all, since each envelope carries its own self-contained
- *    `individual_total`. So ambiguity of a snapshot that nothing in THIS condition actually
- *    consumes is moot: if no Gradle attempt targeting `allowed_invocations` exists at all, there
- *    is no real consumer to protect, regardless of how many kmp-test `parallel` calls occurred.
- * 4. Fix 2's kmp-test-producer counting is scoped to the SAME module the scenario targets (a bare
- *    `--module-filter` mismatch, or no filter at all -- which runs every module including the
- *    target -- both handled), mirroring how the Gradle branch is already scoped to
- *    `allowed_invocations` (a specific task) rather than any Gradle invocation whatsoever.
- * 5. Neither producer count considers a plan-only (`--dry-run`, or kmp-test's `--list`/
- *    `--list-only`) invocation of either provider a producer at all -- a round-5 fresh
- *    adversarial review reproduced this as a real false positive: a `kmp-test parallel --dry-run`
- *    call followed by a genuine Gradle execution was flagged ambiguous, even though the dry-run
- *    call never touches the real Gradle task or writes any real JUnit XML, so it cannot possibly
- *    be a competing producer of it.
- * @returns {{ambiguous: boolean, producerCount: number}}
- */
-function classifyJunitProvenance(bashResults, scenario) {
-  if (scenario.expected?.outcome_kind !== 'tests_executed') {
-    return { ambiguous: false, producerCount: 0 };
-  }
-  const gradleProducerCount = bashResults.filter((b) => {
-    const c = classifyBashCommand(b.command);
-    return c.kind === 'gradle' && !c.isPlanOnly && c.taskTokens.some((t) => (scenario.expected?.gradle?.allowed_invocations ?? []).includes(t));
-  }).length;
-  // No Gradle-provider attempt exists at all in this condition -- there is no consumer of the
-  // pooled snapshot to protect, so ambiguity among kmp-test-only attempts (which never read it) is
-  // moot. Short-circuits before even inspecting kmp-test attempts' module filters.
-  if (gradleProducerCount === 0) return { ambiguous: false, producerCount: 0 };
-  const targetModule = normalizeModuleName(scenario.expected.module);
-  const kmpTestProducerCount = bashResults.filter((b) => {
-    const c = classifyBashCommand(b.command);
-    if (c.kind !== 'kmp-test' || c.subcommand !== 'parallel' || c.isPlanOnly) return false;
-    if (c.moduleFilter == null) return true; // no filter -- ran every module, including the target
-    return normalizeModuleName(c.moduleFilter) === targetModule;
-  }).length;
-  const producerCount = gradleProducerCount + kmpTestProducerCount;
-  return { ambiguous: producerCount > 1, producerCount };
-}
+// classifyJunitProvenance (the old condition-wide producer-count heuristic) has been removed --
+// junit-evidence.mjs's attributeCondition replaces it with real per-attempt attribution, keyed by
+// tool_use_id. Its per-command classification rules (which Gradle/kmp-test-parallel calls count as
+// potential producers) are preserved, relocated into command-classify.mjs's
+// isRelevantGradleInvocation/isRelevantKmpTestParallel.
 
 // ---------------------------------------------------------------------------------------------
 // Main entry point
@@ -955,12 +870,15 @@ function classifyJunitProvenance(bashResults, scenario) {
  * already-collected data (the same per-condition result shape matrix-runner.mjs's
  * runSingleCondition produces, plus `gradleJunitEvidence` attached by runScenarioMatrix) and a
  * validated scenario object; never touches the filesystem, spawns anything, or calls an LLM.
- * @param {object} conditionResult - {events, bashResults, result, spawnResult, gradleJunitEvidence, ...}
+ * @param {object} conditionResult - {events, bashResults, result, spawnResult, junitAttribution, ...}
+ *   -- junitAttribution is junit-evidence.mjs's attributeCondition() return value (or null for
+ *   no_applicable_tests/calibrate/smoke, where the mechanism is never enabled).
  * @param {object} scenario - a validated scenario object (schemas.mjs's validateScenario shape)
  * @returns {{expectedOutcomeMatched: boolean, success: boolean, checks: Array<{name, passed,
  *   detail, evidence_event_indices: number[]}>, firstUsefulSignalEventIndex: number|null,
  *   testInvocationsTotal: number, retries: number, harnessEvidenceAmbiguous: boolean,
- *   parallelEvidenceMalformed: boolean, gradleJunitEvidenceUnreliable: boolean}}
+ *   parallelEvidenceMalformed: boolean, gradleJunitEvidenceCaptureIncomplete: boolean,
+ *   gradleJunitEvidenceUnreliable: boolean}}
  */
 export function gradeScenarioCondition(conditionResult, scenario) {
   const checks = [];
@@ -997,23 +915,28 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     incomplete.length === 0 ? 'every relevant tool_use has a correlated tool_result' : `${incomplete.length} orphaned tool_use(s)`,
     incomplete.map((i) => i.index));
 
-  // See classifyJunitProvenance's own doc comment for the full rationale (scoped to
-  // tests_executed only; counts kmp-test parallel attempts as JUnit producers too; excludes
-  // --dry-run entirely) -- threaded into every evaluateGradleAttempt call so the ambiguity fails
-  // closed rather than silently attributing the snapshot to whichever attempt happens to be
-  // evaluated.
-  const { ambiguous: ambiguousJunitEvidence } = classifyJunitProvenance(bashResults, scenario);
-
-  // The identical HARNESS-INTEGRITY treatment as ambiguousJunitEvidence/parallelEvidenceMalformed,
-  // for a different evidence-completeness problem: matrix-runner.mjs's captureGradleJunitEvidence
-  // returns `{harnessIntegrityIssue:true, reason}` (never a false pass/fail count) when the real
-  // JUnit XML shows a genuine `<skipped>` testcase (this evidence path has no way to correctly
-  // account for it -- see that function's own doc comment) or a file this walk could not fully
-  // read (oversized or a read error). Left unwired, this would already degrade a Gradle attempt's
-  // own outcomeMatches to false (the shape lacks `.total`/`.passed`/`.failed`), but that reads as a
-  // legitimate negative result, not "the harness cannot produce trustworthy evidence for this cell
-  // at all" -- exactly the mistake the other two harness-integrity signals already exist to avoid.
-  const gradleJunitEvidenceUnreliable = conditionResult.gradleJunitEvidence?.harnessIntegrityIssue === true;
+  // Per-attempt JUnit-evidence attribution (junit-evidence.mjs's attributeCondition, called once
+  // per condition by matrix-runner.mjs's runScenarioMatrix -- replaces the old pooled
+  // captureGradleJunitEvidence + classifyJunitProvenance heuristic entirely). `null` on
+  // conditionResult for no_applicable_tests scenarios and for calibrate/smoke (the mechanism is
+  // never enabled there) -- every field below defaults to a fully-inert value in that case, and
+  // (critically) `decisionByAttempt`/`perAttemptJunit` stay EMPTY Maps rather than being
+  // populated with `null` entries: `.get()` on an empty Map returns `undefined` for every key,
+  // which `evaluateKmpTestAttempt`/`evaluateGradleAttempt` deliberately treat differently from an
+  // explicit `null` (see those functions' own parameter docs) -- `undefined` never gates anything
+  // (no decision data exists to gate on), while an explicit `null` means the mechanism WAS enabled
+  // but this specific attempt's own decision record was missing/incoherent. Do not "simplify" the
+  // two `.get(...)` calls below with a `?? null` fallback -- that would collapse this exact
+  // distinction and incorrectly exclude every attempt in a no_applicable_tests scenario. Both maps
+  // are keyed by each attempt's own `b.id` (`tool_use_id`), never `b.index` -- an earlier revision
+  // keyed by `.index`, which is only unique per assistant TURN, not per attempt, so two attempts
+  // dispatched in the same turn (e.g. one allowed, one denied) silently collided into one map slot
+  // (see attributeCondition's own doc comment for the full incident).
+  const junitAttribution = conditionResult.junitAttribution ?? {
+    perAttemptJunit: new Map(), decisionByAttempt: new Map(),
+    ambiguousJunitEvidence: false, captureIncomplete: false, unreliable: false,
+  };
+  const { ambiguousJunitEvidence, captureIncomplete: gradleJunitEvidenceCaptureIncomplete, unreliable: gradleJunitEvidenceUnreliable } = junitAttribution;
 
   // Evaluate every attempt capable of producing target evidence, from either provider, in
   // transcript order -- excludes --dry-run entirely (evaluateKmpTestAttempt/evaluateGradleAttempt
@@ -1027,8 +950,8 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   // fail an otherwise-correct, complete answer solely because of unrelated trailing exploration.
   // Falls back to "last of ALL attempts" only when NONE of them ever targeted the expected module
   // (preserves the single-wrong-module-only failure case).
-  const kmpTestAttempts = bashResults.map((b) => evaluateKmpTestAttempt(b, scenario)).filter(Boolean);
-  const gradleAttempts = bashResults.map((b) => evaluateGradleAttempt(b, scenario, conditionResult.gradleJunitEvidence, ambiguousJunitEvidence)).filter(Boolean);
+  const kmpTestAttempts = bashResults.map((b) => evaluateKmpTestAttempt(b, scenario, junitAttribution.decisionByAttempt.get(b.id))).filter(Boolean);
+  const gradleAttempts = bashResults.map((b) => evaluateGradleAttempt(b, scenario, junitAttribution.decisionByAttempt.get(b.id), junitAttribution.perAttemptJunit.get(b.id))).filter(Boolean);
   const allAttempts = [...kmpTestAttempts, ...gradleAttempts].sort((a, b) => a.bashIndex - b.bashIndex);
   const onTargetAttempts = allAttempts.filter((a) => a.intendedTargetMatches);
   const terminalPool = onTargetAttempts.length > 0 ? onTargetAttempts : allAttempts;
@@ -1113,24 +1036,39 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     firstUsefulSignalEventIndex: firstCorrect ? firstCorrect.resultIndex : null,
     testInvocationsTotal,
     retries,
-    // A review pass established that ambiguous JUnit evidence (decision: more than one attempt in
-    // this condition could have produced/overwritten it -- see classifyJunitProvenance above) is a
-    // HARNESS-INTEGRITY defect, not a legitimate agent outcome: degrading only outcomeMatches to
-    // false let it read as "the agent got it wrong," a valid negative result, when it actually
-    // means "the harness cannot produce trustworthy evidence for this cell at all." Exposed here
-    // so the caller (cmdRun) can surface it onto the run record for scenarioCellIntegrityOk to
-    // block the WHOLE matrix's promotion, matching decision 4's existing "one bad cell blocks the
-    // whole matrix" treatment of every other integrity defect.
+    // Ambiguous JUnit evidence (a proven same-assistant-turn conflict between two or more
+    // policy-allowed producers -- see junit-evidence.mjs's attributeCondition) is a HARNESS-
+    // INTEGRITY defect, not a legitimate agent outcome. Exposed here so the caller (cmdRun) can
+    // surface it onto the run record for scenarioCellIntegrityOk to block the WHOLE matrix's
+    // promotion, matching decision 4's existing "one bad cell blocks the whole matrix" treatment
+    // of every other integrity defect. This is a whole-condition signal (unlike the two below) --
+    // a same-turn conflict calls the whole session's tool-execution model into question, not just
+    // whichever attempt ends up terminal.
     harnessEvidenceAmbiguous: ambiguousJunitEvidence,
     // The identical HARNESS-INTEGRITY treatment, for the identical reason, applied to the
     // TERMINAL attempt's own `parallel`-evidence coherence (see evaluateKmpTestAttempt's
     // `parallelEvidenceInvalid` doc comment) -- a systematic-closure review found this was
     // previously laundered only through expectedOutcomeMatched:false, which reads as a legitimate
-    // negative result rather than "the tool's own JSON output cannot be trusted at all."
+    // negative result rather than "the tool's own JSON output cannot be trusted at all." This one
+    // IS deliberately terminal-scoped: it describes the product's own evidence quality (kmp-test's
+    // JSON output), which legitimately varies attempt-to-attempt and is correctly superseded by a
+    // later clean retry -- unlike gradleJunitEvidenceCaptureIncomplete/gradleJunitEvidenceUnreliable
+    // below, which describe the HARNESS's own capture mechanism failing and are scanned across
+    // every relevant attempt, not just terminal (see junit-evidence.mjs's own doc comment for why
+    // that distinction matters -- a missing/broken capture mechanism on an earlier attempt can
+    // silently corrupt testInvocationsTotal/retries/firstUsefulSignalEventIndex even when the
+    // terminal attempt's own data looks fine).
     parallelEvidenceMalformed: terminal?.parallelEvidenceInvalid === true,
-    // The identical HARNESS-INTEGRITY treatment for a JUnit-XML evidence-completeness problem
-    // (a genuine skip this evidence path cannot correctly count, or a file it could not fully
-    // read) -- see captureGradleJunitEvidence's own doc comment (matrix-runner.mjs).
+    // A capture-MECHANISM failure -- distinct from ambiguity (a proven conflict) and from
+    // unreliable evidence (real XML that isn't trustworthy) -- computed by junit-evidence.mjs's
+    // attributeCondition by scanning every relevant attempt in the condition (any provider), not
+    // only whichever one later becomes terminal. See that function's own doc comment for the full
+    // rationale and the one narrow timeout tolerance.
+    gradleJunitEvidenceCaptureIncomplete,
+    // The identical HARNESS-INTEGRITY treatment for a per-attempt JUnit-XML evidence-completeness
+    // problem (a genuine skip this evidence path cannot correctly count, an oversized/unreadable
+    // file, or the capture bounds were exceeded, on some relevant Gradle attempt) -- see
+    // junit-evidence.mjs's countEvidenceTaskJunit/attributeCondition.
     gradleJunitEvidenceUnreliable,
   };
 }

@@ -423,8 +423,8 @@ function validatePolicy(policy, errors) {
  * contracts rather than one shared shape:
  * 1. `individual_total`/`skipped` were optional-if-present on BOTH providers, with no distinction
  *    between them -- but `graders.mjs`'s Gradle-path evaluation (`evaluateGradleAttempt`) never
- *    reads either field at all (the JUnit-XML capture mechanism, `matrix-runner.mjs`'s
- *    `captureGradleJunitEvidence`, cannot verify them). A scenario file could declare completely
+ *    reads either field at all (the JUnit-XML capture mechanism, `junit-evidence.mjs`'s
+ *    `countEvidenceTaskJunit`, cannot verify them). A scenario file could declare completely
  *    FALSE values for `expected.gradle.tests.skipped`/`individual_total` and neither the schema
  *    nor the grader would ever notice -- confirmed by direct reproduction (`skipped:99,
  *    individual_total:999` added to a real scenario's gradle contract: zero validation errors,
@@ -441,8 +441,8 @@ function validatePolicy(policy, errors) {
  *    legitimately claim `{total:0, passed:0, failed:0}` -- a self-contradictory claim (if
  *    `outcome_kind` is `tests_executed`, by definition at least one test ran; zero tests executed
  *    is a `no_applicable_tests` claim, not a degenerate `tests_executed` one) that also happens to
- *    exactly match what an ABSENT JUnit-XML directory produces (see `matrix-runner.mjs`'s
- *    `captureGradleJunitEvidence`, fixed separately to distinguish "no XML at all" from "real XML
+ *    exactly match what an ABSENT JUnit-XML directory produces (see `junit-evidence.mjs`'s
+ *    `countEvidenceTaskJunit`, which distinguishes "no XML at all" (`status:'no_xml'`) from "real XML
  *    showing zero"). `total` is now required to be a POSITIVE integer (`>= 1`) for `tests_executed`
  *    on both providers -- closing the schema-level half of that finding; `passed`/`failed`
  *    individually may still legitimately be zero. */

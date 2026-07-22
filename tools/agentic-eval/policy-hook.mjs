@@ -27,6 +27,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { sha256Hex, writeSidecarRecord } from './junit-evidence-io.mjs';
 
 const DENY_REASON = 'Command not permitted by evaluation harness policy.';
 const ALLOW_REASON = 'Command permitted by evaluation harness policy.';
@@ -329,6 +330,58 @@ function writeAndExit(output) {
   process.stdout.write(output, () => process.exit(0));
 }
 
+/**
+ * Additive side effect for the per-attempt JUnit-evidence-attribution mechanism (tools/agentic-eval
+ * "bind junit evidence to authoritative attempts" fix) -- records this call's own real allow/deny
+ * decision, keyed by tool_use_id, so attributeCondition (junit-evidence.mjs) can later distinguish
+ * a legitimately denied attempt (no execution occurred, never a capture-failure signal) from a
+ * genuinely missing/incoherent decision record (a harness-integrity concern). Reads `output` (the
+ * ALREADY-COMPUTED decide() result) rather than re-deriving anything -- this can never disagree
+ * with what was actually returned to Claude Code. Never touches decide() itself, never reads any
+ * JUnit XML, and is wrapped so nothing here can alter the caller's own stdout response: called
+ * strictly AFTER `output` has already been computed, and its own try/catch swallows every failure.
+ * A no-op entirely when KMP_EVAL_JUNIT_EVIDENCE_DIR is unset (calibrate/smoke/no_applicable_tests
+ * never set it, so this hook's behavior there is unchanged).
+ */
+export function recordDecisionSideEffect(raw, output, env = process.env) {
+  try {
+    const evidenceDirRaw = env.KMP_EVAL_JUNIT_EVIDENCE_DIR;
+    if (!evidenceDirRaw) return;
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (payload == null || typeof payload !== 'object') return;
+    const toolUseId = payload.tool_use_id;
+    if (typeof toolUseId !== 'string' || toolUseId.length === 0) return;
+    const command = payload.tool_input?.command;
+    if (typeof command !== 'string') return;
+    let decisionOutput;
+    try {
+      decisionOutput = JSON.parse(output);
+    } catch {
+      return;
+    }
+    const decision = decisionOutput?.hookSpecificOutput?.permissionDecision;
+    if (decision !== 'allow' && decision !== 'deny') return;
+    let evidenceDirReal;
+    try {
+      evidenceDirReal = fs.realpathSync(evidenceDirRaw);
+    } catch {
+      return;
+    }
+    const idHash = sha256Hex(toolUseId);
+    writeSidecarRecord(
+      path.join(evidenceDirReal, 'decisions'), idHash, { decision, command },
+      path.join(evidenceDirReal, 'anomalies'), 'duplicate_decision_write',
+    );
+  } catch {
+    // Never allowed to affect the already-computed allow/deny output.
+  }
+}
+
 function runAsHook() {
   let raw = '';
   let finished = false;
@@ -351,7 +404,9 @@ function runAsHook() {
     if (finished) return;
     finished = true;
     clearTimeout(timer);
-    writeAndExit(decide(raw));
+    const output = decide(raw);
+    recordDecisionSideEffect(raw, output);
+    writeAndExit(output);
   });
   process.stdin.on('error', () => {
     if (finished) return;
