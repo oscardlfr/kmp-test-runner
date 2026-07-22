@@ -146,6 +146,46 @@ describe('isTargetSkillReference -- closed allowlist for the two accepted skill-
   it('rejects an empty string', () => {
     expect(isTargetSkillReference('', 'kmp-test-runner', 'kmp-test-runner')).toBe(false);
   });
+
+  // P2 (post-#385 review): fails closed on a misconfigured IDENTITY too, not just a malformed
+  // skillArg -- without this, a caller accidentally passing pluginName:undefined would silently
+  // match a wire value literally containing the string "undefined" (JS's own template-literal
+  // coercion turns `${undefined}:foo` into the real string 'undefined:foo'), and skillName:''
+  // would match an empty-string skillArg. No real call site does this today, but the exported
+  // function's own contract promises a closed allowlist regardless of caller correctness.
+  describe('fails closed when pluginName/skillName themselves are misconfigured', () => {
+    it('an undefined pluginName never matches, even a wire value literally containing "undefined"', () => {
+      expect(isTargetSkillReference('undefined:kmp-test-runner', undefined, 'kmp-test-runner')).toBe(false);
+      expect(isTargetSkillReference('kmp-test-runner', undefined, 'kmp-test-runner')).toBe(false);
+    });
+
+    it('a null pluginName never matches, even a wire value literally containing "null"', () => {
+      expect(isTargetSkillReference('null:kmp-test-runner', null, 'kmp-test-runner')).toBe(false);
+    });
+
+    it('an undefined skillName never matches, even a wire value literally containing "undefined"', () => {
+      expect(isTargetSkillReference('kmp-test-runner:undefined', 'kmp-test-runner', undefined)).toBe(false);
+      expect(isTargetSkillReference('undefined', 'kmp-test-runner', undefined)).toBe(false);
+    });
+
+    it('a null skillName never matches, even a wire value literally containing "null"', () => {
+      expect(isTargetSkillReference('null', 'kmp-test-runner', null)).toBe(false);
+    });
+
+    it('an empty-string skillName never matches an empty-string skillArg', () => {
+      expect(isTargetSkillReference('', 'kmp-test-runner', '')).toBe(false);
+    });
+
+    it('an empty-string pluginName never matches the bare-colon namespaced form', () => {
+      expect(isTargetSkillReference(':kmp-test-runner', '', 'kmp-test-runner')).toBe(false);
+    });
+
+    it('both identities misconfigured at once still returns false, never throws', () => {
+      expect(isTargetSkillReference('anything', undefined, undefined)).toBe(false);
+      expect(isTargetSkillReference('anything', null, null)).toBe(false);
+      expect(isTargetSkillReference('anything', '', '')).toBe(false);
+    });
+  });
 });
 
 describe('skill availability and invocation detection (real captured event shapes)', () => {

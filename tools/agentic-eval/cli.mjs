@@ -1331,10 +1331,12 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
  * Per-cell harness-integrity check for a single scenario matrix cell -- deliberately built ONLY
  * from harness-integrity sub-checks already proven reusable, never from the scenario OUTCOME
  * (that's graders.mjs's job, reported separately on success/expected_outcome_matched, and must
- * never gate promotion -- decision 4). Explicitly omits calibration's noSkillSafetyOk/
- * currentInvocationOk (those prove skill-invocation MECHANICS under calibration's own explicit
- * "use the skill" prompt -- for a natural scenario prompt, whether the agent invokes the skill at
- * all is part of what's being MEASURED, not a harness precondition) and smoke's processOk/
+ * never gate promotion -- decision 4). Adopts calibration's noSkillSafetyOk (a confirmed no-skill
+ * invocation is real evidence-contamination regardless of prompt shape -- see the check's own
+ * comment) but explicitly omits calibration's currentInvocationOk (proves skill-invocation
+ * MECHANICS under calibration's own explicit "use the skill" prompt -- for a natural scenario
+ * prompt, whether the agent invokes the skill at all is part of what's being MEASURED, not a
+ * harness precondition) and smoke's processOk/
  * resultOk/exactCommandsOk/realWorkOk (those encode "proved equivalent diagnostic work," which
  * doesn't transfer to a scenario where a wrong answer, or a correct answer via a different valid
  * tool sequence, is legitimate data, not a harness defect). hookAccountingOk checks MECHANISM
@@ -1380,6 +1382,16 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
 function scenarioCellIntegrityOk(record, conditionResult) {
   const expectSkillAvailable = record.condition === 'current-skill';
   const availabilityOk = record.skill_available.value === expectSkillAvailable;
+  // Post-#385 review finding: a no-skill condition's plugin is never loaded (availabilityOk/
+  // pluginProfileOk already prove this), but a CONFIRMED invocation could still slip through some
+  // OTHER route (an environmental same-named skill, a Claude Code inconsistency) -- now that
+  // isTargetSkillReference correctly recognizes both the bare and plugin-namespaced forms as the
+  // TARGET skill, skillSelectionOk (which only catches a FOREIGN invocation) no longer catches
+  // this. A confirmed no-skill invocation is real evidence-contamination, mirroring
+  // calibrationHardGate's own noSkillSafetyOk exactly. current-skill is deliberately exempt --
+  // whether the skill triggers naturally on a scenario prompt is part of what's being MEASURED,
+  // not a harness precondition (unchanged from this function's original design).
+  const noSkillSafetyOk = expectSkillAvailable || record.skill_invoked.value === false;
   const pluginProfileOk = hasExpectedPluginProfile(conditionResult.init, TARGET_PLUGIN_NAME, expectSkillAvailable);
   const pluginSnapshotBindingOk = !expectSkillAvailable || isPluginBoundToSnapshot(conditionResult.init, conditionResult.snapshotDir);
   const foreignSkillUses = classifyForeignSkillUses(conditionResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME);
@@ -1405,7 +1417,8 @@ function scenarioCellIntegrityOk(record, conditionResult) {
   const junitCaptureCompleteOk = !(record.errors ?? []).some((e) => e.code === 'junit_evidence_capture_incomplete');
 
   const evaluation = evaluateNamedChecks([
-    ['availabilityOk', availabilityOk], ['pluginProfileOk', pluginProfileOk],
+    ['availabilityOk', availabilityOk], ['noSkillSafetyOk', noSkillSafetyOk],
+    ['pluginProfileOk', pluginProfileOk],
     ['pluginSnapshotBindingOk', pluginSnapshotBindingOk], ['skillSelectionOk', skillSelectionOk],
     ['foreignSkillToolResultsCompleteOk', foreignSkillToolResultsCompleteOk], ['initOk', initOk],
     ['toolProfileOk', toolProfileOk], ['noUnexpectedToolsOk', noUnexpectedToolsOk],
@@ -1515,9 +1528,12 @@ async function cmdCalibrate(args) {
 /**
  * Smoke's hard gate, extracted as a named, independently-testable function for the same reason
  * as calibrationHardGate. Requires EQUIVALENT REAL WORK in both arms -- not just skill
- * availability. skill_invoked is deliberately NOT required (whether the skill triggers
- * naturally on this prompt is an open question for a future corpus-probe run, not something
- * smoke should presuppose).
+ * availability. For B (current-skill), skill_invoked is deliberately NOT required (whether the
+ * skill triggers naturally on this prompt is an open question for a future corpus-probe run, not
+ * something smoke should presuppose). For A (no-skill), skill_invoked IS required to be false
+ * (noSkillSafetyOk, post-#385 review addition, mirrors calibrationHardGate's identical check) --
+ * a genuinely CONFIRMED invocation in the arm whose plugin was never loaded is real evidence
+ * contamination, not an open measurement question.
  *
  * Computed per-side (A/B) via evaluateNamedChecks and combined as `evalA.ok && evalB.ok` --
  * mathematically identical to a single flat AND of all 15 checks, so this restructure changes
@@ -1526,6 +1542,13 @@ async function cmdCalibrate(args) {
 function smokeHardGate(a, b, runAResult, runBResult) {
   const availabilityOkA = a.skill_available.value === false;
   const availabilityOkB = b.skill_available.value === true;
+  // Post-#385 review finding, mirrors scenarioCellIntegrityOk's identical new check and
+  // calibrationHardGate's own noSkillSafetyOk -- A's plugin is never loaded, but a CONFIRMED
+  // invocation (now correctly recognized as the target skill under either wire form, never
+  // foreign) is real evidence contamination that skillSelectionOk alone no longer catches. B is
+  // deliberately exempt -- see this function's own doc comment on skill_invoked never being
+  // required for B.
+  const noSkillSafetyOkA = a.skill_invoked.value === false;
   // See calibrationHardGate's identical check and doc comment -- noUnexpectedToolsOk only checks
   // the tool NAME (Bash/Skill), never a Skill call's own `input.skill` argument, so this closes
   // the same gap here: neither condition may contain a Skill call targeting anything other than
@@ -1585,7 +1608,8 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   const toolResultsCompleteOkB = findIncompleteToolResults(runBResult.events).length === 0;
 
   const checksA = [
-    ['availabilityOk', availabilityOkA], ['skillSelectionOk', skillSelectionOkA],
+    ['availabilityOk', availabilityOkA], ['noSkillSafetyOk', noSkillSafetyOkA],
+    ['skillSelectionOk', skillSelectionOkA],
     ['pluginProfileOk', pluginProfileOkA], ['initOk', initOkA], ['toolProfileOk', toolProfileOkA],
     ['noUnexpectedToolsOk', noUnexpectedToolsOkA], ['processOk', processOkA],
     ['resultOk', resultOkA], ['hookAccountingOk', hookAccountingOkA],

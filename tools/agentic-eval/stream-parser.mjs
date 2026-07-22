@@ -114,9 +114,19 @@ function findToolResultById(events, toolUseId, fromIndex) {
  * as the target: a foreign namespace (`evil:kmp-test-runner`), a DIFFERENT skill from the SAME
  * plugin (`kmp-test-runner:some-other-skill-in-this-plugin`), a casing variant, leading/trailing
  * whitespace, or a double/nested namespace (`kmp-test-runner:kmp-test-runner:extra`).
+ *
+ * Fails closed on a misconfigured IDENTITY too, not just a malformed `skillArg` -- `pluginName`/
+ * `skillName` must themselves be non-empty strings, or this always returns false regardless of
+ * `skillArg`. Without this, a caller accidentally passing `pluginName:undefined` would silently
+ * match a wire value literally containing the string "undefined" as its namespace prefix (JS's
+ * own template-literal coercion), and a caller passing `skillName:''` would match an empty-string
+ * `skillArg` -- this function's exported contract promises a closed allowlist, not just "correct
+ * when called correctly."
  */
 export function isTargetSkillReference(skillArg, pluginName, skillName) {
   if (typeof skillArg !== 'string') return false;
+  if (typeof pluginName !== 'string' || pluginName.length === 0) return false;
+  if (typeof skillName !== 'string' || skillName.length === 0) return false;
   return skillArg === skillName || skillArg === `${pluginName}:${skillName}`;
 }
 
