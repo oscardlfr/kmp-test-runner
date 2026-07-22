@@ -383,6 +383,39 @@ describe('validateRejectionRow -- schema validation', () => {
     });
   });
 
+  // Round-8 audit finding: skill_source_sha's shape check ("null or a non-empty string") was
+  // never actually tied to the cell's own `condition`, contradicting both this file's own
+  // pre-existing comment and the main run-record schema's real, enforced relationship
+  // (schemas.mjs:219-223) -- reproduced directly: a no-skill cell with a real SHA, and a
+  // current-skill cell with a null SHA, both validated with zero errors.
+  describe('skill_source_sha coherence with condition (round-8 audit finding)', () => {
+    it('rejects a no-skill cell carrying a real (non-null) skill_source_sha', () => {
+      const row = validRow();
+      row.cells[0] = { ...row.cells[0], condition: 'no-skill', skill_source_sha: 'a'.repeat(40) };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].skill_source_sha' && e.message.includes("not 'current-skill'"))).toBe(true);
+    });
+
+    it('rejects a current-skill cell carrying a null skill_source_sha', () => {
+      const row = validRow();
+      row.cells[1] = { ...row.cells[1], condition: 'current-skill', skill_source_sha: null };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[1].skill_source_sha' && e.message.includes("'current-skill'"))).toBe(true);
+    });
+
+    it('rejects a current-skill cell carrying an empty-string skill_source_sha (real, non-empty required)', () => {
+      const row = validRow();
+      row.cells[1] = { ...row.cells[1], condition: 'current-skill', skill_source_sha: '' };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[1].skill_source_sha')).toBe(true);
+    });
+
+    it('accepts the coherent pairing (no-skill/null, current-skill/real SHA) -- validRow\'s own default', () => {
+      const { errors } = validateRejectionRow(validRow());
+      expect(errors.filter((e) => e.field.includes('skill_source_sha'))).toEqual([]);
+    });
+  });
+
   describe('provenance fields (round-6/7 audit findings: scenario_id/project_*/seed/policy_sha256/platform/privacy_status)', () => {
     it('rejects a missing scenario_id', () => {
       const row = validRow();
@@ -451,10 +484,23 @@ describe('validateRejectionRow -- schema validation', () => {
         expect(errors.filter((e) => e.field === 'project_alias' || e.field === 'project_commit' || e.field === 'seed')).toEqual([]);
       });
 
-      it('rejects a smoke row with a null project_alias/project_commit', () => {
-        const row = validRow({ run_kind: 'smoke', scenario_id: 'smoke-explicit-invocation' }); // project_alias/project_commit still calibration's null-ish/fixed defaults
+      // Round-8 audit finding (CodeRabbit): this test's own title previously claimed to cover a
+      // null project_alias too, but validRow()'s default project_alias is 'calibration-project'
+      // (a non-null placeholder that happens to also satisfy smoke's "real, non-empty string"
+      // check) -- only project_commit was ever actually asserted null-and-rejected here.
+      // Production behavior was never wrong (validateProvenanceForRunKind's smoke branch does
+      // reject a genuinely-null project_alias), only this test's own coverage was incomplete;
+      // split into two isolated cases so each field's rejection is actually exercised.
+      it('rejects a smoke row with a null project_commit (project_alias left at its non-null default)', () => {
+        const row = validRow({ run_kind: 'smoke', scenario_id: 'smoke-explicit-invocation' }); // project_commit still calibration's null default
         const { errors } = validateRejectionRow(row);
         expect(errors.some((e) => e.field === 'project_commit')).toBe(true);
+      });
+
+      it('rejects a smoke row with a null project_alias', () => {
+        const row = validRow({ run_kind: 'smoke', scenario_id: 'smoke-explicit-invocation', project_alias: null, project_commit: 'd'.repeat(40) });
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'project_alias')).toBe(true);
       });
 
       it('accepts scenario\'s own real-project shape (project_alias/project_commit non-null, seed a real integer)', () => {

@@ -222,8 +222,20 @@ export function validateRejectionRow(row) {
           }
         }
       }
-      if (!(cell.skill_source_sha === null || (typeof cell.skill_source_sha === 'string' && cell.skill_source_sha.length > 0))) {
-        errors.push({ field: `cells[${i}].skill_source_sha`, message: 'must be null (no-skill) or a non-empty string (current-skill)' });
+      // Round-8 audit finding: this previously checked ONLY the generic shape ("null or a
+      // non-empty string"), never actually relating it to the cell's own `condition` -- a
+      // no-skill cell carrying a real SHA, or a current-skill cell carrying null, both validated
+      // cleanly, contradicting both this file's own comment (which already claimed the
+      // relationship) and the main run-record schema's real, enforced rule (schemas.mjs:219-223:
+      // condition==='current-skill' requires a real skill_source_sha; every other condition
+      // requires null). Mirrors that exact relationship, plus the pre-existing non-empty-string
+      // requirement this file's OTHER nullable-string fields already hold cells to.
+      if (cell.condition === 'current-skill') {
+        if (!(typeof cell.skill_source_sha === 'string' && cell.skill_source_sha.length > 0)) {
+          errors.push({ field: `cells[${i}].skill_source_sha`, message: `must be a non-empty string when condition is 'current-skill'` });
+        }
+      } else if (cell.skill_source_sha !== null) {
+        errors.push({ field: `cells[${i}].skill_source_sha`, message: `must be null when condition is not 'current-skill'` });
       }
       if (!(cell.model_resolved === null || (typeof cell.model_resolved === 'string' && cell.model_resolved.length > 0))) {
         errors.push({ field: `cells[${i}].model_resolved`, message: 'must be null (no init event captured) or a non-empty string' });
