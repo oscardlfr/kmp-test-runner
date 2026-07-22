@@ -329,6 +329,71 @@ function writeAndExit(output) {
   process.stdout.write(output, () => process.exit(0));
 }
 
+/**
+ * Additive side effect for the per-attempt JUnit-evidence-attribution mechanism (tools/agentic-eval
+ * "bind junit evidence to authoritative attempts" fix) -- records this call's own real allow/deny
+ * decision, keyed by tool_use_id, so attributeCondition (junit-evidence.mjs) can later distinguish
+ * a legitimately denied attempt (no execution occurred, never a capture-failure signal) from a
+ * genuinely missing/incoherent decision record (a harness-integrity concern). Reads `output` (the
+ * ALREADY-COMPUTED decide() result) rather than re-deriving anything -- this can never disagree
+ * with what was actually returned to Claude Code. Never touches decide() itself, never reads any
+ * JUnit XML, and is wrapped so nothing here can alter the caller's own stdout response: called
+ * strictly AFTER `output` has already been computed, and its own try/catch swallows every failure.
+ * A no-op entirely when KMP_EVAL_JUNIT_EVIDENCE_DIR is unset (calibrate/smoke/no_applicable_tests
+ * never set it, so this hook's behavior there is unchanged).
+ *
+ * `junit-evidence-io.mjs` (and its own `evidence-io.mjs` dependency) is imported LAZILY, via a
+ * dynamic `import()` reached only AFTER the cheap `KMP_EVAL_JUNIT_EVIDENCE_DIR` check above -- an
+ * EXACT REPRODUCTION a fresh adversarial review found: an earlier revision imported it statically
+ * at the top of this file, so EVERY PreToolUse invocation (this hook runs on literally every Bash
+ * call) paid that module's resolution cost regardless of whether this mechanism was ever enabled,
+ * contradicting `condition-launcher.mjs`'s own documented "no ... timing drift for those [disabled]
+ * run kinds" claim. Making this function `async` to support the dynamic import is safe here: its
+ * only caller (`runAsHook`'s `'end'` handler) already computes `output` and clears the hard-timeout
+ * timer before calling this, and `writeAndExit` is only ever invoked AFTER this promise settles --
+ * this function's own try/catch still swallows every failure, so an await never risks leaking an
+ * exception into the caller.
+ */
+export async function recordDecisionSideEffect(raw, output, env = process.env) {
+  try {
+    const evidenceDirRaw = env.KMP_EVAL_JUNIT_EVIDENCE_DIR;
+    if (!evidenceDirRaw) return;
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (payload == null || typeof payload !== 'object') return;
+    const toolUseId = payload.tool_use_id;
+    if (typeof toolUseId !== 'string' || toolUseId.length === 0) return;
+    const command = payload.tool_input?.command;
+    if (typeof command !== 'string') return;
+    let decisionOutput;
+    try {
+      decisionOutput = JSON.parse(output);
+    } catch {
+      return;
+    }
+    const decision = decisionOutput?.hookSpecificOutput?.permissionDecision;
+    if (decision !== 'allow' && decision !== 'deny') return;
+    let evidenceDirReal;
+    try {
+      evidenceDirReal = fs.realpathSync(evidenceDirRaw);
+    } catch {
+      return;
+    }
+    const { sha256Hex, writeSidecarRecord } = await import('./junit-evidence-io.mjs');
+    const idHash = sha256Hex(toolUseId);
+    writeSidecarRecord(
+      path.join(evidenceDirReal, 'decisions'), idHash, { decision, command },
+      path.join(evidenceDirReal, 'anomalies'), 'duplicate_decision_write',
+    );
+  } catch {
+    // Never allowed to affect the already-computed allow/deny output.
+  }
+}
+
 function runAsHook() {
   let raw = '';
   let finished = false;
@@ -347,11 +412,13 @@ function runAsHook() {
       if (!finished) { finished = true; clearTimeout(timer); writeAndExit(denyOutput()); }
     }
   });
-  process.stdin.on('end', () => {
+  process.stdin.on('end', async () => {
     if (finished) return;
     finished = true;
     clearTimeout(timer);
-    writeAndExit(decide(raw));
+    const output = decide(raw);
+    await recordDecisionSideEffect(raw, output);
+    writeAndExit(output);
   });
   process.stdin.on('error', () => {
     if (finished) return;

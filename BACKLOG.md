@@ -96,9 +96,9 @@
 
 ### 📋 QUEUED follow-ups (next sessions)
 
-- 🚧 **Rejected `agentic-eval` hard-gate runs leave no auditable trace** — IN PROGRESS, PR #382
-  (`feature/agentic-foreign-skill-diagnostics`) open against `develop`, not yet merged — do not
-  mark SHIPPED until it lands. Surfaced 2026-07-19 during the calibration
+- ✅ **Rejected `agentic-eval` hard-gate runs leave no auditable trace** — SHIPPED 2026-07-22
+  (PR #382, squash `829f6f6`, `feature/agentic-foreign-skill-diagnostics` → `develop`). Surfaced
+  2026-07-19 during the calibration
   no-skill-arm contract fix; motivated further by a real live scenario-matrix run
   (`kampkit-android-host-test-discovery`, 2026-07-21) that was correctly rejected for a
   since-fixed over-broad reason and left nothing beyond a terse stderr line. New

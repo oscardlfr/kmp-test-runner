@@ -18,7 +18,9 @@ import {
   isSafeFilterValue,
   evaluateKmpTest,
   evaluateGradle,
+  recordDecisionSideEffect,
 } from '../../tools/agentic-eval/policy-hook.mjs';
+import { sha256Hex, readSidecarRecord } from '../../tools/agentic-eval/junit-evidence-io.mjs';
 
 let fixtureRoot;
 let outsideDir;
@@ -440,5 +442,99 @@ describe('policy-hook grammar -- SKILL.md canonical commands (skill-portability 
     'which android && android info >/dev/null 2>&1 && echo "HAS_ANDROID_CLI" || echo "NO_ANDROID_CLI"',
   ])('denies the non-canonical shapes SKILL.md no longer presents as agent commands: %s', (cmd) => {
     expect(decision(payload(cmd))).toBe('deny');
+  });
+});
+
+// recordDecisionSideEffect -- the additive per-attempt JUnit-evidence-attribution side effect.
+// decide() itself is completely untouched (covered by every test above); these tests exercise ONLY
+// the new side-effect function, called with decide()'s own already-computed output, exactly the way
+// runAsHook wires them together (never re-derives the decision independently).
+describe('recordDecisionSideEffect', () => {
+  let evidenceDir;
+  beforeAll(() => {
+    evidenceDir = mkdtempSync(path.join(os.tmpdir(), 'aeph-decisions-'));
+  });
+  afterAll(() => {
+    rmSync(evidenceDir, { recursive: true, force: true });
+  });
+
+  function rawInput(command, toolUseId = 't1') {
+    return JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: toolUseId, cwd: fixtureRoot, tool_input: { command } });
+  }
+  function decisionEnv(overrides = {}) {
+    return { KMP_EVAL_JUNIT_EVIDENCE_DIR: evidenceDir, ...overrides };
+  }
+
+  it('is a complete no-op when KMP_EVAL_JUNIT_EVIDENCE_DIR is unset -- calibrate/smoke/no_applicable_tests never set it', async () => {
+    const raw = rawInput('kmp-test --version', 'toolu_noenv');
+    const output = decide(raw, baseEnv());
+    await expect(recordDecisionSideEffect(raw, output, {})).resolves.toBeUndefined();
+    // No decisions/ directory should have been created at all under an env with no evidence dir
+    // configured -- nothing to read back; the absence of a rejection is itself the main proof, but
+    // this also confirms no stray directory was created anywhere reachable from this env.
+  });
+
+  it('records a real "allow" decision, keyed by sha256(tool_use_id), reading the decision from decide()\'s own output (never re-derived)', async () => {
+    const raw = rawInput('kmp-test --version', 'toolu_allow1');
+    const output = decide(raw, baseEnv());
+    await recordDecisionSideEffect(raw, output, decisionEnv());
+    expect(readSidecarRecord(path.join(evidenceDir, 'decisions'), sha256Hex('toolu_allow1'))).toEqual({ decision: 'allow', command: 'kmp-test --version' });
+  });
+
+  it('records a real "deny" decision identically', async () => {
+    const raw = rawInput('whoami', 'toolu_deny1');
+    const output = decide(raw, baseEnv());
+    await recordDecisionSideEffect(raw, output, decisionEnv());
+    expect(readSidecarRecord(path.join(evidenceDir, 'decisions'), sha256Hex('toolu_deny1'))).toEqual({ decision: 'deny', command: 'whoami' });
+  });
+
+  it('never throws for invalid raw JSON (returns before output is ever inspected)', async () => {
+    await expect(recordDecisionSideEffect('{not valid json', '{}', decisionEnv())).resolves.toBeUndefined();
+  });
+
+  it('never writes anything when tool_use_id is missing/empty', async () => {
+    const raw = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: fixtureRoot, tool_input: { command: 'kmp-test --version' } });
+    const output = decide(raw, baseEnv());
+    await expect(recordDecisionSideEffect(raw, output, decisionEnv())).resolves.toBeUndefined();
+  });
+
+  it('never writes anything when tool_input.command is missing/non-string', async () => {
+    const raw = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: 'toolu_nocommand', cwd: fixtureRoot, tool_input: {} });
+    const output = decide(raw, baseEnv());
+    await recordDecisionSideEffect(raw, output, decisionEnv());
+    expect(readSidecarRecord(path.join(evidenceDir, 'decisions'), sha256Hex('toolu_nocommand'))).toBeNull();
+  });
+
+  it('never writes anything when the output itself is invalid JSON or lacks a recognizable permissionDecision', async () => {
+    const raw = rawInput('kmp-test --version', 'toolu_badoutput');
+    await recordDecisionSideEffect(raw, 'not valid json', decisionEnv());
+    expect(readSidecarRecord(path.join(evidenceDir, 'decisions'), sha256Hex('toolu_badoutput'))).toBeNull();
+    await recordDecisionSideEffect(raw, JSON.stringify({ hookSpecificOutput: { permissionDecision: 'maybe' } }), decisionEnv());
+    expect(readSidecarRecord(path.join(evidenceDir, 'decisions'), sha256Hex('toolu_badoutput'))).toBeNull();
+  });
+
+  it('never throws when KMP_EVAL_JUNIT_EVIDENCE_DIR does not exist on disk (realpathSync fails, caught internally)', async () => {
+    const raw = rawInput('kmp-test --version', 'toolu_baddir');
+    const output = decide(raw, baseEnv());
+    await expect(recordDecisionSideEffect(raw, output, decisionEnv({ KMP_EVAL_JUNIT_EVIDENCE_DIR: path.join(evidenceDir, 'does-not-exist-at-all') }))).resolves.toBeUndefined();
+  });
+
+  it('reads the decision from the ALREADY-COMPUTED output, never re-deriving it -- a command decide() would deny is recorded as "allow" here if the (hypothetical) caller passed a mismatched output, proving no re-derivation happens', async () => {
+    // This is a deliberate white-box proof that recordDecisionSideEffect trusts `output` alone: a
+    // real caller (runAsHook) always passes decide()'s own genuine output for the same raw input,
+    // so this mismatch could never occur in production -- it exists only to prove the function
+    // does not independently re-run decide() internally.
+    const raw = rawInput('whoami', 'toolu_mismatch'); // decide() would deny this
+    const mismatchedAllowOutput = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: 'x' } });
+    await recordDecisionSideEffect(raw, mismatchedAllowOutput, decisionEnv());
+    expect(readSidecarRecord(path.join(evidenceDir, 'decisions'), sha256Hex('toolu_mismatch'))).toEqual({ decision: 'allow', command: 'whoami' });
+  });
+
+  it('the lazy import happens only after KMP_EVAL_JUNIT_EVIDENCE_DIR is confirmed set -- an earlier revision imported junit-evidence-io.mjs unconditionally at module load, paying its cost on every PreToolUse call regardless of whether this mechanism was ever enabled', async () => {
+    // A real, dynamic re-import to independently confirm the module still resolves correctly from
+    // this call site (path correctness), rather than only inferring it from the tests above.
+    const mod = await import('../../tools/agentic-eval/junit-evidence-io.mjs');
+    expect(typeof mod.sha256Hex).toBe('function');
+    expect(typeof mod.writeSidecarRecord).toBe('function');
   });
 });

@@ -353,6 +353,94 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
   }, 30000);
 });
 
+// "bind junit evidence to authoritative attempts" fix -- real end-to-end proof of the per-attempt
+// JUnit-evidence-attribution pipeline (matrix-runner.mjs's env threading + scratch-directory
+// lifecycle, junit-evidence.mjs's attributeCondition reading real sidecar files, graders.mjs
+// consuming the result, buildRunRecord/scenarioCellIntegrityOk surfacing the two new error codes),
+// all through a real `cli.mjs run` subprocess. Uses its OWN tests_executed-shaped scenario (the
+// shared beforeEach's SCENARIO_ID scenario is no_applicable_tests-shaped, which never enables this
+// mechanism at all) and its own fake-claude-run-tests-executed-*/claude fixtures -- see each
+// fixture's own header comment for exactly what it simulates and why.
+describe('cli.mjs run -- JUnit-evidence-attribution pipeline, real subprocess against fake claude', () => {
+  const TESTS_EXECUTED_SCENARIO_ID = 'run-command-integration-tests-executed-scenario';
+
+  function writeTestsExecutedScenario() {
+    writeFileSync(path.join(scenariosDir, `${TESTS_EXECUTED_SCENARIO_ID}.json`), JSON.stringify({
+      schema: 1,
+      id: TESTS_EXECUTED_SCENARIO_ID,
+      family: 'test-only',
+      project_alias: 'fake-run-integration-project',
+      project_url: PROJECT_URL,
+      project_commit: pinnedCommit,
+      prompt: "Run the tests for this project's only module and tell me what happened.",
+      expected_outcome: 'The agent discovers and runs the tests for the :fakemod module and reports the accurate pass/fail count.',
+      policy: {
+        allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel'],
+        allowed_gradle_tasks: [':fakemod:test'],
+      },
+      expected: {
+        module: ':fakemod',
+        outcome_kind: 'tests_executed',
+        kmp_test: { tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 2 }, exit_code: 0 },
+        gradle: { allowed_invocations: [':fakemod:test'], evidence_task: ':fakemod:test', tests: { total: 2, passed: 2, failed: 0 }, exit_code: 0 },
+      },
+      first_useful_signal_predicate: { description: 'first well-formed evidence confirming :fakemod 2/2' },
+      tags: ['train'],
+    }, null, 2));
+  }
+
+  function runTestsExecutedArgs(extra = []) {
+    return ['run', '--scenario', TESTS_EXECUTED_SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--model', 'fake-model-x', ...extra];
+  }
+
+  it('two SEQUENTIAL Gradle attempts (fail then a --rerun-tasks retry that passes) attribute correctly end to end -- the terminal (passing) attempt governs, no harness-integrity error codes fire', () => {
+    writeTestsExecutedScenario();
+    // --repeats 2 (even), not 1 -- benchmark_eligible additionally requires balanced realized
+    // current-skill-first/no-skill-first start counts (decision 15), structurally impossible for
+    // an odd --repeats regardless of anything else in the matrix (see the sibling
+    // "REJECTED foreign-skill" test's own identical comment).
+    const result = runCli(runTestsExecutedArgs(['--seed', '7', '--repeats', '2']), fakeClaudeEnv('run-tests-executed-two-gradle'), 30000);
+    expect(result.status).toBe(0);
+    expect(result.parsed).not.toBeNull();
+    const { records } = result.parsed;
+    expect(records.length).toBe(4);
+    expect(listEvidenceFiles('scenario').length).toBe(4);
+
+    for (const record of records) {
+      expect(record.scenario_id).toBe(TESTS_EXECUTED_SCENARIO_ID);
+      // The SECOND (terminal, passing) Gradle attempt's own evidence governs -- the first (failed)
+      // attempt is correctly superseded, not conflated with it into a false ambiguity.
+      expect(record.expected_outcome_matched.value).toBe(true);
+      expect(record.success.value).toBe(true);
+      // Both real Gradle attempts count -- decision 12's test_invocations_total/retries, computed
+      // from the same attempt list grading itself built.
+      expect(record.test_invocations_total.value).toBe(2);
+      expect(record.retries.value).toBe(1);
+      expect(record.benchmark_eligible).toBe(true);
+      // None of the three harness-integrity codes fire for this clean, sequential (never
+      // same-turn) two-attempt pipeline.
+      const errorCodes = (record.errors ?? []).map((e) => e.code);
+      expect(errorCodes).not.toContain('ambiguous_junit_evidence');
+      expect(errorCodes).not.toContain('junit_evidence_capture_incomplete');
+      expect(errorCodes).not.toContain('unreliable_gradle_junit_evidence');
+    }
+  }, 30000);
+
+  // EXACT REPRODUCTION of the round-5 required proof ("colisión + fallo al escribir tombstone =
+  // hard gate rechazado"): see fake-claude-run-tests-executed-collision/claude's own header
+  // comment for exactly how it forces both the evidence-record collision AND the tombstone write
+  // itself to fail, using only real, sequential sidecar writes (no test-harness pre-seeding, no
+  // mocking).
+  it('a duplicate sidecar write whose OWN tombstone write also fails still safely rejects the whole matrix -- zero records written for ANY cell', () => {
+    writeTestsExecutedScenario();
+    const result = runCli(runTestsExecutedArgs(['--seed', '7', '--repeats', '1']), fakeClaudeEnv('run-tests-executed-collision'), 30000);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/RUN FAILED/);
+    expect(result.stderr).toContain('junitCaptureCompleteOk:false');
+    expect(listEvidenceFiles('scenario')).toEqual([]);
+  }, 30000);
+});
+
 // A real subprocess never naturally hits its own configured timeout deterministically without a
 // slow, flaky sleep-based fixture -- these exercise the SAME production functions cmdRun itself
 // calls (gradeScenarioCondition, buildRunRecord-shaped records, finalizeAndWriteMatrixRecords)

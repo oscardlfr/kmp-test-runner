@@ -22,6 +22,7 @@ import { resolveBash } from './resolve-bash.mjs';
 // cli.mjs as a real child process in CI.
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const POLICY_HOOK_PATH = join(__dirname, 'policy-hook.mjs');
+const JUNIT_EVIDENCE_HOOK_PATH = join(__dirname, 'junit-evidence-hook.mjs');
 
 const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
 
@@ -29,13 +30,30 @@ const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
  * Generates a --settings JSON file wiring policy-hook.mjs as the PreToolUse Bash hook.
  * Independent of --setting-sources (verified during Step 1 -- --settings is additive, not
  * excluded by "" setting-sources).
+ *
+ * `junitEvidenceEnabled` (default false) additionally registers junit-evidence-hook.mjs on
+ * `PostToolUse` + `PostToolUseFailure` (matcher `Bash`) -- the only two genuinely new hook
+ * registrations the JUnit-evidence-attribution mechanism needs. Deliberately NOT a second
+ * `PreToolUse` hook: that would double `countHookEvents`'s `hook_started`/`hook_response` counts
+ * against `everyCallHooked`, cascading into `hookAccountingOk`/`realWorkOk` rejecting every cell.
+ * The sole `PreToolUse` entry (policy-hook.mjs) is completely unaffected either way.
+ *
+ * When `junitEvidenceEnabled` is false (calibrate/smoke/`no_applicable_tests` scenarios), the
+ * produced settings.json is byte-for-byte identical to this function's pre-existing output --
+ * Claude Code never spawns the new hook subprocess at all for those paths, so there is no extra
+ * per-Bash-call process spawn, no extra hook_started/hook_response transcript lines, and no
+ * stream_json_bytes/timing drift for those run kinds to explain away.
  */
-export function buildPolicySettingsFile() {
+export function buildPolicySettingsFile({ junitEvidenceEnabled = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-settings-'));
   const settingsPath = join(dir, 'settings.json');
-  writeFileSync(settingsPath, JSON.stringify({
-    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node "${POLICY_HOOK_PATH}"` }] }] },
-  }, null, 2));
+  const hooks = { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node "${POLICY_HOOK_PATH}"` }] }] };
+  if (junitEvidenceEnabled) {
+    const junitHookEntry = { matcher: 'Bash', hooks: [{ type: 'command', command: `node "${JUNIT_EVIDENCE_HOOK_PATH}"` }] };
+    hooks.PostToolUse = [junitHookEntry];
+    hooks.PostToolUseFailure = [junitHookEntry];
+  }
+  writeFileSync(settingsPath, JSON.stringify({ hooks }, null, 2));
   return settingsPath;
 }
 
