@@ -195,7 +195,13 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // fixture would pass the gate outright and write evidence for a run that actually invoked a
   // DIFFERENT skill entirely. Proves the fix is wired up end-to-end (real stream-json parsing,
   // not just the synthetic unit tests in agentic-eval-hard-gates.test.js) and writes NO evidence.
-  it('foreign-skill scenario: A calling an unrelated Skill is rejected (evidence-contamination bypass) and writes NO evidence', () => {
+  //
+  // Round-5 audit correction: this fixture's foreign-skill tool_result has no `is_error` key, so
+  // it's a CONFIRMED foreign invocation (not "rejected" as this test was previously titled) --
+  // see the fixture's own header comment. calibrationHardGate's contract is unchanged by the
+  // result-aware classifier PR, so this correctly still fails regardless of the confirmed/
+  // rejected distinction; the title now says what's actually being tested.
+  it('foreign-skill scenario: A calling an unrelated Skill that gets CONFIRMED is rejected by the gate (evidence-contamination bypass) and writes NO evidence', () => {
     const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('foreign-skill'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('CALIBRATION FAILED');
@@ -210,6 +216,24 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('success'));
     expect(result.status).toBe(0);
     expect(readdirSync(isolatedTmp)).toEqual([]);
+  }, 20000);
+
+  // Round-7 audit finding: a resource-acquisition failure BEFORE any Claude session even spawns
+  // (runConditionPair's own await sat outside cmdCalibrate's try block) previously escaped
+  // uncaught all the way to main()'s top-level catch -- exit 2 with a raw stack trace, never this
+  // command's own "CALIBRATION FAILED: <reason>" / exit 1 contract every OTHER failure path here
+  // already honors. TEMP/TMP/TMPDIR pointed at a non-existent directory forces
+  // acquireSharedEvalResources' own real mkdtempSync call to throw, deterministically, without
+  // needing to reproduce the original (never-confirmed) CI-only trigger.
+  it('a resource-acquisition failure (mkdtempSync throwing on a broken TEMP dir) fails cleanly with exit 1, never an uncaught exit 2', () => {
+    const brokenTemp = path.join(isolatedTmp, 'this-directory-does-not-exist');
+    const env = { ...fakeClaudeEnv('success'), TEMP: brokenTemp, TMP: brokenTemp, TMPDIR: brokenTemp };
+    const result = runCli(['calibrate', '--model', 'fake-model-x'], env);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CALIBRATION FAILED');
+    expect(result.stderr).toContain('session acquisition/spawn threw');
+    // Never the raw, unhandled "agentic-eval: <stack>" shape main()'s own top-level catch writes.
+    expect(result.stderr).not.toMatch(/^agentic-eval:/m);
   }, 20000);
 
   // Uses 'unexpected-tool', not 'no-tool-use' -- the latter is now a legitimate PASS scenario

@@ -21,9 +21,9 @@ import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 // anything else even ran. `LATEST_RUN_SCHEMA` is what every subcommand (calibrate/smoke/run
 // alike) stamps on NEW records going forward; `SUPPORTED_RUN_SCHEMAS` is what validateRun()
 // still accepts, so the 8 historical files keep validating under their original v1 rules
-// unchanged (see the RUN_CANONICAL_FIELDS_V1/_V2 split and validateRun's dispatch, below).
-export const SUPPORTED_RUN_SCHEMAS = [1, 2];
-export const LATEST_RUN_SCHEMA = 2;
+// unchanged (see the RUN_CANONICAL_FIELDS_V1/_V2/_V3 split and validateRun's dispatch, below).
+export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3];
+export const LATEST_RUN_SCHEMA = 3;
 export const CURRENT_SCENARIO_SCHEMA = 1;
 export const CURRENT_AGGREGATE_SCHEMA = 1;
 
@@ -62,8 +62,22 @@ const RUN_CANONICAL_FIELDS_V1 = [
 // convention every other optional field in this schema already follows.
 const RUN_CANONICAL_FIELDS_V2 = [...RUN_CANONICAL_FIELDS_V1, 'grading_checks', 'repetition_index'];
 
+// Schema v3 = v2 + foreign_skill_summary (categorized {rejected, confirmed, incomplete} counts of
+// any Skill tool_use targeting something other than the expected skill -- see
+// classifyForeignSkillUses in stream-parser.mjs). Unlike grading_checks/repetition_index, this is
+// NOT scenario-only and NOT a nullable metric -- it's always computable from the transcript
+// (an empty classification correctly yields all-zero counts), so every run_kind carries a real,
+// non-null value on every schema:3 record.
+const RUN_CANONICAL_FIELDS_V3 = [...RUN_CANONICAL_FIELDS_V2, 'foreign_skill_summary'];
+
+// Explicit if-chain, not a ternary -- a bare `schema === 2 ? V2 : V1`-shaped chain, naively
+// extended with one more ternary branch for v3, silently falls through an unrecognized/future
+// schema number to V1 instead of the LATEST fields, which would make a schema:3 record validate
+// against the wrong (v1) field list entirely. schema===3 must resolve to V3, never V1.
 function runCanonicalFieldsFor(schema) {
-  return schema === 2 ? RUN_CANONICAL_FIELDS_V2 : RUN_CANONICAL_FIELDS_V1;
+  if (schema === 3) return RUN_CANONICAL_FIELDS_V3;
+  if (schema === 2) return RUN_CANONICAL_FIELDS_V2;
+  return RUN_CANONICAL_FIELDS_V1;
 }
 
 // Fields using the {value, reason} nullable-metric shape -- "never infer, store null with a reason".
@@ -240,34 +254,65 @@ export function validateRun(run) {
     errors.push({ field: 'skill_invoked', message: 'cannot be true when skill_invocation_attempted is not true' });
   }
 
-  // grading_checks (v2-only field) -- conditionally required, not merely optional: a real,
-  // non-null checks array whenever this IS a schema:2 scenario record (grading genuinely applies
+  // grading_checks (v2-introduced field) -- conditionally required, not merely optional: a real,
+  // non-null checks array whenever this IS a schema:2+ scenario record (grading genuinely applies
   // and must have actually run), null+reason for every other run_kind/schema combination
-  // (calibrate/smoke's own v2 records, and any v1 record where the field doesn't exist at all).
-  if (run.schema === 2) {
+  // (calibrate/smoke's own v2+ records, and any v1 record where the field doesn't exist at all).
+  // `>= 2`, not `=== 2` -- a v3 record inherits every v2 semantic rule, not just v2's field LIST;
+  // a bare `=== 2` here would silently stop validating this field the moment schema v3 records
+  // started existing (round-4 audit finding: this was the actual bug in an earlier draft of the
+  // v3 bump, found by inspecting this exact line, not assumed from the field-list change alone).
+  if (run.schema >= 2) {
     if (run.run_kind === 'scenario') {
       if (run.grading_checks?.value == null) {
-        errors.push({ field: 'grading_checks', message: 'required (non-null) for a schema:2 run_kind:scenario record -- grading must have actually run' });
+        errors.push({ field: 'grading_checks', message: 'required (non-null) for a schema:2+ run_kind:scenario record -- grading must have actually run' });
       }
     } else if (run.grading_checks?.value != null) {
       errors.push({ field: 'grading_checks', message: `must be null for run_kind "${run.run_kind}" -- grading only applies to scenario records` });
     }
   }
 
-  // repetition_index (v2-only field, plain nullable -- like scenario_id, not a {value,reason}
-  // metric) -- required (a real non-negative integer identifying which trial this record belongs
-  // to) for a schema:2 scenario record, null for every other run_kind (no repetition concept
-  // applies). Gated on schema===2 exactly like grading_checks above -- a schema:1 record (even a
-  // hypothetical/test-constructed run_kind:'scenario' one) was never expected to carry this field
-  // at all, since RUN_CANONICAL_FIELDS_V1 doesn't include it; only v2 introduces the concept.
-  if (run.schema === 2) {
+  // repetition_index (v2-introduced field, plain nullable -- like scenario_id, not a
+  // {value,reason} metric) -- required (a real non-negative integer identifying which trial this
+  // record belongs to) for a schema:2+ scenario record, null for every other run_kind (no
+  // repetition concept applies). `>= 2`, not `=== 2` -- see grading_checks's identical rationale
+  // immediately above; a schema:1 record (even a hypothetical/test-constructed
+  // run_kind:'scenario' one) was never expected to carry this field at all, since
+  // RUN_CANONICAL_FIELDS_V1 doesn't include it -- only v2+ introduces the concept.
+  if (run.schema >= 2) {
     if (run.run_kind === 'scenario') {
       if (!(Number.isInteger(run.repetition_index) && run.repetition_index >= 0)) {
-        errors.push({ field: 'repetition_index', message: 'must be a non-negative integer for a schema:2 run_kind:scenario record' });
+        errors.push({ field: 'repetition_index', message: 'must be a non-negative integer for a schema:2+ run_kind:scenario record' });
       }
     } else if ('repetition_index' in run && run.repetition_index !== null) {
       errors.push({ field: 'repetition_index', message: `must be null for run_kind "${run.run_kind}"` });
     }
+  }
+
+  // foreign_skill_summary (v3-introduced field) -- unlike grading_checks/repetition_index, this
+  // applies to EVERY run_kind (never scenario-only) and is always required once schema>=3, since
+  // it's always computable from the transcript (an empty classification legitimately yields
+  // all-zero counts, never null). Below schema 3 the field must be entirely absent -- it did not
+  // exist in RUN_CANONICAL_FIELDS_V1/_V2, so a v1/v2 record carrying it at all would be
+  // self-contradictory relative to its own declared schema version.
+  if (run.schema >= 3) {
+    const summary = run.foreign_skill_summary;
+    if (summary == null || typeof summary !== 'object' || Array.isArray(summary)) {
+      errors.push({ field: 'foreign_skill_summary', message: 'required (non-null object) for a schema:3+ record' });
+    } else {
+      const allowedKeys = new Set(['rejected', 'confirmed', 'incomplete']);
+      const actualKeys = Object.keys(summary);
+      if (actualKeys.some((k) => !allowedKeys.has(k)) || actualKeys.length !== allowedKeys.size) {
+        errors.push({ field: 'foreign_skill_summary', message: `must have exactly the keys rejected/confirmed/incomplete, got ${JSON.stringify(actualKeys)}` });
+      }
+      for (const key of allowedKeys) {
+        if (!(Number.isInteger(summary[key]) && summary[key] >= 0)) {
+          errors.push({ field: `foreign_skill_summary.${key}`, message: 'must be a non-negative integer' });
+        }
+      }
+    }
+  } else if ('foreign_skill_summary' in run && run.foreign_skill_summary != null) {
+    errors.push({ field: 'foreign_skill_summary', message: `must be absent or null for schema ${run.schema} -- foreign_skill_summary was introduced in schema v3` });
   }
 
   for (const f of NULLABLE_METRIC_FIELDS) if (f in run) validateNullableMetric(run[f], f, errors);
@@ -720,13 +765,15 @@ const AGGREGATE_CANONICAL_FIELDS = ['schema', 'group_key', 'run_count', 'runs'];
 // change what a run was actually permitted to do just as materially as the hook's code does.
 // claude_code_version guards against silently averaging across a different Claude Code CLI
 // release, which can change event shapes or tool behavior independent of anything this harness
-// itself controls.
+// itself controls. `schema` guards against silently averaging across different SCHEMA versions --
+// without it, a schema:2 record (no foreign_skill_summary) and a schema:3 record (has it) could be
+// folded into the same group, even though they don't carry the same measured fields at all.
 export const HARD_PARTITION_FIELDS = [
   'scenario_id', 'condition', 'family', 'run_kind', 'cache_state',
   'project_commit', 'model_resolved', 'platform', 'skill_source_sha', 'policy_sha256',
   'kmp_test_cli_source_sha', 'daemon_policy',
   'env_allowlist_profile', 'policy_allowed_gradle_tasks', 'policy_allowed_kmptest_subcommands',
-  'claude_code_version',
+  'claude_code_version', 'schema',
 ];
 
 // Some HARD_PARTITION_FIELDS values (the two policy_allowed_* lists) are arrays -- a plain

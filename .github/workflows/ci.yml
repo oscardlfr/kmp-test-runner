@@ -106,6 +106,8 @@ jobs:
       - run: npm ci
       - name: Check line endings (tools/check-line-endings.mjs)
         run: node tools/check-line-endings.mjs
+      - name: Check fixture executable bits (tools/check-executable-fixtures.mjs)
+        run: node tools/check-executable-fixtures.mjs
       # Blocking security gate scopes to PRODUCTION dependencies — what
       # consumers actually install. This package ships ZERO runtime deps (all
       # devDependencies are the vitest/vite/esbuild test toolchain, never

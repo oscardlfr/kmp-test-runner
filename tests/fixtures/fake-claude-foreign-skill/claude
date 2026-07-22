@@ -11,6 +11,17 @@
 # (real stream-json parsing -> real event scanning -> the gate), not just in the synthetic unit
 # tests in agentic-eval-hard-gates.test.js. The current-skill arm (B) behaves normally (calls
 # kmp-test-runner, succeeds), mirroring fake-claude-success's own verified shape.
+#
+# Round-5 audit correction: A's foreign-skill tool_result (below) carries no `is_error` key at
+# all, which -- per findToolResultById's `isError: c.is_error === true` check -- reads as
+# isError:false, i.e. a CONFIRMED foreign invocation, not a rejected ("Unknown skill") one. This
+# fixture therefore exercises the "confirmed foreign invocation still fails calibrationHardGate"
+# case (calibrationHardGate's own contract is unchanged by the result-aware classifier PR --
+# calibrate still fails closed on ANY foreign Skill use, confirmed or rejected alike, via the
+# unmodified findForeignSkillUses). It does NOT exercise a genuinely rejected foreign attempt --
+# do not copy this fixture as a "rejected" template; see agentic-eval-run-command.test.js's
+# fake-claude-run-foreign-skill-rejected fixture for that shape instead (scenario-level, where the
+# rejected/confirmed distinction actually changes the outcome).
 HAS_PLUGIN_DIR=0
 PLUGIN_DIR_VALUE=""
 PREV_ARG=""

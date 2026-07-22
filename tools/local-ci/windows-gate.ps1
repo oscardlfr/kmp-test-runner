@@ -53,6 +53,7 @@ try {
 
     Invoke-NativeChecked (Join-Path $Node24Home 'npm.cmd') @('ci') 'npm ci (Node 24)'
     Invoke-NativeChecked $node24 @('tools/check-line-endings.mjs') 'line-ending audit'
+    Invoke-NativeChecked $node24 @('tools/check-executable-fixtures.mjs') 'fixture executable-bit audit'
     Invoke-NativeChecked (Join-Path $Node24Home 'npm.cmd') @('audit', '--omit=dev', '--audit-level=high') 'production dependency audit'
     & (Join-Path $Node24Home 'npm.cmd') audit --audit-level=high
     if ($LASTEXITCODE -ne 0) {

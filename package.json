@@ -41,6 +41,7 @@
     "test:coverage": "vitest run --coverage",
     "shellcheck": "shellcheck scripts/sh/*.sh scripts/sh/lib/*.sh",
     "check-line-endings": "node tools/check-line-endings.mjs",
+    "check-executable-fixtures": "node tools/check-executable-fixtures.mjs",
     "size-check": "node tools/check-bundle-size.mjs",
     "sync-versions": "node tools/sync-versions.js",
     "version": "node tools/sync-versions.js && git add gradle-plugin/build.gradle.kts README.md CLAUDE.md .claude-plugin/plugin.json"

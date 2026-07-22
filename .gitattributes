@@ -147,6 +147,16 @@ tools/runs/agentic-eval-*/*.json text eol=lf
 # Windows git-bash with core.autocrlf=true).
 tests/fixtures/fake-claude-*/claude text eol=lf
 
+# Round-7 audit finding: neither of these 2 files matched any existing eol=lf pattern above
+# (tests/vitest/agentic-eval-*.test.js only covers the agentic-eval- prefix; there was no
+# tools/*.mjs rule at all) -- a Windows checkout (actions/checkout on windows-latest, or a local
+# git clone with core.autocrlf=true) converted both to CRLF, and Node's ESM parser threw a
+# SyntaxError on the multi-line `import { ... } from` statement. The exact failure class this
+# repo's own check-line-endings.mjs exists to catch -- these two were simply never added to its
+# pattern list.
+tools/check-executable-fixtures.mjs text eol=lf
+tests/vitest/check-executable-fixtures.test.js text eol=lf
+
 # Local Docker CI entrypoints execute under Linux even from Windows worktrees.
 tools/local-ci/**/*.sh text eol=lf
 tests/vitest/local-ci.test.js text eol=lf

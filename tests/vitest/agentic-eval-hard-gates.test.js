@@ -701,6 +701,42 @@ describe('calibrationHardGate', () => {
     expect(reason).toContain('transcriptStructureOk:false');
   });
 
+  // Property-style equivalence proof for the A/B-split restructure (round 5's amendment): the
+  // pre-restructure code (a single flat AND of all 15 checks) no longer exists to diff against
+  // directly, so this proves the invariant the restructure is supposed to preserve -- ok is
+  // EXACTLY (failedChecksA.length===0 && failedChecksB.length===0), with every failing check
+  // attributed to the correct side, none dropped, none duplicated, none misattributed to the
+  // wrong side -- across combinations where BOTH sides fail simultaneously on DIFFERENT checks
+  // (the case none of the single-check "isolates X" tests above exercise, and exactly the shape a
+  // checksA/checksB merge-order or copy-paste mistake would corrupt).
+  it('property: ok === (failedChecksA.length===0 && failedChecksB.length===0), with correct per-side attribution, when BOTH sides fail on DIFFERENT checks simultaneously', () => {
+    const a = passA({ skill_available: { value: true, reason: null }, exit_code: 1 });
+    const b = passB({ hook_call_count: 2, hook_deny_count: 0 });
+    const runA = passRunResult();
+    const runB = passRunResult({
+      result: { subtype: 'success', is_error: true },
+      hookStats: { everyCallHooked: false, hookAllowCount: 2 },
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+    });
+    const { ok, reason, failedChecksA, failedChecksB } = calibrationHardGate(a, b, runA, runB);
+    expect(ok).toBe(false);
+    expect(ok).toBe(failedChecksA.length === 0 && failedChecksB.length === 0);
+    expect([...failedChecksA].sort()).toEqual(['availabilityOk', 'processOk'].sort());
+    expect([...failedChecksB].sort()).toEqual(['hookAccountingOk', 'resultOk'].sort());
+    // Every OTHER check, on both sides, still reports true in the verbose reason -- confirming
+    // the two simultaneous failures didn't cascade into (or mask) unrelated checks.
+    for (const stillOk of ['skillSelectionOk', 'pluginProfileOk', 'initOk', 'toolProfileOk', 'noUnexpectedToolsOk', 'toolResultsCompleteOk', 'cleanTranscriptOk', 'transcriptStructureOk']) {
+      expect(reason).toContain(`${stillOk}:true`);
+    }
+  });
+
+  it('property: ok===true and both failedChecks arrays are empty precisely when every individual check passes', () => {
+    const { ok, failedChecksA, failedChecksB } = calibrationHardGate(passA(), passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(true);
+    expect(failedChecksA).toEqual([]);
+    expect(failedChecksB).toEqual([]);
+  });
+
 });
 
 describe('smokeHardGate', () => {
@@ -1195,6 +1231,37 @@ describe('smokeHardGate', () => {
     expect(reason).toContain('transcriptStructureOk:false');
   });
 
+  // Property-style equivalence proof -- see calibrationHardGate's identical rationale. Exercises
+  // BOTH sides failing simultaneously on DIFFERENT checks, including smoke-specific realWorkOk/
+  // exactCommandsOk (not present in calibrationHardGate at all), proving the merge didn't drop or
+  // misattribute either gate's own distinct check set.
+  it('property: ok === (failedChecksA.length===0 && failedChecksB.length===0), with correct per-side attribution, when BOTH sides fail on DIFFERENT checks simultaneously', () => {
+    const a = passA({ skill_available: { value: true, reason: null } });
+    const b = passB({ hook_deny_count: 1 });
+    const runA = passRunResult({
+      bashResults: [{ command: 'kmp-test doctor --json', resultFound: true, resultIsError: false }],
+    });
+    const runB = passRunResult({
+      malformedLines: [{ line: 'not valid json', error: 'simulated' }],
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+    });
+    const { ok, reason, failedChecksA, failedChecksB } = smokeHardGate(a, b, runA, runB);
+    expect(ok).toBe(false);
+    expect(ok).toBe(failedChecksA.length === 0 && failedChecksB.length === 0);
+    expect([...failedChecksA].sort()).toEqual(['availabilityOk', 'exactCommandsOk'].sort());
+    expect([...failedChecksB].sort()).toEqual(['cleanTranscriptOk', 'realWorkOk'].sort());
+    for (const stillOk of ['skillSelectionOk', 'pluginProfileOk', 'initOk', 'toolProfileOk', 'noUnexpectedToolsOk', 'processOk', 'resultOk', 'hookAccountingOk', 'toolResultsCompleteOk', 'transcriptStructureOk']) {
+      expect(reason).toContain(`${stillOk}:true`);
+    }
+  });
+
+  it('property: ok===true and both failedChecks arrays are empty precisely when every individual check passes', () => {
+    const { ok, failedChecksA, failedChecksB } = smokeHardGate(passA(), passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    expect(ok).toBe(true);
+    expect(failedChecksA).toEqual([]);
+    expect(failedChecksB).toEqual([]);
+  });
+
 });
 
 // scenarioCellIntegrityOk/scenarioHardGate (decision 4 of the design): harness-integrity ONLY,
@@ -1357,7 +1424,14 @@ describe('scenarioCellIntegrityOk', () => {
     expect(reason).toBeNull();
   });
 
-  it('isolates skillSelectionOk -- a foreign Skill call unrelated to kmp-test-runner', () => {
+  // Result-aware foreign-skill classification (see stream-parser.mjs's classifyForeignSkillUses):
+  // this fixture's foreign Skill call has NO correlated tool_result anywhere in the transcript --
+  // that is the MISSING/INCOMPLETE case, not a confirmed contamination. Previously (when
+  // scenarioCellIntegrityOk used the plain, argument-only findForeignSkillUses) this same fixture
+  // failed via skillSelectionOk; it now fails via the new, distinct foreignSkillToolResultsCompleteOk
+  // check instead -- skillSelectionOk itself correctly reads true, since nothing here CONFIRMS a
+  // foreign invocation happened.
+  it('isolates foreignSkillToolResultsCompleteOk -- a foreign Skill call with no correlated tool_result at all (missing/incomplete)', () => {
     const cr = passConditionResult('no-skill', {
       events: [
         initEventStub(),
@@ -1367,7 +1441,44 @@ describe('scenarioCellIntegrityOk', () => {
     });
     const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr);
     expect(ok).toBe(false);
+    expect(reason).toContain('foreignSkillToolResultsCompleteOk:false');
+    expect(reason).toContain('skillSelectionOk:true');
+  });
+
+  // The genuinely-confirmed case the original test's name implied: a foreign Skill call WITH a
+  // real, correlated, non-error tool_result. This is the one case that must still fail closed --
+  // a rejected ("Unknown skill") foreign attempt no longer fails skillSelectionOk (see the
+  // "tolerates a REJECTED foreign attempt" test below), but a CONFIRMED one still must.
+  it('isolates skillSelectionOk -- a foreign Skill call that was actually CONFIRMED (real, non-error tool_result)', () => {
+    const cr = passConditionResult('no-skill', {
+      events: [
+        initEventStub(),
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: 'some-other-skill' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', is_error: false, content: 'some real skill output' }] } },
+        resultEventStub(),
+      ],
+    });
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr);
+    expect(ok).toBe(false);
     expect(reason).toContain('skillSelectionOk:false');
+    expect(reason).toContain('foreignSkillToolResultsCompleteOk:true');
+  });
+
+  // The headline new behavior this whole PR exists to enable: a REJECTED foreign attempt ("Unknown
+  // skill") on an otherwise-clean cell is measured agent behavior, not contamination, and must no
+  // longer block promotion.
+  it('tolerates a REJECTED foreign Skill attempt (is_error:true) on an otherwise-clean cell -- ok:true', () => {
+    const cr = passConditionResult('no-skill', {
+      events: [
+        initEventStub(),
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: 'some-other-skill' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', is_error: true, content: '<tool_use_error>Unknown skill: some-other-skill</tool_use_error>' }] } },
+        resultEventStub(),
+      ],
+    });
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr);
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
   });
 });
 

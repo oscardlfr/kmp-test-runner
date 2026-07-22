@@ -183,6 +183,39 @@ export function findForeignSkillUses(events, expectedSkillName) {
   return out;
 }
 
+/**
+ * Every entry from findForeignSkillUses, additionally correlated with its OWN tool_result outcome
+ * -- mirrors findBashToolUsesWithResults' and findSkillInvocation's identical correlation pattern
+ * (both below), generalized to a foreign Skill call. Unlike findSkillInvocation (which aggregates
+ * every matching attempt into one {attempted, confirmed, attemptCount, ...} summary for ONE target
+ * skill), this returns one independent entry PER foreign call -- a transcript could probe several
+ * different unrelated skill names, each with its own distinct result, and collapsing them into a
+ * single aggregate would lose exactly which one(s) were confirmed vs. rejected vs. incomplete.
+ * findForeignSkillUses itself is intentionally never modified -- every existing caller that only
+ * checks its `.length === 0` (calibrationHardGate, smokeHardGate) keeps its exact current
+ * contamination-detection contract unchanged; this function exists so a caller that DOES want the
+ * result-aware distinction (the scenario matrix's hard gate) can make it, without duplicating the
+ * underlying scan.
+ *
+ * `resultIsError`/`confirmed` follow the exact same null-when-absent convention as
+ * findSkillInvocation/findBashToolUsesWithResults: `resultIsError: null` means no correlated
+ * tool_result was found at all (a missing/structurally incomplete capture, not a demonstrated
+ * outcome); `resultIsError: true` means a real "Unknown skill"-shaped rejection; `resultIsError:
+ * false` -- including when `is_error` is absent from the tool_result entirely, per the documented
+ * tool_result contract where an absent `is_error` also means success -- means a CONFIRMED foreign
+ * invocation. `confirmed` is true only in that last case.
+ */
+export function classifyForeignSkillUses(events, expectedSkillName) {
+  return findForeignSkillUses(events, expectedSkillName).map((u) => {
+    const result = u.id != null ? findToolResultById(events, u.id, u.index + 1) : null;
+    return {
+      ...u,
+      resultIsError: result ? result.isError : null,
+      confirmed: result != null && result.isError === false,
+    };
+  });
+}
+
 export function findBashToolUses(events) {
   const out = [];
   for (let i = 0; i < events.length; i++) {

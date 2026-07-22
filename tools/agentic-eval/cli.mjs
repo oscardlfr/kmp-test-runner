@@ -28,8 +28,11 @@
 // No committable evidence is ever written before ALL of: schema validation, a fresh
 // policy_sha256 match against the CURRENT policy-hook.mjs, the privacy fail-closed check
 // (assertCleanOrThrow), and the run-kind's hard acceptance gate all pass -- see
-// finalizeAndWriteRecords(). Any failure writes nothing and reports why.
-import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync, rmSync, linkSync, statSync } from 'node:fs';
+// finalizeAndWriteRecords(). Any failure writes no run evidence and reports why -- a hard-gate
+// failure specifically ALSO writes a separate, privacy-safe rejection diagnostic (never a run
+// record, never confusable with real evidence by aggregate/validate) -- see
+// rejection-diagnostics.mjs.
+import { readFileSync, readdirSync, existsSync, rmSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -39,7 +42,7 @@ import { LATEST_RUN_SCHEMA, SUPPORTED_RUN_SCHEMAS, validateRun, validateScenario
 import { buildEvalEnv } from './env-builder.mjs';
 import { materializeCalibrationProject, materializeScenarioProject, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { buildBaseArgv } from './condition-launcher.mjs';
-import { isSkillAvailable, findForeignSkillUses, findBashToolUses, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, findTranscriptStructuralIssues, findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout, extractTokenUsage, deriveFirstUsefulSignalMs } from './stream-parser.mjs';
+import { isSkillAvailable, findForeignSkillUses, classifyForeignSkillUses, findBashToolUses, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, findTranscriptStructuralIssues, findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout, extractTokenUsage, deriveFirstUsefulSignalMs } from './stream-parser.mjs';
 import { acquireSharedEvalResources, runSingleCondition, runScenarioMatrix, reportCleanupFailures } from './matrix-runner.mjs';
 import { gradeScenarioCondition } from './graders.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
@@ -47,6 +50,8 @@ import { aggregateRuns } from './aggregate.mjs';
 import { assertCleanOrThrow, assertCleanOrThrowObject, loadPrivateRules } from './privacy.mjs';
 import { tokenize } from './policy-hook.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
+import { RUNS_ROOT, resolveEvidenceOutDir, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
+import { buildRejectionDiagnostics, writeRejectedRunDiagnostics } from './rejection-diagnostics.mjs';
 
 // dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
 // but package.json declares "node": ">=18" (confirmed to actually matter on a real ubuntu-latest
@@ -59,8 +64,8 @@ const PINNED_SKILL_SHA = 'aeba6eaa8d027be999cdfeeb5bb2d1bbd0f688ee';
 // test suite listed and deleted files directly under the real RUNS_ROOT, including an
 // unconditional recursive delete of the whole raw/ subdirectory in its own afterEach. Redirecting
 // this makes that class of bug structurally impossible rather than relying on the test being
-// careful.
-const RUNS_ROOT = process.env.KMP_EVAL_RUNS_ROOT || join(REPO_ROOT, 'tools', 'runs');
+// careful. (RUNS_ROOT itself is now defined once in evidence-io.mjs and imported here, so this
+// module and evidence-io.mjs can never compute two different values for it.)
 // KMP_EVAL_SCENARIOS_DIR mirrors KMP_EVAL_RUNS_ROOT's exact rationale, one directory over: a
 // test-only escape hatch so cmdRun's integration tests can point --scenario at a synthetic,
 // throwaway scenario (a tiny local git repo standing in for a real project, exactly like smoke's
@@ -522,6 +527,14 @@ function buildRunRecord({
   const { init, result, invocation, hookStats, byteMetrics, startedAt, endedAt } = conditionResult;
   const isScenario = runKind === 'scenario';
   const notApplicableReason = `${runKind} run -- no scenario grader applies`;
+  // Computed once, shared by tool_calls_total (below) and foreign_skill_summary (schema V3) --
+  // never re-derived twice from the same transcript.
+  const foreignSkillUses = classifyForeignSkillUses(conditionResult.events, TARGET_SKILL_NAME);
+  const foreignSkillSummary = {
+    rejected: foreignSkillUses.filter((u) => u.resultIsError === true).length,
+    confirmed: foreignSkillUses.filter((u) => u.confirmed === true).length,
+    incomplete: foreignSkillUses.filter((u) => u.resultIsError === null).length,
+  };
   const provenance = resolveHarnessProvenance();
   // Shared by BOTH dirty_harness_tooling branches below so the two messages can't drift apart
   // again -- this exact drift (the messages claiming "never blocks evidence" after
@@ -591,8 +604,11 @@ function buildRunRecord({
     },
     // Counts EVERY Skill attempt (invocation?.attemptCount), not just presence/absence -- a
     // version that added a flat 0-or-1 undercounted a real multi-attempt transcript (e.g. a
-    // failed attempt followed by a retry) by construction.
-    tool_calls_total: nullableMetric(findBashToolUses(conditionResult.events).length + (invocation?.attemptCount ?? 0)),
+    // failed attempt followed by a retry) by construction. Also counts every FOREIGN Skill
+    // attempt (foreignSkillUses.length) -- a rejected/confirmed/incomplete attempt at some OTHER
+    // skill is a real tool call the agent made and previously went uncounted entirely, undercounting
+    // any transcript with a foreign-skill probe alongside the expected skill.
+    tool_calls_total: nullableMetric(findBashToolUses(conditionResult.events).length + (invocation?.attemptCount ?? 0) + foreignSkillUses.length),
     shell_commands_total: nullableMetric(findBashToolUses(conditionResult.events).length),
     // decision 12: real, non-null counts for a scenario record -- directly reusing the SAME
     // attempt list gradeScenarioCondition already built (never a second, independently-derived
@@ -630,6 +646,14 @@ function buildRunRecord({
     // repetition_index (decision 11, v2-only, plain nullable like scenario_id -- not a
     // {value,reason} metric): which trial within the matrix this record belongs to.
     repetition_index: isScenario ? repetitionIndex : null,
+    // foreign_skill_summary (schema v3): categorized counts of any Skill tool_use targeting
+    // something other than the expected skill, computed once above and shared with
+    // tool_calls_total. Always present for every run_kind -- an empty classification correctly
+    // yields all-zero counts, so this is a required field, never a nullable metric. Exists so a
+    // rejected-but-harmless foreign-skill attempt on an otherwise-clean, ACCEPTED record still
+    // leaves a real trace of having happened, instead of disappearing entirely the moment
+    // scenarioCellIntegrityOk's result-aware skillSelectionOk stops treating it as contamination.
+    foreign_skill_summary: foreignSkillSummary,
     // repo_commit/kmp_test_cli_source_sha describe HEAD, not necessarily the exact bytes that
     // executed -- disclosed here rather than silently letting the recorded SHA imply a codebase
     // that isn't quite what actually ran. Two distinct codes: dirty_measured_code (bin/lib/
@@ -694,6 +718,10 @@ function buildRunRecord({
   };
 }
 
+// resolveEvidenceOutDir/isRawDirSafeFromAccidentalCommit/promoteTargetsAtomically now live in
+// evidence-io.mjs (imported above) -- extracted so rejection-diagnostics.mjs's new writer can
+// reuse the identical atomic-promotion mechanism without a circular import. Zero behavior change.
+
 /**
  * Writes ALREADY-REDACTED, already-gated record text (never re-serializes recordA/recordB --
  * the caller's redacted text is authoritative) to the committable top-level run-kind directory,
@@ -708,134 +736,9 @@ function buildRunRecord({
  * ANYWHERE in it -- including partway through the four linkSync calls themselves, not just the
  * four writeFileSync calls -- rolls back every FINAL-path file this call already linked into
  * place (plus any leftover temp files) before rethrowing: a promotion failure on file 3 of 4 must
- * never leave files 1-2 committed as final evidence while 3-4 are missing.
+ * never leave files 1-2 committed as final evidence while 3-4 are missing. See evidence-io.mjs's
+ * promoteTargetsAtomically for the exact contract this guarantee actually provides.
  */
-function resolveEvidenceOutDir(runKind, runsRootOverride = RUNS_ROOT) {
-  return join(runsRootOverride, `agentic-eval-${runKind}`);
-}
-
-// Runtime enforcement, not just the run record's own errors[] disclosure (see
-// RUNS_ROOT_IS_DEFAULT's comment) -- an independent review pass argued that documenting a
-// non-default root in the record doesn't itself prevent an accidental `git add -A` from staging
-// raw, unredacted transcripts. Verifies the raw-transcript destination can never end up in a real
-// commit: EITHER it's CONFIRMED entirely outside any git repository (not just this one -- git can
-// never see it, regardless of any gitignore rule), OR it's inside one and actually covered by
-// that repository's own .gitignore -- checked via `git check-ignore`, not assumed from the path's
-// string shape. Every git call's failure mode is itself fail-closed: a result this function can't
-// positively confirm is never treated as safe by default.
-function isRawDirSafeFromAccidentalCommit(rawDir, runsRootOverride) {
-  let runsRootReal;
-  try {
-    runsRootReal = realpath(runsRootOverride);
-  } catch {
-    return false; // can't even resolve the root -- fail closed
-  }
-  // Determine the ACTUAL containing git repository, if any -- never assumed to be REPO_ROOT
-  // specifically. An earlier version only checked containment against REPO_ROOT and treated
-  // anything outside THIS repo's worktree as automatically safe, but a KMP_EVAL_RUNS_ROOT pointed
-  // at a location inside a COMPLETELY DIFFERENT git repository (a sibling checkout, any other
-  // git-managed directory on the machine) is not "outside a repo" at all -- it's inside a repo
-  // this harness never checks .gitignore against. Reproduced directly: pointed at a temp
-  // repository elsewhere, `git status` there showed the raw directory as a real, trackable
-  // untracked path (`?? agentic-eval-calibration/`) -- an accidental `git add -A` in THAT repo
-  // would have staged it. `git -C <path> rev-parse --show-toplevel` finds whatever repository (if
-  // any) actually contains the resolved root.
-  //
-  // A non-zero exit is NOT by itself "confirmed not inside any git repository" -- a further
-  // independent review pass caught exactly this: git being unavailable (missing from PATH), a
-  // spawn-level error, a permissions problem, an unconfigured safe.directory, or any other
-  // unexpected failure ALSO produces a non-zero exit, and treating all of these the same as
-  // "definitely outside a repo, therefore safe" is the identical fail-open pattern already fixed
-  // once for gitDirtyPaths() -- reproduced concretely by disabling git for this exact call: the
-  // function returned "safe" for a destination that, with git working normally, would have shown
-  // up as trackable, untracked content in a real containing repository. Only ONE specific,
-  // positively-matched outcome counts as confirmed-safe: the spawn itself succeeded (no
-  // `.error`), AND git's own exit code (128) and stderr match its well-known, stable
-  // "not a git repository" message exactly. Every other outcome -- including a DIFFERENT
-  // non-zero status, unrecognized stderr, or a spawn error -- fails closed.
-  // LC_ALL/LANG=C forces git's stderr into its default (English) locale regardless of the host's
-  // configured language -- a minor observation from an independent review pass: git can localize
-  // "fatal: not a git repository" into another language, and without this override, the stable
-  // pattern match below would fail to recognize a genuinely-confirmed-safe destination on a
-  // non-English host, over-rejecting (never under-rejecting -- fail-closed either way) a valid
-  // path. Merged onto process.env, not replacing it -- spawnSync's env option replaces the WHOLE
-  // environment if set, and git itself still needs PATH to be found at all.
-  const toplevel = spawnSync('git', ['-C', runsRootReal, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
-  const confirmedNotInAnyRepo = !toplevel.error && toplevel.status === 128 && /fatal: not a git repository/i.test(toplevel.stderr ?? '');
-  if (confirmedNotInAnyRepo) return true;
-  if (toplevel.status !== 0) return false; // couldn't confirm either way -- fail closed, never assume safe
-  const containingRepoRoot = toplevel.stdout.trim();
-  // .gitignore's own pattern is `tools/runs/agentic-eval-*/raw/**` -- the `**` only matches
-  // CONTENTS of raw/, never the bare directory path itself (confirmed empirically: `git
-  // check-ignore` on the directory alone exits 1/not-ignored, on a file inside it exits 0). Check
-  // a representative file path inside it, matching what actually gets written there, scoped to
-  // whichever repository actually contains it (not always REPO_ROOT).
-  const r = spawnSync('git', ['check-ignore', '--quiet', join(rawDir, 'probe.jsonl')], { cwd: containingRepoRoot, encoding: 'utf8' });
-  return !r.error && r.status === 0;
-}
-
-/**
- * The shared write/link/rollback body -- arity-independent (iterates whatever `targets` array
- * it's given), extracted so both the existing pair-shaped `writeRunRecordEvidence` (still
- * literally 4 entries) and the new N-record `writeRunMatrixRecordEvidence` (2xN entries) share
- * the identical atomic-promotion mechanism rather than one being a subtly-different duplicate of
- * the other. `ensureDir` is the deepest directory that must exist before any tmp file can be
- * written (mkdirSync's recursive:true also creates every parent, e.g. a `raw/` subdirectory's own
- * parent `outDir`).
- *
- * run_id embeds only an 8-hex-char slice of randomUUID() (~2^32 space, not the full 128 bits) --
- * not astronomically improbable to collide across this harness's full lifetime of runs (or,
- * concurrently, two overlapping invocations racing each other). The upfront existsSync loop is a
- * fast, non-atomic PRE-check only -- it narrows the common case early, but does NOT by itself
- * prevent a collision: an independent review pass reproduced a genuine TOCTOU race with two
- * synchronized workers -- both passed this existsSync check (target didn't exist YET for either),
- * then both proceeded to promote, and one silently overwrote the other via renameSync (which
- * replaces an existing destination on POSIX). The REAL, atomic guarantee is the linkSync-based
- * promotion below, which can never lose this race the way check-then-renameSync could.
- */
-function promoteTargetsAtomically(targets, ensureDir) {
-  for (const [target] of targets) {
-    if (existsSync(target)) {
-      throw new Error(`refusing to write evidence: ${target} already exists (run_id collision?) -- nothing was written or touched`);
-    }
-  }
-  mkdirSync(ensureDir, { recursive: true });
-  const tmpSuffix = `.tmp-${randomUUID().slice(0, 8)}`;
-  const tmpPaths = targets.map(([target]) => target + tmpSuffix);
-  // linkSync (not renameSync) for promotion: creates a hard link to the fully-written tmp file at
-  // the FINAL target path, and -- critically -- fails atomically with EEXIST if that target
-  // already exists, rather than silently replacing it the way renameSync does on POSIX. This is
-  // what actually closes the TOCTOU window the existsSync pre-check above cannot: a concurrent
-  // invocation racing to create the SAME target can now only ever have ONE winner: whichever
-  // linkSync call the filesystem serializes first.
-  const linkedTargets = [];
-  try {
-    targets.forEach(([, content], i) => writeFileSync(tmpPaths[i], content));
-    targets.forEach(([target], i) => {
-      try {
-        linkSync(tmpPaths[i], target);
-      } catch (err) {
-        if (err.code === 'EEXIST') {
-          throw new Error(`refusing to write evidence: ${target} already exists (run_id collision -- lost a concurrent race) -- targets created by this invocation are being rolled back`);
-        }
-        throw err;
-      }
-      linkedTargets.push(target);
-    });
-  } catch (err) {
-    // Roll back ONLY the targets THIS invocation actually created via a successful linkSync --
-    // never a target that failed with EEXIST, since that means a DIFFERENT invocation already
-    // owns it and this one must not touch it.
-    for (const target of linkedTargets) rmSync(target, { force: true });
-    for (const tmpPath of tmpPaths) rmSync(tmpPath, { force: true });
-    throw err;
-  }
-  // linkSync creates an ADDITIONAL directory entry pointing at the same data -- unlike renameSync,
-  // it doesn't consume the source -- so the tmp files must be cleaned up explicitly once every
-  // target has been linked successfully.
-  for (const tmpPath of tmpPaths) rmSync(tmpPath, { force: true });
-}
-
 function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB, runsRootOverride = RUNS_ROOT) {
   const outDir = resolveEvidenceOutDir(runKind, runsRootOverride);
   const rawDir = join(outDir, 'raw');
@@ -895,7 +798,10 @@ function writeRunMatrixRecordEvidence(runKind, records, conditionResults, redact
  * privacy check, verified before writeRunRecordEvidence is ever called (not after -- an earlier
  * version wrote all four files first and only checked the path afterward, so a private-patterns
  * rule matching only the runs-root path itself could report {ok:false} after real evidence was
- * already on disk). Any failure returns {ok:false, reason} and writes nothing.
+ * already on disk). Any failure returns {ok:false, reason} and writes no run evidence -- the one
+ * exception is the hard-gate-failure branch specifically, which additionally writes a separate,
+ * privacy-safe rejection diagnostic (see rejection-diagnostics.mjs); every OTHER failure reason
+ * (schema-invalid, dirty tree, stale policy, privacy-check-throw) writes literally nothing.
  */
 /**
  * Extracted as a named, independently-testable function specifically so BOTH branches of this
@@ -981,7 +887,27 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
   }
   const gate = hardGateFn(recordA, recordB, runA, runB);
   if (!gate.ok) {
-    return { ok: false, reason: gate.reason };
+    // Privacy-safe rejected-run diagnostics (closes BACKLOG.md's "leave no auditable trace" gap)
+    // -- a diagnostics-write failure must never mask the ORIGINAL rejection reason or crash the
+    // caller; caught and surfaced as a separate field instead. rejectionId/diagnosticsRelativePath
+    // stay null unless the write actually succeeded -- round-6 audit finding ("localización del
+    // diagnóstico"): a caller must be able to tell a human WHERE a successfully-written diagnostic
+    // landed, not just that no error was thrown.
+    let diagnosticsWriteError = null;
+    let rejectionId = null;
+    let diagnosticsRelativePath = null;
+    try {
+      const failedChecksByRunId = { [recordA.run_id]: gate.failedChecksA ?? [], [recordB.run_id]: gate.failedChecksB ?? [] };
+      const foreignSkillNamesByRunId = {
+        [recordA.run_id]: classifyForeignSkillUses(runA.events, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null),
+        [recordB.run_id]: classifyForeignSkillUses(runB.events, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null),
+      };
+      const diagnostics = buildRejectionDiagnostics({ runKind, records: [recordA, recordB], failedChecksByRunId, foreignSkillNamesByRunId });
+      ({ rejectionId, relativePath: diagnosticsRelativePath } = writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride }));
+    } catch (err) {
+      diagnosticsWriteError = err.message;
+    }
+    return { ok: false, reason: gate.reason, diagnosticsWriteError, rejectionId, diagnosticsRelativePath };
   }
   // The evidence directory path itself can carry the real OS username (this repo may be checked
   // out under e.g. C:\Users\<name>\...). Verified BEFORE anything is written: an earlier version
@@ -989,7 +915,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
   // private-patterns rule matching only the (possibly KMP_EVAL_RUNS_ROOT-overridden) runs-root
   // path itself -- never the record content, which was already verified clean above -- could
   // report {ok:false} after real evidence and raw transcripts were already committed to disk,
-  // contradicting this function's own "any failure returns {ok:false} and writes nothing"
+  // contradicting this function's own "any failure returns {ok:false} and writes no run evidence"
   // contract. `outDir` stays the REAL, navigable path (a caller may legitimately need it, e.g. a
   // test asserting a file exists there) -- `redactedOutDir` is the separate, display-safe value
   // for anything printed to a terminal. A single raw path string (never JSON-serialized), so the
@@ -1164,7 +1090,26 @@ async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResult
     }
   }
   if (!gate.ok) {
-    return { ok: false, reason: gate.reason };
+    // Privacy-safe rejected-run diagnostics (closes BACKLOG.md's "leave no auditable trace" gap)
+    // -- gate.cellResults (scenarioHardGate's own new field) already correlates every cell to its
+    // own failedChecks, so this is pure reshaping, never a second gate re-run. A diagnostics-write
+    // failure must never mask the ORIGINAL rejection reason or crash the caller.
+    // rejectionId/diagnosticsRelativePath stay null unless the write actually succeeded -- see the
+    // pair-based finalizeAndWriteRecords' identical rationale.
+    let diagnosticsWriteError = null;
+    let rejectionId = null;
+    let diagnosticsRelativePath = null;
+    try {
+      const failedChecksByRunId = Object.fromEntries((gate.cellResults ?? []).map((c) => [c.runId, c.failedChecks]));
+      const foreignSkillNamesByRunId = Object.fromEntries(
+        records.map((r, i) => [r.run_id, classifyForeignSkillUses(conditionResults[i].events, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null)]),
+      );
+      const diagnostics = buildRejectionDiagnostics({ runKind, records, failedChecksByRunId, foreignSkillNamesByRunId });
+      ({ rejectionId, relativePath: diagnosticsRelativePath } = writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride }));
+    } catch (err) {
+      diagnosticsWriteError = err.message;
+    }
+    return { ok: false, reason: gate.reason, diagnosticsWriteError, rejectionId, diagnosticsRelativePath };
   }
   const outDir = resolveEvidenceOutDir(runKind, runsRootOverride);
   let redactedOutDir;
@@ -1182,6 +1127,34 @@ async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResult
 }
 
 /**
+ * Derives {ok, reason, failedChecks} from ONE shared ordered list of named [name, boolean] checks
+ * -- the single source of truth for all four hard-gate functions below. Exists specifically to
+ * close a two-sources-of-truth risk: manually building a `failedChecks` array alongside a
+ * hand-written `reason` template string (as an earlier draft of this change did) can drift out of
+ * sync exactly the way this file's own history already shows named checks and their free-text
+ * reason strings drifting apart across several independent review rounds. `reason` preserves the
+ * exact `name:value` substring shape every existing test already matches against.
+ */
+function evaluateNamedChecks(checks) {
+  const failedChecks = checks.filter(([, passed]) => !passed).map(([name]) => name);
+  return {
+    ok: failedChecks.length === 0,
+    reason: failedChecks.length === 0 ? null : checks.map(([name, passed]) => `${name}:${passed}`).join(' '),
+    failedChecks,
+  };
+}
+
+// Always the full `name:value` list for every check, regardless of pass/fail -- used by
+// calibrationHardGate/smokeHardGate's two-sided (A/B) reason string, which must show BOTH sides'
+// complete check breakdown whenever the gate fails overall, not just the side(s) that actually
+// failed (matching this gate's pre-existing, already-tested verbose format -- evaluateNamedChecks'
+// own `reason` is null on a passing side, which is the right behavior for its `ok`/`failedChecks`
+// consumers but the wrong one for this always-verbose rendering).
+function joinChecks(checks) {
+  return checks.map(([name, passed]) => `${name}:${passed}`).join(' ');
+}
+
+/**
  * Calibration's hard gate, extracted as a named, independently-testable function (not an inline
  * closure) specifically so each sub-check can be unit-tested in isolation with precise synthetic
  * inputs -- constructing a real subprocess fixture that fails EXACTLY one of these and none of
@@ -1189,9 +1162,18 @@ async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResult
  * tool_result looks like on a real transcript, so fabricating one for a fixture risks encoding a
  * guess as if it were confirmed fact). Every sub-check is reported by name in the failure reason
  * (not just an aggregate boolean).
+ *
+ * Computed per-side (A/B) via evaluateNamedChecks and combined as `evalA.ok && evalB.ok` --
+ * mathematically identical to a single flat AND of all 15 checks (boolean AND is associative;
+ * every original sub-expression appears in exactly one side's list, never duplicated or dropped),
+ * so this restructure changes zero pass/fail behavior. It exists to expose which SIDE (not just
+ * which check) failed, for rejected-run diagnostics (rejection-diagnostics.mjs) to attribute
+ * correctly without re-deriving anything. A few checks (noSkillSafetyOk, currentInvocationOk,
+ * pluginSnapshotBindingOk) are inherently single-sided already and appear in only one list.
  */
 function calibrationHardGate(a, b, runAResult, runBResult) {
-  const availabilityOk = a.skill_available.value === false && b.skill_available.value === true;
+  const availabilityOkA = a.skill_available.value === false;
+  const availabilityOkB = b.skill_available.value === true;
   // The no-skill arm's actual safety property is "never a CONFIRMED invocation" -- whether it
   // ATTEMPTED the call first is not required. A model correctly recognizing the skill isn't in
   // its available tool list and not trying it at all is just as legitimate isolation proof as
@@ -1210,15 +1192,18 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   // attempted:false/invoked:false for kmp-test-runner (that call is invisible to
   // findSkillInvocation, which is scoped to kmp-test-runner only) and pass unnoticed. Requires
   // BOTH conditions to contain zero Skill calls targeting anything other than kmp-test-runner.
-  const skillSelectionOk = findForeignSkillUses(runAResult.events, TARGET_SKILL_NAME).length === 0
-    && findForeignSkillUses(runBResult.events, TARGET_SKILL_NAME).length === 0;
+  // Deliberately still the plain, argument-only findForeignSkillUses (not the result-aware
+  // classifyForeignSkillUses used by scenarioCellIntegrityOk below) -- calibration's contract is
+  // untouched by this change; ANY foreign Skill call, rejected or not, still fails this check.
+  const skillSelectionOkA = findForeignSkillUses(runAResult.events, TARGET_SKILL_NAME).length === 0;
+  const skillSelectionOkB = findForeignSkillUses(runBResult.events, TARGET_SKILL_NAME).length === 0;
   // Regression coverage for a real gap an independent review pass demonstrated: neither
   // isSkillAvailable nor hasExpectedToolProfile ever inspects the init event's OWN plugins[]
   // array -- an unexpected third-party plugin loaded alongside (or instead of) the intended one
   // went completely undetected. A must load exactly zero plugins; B must load exactly one,
   // named kmp-test-runner -- no duplicates, no extras.
-  const pluginProfileOk = hasExpectedPluginProfile(runAResult.init, TARGET_SKILL_NAME, false)
-    && hasExpectedPluginProfile(runBResult.init, TARGET_SKILL_NAME, true);
+  const pluginProfileOkA = hasExpectedPluginProfile(runAResult.init, TARGET_SKILL_NAME, false);
+  const pluginProfileOkB = hasExpectedPluginProfile(runBResult.init, TARGET_SKILL_NAME, true);
   // Regression coverage for a real evidence-contamination bypass an independent review pass
   // demonstrated: pluginProfileOk only checks the loaded plugin's NAME, never its path -- a
   // same-named "kmp-test-runner" plugin loaded from a completely unrelated directory satisfied
@@ -1232,30 +1217,34 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   // contradictory init+result pair appended after a legitimate first one, or two tool_use blocks
   // sharing one id satisfied by a single tool_result. See findTranscriptStructuralIssues's own
   // doc comment for the full rationale.
-  const transcriptStructureOk = findTranscriptStructuralIssues(runAResult.events).length === 0
-    && findTranscriptStructuralIssues(runBResult.events).length === 0;
+  const transcriptStructureOkA = findTranscriptStructuralIssues(runAResult.events).length === 0;
+  const transcriptStructureOkB = findTranscriptStructuralIssues(runBResult.events).length === 0;
   // A session that never emitted an init event at all is a fundamentally broken/incomplete
   // capture, not a legitimately-observed "skill unavailable" -- without this check, a run with
   // NO init event could still show skill_available:false for the no-skill arm (nothing to derive
   // it from) and happen to match the EXPECTED value there by coincidence, passing availabilityOk
   // for the wrong reason entirely.
-  const initOk = runAResult.init != null && runBResult.init != null;
+  const initOkA = runAResult.init != null;
+  const initOkB = runBResult.init != null;
   // The init event's OWN declared profile must match exactly what this harness actually
   // launches with -- proves a genuinely narrow session, not just that ONE happened to arrive.
-  const toolProfileOk = hasExpectedToolProfile(runAResult.init, EXPECTED_TOOL_NAMES) && hasExpectedToolProfile(runBResult.init, EXPECTED_TOOL_NAMES);
+  const toolProfileOkA = hasExpectedToolProfile(runAResult.init, EXPECTED_TOOL_NAMES);
+  const toolProfileOkB = hasExpectedToolProfile(runBResult.init, EXPECTED_TOOL_NAMES);
   // No tool_use ANYWHERE in the transcript may name anything outside Bash/Skill -- a
   // transcript could otherwise use some other tool (e.g. Read) alongside the expected calls and
   // still pass every other check.
-  const noUnexpectedToolsOk = findUnexpectedToolUses(runAResult.events, EXPECTED_TOOL_NAMES).length === 0
-    && findUnexpectedToolUses(runBResult.events, EXPECTED_TOOL_NAMES).length === 0;
-  const processOk = a.terminated === false && b.terminated === false && a.exit_code === 0 && b.exit_code === 0;
+  const noUnexpectedToolsOkA = findUnexpectedToolUses(runAResult.events, EXPECTED_TOOL_NAMES).length === 0;
+  const noUnexpectedToolsOkB = findUnexpectedToolUses(runBResult.events, EXPECTED_TOOL_NAMES).length === 0;
+  const processOkA = a.terminated === false && a.exit_code === 0;
+  const processOkB = b.terminated === false && b.exit_code === 0;
   // subtype==='success' (not just is_error===false) -- a session cut off by e.g. the budget cap
   // reports a distinct result.subtype (confirmed: 'error_max_budget_usd') that is NOT
   // necessarily paired with is_error:true, so is_error alone doesn't prove the session ran to a
   // genuine, uninterrupted completion.
-  const resultOk = runAResult.result?.subtype === 'success' && runAResult.result?.is_error === false
-    && runBResult.result?.subtype === 'success' && runBResult.result?.is_error === false;
-  const hookAccountingOk = runAResult.hookStats.everyCallHooked === true && runBResult.hookStats.everyCallHooked === true;
+  const resultOkA = runAResult.result?.subtype === 'success' && runAResult.result?.is_error === false;
+  const resultOkB = runBResult.result?.subtype === 'success' && runBResult.result?.is_error === false;
+  const hookAccountingOkA = runAResult.hookStats.everyCallHooked === true;
+  const hookAccountingOkB = runBResult.hookStats.everyCallHooked === true;
   // Regression coverage for a real gap an independent review pass demonstrated: findSkillInvocation
   // correctly reports confirmed:false for a Skill attempt with NO correlated tool_result at all
   // (transcript cut short before a result arrived), but the gate previously treated
@@ -1263,17 +1252,41 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   // INCOMPLETE capture, not a demonstrated Unknown-skill rejection, and must not be silently
   // accepted as equivalent. Scans every tool_use (Bash included -- calibration has no per-command
   // result check of its own, unlike smoke's exactCommandsOk).
-  const toolResultsCompleteOk = findIncompleteToolResults(runAResult.events).length === 0
-    && findIncompleteToolResults(runBResult.events).length === 0;
+  const toolResultsCompleteOkA = findIncompleteToolResults(runAResult.events).length === 0;
+  const toolResultsCompleteOkB = findIncompleteToolResults(runBResult.events).length === 0;
   // Only smokeHardGate had this check until now -- a malformed/truncated JSONL line could hide
   // exactly a Skill tool_use or its result, artificially producing attempted:false for A, which
   // the relaxed no-skill contract now legitimately tolerates. Calibration needs the same
   // protection smoke already has.
-  const cleanTranscriptOk = runAResult.malformedLines.length === 0 && runBResult.malformedLines.length === 0;
-  const ok = availabilityOk && noSkillSafetyOk && currentInvocationOk && skillSelectionOk && pluginProfileOk && pluginSnapshotBindingOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && toolResultsCompleteOk && cleanTranscriptOk && transcriptStructureOk;
+  const cleanTranscriptOkA = runAResult.malformedLines.length === 0;
+  const cleanTranscriptOkB = runBResult.malformedLines.length === 0;
+
+  const checksA = [
+    ['availabilityOk', availabilityOkA], ['noSkillSafetyOk', noSkillSafetyOk],
+    ['skillSelectionOk', skillSelectionOkA], ['pluginProfileOk', pluginProfileOkA],
+    ['initOk', initOkA], ['toolProfileOk', toolProfileOkA],
+    ['noUnexpectedToolsOk', noUnexpectedToolsOkA], ['processOk', processOkA],
+    ['resultOk', resultOkA], ['hookAccountingOk', hookAccountingOkA],
+    ['toolResultsCompleteOk', toolResultsCompleteOkA], ['cleanTranscriptOk', cleanTranscriptOkA],
+    ['transcriptStructureOk', transcriptStructureOkA],
+  ];
+  const checksB = [
+    ['availabilityOk', availabilityOkB], ['currentInvocationOk', currentInvocationOk],
+    ['skillSelectionOk', skillSelectionOkB], ['pluginProfileOk', pluginProfileOkB],
+    ['pluginSnapshotBindingOk', pluginSnapshotBindingOk], ['initOk', initOkB],
+    ['toolProfileOk', toolProfileOkB], ['noUnexpectedToolsOk', noUnexpectedToolsOkB],
+    ['processOk', processOkB], ['resultOk', resultOkB], ['hookAccountingOk', hookAccountingOkB],
+    ['toolResultsCompleteOk', toolResultsCompleteOkB], ['cleanTranscriptOk', cleanTranscriptOkB],
+    ['transcriptStructureOk', transcriptStructureOkB],
+  ];
+  const evalA = evaluateNamedChecks(checksA);
+  const evalB = evaluateNamedChecks(checksB);
+  const ok = evalA.ok && evalB.ok;
   return {
     ok,
-    reason: ok ? null : `calibration hard gate failed -- availabilityOk:${availabilityOk} noSkillSafetyOk:${noSkillSafetyOk} currentInvocationOk:${currentInvocationOk} skillSelectionOk:${skillSelectionOk} pluginProfileOk:${pluginProfileOk} pluginSnapshotBindingOk:${pluginSnapshotBindingOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} toolResultsCompleteOk:${toolResultsCompleteOk} cleanTranscriptOk:${cleanTranscriptOk} transcriptStructureOk:${transcriptStructureOk} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
+    reason: ok ? null : `calibration hard gate failed -- A:{${joinChecks(checksA)}} B:{${joinChecks(checksB)}} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
+    failedChecksA: evalA.failedChecks,
+    failedChecksB: evalB.failedChecks,
   };
 }
 
@@ -1307,13 +1320,25 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
  * `junitSkipEvidenceOk` is the identical treatment for an `unreliable_gradle_junit_evidence` error
  * (buildRunRecord, from graders.mjs's own `gradleJunitEvidenceUnreliable`) -- a genuine skipped
  * testcase or an unreadable/oversized XML file this evidence path cannot correctly count.
+ *
+ * `skillSelectionOk`/`foreignSkillToolResultsCompleteOk` are result-aware (classifyForeignSkillUses,
+ * not the plain findForeignSkillUses calibration/smoke still use): for a scenario's naturally-
+ * prompted transcript, a REJECTED foreign attempt ("Unknown skill") is measured agent behavior,
+ * not contamination -- only a CONFIRMED foreign invocation still fails skillSelectionOk. A
+ * missing/incomplete result on a foreign call is its own distinct failure
+ * (foreignSkillToolResultsCompleteOk), deliberately NOT delegated to the generic timeout-tolerant
+ * toolResultsCompleteOk check below (which can excuse exactly one incomplete tool_use if it's the
+ * last one before a genuine timeout) -- a foreign Skill call's own incompleteness must fail closed
+ * unconditionally, with no timeout exception.
  */
 function scenarioCellIntegrityOk(record, conditionResult) {
   const expectSkillAvailable = record.condition === 'current-skill';
   const availabilityOk = record.skill_available.value === expectSkillAvailable;
   const pluginProfileOk = hasExpectedPluginProfile(conditionResult.init, TARGET_SKILL_NAME, expectSkillAvailable);
   const pluginSnapshotBindingOk = !expectSkillAvailable || isPluginBoundToSnapshot(conditionResult.init, conditionResult.snapshotDir);
-  const skillSelectionOk = findForeignSkillUses(conditionResult.events, TARGET_SKILL_NAME).length === 0;
+  const foreignSkillUses = classifyForeignSkillUses(conditionResult.events, TARGET_SKILL_NAME);
+  const skillSelectionOk = !foreignSkillUses.some((u) => u.confirmed === true);
+  const foreignSkillToolResultsCompleteOk = !foreignSkillUses.some((u) => u.resultIsError === null);
   const initOk = conditionResult.init != null;
   const toolProfileOk = hasExpectedToolProfile(conditionResult.init, EXPECTED_TOOL_NAMES);
   const noUnexpectedToolsOk = findUnexpectedToolUses(conditionResult.events, EXPECTED_TOOL_NAMES).length === 0;
@@ -1327,13 +1352,17 @@ function scenarioCellIntegrityOk(record, conditionResult) {
   const parallelEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'malformed_parallel_evidence');
   const junitSkipEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'unreliable_gradle_junit_evidence');
 
-  const ok = availabilityOk && pluginProfileOk && pluginSnapshotBindingOk && skillSelectionOk && initOk
-    && toolProfileOk && noUnexpectedToolsOk && hookAccountingOk && cleanTranscriptOk && transcriptStructureOk
-    && toolResultsCompleteOk && terminationOk && junitEvidenceOk && parallelEvidenceOk && junitSkipEvidenceOk;
-  return {
-    ok,
-    reason: ok ? null : `availabilityOk:${availabilityOk} pluginProfileOk:${pluginProfileOk} pluginSnapshotBindingOk:${pluginSnapshotBindingOk} skillSelectionOk:${skillSelectionOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} hookAccountingOk:${hookAccountingOk} cleanTranscriptOk:${cleanTranscriptOk} transcriptStructureOk:${transcriptStructureOk} toolResultsCompleteOk:${toolResultsCompleteOk} terminationOk:${terminationOk} junitEvidenceOk:${junitEvidenceOk} parallelEvidenceOk:${parallelEvidenceOk} junitSkipEvidenceOk:${junitSkipEvidenceOk}`,
-  };
+  const evaluation = evaluateNamedChecks([
+    ['availabilityOk', availabilityOk], ['pluginProfileOk', pluginProfileOk],
+    ['pluginSnapshotBindingOk', pluginSnapshotBindingOk], ['skillSelectionOk', skillSelectionOk],
+    ['foreignSkillToolResultsCompleteOk', foreignSkillToolResultsCompleteOk], ['initOk', initOk],
+    ['toolProfileOk', toolProfileOk], ['noUnexpectedToolsOk', noUnexpectedToolsOk],
+    ['hookAccountingOk', hookAccountingOk], ['cleanTranscriptOk', cleanTranscriptOk],
+    ['transcriptStructureOk', transcriptStructureOk], ['toolResultsCompleteOk', toolResultsCompleteOk],
+    ['terminationOk', terminationOk], ['junitEvidenceOk', junitEvidenceOk],
+    ['parallelEvidenceOk', parallelEvidenceOk], ['junitSkipEvidenceOk', junitSkipEvidenceOk],
+  ]);
+  return { ok: evaluation.ok, reason: evaluation.reason, failedChecks: evaluation.failedChecks };
 }
 
 /**
@@ -1343,17 +1372,31 @@ function scenarioCellIntegrityOk(record, conditionResult) {
  * (success/expected_outcome_matched) -- a cell where the agent got the task wrong, or legitimately
  * timed out, still passes this gate and gets promoted with its true (failing) outcome, as long as
  * harness integrity held for every cell.
+ *
+ * `cellResults` covers EVERY cell in the batch, not only the failing ones -- rejected-run
+ * diagnostics (rejection-diagnostics.mjs) need the whole matrix as context, since "one bad cell
+ * blocks the whole matrix" means every cell is relevant to explaining a rejection, not just the
+ * cell(s) that individually failed. Computed in this function's own single existing loop -- never
+ * re-run scenarioCellIntegrityOk a second time to recover this.
  */
 function scenarioHardGate(records, conditionResults) {
   const failures = [];
+  const cellResults = [];
   for (let i = 0; i < records.length; i++) {
     const cell = scenarioCellIntegrityOk(records[i], conditionResults[i]);
+    cellResults.push({
+      runId: records[i].run_id,
+      condition: records[i].condition,
+      repetitionIndex: records[i].repetition_index,
+      ok: cell.ok,
+      failedChecks: cell.failedChecks,
+    });
     if (!cell.ok) {
       failures.push(`cell[${i}] (repetition ${records[i].repetition_index}, condition ${records[i].condition}): ${cell.reason}`);
     }
   }
   const ok = failures.length === 0;
-  return { ok, reason: ok ? null : `scenario hard gate failed for ${failures.length}/${records.length} cell(s) -- ${failures.join(' || ')}` };
+  return { ok, reason: ok ? null : `scenario hard gate failed for ${failures.length}/${records.length} cell(s) -- ${failures.join(' || ')}`, cellResults };
 }
 
 async function cmdCalibrate(args) {
@@ -1367,14 +1410,29 @@ async function cmdCalibrate(args) {
   }
   const { computePolicySha256 } = await import('./policy-config.mjs');
   const templateDir = join(__dirname, 'fixtures', 'calibration-project');
-  const conditionPair = await runConditionPair({
-    prompt: 'Use the kmp-test-runner skill to check this project.',
-    model,
-    allowedGradleTasks: ['build'],
-    allowedKmpTestSubcommands: ['doctor', 'parallel'],
-    materializeFixture: (existingDir) => materializeCalibrationProject({ templateDir, existingDir }),
-    cleanupFixture: (fixtureDir) => rmSync(fixtureDir, { recursive: true, force: true }),
-  });
+  // Round-7 audit finding: this call sat OUTSIDE the try block below, unguarded -- any exception
+  // during resource acquisition or session spawning (acquireSharedEvalResources' own real
+  // mkdtempSync/git-materialize calls, both genuinely capable of throwing under resource pressure
+  // or a transient git/filesystem hiccup) would escape uncaught all the way to main()'s own
+  // top-level catch, exiting 2 with a raw stack trace instead of this command's own clean "FAILED:
+  // <reason>" / exit 1 contract every OTHER failure path here already uses. Not proven to be THE
+  // root cause of any specific CI failure (never reproduced locally despite real attempts across
+  // both platforms, isolated and full-suite, plain and CPU-constrained), but it is a genuine,
+  // structurally-real gap independent of that -- closing it is correct regardless.
+  let conditionPair;
+  try {
+    conditionPair = await runConditionPair({
+      prompt: 'Use the kmp-test-runner skill to check this project.',
+      model,
+      allowedGradleTasks: ['build'],
+      allowedKmpTestSubcommands: ['doctor', 'parallel'],
+      materializeFixture: (existingDir) => materializeCalibrationProject({ templateDir, existingDir }),
+      cleanupFixture: (fixtureDir) => rmSync(fixtureDir, { recursive: true, force: true }),
+    });
+  } catch (err) {
+    console.error(`CALIBRATION FAILED: session acquisition/spawn threw before any condition completed: ${err.stack || err.message}`);
+    return 1;
+  }
   try {
     const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = conditionPair;
     const policySha256 = computePolicySha256();
@@ -1390,6 +1448,8 @@ async function cmdCalibrate(args) {
     });
     if (!result.ok) {
       console.error(`CALIBRATION FAILED: ${result.reason}`);
+      if (result.diagnosticsWriteError) console.error(`(rejected-run diagnostics were NOT written: ${result.diagnosticsWriteError})`);
+      else if (result.rejectionId) console.error(`(rejected-run diagnostics written: ${result.diagnosticsRelativePath}, rejection_id ${result.rejectionId})`);
       return 1;
     }
     console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.redactedOutDir }, null, 2));
@@ -1405,19 +1465,25 @@ async function cmdCalibrate(args) {
  * availability. skill_invoked is deliberately NOT required (whether the skill triggers
  * naturally on this prompt is an open question for a future corpus-probe run, not something
  * smoke should presuppose).
+ *
+ * Computed per-side (A/B) via evaluateNamedChecks and combined as `evalA.ok && evalB.ok` --
+ * mathematically identical to a single flat AND of all 15 checks, so this restructure changes
+ * zero pass/fail behavior; see calibrationHardGate's identical rationale.
  */
 function smokeHardGate(a, b, runAResult, runBResult) {
-  const availabilityOk = a.skill_available.value === false && b.skill_available.value === true;
+  const availabilityOkA = a.skill_available.value === false;
+  const availabilityOkB = b.skill_available.value === true;
   // See calibrationHardGate's identical check and doc comment -- noUnexpectedToolsOk only checks
   // the tool NAME (Bash/Skill), never a Skill call's own `input.skill` argument, so this closes
   // the same gap here: neither condition may contain a Skill call targeting anything other than
-  // kmp-test-runner.
-  const skillSelectionOk = findForeignSkillUses(runAResult.events, TARGET_SKILL_NAME).length === 0
-    && findForeignSkillUses(runBResult.events, TARGET_SKILL_NAME).length === 0;
+  // kmp-test-runner. Deliberately still the plain, argument-only findForeignSkillUses -- smoke's
+  // contract is untouched by this change.
+  const skillSelectionOkA = findForeignSkillUses(runAResult.events, TARGET_SKILL_NAME).length === 0;
+  const skillSelectionOkB = findForeignSkillUses(runBResult.events, TARGET_SKILL_NAME).length === 0;
   // See calibrationHardGate's identical check and doc comment -- neither isSkillAvailable nor
   // hasExpectedToolProfile ever inspects the init event's own plugins[] array.
-  const pluginProfileOk = hasExpectedPluginProfile(runAResult.init, TARGET_SKILL_NAME, false)
-    && hasExpectedPluginProfile(runBResult.init, TARGET_SKILL_NAME, true);
+  const pluginProfileOkA = hasExpectedPluginProfile(runAResult.init, TARGET_SKILL_NAME, false);
+  const pluginProfileOkB = hasExpectedPluginProfile(runBResult.init, TARGET_SKILL_NAME, true);
   // See calibrationHardGate's identical check and doc comment -- pluginProfileOk never checks
   // the loaded plugin's own path, only its name/count.
   const pluginSnapshotBindingOk = isPluginBoundToSnapshot(runBResult.init, runBResult.snapshotDir);
@@ -1425,44 +1491,73 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   // findResultEvent (take "the first" of a kind) nor findIncompleteToolResults (only checks "at
   // least one" correlation) catch a second contradictory init+result pair, or duplicated
   // tool_use ids satisfied by a single tool_result.
-  const transcriptStructureOk = findTranscriptStructuralIssues(runAResult.events).length === 0
-    && findTranscriptStructuralIssues(runBResult.events).length === 0;
+  const transcriptStructureOkA = findTranscriptStructuralIssues(runAResult.events).length === 0;
+  const transcriptStructureOkB = findTranscriptStructuralIssues(runBResult.events).length === 0;
   // See calibrationHardGate's identical check -- a session with no init event at all is a
   // broken/incomplete capture, not legitimately-observed data.
-  const initOk = runAResult.init != null && runBResult.init != null;
+  const initOkA = runAResult.init != null;
+  const initOkB = runBResult.init != null;
   // See calibrationHardGate's identical checks -- the init event's OWN declared profile must
   // match what this harness actually launches with, and no tool_use anywhere in the transcript
   // may name anything outside Bash/Skill.
-  const toolProfileOk = hasExpectedToolProfile(runAResult.init, EXPECTED_TOOL_NAMES) && hasExpectedToolProfile(runBResult.init, EXPECTED_TOOL_NAMES);
-  const noUnexpectedToolsOk = findUnexpectedToolUses(runAResult.events, EXPECTED_TOOL_NAMES).length === 0
-    && findUnexpectedToolUses(runBResult.events, EXPECTED_TOOL_NAMES).length === 0;
-  const processOk = a.terminated === false && b.terminated === false && a.exit_code === 0 && b.exit_code === 0;
+  const toolProfileOkA = hasExpectedToolProfile(runAResult.init, EXPECTED_TOOL_NAMES);
+  const toolProfileOkB = hasExpectedToolProfile(runBResult.init, EXPECTED_TOOL_NAMES);
+  const noUnexpectedToolsOkA = findUnexpectedToolUses(runAResult.events, EXPECTED_TOOL_NAMES).length === 0;
+  const noUnexpectedToolsOkB = findUnexpectedToolUses(runBResult.events, EXPECTED_TOOL_NAMES).length === 0;
+  const processOkA = a.terminated === false && a.exit_code === 0;
+  const processOkB = b.terminated === false && b.exit_code === 0;
   // subtype==='success' (not just is_error===false) -- see calibrationHardGate's identical
   // check; a budget-cap-truncated session is not a genuine completion even when is_error is
   // false for that particular subtype.
-  const resultOk = runAResult.result?.subtype === 'success' && runAResult.result?.is_error === false
-    && runBResult.result?.subtype === 'success' && runBResult.result?.is_error === false;
-  const hookAccountingOk = runAResult.hookStats.everyCallHooked === true && runBResult.hookStats.everyCallHooked === true;
+  const resultOkA = runAResult.result?.subtype === 'success' && runAResult.result?.is_error === false;
+  const resultOkB = runBResult.result?.subtype === 'success' && runBResult.result?.is_error === false;
+  const hookAccountingOkA = runAResult.hookStats.everyCallHooked === true;
+  const hookAccountingOkB = runBResult.hookStats.everyCallHooked === true;
   // hook_call_count>=1 proves the agent actually tried real commands; hook_deny_count===0 proves
   // every command it tried was inside the approved grammar; hookAllowCount matching
   // hook_call_count proves every decision was explicitly "allow", not merely "not deny" (a
   // hook_response with unparseable `output` JSON produces neither an allow nor a deny decision --
   // hook_deny_count===0 alone would silently accept that).
-  const realWorkOk = a.hook_call_count >= 1 && a.hook_deny_count === 0 && runAResult.hookStats.hookAllowCount === a.hook_call_count
-    && b.hook_call_count >= 1 && b.hook_deny_count === 0 && runBResult.hookStats.hookAllowCount === b.hook_call_count;
+  const realWorkOkA = a.hook_call_count >= 1 && a.hook_deny_count === 0 && runAResult.hookStats.hookAllowCount === a.hook_call_count;
+  const realWorkOkB = b.hook_call_count >= 1 && b.hook_deny_count === 0 && runBResult.hookStats.hookAllowCount === b.hook_call_count;
   // Requires the EXACT expected multiset (both commands, --json included, exactly once each, no
   // extras) -- see verifyExactCommandsSucceeded's own doc comment.
-  const exactCommandsOk = verifyExactCommandsSucceeded(runAResult.bashResults, SMOKE_EXPECTED_COMMANDS)
-    && verifyExactCommandsSucceeded(runBResult.bashResults, SMOKE_EXPECTED_COMMANDS);
-  const cleanTranscriptOk = runAResult.malformedLines.length === 0 && runBResult.malformedLines.length === 0;
+  const exactCommandsOkA = verifyExactCommandsSucceeded(runAResult.bashResults, SMOKE_EXPECTED_COMMANDS);
+  const exactCommandsOkB = verifyExactCommandsSucceeded(runBResult.bashResults, SMOKE_EXPECTED_COMMANDS);
+  const cleanTranscriptOkA = runAResult.malformedLines.length === 0;
+  const cleanTranscriptOkB = runBResult.malformedLines.length === 0;
   // See calibrationHardGate's identical check and doc comment -- a dangling tool_use with no
   // correlated tool_result is an incomplete capture, not a demonstrated outcome.
-  const toolResultsCompleteOk = findIncompleteToolResults(runAResult.events).length === 0
-    && findIncompleteToolResults(runBResult.events).length === 0;
-  const ok = availabilityOk && skillSelectionOk && pluginProfileOk && pluginSnapshotBindingOk && initOk && toolProfileOk && noUnexpectedToolsOk && processOk && resultOk && hookAccountingOk && realWorkOk && exactCommandsOk && cleanTranscriptOk && toolResultsCompleteOk && transcriptStructureOk;
+  const toolResultsCompleteOkA = findIncompleteToolResults(runAResult.events).length === 0;
+  const toolResultsCompleteOkB = findIncompleteToolResults(runBResult.events).length === 0;
+
+  const checksA = [
+    ['availabilityOk', availabilityOkA], ['skillSelectionOk', skillSelectionOkA],
+    ['pluginProfileOk', pluginProfileOkA], ['initOk', initOkA], ['toolProfileOk', toolProfileOkA],
+    ['noUnexpectedToolsOk', noUnexpectedToolsOkA], ['processOk', processOkA],
+    ['resultOk', resultOkA], ['hookAccountingOk', hookAccountingOkA],
+    ['realWorkOk', realWorkOkA], ['exactCommandsOk', exactCommandsOkA],
+    ['cleanTranscriptOk', cleanTranscriptOkA], ['toolResultsCompleteOk', toolResultsCompleteOkA],
+    ['transcriptStructureOk', transcriptStructureOkA],
+  ];
+  const checksB = [
+    ['availabilityOk', availabilityOkB], ['skillSelectionOk', skillSelectionOkB],
+    ['pluginProfileOk', pluginProfileOkB], ['pluginSnapshotBindingOk', pluginSnapshotBindingOk],
+    ['initOk', initOkB], ['toolProfileOk', toolProfileOkB],
+    ['noUnexpectedToolsOk', noUnexpectedToolsOkB], ['processOk', processOkB],
+    ['resultOk', resultOkB], ['hookAccountingOk', hookAccountingOkB],
+    ['realWorkOk', realWorkOkB], ['exactCommandsOk', exactCommandsOkB],
+    ['cleanTranscriptOk', cleanTranscriptOkB], ['toolResultsCompleteOk', toolResultsCompleteOkB],
+    ['transcriptStructureOk', transcriptStructureOkB],
+  ];
+  const evalA = evaluateNamedChecks(checksA);
+  const evalB = evaluateNamedChecks(checksB);
+  const ok = evalA.ok && evalB.ok;
   return {
     ok,
-    reason: ok ? null : `smoke hard gate failed -- availabilityOk:${availabilityOk} skillSelectionOk:${skillSelectionOk} pluginProfileOk:${pluginProfileOk} pluginSnapshotBindingOk:${pluginSnapshotBindingOk} initOk:${initOk} toolProfileOk:${toolProfileOk} noUnexpectedToolsOk:${noUnexpectedToolsOk} processOk:${processOk} resultOk:${resultOk} hookAccountingOk:${hookAccountingOk} realWorkOk:${realWorkOk} exactCommandsOk:${exactCommandsOk} cleanTranscriptOk:${cleanTranscriptOk} toolResultsCompleteOk:${toolResultsCompleteOk} transcriptStructureOk:${transcriptStructureOk} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype} tools:${JSON.stringify(runAResult.init?.tools)}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype} tools:${JSON.stringify(runBResult.init?.tools)})`,
+    reason: ok ? null : `smoke hard gate failed -- A:{${joinChecks(checksA)}} B:{${joinChecks(checksB)}} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype} tools:${JSON.stringify(runAResult.init?.tools)}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype} tools:${JSON.stringify(runBResult.init?.tools)})`,
+    failedChecksA: evalA.failedChecks,
+    failedChecksB: evalB.failedChecks,
   };
 }
 
@@ -1490,23 +1585,32 @@ async function cmdSmoke(args) {
   const scenarioId = `${projectAlias}-android-host-test-discovery`;
   const projectUrl = resolveGitRemoteUrl(sourceRepoDir);
   const { computePolicySha256 } = await import('./policy-config.mjs');
-  const conditionPair = await runConditionPair({
-    // Explicit and directive on purpose: smoke exists to prove the pipeline works end-to-end
-    // with REAL diagnostic work in both arms, not to test whether the skill triggers naturally
-    // (that is a corpus-probe concern, deliberately out of scope here). An earlier, open-ended
-    // prompt ("check whether this project's test setup is healthy") drove the agent toward
-    // general exploration (ls/pwd/git status/find/cat) that the policy hook's narrow grammar
-    // correctly denies by design -- 11/13 and 6/6 calls were denied in that run, meaning the
-    // agent never actually got to do the diagnostic work smoke exists to prove. Naming the exact
-    // two read-only commands removes the need to explore.
-    prompt: "Run `kmp-test doctor --json` in this project directory, then run `kmp-test describe --json`. Based only on their output, tell me whether the test setup looks healthy. Do not run any other commands or tools.",
-    model,
-    allowedGradleTasks: [],
-    allowedKmpTestSubcommands: ['doctor', 'describe'],
-    materializeFixture: (existingWorktreeDir) => materializeScenarioProject({ sourceRepoDir, pinnedCommit, existingWorktreeDir }),
-    cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
-    timeoutMs: 180000,
-  });
+  // Round-7 audit finding: see cmdCalibrate's identical rationale -- resource acquisition must
+  // never be allowed to throw uncaught past this command's own "FAILED: <reason>" / exit 1
+  // contract.
+  let conditionPair;
+  try {
+    conditionPair = await runConditionPair({
+      // Explicit and directive on purpose: smoke exists to prove the pipeline works end-to-end
+      // with REAL diagnostic work in both arms, not to test whether the skill triggers naturally
+      // (that is a corpus-probe concern, deliberately out of scope here). An earlier, open-ended
+      // prompt ("check whether this project's test setup is healthy") drove the agent toward
+      // general exploration (ls/pwd/git status/find/cat) that the policy hook's narrow grammar
+      // correctly denies by design -- 11/13 and 6/6 calls were denied in that run, meaning the
+      // agent never actually got to do the diagnostic work smoke exists to prove. Naming the exact
+      // two read-only commands removes the need to explore.
+      prompt: "Run `kmp-test doctor --json` in this project directory, then run `kmp-test describe --json`. Based only on their output, tell me whether the test setup looks healthy. Do not run any other commands or tools.",
+      model,
+      allowedGradleTasks: [],
+      allowedKmpTestSubcommands: ['doctor', 'describe'],
+      materializeFixture: (existingWorktreeDir) => materializeScenarioProject({ sourceRepoDir, pinnedCommit, existingWorktreeDir }),
+      cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
+      timeoutMs: 180000,
+    });
+  } catch (err) {
+    console.error(`SMOKE FAILED: session acquisition/spawn threw before any condition completed: ${err.stack || err.message}`);
+    return 1;
+  }
   try {
     const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = conditionPair;
     const policySha256 = computePolicySha256();
@@ -1526,6 +1630,8 @@ async function cmdSmoke(args) {
     });
     if (!result.ok) {
       console.error(`SMOKE FAILED: ${result.reason}`);
+      if (result.diagnosticsWriteError) console.error(`(rejected-run diagnostics were NOT written: ${result.diagnosticsWriteError})`);
+      else if (result.rejectionId) console.error(`(rejected-run diagnostics written: ${result.diagnosticsRelativePath}, rejection_id ${result.rejectionId})`);
       return 1;
     }
     console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.redactedOutDir }, null, 2));
@@ -1750,16 +1856,25 @@ async function cmdRun(args) {
   }
 
   const { computePolicySha256 } = await import('./policy-config.mjs');
-  const matrix = await runScenarioMatrix({
-    scenario, repeats, seed, model,
-    allowedGradleTasks: scenario.policy.allowed_gradle_tasks,
-    allowedKmpTestSubcommands: scenario.policy.allowed_kmptest_subcommands,
-    repoRoot: REPO_ROOT, pinnedSkillSha: PINNED_SKILL_SHA, runPluginValidator,
-    materializeFixture: (existingWorktreeDir) => materializeScenarioProject({ sourceRepoDir, pinnedCommit: scenario.project_commit, existingWorktreeDir }),
-    cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
-    targetSkillName: TARGET_SKILL_NAME,
-    timeoutMs: 600000,
-  });
+  // Round-7 audit finding: see cmdCalibrate's identical rationale -- resource acquisition must
+  // never be allowed to throw uncaught past this command's own "RUN FAILED: <reason>" / exit 1
+  // contract.
+  let matrix;
+  try {
+    matrix = await runScenarioMatrix({
+      scenario, repeats, seed, model,
+      allowedGradleTasks: scenario.policy.allowed_gradle_tasks,
+      allowedKmpTestSubcommands: scenario.policy.allowed_kmptest_subcommands,
+      repoRoot: REPO_ROOT, pinnedSkillSha: PINNED_SKILL_SHA, runPluginValidator,
+      materializeFixture: (existingWorktreeDir) => materializeScenarioProject({ sourceRepoDir, pinnedCommit: scenario.project_commit, existingWorktreeDir }),
+      cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
+      targetSkillName: TARGET_SKILL_NAME,
+      timeoutMs: 600000,
+    });
+  } catch (err) {
+    console.error(`RUN FAILED: matrix resource acquisition/spawn threw before any cell completed: ${err.stack || err.message}`);
+    return 1;
+  }
   try {
     const policySha256 = computePolicySha256();
     const records = [];
@@ -1789,6 +1904,8 @@ async function cmdRun(args) {
     });
     if (!result.ok) {
       console.error(`RUN FAILED: ${result.reason}`);
+      if (result.diagnosticsWriteError) console.error(`(rejected-run diagnostics were NOT written: ${result.diagnosticsWriteError})`);
+      else if (result.rejectionId) console.error(`(rejected-run diagnostics written: ${result.diagnosticsRelativePath}, rejection_id ${result.rejectionId})`);
       return 1;
     }
     console.log(JSON.stringify({ records: result.redactedRecords, evidenceDir: result.redactedOutDir }, null, 2));

@@ -925,6 +925,38 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
     });
     expect(record.tool_calls_total).toEqual({ value: 1, reason: null });
   });
+
+  // Dedicated, isolated coverage for THIS PR's own addition (result-aware foreign-skill
+  // classification): a foreign Skill attempt was, until now, silently uncounted -- neither
+  // findBashToolUses (name!=='Bash') nor invocation?.attemptCount (findSkillInvocation is scoped
+  // to ONLY the expected skill name) ever sees it. Zero Bash events and a single-attempt
+  // expected-skill invocation isolate the foreign contribution precisely: 0 (Bash) + 1
+  // (invocation.attemptCount) + 1 (the new foreignSkillUses.length term) = 2, not 1.
+  it('adds foreignSkillUses.length to the total -- a foreign Skill attempt is no longer silently uncounted', () => {
+    const conditionResult = {
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [{ name: 'kmp-test-runner', path: '/fake', source: 'fake' }], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      result: { subtype: 'success', is_error: false },
+      invocation: { attempted: true, confirmed: true, attemptCount: 1, type: 'assistant.tool_use.Skill', index: 0, receiptNs: 0n, input: { skill: 'kmp-test-runner' }, resultIsError: false },
+      hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
+      events: [
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 'toolu_foreign1', input: { skill: 'totally-unrelated-skill' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_foreign1', is_error: true, content: '<tool_use_error>Unknown skill: totally-unrelated-skill</tool_use_error>' }] } },
+      ],
+    };
+    const record = buildRunRecord({
+      conditionResult, condition: 'current-skill', runKind: 'calibration', scenarioId: 'test-tool-calls-total-foreign-skill',
+      skillSourceSha: 'aeba6eaa8d027be999cdfeeb5bb2d1bbd0f688ee', daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+    });
+    // 0 Bash + 1 expected-skill attempt + 1 foreign-skill attempt = 2, not the pre-fix 1.
+    expect(record.tool_calls_total).toEqual({ value: 2, reason: null });
+    expect(record.foreign_skill_summary).toEqual({ rejected: 1, confirmed: 0, incomplete: 0 });
+  });
 });
 
 // Regression coverage for a real gap found while implementing the gitignore-safety check above:
