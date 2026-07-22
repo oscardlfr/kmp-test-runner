@@ -821,18 +821,26 @@ describe('attributeCondition -- wrong-module kmp-test parallel attempts still ge
     }
   });
 
-  // EXACT REPRODUCTION (a fresh adversarial review found this real, confirmed P1 defect): the four
-  // tests below each construct one of the FOUR ways a wrong-module attempt's decision sidecar can
-  // be untrustworthy -- absent, incoherent, tombstoned, or command-mismatched. An earlier revision
-  // of the decision-only pass only ever SET decisionByAttempt for a fully coherent record, leaving
-  // it entirely unset (`.get()` returns `undefined`) in all four of these cases. Since `undefined`
-  // is graders.mjs's own reserved signal for "the mechanism was never enabled for this condition at
-  // all" (which never gates), and evaluateKmpTestAttempt evaluates ANY non-plan-only `parallel`
-  // attempt regardless of module BEFORE its own deny/null gate, an attempt whose own decision
-  // status the harness could not even verify silently passed that gate -- phantom-counted as a real
-  // execution in testInvocationsTotal/retries, a documented, publishable metric. Each case here
-  // must now resolve to explicit `null` (never bare `undefined`), which DOES correctly gate.
-  it('(i) a wrong-module kmp-test parallel attempt with NO decision record at all resolves to null (not undefined) -- correctly excludable downstream, never phantom-countable', () => {
+  // EXACT REPRODUCTION, ROUND 1 (a fresh adversarial review found this real, confirmed defect): the
+  // four tests below each construct one of the FOUR ways a wrong-module attempt's decision sidecar
+  // can be untrustworthy -- absent, incoherent, tombstoned, or command-mismatched. An earlier
+  // revision of the decision-only pass only ever SET decisionByAttempt for a fully coherent record,
+  // leaving it entirely unset (`.get()` returns `undefined`) in all four of these cases. Since
+  // `undefined` is graders.mjs's own reserved signal for "the mechanism was never enabled for this
+  // condition at all" (which never gates), and evaluateKmpTestAttempt evaluates ANY non-plan-only
+  // `parallel` attempt regardless of module BEFORE its own deny/null gate, an attempt whose own
+  // decision status the harness could not even verify silently passed that gate -- phantom-counted
+  // as a real execution in testInvocationsTotal/retries, a documented, publishable metric. Each case
+  // here must now resolve to explicit `null` (never bare `undefined`), which DOES correctly gate.
+  //
+  // EXACT REPRODUCTION, ROUND 2 (a second review found round 1's fix was itself still fail-open):
+  // resolving to `null` stopped the OVERcounting, but captureIncomplete was never raised for it --
+  // so a real, executed attempt whose decision the harness genuinely could not verify was silently
+  // EXCLUDED with no integrity signal at all, UNDERcounting testInvocationsTotal/retries with zero
+  // trace that anything went wrong. Each of the four cases below now also asserts
+  // captureIncomplete:true -- a harness that cannot verify whether a real Bash call was allowed or
+  // denied has failed to capture it, regardless of which module it targeted.
+  it('(i) a wrong-module kmp-test parallel attempt with NO decision record at all resolves to null (not undefined) AND flags captureIncomplete -- correctly excluded downstream, never phantom-countable, never silently undercounted either', () => {
     const dir = makeEvidenceDir();
     try {
       const wrongModuleCmd = 'kmp-test parallel --module-filter app --json';
@@ -840,15 +848,15 @@ describe('attributeCondition -- wrong-module kmp-test parallel attempts still ge
       const result = attributeCondition(dir, SCENARIO, bashResults);
       expect(result.decisionByAttempt.has('t1')).toBe(true);
       expect(result.decisionByAttempt.get('t1')).toBeNull();
-      // Still never a harness-integrity signal for the TARGET module -- this attempt was never a
-      // candidate producer of :shared's own evidence.
-      expect(result.captureIncomplete).toBe(false);
+      // A real, unverifiable capture failure IS a whole-condition harness-integrity signal, even
+      // though this attempt was never a candidate producer of :shared's own JUnit evidence.
+      expect(result.captureIncomplete).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('(ii) a wrong-module kmp-test parallel attempt whose decision record EXISTS but is INCOHERENT (neither allow nor deny) also resolves to null', () => {
+  it('(ii) a wrong-module kmp-test parallel attempt whose decision record EXISTS but is INCOHERENT (neither allow nor deny) also resolves to null AND flags captureIncomplete', () => {
     const dir = makeEvidenceDir();
     try {
       const wrongModuleCmd = 'kmp-test parallel --module-filter app --json';
@@ -856,13 +864,13 @@ describe('attributeCondition -- wrong-module kmp-test parallel attempts still ge
       const bashResults = [{ index: 1, id: 't1', command: wrongModuleCmd }];
       const result = attributeCondition(dir, SCENARIO, bashResults);
       expect(result.decisionByAttempt.get('t1')).toBeNull();
-      expect(result.captureIncomplete).toBe(false);
+      expect(result.captureIncomplete).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('(iii) a wrong-module kmp-test parallel attempt with an anomalies/ tombstone (a duplicate-write collision) also resolves to null', () => {
+  it('(iii) a wrong-module kmp-test parallel attempt with an anomalies/ tombstone (a duplicate-write collision) also resolves to null AND flags captureIncomplete', () => {
     const dir = makeEvidenceDir();
     try {
       const wrongModuleCmd = 'kmp-test parallel --module-filter app --json';
@@ -871,13 +879,13 @@ describe('attributeCondition -- wrong-module kmp-test parallel attempts still ge
       const bashResults = [{ index: 1, id: 't1', command: wrongModuleCmd }];
       const result = attributeCondition(dir, SCENARIO, bashResults);
       expect(result.decisionByAttempt.get('t1')).toBeNull();
-      expect(result.captureIncomplete).toBe(false);
+      expect(result.captureIncomplete).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('(iv) a wrong-module kmp-test parallel attempt whose decision record\'s OWN stored command differs from the transcript command also resolves to null', () => {
+  it('(iv) a wrong-module kmp-test parallel attempt whose decision record\'s OWN stored command differs from the transcript command also resolves to null AND flags captureIncomplete', () => {
     const dir = makeEvidenceDir();
     try {
       const wrongModuleCmd = 'kmp-test parallel --module-filter app --json';
@@ -885,7 +893,7 @@ describe('attributeCondition -- wrong-module kmp-test parallel attempts still ge
       const bashResults = [{ index: 1, id: 't1', command: wrongModuleCmd }];
       const result = attributeCondition(dir, SCENARIO, bashResults);
       expect(result.decisionByAttempt.get('t1')).toBeNull();
-      expect(result.captureIncomplete).toBe(false);
+      expect(result.captureIncomplete).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

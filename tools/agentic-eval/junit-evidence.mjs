@@ -162,12 +162,16 @@ export function countEvidenceTaskJunit(fixtureRoot, evidenceTask) {
  * **never left as bare `undefined`**, which is graders.mjs's own reserved signal for "the
  * mechanism was never enabled for this condition at all" and therefore never gates. A missing,
  * incoherent, tombstoned, or command-mismatched decision on a wrong-module attempt now resolves to
- * `null` (mirroring the identical handling the main loop above already applies to relevant
- * attempts), correctly excluding it via the same deny/null gate -- an earlier revision only ever
- * set this map for a fully coherent record, silently phantom-counting an unverifiable wrong-module
- * attempt as a real execution in `testInvocationsTotal`/`retries`. This pass never touches
- * `perAttemptJunit`/`captureIncomplete`/`unreliable` (a wrong-module attempt's own capture
- * completeness says nothing about the target module's evidence trustworthiness).
+ * `null` AND sets the whole-condition `captureIncomplete` flag (a further review found the
+ * null-only fix was itself still fail-open: excluding the attempt from `testInvocationsTotal`/
+ * `retries` without also flagging it silently UNDERcounts a real, executed-but-unverifiable
+ * attempt -- a real Bash call whose own decision the harness failed to record is exactly the kind
+ * of capture-mechanism failure `captureIncomplete` exists to surface, regardless of which module it
+ * targeted). A valid `'deny'` resolution remains a legitimate, non-blocking observation (no flag);
+ * a valid `'allow'` remains a plain counted execution (no flag). This pass never touches
+ * `perAttemptJunit`/`unreliable` (a wrong-module attempt's own JUnit-XML trustworthiness says
+ * nothing about the target module's evidence) -- only `captureIncomplete`, which is a
+ * condition-wide harness-integrity signal, never scoped to any one module's own evidence.
  * @param {string} evidenceDir - KMP_EVAL_JUNIT_EVIDENCE_DIR for this condition
  * @param {object} scenario - the validated scenario object
  * @param {Array} bashResults - conditionResult.bashResults (real transcript order, real `.id`/`.index`)
@@ -288,40 +292,53 @@ export function attributeCondition(evidenceDir, scenario, bashResults, terminati
   }
 
   // Decision-only pass for a kmp-test-parallel attempt targeting a DIFFERENT module -- see this
-  // function's own doc comment for the full rationale. Never touches perAttemptJunit/
-  // captureIncomplete/unreliable (its own capture completeness says nothing about the TARGET
-  // module's evidence trustworthiness) -- but EVERY such attempt gets an explicit, coherent
-  // resolution ('allow'/'deny'/null), never left as bare `undefined`.
+  // function's own doc comment for the full rationale. Never touches perAttemptJunit/unreliable
+  // (its own JUnit-XML trustworthiness says nothing about the TARGET module's evidence) -- but
+  // EVERY such attempt gets an explicit, coherent resolution ('allow'/'deny'/null), never left as
+  // bare `undefined`, and a null resolution ALSO raises the whole-condition captureIncomplete flag.
   //
-  // EXACT REPRODUCTION (a fresh adversarial review found this, reproduced against the code before
-  // this fix): `undefined` is graders.mjs's OWN signal for "the mechanism was never enabled for
-  // this condition at all" (see evaluateKmpTestAttempt's parameter doc) -- it deliberately never
-  // gates. An earlier version of this pass only ever SET the map for a fully coherent record,
-  // leaving it unset (reads back as `undefined`) for a missing, incoherent, tombstoned, or
+  // EXACT REPRODUCTION, ROUND 1 (a fresh adversarial review found this, reproduced against the code
+  // before that fix): `undefined` is graders.mjs's OWN signal for "the mechanism was never enabled
+  // for this condition at all" (see evaluateKmpTestAttempt's parameter doc) -- it deliberately
+  // never gates. An earlier version of this pass only ever SET the map for a fully coherent
+  // record, leaving it unset (reads back as `undefined`) for a missing, incoherent, tombstoned, or
   // command-mismatched decision on a WRONG-MODULE attempt. Since graders.mjs's own
   // evaluateKmpTestAttempt evaluates ANY non-plan-only `parallel` attempt regardless of module
   // BEFORE its target-match check, that `undefined` silently passed its deny/null gate -- an
   // attempt whose own decision status the harness could not even verify (denied? a capture bug?)
-  // was phantom-counted as a real execution in testInvocationsTotal/retries, with
-  // captureIncomplete staying false throughout (correctly -- its incompleteness says nothing about
-  // the TARGET module's own evidence). Concretely reproducible: a potentially-denied :app call
-  // followed by a clean :shared pass previously produced success:true, captureIncomplete:false,
-  // testInvocationsTotal:2, retries:1 -- silent corruption of a documented, publishable metric.
-  // Fixed by resolving every non-plan-only kmp-test-parallel attempt to an explicit 'allow'/
-  // 'deny'/null, mirroring the SAME missing/incoherent/tombstone/mismatch handling the main loop
-  // above already applies to relevant attempts -- `null` (not `undefined`) correctly excludes it
-  // via the identical deny/null gate, without ever touching the whole-condition integrity flags.
+  // was phantom-counted as a real execution in testInvocationsTotal/retries. Fixed, that round, by
+  // resolving every non-plan-only kmp-test-parallel attempt to an explicit 'allow'/'deny'/null.
+  //
+  // EXACT REPRODUCTION, ROUND 2 (this fix -- round 1's fix was itself still fail-open): resolving
+  // to `null` correctly stopped the OVERcounting above, but this pass still never touched
+  // `captureIncomplete` -- so a wrong-module attempt whose decision was genuinely unverifiable
+  // (missing/incoherent/tombstoned/mismatched sidecar) was silently EXCLUDED with no integrity
+  // flag raised at all, UNDERcounting a real, executed attempt with zero signal anything went
+  // wrong. Concretely reproducible: a wrong-module attempt with `resultFound:true` (it genuinely
+  // ran) whose own sidecar was lost, followed by a clean, correctly-targeted attempt, previously
+  // produced success:true, captureIncomplete:false, testInvocationsTotal:1, retries:0 -- when two
+  // attempts actually executed. A harness that cannot verify whether a real Bash call was allowed
+  // or denied has failed to capture it -- exactly what captureIncomplete exists to surface,
+  // regardless of which module it targeted. Fixed by additionally setting captureIncomplete=true on
+  // every null resolution in this pass; a valid 'deny' remains a legitimate, non-blocking
+  // observation, and a valid 'allow' remains a plain counted execution -- only the unverifiable
+  // (null) case now raises the flag.
   for (const { b, c } of classified) {
     if (decisionByAttempt.has(b.id)) continue; // already handled above (a relevant attempt)
     if (c.kind !== 'kmp-test' || c.subcommand !== 'parallel' || c.isPlanOnly) continue;
     const idHash = sha256Hex(b.id);
-    if (anomalyIds.has(idHash)) { decisionByAttempt.set(b.id, null); continue; }
-    const decisionRecord = readSidecarRecord(decisionsDir, idHash);
-    if (decisionRecord == null || (decisionRecord.decision !== 'allow' && decisionRecord.decision !== 'deny') || decisionRecord.command !== b.command) {
+    if (anomalyIds.has(idHash)) {
+      captureIncomplete = true;
       decisionByAttempt.set(b.id, null);
       continue;
     }
-    decisionByAttempt.set(b.id, decisionRecord.decision);
+    const decisionRecord = readSidecarRecord(decisionsDir, idHash);
+    if (decisionRecord == null || (decisionRecord.decision !== 'allow' && decisionRecord.decision !== 'deny') || decisionRecord.command !== b.command) {
+      captureIncomplete = true;
+      decisionByAttempt.set(b.id, null);
+      continue;
+    }
+    decisionByAttempt.set(b.id, decisionRecord.decision); // valid allow/deny -- no flag either way
   }
 
   return { perAttemptJunit, decisionByAttempt, ambiguousJunitEvidence, captureIncomplete, unreliable };

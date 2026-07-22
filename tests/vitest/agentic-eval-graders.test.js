@@ -11,6 +11,8 @@
 // smaller, structural KMP_EVAL_RESULT test group instead.
 import { describe, it, expect } from 'vitest';
 import { extractKmpTestEnvelope, gradeScenarioCondition, GRADING_CHECK_NAMES, validateParallelEvidence } from '../../tools/agentic-eval/graders.mjs';
+import { buildRunRecord } from '../../tools/agentic-eval/cli.mjs';
+import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 
 // The exact two scenario shapes this PR ships, matching corpus/scenarios/*.json byte-for-byte
 // (kept here as plain objects so grader tests don't depend on file I/O -- schema-shape coverage
@@ -2214,5 +2216,88 @@ describe('gradeScenarioCondition -- round-7: envelope schema_version must match 
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
     expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+});
+
+describe('gradeScenarioCondition -- a wrong-module attempt whose decision sidecar was genuinely LOST (unverifiable, not denied) flags captureIncomplete, never silently undercounts', () => {
+  // EXACT REPRODUCTION (a fresh review found the earlier wrong-module fix -- resolving an
+  // unverifiable decision to explicit `null` instead of bare `undefined` -- was ITSELF still
+  // fail-open): excluding the attempt from testInvocationsTotal/retries without ALSO raising
+  // captureIncomplete silently UNDERcounts a real, executed attempt with zero trace anything went
+  // wrong. This describe block proves gradeScenarioCondition's own consumption of the corrected
+  // attributeCondition() output for the exact reproduction shape (a wrong-module attempt that
+  // genuinely ran but whose decision the harness could not verify, immediately followed by a clean,
+  // correctly-targeted attempt). attributeCondition's OWN production of captureIncomplete:true for
+  // this shape has its own dedicated RED/GREEN-verified coverage in
+  // agentic-eval-junit-evidence.test.js (the "(i)-(iv)" wrong-module tests) -- this block never
+  // re-derives that, per this file's own established convention (see buildConditionResult's doc
+  // comment) of accepting the three whole-condition flags as explicit options.
+  it('a wrong-module attempt with an unverifiable (lost) decision sidecar, followed by a clean correctly-targeted pass, flags gradleJunitEvidenceCaptureIncomplete -- while success/expectedOutcomeMatched stay TRUE (a pure harness-capture problem, not an agent failure)', () => {
+    const cr = buildConditionResult(
+      [
+        // decision:null models a genuinely UNVERIFIABLE sidecar (absent/incoherent/tombstoned/
+        // command-mismatched -- attributeCondition resolves all four the same way). resultContent
+        // is present (the attempt genuinely ran; this is not a --dry-run or an orphaned call).
+        { command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS, decision: null },
+        { command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS },
+      ],
+      SCENARIO_1_CORRECT_ANSWER,
+      { captureIncomplete: true }, // what the FIXED attributeCondition now derives for this exact shape
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.gradleJunitEvidenceCaptureIncomplete).toBe(true);
+    // The agent's own final answer and the correctly-targeted attempt's evidence are both genuinely
+    // fine -- this is a harness capture-mechanism problem, decoupled from whether the agent did the
+    // task correctly. gradleJunitEvidenceCaptureIncomplete is surfaced ALONGSIDE success, never
+    // folded into it (matching gradleJunitEvidenceUnreliable/harnessEvidenceAmbiguous's own
+    // established treatment).
+    expect(grade.success).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    // The wrong-module attempt is correctly EXCLUDED (its decision is unverifiable, never phantom-
+    // counted as executed) -- but that exclusion is no longer silent: captureIncomplete above is
+    // the harness-integrity trace that a real attempt's outcome could not be verified.
+    expect(grade.testInvocationsTotal).toBe(1);
+  });
+
+  // Closes the loop from graders.mjs's raw boolean to the actual, already-independently-proven
+  // blocking mechanism: buildRunRecord (cli.mjs) turns gradleJunitEvidenceCaptureIncomplete:true
+  // into a `junit_evidence_capture_incomplete` errors[] entry (generic propagation already covered
+  // by agentic-eval-cli.test.js); scenarioCellIntegrityOk's junitCaptureCompleteOk check then fails
+  // closed on that exact code (agentic-eval-hard-gates.test.js), which is what makes
+  // scenarioHardGate/benchmark_eligible reject the cell (the real-subprocess suite in
+  // agentic-eval-run-command.test.js exercises benchmark_eligible end-to-end). This test's own job
+  // is only the first, fix-specific hop: proving THIS reproduction's real gradeScenarioCondition
+  // output actually carries the code into a real record, not a synthetic fakeGradeResult.
+  it('the SAME reproduction, carried through buildRunRecord, produces a real errors[] entry with code "junit_evidence_capture_incomplete" -- the exact signal scenarioCellIntegrityOk/benchmark_eligible already fail closed on', () => {
+    const cr = buildConditionResult(
+      [
+        { command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS, decision: null },
+        { command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS },
+      ],
+      SCENARIO_1_CORRECT_ANSWER,
+      { captureIncomplete: true },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    const record = buildRunRecord({
+      conditionResult: {
+        ...cr,
+        init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash'], mcp_servers: [], permissionMode: 'dontAsk' },
+        invocation: null,
+        hookStats: { hookCallCount: 2, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 2 },
+        byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+        startedAt: new Date('2026-01-01T00:00:00.000Z'),
+        endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      },
+      condition: 'no-skill', runKind: 'scenario', scenarioId: SCENARIO_1.id,
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: SCENARIO_1.policy.allowed_gradle_tasks, allowedKmpTestSubcommands: SCENARIO_1.policy.allowed_kmptest_subcommands,
+      policySha256: computePolicySha256(), modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      gradeResult: grade,
+    });
+    expect(record.errors.some((e) => e.code === 'junit_evidence_capture_incomplete')).toBe(true);
+    // Sanity: the record's own success/expected_outcome_matched still reflect the genuinely correct
+    // agent answer -- the blocking is carried entirely by errors[], never by these fields.
+    expect(record.success.value).toBe(true);
+    expect(record.expected_outcome_matched.value).toBe(true);
   });
 });
