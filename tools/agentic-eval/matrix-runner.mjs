@@ -13,7 +13,11 @@
 //
 // Deliberately self-contained (no import from cli.mjs) to avoid a circular import -- cli.mjs
 // imports FROM this module. Anything cli.mjs-specific (PINNED_SKILL_SHA, REPO_ROOT,
-// TARGET_SKILL_NAME, the plugin validator) is threaded in as an explicit parameter instead.
+// TARGET_PLUGIN_NAME/TARGET_SKILL_NAME, the plugin validator) is threaded in as an explicit
+// parameter instead -- TARGET_PLUGIN_NAME and TARGET_SKILL_NAME are kept as two separate
+// parameters throughout (never collapsed into one), matching stream-parser.mjs's
+// isTargetSkillReference contract: a plugin's own identity and a skill's own identity within it
+// are logically distinct, even where (as in this harness) their literal string values coincide.
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -133,6 +137,10 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
  * @param {string[]} opts.baseArgv
  * @param {string} opts.snapshotDir - the skill snapshot dir (only actually used when
  *   condition==='current-skill'; buildConditionArgv ignores it otherwise).
+ * @param {string} opts.targetPluginName - the plugin's own identity (plugin.json's `name`), used
+ *   for both plugin-profile checks and as the namespace prefix in Skill invocation matching --
+ *   see stream-parser.mjs's isTargetSkillReference for why this is kept separate from
+ *   targetSkillName even though this harness's own plugin and skill share one string value.
  * @param {string} opts.targetSkillName
  * @param {number} opts.timeoutMs
  * @param {boolean} [opts.junitEvidenceEnabled] - when true, materializes the per-condition JUnit
@@ -146,7 +154,7 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
  *   acquireSharedEvalResources); the scratch directory's removal is queued on it IMMEDIATELY after
  *   creation, before spawnCondition runs, so a failure anywhere later in this call is still covered.
  */
-export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetSkillName, timeoutMs, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null }) {
+export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null }) {
   const materialized = materializeFixture(previousFixtureDir);
   const fixtureDir = materialized.fixtureDir;
   cleanupFixtureOnce(fixtureDir);
@@ -181,7 +189,7 @@ export async function runSingleCondition({ condition, materializeFixture, previo
   const { events, malformedLines } = parseStreamJsonl(spawnResult.rawStdout, { taggedLines: spawnResult.taggedLines });
   const init = findInitEvent(events);
   const result = findResultEvent(events);
-  const invocation = findSkillInvocation(events, targetSkillName);
+  const invocation = findSkillInvocation(events, targetPluginName, targetSkillName);
   const hookStats = countHookEvents(events);
   const byteMetrics = computeByteMetrics(spawnResult.rawStdout, events);
   const bashResults = findBashToolUsesWithResults(events);
@@ -229,13 +237,14 @@ export async function runSingleCondition({ condition, materializeFixture, previo
  *   own, kept out of this signature (callers never pass it in).
  * @param {(previousFixtureDir: string|undefined) => {fixtureDir: string}} opts.materializeFixture
  * @param {(fixtureDir: string) => void|Promise<void>} [opts.cleanupFixture] - called once at the end.
+ * @param {string} opts.targetPluginName - see runSingleCondition's identical doc comment.
  * @param {string} opts.targetSkillName
  * @param {number} opts.timeoutMs
  * @returns {Promise<{cellResults: Array<{repetitionIndex: number, orderIndex: number, seed: number,
  *   conditionResult: object}>, snapshotDir: string, daemonPolicy: string, allowedGradleTasks: string[],
  *   allowedKmpTestSubcommands: string[], cleanup: () => Promise<string[]>}>}
  */
-export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetSkillName, timeoutMs }) {
+export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs }) {
   // JUnit-evidence attribution is only ever relevant for a `tests_executed` scenario -- a
   // `no_applicable_tests` scenario never reads JUnit XML at all (three independent layers already
   // guarantee this; this flag additionally keeps the mechanism's own hooks unregistered and its
@@ -279,6 +288,7 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
           sharedEnv: shared.sharedEnv,
           baseArgv,
           snapshotDir: shared.snapshotDir,
+          targetPluginName,
           targetSkillName,
           timeoutMs,
           junitEvidenceEnabled,

@@ -64,10 +64,32 @@ record could show `skill_available:false` and `skill_invoked:true` in the *same 
 directly self-contradictory. `schemas.mjs` now also rejects that combination at the schema level
 (`skill_invoked:true` requires `skill_invocation_attempted:true`).
 
+### Skill identity vs. wire representation
+
+The harness's target skill is a *logical* identity — `(pluginName, skillName)`, both currently
+`kmp-test-runner` for this repo's own plugin — kept as two separate constants
+(`TARGET_PLUGIN_NAME`/`TARGET_SKILL_NAME` in `cli.mjs`) even though their literal values coincide.
+On the *wire*, a Skill `tool_use`'s `input.skill` string can address that same logical skill two
+ways: its bare skill name (the historical form every fixture originally assumed was the only one),
+or Claude Code's plugin-namespaced form `${pluginName}:${skillName}` — the canonical addressing
+scheme for any plugin-loaded skill, confirmed live 2026-07-22 when a real Claude Code 2.1.217
+session invoked this harness's own target skill via `kmp-test-runner:kmp-test-runner`.
+`stream-parser.mjs`'s `isTargetSkillReference()` is the one place that decides the match: a
+closed, exact-string allowlist of precisely those two forms, deliberately never a
+prefix/suffix/namespace-pattern match — a foreign namespace, a *different* skill from the *same*
+plugin, a casing/whitespace variant, or a doubled/nested namespace are never accepted. Its own two
+identity parameters (`pluginName`, `skillName`) are never derived from one another — the canonical
+namespaced form is built from both, never assumed by doubling either one on itself. Every
+invocation-matching consumer (`findSkillInvocation()`, `findForeignSkillUses()`/
+`classifyForeignSkillUses()`) takes both parameters for the same reason; `isSkillAvailable()`/
+`hasExpectedPluginProfile()` take only `pluginName`, since they check the init event's plugin
+manifest (`plugins[].name`) — a genuinely plugin-only identity, never a skill-invocation match.
+
 ### Result-aware FOREIGN skill classification (scenario only)
 
-The same attempted/confirmed distinction applies to a `Skill` call targeting something *other*
-than `kmp-test-runner` — `stream-parser.mjs`'s `classifyForeignSkillUses()` (a thin wrapper around
+The same attempted/confirmed distinction applies to a `Skill` call that does not match the target
+skill identity (see "Skill identity vs. wire representation" above) — `stream-parser.mjs`'s
+`classifyForeignSkillUses()` (a thin wrapper around
 `findForeignSkillUses()`, mirroring `findBashToolUsesWithResults()`'s identical correlation
 pattern) classifies each foreign call as one of three states, never conflated:
 

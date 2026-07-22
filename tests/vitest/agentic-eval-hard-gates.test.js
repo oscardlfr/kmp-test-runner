@@ -1313,6 +1313,24 @@ describe('scenarioCellIntegrityOk', () => {
     expect(reason).toBeNull();
   });
 
+  // RED proof (pre-fix, confirmed against a real 2026-07-22 live rejection): a current-skill
+  // cell's ONLY Skill call used Claude Code's plugin-namespaced form (kmp-test-runner:kmp-test-runner,
+  // per plugin.json's own documented addressing scheme), not the bare form -- a genuine invocation
+  // of the harness's own target skill, wrongly classified as confirmed foreign-skill contamination.
+  it('a current-skill cell whose ONLY Skill call uses the plugin-namespaced form is a genuine target-skill invocation, not foreign contamination', () => {
+    const cr = passConditionResult('current-skill', {
+      events: [
+        initEventStub(),
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: 'kmp-test-runner:kmp-test-runner' } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', is_error: false, content: 'real skill output' }] } },
+        resultEventStub(),
+      ],
+    });
+    const { ok, reason } = scenarioCellIntegrityOk(passRecord('current-skill'), cr);
+    expect(ok).toBe(true);
+    expect(reason).toBeNull();
+  });
+
   it('isolates availabilityOk -- a no-skill cell whose environment shows the skill as available', () => {
     const record = passRecord('no-skill', { skill_available: { value: true, reason: null } });
     const { ok, reason } = scenarioCellIntegrityOk(record, passConditionResult('no-skill'));
