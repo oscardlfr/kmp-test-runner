@@ -18,8 +18,20 @@
 // smoke tests already do. This proves cmdRun's own WIRING (materialize/reset per cell, grading
 // integration, atomic N-record promotion, hard-gate enforcement, cleanup) without needing a real
 // KaMPKit checkout or any live Claude/API call.
+//
+// runCli() spawns each `node cli.mjs run ...` subprocess ASYNCHRONOUSLY (round-8 fix -- see this
+// function's own comment): this file grew past 24 real subprocess invocations across its own
+// round-7/round-8 additions, and hosted Windows CI measured this file at ~69s wall-clock, wholly
+// spent inside back-to-back synchronous spawnSync calls with essentially no event-loop yielding in
+// between. Vitest's own worker RPC layer needs the event loop free to send its periodic
+// "onTaskUpdate" heartbeat; a long enough run of uninterrupted synchronous blocking crossed that
+// internal timeout on Windows CI specifically (`Error: [vitest-worker]: Timeout calling
+// "onTaskUpdate"`) on BOTH of this PR's hosted Windows runs, even though every one of the 3729
+// tests in the full suite passed cleanly. gitViaBash() below stays synchronous deliberately --
+// its own calls (git init/config/commit, used only in setup and a couple of assertions) are
+// millisecond-scale, never the actual contributor to the cumulative blocking time.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -120,11 +132,46 @@ function fakeClaudeEnv(scenario) {
   };
 }
 
+/** Spawns `node cli.mjs run ...` ASYNCHRONOUSLY (round-8 fix -- see this file's own header
+ * comment for the full Windows-CI RPC-timeout rationale) -- never spawnSync, so the event loop
+ * stays free between subprocess exits and Vitest's own RPC layer never goes quiet for the whole
+ * duration of a 1-7-second child process. Same external contract as the pre-existing spawnSync-
+ * based helper it replaces: resolves to `{status, stdout, stderr, parsed}`, `parsed` is `null`
+ * on anything that doesn't parse as JSON (a stderr-only failure path), `status` is the child's
+ * real exit code (or `null` if the timeout killed it first, mirroring spawnSync's own timeout
+ * contract -- no test in this file asserts on that specific shape, it exists purely as a safety
+ * net against a hung child blocking the whole run). Every caller must `await` this. */
 function runCli(args, env, timeout = 30000) {
-  const r = spawnSync('node', [CLI_PATH, ...args], { env, encoding: 'utf8', timeout });
-  let parsed = null;
-  try { parsed = JSON.parse(r.stdout); } catch { /* stderr-only failure path -- fine */ }
-  return { status: r.status, stdout: r.stdout, stderr: r.stderr, parsed };
+  return new Promise((resolve) => {
+    const child = spawn('node', [CLI_PATH, ...args], { env });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      resolve({ status: null, stdout, stderr, parsed: null });
+    }, timeout);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      let parsed = null;
+      try { parsed = JSON.parse(stdout); } catch { /* stderr-only failure path -- fine */ }
+      resolve({ status: code, stdout, stderr, parsed });
+    });
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ status: null, stdout, stderr: `${stderr}\n${err.message}`, parsed: null });
+    });
+  });
 }
 
 function evidenceDirFor(runKind) {
@@ -142,8 +189,8 @@ function runArgs(extra = []) {
 }
 
 describe('cli.mjs run --dry-run -- zero-spawn plan preview', () => {
-  it('prints the resolved plan and spawns nothing, even with a nonexistent --source-repo-dir', () => {
-    const result = runCli(
+  it('prints the resolved plan and spawns nothing, even with a nonexistent --source-repo-dir', async () => {
+    const result = await runCli(
       ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7', '--repeats', '2', '--dry-run'],
       fakeClaudeEnv('run-scenario-success'),
     );
@@ -170,16 +217,16 @@ describe('cli.mjs run --dry-run -- zero-spawn plan preview', () => {
     expect(result.parsed.total_live_claude_sessions).toBe(4);
   }, 15000);
 
-  it('is deterministic -- the same --seed produces the identical plan every time', () => {
-    const a = runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '99', '--repeats', '3', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
-    const b = runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '99', '--repeats', '3', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+  it('is deterministic -- the same --seed produces the identical plan every time', async () => {
+    const a = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '99', '--repeats', '3', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+    const b = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '99', '--repeats', '3', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
     expect(a.parsed.plan).toEqual(b.parsed.plan);
   }, 15000);
 });
 
 describe('cli.mjs run -- argument validation', () => {
-  it('requires --seed explicitly -- never silently auto-generated', () => {
-    const result = runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+  it('requires --seed explicitly -- never silently auto-generated', async () => {
+    const result = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--dry-run'], fakeClaudeEnv('run-scenario-success'));
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/--seed/);
   });
@@ -188,33 +235,33 @@ describe('cli.mjs run -- argument validation', () => {
   // bound -- each repetition spawns 2 real live Claude sessions once `run` is pointed at a real
   // claude binary, so a single typo (e.g. --repeats 100) would have silently authorized 200
   // sessions with no warning at all, even under --dry-run.
-  it('rejects --repeats exceeding MAX_REPEATS (20), even under --dry-run -- a typo must never silently authorize hundreds of live sessions', () => {
-    const result = runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '1', '--repeats', '100', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+  it('rejects --repeats exceeding MAX_REPEATS (20), even under --dry-run -- a typo must never silently authorize hundreds of live sessions', async () => {
+    const result = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '1', '--repeats', '100', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/--repeats 100 exceeds the maximum/);
     expect(result.parsed).toBeNull(); // no plan was ever printed
   });
 
-  it('accepts --repeats exactly AT the cap (20)', () => {
-    const result = runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '1', '--repeats', '20', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+  it('accepts --repeats exactly AT the cap (20)', async () => {
+    const result = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '1', '--repeats', '20', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
     expect(result.status).toBe(0);
     expect(result.parsed.repeats).toBe(20);
     expect(result.parsed.total_live_claude_sessions).toBe(40);
   });
 
-  it('rejects --repeats one over the cap (21)', () => {
-    const result = runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '1', '--repeats', '21', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+  it('rejects --repeats one over the cap (21)', async () => {
+    const result = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '1', '--repeats', '21', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/--repeats 21 exceeds the maximum/);
   });
 
-  it('rejects an unknown --scenario id with a clear, actionable error', () => {
-    const result = runCli(['run', '--scenario', 'totally-unknown-scenario', '--source-repo-dir', sourceRepoDir, '--seed', '1', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+  it('rejects an unknown --scenario id with a clear, actionable error', async () => {
+    const result = await runCli(['run', '--scenario', 'totally-unknown-scenario', '--source-repo-dir', sourceRepoDir, '--seed', '1', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/no scenario file found/);
   });
 
-  it('refuses a --source-repo-dir whose origin does not match the scenario\'s declared project_url (real run, not dry-run)', () => {
+  it('refuses a --source-repo-dir whose origin does not match the scenario\'s declared project_url (real run, not dry-run)', async () => {
     const wrongRemote = mkdtempSync(path.join(os.tmpdir(), 'aerc-wrong-remote-'));
     try {
       gitViaBash(['init', '-q'], wrongRemote);
@@ -224,7 +271,7 @@ describe('cli.mjs run -- argument validation', () => {
       gitViaBash(['add', '-A'], wrongRemote);
       gitViaBash(['commit', '-q', '-m', 'initial'], wrongRemote);
       gitViaBash(['remote', 'add', 'origin', 'https://github.com/example/totally-different-project.git'], wrongRemote);
-      const result = runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', wrongRemote, '--seed', '1', '--repeats', '1'], fakeClaudeEnv('run-scenario-success'));
+      const result = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', wrongRemote, '--seed', '1', '--repeats', '1'], fakeClaudeEnv('run-scenario-success'));
       expect(result.status).toBe(1);
       expect(result.stderr).toMatch(/does not match the scenario's declared project_url/);
       expect(listEvidenceFiles('scenario')).toEqual([]);
@@ -235,8 +282,8 @@ describe('cli.mjs run -- argument validation', () => {
 });
 
 describe('cli.mjs run -- real subprocess against fake claude (no live API cost)', () => {
-  it('repeats=2: writes 4 schema-valid, benchmark_eligible:true records with genuine counterbalancing', () => {
-    const result = runCli(runArgs(['--seed', '13', '--repeats', '2']), fakeClaudeEnv('run-scenario-success'), 60000);
+  it('repeats=2: writes 4 schema-valid, benchmark_eligible:true records with genuine counterbalancing', async () => {
+    const result = await runCli(runArgs(['--seed', '13', '--repeats', '2']), fakeClaudeEnv('run-scenario-success'), 60000);
     expect(result.status).toBe(0);
     expect(result.parsed).not.toBeNull();
     const { records } = result.parsed;
@@ -293,8 +340,8 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
   // hard-gate/record promotion) -- not just at the stream-parser unit level
   // (agentic-eval-stream-parser.test.js) or the synthetic hard-gate level
   // (agentic-eval-hard-gates.test.js), both of which also cover this fix directly.
-  it('the plugin-namespaced Skill invocation form promotes cleanly end-to-end -- matches the real 2026-07-22 rejection shape, now fixed', () => {
-    const result = runCli(runArgs(['--seed', '13', '--repeats', '2']), fakeClaudeEnv('run-scenario-success-namespaced-skill'), 60000);
+  it('the plugin-namespaced Skill invocation form promotes cleanly end-to-end -- matches the real 2026-07-22 rejection shape, now fixed', async () => {
+    const result = await runCli(runArgs(['--seed', '13', '--repeats', '2']), fakeClaudeEnv('run-scenario-success-namespaced-skill'), 60000);
     expect(result.status).toBe(0);
     expect(result.parsed).not.toBeNull();
     const { records } = result.parsed;
@@ -324,12 +371,12 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
   // kmp-test-parallel attempt was previously phantom-counted as a real execution for a
   // no_applicable_tests condition (this suite's own synthetic scenario), since decisionByAttempt
   // was never populated at all for that outcome_kind.
-  it('round-7: a denied wildcard-filtered attempt followed by two ALLOWED attempts counts as exactly 2 invocations / 1 retry, never 3/2', () => {
+  it('round-7: a denied wildcard-filtered attempt followed by two ALLOWED attempts counts as exactly 2 invocations / 1 retry, never 3/2', async () => {
     // --repeats 2 (even), not 1 -- benchmark_eligible additionally requires balanced realized
     // current-skill-first/no-skill-first start counts (decision 15), structurally impossible for
     // an odd --repeats regardless of anything else in the matrix (see the identical comment on
     // the foreign-skill-rejected test above).
-    const result = runCli(runArgs(['--seed', '1', '--repeats', '2']), fakeClaudeEnv('run-scenario-parallel-denied-then-two-allowed'), 30000);
+    const result = await runCli(runArgs(['--seed', '1', '--repeats', '2']), fakeClaudeEnv('run-scenario-parallel-denied-then-two-allowed'), 30000);
     expect(result.status).toBe(0);
     expect(result.parsed).not.toBeNull();
     const { records } = result.parsed;
@@ -344,8 +391,8 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
     for (const record of records) expect(record.benchmark_eligible).toBe(true);
   }, 30000);
 
-  it('round-7: a denied trailing attempt never displaces a genuinely valid earlier attempt as terminal', () => {
-    const result = runCli(runArgs(['--seed', '1', '--repeats', '2']), fakeClaudeEnv('run-scenario-parallel-valid-then-denied-last'), 30000);
+  it('round-7: a denied trailing attempt never displaces a genuinely valid earlier attempt as terminal', async () => {
+    const result = await runCli(runArgs(['--seed', '1', '--repeats', '2']), fakeClaudeEnv('run-scenario-parallel-valid-then-denied-last'), 30000);
     expect(result.status).toBe(0);
     expect(result.parsed).not.toBeNull();
     const { records } = result.parsed;
@@ -361,8 +408,8 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
     for (const record of records) expect(record.benchmark_eligible).toBe(true);
   }, 30000);
 
-  it('round-7: only-denied kmp-test-parallel attempts do not satisfy bash_tool_use_present', () => {
-    const result = runCli(runArgs(['--seed', '1', '--repeats', '2']), fakeClaudeEnv('run-scenario-all-parallel-denied'), 30000);
+  it('round-7: only-denied kmp-test-parallel attempts do not satisfy bash_tool_use_present', async () => {
+    const result = await runCli(runArgs(['--seed', '1', '--repeats', '2']), fakeClaudeEnv('run-scenario-all-parallel-denied'), 30000);
     expect(result.status).toBe(0);
     expect(result.parsed).not.toBeNull();
     const { records } = result.parsed;
@@ -377,15 +424,15 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
     for (const record of records) expect(record.benchmark_eligible).toBe(true);
   }, 30000);
 
-  it('round-7: a genuinely missing decision sidecar for an otherwise-clean attempt fails the WHOLE matrix closed -- never silently promoted', () => {
-    const result = runCli(runArgs(['--seed', '1', '--repeats', '1']), fakeClaudeEnv('run-scenario-parallel-missing-decision'), 30000);
+  it('round-7: a genuinely missing decision sidecar for an otherwise-clean attempt fails the WHOLE matrix closed -- never silently promoted', async () => {
+    const result = await runCli(runArgs(['--seed', '1', '--repeats', '1']), fakeClaudeEnv('run-scenario-parallel-missing-decision'), 30000);
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/junitCaptureCompleteOk:false/);
     expect(listEvidenceFiles('scenario')).toEqual([]);
   }, 30000);
 
-  it('a harness-integrity failure (malformed transcript) blocks the WHOLE matrix -- zero records written for ANY cell', () => {
-    const result = runCli(runArgs(['--seed', '1', '--repeats', '1']), fakeClaudeEnv('malformed'), 30000);
+  it('a harness-integrity failure (malformed transcript) blocks the WHOLE matrix -- zero records written for ANY cell', async () => {
+    const result = await runCli(runArgs(['--seed', '1', '--repeats', '1']), fakeClaudeEnv('malformed'), 30000);
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/RUN FAILED/);
     expect(listEvidenceFiles('scenario')).toEqual([]);
@@ -395,11 +442,11 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
   // this PR (see fake-claude-run-foreign-skill-rejected/claude's own header comment): a REJECTED
   // ("Unknown skill") foreign Skill attempt, alongside otherwise-correct diagnostic work, must no
   // longer block the whole matrix's promotion.
-  it('a REJECTED foreign-skill attempt (is_error:true), otherwise clean, promotes the WHOLE matrix successfully end-to-end', () => {
+  it('a REJECTED foreign-skill attempt (is_error:true), otherwise clean, promotes the WHOLE matrix successfully end-to-end', async () => {
     // --repeats 2 (even), not 1 -- benchmark_eligible additionally requires balanced realized
     // current-skill-first/no-skill-first start counts (decision 15), which is structurally
     // impossible for an odd --repeats regardless of anything else in the matrix.
-    const result = runCli(runArgs(['--seed', '5', '--repeats', '2']), fakeClaudeEnv('run-foreign-skill-rejected'), 30000);
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '2']), fakeClaudeEnv('run-foreign-skill-rejected'), 30000);
     expect(result.status).toBe(0);
     expect(result.parsed).not.toBeNull();
     const { records } = result.parsed;
@@ -421,36 +468,36 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
   // The companion negative case (see fake-claude-run-foreign-skill-confirmed/claude's own header
   // comment): a genuinely CONFIRMED foreign invocation must still block the whole matrix, exactly
   // as any foreign contamination did before this PR -- only the REJECTED case was relaxed.
-  it('a CONFIRMED foreign-skill invocation (is_error:false) still blocks the WHOLE matrix -- zero records written for ANY cell', () => {
-    const result = runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('run-foreign-skill-confirmed'), 30000);
+  it('a CONFIRMED foreign-skill invocation (is_error:false) still blocks the WHOLE matrix -- zero records written for ANY cell', async () => {
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('run-foreign-skill-confirmed'), 30000);
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/RUN FAILED/);
     expect(result.stderr).toContain('skillSelectionOk:false');
     expect(listEvidenceFiles('scenario')).toEqual([]);
   }, 30000);
 
-  it('leaves no registered git worktree behind after a passing run (removeScenarioWorktree ran)', () => {
-    const result = runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('run-scenario-success'), 30000);
+  it('leaves no registered git worktree behind after a passing run (removeScenarioWorktree ran)', async () => {
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('run-scenario-success'), 30000);
     expect(result.status).toBe(0);
     const worktreeList = gitViaBash(['worktree', 'list'], sourceRepoDir);
     expect(worktreeList.trim().split('\n').length).toBe(1);
   }, 30000);
 
-  it('leaves no registered git worktree behind after a FAILING run either (cleanup runs in finally)', () => {
-    const result = runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('malformed'), 30000);
+  it('leaves no registered git worktree behind after a FAILING run either (cleanup runs in finally)', async () => {
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('malformed'), 30000);
     expect(result.status).toBe(1);
     const worktreeList = gitViaBash(['worktree', 'list'], sourceRepoDir);
     expect(worktreeList.trim().split('\n').length).toBe(1);
   }, 30000);
 
-  it('leaves no leftover temp directories after a passing run', () => {
-    const result = runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('run-scenario-success'), 30000);
+  it('leaves no leftover temp directories after a passing run', async () => {
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('run-scenario-success'), 30000);
     expect(result.status).toBe(0);
     expect(readdirSync(isolatedTmp)).toEqual([]);
   }, 30000);
 
-  it('leaves no leftover temp directories after a FAILING run either', () => {
-    const result = runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('malformed'), 30000);
+  it('leaves no leftover temp directories after a FAILING run either', async () => {
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('malformed'), 30000);
     expect(result.status).toBe(1);
     expect(readdirSync(isolatedTmp)).toEqual([]);
   }, 30000);
@@ -496,13 +543,13 @@ describe('cli.mjs run -- JUnit-evidence-attribution pipeline, real subprocess ag
     return ['run', '--scenario', TESTS_EXECUTED_SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--model', 'fake-model-x', ...extra];
   }
 
-  it('two SEQUENTIAL Gradle attempts (fail then a --rerun-tasks retry that passes) attribute correctly end to end -- the terminal (passing) attempt governs, no harness-integrity error codes fire', () => {
+  it('two SEQUENTIAL Gradle attempts (fail then a --rerun-tasks retry that passes) attribute correctly end to end -- the terminal (passing) attempt governs, no harness-integrity error codes fire', async () => {
     writeTestsExecutedScenario();
     // --repeats 2 (even), not 1 -- benchmark_eligible additionally requires balanced realized
     // current-skill-first/no-skill-first start counts (decision 15), structurally impossible for
     // an odd --repeats regardless of anything else in the matrix (see the sibling
     // "REJECTED foreign-skill" test's own identical comment).
-    const result = runCli(runTestsExecutedArgs(['--seed', '7', '--repeats', '2']), fakeClaudeEnv('run-tests-executed-two-gradle'), 30000);
+    const result = await runCli(runTestsExecutedArgs(['--seed', '7', '--repeats', '2']), fakeClaudeEnv('run-tests-executed-two-gradle'), 30000);
     expect(result.status).toBe(0);
     expect(result.parsed).not.toBeNull();
     const { records } = result.parsed;
@@ -534,9 +581,9 @@ describe('cli.mjs run -- JUnit-evidence-attribution pipeline, real subprocess ag
   // comment for exactly how it forces both the evidence-record collision AND the tombstone write
   // itself to fail, using only real, sequential sidecar writes (no test-harness pre-seeding, no
   // mocking).
-  it('a duplicate sidecar write whose OWN tombstone write also fails still safely rejects the whole matrix -- zero records written for ANY cell', () => {
+  it('a duplicate sidecar write whose OWN tombstone write also fails still safely rejects the whole matrix -- zero records written for ANY cell', async () => {
     writeTestsExecutedScenario();
-    const result = runCli(runTestsExecutedArgs(['--seed', '7', '--repeats', '1']), fakeClaudeEnv('run-tests-executed-collision'), 30000);
+    const result = await runCli(runTestsExecutedArgs(['--seed', '7', '--repeats', '1']), fakeClaudeEnv('run-tests-executed-collision'), 30000);
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/RUN FAILED/);
     expect(result.stderr).toContain('junitCaptureCompleteOk:false');
