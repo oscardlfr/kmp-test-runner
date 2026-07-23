@@ -910,26 +910,27 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   // Check 2 -- any policy-allowed command attempted at all (broader than check 4's evidence scope;
   // deliberately does not exclude --dry-run -- a dry-run call is still genuine engagement with the
   // tool, even though it can never itself count as target evidence below). A policy-DENIED
-  // kmp-test-parallel or Gradle-relevant attempt is excluded here too (round-7 fix): the command's
-  // own text can look policy-shaped (e.g. `kmp-test parallel --module-filter "*"`, subcommand
-  // 'parallel') while the hook denied that SPECIFIC invocation for a finer-grained reason (a
-  // wildcard filter, an unapproved flag combination) -- counting it as "genuine engagement" would
-  // let a denied attempt alone satisfy this check, exactly the kind of phantom-execution signal
-  // decisionByAttempt exists to rule out elsewhere. `undefined` (no decision data at all --
-  // doctor/describe, which attributeCondition never tracks, or the mechanism genuinely disabled)
-  // never excludes, matching evaluateKmpTestAttempt/evaluateGradleAttempt's own identical
-  // convention below.
+  // attempt is excluded here too (round-7/round-8 fix), UNIFORMLY for every command kind -- not
+  // just kmp-test-parallel/Gradle: the command's own text can look policy-shaped (subcommand
+  // 'parallel', 'doctor', 'describe', or a policy-listed Gradle task) while the hook denied that
+  // SPECIFIC invocation for a finer-grained reason (a wildcard filter, an unapproved flag
+  // combination) -- counting it as "genuine engagement" would let a denied attempt alone satisfy
+  // this check, exactly the kind of phantom-execution signal decisionByAttempt exists to rule out
+  // elsewhere. round-7's fix only excluded 'parallel'/Gradle specifically, since that was all
+  // attributeCondition's own (relevance-scoped) decisionByAttempt covered at the time -- a denied
+  // `kmp-test doctor`/`describe`, or a denied `kmp-test parallel --dry-run` (plan-only, so never
+  // "relevant" either), still slipped through. round-8's resolveDecisions() now resolves a
+  // decision for EVERY bashResult, closing that gap generally rather than adding another
+  // per-subcommand conditional. Same `deny`-or-`null` exclusion predicate as
+  // evaluateKmpTestAttempt/evaluateGradleAttempt below (`undefined` -- the mechanism genuinely
+  // disabled entirely, e.g. calibrate/smoke, which never reaches this function anyway -- never
+  // excludes).
   const policyAllowedResults = bashResults.filter((b) => {
-    const c = classifyBashCommand(b.command);
     const decision = junitAttribution.decisionByAttempt.get(b.id);
-    if (c.kind === 'kmp-test') {
-      if (c.subcommand === 'parallel' && decision === 'deny') return false;
-      return (scenario.policy?.allowed_kmptest_subcommands ?? []).includes(c.subcommand);
-    }
-    if (c.kind === 'gradle') {
-      if (decision === 'deny') return false;
-      return c.taskTokens.some((t) => (scenario.policy?.allowed_gradle_tasks ?? []).includes(t));
-    }
+    if (decision === 'deny' || decision === null) return false;
+    const c = classifyBashCommand(b.command);
+    if (c.kind === 'kmp-test') return (scenario.policy?.allowed_kmptest_subcommands ?? []).includes(c.subcommand);
+    if (c.kind === 'gradle') return c.taskTokens.some((t) => (scenario.policy?.allowed_gradle_tasks ?? []).includes(t));
     return false;
   });
   addCheck('bash_tool_use_present', policyAllowedResults.length > 0,

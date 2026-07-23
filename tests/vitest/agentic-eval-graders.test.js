@@ -589,6 +589,42 @@ describe('gradeScenarioCondition -- structural/evidence adversarial cases (evide
   });
 });
 
+describe('gradeScenarioCondition -- round-8: bash_tool_use_present is decision-aware for EVERY command kind, not just kmp-test-parallel/Gradle', () => {
+  // round-7 only excluded a denied decision for 'parallel'-subcommand kmp-test attempts and
+  // Gradle attempts, since that was all attributeCondition's own (relevance-scoped)
+  // decisionByAttempt covered at the time. A denied `doctor`/`describe` attempt, or a denied
+  // `parallel --dry-run` (plan-only, never "relevant" either), still slipped through --
+  // round-8's resolveDecisions() now resolves a decision for EVERY bashResult uniformly, closing
+  // the gap generally instead of adding another per-subcommand conditional.
+  it.each([
+    ['kmp-test doctor --json', 'doctor (real run)'],
+    ['kmp-test describe --json', 'describe (real run)'],
+    ['kmp-test parallel --dry-run --json', 'parallel --dry-run (plan-only)'],
+  ])('a DENIED %s does not satisfy bash_tool_use_present (%s)', (command) => {
+    const cr = buildConditionResult(
+      [{ command, decision: 'deny', resultContent: 'denied', resultIsError: true }],
+      'I could not run any diagnostic commands -- everything was blocked by policy.\n\nKMP_EVAL_RESULT\n{"module": ":shared", "outcome_kind": "no_applicable_tests"}\nKMP_EVAL_RESULT_END',
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    const check = grade.checks.find((c) => c.name === 'bash_tool_use_present');
+    expect(check.passed).toBe(false);
+  });
+
+  it.each([
+    ['kmp-test doctor --json', 'doctor (real run)'],
+    ['kmp-test describe --json', 'describe (real run)'],
+    ['kmp-test parallel --dry-run --json', 'parallel --dry-run (plan-only)'],
+  ])('an ALLOWED %s DOES satisfy bash_tool_use_present (%s)', (command) => {
+    const cr = buildConditionResult(
+      [{ command, decision: 'allow', resultContent: '{"tool":"kmp-test","schema_version":2}' }],
+      'Ran a diagnostic command.\n\nKMP_EVAL_RESULT\n{"module": ":shared", "outcome_kind": "no_applicable_tests"}\nKMP_EVAL_RESULT_END',
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    const check = grade.checks.find((c) => c.name === 'bash_tool_use_present');
+    expect(check.passed).toBe(true);
+  });
+});
+
 describe('gradeScenarioCondition -- envelope self-contradiction (review-round-2/3 fixes, still relevant under the structured-block design)', () => {
   it('kmp-test path: resultIsError:true alongside an envelope claiming exit_code:0 must fail, never trust the envelope over resultIsError', () => {
     const cr = buildConditionResult(
