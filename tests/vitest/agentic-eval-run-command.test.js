@@ -140,18 +140,23 @@ function fakeClaudeEnv(scenario) {
  * on anything that doesn't parse as JSON (a stderr-only failure path), `status` is the child's
  * real exit code (or `null` if the timeout killed it first, mirroring spawnSync's own timeout
  * contract -- no test in this file asserts on that specific shape, it exists purely as a safety
- * net against a hung child blocking the whole run). Every caller must `await` this. */
+ * net against a hung child blocking the whole run). On timeout, the timer only signals `child.kill()`
+ * and never resolves by itself -- resolution always happens from the `close` handler, once the
+ * killed child has actually exited, so the next test's beforeEach/afterEach never races a
+ * still-alive process over the same temp/run directories (spawnSync's own timeout implicitly had
+ * this property for free; naively resolving as soon as kill() is called would silently lose it).
+ * Every caller must `await` this. */
 function runCli(args, env, timeout = 30000) {
   return new Promise((resolve) => {
     const child = spawn('node', [CLI_PATH, ...args], { env });
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let timedOut = false;
     const timer = setTimeout(() => {
       if (settled) return;
-      settled = true;
+      timedOut = true;
       child.kill();
-      resolve({ status: null, stdout, stderr, parsed: null });
     }, timeout);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -161,6 +166,10 @@ function runCli(args, env, timeout = 30000) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (timedOut) {
+        resolve({ status: null, stdout, stderr, parsed: null });
+        return;
+      }
       let parsed = null;
       try { parsed = JSON.parse(stdout); } catch { /* stderr-only failure path -- fine */ }
       resolve({ status: code, stdout, stderr, parsed });
