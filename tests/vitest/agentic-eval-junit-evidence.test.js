@@ -298,6 +298,10 @@ describe('attributeCondition -- anomaly tombstone always forces captureIncomplet
 });
 
 describe('attributeCondition -- same-transcript-index conflict vs. different-index sequential attempts', () => {
+  // Round-8 pairing note: this test's own default (junitXmlAttributionEnabled omitted, defaults
+  // true) is exactly "the same conflict, with JUnit attribution enabled, still blocks" -- see the
+  // sibling round-8 test below for the paired junitXmlAttributionEnabled:false case (a kmp-test-
+  // parallel-only variant, which does NOT block).
   it('two relevant, ALLOWED attempts sharing the SAME .index (a genuine same-turn concurrent dispatch) trip ambiguousJunitEvidence:true, and each resolves to {status:"conflict"}', () => {
     const dir = makeEvidenceDir();
     try {
@@ -315,6 +319,35 @@ describe('attributeCondition -- same-transcript-index conflict vs. different-ind
       // same-turn conflict never collapses two distinct attempts into one shared slot.
       expect(result.perAttemptJunit.get('t1')).toEqual({ status: 'conflict' });
       expect(result.perAttemptJunit.get('t2')).toEqual({ status: 'conflict' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Round-8 regression: the IDENTICAL same-turn shape as the test above, but for two kmp-test
+  // parallel calls (never a shared external resource a race could corrupt -- each has its own
+  // self-contained, directly-correlated tool_result envelope) with junitXmlAttributionEnabled:
+  // false. Confirmed by CodeRabbit on the round-7 PR and independently reproduced: the ambiguity
+  // scan previously ran unconditionally, so this exact shape wrongly set
+  // ambiguousJunitEvidence:true even when real JUnit-XML attribution was disabled entirely (e.g. a
+  // no_applicable_tests condition), incorrectly blocking a perfectly valid matrix promotion.
+  it('round-8: two ALLOWED kmp-test-parallel attempts sharing the SAME .index do NOT trip ambiguousJunitEvidence when junitXmlAttributionEnabled is false', () => {
+    const dir = makeEvidenceDir();
+    try {
+      writeDecision(dir, 't1', 'allow', KMP_TEST_CMD);
+      writeDecision(dir, 't2', 'allow', KMP_TEST_CMD);
+      const bashResults = [
+        { index: 5, id: 't1', command: KMP_TEST_CMD },
+        { index: 5, id: 't2', command: KMP_TEST_CMD },
+      ];
+      const result = attributeCondition(dir, SCENARIO, bashResults, {}, false);
+      expect(result.ambiguousJunitEvidence).toBe(false);
+      expect(result.perAttemptJunit.size).toBe(0);
+      // Both attempts still get their own real decision tracked -- only the JUnit-XML-specific
+      // ambiguity/evidence concerns are gated off, never the general decision attribution.
+      expect(result.decisionByAttempt.get('t1')).toBe('allow');
+      expect(result.decisionByAttempt.get('t2')).toBe('allow');
+      expect(result.captureIncomplete).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -392,15 +425,21 @@ describe('attributeCondition -- lifecycle-alias relevance (decision 3 contract)'
     }
   });
 
-  it('a Gradle command outside allowed_invocations entirely is not tracked at all -- never even reaches captureIncomplete', () => {
+  it('a Gradle command outside allowed_invocations entirely still gets its own decision tracked (round-8: resolveDecisions covers every attempt), but never pollutes perAttemptJunit/ambiguousJunitEvidence', () => {
     const dir = makeEvidenceDir();
     try {
-      // No sidecar records written for this id at all -- if this command were (wrongly) considered
-      // relevant, the missing decision would trip captureIncomplete.
-      const bashResults = [{ index: 1, id: 't1', command: './gradlew.bat :shared:build --console=plain' }];
+      const outsideCmd = './gradlew.bat :shared:build --console=plain';
+      // A real decision sidecar DOES exist for it in production (policy-hook.mjs writes one for
+      // every Bash call unconditionally) -- round-8's resolveDecisions() now reads it, same as any
+      // other attempt; this command's own irrelevance to `evidence_task` only means it never
+      // reaches perAttemptJunit/the ambiguity scan below, not that its decision goes untracked.
+      writeDecision(dir, 't1', 'allow', outsideCmd);
+      const bashResults = [{ index: 1, id: 't1', command: outsideCmd }];
       const result = attributeCondition(dir, SCENARIO, bashResults);
       expect(result.captureIncomplete).toBe(false);
-      expect(result.decisionByAttempt.has('t1')).toBe(false);
+      expect(result.decisionByAttempt.get('t1')).toBe('allow');
+      expect(result.perAttemptJunit.has('t1')).toBe(false);
+      expect(result.ambiguousJunitEvidence).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -899,14 +938,19 @@ describe('attributeCondition -- wrong-module kmp-test parallel attempts still ge
     }
   });
 
-  it('a wrong-module kmp-test --dry-run call is never tracked at all, even decision-only (plan-only, never executed)', () => {
+  it('a wrong-module kmp-test --dry-run call still gets its own decision tracked (round-8), but never reaches perAttemptJunit (plan-only, never executed, not Gradle)', () => {
     const dir = makeEvidenceDir();
     try {
       const wrongModuleDryRun = 'kmp-test parallel --module-filter app --dry-run --json';
       writeDecision(dir, 't1', 'allow', wrongModuleDryRun);
       const bashResults = [{ index: 1, id: 't1', command: wrongModuleDryRun }];
       const result = attributeCondition(dir, SCENARIO, bashResults);
-      expect(result.decisionByAttempt.has('t1')).toBe(false);
+      // resolveDecisions() covers every bashResult uniformly now -- a plan-only/wrong-module
+      // command is no more "invisible" to basic decision tracking than any other. It still never
+      // becomes a perAttemptJunit entry (not Gradle at all) or an ambiguity participant.
+      expect(result.decisionByAttempt.get('t1')).toBe('allow');
+      expect(result.perAttemptJunit.has('t1')).toBe(false);
+      expect(result.captureIncomplete).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

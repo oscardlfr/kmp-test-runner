@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-run-scenario-all-parallel-denied/claude -- round-7 regression: BOTH
+# `kmp-test parallel` attempts are DENIED (a wildcard filter, then a bare no-filter retry) -- no
+# allowed kmp-test-parallel attempt exists anywhere in this transcript. bash_tool_use_present must
+# read false: the command TEXT alone (subcommand 'parallel', policy-allowed in the abstract) is not
+# enough -- a denied attempt is not "genuine engagement" with the tool. Before the fix, this check
+# never consulted decisionByAttempt at all, so it would have read true purely from the command
+# shape regardless of either attempt's own denial. See fake-claude-run-scenario-success/claude for
+# the shared write_sidecar convention this reuses.
+write_sidecar() {
+  local kind="$1" toolUseId="$2" recordJson="$3"
+  node -e '
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const [kind, toolUseId, recordJson] = process.argv.slice(1);
+const idHash = crypto.createHash("sha256").update(toolUseId).digest("hex");
+const dir = path.join(process.env.KMP_EVAL_JUNIT_EVIDENCE_DIR, kind);
+fs.mkdirSync(dir, { recursive: true });
+fs.writeFileSync(path.join(dir, idHash + ".json"), recordJson);
+' -- "$kind" "$toolUseId" "$recordJson"
+}
+
+HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  PREV_ARG="$arg"
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
+else
+  PLUGINS='[]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-0001\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"dontAsk\",\"plugins\":$PLUGINS,\"skills\":[],\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+else
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
+fi
+
+# Attempt #1: wildcard filter, DENIED.
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test parallel --module-filter \"*\" --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+write_sidecar decisions toolu_fakebash1 '{"decision":"deny","command":"kmp-test parallel --module-filter \"*\" --json"}'
+echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"denied","tool_use_id":"toolu_fakebash1"}]}}'
+
+# Attempt #2: bare no-filter retry, ALSO DENIED.
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash2","name":"Bash","input":{"command":"kmp-test parallel --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-2","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-2","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+write_sidecar decisions toolu_fakebash2 '{"decision":"deny","command":"kmp-test parallel --json"}'
+echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"denied","tool_use_id":"toolu_fakebash2"}]}}'
+
+FINAL_ANSWER='I was unable to run any tests -- every command I tried was blocked by the environment policy.
+
+KMP_EVAL_RESULT
+{"module": ":fakemod", "outcome_kind": "no_applicable_tests"}
+KMP_EVAL_RESULT_END'
+node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
+exit 0

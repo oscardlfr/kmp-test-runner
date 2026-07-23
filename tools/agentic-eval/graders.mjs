@@ -891,6 +891,17 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   const events = conditionResult.events ?? [];
   const bashResults = conditionResult.bashResults ?? [];
 
+  // Computed here (moved up from its original position, round-7 fix) so check 2 below can also
+  // consult decisionByAttempt -- see this const's own original doc comment, still attached where
+  // it's consumed for terminal selection further down, for the full `undefined`-vs-`null`-vs-real-
+  // value rationale. `null` on conditionResult for calibrate/smoke (the mechanism is never enabled
+  // there at all); a real, populated object for every scenario condition since round-7 (previously
+  // `null` for no_applicable_tests specifically -- see matrix-runner.mjs's own comment).
+  const junitAttribution = conditionResult.junitAttribution ?? {
+    perAttemptJunit: new Map(), decisionByAttempt: new Map(),
+    ambiguousJunitEvidence: false, captureIncomplete: false, unreliable: false,
+  };
+
   // Check 1 -- blocking precondition.
   const structuralIssues = findTranscriptStructuralIssuesToleratingTimeout(events, { terminated, terminationReason });
   addCheck('no_transcript_structural_issues', structuralIssues.length === 0,
@@ -898,8 +909,25 @@ export function gradeScenarioCondition(conditionResult, scenario) {
 
   // Check 2 -- any policy-allowed command attempted at all (broader than check 4's evidence scope;
   // deliberately does not exclude --dry-run -- a dry-run call is still genuine engagement with the
-  // tool, even though it can never itself count as target evidence below).
+  // tool, even though it can never itself count as target evidence below). A policy-DENIED
+  // attempt is excluded here too (round-7/round-8 fix), UNIFORMLY for every command kind -- not
+  // just kmp-test-parallel/Gradle: the command's own text can look policy-shaped (subcommand
+  // 'parallel', 'doctor', 'describe', or a policy-listed Gradle task) while the hook denied that
+  // SPECIFIC invocation for a finer-grained reason (a wildcard filter, an unapproved flag
+  // combination) -- counting it as "genuine engagement" would let a denied attempt alone satisfy
+  // this check, exactly the kind of phantom-execution signal decisionByAttempt exists to rule out
+  // elsewhere. round-7's fix only excluded 'parallel'/Gradle specifically, since that was all
+  // attributeCondition's own (relevance-scoped) decisionByAttempt covered at the time -- a denied
+  // `kmp-test doctor`/`describe`, or a denied `kmp-test parallel --dry-run` (plan-only, so never
+  // "relevant" either), still slipped through. round-8's resolveDecisions() now resolves a
+  // decision for EVERY bashResult, closing that gap generally rather than adding another
+  // per-subcommand conditional. Same `deny`-or-`null` exclusion predicate as
+  // evaluateKmpTestAttempt/evaluateGradleAttempt below (`undefined` -- the mechanism genuinely
+  // disabled entirely, e.g. calibrate/smoke, which never reaches this function anyway -- never
+  // excludes).
   const policyAllowedResults = bashResults.filter((b) => {
+    const decision = junitAttribution.decisionByAttempt.get(b.id);
+    if (decision === 'deny' || decision === null) return false;
     const c = classifyBashCommand(b.command);
     if (c.kind === 'kmp-test') return (scenario.policy?.allowed_kmptest_subcommands ?? []).includes(c.subcommand);
     if (c.kind === 'gradle') return c.taskTokens.some((t) => (scenario.policy?.allowed_gradle_tasks ?? []).includes(t));
@@ -917,25 +945,21 @@ export function gradeScenarioCondition(conditionResult, scenario) {
 
   // Per-attempt JUnit-evidence attribution (junit-evidence.mjs's attributeCondition, called once
   // per condition by matrix-runner.mjs's runScenarioMatrix -- replaces the old pooled
-  // captureGradleJunitEvidence + classifyJunitProvenance heuristic entirely). `null` on
-  // conditionResult for no_applicable_tests scenarios and for calibrate/smoke (the mechanism is
-  // never enabled there) -- every field below defaults to a fully-inert value in that case, and
-  // (critically) `decisionByAttempt`/`perAttemptJunit` stay EMPTY Maps rather than being
+  // captureGradleJunitEvidence + classifyJunitProvenance heuristic entirely; junitAttribution
+  // itself is computed once, near the top of this function, so check 2 above can also consult
+  // decisionByAttempt). `null` on conditionResult only for calibrate/smoke now (the mechanism is
+  // never enabled there at all) -- every field below defaults to a fully-inert value in that case,
+  // and (critically) `decisionByAttempt`/`perAttemptJunit` stay EMPTY Maps rather than being
   // populated with `null` entries: `.get()` on an empty Map returns `undefined` for every key,
   // which `evaluateKmpTestAttempt`/`evaluateGradleAttempt` deliberately treat differently from an
   // explicit `null` (see those functions' own parameter docs) -- `undefined` never gates anything
   // (no decision data exists to gate on), while an explicit `null` means the mechanism WAS enabled
   // but this specific attempt's own decision record was missing/incoherent. Do not "simplify" the
   // two `.get(...)` calls below with a `?? null` fallback -- that would collapse this exact
-  // distinction and incorrectly exclude every attempt in a no_applicable_tests scenario. Both maps
-  // are keyed by each attempt's own `b.id` (`tool_use_id`), never `b.index` -- an earlier revision
-  // keyed by `.index`, which is only unique per assistant TURN, not per attempt, so two attempts
-  // dispatched in the same turn (e.g. one allowed, one denied) silently collided into one map slot
-  // (see attributeCondition's own doc comment for the full incident).
-  const junitAttribution = conditionResult.junitAttribution ?? {
-    perAttemptJunit: new Map(), decisionByAttempt: new Map(),
-    ambiguousJunitEvidence: false, captureIncomplete: false, unreliable: false,
-  };
+  // distinction. Both maps are keyed by each attempt's own `b.id` (`tool_use_id`), never `b.index`
+  // -- an earlier revision keyed by `.index`, which is only unique per assistant TURN, not per
+  // attempt, so two attempts dispatched in the same turn (e.g. one allowed, one denied) silently
+  // collided into one map slot (see attributeCondition's own doc comment for the full incident).
   const { ambiguousJunitEvidence, captureIncomplete: gradleJunitEvidenceCaptureIncomplete, unreliable: gradleJunitEvidenceUnreliable } = junitAttribution;
 
   // Evaluate every attempt capable of producing target evidence, from either provider, in
