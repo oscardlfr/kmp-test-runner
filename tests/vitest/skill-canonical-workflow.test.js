@@ -13,6 +13,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { discoverCoverageModules, parseArgs as parseCoverageArgs } from '../../lib/orchestrators/coverage-orchestrator.js';
+import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -35,6 +37,48 @@ function section(heading) {
   const nextIdx = rest.search(/^## /m);
   return nextIdx === -1 ? rest : rest.slice(0, nextIdx);
 }
+
+// Round-4 addition: ground SKILL.md's coverage-scoping claims in the REAL orchestrator's actual
+// behavior, not just prose pattern-matching -- round 3's own text-presence tests couldn't have
+// caught that --coverage-modules uses exact/colonless matching (proven wrong by round 3's
+// content, which implied it shared --module-filter's substring/glob semantics). Reuses the exact
+// fixture shape already established in tests/vitest/coverage-orchestrator.test.js (colon-prefixed
+// module keys, {coveragePlugin, type} minimal shape, real parseArgs()).
+describe('Coverage module-scoping contract (grounds SKILL.md claims in the real orchestrator)', () => {
+  const projectModel = { modules: { ':app': { coveragePlugin: 'kover', type: 'jvm' } } };
+
+  it(':app (colon-prefixed, as describe modules[].name literally returns it) matches ZERO modules', () => {
+    const r = discoverCoverageModules(projectModel, parseCoverageArgs(['--coverage-modules', ':app']));
+    expect(r.dispatched).toHaveLength(0);
+  });
+
+  it('app (colonless, exact) matches the :app module', () => {
+    const r = discoverCoverageModules(projectModel, parseCoverageArgs(['--coverage-modules', 'app']));
+    expect(r.dispatched.map((m) => m.name)).toEqual(['app']);
+  });
+
+  it('app* (glob-shaped) matches ZERO modules -- no glob or substring support', () => {
+    const r = discoverCoverageModules(projectModel, parseCoverageArgs(['--coverage-modules', 'app*']));
+    expect(r.dispatched).toHaveLength(0);
+  });
+});
+
+// Round-4 addition: ground the no-test-outcome caveat (describe's test_tasks field names aren't
+// --test-type values) in the real enum, not an asserted mapping that could itself go stale.
+describe('--test-type value contract (grounds the no-test-outcome caveat in real behavior)', () => {
+  it('device and web are NOT real --test-type values', () => {
+    expect(TEST_TYPE_VALUES).not.toContain('device');
+    expect(TEST_TYPE_VALUES).not.toContain('web');
+  });
+
+  it('the real enum includes androidInstrumented, js, wasm, ios, macos', () => {
+    expect(TEST_TYPE_VALUES).toContain('androidInstrumented');
+    expect(TEST_TYPE_VALUES).toContain('js');
+    expect(TEST_TYPE_VALUES).toContain('wasm');
+    expect(TEST_TYPE_VALUES).toContain('ios');
+    expect(TEST_TYPE_VALUES).toContain('macos');
+  });
+});
 
 describe('Decision protocol -- single canonical entry point, first in the document', () => {
   it('is the first ## heading in the document (not a fourth layer alongside old ones)', () => {
@@ -100,6 +144,11 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     // agent following workflow-agnostic advice here would believe it scoped to one module while
     // actually aggregating coverage across all of them.
     expect(step3).toContain('--coverage-modules');
+    // Round-4 fix: --coverage-modules is exact/colonless-match only (proven against the real
+    // discoverCoverageModules() in the "Coverage module-scoping contract" describe block above) --
+    // round 3's wording wrongly implied it shared --module-filter's substring/glob semantics.
+    expect(step3.toLowerCase()).toContain('stripped');
+    expect(step3.toLowerCase()).toContain('no glob');
   });
 
   it('step: known workflow + unclear module runs describe once before a targeted dispatch', () => {
@@ -116,6 +165,10 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(describeIdx).toBeGreaterThan(-1);
     expect(dispatchIdx).toBeGreaterThan(-1);
     expect(describeIdx).toBeLessThan(dispatchIdx);
+    // Round-4 fix: describe returns modules[].name WITH the leading colon: stripping it before
+    // use is required specifically for --coverage-modules (proven above), so step 4 must repeat
+    // this instruction rather than leaving it implicit.
+    expect(step4.toLowerCase()).toContain('strip');
   });
 
   it('step: unclear module reads the exact value from modules[].name', () => {
@@ -176,14 +229,38 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(protocol).not.toMatch(/`git[\s`]/i);
   });
 
-  // Round-3 addition: matchModuleFilter's own doc comment (lib/orchestrators/orchestrator-utils.js)
-  // confirms non-glob patterns are SUBSTRING matches -- `--module-filter app` matches both `:app`
-  // and `:application`. Even using describe's own exact-returned name as the filter value doesn't
-  // guarantee a single-module dispatch if another module's name contains it as a substring.
-  it('warns --module-filter/--coverage-modules match by substring, and to verify the envelope', () => {
-    expect(protocol.toLowerCase()).toMatch(/substring/);
-    expect(protocol.toLowerCase()).toMatch(/verify/);
-    expect(protocol).toMatch(/modules\[\]/);
+  // Round-3 addition, round-4 corrected: matchModuleFilter's own doc comment
+  // (lib/orchestrators/orchestrator-utils.js) confirms non-glob patterns are SUBSTRING matches --
+  // `--module-filter app` matches both `:app` and `:application`. This property belongs to
+  // --module-filter ONLY -- round 3 wrongly implied --coverage-modules shared it (it's exact/
+  // colonless-only, proven in the "Coverage module-scoping contract" describe block above).
+  // Round-4 also fixes a false-pass CodeRabbit found independently on this same test: an unscoped
+  // whole-protocol "verify" search would keep passing even if this specific warning were deleted,
+  // since neighboring steps use "verify" for unrelated things -- both warnings are now scoped to
+  // their own paragraph, ending exactly where the next one begins.
+  it('warns --module-filter (only) is substring-based and to verify modules[]', () => {
+    const start = protocol.indexOf('`--module-filter` matches by substring');
+    const end = protocol.indexOf('`--coverage-modules` is exact-match only');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const paragraph = protocol.slice(start, end);
+    expect(paragraph.toLowerCase()).toContain('substring');
+    expect(paragraph).toMatch(/modules\[\]/);
+    expect(paragraph).not.toContain('--coverage-modules');
+  });
+
+  it('warns --coverage-modules is exact-match only and must be verified via module_buckets', () => {
+    const start = protocol.indexOf('`--coverage-modules` is exact-match only');
+    const end = protocol.indexOf('A denied exploratory command');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const paragraph = protocol.slice(start, end);
+    expect(paragraph.toLowerCase()).toContain('exact');
+    // Explicitly ruling out substring matching ("no substring") is correct, precise content --
+    // what must never appear is the AFFIRMATIVE claim (module-filter's own property).
+    expect(paragraph).not.toMatch(/matches by substring/i);
+    expect(paragraph).toContain('module_buckets');
+    expect(paragraph.toLowerCase()).toMatch(/always empty/);
   });
 
   it('denial recovery: a denied exploratory probe is abandoned, not retried', () => {
@@ -217,14 +294,21 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(paragraph.toLowerCase()).toMatch(/\bstop\b/);
   });
 
-  it('explicit platform test types (ios/device/web/macos) must not be judged from test_tasks.unit', () => {
+  // Round-4 fix: round 3 named device/web as things a module can "run via ... under an explicit
+  // --test-type" -- but device and web are describe's OWN test_tasks field names, not real
+  // --test-type values at all (proven against the real TEST_TYPE_VALUES enum in the "--test-type
+  // value contract" describe block above; the real analogues are androidInstrumented and js/wasm).
+  // Rather than hardcode a field-name-to-CLI-value mapping in SKILL.md (which could itself go
+  // stale), the fix points to the reference doc and never presents device/web as if they were
+  // literal --test-type arguments.
+  it('does not present device/web as literal --test-type values; points to the real enum', () => {
     const match = protocol.match(NO_TEST_PARAGRAPH_ANCHOR);
     expect(match).not.toBeNull();
     const paragraph = match[0];
-    expect(paragraph).toMatch(/\bios\b/i);
-    expect(paragraph).toMatch(/\bdevice\b/i);
-    expect(paragraph).toMatch(/\bweb\b/i);
-    expect(paragraph).toMatch(/\bmacos\b/i);
+    expect(paragraph).not.toMatch(/--test-type\s+device\b/i);
+    expect(paragraph).not.toMatch(/--test-type\s+web\b/i);
+    expect(paragraph).toMatch(/test_tasks/);
+    expect(paragraph).toMatch(/flags-reference/i);
   });
 
   it('the no-test-outcome guidance does not enumerate specific alternate subcommands', () => {
@@ -235,6 +319,18 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(paragraph).not.toMatch(/\bcoverage\b/i);
     expect(paragraph).not.toMatch(/\bchanged\b/i);
     expect(paragraph).not.toMatch(/\binfo\b/i);
+  });
+});
+
+// Round-4 addition: CodeRabbit's own fresh review of b957984 flagged that "initialize the gradle
+// wrapper first if missing" reads as an instruction for the AGENT to auto-initialize it -- which
+// can mutate project files and pick an unspecified Gradle version before the requested test run.
+describe('SKILL.md Prerequisites -- does not implicitly initialize a missing gradle wrapper', () => {
+  const prereqs = section('Prerequisites');
+
+  it('reports a missing gradlew as a prerequisite failure, never auto-initializes it', () => {
+    expect(prereqs).not.toMatch(/initialize the gradle wrapper first/i);
+    expect(prereqs.toLowerCase()).toMatch(/report the prerequisite|prerequisite failure/);
   });
 });
 
@@ -267,6 +363,14 @@ describe('Steps -- dispatch table and envelope parsing', () => {
     'kmp-test changed --json --project-root .',
   ])('dispatch table documents: %s', (cmd) => {
     expect(steps).toContain(cmd);
+  });
+
+  // Round-4 addition: CodeRabbit's own fresh review of b957984 -- errors[] is documented as
+  // `[{ message, code?, ...extra }]`; only a subset of codes (module_failed, spawn_error,
+  // gradle_timeout) carry an optional module field. Requiring it unconditionally would have an
+  // agent expect/invent a module for error shapes that never carry one.
+  it('reports errors[].module only when present, not for every entry', () => {
+    expect(steps.toLowerCase()).toMatch(/only when present|not every/);
   });
 });
 
