@@ -318,6 +318,72 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
     }
   }, 60000);
 
+  // Round-7 regression group: decision attribution (allow/deny per Bash attempt) is now available
+  // for every scenario, not just 'tests_executed' ones -- see matrix-runner.mjs's own comment on
+  // decisionAttributionEnabled. Reproduces the exact 2026-07-23 canary-evidence finding: a denied
+  // kmp-test-parallel attempt was previously phantom-counted as a real execution for a
+  // no_applicable_tests condition (this suite's own synthetic scenario), since decisionByAttempt
+  // was never populated at all for that outcome_kind.
+  it('round-7: a denied wildcard-filtered attempt followed by two ALLOWED attempts counts as exactly 2 invocations / 1 retry, never 3/2', () => {
+    // --repeats 2 (even), not 1 -- benchmark_eligible additionally requires balanced realized
+    // current-skill-first/no-skill-first start counts (decision 15), structurally impossible for
+    // an odd --repeats regardless of anything else in the matrix (see the identical comment on
+    // the foreign-skill-rejected test above).
+    const result = runCli(runArgs(['--seed', '1', '--repeats', '2']), fakeClaudeEnv('run-scenario-parallel-denied-then-two-allowed'), 30000);
+    expect(result.status).toBe(0);
+    expect(result.parsed).not.toBeNull();
+    const { records } = result.parsed;
+    const currentSkillRecords = records.filter((r) => r.condition === 'current-skill');
+    expect(currentSkillRecords.length).toBe(2);
+    for (const record of currentSkillRecords) {
+      expect(record.test_invocations_total.value).toBe(2);
+      expect(record.retries.value).toBe(1);
+      expect(record.success.value).toBe(true);
+      expect(record.expected_outcome_matched.value).toBe(true);
+    }
+    for (const record of records) expect(record.benchmark_eligible).toBe(true);
+  }, 30000);
+
+  it('round-7: a denied trailing attempt never displaces a genuinely valid earlier attempt as terminal', () => {
+    const result = runCli(runArgs(['--seed', '1', '--repeats', '2']), fakeClaudeEnv('run-scenario-parallel-valid-then-denied-last'), 30000);
+    expect(result.status).toBe(0);
+    expect(result.parsed).not.toBeNull();
+    const { records } = result.parsed;
+    const currentSkillRecords = records.filter((r) => r.condition === 'current-skill');
+    expect(currentSkillRecords.length).toBe(2);
+    for (const record of currentSkillRecords) {
+      // Only the first (allowed) attempt counts -- the denied trailing retry is excluded
+      // entirely, never becoming "terminal" just by virtue of running last.
+      expect(record.test_invocations_total.value).toBe(1);
+      expect(record.success.value).toBe(true);
+      expect(record.expected_outcome_matched.value).toBe(true);
+    }
+    for (const record of records) expect(record.benchmark_eligible).toBe(true);
+  }, 30000);
+
+  it('round-7: only-denied kmp-test-parallel attempts do not satisfy bash_tool_use_present', () => {
+    const result = runCli(runArgs(['--seed', '1', '--repeats', '2']), fakeClaudeEnv('run-scenario-all-parallel-denied'), 30000);
+    expect(result.status).toBe(0);
+    expect(result.parsed).not.toBeNull();
+    const { records } = result.parsed;
+    const currentSkillRecords = records.filter((r) => r.condition === 'current-skill');
+    expect(currentSkillRecords.length).toBe(2);
+    for (const record of currentSkillRecords) {
+      expect(record.test_invocations_total.value).toBe(0);
+      const btupCheck = record.grading_checks.value.find((c) => c.name === 'bash_tool_use_present');
+      expect(btupCheck.passed).toBe(false);
+    }
+    // Still a legitimate, disclosed negative result -- not a harness-integrity failure.
+    for (const record of records) expect(record.benchmark_eligible).toBe(true);
+  }, 30000);
+
+  it('round-7: a genuinely missing decision sidecar for an otherwise-clean attempt fails the WHOLE matrix closed -- never silently promoted', () => {
+    const result = runCli(runArgs(['--seed', '1', '--repeats', '1']), fakeClaudeEnv('run-scenario-parallel-missing-decision'), 30000);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/junitCaptureCompleteOk:false/);
+    expect(listEvidenceFiles('scenario')).toEqual([]);
+  }, 30000);
+
   it('a harness-integrity failure (malformed transcript) blocks the WHOLE matrix -- zero records written for ANY cell', () => {
     const result = runCli(runArgs(['--seed', '1', '--repeats', '1']), fakeClaudeEnv('malformed'), 30000);
     expect(result.status).toBe(1);

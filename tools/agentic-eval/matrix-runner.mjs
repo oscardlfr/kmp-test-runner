@@ -143,9 +143,24 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
  *   targetSkillName even though this harness's own plugin and skill share one string value.
  * @param {string} opts.targetSkillName
  * @param {number} opts.timeoutMs
- * @param {boolean} [opts.junitEvidenceEnabled] - when true, materializes the per-condition JUnit
- *   evidence-attribution scratch directory and sets its three env vars. Default false (calibrate/
- *   smoke): completely inert, conditionEnv is unchanged from before this parameter existed.
+ * @param {boolean} [opts.decisionAttributionEnabled] - when true, materializes the per-condition
+ *   decision-attribution scratch directory and sets `KMP_EVAL_JUNIT_EVIDENCE_DIR` -- the ONLY env
+ *   var policy-hook.mjs's own recordDecisionSideEffect needs to start writing a per-attempt
+ *   allow/deny decision sidecar for every Bash call (see junit-evidence.mjs's attributeCondition,
+ *   which reads them back). Independent of junitEvidenceEnabled below (round-7 fix): a scenario
+ *   whose outcome_kind isn't 'tests_executed' still needs its own attempts' allow/deny decisions
+ *   correctly attributed -- a no_applicable_tests condition's denied kmp-test-parallel attempts
+ *   were previously phantom-counted into test_invocations_total/retries and could corrupt terminal
+ *   selection, since decisionByAttempt was never populated at all for that outcome_kind and
+ *   graders.mjs's own deny/null exclusion gate never fires on bare `undefined`. Default false
+ *   (calibrate/smoke): completely inert, conditionEnv is unchanged from before this parameter
+ *   existed.
+ * @param {boolean} [opts.junitEvidenceEnabled] - when true, ADDITIONALLY registers
+ *   junit-evidence-hook.mjs on PostToolUse/PostToolUseFailure and sets the two Gradle-JUnit-XML-
+ *   specific env vars (evidenceTask/allowedInvocations) -- only meaningful on top of
+ *   decisionAttributionEnabled:true, since without a real scratch dir there is nowhere for that
+ *   hook to write. Scoped to 'tests_executed' scenarios only (real JUnit XML only ever exists
+ *   there); calibrate/smoke and no_applicable_tests scenarios never set this.
  * @param {string} [opts.evidenceTask] - scenario.expected.gradle.evidence_task (only meaningful
  *   when junitEvidenceEnabled).
  * @param {string[]} [opts.allowedInvocations] - scenario.expected.gradle.allowed_invocations (only
@@ -154,7 +169,7 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
  *   acquireSharedEvalResources); the scratch directory's removal is queued on it IMMEDIATELY after
  *   creation, before spawnCondition runs, so a failure anywhere later in this call is still covered.
  */
-export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null }) {
+export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null }) {
   const materialized = materializeFixture(previousFixtureDir);
   const fixtureDir = materialized.fixtureDir;
   cleanupFixtureOnce(fixtureDir);
@@ -172,15 +187,17 @@ export async function runSingleCondition({ condition, materializeFixture, previo
   // is ever called, so an exception anywhere later in this function still results in it being
   // removed once the caller's own try/catch invokes runCleanup().
   let evidenceDir = null;
-  if (junitEvidenceEnabled) {
+  if (decisionAttributionEnabled) {
     evidenceDir = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-junit-'));
     if (registerCleanup) registerCleanup(() => rmSync(evidenceDir, { recursive: true, force: true }));
-    conditionEnv = {
-      ...conditionEnv,
-      KMP_EVAL_JUNIT_EVIDENCE_DIR: evidenceDir,
-      KMP_EVAL_JUNIT_EVIDENCE_TASK: evidenceTask,
-      KMP_EVAL_JUNIT_ALLOWED_INVOCATIONS: JSON.stringify(allowedInvocations ?? []),
-    };
+    conditionEnv = { ...conditionEnv, KMP_EVAL_JUNIT_EVIDENCE_DIR: evidenceDir };
+    if (junitEvidenceEnabled) {
+      conditionEnv = {
+        ...conditionEnv,
+        KMP_EVAL_JUNIT_EVIDENCE_TASK: evidenceTask,
+        KMP_EVAL_JUNIT_ALLOWED_INVOCATIONS: JSON.stringify(allowedInvocations ?? []),
+      };
+    }
   }
   const argv = buildConditionArgv(baseArgv, condition, condition === 'current-skill' ? snapshotDir : null);
   const startedAt = new Date();
@@ -245,10 +262,15 @@ export async function runSingleCondition({ condition, materializeFixture, previo
  *   allowedKmpTestSubcommands: string[], cleanup: () => Promise<string[]>}>}
  */
 export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs }) {
-  // JUnit-evidence attribution is only ever relevant for a `tests_executed` scenario -- a
+  // Decision attribution (allow/deny per Bash attempt) is needed for EVERY scenario regardless of
+  // outcome_kind (round-7 fix): a no_applicable_tests condition's denied kmp-test-parallel
+  // attempts were previously phantom-counted as real executions (test_invocations_total/retries),
+  // since decisionByAttempt was never populated at all for that outcome_kind. Real JUnit-XML
+  // attribution, in contrast, is only ever relevant for a `tests_executed` scenario -- a
   // `no_applicable_tests` scenario never reads JUnit XML at all (three independent layers already
-  // guarantee this; this flag additionally keeps the mechanism's own hooks unregistered and its
-  // env vars unset for that outcome_kind, not merely inert internally).
+  // guarantee this; junitEvidenceEnabled additionally keeps junit-evidence-hook.mjs unregistered
+  // and its two Gradle-specific env vars unset for that outcome_kind, not merely inert internally).
+  const decisionAttributionEnabled = true;
   const junitEvidenceEnabled = scenario.expected?.outcome_kind === 'tests_executed';
   const evidenceTask = scenario.expected?.gradle?.evidence_task ?? null;
   const allowedInvocations = scenario.expected?.gradle?.allowed_invocations ?? null;
@@ -291,17 +313,18 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
           targetPluginName,
           targetSkillName,
           timeoutMs,
+          decisionAttributionEnabled,
           junitEvidenceEnabled,
           evidenceTask,
           allowedInvocations,
           registerCleanup,
         });
         fixtureDir = conditionResult.fixtureDir;
-        const junitAttribution = junitEvidenceEnabled
+        const junitAttribution = decisionAttributionEnabled
           ? attributeCondition(conditionResult.evidenceDir, scenario, conditionResult.bashResults, {
               terminated: conditionResult.spawnResult.terminated,
               terminationReason: conditionResult.spawnResult.terminationReason,
-            })
+            }, junitEvidenceEnabled)
           : null;
         // The scratch directory has now been fully consumed by attributeCondition -- eagerly
         // remove it right away (a safe no-op if already gone) rather than leaving it until the

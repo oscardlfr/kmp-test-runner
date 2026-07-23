@@ -176,11 +176,24 @@ export function countEvidenceTaskJunit(fixtureRoot, evidenceTask) {
  * @param {object} scenario - the validated scenario object
  * @param {Array} bashResults - conditionResult.bashResults (real transcript order, real `.id`/`.index`)
  * @param {{terminated?: boolean, terminationReason?: string|null}} [terminationInfo]
+ * @param {boolean} [junitXmlAttributionEnabled] - round-7 addition: when false (a scenario whose
+ *   outcome_kind isn't 'tests_executed' -- real JUnit XML never exists there), this function still
+ *   fully resolves `decisionByAttempt` for every relevant attempt of EITHER provider (that data
+ *   comes from the decision sidecars alone, always meaningful regardless of outcome_kind) but
+ *   skips reading the Gradle-specific evidence sidecars entirely for Gradle-relevant attempts --
+ *   `perAttemptJunit` simply stays unset for them, exactly as if they weren't Gradle at all.
+ *   graders.mjs's own evaluateGradleAttempt never reads `resolvedEvidence` at all for a
+ *   non-'tests_executed' outcome_kind (it derives outcomeMatches purely from the attempt's own
+ *   NO-SOURCE marker text), so this is a safe no-op for that path -- it exists specifically to
+ *   avoid a missing-evidence-sidecar false `captureIncomplete` for an ALLOWED Gradle attempt when
+ *   junit-evidence-hook.mjs was never even registered to write one (matrix-runner.mjs only
+ *   registers that hook when junitEvidenceEnabled). Default true preserves this function's exact
+ *   pre-existing behavior for every caller that predates this parameter.
  * @returns {{perAttemptJunit: Map<string, object>, decisionByAttempt: Map<string, string|null>,
  *   ambiguousJunitEvidence: boolean, captureIncomplete: boolean, unreliable: boolean}} both maps are
  *   keyed by each attempt's own `tool_use_id` string (`b.id`), never `b.index`.
  */
-export function attributeCondition(evidenceDir, scenario, bashResults, terminationInfo = {}) {
+export function attributeCondition(evidenceDir, scenario, bashResults, terminationInfo = {}, junitXmlAttributionEnabled = true) {
   const { terminated = false, terminationReason = null } = terminationInfo;
   const allowedInvocations = scenario.expected?.gradle?.allowed_invocations ?? [];
   const targetModule = scenario.expected?.module;
@@ -267,7 +280,12 @@ export function attributeCondition(evidenceDir, scenario, bashResults, terminati
     decisionByAttempt.set(b.id, decisionRecord.decision);
     if (decisionRecord.decision === 'deny') continue; // legitimate, non-blocking observation
 
-    if (!isGradle) continue; // kmp-test-parallel: self-contained envelope, no further check here
+    // kmp-test-parallel: self-contained envelope, no further check here. Same skip when JUnit-XML
+    // attribution is disabled for this condition's outcome_kind (round-7) -- a Gradle attempt's
+    // own decision is already recorded above; there is simply no real evidence sidecar to read
+    // (junit-evidence-hook.mjs was never registered to write one), so reading evidenceRecordsDir
+    // here would only ever find nothing and wrongly raise captureIncomplete.
+    if (!isGradle || !junitXmlAttributionEnabled) continue;
 
     if (conflictingIds.has(idHash)) {
       // Already counted in ambiguousJunitEvidence above; scoped to exactly this attempt, never a

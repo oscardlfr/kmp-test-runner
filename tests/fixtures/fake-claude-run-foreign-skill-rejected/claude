@@ -10,6 +10,23 @@
 # have failed skillSelectionOk in every cell, exactly like the real incident. Under the
 # result-aware classifier, a rejected foreign attempt is measured agent behavior, not
 # contamination -- the whole matrix must still promote successfully.
+#
+# Also writes the decision sidecar the real policy-hook.mjs now writes for EVERY scenario
+# condition (round-7 fix) -- see fake-claude-run-scenario-success/claude's identical addition.
+write_sidecar() {
+  local kind="$1" toolUseId="$2" recordJson="$3"
+  node -e '
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const [kind, toolUseId, recordJson] = process.argv.slice(1);
+const idHash = crypto.createHash("sha256").update(toolUseId).digest("hex");
+const dir = path.join(process.env.KMP_EVAL_JUNIT_EVIDENCE_DIR, kind);
+fs.mkdirSync(dir, { recursive: true });
+fs.writeFileSync(path.join(dir, idHash + ".json"), recordJson);
+' -- "$kind" "$toolUseId" "$recordJson"
+}
+
 HAS_PLUGIN_DIR=0
 PLUGIN_DIR_VALUE=""
 PREV_ARG=""
@@ -45,6 +62,7 @@ fi
 echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test parallel --module-filter :fakemod --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
 echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
 echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+write_sidecar decisions toolu_fakebash1 '{"decision":"allow","command":"kmp-test parallel --module-filter :fakemod --json"}'
 
 # Built via `node -e` (never manual bash quote-escaping) specifically so the nested JSON envelope
 # survives as a byte-exact string VALUE inside the outer transcript line -- see

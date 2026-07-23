@@ -1,28 +1,13 @@
 #!/usr/bin/env bash
-# tests/fixtures/fake-claude-run-scenario-success/claude -- deterministic stand-in for the real
-# `claude` CLI, used by tests/vitest/agentic-eval-run-command.test.js to exercise cmdRun's own
-# scenario-matrix orchestration end-to-end (per-cell materialize/reset, grading integration via
-# graders.mjs, atomic N-record promotion) without spending live API budget. Never invoked outside
-# these tests -- production runs always use the real, authenticated `claude` CLI. See
-# fake-claude-success/claude (calibrate/smoke's own fixture) for the shared --plugin-dir-sniffing
-# convention this mirrors.
-#
-# Both conditions attempt the Skill tool (--plugin-dir presence decides confirmed vs. "Unknown
-# skill") and BOTH then run the exact same single Bash call -- `kmp-test parallel --module-filter
-# :fakemod --json` -- reporting a real, well-formed no_test_modules envelope for a module named
-# :fakemod, matching tests/vitest/agentic-eval-run-command.test.js's own synthetic,
-# integration-test-only scenario (its `expected.kmp_test` contract exactly, and its
-# `expected.module`). Whether the skill was "available" doesn't change what command gets run here
-# -- this fixture exists to prove cmdRun's own WIRING works end-to-end for a correct answer in
-# both arms, not to model realistic skill-driven behavioral divergence (that is exactly what a
-# live/corpus-probe run would measure for real, deliberately out of scope for an infrastructure
-# integration test).
-#
-# Also writes the decision sidecar the real policy-hook.mjs now writes for EVERY scenario
-# condition (round-7 fix -- KMP_EVAL_JUNIT_EVIDENCE_DIR is no longer 'tests_executed'-only), the
-# same way fake-claude-run-tests-executed-two-gradle/claude already does for its own Gradle
-# attempts -- see that fixture's header comment for why this simulates the hook's own side effect
-# inline rather than spawning it for real.
+# tests/fixtures/fake-claude-run-scenario-parallel-valid-then-denied-last/claude -- round-7
+# regression: a correctly module-filtered, ALLOWED `kmp-test parallel` attempt runs FIRST (would be
+# terminal on its own), followed by a SECOND, DENIED attempt (a trailing --verbose retry). Before
+# the fix, the denied trailing attempt's decision resolved to bare `undefined` for a
+# no_applicable_tests condition, so graders.mjs's own deny/null exclusion gate never excluded it --
+# it could become "terminal" purely by running last (its own resultContent never parses as a valid
+# kmp-test envelope, since it never actually executed), flipping a genuinely correct answer to a
+# reported failure. See fake-claude-run-scenario-success/claude for the shared write_sidecar
+# convention this reuses.
 write_sidecar() {
   local kind="$1" toolUseId="$2" recordJson="$3"
   node -e '
@@ -62,23 +47,21 @@ else
   echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
 fi
 
+# Attempt #1: correctly module-filtered, ALLOWED -- target-matching, the ONLY valid evidence.
 echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test parallel --module-filter :fakemod --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
 echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
 echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
 write_sidecar decisions toolu_fakebash1 '{"decision":"allow","command":"kmp-test parallel --module-filter :fakemod --json"}'
-
-# Built via `node -e` (never manual bash quote-escaping) specifically so the nested JSON envelope
-# survives as a byte-exact string VALUE inside the outer transcript line -- the tool_result's own
-# `content` field must be the literal stdout text a real `kmp-test parallel --json` would have
-# printed, i.e. a JSON-encoded STRING whose PARSED value is this envelope object, not the object
-# itself inlined.
 KMP_ENVELOPE='{"tool":"kmp-test","schema_version":2,"subcommand":"parallel","version":"0.14.0","project_root":"/fake","exit_code":2,"duration_ms":21,"tests":{"total":0,"passed":0,"failed":0,"skipped":0,"individual_total":0},"modules":[],"skipped":[{"module":"fakemod","reason":"no test source set"}],"coverage":{"tool":"auto","missed_lines":null,"modules_with_kover_plugin":[],"modules_with_jacoco_plugin":[]},"errors":[{"code":"no_test_modules","message":"No modules found matching filter: :fakemod","test_type":"","caused_by_filter":true}],"warnings":[],"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true}}'
 node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{type:'tool_result',content:process.argv[1],tool_use_id:'toolu_fakebash1'}]}}))" "$KMP_ENVELOPE"
 
-# The trailing KMP_EVAL_RESULT block is what graders.mjs's structured final-answer check (check
-# 8) actually reads -- the prose above it is retained in the record for human review only, never
-# inspected for grading (see graders.mjs's own header comment for why free-prose parsing was
-# removed from the grading path entirely).
+# Attempt #2: a trailing --verbose retry, DENIED -- must never displace attempt #1 as terminal.
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash2","name":"Bash","input":{"command":"kmp-test parallel --module-filter :fakemod --json --verbose","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-2","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-2","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+write_sidecar decisions toolu_fakebash2 '{"decision":"deny","command":"kmp-test parallel --module-filter :fakemod --json --verbose"}'
+echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"denied","tool_use_id":"toolu_fakebash2"}]}}'
+
 FINAL_ANSWER='The :fakemod module has no applicable unit tests -- kmp-test reported no test modules matching that filter.
 
 KMP_EVAL_RESULT
