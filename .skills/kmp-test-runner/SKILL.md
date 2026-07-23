@@ -24,18 +24,21 @@ metadata:
 
 Resolve scope before running anything, then stop once the envelope proves the outcome.
 
-1. **Known workflow, no specific module** — dispatch the matching subcommand globally (see the
-   table under Steps), e.g. `kmp-test parallel --json --project-root .`.
-2. **Known module** — dispatch the matching subcommand with `--module-filter` set to the module
-   name already known from context; no `describe` call needed.
-3. **Unknown module or unclear task** — run `kmp-test describe --json --project-root .` once. Read
+1. **Resolve the workflow first** — from what the user asked for (see the table under Steps).
+   `describe` discovers modules and their available tasks; it does not decide which workflow the
+   user wants. If the workflow itself is ambiguous, ask before running anything.
+2. **Known workflow, no specific module** — dispatch the matching subcommand globally, e.g.
+   `kmp-test parallel --json --project-root .`.
+3. **Known workflow, known module** — dispatch the matching subcommand with `--module-filter` set
+   to the module name already known from context; no `describe` call needed.
+4. **Known workflow, unclear module** — run `kmp-test describe --json --project-root .` once. Read
    the exact value from its `modules[].name` field. Dispatch the matching subcommand (e.g.
    `kmp-test parallel --json --project-root .`) with `--module-filter` set to that exact value.
-4. **Preview only** — add `--dry-run` to any subcommand; don't loop through guessed filters.
-5. **Trust the real envelope** — a non-dry-run envelope is authoritative for what ran; trust its
+5. **Preview only** — add `--dry-run` to any subcommand; don't loop through guessed filters.
+6. **Trust the real envelope** — a non-dry-run envelope is authoritative for what ran; trust its
    `exit_code` and `errors[]` over any prior assumption.
-6. **Stop once proven** — report the envelope-backed result and stop.
-7. **Diagnose only on failure** — run `kmp-test doctor --json --project-root .` only for
+7. **Stop once proven** — report the envelope-backed result and stop.
+8. **Diagnose only on failure** — run `kmp-test doctor --json --project-root .` only for
    `exit_code: 3` or an explicit request. Confirms gradlew, JDK, ADB, Kotlin/AGP versions, project
    shape.
 
@@ -45,36 +48,36 @@ A denied exploratory command is not worth retrying in another shape — abandon 
 to the next canonical step above. A denied canonical `kmp-test` command is final — stop and report
 the blockage; don't retry with a different flag, subcommand, or shell wrapper.
 
-A confirmed no-test result — `describe` shows no unit-test task, and a targeted `parallel` run
-returns `errors[].code: "no_test_modules"` with `caused_by_filter:true` — is final: report
-"no applicable tests" and stop. Don't switch to a different subcommand or workflow looking for
-another answer.
+When the resolved workflow is `parallel`, "no applicable tests" needs `describe`-confirmed
+evidence: the module is in `modules[].name` with `test_tasks.unit: null`. Reached step 3 (known
+module, no describe) and got `no_test_modules` + `caused_by_filter:true` instead? Run `describe`
+once first — the same code can also mean a wrong name. Once confirmed, report "no applicable
+tests" and stop; don't switch subcommand or workflow for another answer.
 
 ## Prerequisites
 
-1. `kmp-test` CLI installed — npm: `npm install -g kmp-test-runner`, or the shell installer:
-   `curl -fsSL https://raw.githubusercontent.com/oscardlfr/kmp-test-runner/main/scripts/install.sh | bash`.
+1. `kmp-test` CLI installed — npm: `npm install -g kmp-test-runner`.
 2. `gradlew` (`gradlew.bat` on Windows) at the project root — initialize the gradle wrapper first
    if missing.
 3. JDK 17+ — auto-selected from `~/.kmp-test/config.json`, `JAVA_HOME`, or the built-in catalogue.
 
 ## Environment detection
 
-Optional — running tests never needs it. `kmp-test doctor --json --project-root .` already
-reports device/emulator availability, and `kmp-test android --json --project-root .` works
-standalone. Google's `android` CLI is a separate, optional layer for emulator, screen-capture, and
-UI-debug tooling on the same envelope; see [`references/workflows/overview.md`](references/workflows/overview.md)
-for the per-environment deep-dives when useful. Either branch returns the identical JSON shape —
-the extra CLI only enriches troubleshooting, not dispatch.
+Optional — running tests never needs it. `kmp-test doctor --json --project-root .` reports
+ADB/SDK availability, and `kmp-test android --json --project-root .` works standalone regardless.
+Google's `android` CLI is a separate, optional layer for emulator, screen-capture, and UI-debug
+tooling with its own independent output format (see Tool selection below) — using it or not never
+changes `kmp-test`'s own envelope shape. See [`references/workflows/overview.md`](references/workflows/overview.md)
+for the per-environment deep-dives when useful.
 
 ## Tool selection — `kmp-test` vs `android` CLI overlap
 
 `android describe`/`android info` overlap with `kmp-test parallel --dry-run --json`/`kmp-test
 doctor --json`. Default to `kmp-test`: versioned JSON (`schema_version: 2`), cross-platform,
-side-effect-free on `--dry-run`, discriminated `errors[].code`/`warnings[].code`. `android info`
-is plain text, not JSON; `android describe` is a paths-pointer tool with a known Windows bug at
-0.7.15. Use `android` CLI for quick SDK probing or emulator/screen/UI work `kmp-test` doesn't
-cover. Mapping: [`references/cli/envelope-schema.md` section Cross-tool comparison](references/cli/envelope-schema.md#cross-tool-comparison-android-cli-analogues).
+side-effect-free on `--dry-run`. `android info` is plain text, not JSON; `android describe` is a
+paths-pointer tool with a known Windows bug at 0.7.15. Use `android` CLI for SDK probing or
+emulator/UI work `kmp-test` doesn't cover. Mapping: [`references/cli/envelope-schema.md` section
+Cross-tool comparison](references/cli/envelope-schema.md#cross-tool-comparison-android-cli-analogues).
 
 ## Steps
 
@@ -139,8 +142,10 @@ Confirm the envelope matches `exit_code`:
 ## Guidelines
 
 - **Never run `gradle clean`** first — wastes time; dispatch is already incremental.
-- **`--module-filter <glob>`** narrows scope to a module subset (e.g. `"core-*"`).
-- **`--test-filter <FQN>#<method>`** narrows to one test in large, slow suites.
+- **`--module-filter`** narrows scope to a module subset — e.g. `--module-filter core-network`
+  matches modules whose name contains "core-network".
+- **`--test-filter`** narrows to one test in large, slow suites, using
+  `FullyQualifiedClassName#methodName` — e.g. `--test-filter com.example.MyTest#myMethod`.
 - **Avoid `--no-coverage`** unless coverage genuinely doesn't apply — `coverage{}` is often what
   the agent wants.
 - **`--dry-run`** plans without running — same envelope shape, `dry_run: true`.
@@ -154,13 +159,12 @@ Confirm the envelope matches `exit_code`:
 Branch on `errors[].code` — root-cause and recovery steps live in
 [`references/troubleshooting/overview.md`](references/troubleshooting/overview.md), keyed by code:
 
-- `no_test_modules` — zero test-task modules; `caused_by_filter` splits user-filter (CONFIG_ERROR
-  2) from project-wide (ENV_ERROR 3).
-- `task_not_found` / `module_failed` / `unsupported_class_version` — wrong subcommand or AGP
-  mismatch; a real task failure (`setup_failed`); or a JDK toolchain mismatch (`kmp-test doctor`).
-- `instrumented_setup_failed` / `flavor_unused` / `isolated_runtime_race` / `lock_held` —
-  device/emulator problem; unmatched `--flavor`; `--isolated` racing a shared resource; or a held
-  lock (`--force` to bypass).
+- `no_test_modules` — `caused_by_filter` splits user-filter (CONFIG_ERROR 2) from project-wide
+  (ENV_ERROR 3).
+- `task_not_found` / `module_failed` / `unsupported_class_version` — wrong subcommand/AGP
+  mismatch; a real failure (`setup_failed`); or a JDK mismatch (`kmp-test doctor`).
+- `instrumented_setup_failed` / `flavor_unused` / `isolated_runtime_race` / `lock_held` — device
+  problem; unmatched `--flavor`; a shared-resource race; or a held lock (`--force`).
 
 ## References
 

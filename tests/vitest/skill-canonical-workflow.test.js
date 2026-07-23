@@ -66,32 +66,54 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(window).toMatch(/\b3\b/);
   });
 
+  // Round-2 addition: workflow resolution (parallel/android/coverage/benchmark/changed) and
+  // module resolution are two DIFFERENT decisions. `describe` discovers modules and their tasks;
+  // it never decides which workflow the user wants. Scoped to step 1's own text so this doesn't
+  // just match the word "workflow" appearing anywhere else in the section.
+  it('step: resolves the workflow first; describe does not decide it; asks if ambiguous', () => {
+    const start = protocol.indexOf('Resolve the workflow first');
+    const end = protocol.indexOf('**Known workflow, no specific module**');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const step1 = protocol.slice(start, end);
+    expect(step1.toLowerCase()).toMatch(/does not decide/);
+    expect(step1.toLowerCase()).toMatch(/ambiguous/);
+    expect(step1.toLowerCase()).toMatch(/\bask\b/);
+  });
+
   it('step: known workflow with no specific module dispatches globally', () => {
     expect(protocol).toMatch(/known workflow.{0,20}no specific module/i);
   });
 
-  it('step: known module dispatches filtered using the already-known name', () => {
-    expect(protocol).toMatch(/known module/i);
-    expect(protocol).toMatch(/already known|already-known/i);
-  });
-
-  it('step: unknown module/task runs describe once before a targeted dispatch', () => {
-    // Scoped to step 3's own text (not the whole section) -- step 2 (known module) legitimately
-    // mentions --module-filter too, earlier in the document, which would false-fail an unscoped
-    // describe-before-filter check even after a correct implementation.
-    const start = protocol.indexOf('Unknown module or unclear task');
-    const end = protocol.indexOf('**Preview only**');
+  it('step: known workflow + known module dispatches filtered using the already-known name', () => {
+    // Round-2 fix: scoped to this step's own text (was previously an unscoped whole-section
+    // match, which doesn't actually prove THIS step's content is correct/complete).
+    const start = protocol.indexOf('Known workflow, known module');
+    const end = protocol.indexOf('**Known workflow, unclear module**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const step3 = protocol.slice(start, end);
-    const describeIdx = step3.indexOf('kmp-test describe --json --project-root .');
-    const filterIdx = step3.indexOf('--module-filter');
+    expect(step3).toMatch(/already known|already-known/i);
+    expect(step3).toMatch(/--module-filter/);
+  });
+
+  it('step: known workflow + unclear module runs describe once before a targeted dispatch', () => {
+    // Scoped to this step's own text (not the whole section) -- the preceding step legitimately
+    // mentions --module-filter too, which would false-fail an unscoped describe-before-filter
+    // check even after a correct implementation.
+    const start = protocol.indexOf('Known workflow, unclear module');
+    const end = protocol.indexOf('**Preview only**');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const step4 = protocol.slice(start, end);
+    const describeIdx = step4.indexOf('kmp-test describe --json --project-root .');
+    const filterIdx = step4.indexOf('--module-filter');
     expect(describeIdx).toBeGreaterThan(-1);
     expect(filterIdx).toBeGreaterThan(-1);
     expect(describeIdx).toBeLessThan(filterIdx);
   });
 
-  it('step: unknown module/task reads the exact value from modules[].name', () => {
+  it('step: unclear module reads the exact value from modules[].name', () => {
     expect(protocol).toMatch(/modules\[\]\.name/);
   });
 
@@ -143,16 +165,31 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(protocol.toLowerCase()).toMatch(/don.t retry|no retry/);
   });
 
-  it('a confirmed no-test result is final: reports "no applicable tests" and stops', () => {
-    expect(protocol).toContain('no_test_modules');
-    expect(protocol).toContain('caused_by_filter:true');
-    expect(protocol).toMatch(/no applicable tests/i);
+  // Round-2 fixes: (a) explicitly scoped to the `parallel` workflow -- a targeted parallel
+  // result only proves absence of unit-test modules, and this rule must not terminate an
+  // android/coverage/benchmark/changed request; (b) requires describe-CONFIRMED evidence
+  // (modules[].test_tasks.unit:null) rather than trusting a bare no_test_modules code alone --
+  // reached via the known-module (no-describe) path, that same code can also mean the module
+  // name was wrong, not that it genuinely has no tests; (c) the test now actually asserts "stop"
+  // appears (the previous version's name claimed this but never checked it).
+  const NO_TEST_PARAGRAPH_ANCHOR = /When the resolved workflow is `parallel`[\s\S]*?(?=\n\n|$)/;
+
+  it('a confirmed no-test result requires describe-confirmed evidence, scoped to parallel, and stops', () => {
+    const match = protocol.match(NO_TEST_PARAGRAPH_ANCHOR);
+    expect(match).not.toBeNull();
+    const paragraph = match[0];
+    expect(paragraph).toContain('test_tasks.unit');
+    expect(paragraph).toMatch(/\bnull\b/);
+    expect(paragraph).toContain('no_test_modules');
+    expect(paragraph).toContain('caused_by_filter:true');
+    expect(paragraph).toMatch(/no applicable tests/i);
+    expect(paragraph.toLowerCase()).toMatch(/\bstop\b/);
   });
 
   it('the no-test-outcome guidance does not enumerate specific alternate subcommands', () => {
-    const noTestParagraph = protocol.match(/A confirmed no-test result[\s\S]*?(?=\n\n|$)/);
-    expect(noTestParagraph).not.toBeNull();
-    const paragraph = noTestParagraph[0];
+    const match = protocol.match(NO_TEST_PARAGRAPH_ANCHOR);
+    expect(match).not.toBeNull();
+    const paragraph = match[0];
     expect(paragraph).not.toMatch(/\bandroid\b/i);
     expect(paragraph).not.toMatch(/\bcoverage\b/i);
     expect(paragraph).not.toMatch(/\bchanged\b/i);
@@ -213,8 +250,21 @@ describe('SKILL.md version wording', () => {
     expect(skillMd).not.toContain('0.10.0');
   });
 
-  it('does not include an unconditional kmp-test --version check', () => {
-    expect(skillMd).not.toMatch(/`kmp-test --version`\s+prints/i);
+  // Round-2 fix: broadened from the exact old phrase ("`kmp-test --version` prints") to a bare
+  // substring check -- the old regex only caught that one specific sentence and would have
+  // missed any other rephrasing of an unconditional preflight version check.
+  it('does not include an unconditional kmp-test --version check, in any phrasing', () => {
+    expect(skillMd).not.toContain('kmp-test --version');
+  });
+});
+
+// Round-2 addition: catches the general failure class, not just Decision protocol's own
+// examples -- a policy-unsafe bracketed placeholder anywhere in SKILL.md (e.g. Guidelines'
+// pre-existing `--module-filter <glob>` / `--test-filter <FQN>#<method>`) undermines this PR's
+// whole purpose just as much as one in the new section would.
+describe('SKILL.md never presents a bracketed flag-value placeholder as literal syntax', () => {
+  it('no "--flag <placeholder>" pattern appears anywhere in the document', () => {
+    expect(skillMd).not.toMatch(/--[\w-]+\s+<[^>]*>/);
   });
 });
 
