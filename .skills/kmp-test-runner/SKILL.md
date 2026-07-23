@@ -31,14 +31,14 @@ Resolve scope before running anything, then stop once the envelope proves the ou
    `kmp-test parallel --json --project-root .`.
 3. **Known workflow, known module** — dispatch with the workflow's own module-scoping flag set to
    the module name already known from context; no `describe` call needed. `--module-filter`
-   (parallel/android/benchmark/changed) takes the name as-is. `--coverage-modules` (coverage;
-   `coverage` ignores `--module-filter`) needs the exact name with any leading `:` stripped,
-   comma-separated, no glob.
+   (parallel/android/benchmark) takes the name as-is; `changed` has no such flag — its module set
+   is always git-derived. `--coverage-modules` (coverage; `coverage` ignores `--module-filter`)
+   needs the exact name with any leading `:` stripped, comma-separated, no glob.
 4. **Known workflow, unclear module** — run `kmp-test describe --json --project-root .` once. Read
    the exact value from its `modules[].name` field, and strip the leading `:` if dispatching
    `--coverage-modules`. Dispatch with the same workflow-specific flag set to that value.
-5. **Preview only** — add `--dry-run` to parallel/android/coverage/benchmark/changed; don't loop
-   through guessed filters.
+5. **Preview only** — add `--dry-run` to parallel/android/coverage/benchmark/changed, or
+   `changed --show-modules-only` for its own git-derived list; don't loop through guessed filters.
 6. **Trust the real envelope** — a non-dry-run envelope is authoritative for what ran; trust its
    `exit_code` and `errors[]` over any prior assumption.
 7. **Stop once proven** — report the envelope-backed result and stop.
@@ -50,8 +50,9 @@ Start with the structured CLI from the project root — skip generic preflight.
 `--module-filter` matches by substring unless the value has glob characters — verify the
 envelope's `modules[]` before treating a dispatch as exactly scoped.
 
-`--coverage-modules` is exact-match only (no substring, no glob) — verify scope via
-`coverage.module_buckets`, since `coverage`'s own `modules[]` is always empty.
+`--coverage-modules` is exact-match only (no substring, no glob). `coverage`'s own `modules[]` is
+always empty — verify scope via `plan.coverage_modules` on `--dry-run` (echoes the filter,
+unresolved) or `coverage.module_buckets` on a real run.
 
 A denied exploratory command is not worth retrying in another shape — abandon it and go straight
 to the next canonical step above. A denied canonical `kmp-test` command is final — stop and report
@@ -81,11 +82,10 @@ Deep-dives: [`references/workflows/overview.md`](references/workflows/overview.m
 
 ## Tool selection — `kmp-test` vs `android` CLI overlap
 
-`android describe`/`android info` overlap with `kmp-test parallel --dry-run --json`/`kmp-test
-doctor --json`. Default to `kmp-test`: versioned JSON (`schema_version: 2`), cross-platform,
-side-effect-free on `--dry-run`. `android info` is plain text, not JSON; `android describe` has a
-known Windows bug. Use `android` CLI for SDK probing/emulator/UI work outside `kmp-test`. Mapping:
-[`references/cli/envelope-schema.md` section Cross-tool comparison](references/cli/envelope-schema.md#cross-tool-comparison-android-cli-analogues).
+Default to `kmp-test`: versioned JSON, cross-platform, side-effect-free on `--dry-run`. `android
+info`/`describe` overlap but are plain text, not JSON (and `describe` has a known Windows bug) —
+use `android` CLI only for SDK/emulator/UI work outside `kmp-test`. Mapping:
+[`envelope-schema.md`](references/cli/envelope-schema.md#cross-tool-comparison-android-cli-analogues).
 
 ## Steps
 
@@ -114,8 +114,7 @@ carries discriminated codes (e.g. `no_test_modules` with `caused_by_filter`, `mo
 ### 3. Report failures with module attribution
 
 Per `errors[]` entry, surface `code`, discriminators (`caused_by_filter`, `setup_failed`), and
-`message`; include `module` only when present (not every code carries one — e.g. `module_failed`/
-`spawn_error`/`gradle_timeout` do). For test failures, drill into
+`message`; include `module` only when present on the entry. For test failures, drill into
 `modules[].test_failures[{test,cause,type}]` — `test` is the fully-qualified `ClassName.methodName`,
 `cause` the failure message, `type` the optional exception class.
 

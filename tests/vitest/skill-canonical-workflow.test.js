@@ -13,7 +13,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { discoverCoverageModules, parseArgs as parseCoverageArgs } from '../../lib/orchestrators/coverage-orchestrator.js';
+import { discoverCoverageModules, parseArgs as parseCoverageArgs, runCoverage } from '../../lib/orchestrators/coverage-orchestrator.js';
+import { parseArgs as parseChangedArgs } from '../../lib/orchestrators/changed-orchestrator.js';
 import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -80,6 +81,43 @@ describe('--test-type value contract (grounds the no-test-outcome caveat in real
   });
 });
 
+// Round-5 addition: ground the "changed has no user-facing module filter" claim in the real
+// parser -- changed-orchestrator.js's parseArgs has no `--module-filter` case at all, so it falls
+// through to the generic unknown-flag handler. Round 4's SKILL.md text wrongly grouped `changed`
+// alongside parallel/android/benchmark as accepting --module-filter; this is the real behavior
+// that the Decision-protocol assertion below is tied to.
+describe('changed module-filter contract (grounds the SKILL.md claim in the real parser)', () => {
+  it('--module-filter is rejected as unknown_flag -- changed has no user-facing module filter', () => {
+    const opts = parseChangedArgs(['--module-filter', 'app']);
+    expect(opts.errors).toContainEqual(
+      expect.objectContaining({ code: 'unknown_flag', flag: '--module-filter' })
+    );
+  });
+});
+
+// Round-5 addition: ground the dry-run-vs-real-run coverage verification split in the real
+// orchestrator. Round 4's SKILL.md text said to verify --coverage-modules scope via
+// coverage.module_buckets unconditionally -- but on --dry-run, module_buckets is ALWAYS the
+// hardcoded-empty shape (no model build, no XML reads); the filter value only surfaces via
+// plan.coverage_modules (unresolved -- it echoes the raw split value, not a validated module list).
+describe('Coverage dry-run verification contract (grounds the dry-run-vs-real-run split in real behavior)', () => {
+  it('--dry-run echoes the filter into plan.coverage_modules but leaves module_buckets empty', async () => {
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot: REPO_ROOT,
+      args: ['--dry-run', '--coverage-modules', 'app'],
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.dry_run).toBe(true);
+    expect(envelope.plan.coverage_modules).toEqual(['app']);
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: [],
+      no_xml: [],
+      parse_errored: [],
+      skipped_by_user: [],
+    });
+  });
+});
+
 describe('Decision protocol -- single canonical entry point, first in the document', () => {
   it('is the first ## heading in the document (not a fourth layer alongside old ones)', () => {
     const headings = [...skillMd.matchAll(/^## (.+)$/gm)];
@@ -139,6 +177,18 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     const step3 = protocol.slice(start, end);
     expect(step3).toMatch(/already known|already-known/i);
     expect(step3).toMatch(/--module-filter/);
+    // Round-5 fix: changed has NO user-facing --module-filter at all (proven against the real
+    // parser in the "changed module-filter contract" describe block above -- parseArgs returns
+    // unknown_flag) -- round 4 wrongly grouped it alongside parallel/android/benchmark. Scoped to
+    // the parenthetical immediately after the first --module-filter mention, the exact shape of
+    // the old bug ("(parallel/android/benchmark/changed)"), so this doesn't just re-match the
+    // unscoped word "changed" appearing anywhere else in the step (e.g. a future unrelated
+    // mention would not false-fail this check).
+    const filterIdx = step3.indexOf('--module-filter');
+    const parenWindow = step3.slice(filterIdx, filterIdx + 60);
+    expect(parenWindow).not.toMatch(/\bchanged\b/);
+    expect(step3).toMatch(/`changed`/);
+    expect(step3.toLowerCase()).toMatch(/git-derived/);
     // Round-3 fix: coverage silently accepts --module-filter but ignores it (its own scoping
     // flag is --coverage-modules, confirmed in lib/orchestrators/coverage-orchestrator.js) -- an
     // agent following workflow-agnostic advice here would believe it scoped to one module while
@@ -205,6 +255,16 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(step5).toMatch(/\bandroid\b/);
   });
 
+  // Round-5 addition: changed's own preview mechanism is --show-modules-only (lists the
+  // git-derived module set without running tests), not --dry-run alone -- pointing agents only at
+  // --dry-run here would still be correct but less informative for this specific subcommand.
+  it('step: preview mentions --show-modules-only as changed\'s own preview flag', () => {
+    const start = protocol.indexOf('**Preview only**');
+    const end = protocol.indexOf('**Trust the real envelope**');
+    const step5 = protocol.slice(start, end);
+    expect(step5).toMatch(/--show-modules-only/);
+  });
+
   it('step: trusts the real (non-dry-run) envelope as authoritative', () => {
     expect(protocol).toMatch(/authoritative/i);
   });
@@ -249,7 +309,7 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(paragraph).not.toContain('--coverage-modules');
   });
 
-  it('warns --coverage-modules is exact-match only and must be verified via module_buckets', () => {
+  it('warns --coverage-modules is exact-match only, distinguishing dry-run from real-run verification', () => {
     const start = protocol.indexOf('`--coverage-modules` is exact-match only');
     const end = protocol.indexOf('A denied exploratory command');
     expect(start).toBeGreaterThan(-1);
@@ -259,8 +319,15 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     // Explicitly ruling out substring matching ("no substring") is correct, precise content --
     // what must never appear is the AFFIRMATIVE claim (module-filter's own property).
     expect(paragraph).not.toMatch(/matches by substring/i);
-    expect(paragraph).toContain('module_buckets');
     expect(paragraph.toLowerCase()).toMatch(/always empty/);
+    // Round-5 fix: round 4 pointed unconditionally at coverage.module_buckets -- but on
+    // --dry-run, module_buckets is ALWAYS the hardcoded-empty shape regardless of the filter
+    // (proven in the "Coverage dry-run verification contract" describe block above), so that
+    // guidance silently misled a dry-run caller into reading "nothing matched" from an envelope
+    // that never ran anything. The filter only surfaces pre-run via plan.coverage_modules.
+    expect(paragraph).toMatch(/--dry-run/);
+    expect(paragraph).toContain('plan.coverage_modules');
+    expect(paragraph).toContain('module_buckets');
   });
 
   it('denial recovery: a denied exploratory probe is abandoned, not retried', () => {
@@ -280,6 +347,17 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   // test_tasks.unit:null while test_tasks.ios:"iosX64Test" is populated and genuinely
   // dispatchable via --test-type ios -- unit:null alone would have wrongly short-circuited that.
   const NO_TEST_PARAGRAPH_ANCHOR = /For the default unit-test `parallel` workflow[\s\S]*?(?=\n\n|$)/;
+
+  // Round-5 fix: the round-4 version of this check only looked for the literal concatenation
+  // "--test-type device" / "--test-type web" -- but the ACTUAL old (round-3-era) bug never wrote
+  // that concatenation. It wrote device/web backtick-quoted alongside ios/macos in a list near
+  // "--test-type", e.g. "...run via `ios`/`device`/`web`/`macos` under an explicit `--test-type`".
+  // The round-4 regex would have stayed green against that exact real bad sentence -- it was
+  // never actually discriminating. Extracted as a pure detector so its power can be proven with a
+  // synthetic copy of the real old sentence, independent of whatever the paragraph currently says.
+  function mentionsDeviceOrWebNearTestType(text) {
+    return /--test-type/.test(text) && /`device`|`web`/.test(text);
+  }
 
   it('a confirmed no-test result requires a REAL non-dry-run parallel envelope, not describe alone', () => {
     const match = protocol.match(NO_TEST_PARAGRAPH_ANCHOR);
@@ -301,12 +379,23 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   // Rather than hardcode a field-name-to-CLI-value mapping in SKILL.md (which could itself go
   // stale), the fix points to the reference doc and never presents device/web as if they were
   // literal --test-type arguments.
+  it('[detector] catches a synthetic copy of the real old sentence', () => {
+    const oldBadSentence =
+      'the module may still run via `ios`/`device`/`web`/`macos` under an explicit `--test-type`';
+    expect(mentionsDeviceOrWebNearTestType(oldBadSentence)).toBe(true);
+  });
+
+  it('[detector] does not flag an ordinary --test-type mention with no device/web backticks', () => {
+    const goodSentence =
+      'the module may still run under a different `--test-type`; see flags-reference.md';
+    expect(mentionsDeviceOrWebNearTestType(goodSentence)).toBe(false);
+  });
+
   it('does not present device/web as literal --test-type values; points to the real enum', () => {
     const match = protocol.match(NO_TEST_PARAGRAPH_ANCHOR);
     expect(match).not.toBeNull();
     const paragraph = match[0];
-    expect(paragraph).not.toMatch(/--test-type\s+device\b/i);
-    expect(paragraph).not.toMatch(/--test-type\s+web\b/i);
+    expect(mentionsDeviceOrWebNearTestType(paragraph)).toBe(false);
     expect(paragraph).toMatch(/test_tasks/);
     expect(paragraph).toMatch(/flags-reference/i);
   });
@@ -371,6 +460,15 @@ describe('Steps -- dispatch table and envelope parsing', () => {
   // agent expect/invent a module for error shapes that never carry one.
   it('reports errors[].module only when present, not for every entry', () => {
     expect(steps.toLowerCase()).toMatch(/only when present|not every/);
+  });
+
+  // Round-5 fix: round 4's wording claimed module_failed/spawn_error/gradle_timeout "do" carry a
+  // module field, as if unconditionally -- but classifySpawnError (lib/runners/script-dispatcher.js)
+  // constructs spawn_error entries with NO module field at all. Whitespace-collapsed before
+  // matching so the check doesn't depend on exactly where the prose happens to wrap.
+  it('does not overclaim that specific codes always carry a module field', () => {
+    const flattened = steps.replace(/\s+/g, ' ');
+    expect(flattened).not.toMatch(/spawn_error.{0,10}gradle_timeout.{0,10}\bdo\b/i);
   });
 });
 

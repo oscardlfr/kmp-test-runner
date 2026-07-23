@@ -4,7 +4,7 @@ Detect modules touched by uncommitted git changes and run only their tests. In-p
 
 ## Goal
 
-Run `git diff` against the working tree (default) or the staged index (`--staged-only`), map each changed file's path to its enclosing gradle module via longest-prefix matching, build a synthetic `--module-filter`, and dispatch the unit-tests workflow against just those modules. Surface the diff + dispatch in a single JSON envelope.
+Run `git diff` against the working tree (default) or the staged index (`--staged-only`), map each changed file's path to its enclosing gradle module via longest-prefix matching, build an internal `--module-filter` value (not a user-facing flag — see Common flags), and dispatch the unit-tests workflow against just those modules. Surface the diff + dispatch in a single JSON envelope.
 
 ## When to use this workflow
 
@@ -34,7 +34,7 @@ That command:
 1. Runs `git diff --name-only HEAD` (default) or `git diff --cached --name-only` (`--staged-only`) plus `git status --porcelain` for untracked.
 2. Maps each path to its enclosing gradle module by walking the project model (`discoverIncludedModules()` in `lib/orchestrators/changed-orchestrator.js`) — longest-prefix wins, handles arbitrary nesting (`feature/<name>/<api|impl>/...`).
 3. Deduplicates the module set, normalises the module names (`:core:network` vs `core/network/`).
-4. Builds a synthetic `--module-filter <comma-list>` and delegates **in-process** to the parallel orchestrator's `runParallel()`. No subprocess hop, no re-spawn cost.
+4. Builds an internal `--module-filter <comma-list>` value (not user-settable) and delegates **in-process** to the parallel orchestrator's `runParallel()`. No subprocess hop, no re-spawn cost.
 5. Emits a JSON envelope with the changed-files diff, the resolved modules, and the per-module test outcomes.
 
 If no modules changed: exit 0 with `errors[].code: no_changed_modules` (**soft code** — does NOT promote `exit_code` via WS-5).
@@ -50,7 +50,6 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags
 | `--show-modules-only` | off | List detected modules in the envelope, exit 0 **without** running tests. Pair with `--json` for a machine-readable preview. |
 | `--max-failures <N>` | `0` | Stop after `N` per-module failures. `0` = run all modules, accumulate failures. Useful in CI gates for early termination. |
 | `--test-type <type>` | auto-detect | Forwarded to parallel-orchestrator. Same enum (`all` / `common` / `androidUnit` / etc.). |
-| `--module-filter <glob>` | none | Inherited from `parallel`. **Composes with** the changed-derived filter — both must match for a module to dispatch. Useful for "test changed modules in `core-*` only". |
 | `--test-filter <pattern>` | none | Inherited. Filter to single class/method. Globs work on JVM; Android resolves to FQN. |
 | `--coverage-tool <tool>` | `jacoco` | **Distinct from `parallel`'s `auto` default.** Set via `kmp-test changed`'s SUBCOMMAND_HELP. Override with `--coverage-tool auto` if mixing kover + jacoco modules. |
 | `--no-coverage` | off | Alias for `--coverage-tool none`. Expanded via CLI alias (`expandNoCoverageAlias` in `lib/parsers/argv.js`). |
@@ -69,6 +68,11 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags
 | `--ignore-jdk-mismatch` | off | Downgrade JDK gate to WARN. |
 | `--dry-run` | off | Plan envelope, exit 0, no gradle spawn. Useful with `--show-modules-only` to see which modules WOULD run. |
 | `--color <mode>` | `auto` | `always` / `never` / `auto`. |
+
+Note that `changed` does **not** accept `--module-filter` (`parseArgs` rejects it as `unknown_flag`)
+— its module set always comes from the git diff. To narrow it, use `--exclude-modules` (globs to
+skip) or `--staged-only`/`--include-shared` to change what counts as "changed"; to preview the
+resolved set before running anything, use `--show-modules-only` or `--dry-run`.
 
 ## Behaviors únicos
 
@@ -123,7 +127,7 @@ When `git diff` returns zero files (clean working tree), `changed` emits:
 - **Only build-config changes** (`build.gradle.kts`, `gradle/libs.versions.toml`, `settings.gradle.kts`): map to root module which has no test source set → exit 0 with `no_changed_modules`. Pass `--include-untested` to force inclusion if you've added build-logic that needs validation.
 - **`--show-modules-only` envelope**: emits `changed.detected_modules[]` populated but `tests.total = 0`, `parallel:{}` block absent. Useful for agentic preview ("show me what would run before I commit to a 5-minute test pass"). Note the field is `detected_modules`, not `modules`.
 - **`--max-failures 1` for early termination**: the orchestrator interrupts gradle after the first per-module failure. The envelope's `modules[]` will be partial — only the modules dispatched before the interrupt are included. `tests.skipped` reflects the cut.
-- **`--module-filter "core-*"` composed with changed-derived filter**: if I changed `:feature:auth` AND `:core:network`, but pass `--module-filter "core-*"`, only `:core:network` dispatches. Both filters must match.
+- **`--exclude-modules "core-*"` combined with a git-derived changed set**: if I changed `:feature:auth` AND `:core:network`, passing `--exclude-modules "core-*"` drops `:core:network`, leaving only `:feature:auth` dispatched.
 - **Detached HEAD or no commits yet**: `git diff HEAD` fails. `changed` surfaces the git error in `errors[]` with a generic message. Recovery: ensure the project has at least one commit.
 - **`--staged-only` with nothing staged**: emits `no_changed_modules` (soft, exit 0).
 - **JDK toolchain mismatch on the dispatched modules**: same gate as `parallel` — exit 3 with `errors[].code: unsupported_class_version` (or auto-select if a catalogue match exists). Recovery: see [`unit-tests.md`](unit-tests.md) JDK section.
