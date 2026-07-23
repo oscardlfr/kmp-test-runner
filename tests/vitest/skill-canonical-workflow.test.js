@@ -95,22 +95,27 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     const step3 = protocol.slice(start, end);
     expect(step3).toMatch(/already known|already-known/i);
     expect(step3).toMatch(/--module-filter/);
+    // Round-3 fix: coverage silently accepts --module-filter but ignores it (its own scoping
+    // flag is --coverage-modules, confirmed in lib/orchestrators/coverage-orchestrator.js) -- an
+    // agent following workflow-agnostic advice here would believe it scoped to one module while
+    // actually aggregating coverage across all of them.
+    expect(step3).toContain('--coverage-modules');
   });
 
   it('step: known workflow + unclear module runs describe once before a targeted dispatch', () => {
     // Scoped to this step's own text (not the whole section) -- the preceding step legitimately
-    // mentions --module-filter too, which would false-fail an unscoped describe-before-filter
-    // check even after a correct implementation.
+    // mentions the module-scoping flags too, which would false-fail an unscoped
+    // describe-before-dispatch check even after a correct implementation.
     const start = protocol.indexOf('Known workflow, unclear module');
     const end = protocol.indexOf('**Preview only**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const step4 = protocol.slice(start, end);
     const describeIdx = step4.indexOf('kmp-test describe --json --project-root .');
-    const filterIdx = step4.indexOf('--module-filter');
+    const dispatchIdx = step4.toLowerCase().indexOf('dispatch');
     expect(describeIdx).toBeGreaterThan(-1);
-    expect(filterIdx).toBeGreaterThan(-1);
-    expect(describeIdx).toBeLessThan(filterIdx);
+    expect(dispatchIdx).toBeGreaterThan(-1);
+    expect(describeIdx).toBeLessThan(dispatchIdx);
   });
 
   it('step: unclear module reads the exact value from modules[].name', () => {
@@ -129,6 +134,22 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   it('step: preview-only uses --dry-run and forbids guessing filters', () => {
     expect(protocol).toMatch(/--dry-run/);
     expect(protocol).toMatch(/guessed filters|guessing filters/i);
+  });
+
+  it('step: preview-only scopes --dry-run to the five test-dispatch subcommands, not "any"', () => {
+    // Round-3 fix: doctor/info/describe don't support --dry-run at all (confirmed against
+    // flags-reference.md's own support table); "any subcommand" overclaims.
+    const start = protocol.indexOf('**Preview only**');
+    const end = protocol.indexOf('**Trust the real envelope**');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const step5 = protocol.slice(start, end);
+    expect(step5).not.toMatch(/any subcommand/i);
+    expect(step5).toMatch(/\bparallel\b/);
+    expect(step5).toMatch(/\bcoverage\b/);
+    expect(step5).toMatch(/\bbenchmark\b/);
+    expect(step5).toMatch(/\bchanged\b/);
+    expect(step5).toMatch(/\bandroid\b/);
   });
 
   it('step: trusts the real (non-dry-run) envelope as authoritative', () => {
@@ -155,6 +176,16 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(protocol).not.toMatch(/`git[\s`]/i);
   });
 
+  // Round-3 addition: matchModuleFilter's own doc comment (lib/orchestrators/orchestrator-utils.js)
+  // confirms non-glob patterns are SUBSTRING matches -- `--module-filter app` matches both `:app`
+  // and `:application`. Even using describe's own exact-returned name as the filter value doesn't
+  // guarantee a single-module dispatch if another module's name contains it as a substring.
+  it('warns --module-filter/--coverage-modules match by substring, and to verify the envelope', () => {
+    expect(protocol.toLowerCase()).toMatch(/substring/);
+    expect(protocol.toLowerCase()).toMatch(/verify/);
+    expect(protocol).toMatch(/modules\[\]/);
+  });
+
   it('denial recovery: a denied exploratory probe is abandoned, not retried', () => {
     expect(protocol.toLowerCase()).toMatch(/abandon/);
     expect(protocol.toLowerCase()).toMatch(/next canonical/);
@@ -165,25 +196,35 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(protocol.toLowerCase()).toMatch(/don.t retry|no retry/);
   });
 
-  // Round-2 fixes: (a) explicitly scoped to the `parallel` workflow -- a targeted parallel
-  // result only proves absence of unit-test modules, and this rule must not terminate an
-  // android/coverage/benchmark/changed request; (b) requires describe-CONFIRMED evidence
-  // (modules[].test_tasks.unit:null) rather than trusting a bare no_test_modules code alone --
-  // reached via the known-module (no-describe) path, that same code can also mean the module
-  // name was wrong, not that it genuinely has no tests; (c) the test now actually asserts "stop"
-  // appears (the previous version's name claimed this but never checked it).
-  const NO_TEST_PARAGRAPH_ANCHOR = /When the resolved workflow is `parallel`[\s\S]*?(?=\n\n|$)/;
+  // Round-3 fix: round 2's version let describe's test_tasks.unit:null ALONE justify "no
+  // applicable tests" -- reproduced against the real canary scenario ground truth
+  // (kampkit-no-applicable-tests.json, which requires an ACTUAL executed parallel envelope, not
+  // a describe-only inference) and against real describe output shape: a module can have
+  // test_tasks.unit:null while test_tasks.ios:"iosX64Test" is populated and genuinely
+  // dispatchable via --test-type ios -- unit:null alone would have wrongly short-circuited that.
+  const NO_TEST_PARAGRAPH_ANCHOR = /For the default unit-test `parallel` workflow[\s\S]*?(?=\n\n|$)/;
 
-  it('a confirmed no-test result requires describe-confirmed evidence, scoped to parallel, and stops', () => {
+  it('a confirmed no-test result requires a REAL non-dry-run parallel envelope, not describe alone', () => {
     const match = protocol.match(NO_TEST_PARAGRAPH_ANCHOR);
     expect(match).not.toBeNull();
     const paragraph = match[0];
-    expect(paragraph).toContain('test_tasks.unit');
-    expect(paragraph).toMatch(/\bnull\b/);
+    expect(paragraph).toMatch(/non-dry-run/i);
     expect(paragraph).toContain('no_test_modules');
     expect(paragraph).toContain('caused_by_filter:true');
+    expect(paragraph.toLowerCase()).toMatch(/\balone\b/);
+    expect(paragraph).toContain('test_tasks.unit');
     expect(paragraph).toMatch(/no applicable tests/i);
     expect(paragraph.toLowerCase()).toMatch(/\bstop\b/);
+  });
+
+  it('explicit platform test types (ios/device/web/macos) must not be judged from test_tasks.unit', () => {
+    const match = protocol.match(NO_TEST_PARAGRAPH_ANCHOR);
+    expect(match).not.toBeNull();
+    const paragraph = match[0];
+    expect(paragraph).toMatch(/\bios\b/i);
+    expect(paragraph).toMatch(/\bdevice\b/i);
+    expect(paragraph).toMatch(/\bweb\b/i);
+    expect(paragraph).toMatch(/\bmacos\b/i);
   });
 
   it('the no-test-outcome guidance does not enumerate specific alternate subcommands', () => {
@@ -226,6 +267,30 @@ describe('Steps -- dispatch table and envelope parsing', () => {
     'kmp-test changed --json --project-root .',
   ])('dispatch table documents: %s', (cmd) => {
     expect(steps).toContain(cmd);
+  });
+});
+
+describe('SKILL.md Verification section -- exit_code:1 covers WS-5 promotion too', () => {
+  // Round-3 fix: exit-codes.md's own WS-5 invariant says exit_code:1 fires "OR a hard errors[]
+  // entry promoted via WS-5" -- not just a failed test. The old wording ("a test failed: drill
+  // into modules[].test_failures[]") only covered the test-failure half.
+  const verification = section('Verification');
+
+  it('exit_code 1 guidance covers WS-5 hard-error promotion, not just a failed test', () => {
+    expect(verification.toLowerCase()).toMatch(/ws-5/);
+  });
+
+  it('exit_code 1 guidance requires inspecting errors[] in addition to test_failures[]', () => {
+    // Scoped to item 2's own text specifically -- items 3/4 already mention `errors[].code` for
+    // OTHER exit codes, which would make an unscoped whole-section check trivially pass even
+    // without this fix (confirmed: it did, before this scoping correction).
+    const start = verification.indexOf('`1`');
+    const end = verification.indexOf('`2`');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const item2 = verification.slice(start, end);
+    expect(item2).toMatch(/errors\[\]/);
+    expect(item2).toMatch(/test_failures\[\]/);
   });
 });
 
