@@ -120,11 +120,13 @@ discovers and runs the non-obvious Android host-test task for `:shared`
 | `retries` | 0 | 0 | 0 | 0 |
 
 Independently re-derived from each raw transcript's `PreToolUse:Bash` `hook_response` events,
-positionally correlated to each `Bash` `tool_use` in emission order (Claude Code dispatches
-`PreToolUse` synchronously per call, so this ordering is a structural guarantee, not an
-assumption) — every count above matched the committed record exactly, and every single Bash
+positionally correlated to each `Bash` `tool_use` in emission order — this ordering was observed
+consistently across all 8 captures in this batch and is used here only as an independent
+cross-check, not asserted as a structural guarantee. The harness's own authoritative attribution
+(`tools/agentic-eval/junit-evidence.mjs`) instead keys decision/evidence sidecars by `tool_use_id`,
+not stream position. Every count above matched the committed record exactly, and every single Bash
 attempt across all 4 cells resolved to a real, non-missing `allow`/`deny` decision (zero `MISSING`
-correlations).
+correlations) under this cross-check.
 
 **Usage**
 
@@ -225,15 +227,21 @@ classification).
 The **3** `success: true` cells — `current-skill-99f6a6e7` (scenario 1, repetition 1),
 `current-skill-11794dda` and `current-skill-46878375` (scenario 2, both repetitions) — pass all 8
 checks unanimously, each anchored to a real terminal `tool_result` event
-(`authoritative_evidence_indices`: `[56]`, `[157]`, `[133]` respectively) whose `KMP_EVAL_RESULT`
-block exactly matched the scenario's expected module, `outcome_kind`, and counts. These are 3 of
+(`grading_checks.value[*].evidence_event_indices` on the `authoritative_evidence_well_formed`
+check: `[56]`, `[157]`, `[133]` respectively) whose `KMP_EVAL_RESULT` block exactly matched the
+scenario's expected module, `outcome_kind`, and counts. These are 3 of
 the batch's 4 `current-skill` cells — not all of them, per the paragraph above.
 
 ## PR #387 semantics reconciliation (Phase 5)
 
-Verified directly against all 8 raw transcripts (each `PreToolUse:Bash` `hook_response`
-positionally correlated to its `Bash` `tool_use`, per Claude Code's synchronous per-call hook
-dispatch), not merely inferred from a clean promotion:
+Verified directly against all 8 raw transcripts, not merely inferred from a clean promotion: each
+`PreToolUse:Bash` `hook_response` was positionally correlated to its `Bash` `tool_use` in stream
+order as an independent cross-check. This ordering held consistently across all 8 captures here,
+but it is this report's own cross-check, not the harness's authoritative attribution mechanism —
+the harness itself resolves decision/evidence attribution through sidecars keyed by `tool_use_id`
+(`decisions/<sha256(tool_use_id)>.json`, `evidence/<sha256(tool_use_id)>.json`), which is robust to
+same-turn/parallel tool dispatch in a way whole-transcript positional correlation is not proven to
+be:
 
 1. **Every Bash attempt has a real decision.** 0 of 87 total Bash attempts across all 8 cells
    (`sum(hook_call_count)` — recomputed directly, not asserted) correlated to a missing/absent hook
@@ -361,6 +369,18 @@ partially promoted — each wrote its full, atomic 4-of-4 cells.
 - **This is `n=2` per scenario, not a benchmark.** No statistical claim follows from 2 repetitions
   per condition. `benchmark_eligible: true` is a protocol/integrity statement, never a correctness
   or performance one.
+- **The terminal-result and hook-decision checks in this report are not independently reproducible
+  from the 9 committed files alone.** All 8 records carry `raw_capture_committed: false`; the
+  `result.subtype`/`is_error` check, the positional hook-decision cross-check, and the
+  `PostToolUse:Bash` JUnit-hook-activity observation in the "PR #387 semantics reconciliation"
+  section above were all derived by reading the local, gitignored raw transcripts
+  (`tools/runs/agentic-eval-scenario/raw/*.jsonl`), which no committed artifact currently
+  substitutes for. A privacy-sanitized, committable per-run audit sidecar (decision/evidence
+  summaries with all command and content text redacted) would close this reproducibility gap —
+  a genuine proposal, but one that changes the harness's own evidence contract by adding a new
+  committable artifact shape. Out of scope for this evidence-only regeneration PR; tracked as a
+  possible future harness enhancement, not implemented here, and no JSON metadata was hand-edited
+  to approximate it.
 - **No speed, cost, token-efficiency, or skill-efficacy claim is made or implied.** The
   `current-skill` cells that succeeded did real, materially different work (actual Gradle
   invocations) than the `no-skill` cells that failed (100% command denial) — these are not
