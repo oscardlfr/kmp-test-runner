@@ -1,10 +1,15 @@
 // tests/vitest/skill-canonical-workflow.test.js
-// Regression coverage for SKILL.md's canonical agent workflow: dispatch-first with doctor only
-// on failure, no consumer-cwd-relative script paths, no policy-denied commands even in the
-// "optional" Environment detection section, no stale hardcoded version, frontmatter untouched,
-// and relative doc references still resolve. Section-scoped (not whole-file substring checks) so
-// a fix landing in the wrong section can't produce a false green.
-import { describe, it, expect } from 'vitest';
+// Regression coverage for SKILL.md's canonical agent workflow: ONE authoritative Decision
+// protocol section (first heading in the document) drives known-scope dispatch, uncertain-scope
+// discovery via describe, preview-only dry-run, envelope-as-authority, stop-after-evidence, and
+// conditional doctor -- replacing the old split across Quick start / Steps section 1 / Steps
+// section 2. Also locks: no policy-unsafe placeholder commands, no policy-denied commands in the
+// "optional" Environment detection section, no stale hardcoded version, no unconditional
+// `kmp-test --version` check, frontmatter description covers module/task discovery, no
+// agentic-eval-harness-internal leakage, and relative doc references still resolve.
+// Section-scoped (not whole-file substring checks) so a fix landing in the wrong section can't
+// produce a false green.
+import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,8 +25,6 @@ const skillMd = readFileSync(path.join(SKILL_DIR, 'SKILL.md'), 'utf8')
   .replace(/\r\n/g, '\n')
   .replace(/\r/g, '\n');
 
-const EXPECTED_DESCRIPTION = "Parallel test runner for Kotlin Multiplatform (KMP) and Android Gradle projects via the kmp-test CLI. Runs unit tests, instrumented tests on devices and emulators, coverage (kover/jacoco), and benchmarks across multi-module projects. Use when the user asks to run tests, the project is slow with gradle's default sequential dispatch, or the agent needs structured JSON output to parse failures and module attribution.";
-
 // Narrow section extraction by level-2 (## ) heading boundaries -- not a general markdown
 // parser. Level-3 (### ) subheadings stay inside their parent section.
 function section(heading) {
@@ -33,25 +36,127 @@ function section(heading) {
   return nextIdx === -1 ? rest : rest.slice(0, nextIdx);
 }
 
-describe('Quick start -- dispatch-first, no unconditional doctor call', () => {
-  const quickStart = section('Quick start');
-
-  it('shows exactly one canonical command', () => {
-    const codeBlocks = quickStart.match(/```bash\n([\s\S]*?)```/g) || [];
-    expect(codeBlocks).toHaveLength(1);
-    const cmdLines = codeBlocks[0].split('\n').filter((l) => l.trim() && !l.startsWith('```'));
-    expect(cmdLines).toHaveLength(1);
-    expect(cmdLines[0]).toMatch(/^kmp-test \S+ --json --project-root \.$/);
+describe('Decision protocol -- single canonical entry point, first in the document', () => {
+  it('is the first ## heading in the document (not a fourth layer alongside old ones)', () => {
+    const headings = [...skillMd.matchAll(/^## (.+)$/gm)];
+    expect(headings.length).toBeGreaterThan(0);
+    expect(headings[0][1]).toBe('Decision protocol');
   });
 
-  it('does not run doctor unconditionally', () => {
-    const codeBlocks = quickStart.match(/```bash\n([\s\S]*?)```/g) || [];
-    expect(codeBlocks[0]).not.toMatch(/^kmp-test doctor/m);
+  // Computed lazily in beforeAll (not at describe-body scope like the other sections below) --
+  // unlike those, this heading is genuinely absent pre-fix, and section() throws synchronously
+  // when a heading is missing. Throwing during describe-body collection would abort collecting
+  // the *entire file*, hiding every other describe block's real pass/fail state; throwing inside
+  // beforeAll only fails this block's own tests, leaving the rest of the file to run normally.
+  let protocol;
+  beforeAll(() => {
+    protocol = section('Decision protocol');
   });
 
-  it('mentions doctor only as a conditional follow-up for exit_code 3', () => {
-    expect(quickStart).toMatch(/exit_code.*3/);
-    expect(quickStart).toContain('kmp-test doctor --json --project-root .');
+  it('shows the canonical command for the no-module-known case', () => {
+    expect(protocol).toContain('kmp-test parallel --json --project-root .');
+  });
+
+  it('doctor appears exactly once, only in a conditionally-framed context (exit_code 3)', () => {
+    const occurrences = protocol.split('kmp-test doctor').length - 1;
+    expect(occurrences).toBe(1);
+    const idx = protocol.indexOf('kmp-test doctor');
+    const window = protocol.slice(Math.max(0, idx - 150), idx + 150);
+    expect(window).toMatch(/exit_code/);
+    expect(window).toMatch(/\b3\b/);
+  });
+
+  it('step: known workflow with no specific module dispatches globally', () => {
+    expect(protocol).toMatch(/known workflow.{0,20}no specific module/i);
+  });
+
+  it('step: known module dispatches filtered using the already-known name', () => {
+    expect(protocol).toMatch(/known module/i);
+    expect(protocol).toMatch(/already known|already-known/i);
+  });
+
+  it('step: unknown module/task runs describe once before a targeted dispatch', () => {
+    // Scoped to step 3's own text (not the whole section) -- step 2 (known module) legitimately
+    // mentions --module-filter too, earlier in the document, which would false-fail an unscoped
+    // describe-before-filter check even after a correct implementation.
+    const start = protocol.indexOf('Unknown module or unclear task');
+    const end = protocol.indexOf('**Preview only**');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const step3 = protocol.slice(start, end);
+    const describeIdx = step3.indexOf('kmp-test describe --json --project-root .');
+    const filterIdx = step3.indexOf('--module-filter');
+    expect(describeIdx).toBeGreaterThan(-1);
+    expect(filterIdx).toBeGreaterThan(-1);
+    expect(describeIdx).toBeLessThan(filterIdx);
+  });
+
+  it('step: unknown module/task reads the exact value from modules[].name', () => {
+    expect(protocol).toMatch(/modules\[\]\.name/);
+  });
+
+  it('never presents --module-filter with a bracketed placeholder', () => {
+    expect(protocol).not.toContain('--module-filter <module>');
+    expect(protocol).not.toMatch(/--module-filter\s+<[^>]*>/);
+  });
+
+  it('never presents --module-filter with an unbracketed "module-name" placeholder', () => {
+    expect(protocol).not.toContain('--module-filter module-name');
+  });
+
+  it('step: preview-only uses --dry-run and forbids guessing filters', () => {
+    expect(protocol).toMatch(/--dry-run/);
+    expect(protocol).toMatch(/guessed filters|guessing filters/i);
+  });
+
+  it('step: trusts the real (non-dry-run) envelope as authoritative', () => {
+    expect(protocol).toMatch(/authoritative/i);
+  });
+
+  it('step: stops once the outcome is proven', () => {
+    expect(protocol).toMatch(/stop once proven/i);
+  });
+
+  it('step: diagnose only for exit_code 3 or an explicit request', () => {
+    expect(protocol).toMatch(/only.{0,20}exit_code.{0,10}3|exit_code.{0,10}3.{0,30}explicit/i);
+  });
+
+  it('gives positive shell-discovery guidance (structured CLI from the project root)', () => {
+    expect(protocol.toLowerCase()).toMatch(/structured cli/);
+    expect(protocol.toLowerCase()).toMatch(/project root/);
+  });
+
+  it('does not present cd/pwd/ls/git as a runnable example', () => {
+    expect(protocol).not.toMatch(/`cd[\s`]/i);
+    expect(protocol).not.toMatch(/`ls\b/i);
+    expect(protocol).not.toMatch(/`pwd`/i);
+    expect(protocol).not.toMatch(/`git[\s`]/i);
+  });
+
+  it('denial recovery: a denied exploratory probe is abandoned, not retried', () => {
+    expect(protocol.toLowerCase()).toMatch(/abandon/);
+    expect(protocol.toLowerCase()).toMatch(/next canonical/);
+  });
+
+  it('denial recovery: a denied canonical command is final -- stop, report, no retry', () => {
+    expect(protocol.toLowerCase()).toMatch(/stop and report/);
+    expect(protocol.toLowerCase()).toMatch(/don.t retry|no retry/);
+  });
+
+  it('a confirmed no-test result is final: reports "no applicable tests" and stops', () => {
+    expect(protocol).toContain('no_test_modules');
+    expect(protocol).toContain('caused_by_filter:true');
+    expect(protocol).toMatch(/no applicable tests/i);
+  });
+
+  it('the no-test-outcome guidance does not enumerate specific alternate subcommands', () => {
+    const noTestParagraph = protocol.match(/A confirmed no-test result[\s\S]*?(?=\n\n|$)/);
+    expect(noTestParagraph).not.toBeNull();
+    const paragraph = noTestParagraph[0];
+    expect(paragraph).not.toMatch(/\bandroid\b/i);
+    expect(paragraph).not.toMatch(/\bcoverage\b/i);
+    expect(paragraph).not.toMatch(/\bchanged\b/i);
+    expect(paragraph).not.toMatch(/\binfo\b/i);
   });
 });
 
@@ -73,7 +178,7 @@ describe('Environment detection -- optional, prose only, no policy-denied comman
   });
 });
 
-describe('Steps -- dispatch first, conditional diagnosis', () => {
+describe('Steps -- dispatch table and envelope parsing', () => {
   const steps = section('Steps');
 
   it.each([
@@ -84,19 +189,6 @@ describe('Steps -- dispatch first, conditional diagnosis', () => {
     'kmp-test changed --json --project-root .',
   ])('dispatch table documents: %s', (cmd) => {
     expect(steps).toContain(cmd);
-  });
-
-  it('doctor appears only under conditional framing', () => {
-    expect(steps).toContain('kmp-test doctor --json --project-root .');
-    expect(steps).toMatch(/skip this step unless|only if/i);
-  });
-
-  it('"Run the relevant test type" precedes "Diagnose" (dispatch-first ordering)', () => {
-    const runIdx = steps.indexOf('Run the relevant test type');
-    const diagnoseIdx = steps.indexOf('Diagnose only if');
-    expect(runIdx).toBeGreaterThan(-1);
-    expect(diagnoseIdx).toBeGreaterThan(-1);
-    expect(runIdx).toBeLessThan(diagnoseIdx);
   });
 });
 
@@ -121,18 +213,33 @@ describe('SKILL.md version wording', () => {
     expect(skillMd).not.toContain('0.10.0');
   });
 
-  it('the --version verification line names no specific version number', () => {
-    const line = skillMd.split('\n').find((l) => l.includes('kmp-test --version'));
-    expect(line).toBeDefined();
-    expect(line).not.toMatch(/\d+\.\d+\.\d+/);
+  it('does not include an unconditional kmp-test --version check', () => {
+    expect(skillMd).not.toMatch(/`kmp-test --version`\s+prints/i);
   });
 });
 
-describe('SKILL.md frontmatter description is unchanged', () => {
-  it('matches the known description verbatim', () => {
-    const match = skillMd.match(/^description:\s*"(.*)"\s*$/m);
+describe('SKILL.md frontmatter description triggers on running tests and on module/task discovery', () => {
+  const match = skillMd.match(/^description:\s*"(.*)"\s*$/m);
+  const description = match ? match[1] : '';
+
+  it('has a description field', () => {
     expect(match).not.toBeNull();
-    expect(match[1]).toBe(EXPECTED_DESCRIPTION);
+  });
+
+  it('preservation: still mentions kmp-test', () => {
+    expect(description).toMatch(/kmp-test/);
+  });
+
+  it('preservation: still triggers on a "run tests" intent', () => {
+    expect(description).toContain('run tests');
+  });
+
+  it('preservation: still triggers on the structured-JSON-for-agents need', () => {
+    expect(description).toMatch(/structured JSON/i);
+  });
+
+  it('new: triggers when the target module or Gradle test task is unclear', () => {
+    expect(description).toMatch(/module[\s\S]{0,60}unclear/i);
   });
 });
 
@@ -148,5 +255,76 @@ describe('SKILL.md relative markdown references resolve', () => {
     for (const target of targets) {
       expect(existsSync(path.resolve(SKILL_DIR, target)), target).toBe(true);
     }
+  });
+});
+
+describe('Leakage guard -- pure detector proven via synthetic strings, then checked against SKILL.md', () => {
+  // Extracted as a pure helper (not exported from production code -- SKILL.md isn't a lib/
+  // concern) so its discriminating power can be proven with synthetic strings, independent of
+  // whatever SKILL.md's real content happens to be. A test can't verify this by mutating a
+  // "scratch copy" -- skillMd above always reads the real file at its fixed repo path.
+  const FORBIDDEN_TERM_PATTERNS = [
+    /KaMPKit/i,
+    /:shared\b/,
+    /:app\b/,
+    /KMP_EVAL_/,
+    /policy hook/i,
+    /harness allowlist/i,
+    /benchmark_eligible/,
+    /calibration run/i,
+    /\bgrading\b/i,
+  ];
+
+  function findForbiddenTerms(text) {
+    return FORBIDDEN_TERM_PATTERNS.filter((re) => re.test(text));
+  }
+
+  it('detector catches KaMPKit in a synthetic string', () => {
+    expect(findForbiddenTerms('Tested against KaMPKit for validation.')).not.toHaveLength(0);
+  });
+
+  it('detector catches a :shared module reference in a synthetic string', () => {
+    expect(findForbiddenTerms('Run tests for :shared and :core.')).not.toHaveLength(0);
+  });
+
+  it('detector catches an :app module reference in a synthetic string', () => {
+    expect(findForbiddenTerms('The :app module needs testing.')).not.toHaveLength(0);
+  });
+
+  it('detector catches KMP_EVAL_-prefixed tokens in a synthetic string', () => {
+    expect(findForbiddenTerms('Set KMP_EVAL_RESULT before grading.')).not.toHaveLength(0);
+  });
+
+  it('detector catches "policy hook" mentions in a synthetic string', () => {
+    expect(findForbiddenTerms('The policy hook denies this command.')).not.toHaveLength(0);
+  });
+
+  it('detector catches "harness allowlist" mentions in a synthetic string', () => {
+    expect(findForbiddenTerms('Check the harness allowlist first.')).not.toHaveLength(0);
+  });
+
+  it('detector catches benchmark_eligible in a synthetic string', () => {
+    expect(findForbiddenTerms('This run is benchmark_eligible: true.')).not.toHaveLength(0);
+  });
+
+  it('detector catches "calibration run" mentions in a synthetic string', () => {
+    expect(findForbiddenTerms('Start a calibration run first.')).not.toHaveLength(0);
+  });
+
+  it('detector catches bare "grading" mentions in a synthetic string', () => {
+    expect(findForbiddenTerms('The grading step checks the answer.')).not.toHaveLength(0);
+  });
+
+  it('detector returns empty for ordinary skill prose', () => {
+    const ordinary = 'Run kmp-test parallel --json --project-root . to test modules.';
+    expect(findForbiddenTerms(ordinary)).toHaveLength(0);
+  });
+
+  it('SKILL.md contains none of the forbidden terms', () => {
+    expect(findForbiddenTerms(skillMd)).toEqual([]);
+  });
+
+  it('SKILL.md still documents the real kmp-test benchmark subcommand (leakage guard did not collateral-damage a real workflow)', () => {
+    expect(skillMd).toContain('kmp-test benchmark --json --project-root .');
   });
 });
