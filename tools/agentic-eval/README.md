@@ -260,6 +260,25 @@ matrix is rejected anyway.
   look like, which is exactly why `scope_id` (not just the fingerprint) is itself part of the
   Fairness Contract's partition key (below). See "Schemas" and "Fairness Contract" below.
 
+  **Known limitation, deliberately not addressed in this fix (round-3 audit note):** because the
+  HMAC key is random and freshly generated *per harness invocation* (never per measurement or
+  per scenario), and `ambient_skill_profile` -- `scope_id` included -- sits in
+  `HARD_PARTITION_FIELDS`, two runs of the **same scenario** captured in **different** harness
+  invocations can never be aggregated together, even when their underlying ambient environment was
+  genuinely identical. This is correct and intentional for a single invocation's own internal
+  fairness, but it means **no cross-invocation, longitudinal aggregation is possible with today's
+  key lifecycle** -- every fresh `calibrate`/`smoke`/`run` invocation starts an unrelated
+  comparability island. For a one-shot canary this is a non-issue; for a *publishable, repeated*
+  measurement program it is a real constraint that needs its own design decision before the next
+  live run, not a silent assumption: a stable, **per-measurement** (not per-invocation) HMAC key,
+  injected only into the specific commands that constitute one measurement, identified by a
+  **non-secret key id** (so a stale or rotated key is diagnosable from the record itself, the same
+  way `scope_id` already is), with explicit, deliberate rotation semantics rather than an implicit
+  one-key-forever default. This PR intentionally does **not** implement that redesign -- the
+  per-invocation key described above is correctly isolated and ships as-is; the redesign is future
+  work, gated on an explicit decision about the measurement program's actual longitudinal-comparison
+  needs.
+
   **JUnit-evidence attribution, per attempt, keyed by `tool_use_id`.** A `tests_executed`
   scenario condition can involve **multiple Bash attempts** (a first, wrong/failed try; a
   corrected retry). Earlier, JUnit-XML evidence for the raw-Gradle path was captured **once per

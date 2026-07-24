@@ -171,6 +171,94 @@ function validateAmbientSkillProfile(profile, fieldPrefix) {
 }
 
 /**
+ * Validates `ambient_profile_matrix_ok` -- both its own run_kind-conditional shape (round-3 audit
+ * finding, CodeRabbit Major thread on commit 45e3522: the pre-fix check accepted EITHER null or a
+ * boolean regardless of run_kind, so a scenario row with a missing/null matrix-consensus verdict,
+ * or a calibration/smoke row carrying an impossible real boolean, both validated cleanly) AND its
+ * coherence against the cells[] it describes (round-3 audit finding: "el diagnóstico no valida la
+ * coherencia interna del perfil" -- a hand-built row claiming `ambient_profile_matrix_ok:true` with
+ * completely different scope_id/count/fingerprint_hmac across its cells validated with zero errors,
+ * reproduced directly). Kept as one function, not split in two, because both checks are about the
+ * SAME field's meaning, not two unrelated concerns.
+ *
+ * Shape: null for run_kind:'calibration'/'smoke' (no matrix/consensus concept applies to a plain
+ * A/B pair); a real boolean for run_kind:'scenario' (scenarioHardGate always computes a real
+ * verdict for a batch). An already-invalid/not-yet-handled run_kind is skipped here, mirroring
+ * validateProvenanceForRunKind's identical "don't cascade a wall of errors" rationale.
+ *
+ * Coherence (only meaningful once every cell's OWN ambient_skill_profile shape is already
+ * individually valid -- comparing already-malformed values would just add redundant noise on top
+ * of validateAmbientSkillProfile's own per-cell errors):
+ *   1. Every cell must share exactly ONE scope_id, for EVERY run_kind -- generateAmbientProfileScope
+ *      (cli.mjs) is called once per harness invocation and threaded into every record built during
+ *      it, calibration/smoke's A/B pair exactly like scenario's N-cell matrix.
+ *   2. `ambient_profile_matrix_ok === true` implies every cell's count AND fingerprint_hmac are
+ *      identical -- that agreement is the literal claim "true" makes. `false` implies nothing about
+ *      cell-to-cell equality (a single malformed or wrongly-target-identified cell can fail the
+ *      matrix while its own clean ambient names coincidentally still match another cell's -- not a
+ *      contradiction).
+ *   3. For run_kind:'scenario' only (the only run_kind where cli.mjs's scenarioCellIntegrityOk ever
+ *      threads `ambientProfileMatrixOk` into a cell's OWN named-check list): `false` must show up as
+ *      `'ambientProfileMatrixOk'` in EVERY cell's failed_checks (it is the identical shared boolean
+ *      copied into every cell's own check list, so it can never legitimately fail for only some
+ *      cells), and `true` must appear in NO cell's failed_checks. A scenario row claiming a
+ *      batch-wide ambient failure that no individual cell's own failed_checks corroborates is
+ *      exactly the "rejection with no recorded cause" gap the pre-existing anyCellHasFailedCheck
+ *      check exists to catch generically, one level more specific.
+ * @returns {Array<{field: string, message: string}>}
+ */
+function validateAmbientProfileMatrixOk(row) {
+  const errors = [];
+  if (RUN_KIND_VALUES.includes(row.run_kind)) {
+    if (row.run_kind === 'scenario') {
+      if (typeof row.ambient_profile_matrix_ok !== 'boolean') {
+        errors.push({ field: 'ambient_profile_matrix_ok', message: `must be a boolean for run_kind:'scenario' -- the matrix-wide ambient-profile consensus is always a real, computed fact for a scenario batch` });
+      }
+    } else if (row.run_kind === 'calibration' || row.run_kind === 'smoke') {
+      if (row.ambient_profile_matrix_ok !== null) {
+        errors.push({ field: 'ambient_profile_matrix_ok', message: `must be null for run_kind:'${row.run_kind}' -- no matrix/consensus concept applies to a plain A/B pair` });
+      }
+    }
+    // run_kind:'corpus-probe' (or any other recognized-but-not-yet-handled value): its own shape is
+    // undefined, already reported by validateProvenanceForRunKind -- not cascaded here too.
+  }
+
+  if (!Array.isArray(row.cells) || row.cells.length === 0) return errors;
+  const cellsWellFormed = row.cells.every((c) => c != null && typeof c === 'object' && !Array.isArray(c));
+  if (!cellsWellFormed) return errors; // already reported by validateRejectionRow's own per-cell loop
+
+  const cellsWithValidProfiles = row.cells.filter((c) => validateAmbientSkillProfile(c.ambient_skill_profile, 'probe').length === 0);
+  if (cellsWithValidProfiles.length === row.cells.length) {
+    const scopeIds = new Set(cellsWithValidProfiles.map((c) => c.ambient_skill_profile.scope_id));
+    if (scopeIds.size > 1) {
+      errors.push({ field: 'cells', message: `all cells must share exactly one ambient_skill_profile.scope_id within one harness invocation (found ${scopeIds.size}: ${JSON.stringify([...scopeIds])})` });
+    }
+    if (row.ambient_profile_matrix_ok === true) {
+      const counts = new Set(cellsWithValidProfiles.map((c) => c.ambient_skill_profile.count));
+      const fingerprints = new Set(cellsWithValidProfiles.map((c) => c.ambient_skill_profile.fingerprint_hmac));
+      if (counts.size > 1 || fingerprints.size > 1) {
+        errors.push({ field: 'ambient_profile_matrix_ok', message: `is true (cells agree) but cells[].ambient_skill_profile differs across cells (${counts.size} distinct count(s), ${fingerprints.size} distinct fingerprint_hmac(s))` });
+      }
+    }
+  }
+
+  if (row.run_kind === 'scenario' && typeof row.ambient_profile_matrix_ok === 'boolean') {
+    const cellsHaveValidFailedChecks = row.cells.every((c) => Array.isArray(c.failed_checks) && c.failed_checks.every((x) => typeof x === 'string' && x.length > 0));
+    if (cellsHaveValidFailedChecks) {
+      const flaggedCount = row.cells.filter((c) => c.failed_checks.includes('ambientProfileMatrixOk')).length;
+      if (row.ambient_profile_matrix_ok === false && flaggedCount !== row.cells.length) {
+        errors.push({ field: 'ambient_profile_matrix_ok', message: `is false but only ${flaggedCount}/${row.cells.length} cells show 'ambientProfileMatrixOk' in failed_checks -- this is one shared matrix-wide value, so a genuine failure must appear in EVERY cell's own failed_checks` });
+      }
+      if (row.ambient_profile_matrix_ok === true && flaggedCount > 0) {
+        errors.push({ field: 'ambient_profile_matrix_ok', message: `is true but ${flaggedCount} cell(s) still show 'ambientProfileMatrixOk' in failed_checks -- contradicts the batch-wide agreement this flag claims` });
+      }
+    }
+  }
+
+  return errors;
+}
+
+/**
  * Validates one rejection-diagnostics record. Closed key sets at EVERY nesting level (top-level,
  * each cells[] entry, both foreign_skill_summary objects) -- round-5 audit finding: "not just
  * top-level" was the explicit ask. Also enforces: cells[].run_id values unique within one record;
@@ -205,13 +293,12 @@ export function validateRejectionRow(row) {
   if (typeof row.scenario_id !== 'string' || row.scenario_id.length === 0) errors.push({ field: 'scenario_id', message: 'must be a non-empty string' });
   if (!PLATFORM_VALUES.includes(row.platform)) errors.push({ field: 'platform', message: `must be one of ${PLATFORM_VALUES.join('|')}` });
   if (!PRIVACY_STATUS_VALUES.includes(row.privacy_status)) errors.push({ field: 'privacy_status', message: `must be one of ${PRIVACY_STATUS_VALUES.join('|')}` });
-  // ambient_profile_matrix_ok (correction 6): null for calibration/smoke (no matrix/consensus
-  // concept), a real boolean for scenario -- never any other type, and never merely absent (a
-  // batch-wide fact this row's own key contract requires explicitly, even when it doesn't apply).
-  if (row.ambient_profile_matrix_ok !== null && typeof row.ambient_profile_matrix_ok !== 'boolean') {
-    errors.push({ field: 'ambient_profile_matrix_ok', message: 'must be null or a boolean' });
-  }
   errors.push(...validateProvenanceForRunKind(row));
+  // ambient_profile_matrix_ok (correction 6, hardened round-3): run_kind-conditional shape plus
+  // cross-cell coherence -- see validateAmbientProfileMatrixOk's own doc comment. Called here
+  // (rather than folded into validateProvenanceForRunKind) because it is not a provenance fact --
+  // it is a batch-wide INTEGRITY/consensus fact about the cells[] this same row carries.
+  errors.push(...validateAmbientProfileMatrixOk(row));
   if (typeof row.policy_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(row.policy_sha256)) {
     errors.push({ field: 'policy_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
   }

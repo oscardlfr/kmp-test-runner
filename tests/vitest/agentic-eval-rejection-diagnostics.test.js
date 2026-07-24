@@ -266,7 +266,11 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
       project_url: 'https://github.com/example/kampkit', seed: 7, policy_sha256: 'b'.repeat(64),
       platform: 'linux', privacy_status: 'redacted-private',
     });
-    const { committed, local } = buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: ['toolResultsCompleteOk'], [b.run_id]: [] } });
+    // ambientProfileMatrixOk (round-3 audit finding): a real scenario diagnostic ALWAYS carries a
+    // real boolean here (cli.mjs's finalizeAndWriteMatrixRecords always passes gate.ambientProfileMatrixOk,
+    // never leaves the default) -- true, and coherent with neither cell's failed_checks below
+    // flagging 'ambientProfileMatrixOk', matching validateAmbientProfileMatrixOk's own coherence rule.
+    const { committed, local } = buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: ['toolResultsCompleteOk'], [b.run_id]: [] }, ambientProfileMatrixOk: true });
     expect(committed.scenario_id).toBe('kampkit-android-host-test-discovery');
     expect(committed.project_alias).toBe('kampkit');
     expect(committed.project_commit).toBe('d'.repeat(40));
@@ -423,18 +427,60 @@ describe('validateRejectionRow -- schema validation', () => {
       expect(JSON.stringify(validRow())).not.toMatch(/"run"|"review"/);
     });
 
-    it('ambient_profile_matrix_ok accepts null (calibration/smoke -- no matrix consensus concept)', () => {
+    // Builds a genuinely run_kind:'scenario'-shaped row (real project_alias/project_commit/seed,
+    // integer repetition_index/order_index on every cell -- mirrors the existing
+    // "run_kind-specific provenance shape" describe block's own scenario overrides below) so
+    // ambient_profile_matrix_ok's scenario-side rules are exercised on a row that is ACTUALLY
+    // scenario-shaped, not merely a calibration row with one field overridden.
+    function scenarioShapedValidRow(overrides = {}) {
+      const row = validRow({
+        run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery',
+        project_alias: 'kampkit', project_commit: 'd'.repeat(40), seed: 5,
+        ambient_profile_matrix_ok: true,
+      });
+      row.cells = row.cells.map((c, i) => ({ ...c, repetition_index: 0, order_index: i }));
+      return { ...row, ...overrides };
+    }
+
+    it('ambient_profile_matrix_ok accepts null for calibration', () => {
       const { errors } = validateRejectionRow({ ...validRow(), ambient_profile_matrix_ok: null });
       expect(errors.filter((e) => e.field === 'ambient_profile_matrix_ok')).toEqual([]);
     });
 
-    it('ambient_profile_matrix_ok accepts a real boolean (scenario)', () => {
-      const { errors } = validateRejectionRow({ ...validRow(), ambient_profile_matrix_ok: false });
+    it('ambient_profile_matrix_ok accepts null for smoke', () => {
+      const row = validRow({ run_kind: 'smoke', scenario_id: 'smoke-explicit-invocation', project_alias: 'kampkit', project_commit: 'd'.repeat(40), ambient_profile_matrix_ok: null });
+      const { errors } = validateRejectionRow(row);
       expect(errors.filter((e) => e.field === 'ambient_profile_matrix_ok')).toEqual([]);
     });
 
-    it('rejects a non-boolean, non-null ambient_profile_matrix_ok', () => {
+    // Round-3 audit finding (CodeRabbit Major thread on commit 45e3522, unresolved until this fix):
+    // this test's own title previously claimed to cover "a real boolean (scenario)", but only ever
+    // overrode ambient_profile_matrix_ok on top of validRow()'s CALIBRATION default -- so it
+    // actually asserted a CALIBRATION row carrying a real boolean validated cleanly. Reproduced
+    // directly against the pre-fix validator before this correction. Now correctly a rejection:
+    // calibration requires EXACTLY null, no matrix/consensus concept applies to a plain A/B pair.
+    it('rejects a non-null ambient_profile_matrix_ok on a calibration row', () => {
+      const { errors } = validateRejectionRow({ ...validRow(), ambient_profile_matrix_ok: false });
+      expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok' && e.message.includes("must be null for run_kind:'calibration'"))).toBe(true);
+    });
+
+    it('ambient_profile_matrix_ok accepts a real boolean on a genuinely scenario-shaped row', () => {
+      const { errors } = validateRejectionRow(scenarioShapedValidRow({ ambient_profile_matrix_ok: true }));
+      expect(errors.filter((e) => e.field === 'ambient_profile_matrix_ok')).toEqual([]);
+    });
+
+    it('rejects a null ambient_profile_matrix_ok on a genuinely scenario-shaped row', () => {
+      const { errors } = validateRejectionRow(scenarioShapedValidRow({ ambient_profile_matrix_ok: null }));
+      expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok' && e.message.includes("must be a boolean for run_kind:'scenario'"))).toBe(true);
+    });
+
+    it('rejects a non-boolean, non-null ambient_profile_matrix_ok on a calibration row', () => {
       const { errors } = validateRejectionRow({ ...validRow(), ambient_profile_matrix_ok: 'yes' });
+      expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok')).toBe(true);
+    });
+
+    it('rejects a non-boolean, non-null ambient_profile_matrix_ok on a scenario row', () => {
+      const { errors } = validateRejectionRow(scenarioShapedValidRow({ ambient_profile_matrix_ok: 'yes' }));
       expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok')).toBe(true);
     });
 
@@ -443,6 +489,67 @@ describe('validateRejectionRow -- schema validation', () => {
       delete row.ambient_profile_matrix_ok;
       const { errors } = validateRejectionRow(row);
       expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok')).toBe(true);
+    });
+
+    // Round-3 audit finding: "el diagnóstico no valida la coherencia interna del perfil" -- prior
+    // to this fix, cells[].ambient_skill_profile was validated ONLY in isolation per cell; nothing
+    // related cells to EACH OTHER or to the batch's own top-level ambient_profile_matrix_ok claim.
+    // Reproduced directly: a hand-built row with ambient_profile_matrix_ok:true but two DIFFERENT
+    // scope_id/count/fingerprint_hmac values across its cells validated with zero errors.
+    describe('cross-cell coherence (round-3 audit finding)', () => {
+      it('accepts a genuinely coherent scenario row unchanged (same scope_id, identical profiles, matrix_ok:true, no cell flags it)', () => {
+        const { errors } = validateRejectionRow(scenarioShapedValidRow());
+        expect(errors).toEqual([]);
+      });
+
+      it('rejects matrix_ok:true when cells disagree on scope_id', () => {
+        const row = scenarioShapedValidRow();
+        row.cells[1] = { ...row.cells[1], ambient_skill_profile: { ...row.cells[1].ambient_skill_profile, scope_id: '99999999-9999-4999-8999-999999999999' } };
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'cells' && e.message.includes('exactly one ambient_skill_profile.scope_id'))).toBe(true);
+      });
+
+      it('rejects matrix_ok:true when cells share one scope_id but disagree on count/fingerprint_hmac', () => {
+        const row = scenarioShapedValidRow();
+        row.cells[1] = { ...row.cells[1], ambient_skill_profile: { ...row.cells[1].ambient_skill_profile, count: 99, fingerprint_hmac: 'f'.repeat(64) } };
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok' && e.message.includes('differs across cells'))).toBe(true);
+      });
+
+      it('does NOT require identical profiles when matrix_ok:false -- a single malformed cell can fail the matrix while ambient names coincidentally still differ', () => {
+        const row = scenarioShapedValidRow({ ambient_profile_matrix_ok: false });
+        row.cells = row.cells.map((c) => ({ ...c, failed_checks: ['ambientProfileMatrixOk'] }));
+        row.cells[1] = { ...row.cells[1], ambient_skill_profile: { ...row.cells[1].ambient_skill_profile, count: 99, fingerprint_hmac: 'f'.repeat(64) } };
+        const { errors } = validateRejectionRow(row);
+        expect(errors.filter((e) => e.field === 'ambient_profile_matrix_ok')).toEqual([]);
+      });
+
+      // THE USER'S OWN REPRODUCTION, verbatim: a scenario diagnostic with ambient_profile_matrix_ok
+      // false must show that specific failure attributed on EVERY cell's own failed_checks -- it is
+      // one shared matrix-wide value (cli.mjs's scenarioCellIntegrityOk threads the identical
+      // boolean into every cell), so it can never legitimately fail for only some cells.
+      it('rejects matrix_ok:false when not every cell shows ambientProfileMatrixOk in its own failed_checks', () => {
+        const row = scenarioShapedValidRow({ ambient_profile_matrix_ok: false });
+        row.cells[0] = { ...row.cells[0], failed_checks: ['ambientProfileMatrixOk'] };
+        // row.cells[1].failed_checks stays [] -- the exact "rejection with no recorded cause on
+        // this cell" gap the user's own reproduction demonstrated.
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok' && e.message.includes('only 1/2 cells show'))).toBe(true);
+      });
+
+      it('rejects matrix_ok:true when some cell still shows ambientProfileMatrixOk in its own failed_checks (contradicts the claimed agreement)', () => {
+        const row = scenarioShapedValidRow({ ambient_profile_matrix_ok: true });
+        row.cells[0] = { ...row.cells[0], failed_checks: ['ambientProfileMatrixOk'] };
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok' && e.message.includes('contradicts the batch-wide agreement'))).toBe(true);
+      });
+
+      it('never applies the failed_checks-coherence rule to calibration/smoke (ambient_profile_matrix_ok is always null there, not a boolean)', () => {
+        const row = validRow(); // calibration, ambient_profile_matrix_ok: null by default
+        row.cells = row.cells.map((c) => ({ ...c, failed_checks: [] }));
+        const { errors } = validateRejectionRow(row);
+        expect(errors.filter((e) => e.field === 'ambient_profile_matrix_ok')).toEqual([]);
+      });
     });
   });
 

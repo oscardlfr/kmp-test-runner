@@ -165,6 +165,17 @@ export function isTargetSkillReference(skillArg, pluginName, skillName) {
  * target's own presence doesn't match this condition", and this codebase's own convention keeps
  * such distinct failure modes separately named wherever practical (see e.g. skillSelectionOk vs.
  * foreignSkillToolResultsCompleteOk).
+ *
+ * Round-3 audit finding (P1): the previous `targetIdentityOk` expression --
+ * `!targetDuplicated && (expectTargetPresent || !targetPresent)` -- short-circuits to
+ * `!targetDuplicated` alone whenever `expectTargetPresent` is `true`, so it NEVER actually checked
+ * that the target was present for a current-skill cell; a current-skill condition whose `skills[]`
+ * did not contain the target AT ALL (e.g. `skills: []`) wrongly passed `targetIdentityOk: true`.
+ * Reproduced directly against the pre-fix code. Now an exact match per condition: no-skill requires
+ * `targetMatchCount === 0`, current-skill requires exactly `targetMatchCount === 1` (which also
+ * subsumes the not-duplicated requirement for that branch, but `!targetDuplicated` is kept explicit
+ * for both branches so the "duplicate fails closed regardless of condition" rule reads directly off
+ * the code, not only from `=== 1` happening to already exclude 2+).
  * @returns {{ok: boolean, names: Set<string>, targetPresent: boolean, targetDuplicated: boolean, structurallyWellFormed: boolean, targetIdentityOk: boolean}}
  */
 export function computeAmbientSkillProfile(initEvent, pluginName, skillName, { expectTargetPresent }) {
@@ -178,7 +189,7 @@ export function computeAmbientSkillProfile(initEvent, pluginName, skillName, { e
   const names = new Set(cleanEntries.filter((s) => !isTargetSkillReference(s, pluginName, skillName)));
   const targetPresent = targetMatchCount > 0;
   const targetDuplicated = targetMatchCount > 1;
-  const targetIdentityOk = !targetDuplicated && (expectTargetPresent || !targetPresent);
+  const targetIdentityOk = !targetDuplicated && (expectTargetPresent ? targetMatchCount === 1 : targetMatchCount === 0);
   return { ok: structurallyWellFormed && targetIdentityOk, names, targetPresent, targetDuplicated, structurallyWellFormed, targetIdentityOk };
 }
 

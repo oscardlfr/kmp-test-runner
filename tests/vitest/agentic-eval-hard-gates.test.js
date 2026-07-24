@@ -96,12 +96,14 @@ function passRunResult(overrides = {}) {
     init: {
       model: 'claude-sonnet-5-fake-resolved',
       plugins: [],
-      // Well-formed and empty regardless of A/B side -- computeAmbientSkillProfile's
-      // targetIdentityOk is satisfied by an empty skills[] under EITHER expectTargetPresent value
-      // (no-skill: zero target references is exactly what's required; current-skill: "at most
-      // one" is satisfied vacuously by zero too) -- see stream-parser.mjs's own doc comment. Every
-      // existing override here only ever touches `plugins`, never `skills`, so this one shared
-      // default covers both calibrationHardGate/smokeHardGate sides with zero per-call-site changes.
+      // Round-3 audit finding (P1): an EARLIER version of this comment claimed an empty skills[]
+      // satisfies targetIdentityOk "vacuously" for current-skill too -- that was describing a real
+      // bug (computeAmbientSkillProfile's pre-fix `expectTargetPresent || !targetPresent` never
+      // actually checked presence when true), not a real invariant. The default here is correct
+      // ONLY for the no-skill side (zero target references is exactly what's required); every
+      // call site building the CURRENT-SKILL (B) side must now ALSO override `skills` to include
+      // the target's own identity (`plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner']`)
+      // -- see the many such call sites below.
       skills: [],
       tools: ['Bash', 'Skill'],
       mcp_servers: [],
@@ -134,7 +136,7 @@ function passRunResult(overrides = {}) {
 
 describe('calibrationHardGate', () => {
   it('passes when every sub-check is satisfied', () => {
-    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(true);
     expect(reason).toBeNull();
   });
@@ -144,7 +146,7 @@ describe('calibrationHardGate', () => {
   // own events (re-scanning the transcript), independently of passB()'s record-level defaults.
   it('B confirming the invocation via the plugin-namespaced wire form still passes -- not classified as foreign', () => {
     const runB = passRunResult({
-      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner:kmp-test-runner'] },
       events: [
         initEventStub(),
         { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: 'kmp-test-runner:kmp-test-runner' } }] } },
@@ -159,7 +161,7 @@ describe('calibrationHardGate', () => {
 
   it('isolates currentInvocationOk -- B never confirms invocation (the real "Unknown skill" shape: attempted but not invoked)', () => {
     const b = passB({ skill_invoked: { value: false, reason: 'attempted but not confirmed' } });
-    const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -174,7 +176,7 @@ describe('calibrationHardGate', () => {
 
   it('isolates availabilityOk -- A shows the skill as available (breaks the no-skill/current-skill contrast)', () => {
     const a = passA({ skill_available: { value: true, reason: null } });
-    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:false');
     expect(reason).toContain('noSkillSafetyOk:true');
@@ -189,7 +191,7 @@ describe('calibrationHardGate', () => {
 
   it('isolates processOk -- B exits nonzero', () => {
     const b = passB({ exit_code: 1 });
-    const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -204,7 +206,7 @@ describe('calibrationHardGate', () => {
 
   it('isolates processOk -- A was terminated (timeout/signal)', () => {
     const a = passA({ terminated: true });
-    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -218,7 +220,7 @@ describe('calibrationHardGate', () => {
   });
 
   it('isolates resultOk -- B\'s own result event reports is_error:true', () => {
-    const runB = passRunResult({ result: { is_error: true }, init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } });
+    const runB = passRunResult({ result: { is_error: true }, init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } });
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
@@ -234,7 +236,7 @@ describe('calibrationHardGate', () => {
 
   it('isolates resultOk -- no result event was ever found (undefined, not false)', () => {
     const runA = passRunResult({ result: null });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('resultOk:false');
   });
@@ -244,7 +246,7 @@ describe('calibrationHardGate', () => {
   // 'error_max_budget_usd') that is NOT necessarily paired with is_error:true -- so is_error
   // alone previously let a genuinely-interrupted session pass resultOk.
   it('isolates resultOk -- B\'s result event has is_error:false but subtype is NOT success (the budget-cap-truncation shape)', () => {
-    const runB = passRunResult({ result: { subtype: 'error_max_budget_usd', is_error: false }, init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } });
+    const runB = passRunResult({ result: { subtype: 'error_max_budget_usd', is_error: false }, init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } });
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
@@ -266,7 +268,7 @@ describe('calibrationHardGate', () => {
   // genuine observation).
   it('isolates initOk -- A never produced an init event at all', () => {
     const runA = passRunResult({ init: null });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -286,7 +288,7 @@ describe('calibrationHardGate', () => {
   // that only checks init!=null can't distinguish a genuinely narrow session from one that
   // regressed to a wider tool/MCP/permission profile.
   it('isolates toolProfileOk -- B\'s init event declares Read alongside Bash/Skill', () => {
-    const runB = passRunResult({ init: { ...passRunResult().init, tools: ['Bash', 'Skill', 'Read'], plugins: KMP_TEST_RUNNER_PLUGIN } });
+    const runB = passRunResult({ init: { ...passRunResult().init, tools: ['Bash', 'Skill', 'Read'], plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } });
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
@@ -302,7 +304,7 @@ describe('calibrationHardGate', () => {
 
   it('isolates toolProfileOk -- A\'s init event declares a non-empty mcp_servers list', () => {
     const runA = passRunResult({ init: { ...passRunResult().init, mcp_servers: [{ name: 'unexpected' }] } });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('toolProfileOk:false');
     expect(reason).toContain('noUnexpectedToolsOk:true');
@@ -343,7 +345,7 @@ describe('calibrationHardGate', () => {
   });
 
   it('isolates hookAccountingOk -- not every Bash call in B reached the policy hook', () => {
-    const runB = passRunResult({ hookStats: { everyCallHooked: false, hookAllowCount: 2 }, init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } });
+    const runB = passRunResult({ hookStats: { everyCallHooked: false, hookAllowCount: 2 }, init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } });
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
@@ -362,21 +364,21 @@ describe('calibrationHardGate', () => {
   // as a failure; it's actually just as legitimate isolation proof as attempt-then-"Unknown skill".
   it('passes when A never attempted the skill at all (legitimate -- correctly recognized as unavailable without trying)', () => {
     const a = passA({ skill_invocation_attempted: { value: false, reason: null } });
-    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(true);
     expect(reason).toBeNull();
   });
 
   it('passes when A attempted the skill and got a clean non-invocation (the "Unknown skill" shape -- also legitimate)', () => {
     const a = passA({ skill_invocation_attempted: { value: true, reason: null }, skill_invoked: { value: false, reason: null } });
-    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(true);
     expect(reason).toBeNull();
   });
 
   it('isolates noSkillSafetyOk -- A somehow shows a confirmed invocation despite being the no-skill arm (contradictory input, must still fail)', () => {
     const a = passA({ skill_invoked: { value: true, reason: null } });
-    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -395,7 +397,7 @@ describe('calibrationHardGate', () => {
   // "did not attempt" observation, not a capture gap.
   it('isolates noSkillSafetyOk -- A\'s skill_invocation_attempted is null (unobserved capture, not a genuine "did not attempt" observation)', () => {
     const a = passA({ skill_invocation_attempted: { value: null, reason: 'capture incomplete' } });
-    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -409,7 +411,7 @@ describe('calibrationHardGate', () => {
   // fail, specifically via currentInvocationOk, not be accidentally tolerated by symmetry with A.
   it('isolates currentInvocationOk -- B never attempts the skill at all (unlike A, B\'s contract stays strict)', () => {
     const b = passB({ skill_invocation_attempted: { value: false, reason: null }, skill_invoked: { value: false, reason: null } });
-    const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), b, passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -436,7 +438,7 @@ describe('calibrationHardGate', () => {
   it('isolates skillSelectionOk -- A calls an entirely unrelated Skill (evidence-contamination bypass)', () => {
     const base = passRunResult();
     const runA = passRunResult({ events: [...base.events, foreignSkillToolUseEvent('some-other-skill')] });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:false');
@@ -455,7 +457,7 @@ describe('calibrationHardGate', () => {
   it('isolates skillSelectionOk -- A calls Skill with a missing input.skill', () => {
     const base = passRunResult();
     const runA = passRunResult({ events: [...base.events, foreignSkillToolUseEvent(undefined)] });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('skillSelectionOk:false');
   });
@@ -466,13 +468,13 @@ describe('calibrationHardGate', () => {
   // legitimately tolerates. Calibration needs the same protection smoke already had.
   it('isolates cleanTranscriptOk -- A has a malformed/truncated JSONL line', () => {
     const runA = passRunResult({ malformedLines: ['{not valid json'] });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('cleanTranscriptOk:false');
   });
 
   it('isolates cleanTranscriptOk -- B has a malformed/truncated JSONL line', () => {
-    const runB = passRunResult({ malformedLines: ['{not valid json'], init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } });
+    const runB = passRunResult({ malformedLines: ['{not valid json'], init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } });
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('cleanTranscriptOk:false');
@@ -484,14 +486,14 @@ describe('calibrationHardGate', () => {
   // for the TARGET skill happened to derive correctly.
   it('isolates pluginProfileOk -- A has a foreign plugin loaded (real isolation break, not a scoring artifact)', () => {
     const runA = passRunResult({ init: { ...passRunResult().init, plugins: [{ name: 'some-other-plugin', path: '/fake', source: 'fake' }] } });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('pluginProfileOk:false');
   });
 
   it('isolates pluginProfileOk -- A has no plugins field at all (undefined, not a genuine empty-array observation)', () => {
     const runA = passRunResult({ init: { model: 'claude-sonnet-5-fake-resolved', tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' } });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('pluginProfileOk:false');
   });
@@ -520,7 +522,7 @@ describe('calibrationHardGate', () => {
     const danglingSkillAttempt = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_dangling', name: 'Skill', input: { skill: 'kmp-test-runner' } }] } };
     const base = passRunResult();
     const runA = passRunResult({ events: [...base.events, danglingSkillAttempt] });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('toolResultsCompleteOk:false');
   });
@@ -528,7 +530,7 @@ describe('calibrationHardGate', () => {
   it('isolates toolResultsCompleteOk -- B has a dangling Bash call with no correlated tool_result', () => {
     const danglingBash = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_dangling_bash', name: 'Bash', input: { command: 'kmp-test parallel --json' } }] } };
     const base = passRunResult();
-    const runB = passRunResult({ events: [...base.events, danglingBash], init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } });
+    const runB = passRunResult({ events: [...base.events, danglingBash], init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } });
     const { ok, reason } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('toolResultsCompleteOk:false');
@@ -542,7 +544,7 @@ describe('calibrationHardGate', () => {
     const noIdToolUse = { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'kmp-test parallel --json' } }] } };
     const base = passRunResult();
     const runA = passRunResult({ events: [...base.events, noIdToolUse] });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('toolResultsCompleteOk:false');
   });
@@ -585,7 +587,7 @@ describe('calibrationHardGate', () => {
   it('isolates transcriptStructureOk -- A has a second, contradictory init event later in the transcript', () => {
     const base = passRunResult();
     const runA = passRunResult({ events: [...base.events, initEventStub()] });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('initOk:true');
     expect(reason).toContain('transcriptStructureOk:false');
@@ -613,7 +615,7 @@ describe('calibrationHardGate', () => {
     const dup1 = bashToolUseEvent('toolu_dup', 'kmp-test parallel --json');
     const dup2 = bashToolUseEvent('toolu_dup', 'kmp-test parallel --json');
     const runA = passRunResult({ events: [...base.events, dup1, dup2, toolResultEvent('toolu_dup')] });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('toolResultsCompleteOk:true');
     expect(reason).toContain('transcriptStructureOk:false');
@@ -634,7 +636,7 @@ describe('calibrationHardGate', () => {
   it('isolates transcriptStructureOk -- A has an orphan tool_result referencing a tool_use id that was never called', () => {
     const base = passRunResult();
     const runA = passRunResult({ events: [...base.events, toolResultEvent('toolu_never_called')] });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('toolResultsCompleteOk:true');
     expect(reason).toContain('transcriptStructureOk:false');
@@ -654,7 +656,7 @@ describe('calibrationHardGate', () => {
         toolResultEvent('toolu_late'),
       ],
     });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     // init/result stay valid on their own SEPARATE fields (unaffected by the events array shape),
     // and the dangling-looking Bash call still has its own correlated result -- isolates this to
@@ -697,7 +699,7 @@ describe('calibrationHardGate', () => {
         toolResultEvent('toolu_late'),
       ],
     });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('transcriptStructureOk:false');
   });
@@ -721,7 +723,7 @@ describe('calibrationHardGate', () => {
         resultEventStub(),
       ],
     });
-    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('transcriptStructureOk:false');
   });
@@ -741,7 +743,7 @@ describe('calibrationHardGate', () => {
     const runB = passRunResult({
       result: { subtype: 'success', is_error: true },
       hookStats: { everyCallHooked: false, hookAllowCount: 2 },
-      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] },
     });
     const { ok, reason, failedChecksA, failedChecksB } = calibrationHardGate(a, b, runA, runB);
     expect(ok).toBe(false);
@@ -756,7 +758,7 @@ describe('calibrationHardGate', () => {
   });
 
   it('property: ok===true and both failedChecks arrays are empty precisely when every individual check passes', () => {
-    const { ok, failedChecksA, failedChecksB } = calibrationHardGate(passA(), passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, failedChecksA, failedChecksB } = calibrationHardGate(passA(), passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(true);
     expect(failedChecksA).toEqual([]);
     expect(failedChecksB).toEqual([]);
@@ -770,7 +772,7 @@ describe('calibrationHardGate', () => {
   describe('ambient-skill-profile validity (correction 4 -- previously unchecked)', () => {
     it('isolates ambientSkillProfileOk -- A (no-skill) with a malformed (non-array) skills[] fails closed', () => {
       const runA = passRunResult({ init: { ...passRunResult().init, skills: 'not-an-array' } });
-      const { ok, failedChecksA } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+      const { ok, failedChecksA } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
       expect(ok).toBe(false);
       expect(failedChecksA).toContain('ambientSkillProfileOk');
     });
@@ -784,9 +786,22 @@ describe('calibrationHardGate', () => {
 
     it('isolates targetSkillAmbientIdentityOk -- A (no-skill) whose skills[] anomalously advertises the target fails closed, even though it was never invoked', () => {
       const runA = passRunResult({ init: { ...passRunResult().init, skills: ['kmp-test-runner'] } });
-      const { ok, failedChecksA } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+      const { ok, failedChecksA } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
       expect(ok).toBe(false);
       expect(failedChecksA).toContain('targetSkillAmbientIdentityOk');
+    });
+
+    // --- Mandatory RED->GREEN reproduction (round-3 audit finding, P1): "current-skill accepts
+    // target absence" -- skill_available (isSkillAvailable/hasExpectedPluginProfile) only
+    // inspects plugins[], never skills[], so a current-skill condition with the plugin genuinely
+    // loaded (availabilityOk passes) but the target itself never advertised in skills[] previously
+    // slipped through: targetIdentityOk's pre-fix expression short-circuited to "not duplicated"
+    // alone whenever expectTargetPresent was true, never actually checking presence.
+    it('isolates targetSkillAmbientIdentityOk -- B (current-skill) whose skills[] does NOT include the target fails closed, even though the plugin loaded', () => {
+      const runB = passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['run'] } });
+      const { ok, failedChecksB } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+      expect(ok).toBe(false);
+      expect(failedChecksB).toContain('targetSkillAmbientIdentityOk');
     });
 
     it('a well-formed skills[] carrying real ambient (non-target) entries still passes cleanly on both sides', () => {
@@ -800,7 +815,7 @@ describe('calibrationHardGate', () => {
 
 describe('smokeHardGate', () => {
   it('passes when every sub-check is satisfied', () => {
-    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(true);
     expect(reason).toBeNull();
   });
@@ -820,7 +835,7 @@ describe('smokeHardGate', () => {
         resultEventStub(),
       ],
     });
-    const { ok, reason } = smokeHardGate(a, passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(a, passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('noSkillSafetyOk:false');
   });
@@ -835,7 +850,7 @@ describe('smokeHardGate', () => {
         resultEventStub(),
       ],
     });
-    const { ok, reason } = smokeHardGate(a, passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(a, passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('noSkillSafetyOk:false');
   });
@@ -851,7 +866,7 @@ describe('smokeHardGate', () => {
           resultEventStub(),
         ],
       });
-      const { ok, reason } = smokeHardGate(a, passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+      const { ok, reason } = smokeHardGate(a, passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
       expect(ok).toBe(true);
       expect(reason).toBeNull();
     }
@@ -859,7 +874,7 @@ describe('smokeHardGate', () => {
 
   it('isolates availabilityOk -- A shows the skill as available (breaks the no-skill/current-skill contrast)', () => {
     const a = passA({ skill_available: { value: true, reason: null } });
-    const { ok, reason } = smokeHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(a, passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:false');
     expect(reason).toContain('skillSelectionOk:true');
@@ -875,7 +890,7 @@ describe('smokeHardGate', () => {
 
   it('isolates processOk -- B exits nonzero', () => {
     const b = passB({ exit_code: 1 });
-    const { ok, reason } = smokeHardGate(passA(), b, passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), b, passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -891,7 +906,7 @@ describe('smokeHardGate', () => {
 
   it('isolates resultOk -- A\'s own result event reports is_error:true', () => {
     const runA = passRunResult({ result: { is_error: true } });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -908,7 +923,7 @@ describe('smokeHardGate', () => {
   // Regression coverage -- see calibrationHardGate's identical test for the full rationale
   // (a budget-cap-truncated session reports is_error:false with a non-'success' subtype).
   it('isolates resultOk -- B\'s result event has is_error:false but subtype is NOT success', () => {
-    const runB = passRunResult({ result: { subtype: 'error_max_budget_usd', is_error: false }, init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } });
+    const runB = passRunResult({ result: { subtype: 'error_max_budget_usd', is_error: false }, init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } });
     const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
@@ -946,7 +961,7 @@ describe('smokeHardGate', () => {
   // Regression coverage -- see calibrationHardGate's identical tests for the full rationale.
   it('isolates toolProfileOk -- A\'s init event declares Read alongside Bash/Skill', () => {
     const runA = passRunResult({ init: { ...passRunResult().init, tools: ['Bash', 'Skill', 'Read'] } });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -975,7 +990,7 @@ describe('smokeHardGate', () => {
     // The Read call gets its own correlated tool_result too -- otherwise it would ALSO trip
     // toolResultsCompleteOk, muddying this test's single-cause isolation of noUnexpectedToolsOk.
     const runA = passRunResult({ events: [...base.events, { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', id: 'toolu_evil', input: { file_path: '/etc/passwd' } }] } }, toolResultEvent('toolu_evil')] });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -994,7 +1009,7 @@ describe('smokeHardGate', () => {
 
   it('isolates hookAccountingOk -- not every Bash call in A reached the policy hook', () => {
     const runA = passRunResult({ hookStats: { everyCallHooked: false, hookAllowCount: 2 } });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -1009,7 +1024,7 @@ describe('smokeHardGate', () => {
 
   it('isolates realWorkOk -- B had at least one denied command (hook_deny_count>0)', () => {
     const b = passB({ hook_deny_count: 1 });
-    const { ok, reason } = smokeHardGate(passA(), b, passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), b, passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -1026,7 +1041,7 @@ describe('smokeHardGate', () => {
   it('isolates realWorkOk -- A never attempted any real command (hook_call_count:0)', () => {
     const a = passA({ hook_call_count: 0 });
     const runA = passRunResult({ hookStats: { everyCallHooked: true, hookAllowCount: 0 }, bashResults: [] });
-    const { ok, reason } = smokeHardGate(a, passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(a, passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('realWorkOk:false');
     // bashResults is empty in this fixture too, so exactCommandsOk is honestly also false here --
@@ -1037,7 +1052,7 @@ describe('smokeHardGate', () => {
   });
 
   it('isolates realWorkOk -- B has a malformed hook decision (hookAllowCount does not match hook_call_count even though hook_deny_count is 0)', () => {
-    const runB = passRunResult({ hookStats: { everyCallHooked: true, hookAllowCount: 1 }, init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }); // 1 allow for 2 calls, 0 denies
+    const runB = passRunResult({ hookStats: { everyCallHooked: true, hookAllowCount: 1 }, init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }); // 1 allow for 2 calls, 0 denies
     const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
@@ -1092,7 +1107,7 @@ describe('smokeHardGate', () => {
 
   it('isolates cleanTranscriptOk -- A has a malformed/truncated JSONL line', () => {
     const runA = passRunResult({ malformedLines: ['{not valid json'] });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:true');
@@ -1116,7 +1131,7 @@ describe('smokeHardGate', () => {
   it('isolates skillSelectionOk -- A calls an entirely unrelated Skill (evidence-contamination bypass)', () => {
     const base = passRunResult();
     const runA = passRunResult({ events: [...base.events, foreignSkillToolUseEvent('some-other-skill')] });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('availabilityOk:true');
     expect(reason).toContain('skillSelectionOk:false');
@@ -1133,7 +1148,7 @@ describe('smokeHardGate', () => {
   it('isolates skillSelectionOk -- A calls Skill with a non-string, malformed input.skill', () => {
     const base = passRunResult();
     const runA = passRunResult({ events: [...base.events, foreignSkillToolUseEvent(42)] });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('skillSelectionOk:false');
   });
@@ -1142,14 +1157,14 @@ describe('smokeHardGate', () => {
   // inspected; a dangling tool_use with no correlated result treated as safe) apply to smoke too.
   it('isolates pluginProfileOk -- A has a foreign plugin loaded (real isolation break, not a scoring artifact)', () => {
     const runA = passRunResult({ init: { ...passRunResult().init, plugins: [{ name: 'some-other-plugin', path: '/fake', source: 'fake' }] } });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('pluginProfileOk:false');
   });
 
   it('isolates pluginProfileOk -- A has no plugins field at all (undefined, not a genuine empty-array observation)', () => {
     const runA = passRunResult({ init: { model: 'claude-sonnet-5-fake-resolved', tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' } });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('pluginProfileOk:false');
   });
@@ -1172,7 +1187,7 @@ describe('smokeHardGate', () => {
     const danglingBash = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_dangling_bash', name: 'Bash', input: { command: 'kmp-test doctor --json' } }] } };
     const base = passRunResult();
     const runA = passRunResult({ events: [...base.events, danglingBash] });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('toolResultsCompleteOk:false');
   });
@@ -1182,7 +1197,7 @@ describe('smokeHardGate', () => {
   it('isolates toolResultsCompleteOk -- B has a tool_use with no id at all (cannot be correlated, so it can never be proven complete)', () => {
     const noIdToolUse = { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'kmp-test doctor --json' } }] } };
     const base = passRunResult();
-    const runB = passRunResult({ events: [...base.events, noIdToolUse], init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } });
+    const runB = passRunResult({ events: [...base.events, noIdToolUse], init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } });
     const { ok, reason } = smokeHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('toolResultsCompleteOk:false');
@@ -1217,7 +1232,7 @@ describe('smokeHardGate', () => {
   it('isolates transcriptStructureOk -- A has a second, contradictory init event later in the transcript', () => {
     const base = passRunResult();
     const runA = passRunResult({ events: [...base.events, initEventStub()] });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('initOk:true');
     expect(reason).toContain('transcriptStructureOk:false');
@@ -1240,7 +1255,7 @@ describe('smokeHardGate', () => {
     const dup1 = bashToolUseEvent('toolu_dup', 'kmp-test parallel --json');
     const dup2 = bashToolUseEvent('toolu_dup', 'kmp-test parallel --json');
     const runA = passRunResult({ events: [...base.events, dup1, dup2, toolResultEvent('toolu_dup')] });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('toolResultsCompleteOk:true');
     expect(reason).toContain('transcriptStructureOk:false');
@@ -1261,7 +1276,7 @@ describe('smokeHardGate', () => {
   it('isolates transcriptStructureOk -- A has an orphan tool_result referencing a tool_use id that was never called', () => {
     const base = passRunResult();
     const runA = passRunResult({ events: [...base.events, toolResultEvent('toolu_never_called')] });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('toolResultsCompleteOk:true');
     expect(reason).toContain('transcriptStructureOk:false');
@@ -1278,7 +1293,7 @@ describe('smokeHardGate', () => {
         toolResultEvent('toolu_late'),
       ],
     });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('initOk:true');
     expect(reason).toContain('resultOk:true');
@@ -1318,7 +1333,7 @@ describe('smokeHardGate', () => {
         toolResultEvent('toolu_late'),
       ],
     });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('transcriptStructureOk:false');
   });
@@ -1337,7 +1352,7 @@ describe('smokeHardGate', () => {
         resultEventStub(),
       ],
     });
-    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, reason } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(false);
     expect(reason).toContain('transcriptStructureOk:false');
   });
@@ -1354,7 +1369,7 @@ describe('smokeHardGate', () => {
     });
     const runB = passRunResult({
       malformedLines: [{ line: 'not valid json', error: 'simulated' }],
-      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN },
+      init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] },
     });
     const { ok, reason, failedChecksA, failedChecksB } = smokeHardGate(a, b, runA, runB);
     expect(ok).toBe(false);
@@ -1367,7 +1382,7 @@ describe('smokeHardGate', () => {
   });
 
   it('property: ok===true and both failedChecks arrays are empty precisely when every individual check passes', () => {
-    const { ok, failedChecksA, failedChecksB } = smokeHardGate(passA(), passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+    const { ok, failedChecksA, failedChecksB } = smokeHardGate(passA(), passB(), passRunResult(), passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
     expect(ok).toBe(true);
     expect(failedChecksA).toEqual([]);
     expect(failedChecksB).toEqual([]);
@@ -1379,7 +1394,7 @@ describe('smokeHardGate', () => {
   describe('ambient-skill-profile validity (correction 4 -- previously unchecked)', () => {
     it('isolates ambientSkillProfileOk -- A (no-skill) with a malformed (non-array) skills[] fails closed', () => {
       const runA = passRunResult({ init: { ...passRunResult().init, skills: 'not-an-array' } });
-      const { ok, failedChecksA } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+      const { ok, failedChecksA } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
       expect(ok).toBe(false);
       expect(failedChecksA).toContain('ambientSkillProfileOk');
     });
@@ -1393,9 +1408,18 @@ describe('smokeHardGate', () => {
 
     it('isolates targetSkillAmbientIdentityOk -- A (no-skill) whose skills[] anomalously advertises the target fails closed, even though it was never invoked', () => {
       const runA = passRunResult({ init: { ...passRunResult().init, skills: ['kmp-test-runner'] } });
-      const { ok, failedChecksA } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+      const { ok, failedChecksA } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner'] } }));
       expect(ok).toBe(false);
       expect(failedChecksA).toContain('targetSkillAmbientIdentityOk');
+    });
+
+    // --- Mandatory RED->GREEN reproduction (round-3 audit finding, P1) -- see
+    // calibrationHardGate's identical describe block for the full rationale.
+    it('isolates targetSkillAmbientIdentityOk -- B (current-skill) whose skills[] does NOT include the target fails closed, even though the plugin loaded', () => {
+      const runB = passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['run'] } });
+      const { ok, failedChecksB } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+      expect(ok).toBe(false);
+      expect(failedChecksB).toContain('targetSkillAmbientIdentityOk');
     });
 
     it('a well-formed skills[] carrying real ambient (non-target) entries still passes cleanly on both sides', () => {
@@ -1889,6 +1913,17 @@ describe('scenarioCellIntegrityOk', () => {
       const crBare = passConditionResult('current-skill', { init: { ...passConditionResult('current-skill').init, skills: ['run', 'kmp-test-runner'] } });
       const { ok: okBare } = scenarioCellIntegrityOk(passRecord('current-skill'), crBare);
       expect(okBare).toBe(true);
+    });
+
+    // --- Mandatory RED->GREEN reproduction (round-3 audit finding, P1): "current-skill accepts
+    // target absence" -- pluginProfileOk only inspects init.plugins[], never skills[], so a
+    // current-skill cell with the plugin genuinely loaded but the target never advertised in
+    // skills[] previously slipped through targetSkillAmbientIdentityOk entirely.
+    it('a current-skill cell whose skills[] does NOT include the target at all fails closed, even though the plugin loaded', () => {
+      const cr = passConditionResult('current-skill', { init: { ...passConditionResult('current-skill').init, skills: ['run'] } });
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('current-skill'), cr);
+      expect(ok).toBe(false);
+      expect(reason).toContain('targetSkillAmbientIdentityOk:false');
     });
 
     it('duplicate LOGICAL target representations (bare AND namespaced simultaneously) fail closed, regardless of condition', () => {

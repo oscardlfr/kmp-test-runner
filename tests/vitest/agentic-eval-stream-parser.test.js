@@ -985,6 +985,27 @@ describe('computeAmbientSkillProfile -- parses+validates init.skills[], conditio
     expect(targetDuplicated).toBe(false);
   });
 
+  // --- Mandatory RED->GREEN reproduction (round-3 audit finding, P1): "current-skill accepts
+  // target absence" -- the pre-fix expression `!targetDuplicated && (expectTargetPresent ||
+  // !targetPresent)` short-circuits to `!targetDuplicated` alone whenever expectTargetPresent is
+  // true, so it NEVER actually checked presence. Reproduced directly against the pre-fix code:
+  // {ok:true, targetPresent:false, targetIdentityOk:true}. skill_available (cli.mjs's
+  // hasExpectedPluginProfile) only inspects init.skills[]'s SIBLING field, plugins[] -- it cannot
+  // catch this either, so a current-skill condition with the plugin loaded but the skill itself
+  // never advertised in skills[] passed cleanly end to end.
+  it('current-skill context: NO target reference at all fails closed -- presence is required, not merely "not duplicated"', () => {
+    const { ok, targetPresent, targetIdentityOk } = computeAmbientSkillProfile(initWithSkills(['run']), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: true });
+    expect(targetPresent).toBe(false);
+    expect(targetIdentityOk).toBe(false);
+    expect(ok).toBe(false);
+  });
+
+  it('current-skill context: a completely empty skills[] (target absent) fails closed the same way', () => {
+    const { ok, targetIdentityOk } = computeAmbientSkillProfile(initWithSkills([]), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: true });
+    expect(targetIdentityOk).toBe(false);
+    expect(ok).toBe(false);
+  });
+
   it('duplicate LOGICAL target representations (bare AND namespaced simultaneously) fail closed, regardless of condition', () => {
     for (const expectTargetPresent of [true, false]) {
       const { ok, targetDuplicated } = computeAmbientSkillProfile(
