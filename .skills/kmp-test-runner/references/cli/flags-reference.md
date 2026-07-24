@@ -21,7 +21,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | Flag | Default | parallel | coverage | benchmark | changed | android | Notes |
 |------|---------|:--------:|:--------:|:---------:|:-------:|:-------:|-------|
 | `--test-type <type>` | auto-detect | ✓ | — | — | ✓ | — | `all` / `common` / `androidUnit` / `androidInstrumented` / `desktop` / `ios` / `macos` / `jvm` / `js` / `wasm`. |
-| `--module-filter <glob>` | `*` | ✓ | — | ✓ | ✓ | ✓ | Glob, comma-separated. Composes with `changed`'s derived filter (both must match). |
+| `--module-filter <glob>` | `*` | ✓ | — | ✓ | — | ✓ | Glob, comma-separated. Not accepted by `changed` (`unknown_flag`) — its module set is always git-derived; see `--show-modules-only`. |
 | `--test-filter <pattern>` | none | ✓ | — | android only | ✓ | ✓ | Single class or `Class#method`. JVM test tasks use gradle `--tests`; Android resolves wildcards to FQN by source scan. **benchmark**: only the android leg filters (`-P` instrumentation args); jvm benchmark legs are SKIPPED with `warnings[].code: test_filter_unsupported` + `skipped[]` entries — kotlinx-benchmark tasks reject `--tests` and have no CLI filter (use `benchmark { configurations { include(...) } }` in the build script, or `--module-filter` + `--config smoke` to narrow). |
 | `--exclude-modules <list>` | none | ✓ | — | — | ✓ | — | Comma-separated globs to skip entirely (not probed, not tested). |
 | `--include-untested` | off | ✓ | — | — | ✓ | — | Re-include modules auto-skipped because filesystem has no `src/*Test*` directory. |
@@ -33,8 +33,8 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 |------|---------|:--------:|:--------:|:-------:|-------|
 | `--coverage-tool <tool>` | `auto` (parallel/coverage), `jacoco` (changed) | ✓ | ✓ | ✓ | `auto` / `jacoco` / `kover` / `none`. **Default diverges**: `changed`'s historical default is `jacoco`. |
 | `--no-coverage` | off | ✓ (alias) | — | ✓ (alias) | Sugar for `--coverage-tool none`. Expanded via `expandNoCoverageAlias` in `lib/parsers/argv.js`. |
-| `--coverage-modules <list>` | all with plugin | ✓ | ✓ | — | Comma-separated module names to include in coverage aggregation. |
-| `--exclude-coverage <list>` | none | ✓ | ✓ | ✓ | Comma-separated modules to skip from coverage aggregation only (tests still run). |
+| `--coverage-modules <list>` | all with plugin | ✓ | ✓ | — | Comma-separated **exact** module names (no leading `:`, no glob/substring) to include in coverage aggregation. |
+| `--exclude-coverage <list>` | none | ✓ | ✓ | ✓ | Comma-separated **exact** module names (same matching rules as `--coverage-modules`) to skip from coverage aggregation only (tests still run). |
 | `--no-coverage-xml-autofix` | off | ✓ | — | — | Disable the auto-injected init-script that forces jacoco `xml.required=true` on the coverage-report leg. By default `kmp-test` enables jacoco XML so HTML-only `jacocoTestReport` modules still produce parseable XML. No-op for Kover. Opting out surfaces `coverage_xml_disabled` for HTML-only modules. |
 | `--min-missed-lines <N>` | `0` | ✓ | ✓ | ✓ | Fail (`coverage_threshold_exceeded`, exit 1) if aggregated missed lines exceed `N`. `0` = no gate. |
 | `--output-file <path>` | (writes under `.kmp-test-runner/reports/coverage/`) | ✓ | ✓ | — | Path for the markdown report. Absolute → verbatim; relative → resolved against `--project-root`. When omitted (or set to the historic literal `coverage-full-report.md`), writes to `.kmp-test-runner/reports/coverage/<runId>.md` with a `latest.md` alias. With a custom path, only that file is written — no alias. |
@@ -45,7 +45,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 
 | Flag | Default | parallel | coverage | benchmark | changed | android | Notes |
 |------|---------|:--------:|:--------:|:---------:|:-------:|:-------:|-------|
-| `--max-workers <N>` | `0` (auto) | ✓ | — | — | ✓ | — | Parallel gradle workers. `0` = gradle decides. |
+| `--max-workers <N>` | `0` (auto) | ✓ | — | — | — | — | Parallel gradle workers. `0` = gradle decides. Not accepted by `changed` (`unknown_flag`). |
 | `--timeout <seconds>` | `600` (parallel), per-config (benchmark) | ✓ | — | ✓ | — | — | Per-task gradle watchdog. `0` disables. |
 | `--ignore-gradle-timeout` | off | — | — | ✓ | — | — | Disable watchdog entirely. Wins over `--timeout` and `KMP_GRADLE_TIMEOUT_MS`. |
 | `--max-failures <N>` | `0` (run all) | — | — | — | ✓ | — | Stop after `N` per-module failures (changed only). |
