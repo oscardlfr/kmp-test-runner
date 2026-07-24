@@ -505,14 +505,23 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
       // ambient_skill_profile (schema v4, populated end-to-end by buildRunRecord): exactly one
       // ambient name ("run") on every record, regardless of condition -- proving the field
       // population works through the real subprocess path, not just in unit tests. Never the raw
-      // name itself (privacy-safe count + fingerprint only).
+      // name itself (privacy-safe count + opaque scope id + keyed HMAC fingerprint only).
       expect(record.ambient_skill_profile.count).toBe(1);
-      expect(record.ambient_skill_profile.fingerprint_sha256).toMatch(/^[0-9a-f]{64}$/);
-      expect(Object.keys(record.ambient_skill_profile).sort()).toEqual(['count', 'fingerprint_sha256']);
-      // Privacy-safe: the committed record's ambient_skill_profile is exactly {count,
-      // fingerprint_sha256} -- the raw skill name ("run") never appears anywhere in it.
+      expect(record.ambient_skill_profile.scope_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+      expect(record.ambient_skill_profile.fingerprint_hmac).toMatch(/^[0-9a-f]{64}$/);
+      expect(Object.keys(record.ambient_skill_profile).sort()).toEqual(['count', 'fingerprint_hmac', 'scope_id']);
+      // Privacy-safe: the committed record's ambient_skill_profile is exactly {count, scope_id,
+      // fingerprint_hmac} -- the raw skill name ("run") never appears anywhere in it.
       expect(JSON.stringify(record.ambient_skill_profile)).not.toContain('run');
     }
+    // Every record in this SAME invocation shares the identical scope_id (one random HMAC key
+    // generated once for the whole matrix, correction 2) -- and since they also share the same
+    // real ambient name set ("run"), their fingerprints agree too, proving the keyed HMAC is
+    // still genuinely comparable WITHIN one invocation, not just uncorrelated across invocations.
+    const scopeIds = new Set(records.map((r) => r.ambient_skill_profile.scope_id));
+    const fingerprints = new Set(records.map((r) => r.ambient_skill_profile.fingerprint_hmac));
+    expect(scopeIds.size).toBe(1);
+    expect(fingerprints.size).toBe(1);
     // The no-skill records are the ones that actually confirmed "run" -- foreign_skill_summary
     // (schema v3) still records it as a real, harmless, counted event (categorized counts only,
     // never the raw name).

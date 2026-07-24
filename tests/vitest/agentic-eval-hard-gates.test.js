@@ -96,6 +96,13 @@ function passRunResult(overrides = {}) {
     init: {
       model: 'claude-sonnet-5-fake-resolved',
       plugins: [],
+      // Well-formed and empty regardless of A/B side -- computeAmbientSkillProfile's
+      // targetIdentityOk is satisfied by an empty skills[] under EITHER expectTargetPresent value
+      // (no-skill: zero target references is exactly what's required; current-skill: "at most
+      // one" is satisfied vacuously by zero too) -- see stream-parser.mjs's own doc comment. Every
+      // existing override here only ever touches `plugins`, never `skills`, so this one shared
+      // default covers both calibrationHardGate/smokeHardGate sides with zero per-call-site changes.
+      skills: [],
       tools: ['Bash', 'Skill'],
       mcp_servers: [],
       permissionMode: 'dontAsk',
@@ -755,6 +762,40 @@ describe('calibrationHardGate', () => {
     expect(failedChecksB).toEqual([]);
   });
 
+  // Mandatory RED->GREEN reproduction (review-round-2, correction 4): calibration never checked
+  // init.skills[] validity at all before this fix -- a missing/malformed array silently produced a
+  // "valid" {count:0, ...} ambient_skill_profile on the record (buildRunRecord), masking a genuine
+  // capture defect as confidently-measured "zero ambient skills". Proven for BOTH sides
+  // independently, and for BOTH the structural check and the condition-aware target-identity check.
+  describe('ambient-skill-profile validity (correction 4 -- previously unchecked)', () => {
+    it('isolates ambientSkillProfileOk -- A (no-skill) with a malformed (non-array) skills[] fails closed', () => {
+      const runA = passRunResult({ init: { ...passRunResult().init, skills: 'not-an-array' } });
+      const { ok, failedChecksA } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+      expect(ok).toBe(false);
+      expect(failedChecksA).toContain('ambientSkillProfileOk');
+    });
+
+    it('isolates ambientSkillProfileOk -- B (current-skill) with a malformed (non-array) skills[] fails closed', () => {
+      const runB = passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: 'not-an-array' } });
+      const { ok, failedChecksB } = calibrationHardGate(passA(), passB(), passRunResult(), runB);
+      expect(ok).toBe(false);
+      expect(failedChecksB).toContain('ambientSkillProfileOk');
+    });
+
+    it('isolates targetSkillAmbientIdentityOk -- A (no-skill) whose skills[] anomalously advertises the target fails closed, even though it was never invoked', () => {
+      const runA = passRunResult({ init: { ...passRunResult().init, skills: ['kmp-test-runner'] } });
+      const { ok, failedChecksA } = calibrationHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+      expect(ok).toBe(false);
+      expect(failedChecksA).toContain('targetSkillAmbientIdentityOk');
+    });
+
+    it('a well-formed skills[] carrying real ambient (non-target) entries still passes cleanly on both sides', () => {
+      const runA = passRunResult({ init: { ...passRunResult().init, skills: ['run'] } });
+      const runB = passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['run', 'kmp-test-runner'] } });
+      const { ok } = calibrationHardGate(passA(), passB(), runA, runB);
+      expect(ok).toBe(true);
+    });
+  });
 });
 
 describe('smokeHardGate', () => {
@@ -1332,6 +1373,38 @@ describe('smokeHardGate', () => {
     expect(failedChecksB).toEqual([]);
   });
 
+  // Mandatory RED->GREEN reproduction (review-round-2, correction 4): smoke's own gate, like
+  // calibration's, never checked init.skills[] validity at all before this fix -- see
+  // calibrationHardGate's identical describe block for the full rationale.
+  describe('ambient-skill-profile validity (correction 4 -- previously unchecked)', () => {
+    it('isolates ambientSkillProfileOk -- A (no-skill) with a malformed (non-array) skills[] fails closed', () => {
+      const runA = passRunResult({ init: { ...passRunResult().init, skills: 'not-an-array' } });
+      const { ok, failedChecksA } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+      expect(ok).toBe(false);
+      expect(failedChecksA).toContain('ambientSkillProfileOk');
+    });
+
+    it('isolates ambientSkillProfileOk -- B (current-skill) with a malformed (non-array) skills[] fails closed', () => {
+      const runB = passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: 'not-an-array' } });
+      const { ok, failedChecksB } = smokeHardGate(passA(), passB(), passRunResult(), runB);
+      expect(ok).toBe(false);
+      expect(failedChecksB).toContain('ambientSkillProfileOk');
+    });
+
+    it('isolates targetSkillAmbientIdentityOk -- A (no-skill) whose skills[] anomalously advertises the target fails closed, even though it was never invoked', () => {
+      const runA = passRunResult({ init: { ...passRunResult().init, skills: ['kmp-test-runner'] } });
+      const { ok, failedChecksA } = smokeHardGate(passA(), passB(), runA, passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN } }));
+      expect(ok).toBe(false);
+      expect(failedChecksA).toContain('targetSkillAmbientIdentityOk');
+    });
+
+    it('a well-formed skills[] carrying real ambient (non-target) entries still passes cleanly on both sides', () => {
+      const runA = passRunResult({ init: { ...passRunResult().init, skills: ['run'] } });
+      const runB = passRunResult({ init: { ...passRunResult().init, plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['run', 'kmp-test-runner'] } });
+      const { ok } = smokeHardGate(passA(), passB(), runA, runB);
+      expect(ok).toBe(true);
+    });
+  });
 });
 
 // scenarioCellIntegrityOk/scenarioHardGate (decision 4 of the design): harness-integrity ONLY,
@@ -1778,6 +1851,55 @@ describe('scenarioCellIntegrityOk', () => {
       expect(reason).toContain('ambientSkillProfileOk:false');
     });
   });
+
+  // Mandatory RED->GREEN reproduction (review-round-2, correction 1) -- THE original finding: a
+  // no-skill cell whose skills[] anomalously advertises the target's own identity (bare or
+  // namespaced) passed this exact gate with ok:true/failedChecks:[] before this fix, because
+  // computeAmbientSkillProfile stripped the target's identity unconditionally regardless of
+  // condition, and nothing else here inspects skills[] for the target's own presence (only
+  // plugins[], via pluginProfileOk, and actual invocation, via noSkillSafetyOk). Directly
+  // reproduced against the pre-fix code before this fix existed.
+  describe('targetSkillAmbientIdentityOk -- condition-aware target-identity handling (correction 1)', () => {
+    function noSkillCrWithSkills(skills) {
+      return passConditionResult('no-skill', { init: { ...passConditionResult('no-skill').init, skills } });
+    }
+
+    it('a no-skill cell whose skills[] anomalously advertises the BARE target identity fails closed, even though never invoked', () => {
+      const cr = noSkillCrWithSkills(['kmp-test-runner']);
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr);
+      expect(ok).toBe(false);
+      expect(reason).toContain('targetSkillAmbientIdentityOk:false');
+    });
+
+    it('a no-skill cell whose skills[] anomalously advertises the NAMESPACED target identity fails closed too', () => {
+      const cr = noSkillCrWithSkills(['kmp-test-runner:kmp-test-runner']);
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr);
+      expect(ok).toBe(false);
+      expect(reason).toContain('targetSkillAmbientIdentityOk:false');
+    });
+
+    it('a no-skill cell whose skills[] carries only OTHER ambient names (no target reference at all) passes cleanly', () => {
+      const cr = noSkillCrWithSkills(['run']);
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr);
+      expect(ok).toBe(true);
+      expect(reason).toBeNull();
+    });
+
+    it('a current-skill cell whose skills[] carries exactly one target representation (either form) passes cleanly', () => {
+      const crBare = passConditionResult('current-skill', { init: { ...passConditionResult('current-skill').init, skills: ['run', 'kmp-test-runner'] } });
+      const { ok: okBare } = scenarioCellIntegrityOk(passRecord('current-skill'), crBare);
+      expect(okBare).toBe(true);
+    });
+
+    it('duplicate LOGICAL target representations (bare AND namespaced simultaneously) fail closed, regardless of condition', () => {
+      for (const condition of ['no-skill', 'current-skill']) {
+        const cr = passConditionResult(condition, { init: { ...passConditionResult(condition).init, skills: ['kmp-test-runner', 'kmp-test-runner:kmp-test-runner'] } });
+        const { ok, reason } = scenarioCellIntegrityOk(passRecord(condition), cr);
+        expect(ok).toBe(false);
+        expect(reason).toContain('targetSkillAmbientIdentityOk:false');
+      }
+    });
+  });
 });
 
 describe('scenarioHardGate', () => {
@@ -1809,6 +1931,51 @@ describe('scenarioHardGate', () => {
     const { ok, reason } = scenarioHardGate(cells.map((c) => c.record), cells.map((c) => c.conditionResult));
     expect(ok).toBe(true);
     expect(reason).toBeNull();
+  });
+
+  // Mandatory RED->GREEN reproduction (review-round-2, correction 5): the pre-fix version
+  // returned a vacuous {ok:true, cellResults:[]} for records:[] paired with a non-empty
+  // conditionResults (directly demonstrated), and threw an UNCAUGHT TypeError for the reverse
+  // mismatch (conditionResults:[] with a non-empty records, since ambientProfiles[0] was then
+  // undefined -- also directly demonstrated). A real hard gate must fail closed, without ever
+  // throwing, whenever its own two inputs aren't both non-empty arrays of matching length.
+  describe('cardinality fail-closed (correction 5 -- previously vacuous-pass or uncaught-throw)', () => {
+    it('records:[] with a non-empty conditionResults fails closed -- never the old vacuous ok:true', () => {
+      const oneCell = cell('no-skill', 0);
+      const { ok, reason, cellResults } = scenarioHardGate([], [oneCell.conditionResult]);
+      expect(ok).toBe(false);
+      expect(reason).toMatch(/invalid matrix shape/);
+      expect(cellResults).toEqual([]);
+    });
+
+    it('a non-empty records with conditionResults:[] fails closed -- never throws uncaught', () => {
+      const oneCell = cell('no-skill', 0);
+      expect(() => scenarioHardGate([oneCell.record], [])).not.toThrow();
+      const { ok, reason } = scenarioHardGate([oneCell.record], []);
+      expect(ok).toBe(false);
+      expect(reason).toMatch(/invalid matrix shape/);
+    });
+
+    it('both empty fails closed, never throws', () => {
+      expect(() => scenarioHardGate([], [])).not.toThrow();
+      const { ok } = scenarioHardGate([], []);
+      expect(ok).toBe(false);
+    });
+
+    it('mismatched non-zero lengths (e.g. 2 records, 3 conditionResults) fails closed', () => {
+      const cells = [cell('current-skill', 0), cell('no-skill', 0)];
+      const extra = cell('current-skill', 1);
+      const { ok, reason } = scenarioHardGate(cells.map((c) => c.record), [...cells.map((c) => c.conditionResult), extra.conditionResult]);
+      expect(ok).toBe(false);
+      expect(reason).toMatch(/invalid matrix shape/);
+    });
+
+    it('non-array inputs fail closed rather than throwing', () => {
+      expect(() => scenarioHardGate(null, undefined)).not.toThrow();
+      const { ok, reason } = scenarioHardGate(null, undefined);
+      expect(ok).toBe(false);
+      expect(reason).toMatch(/invalid matrix shape/);
+    });
   });
 
   it('one bad cell blocks the WHOLE batch -- never a partial pass', () => {

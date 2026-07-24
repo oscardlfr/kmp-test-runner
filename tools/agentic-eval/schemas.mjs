@@ -25,7 +25,12 @@ import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3, 4];
 export const LATEST_RUN_SCHEMA = 4;
 export const CURRENT_SCENARIO_SCHEMA = 1;
-export const CURRENT_AGGREGATE_SCHEMA = 1;
+// v1 -> v2 (review-round-2 fix): group_key's own SHAPE changed -- it gained the
+// `ambient_skill_profile` partition field -- so this is bumped exactly like LATEST_RUN_SCHEMA is
+// whenever a run record's own shape changes. No historical committed aggregate-output files exist
+// to preserve compatibility with (aggregate output is always computed on demand, never persisted
+// under tools/runs/), so this is a plain constant bump, not a versioned dispatch.
+export const CURRENT_AGGREGATE_SCHEMA = 2;
 
 export const RUN_KIND_VALUES = ['calibration', 'corpus-probe', 'scenario', 'smoke'];
 export const CONDITION_VALUES = ['no-skill', 'current-skill', 'candidate-skill'];
@@ -70,11 +75,12 @@ const RUN_CANONICAL_FIELDS_V2 = [...RUN_CANONICAL_FIELDS_V1, 'grading_checks', '
 // non-null value on every schema:3 record.
 const RUN_CANONICAL_FIELDS_V3 = [...RUN_CANONICAL_FIELDS_V2, 'foreign_skill_summary'];
 
-// Schema v4 = v3 + ambient_skill_profile ({count, fingerprint_sha256} -- a privacy-safe summary of
-// the init event's `skills[]` array with the target skill's own identity stripped out, see
-// stream-parser.mjs's computeAmbientSkillProfile). Like foreign_skill_summary (and unlike
-// grading_checks/repetition_index), NOT scenario-only -- always computable from any condition's
-// init event, so every run_kind carries a real, non-null value on every schema:4 record.
+// Schema v4 = v3 + ambient_skill_profile ({count, scope_id, fingerprint_hmac} -- a privacy-safe,
+// invocation-scoped-keyed summary of the init event's `skills[]` array with the target skill's own
+// identity stripped out, see stream-parser.mjs's computeAmbientSkillProfile/
+// fingerprintAmbientSkillNames). Like foreign_skill_summary (and unlike grading_checks/
+// repetition_index), NOT scenario-only -- always computable from any condition's init event, so
+// every run_kind carries a real, non-null value on every schema:4 record.
 const RUN_CANONICAL_FIELDS_V4 = [...RUN_CANONICAL_FIELDS_V3, 'ambient_skill_profile'];
 
 // Explicit if-chain, not a ternary -- a bare `schema === 2 ? V2 : V1`-shaped chain, naively
@@ -325,25 +331,37 @@ export function validateRun(run) {
 
   // ambient_skill_profile (v4-introduced field) -- mirrors foreign_skill_summary's identical v3
   // gate one version up: applies to EVERY run_kind (never scenario-only), always required once
-  // schema>=4 (a privacy-safe {count, fingerprint_sha256} summary is always computable from any
-  // condition's init event, never null), and must be entirely absent below schema v4 -- it did not
-  // exist in RUN_CANONICAL_FIELDS_V1/_V2/_V3, so a v1-v3 record carrying it would be
-  // self-contradictory relative to its own declared schema version.
+  // schema>=4, and must be entirely absent below schema v4 -- it did not exist in
+  // RUN_CANONICAL_FIELDS_V1/_V2/_V3, so a v1-v3 record carrying it would be self-contradictory
+  // relative to its own declared schema version.
+  //
+  // Review-round-2 fix: {count, scope_id, fingerprint_hmac} (3 keys, not the original 2) --
+  // `scope_id` is an opaque, per-invocation UUID (see cli.mjs's generateAmbientProfileScope) that
+  // makes explicit which records are even comparable to each other (fingerprint_hmac is keyed by a
+  // random, never-persisted, per-invocation secret -- see stream-parser.mjs's
+  // fingerprintAmbientSkillNames -- so two records sharing the SAME scope_id came from the SAME
+  // invocation and used the SAME key; two different scope_ids can never be meaningfully compared,
+  // regardless of what their fingerprints happen to look like). `fingerprint_hmac` replaces the
+  // original `fingerprint_sha256` name to be honest that this is now a KEYED digest, not a bare
+  // content hash.
   if (run.schema >= 4) {
     const profile = run.ambient_skill_profile;
     if (profile == null || typeof profile !== 'object' || Array.isArray(profile)) {
       errors.push({ field: 'ambient_skill_profile', message: 'required (non-null object) for a schema:4+ record' });
     } else {
-      const allowedKeys = new Set(['count', 'fingerprint_sha256']);
+      const allowedKeys = new Set(['count', 'scope_id', 'fingerprint_hmac']);
       const actualKeys = Object.keys(profile);
       if (actualKeys.some((k) => !allowedKeys.has(k)) || actualKeys.length !== allowedKeys.size) {
-        errors.push({ field: 'ambient_skill_profile', message: `must have exactly the keys count/fingerprint_sha256, got ${JSON.stringify(actualKeys)}` });
+        errors.push({ field: 'ambient_skill_profile', message: `must have exactly the keys count/scope_id/fingerprint_hmac, got ${JSON.stringify(actualKeys)}` });
       }
       if (!(Number.isInteger(profile.count) && profile.count >= 0)) {
         errors.push({ field: 'ambient_skill_profile.count', message: 'must be a non-negative integer' });
       }
-      if (typeof profile.fingerprint_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(profile.fingerprint_sha256)) {
-        errors.push({ field: 'ambient_skill_profile.fingerprint_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
+      if (typeof profile.scope_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(profile.scope_id)) {
+        errors.push({ field: 'ambient_skill_profile.scope_id', message: 'must be a full (36-char) UUID string' });
+      }
+      if (typeof profile.fingerprint_hmac !== 'string' || !/^[0-9a-f]{64}$/.test(profile.fingerprint_hmac)) {
+        errors.push({ field: 'ambient_skill_profile.fingerprint_hmac', message: 'must be a lowercase 64-char hex HMAC-SHA256 string' });
       }
     }
   } else if ('ambient_skill_profile' in run && run.ambient_skill_profile != null) {
@@ -815,15 +833,37 @@ export const HARD_PARTITION_FIELDS = [
   'claude_code_version', 'schema', 'ambient_skill_profile',
 ];
 
-// Some HARD_PARTITION_FIELDS values (the two policy_allowed_* lists, and now the object-valued
+/**
+ * Recursively sorts every OBJECT's own keys (arrays keep their own positional order -- only object
+ * keys are order-independent), returning a new, canonically-shaped value ready for
+ * `JSON.stringify`. Review-round-2 fix: a bare `JSON.stringify` is NOT canonical w.r.t. object key
+ * INSERTION order -- `{count:1,fingerprint_hmac:'x'}` and `{fingerprint_hmac:'x',count:1}` (the
+ * identical value, constructed with keys in a different order) serialize to two DIFFERENT
+ * strings, which previously caused two semantically-identical `ambient_skill_profile` values to be
+ * spuriously treated as "mixed" (demonstrated directly: two such records failed to group under the
+ * old code). The SAME shared function is used by both `partitionFieldKey` (below) and
+ * `aggregate.mjs`'s own bucketing key -- one canonical serializer, not two independently-drifting
+ * notions of "the same value".
+ */
+export function canonicalStructuredValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalStructuredValue);
+  if (value != null && typeof value === 'object') {
+    const sorted = {};
+    for (const k of Object.keys(value).sort()) sorted[k] = canonicalStructuredValue(value[k]);
+    return sorted;
+  }
+  return value;
+}
+
+// Some HARD_PARTITION_FIELDS values (the two policy_allowed_* lists, and the object-valued
 // ambient_skill_profile) are arrays or plain objects -- a bare `new Set(runs.map(r => r[f]))`
 // compares them by REFERENCE, so two runs with structurally identical values (e.g. both
-// ['doctor'], or both {count:0, fingerprint_sha256:'...'}) as separate instances would be treated
-// as "different" and spuriously rejected as mixed. Comparing the JSON.stringify representation
-// instead compares by structural equality, matching how aggregate.mjs's own bucket key already
-// treats array-valued fields.
+// ['doctor'], or both {count:0, scope_id:'...', fingerprint_hmac:'...'}) as separate instances
+// would be treated as "different" and spuriously rejected as mixed. Canonicalizing (recursively
+// sorted object keys, see canonicalStructuredValue) before JSON.stringify compares by genuine
+// structural equality, independent of both object-vs-reference identity AND key insertion order.
 function partitionFieldKey(value) {
-  return (Array.isArray(value) || (value != null && typeof value === 'object')) ? JSON.stringify(value) : value;
+  return (Array.isArray(value) || (value != null && typeof value === 'object')) ? JSON.stringify(canonicalStructuredValue(value)) : value;
 }
 
 export function validateAggregateGroupKey(key) {
@@ -913,6 +953,17 @@ export function buildAggregateGroup(runs) {
         errors.push({ field, message: `${ungraded.length} run(s) have a null/missing ${field}.value and cannot be folded into a publishable scenario aggregate -- benchmark_eligible:true requires grading to have actually produced a real verdict (true OR false), not an absence` });
       }
     }
+    // ambient_skill_profile (review-round-2 fix, P1): a benchmark-eligible schema<4 scenario
+    // record has NO ambient_skill_profile at all (`undefined`) -- two such records previously
+    // "agreed" on that shared absence (`undefined === undefined`) and aggregated with zero errors,
+    // even though their actual ambient capability profile is genuinely UNKNOWN, not proven equal.
+    // Mirrors the exact same "an unknown value can't be trusted to match another unknown value"
+    // principle the string-valued fields above already enforce, generalized to this object-valued
+    // field: required to be a real, well-shaped object, never null/undefined/wrong-typed.
+    const unknownAmbientProfile = runs.filter((r) => r.ambient_skill_profile == null || typeof r.ambient_skill_profile !== 'object' || Array.isArray(r.ambient_skill_profile));
+    if (unknownAmbientProfile.length > 0) {
+      errors.push({ field: 'ambient_skill_profile', message: `${unknownAmbientProfile.length} run(s) have a missing/malformed ambient_skill_profile (introduced in schema v4) and cannot be folded into a publishable scenario aggregate -- an unknown ambient capability profile can't be trusted to match another` });
+    }
   }
   for (const f of HARD_PARTITION_FIELDS) {
     const values = new Set(runs.map((r) => partitionFieldKey(r[f])));
@@ -922,6 +973,20 @@ export function buildAggregateGroup(runs) {
   const [first] = runs;
   const group_key = {};
   for (const f of HARD_PARTITION_FIELDS) group_key[f] = first[f];
+  // Review-round-2 fix (P1): an `undefined` group_key value is a REAL bug waiting to happen, not a
+  // theoretical one -- it silently vanishes on any JSON.stringify/JSON.parse round-trip (exactly
+  // what happens whenever this group is committed, printed, or re-read), which then makes THIS
+  // SAME group_key fail validateAggregateGroupKey's own "field must be present" check the moment
+  // it's read back. Caught here, before ever returning a group whose own key contract can't
+  // survive being serialized -- a genuinely defensive, general safety net (not scoped to any one
+  // field), independent of the ambient_skill_profile-specific check above.
+  const undefinedKeys = HARD_PARTITION_FIELDS.filter((f) => group_key[f] === undefined);
+  if (undefinedKeys.length > 0) {
+    for (const f of undefinedKeys) {
+      errors.push({ field: f, message: `partition field is undefined -- would silently vanish on JSON serialization and violate this group's own key contract once round-tripped` });
+    }
+    return { errors, group: null };
+  }
   return {
     errors,
     group: {

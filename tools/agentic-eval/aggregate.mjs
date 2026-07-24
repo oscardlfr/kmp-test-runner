@@ -7,7 +7,7 @@
 // run outright -- calibration/corpus-probe/smoke prove the harness works, they are never
 // measurement data (schemas.mjs's buildAggregateGroup() implements both checks; this module
 // is the CLI-facing layer around it).
-import { buildAggregateGroup, HARD_PARTITION_FIELDS, validateRun } from './schemas.mjs';
+import { buildAggregateGroup, HARD_PARTITION_FIELDS, validateRun, canonicalStructuredValue } from './schemas.mjs';
 
 /**
  * Groups a flat array of run records by every HARD_PARTITION_FIELDS key (schemas.mjs), then
@@ -39,7 +39,14 @@ export function aggregateRuns(runs) {
     // runs whose field values differ only in WHERE a space falls collide into the same bucket
     // (e.g. project_alias:'a b', platform:'c' vs. project_alias:'a', platform:'b c' both join to
     // "a b c"). JSON encoding unambiguously delimits each element regardless of its own content.
-    const key = JSON.stringify(HARD_PARTITION_FIELDS.map((f) => run[f]));
+    // Review-round-2 fix: each field value is passed through canonicalStructuredValue first --
+    // an object-valued field (e.g. ambient_skill_profile) built with keys in a different insertion
+    // order previously produced a DIFFERENT JSON string here, spuriously bucketing two
+    // semantically identical runs apart before buildAggregateGroup's own mixing check ever got a
+    // chance to compare them. The SAME shared canonical serializer schemas.mjs's own
+    // partitionFieldKey uses, so bucketing and partition-mixing can never independently drift into
+    // two different notions of "the same value".
+    const key = JSON.stringify(HARD_PARTITION_FIELDS.map((f) => canonicalStructuredValue(run[f])));
     if (!buckets.has(key)) buckets.set(key, []);
     buckets.get(key).push(run);
   }

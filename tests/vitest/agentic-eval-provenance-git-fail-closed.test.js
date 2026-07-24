@@ -87,7 +87,7 @@ describe('resolveHarnessProvenance -- fails closed when the git status check its
     expect(provenance.measuredCodeDirtyPaths).toEqual([]);
 
     const conditionResult = {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
       result: { subtype: 'success', is_error: false },
       invocation: null,
       hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
@@ -103,6 +103,7 @@ describe('resolveHarnessProvenance -- fails closed when the git status check its
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
 
     // The record's own errors[] must disclose this as dirty_measured_code -- the SAME code a
@@ -171,6 +172,7 @@ async function buildRecordWithHarnessToolingError() {
     skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
     allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
     modelRequested: 'fake-model',
+    ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
   });
 }
 

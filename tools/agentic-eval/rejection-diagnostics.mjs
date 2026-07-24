@@ -29,16 +29,28 @@ import { resolveRejectedDiagnosticsDir, isRawDirSafeFromAccidentalCommit, promot
 import { assertCleanOrThrowObject } from './privacy.mjs';
 import { RUN_KIND_VALUES, CONDITION_VALUES, PLATFORM_VALUES, PRIVACY_STATUS_VALUES } from './schemas.mjs';
 
-export const REJECTION_DIAGNOSTICS_SCHEMA = 1;
+// v1 -> v2 (correction 6, review-round-2 fix): the row gained per-cell `ambient_skill_profile`
+// and a top-level `ambient_profile_matrix_ok` -- versioned exactly like every other schema in this
+// harness whenever its own shape changes. No historical committed rejection-diagnostics files
+// exist to preserve compatibility with (the whole directory is local-only/gitignored by design --
+// see this module's own header comment), so this is a plain bump, never a dual-version dispatch.
+export const REJECTION_DIAGNOSTICS_SCHEMA = 2;
 
 const FOREIGN_SKILL_SUMMARY_FIELDS = ['rejected', 'confirmed', 'incomplete'];
+const AMBIENT_SKILL_PROFILE_FIELDS = ['count', 'scope_id', 'fingerprint_hmac'];
 // claude_code_version (round-7 audit finding -- "procedencia forense incompleta"): each transcript's
 // OWN reported CLI version, like model_resolved -- can legitimately differ or be null per cell
 // independently (a broken capture never reached its init event), so it lives here, not among the
 // batch-wide fields below.
+//
+// ambient_skill_profile (correction 6): each cell's OWN {count, scope_id, fingerprint_hmac} --
+// read directly off that cell's already-built run record (buildRunRecord always populates it,
+// mirroring foreign_skill_summary's identical precedent), never recomputed here. Privacy-safe by
+// construction (count + opaque scope id + keyed HMAC digest only) -- the raw skill names stay
+// local-tier-only, exactly like foreign_skill_names already does.
 const CELL_CANONICAL_FIELDS = [
   'run_id', 'condition', 'repetition_index', 'order_index', 'skill_source_sha', 'model_resolved',
-  'claude_code_version', 'failed_checks', 'foreign_skill_summary',
+  'claude_code_version', 'failed_checks', 'foreign_skill_summary', 'ambient_skill_profile',
 ];
 // scenario_id/project_alias/project_commit/seed/policy_sha256/platform/privacy_status (round-6/7
 // audit findings -- "diagnostic provenance"): reproducing or even just understanding WHERE/WHEN a
@@ -56,10 +68,14 @@ const CELL_CANONICAL_FIELDS = [
 // the local, gitignored tier (see buildRejectionDiagnostics's own doc comment) -- the safer of the
 // two options this round's audit offered, and the one that needs no new conditional enforcement
 // logic to get right.
+// ambient_profile_matrix_ok (correction 6): the matrix-wide ambient-profile consensus
+// scenarioHardGate computes ONCE per scenario batch (cli.mjs) -- null for calibration/smoke (no
+// matrix/consensus concept applies to a plain A/B pair), a real boolean for scenario. Distinct
+// from any per-cell field: this is a fact about the WHOLE batch, not any one cell.
 const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS = [
   'schema', 'rejection_id', 'timestamp', 'run_kind', 'run_ids', 'model_requested', 'repo_commit',
   'scenario_id', 'project_alias', 'project_commit', 'seed', 'policy_sha256', 'platform',
-  'privacy_status', 'cells', 'foreign_skill_summary',
+  'privacy_status', 'cells', 'foreign_skill_summary', 'ambient_profile_matrix_ok',
 ];
 
 /**
@@ -128,6 +144,32 @@ function validateForeignSkillSummary(summary, fieldPrefix) {
   return errors;
 }
 
+/** Mirrors validateForeignSkillSummary's exact shape/closed-key-set discipline, one field over --
+ * {count, scope_id, fingerprint_hmac}, never the raw skill names (see this module's own header
+ * comment). scope_id: a full UUID string (matches rejection_id's own regex, below). fingerprint_hmac:
+ * a lowercase 64-hex-char HMAC-SHA256 digest (matches schemas.mjs's identical run-record check). */
+function validateAmbientSkillProfile(profile, fieldPrefix) {
+  const errors = [];
+  if (profile == null || typeof profile !== 'object' || Array.isArray(profile)) {
+    errors.push({ field: fieldPrefix, message: 'must be an object' });
+    return errors;
+  }
+  const allowedKeys = new Set(AMBIENT_SKILL_PROFILE_FIELDS);
+  for (const k of Object.keys(profile)) {
+    if (!allowedKeys.has(k)) errors.push({ field: `${fieldPrefix}.${k}`, message: 'unrecognized field' });
+  }
+  if (!(Number.isInteger(profile.count) && profile.count >= 0)) {
+    errors.push({ field: `${fieldPrefix}.count`, message: 'must be a non-negative integer' });
+  }
+  if (typeof profile.scope_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(profile.scope_id)) {
+    errors.push({ field: `${fieldPrefix}.scope_id`, message: 'must be a full (36-char) UUID string' });
+  }
+  if (typeof profile.fingerprint_hmac !== 'string' || !/^[0-9a-f]{64}$/.test(profile.fingerprint_hmac)) {
+    errors.push({ field: `${fieldPrefix}.fingerprint_hmac`, message: 'must be a lowercase 64-char hex HMAC-SHA256 string' });
+  }
+  return errors;
+}
+
 /**
  * Validates one rejection-diagnostics record. Closed key sets at EVERY nesting level (top-level,
  * each cells[] entry, both foreign_skill_summary objects) -- round-5 audit finding: "not just
@@ -163,6 +205,12 @@ export function validateRejectionRow(row) {
   if (typeof row.scenario_id !== 'string' || row.scenario_id.length === 0) errors.push({ field: 'scenario_id', message: 'must be a non-empty string' });
   if (!PLATFORM_VALUES.includes(row.platform)) errors.push({ field: 'platform', message: `must be one of ${PLATFORM_VALUES.join('|')}` });
   if (!PRIVACY_STATUS_VALUES.includes(row.privacy_status)) errors.push({ field: 'privacy_status', message: `must be one of ${PRIVACY_STATUS_VALUES.join('|')}` });
+  // ambient_profile_matrix_ok (correction 6): null for calibration/smoke (no matrix/consensus
+  // concept), a real boolean for scenario -- never any other type, and never merely absent (a
+  // batch-wide fact this row's own key contract requires explicitly, even when it doesn't apply).
+  if (row.ambient_profile_matrix_ok !== null && typeof row.ambient_profile_matrix_ok !== 'boolean') {
+    errors.push({ field: 'ambient_profile_matrix_ok', message: 'must be null or a boolean' });
+  }
   errors.push(...validateProvenanceForRunKind(row));
   if (typeof row.policy_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(row.policy_sha256)) {
     errors.push({ field: 'policy_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
@@ -249,6 +297,7 @@ export function validateRejectionRow(row) {
         anyCellHasFailedCheck = true;
       }
       errors.push(...validateForeignSkillSummary(cell.foreign_skill_summary, `cells[${i}].foreign_skill_summary`));
+      errors.push(...validateAmbientSkillProfile(cell.ambient_skill_profile, `cells[${i}].ambient_skill_profile`));
     }
     if (!anyCellHasFailedCheck) {
       errors.push({ field: 'cells', message: 'at least one cell must have a non-empty failed_checks -- a rejection diagnostic with no recorded failure anywhere is not a real rejection' });
@@ -312,7 +361,7 @@ export function validateRejectionRow(row) {
  *   real (never-committed) foreign skillArg names attempted, for the local-only tier. Optional --
  *   if omitted, the local tier simply carries no extra names (still privacy-safe either way).
  */
-export function buildRejectionDiagnostics({ runKind, records, failedChecksByRunId, foreignSkillNamesByRunId = {} }) {
+export function buildRejectionDiagnostics({ runKind, records, failedChecksByRunId, foreignSkillNamesByRunId = {}, ambientProfileMatrixOk = null }) {
   if (!Array.isArray(records) || records.length === 0) {
     throw new Error('buildRejectionDiagnostics: records must be a non-empty array');
   }
@@ -372,6 +421,10 @@ export function buildRejectionDiagnostics({ runKind, records, failedChecksByRunI
     claude_code_version: r.claude_code_version,
     failed_checks: failedChecksByRunId[r.run_id] ?? [],
     foreign_skill_summary: r.foreign_skill_summary,
+    // ambient_skill_profile (correction 6): read directly off this cell's own already-built run
+    // record (buildRunRecord always populates it, schema v4+), never recomputed here -- mirrors
+    // foreign_skill_summary's identical precedent immediately above.
+    ambient_skill_profile: r.ambient_skill_profile,
   }));
 
   const foreignSkillSummary = { rejected: 0, confirmed: 0, incomplete: 0 };
@@ -390,6 +443,11 @@ export function buildRejectionDiagnostics({ runKind, records, failedChecksByRunI
     ...committedBatchWide,
     cells,
     foreign_skill_summary: foreignSkillSummary,
+    // ambient_profile_matrix_ok (correction 6): the caller's own computed matrix-wide consensus --
+    // null when it doesn't apply (calibration/smoke), a real boolean for scenario (see
+    // cli.mjs's scenarioHardGate). Never recomputed here; this module only reshapes what the
+    // caller already knows, exactly like every other field in this record.
+    ambient_profile_matrix_ok: ambientProfileMatrixOk,
   };
 
   // Local-only tier: same base shape, PLUS project_url (batch-wide -- see

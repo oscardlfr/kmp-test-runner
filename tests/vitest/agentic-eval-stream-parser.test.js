@@ -873,43 +873,53 @@ describe('findIncompleteToolResultsToleratingTimeout', () => {
 // skill's own bare/namespaced identity (reusing isTargetSkillReference's existing closed
 // allowlist, never a separately-invented match) so a current-skill cell's own loaded skill is
 // never counted as "ambient".
-describe('computeAmbientSkillProfile -- parses and validates init.skills[], stripping the target identity', () => {
+// Review-round-2 fix: computeAmbientSkillProfile now takes a REQUIRED { expectTargetPresent }
+// option (true for a current-skill cell, false for no-skill) -- the original, condition-agnostic
+// version silently stripped the target's own identity out of ANY cell's skills[] unconditionally,
+// so a no-skill cell whose skills[] anomalously ALSO advertised the (never-invoked) target skill
+// passed cleanly with zero failed checks (demonstrated directly against the pre-fix code: ok:true,
+// failedChecks:[]). Now: no-skill must show ZERO target references at all (bare or namespaced);
+// current-skill may show AT MOST ONE (either form), stripped before computing the ambient set;
+// more than one target reference (both forms simultaneously) fails closed regardless of condition.
+describe('computeAmbientSkillProfile -- parses+validates init.skills[], condition-aware target-identity handling', () => {
   function initWithSkills(skills) {
     return { type: 'system', subtype: 'init', skills };
   }
 
-  it('a well-formed empty skills[] is ok:true with an empty name set', () => {
-    const { ok, names } = computeAmbientSkillProfile(initWithSkills([]), 'kmp-test-runner', 'kmp-test-runner');
+  it('a well-formed empty skills[] is ok:true with an empty name set (no-skill context)', () => {
+    const { ok, names } = computeAmbientSkillProfile(initWithSkills([]), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
     expect(ok).toBe(true);
     expect(names).toEqual(new Set());
   });
 
-  it('a well-formed skills[] with real ambient entries is ok:true and reports them all', () => {
-    const { ok, names } = computeAmbientSkillProfile(initWithSkills(['run', 'review']), 'kmp-test-runner', 'kmp-test-runner');
+  it('a well-formed skills[] with real ambient entries is ok:true and reports them all (no-skill context)', () => {
+    const { ok, names } = computeAmbientSkillProfile(initWithSkills(['run', 'review']), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
     expect(ok).toBe(true);
     expect(names).toEqual(new Set(['run', 'review']));
   });
 
-  it('strips the target skill\'s BARE identity out of the ambient set -- it is not "ambient", it is the thing being measured', () => {
-    const { names } = computeAmbientSkillProfile(initWithSkills(['run', 'kmp-test-runner']), 'kmp-test-runner', 'kmp-test-runner');
+  it('current-skill context: strips the target skill\'s BARE identity out of the ambient set -- it is not "ambient", it is the thing being measured', () => {
+    const { ok, names } = computeAmbientSkillProfile(initWithSkills(['run', 'kmp-test-runner']), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: true });
+    expect(ok).toBe(true);
     expect(names).toEqual(new Set(['run']));
   });
 
-  it('strips the target skill\'s canonical NAMESPACED identity out of the ambient set too', () => {
-    const { names } = computeAmbientSkillProfile(initWithSkills(['run', 'kmp-test-runner:kmp-test-runner']), 'kmp-test-runner', 'kmp-test-runner');
+  it('current-skill context: strips the target skill\'s canonical NAMESPACED identity out of the ambient set too', () => {
+    const { ok, names } = computeAmbientSkillProfile(initWithSkills(['run', 'kmp-test-runner:kmp-test-runner']), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: true });
+    expect(ok).toBe(true);
     expect(names).toEqual(new Set(['run']));
   });
 
   it('never strips a DIFFERENT skill from the same plugin namespace, or a foreign namespace of the same bare name -- only the exact closed-allowlist forms', () => {
     const { names } = computeAmbientSkillProfile(
       initWithSkills(['kmp-test-runner:some-other-skill', 'evil:kmp-test-runner']),
-      'kmp-test-runner', 'kmp-test-runner',
+      'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false },
     );
     expect(names).toEqual(new Set(['kmp-test-runner:some-other-skill', 'evil:kmp-test-runner']));
   });
 
   it('a missing init event entirely is ok:false with an empty (safe) name set', () => {
-    const { ok, names } = computeAmbientSkillProfile(null, 'kmp-test-runner', 'kmp-test-runner');
+    const { ok, names } = computeAmbientSkillProfile(null, 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
     expect(ok).toBe(false);
     expect(names).toEqual(new Set());
   });
@@ -919,38 +929,91 @@ describe('computeAmbientSkillProfile -- parses and validates init.skills[], stri
   // genuinely absent key on an otherwise-real init event is itself a structural anomaly, so it
   // fails closed exactly like a present-but-malformed array, never silently treated as "empty".
   it('a completely MISSING skills key (not even an empty array) fails closed -- ok:false', () => {
-    const { ok, names } = computeAmbientSkillProfile({ type: 'system', subtype: 'init' }, 'kmp-test-runner', 'kmp-test-runner');
+    const { ok, names } = computeAmbientSkillProfile({ type: 'system', subtype: 'init' }, 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
     expect(ok).toBe(false);
     expect(names).toEqual(new Set());
   });
 
   it('skills present but NOT an array fails closed -- ok:false', () => {
-    const { ok } = computeAmbientSkillProfile(initWithSkills('run'), 'kmp-test-runner', 'kmp-test-runner');
+    const { ok } = computeAmbientSkillProfile(initWithSkills('run'), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
     expect(ok).toBe(false);
   });
 
   it('a non-string entry fails closed -- ok:false', () => {
-    const { ok } = computeAmbientSkillProfile(initWithSkills(['run', 42]), 'kmp-test-runner', 'kmp-test-runner');
+    const { ok } = computeAmbientSkillProfile(initWithSkills(['run', 42]), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
     expect(ok).toBe(false);
   });
 
   it('an empty-string entry fails closed -- ok:false', () => {
-    const { ok } = computeAmbientSkillProfile(initWithSkills(['run', '']), 'kmp-test-runner', 'kmp-test-runner');
+    const { ok } = computeAmbientSkillProfile(initWithSkills(['run', '']), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
     expect(ok).toBe(false);
   });
 
-  it('a duplicate entry fails closed -- ok:false', () => {
-    const { ok } = computeAmbientSkillProfile(initWithSkills(['run', 'run']), 'kmp-test-runner', 'kmp-test-runner');
+  it('a duplicate RAW entry fails closed -- ok:false', () => {
+    const { ok } = computeAmbientSkillProfile(initWithSkills(['run', 'run']), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
     expect(ok).toBe(false);
   });
 
   it('a malformed skills[] still returns a real (empty, safe) name Set, never throws or returns undefined', () => {
-    const { names } = computeAmbientSkillProfile(initWithSkills('not-an-array'), 'kmp-test-runner', 'kmp-test-runner');
+    const { names } = computeAmbientSkillProfile(initWithSkills('not-an-array'), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
     expect(names).toEqual(new Set());
+  });
+
+  // --- Mandatory RED->GREEN reproduction: "target advertised in no-skill but not invoked" ---
+  it('no-skill context: the target skill BARE identity present in skills[] fails closed, even though it was never invoked', () => {
+    const { ok, targetPresent } = computeAmbientSkillProfile(initWithSkills(['kmp-test-runner']), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
+    expect(ok).toBe(false);
+    expect(targetPresent).toBe(true);
+  });
+
+  it('no-skill context: the target skill NAMESPACED identity present in skills[] fails closed too', () => {
+    const { ok, targetPresent } = computeAmbientSkillProfile(initWithSkills(['kmp-test-runner:kmp-test-runner']), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
+    expect(ok).toBe(false);
+    expect(targetPresent).toBe(true);
+  });
+
+  it('no-skill context: no target reference at all passes cleanly', () => {
+    const { ok, targetPresent } = computeAmbientSkillProfile(initWithSkills(['run']), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
+    expect(ok).toBe(true);
+    expect(targetPresent).toBe(false);
+  });
+
+  it('current-skill context: exactly one target representation (either form) is expected and ok', () => {
+    const { ok, targetPresent, targetDuplicated } = computeAmbientSkillProfile(initWithSkills(['run', 'kmp-test-runner:kmp-test-runner']), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: true });
+    expect(ok).toBe(true);
+    expect(targetPresent).toBe(true);
+    expect(targetDuplicated).toBe(false);
+  });
+
+  it('duplicate LOGICAL target representations (bare AND namespaced simultaneously) fail closed, regardless of condition', () => {
+    for (const expectTargetPresent of [true, false]) {
+      const { ok, targetDuplicated } = computeAmbientSkillProfile(
+        initWithSkills(['kmp-test-runner', 'kmp-test-runner:kmp-test-runner']),
+        'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent },
+      );
+      expect(ok).toBe(false);
+      expect(targetDuplicated).toBe(true);
+    }
+  });
+
+  // structurallyWellFormed/targetIdentityOk exposed as their OWN separate booleans (not just
+  // folded into `ok`) -- cli.mjs's gates surface them as two independently-diagnosable named
+  // checks. Proven here directly: each sub-component can independently be the ONE thing that's
+  // false while the other stays true.
+  it('exposes structurallyWellFormed and targetIdentityOk as independent booleans -- a malformed array can be false while target-identity is fine', () => {
+    const { structurallyWellFormed, targetIdentityOk } = computeAmbientSkillProfile(initWithSkills(['run', 42]), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
+    expect(structurallyWellFormed).toBe(false);
+    expect(targetIdentityOk).toBe(true);
+  });
+
+  it('exposes structurallyWellFormed and targetIdentityOk as independent booleans -- target-identity can be false while the array itself is well-formed', () => {
+    const { structurallyWellFormed, targetIdentityOk } = computeAmbientSkillProfile(initWithSkills(['kmp-test-runner']), 'kmp-test-runner', 'kmp-test-runner', { expectTargetPresent: false });
+    expect(structurallyWellFormed).toBe(true);
+    expect(targetIdentityOk).toBe(false);
   });
 });
 
-describe('canonicalAmbientSkillNamesKey / fingerprintAmbientSkillNames -- canonical, order-independent identity', () => {
+describe('canonicalAmbientSkillNamesKey -- canonical, order-independent identity', () => {
   it('produces the identical key regardless of Set insertion order', () => {
     const a = canonicalAmbientSkillNamesKey(new Set(['run', 'review']));
     const b = canonicalAmbientSkillNamesKey(new Set(['review', 'run']));
@@ -966,21 +1029,50 @@ describe('canonicalAmbientSkillNamesKey / fingerprintAmbientSkillNames -- canoni
     const b = canonicalAmbientSkillNamesKey(new Set(['run', 'review']));
     expect(a).not.toBe(b);
   });
+});
 
-  it('fingerprintAmbientSkillNames is a lowercase 64-hex-char SHA-256 string', () => {
-    const fp = fingerprintAmbientSkillNames(new Set(['run']));
+// fingerprintAmbientSkillNames (review-round-2 fix): the original design used an UNKEYED,
+// deterministic SHA-256 hash -- reversible by dictionary attack against the small, guessable
+// universe of real Claude Code skill names (independently demonstrated: hashing a handful of
+// guessed candidates recovers the exact recorded fingerprint). Now HMAC-SHA256, keyed by a
+// caller-supplied, invocation-scoped random key -- generated fresh per harness invocation, never
+// persisted anywhere (see cli.mjs's generateAmbientProfileScope) -- so the SAME underlying name
+// set produces a completely different, uncorrelated digest across separate invocations, and no
+// dictionary/rainbow-table attack can be precomputed without the (never-revealed) key. Comparable
+// only WITHIN one invocation, which shares one key across every cell.
+describe('fingerprintAmbientSkillNames -- keyed HMAC, never an unkeyed digest', () => {
+  const KEY_A = Buffer.from('0'.repeat(64), 'hex');
+  const KEY_B = Buffer.from('1'.repeat(64), 'hex');
+
+  it('is a lowercase 64-hex-char HMAC-SHA256 string', () => {
+    const fp = fingerprintAmbientSkillNames(new Set(['run']), KEY_A);
     expect(fp).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('fingerprintAmbientSkillNames is deterministic and order-independent (same set, same fingerprint)', () => {
-    const a = fingerprintAmbientSkillNames(new Set(['run', 'review']));
-    const b = fingerprintAmbientSkillNames(new Set(['review', 'run']));
+  it('is deterministic and order-independent for the SAME key (same set, same fingerprint)', () => {
+    const a = fingerprintAmbientSkillNames(new Set(['run', 'review']), KEY_A);
+    const b = fingerprintAmbientSkillNames(new Set(['review', 'run']), KEY_A);
     expect(a).toBe(b);
   });
 
-  it('fingerprintAmbientSkillNames differs for genuinely different name sets', () => {
-    const a = fingerprintAmbientSkillNames(new Set(['run']));
-    const b = fingerprintAmbientSkillNames(new Set(['review']));
+  it('differs for genuinely different name sets under the SAME key', () => {
+    const a = fingerprintAmbientSkillNames(new Set(['run']), KEY_A);
+    const b = fingerprintAmbientSkillNames(new Set(['review']), KEY_A);
     expect(a).not.toBe(b);
+  });
+
+  // The headline fix: the SAME name set under two DIFFERENT keys must be uncorrelated -- proving
+  // this is genuinely keyed, not the old unkeyed digest (which would produce the identical value
+  // regardless of any key passed in).
+  it('the SAME name set under two DIFFERENT keys produces two DIFFERENT, uncorrelated fingerprints', () => {
+    const a = fingerprintAmbientSkillNames(new Set(['run']), KEY_A);
+    const b = fingerprintAmbientSkillNames(new Set(['run']), KEY_B);
+    expect(a).not.toBe(b);
+  });
+
+  it('is not recoverable via a small dictionary guess against a real recorded fingerprint when the key is unknown -- a guess under the WRONG key never matches', () => {
+    const recorded = fingerprintAmbientSkillNames(new Set(['run']), KEY_A);
+    const attackerGuessesUnderWrongKey = ['run', 'review', 'security-review', 'init'].map((c) => fingerprintAmbientSkillNames(new Set([c]), KEY_B));
+    expect(attackerGuessesUnderWrongKey).not.toContain(recorded);
   });
 });
