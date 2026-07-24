@@ -72,27 +72,41 @@ describe('materializeSkillSnapshot', () => {
   // above (mechanism-only) and from the live-HEAD test above (tracks develop's tip forever, never
   // references this constant). calibrate/smoke both materialize current-skill via
   // runConditionPair's one call site using exactly PINNED_SKILL_SHA. This is a tripwire, not a
-  // general staleness detector: it deliberately hardcodes aeba6ea and will need its own edit on
+  // general staleness detector: it deliberately hardcodes 6d45dde and will need its own edit on
   // every future legitimate pin advance -- the next test verifies the semantics that should
   // survive such an advance. Split into two independent it() blocks on purpose: expect().toBe()
   // throws synchronously, so a single block with the equality check first would hide whether the
   // content assertions below actually discriminate -- two blocks means a run against a stale pin
   // shows both failing for real, not just the first one.
-  it('PINNED_SKILL_SHA is locked to the aeba6ea skill-portability fix', () => {
-    expect(PINNED_SKILL_SHA).toBe('aeba6eaa8d027be999cdfeeb5bb2d1bbd0f688ee');
+  it('PINNED_SKILL_SHA is locked to the PR #388 decision-protocol fix', () => {
+    expect(PINNED_SKILL_SHA).toBe('6d45dde88956ad33f0725b863e8fff8960c1fc07');
   });
 
-  it('the pinned current-skill snapshot reflects the portable canonical workflow', async () => {
+  it('the pinned current-skill snapshot reflects the Decision protocol canonical workflow', async () => {
     const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runValidator });
     cleanupDirs.push(snapshotDir);
     expect(validation.ok).toBe(true);
     const materializedSkillMd = readFileSync(path.join(snapshotDir, '.skills', 'kmp-test-runner', 'SKILL.md'), 'utf8');
-    expect(materializedSkillMd).toContain('kmp-test parallel --json --project-root .');
-    expect(materializedSkillMd).toContain('### 1. Run the relevant test type');
-    expect(materializedSkillMd).toContain('### 2. Diagnose only if the environment blocks the run');
-    expect(materializedSkillMd).toContain('Skip this step unless `exit_code` is `3`');
-    expect(materializedSkillMd).not.toMatch(/^(bash|pwsh)\s+\.skills\/kmp-test-runner\//m);
-    expect(materializedSkillMd).not.toContain('current: 0.10.0+');
+    // SKILL.md is CRLF on this Windows checkout; .gitattributes doesn't LF-pin .md files --
+    // normalize before line-anchored regex matching.
+    const normalizedSkillMd = materializedSkillMd.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    // Decision protocol must be the canonical entry point -- the first ## heading, not layered
+    // alongside a surviving Quick start.
+    const firstH2Heading = normalizedSkillMd.match(/^## .+$/m)?.[0];
+    expect(firstH2Heading).toBe('## Decision protocol');
+    expect(normalizedSkillMd).toContain('kmp-test parallel --json --project-root .');
+    // Workflow-specific scoping survives: `changed` has no user-facing module filter (always
+    // git-derived), coverage scope is verified via plan.coverage_modules.
+    expect(normalizedSkillMd).toContain('`changed` has no such flag');
+    expect(normalizedSkillMd).toContain('plan.coverage_modules');
+    // "### 1. Run the relevant test type" is deliberately NOT asserted absent below: it was
+    // Steps item 1 before this fix and stays Steps item 1 after -- only its sibling "### 2.
+    // Diagnose only if..." (and the old "## Quick start" heading) were folded into the new
+    // Decision protocol. Asserting "### 1." absent would be false against the real shipped file.
+    expect(normalizedSkillMd).not.toContain('## Quick start');
+    expect(normalizedSkillMd).not.toContain('### 2. Diagnose only if the environment blocks the run');
+    expect(normalizedSkillMd).not.toMatch(/^(bash|pwsh)\s+\.skills\/kmp-test-runner\//m);
+    expect(normalizedSkillMd).not.toContain('current: 0.10.0+');
   });
 
   it('cleans up its temp directory when validation fails partway through (not just on an invalid SHA)', async () => {
