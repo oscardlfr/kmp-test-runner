@@ -51,7 +51,7 @@ describe('finalizeAndWriteRecords -- evidence-directory-path privacy check runs 
 
     function fakeConditionResult() {
       return {
-        init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+        init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
         result: { subtype: 'success', is_error: false },
         invocation: null,
         hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
@@ -64,7 +64,7 @@ describe('finalizeAndWriteRecords -- evidence-directory-path privacy check runs 
     }
 
     const policySha256 = computePolicySha256();
-    const common = { runKind: 'calibration', scenarioId: 'test-outdir-order', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model' };
+    const common = { runKind: 'calibration', scenarioId: 'test-outdir-order', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
     // This test is specifically about outDir-privacy-check ordering, not dirty-tree behavior --

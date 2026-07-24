@@ -20,6 +20,7 @@
 // Skill invocation is detected from a real `tool_use` content block with name:"Skill" --
 // never inferred from which CLI binary the agent happened to run (that conflation is exactly
 // what this harness exists to fix -- see the PR context).
+import { createHmac } from 'node:crypto';
 
 /**
  * @param {string} rawJsonl - the full stdout capture from a `claude -p ... --output-format
@@ -128,6 +129,95 @@ export function isTargetSkillReference(skillArg, pluginName, skillName) {
   if (typeof pluginName !== 'string' || pluginName.length === 0) return false;
   if (typeof skillName !== 'string' || skillName.length === 0) return false;
   return skillArg === skillName || skillArg === `${pluginName}:${skillName}`;
+}
+
+/**
+ * Parses and strictly validates the init event's `skills[]` array (see `isSkillAvailable`'s own
+ * doc comment: an unrelated, ambient set of bundled/managed skills present identically regardless
+ * of `--plugin-dir` -- e.g. Claude Code's own bundled `run` skill, confirmed on a real live
+ * scenario run whose no-skill cells were wrongly rejected for confirming it as if it were foreign
+ * contamination). `ok:false` covers every way this array can fail to be trustworthy evidence: a
+ * missing init event, a missing `skills` key entirely (a real init event always carries it -- see
+ * this file's own header comment -- so a genuinely absent key is a structural anomaly, not a
+ * legitimate "no ambient skills" signal), a non-array value, any non-string/empty-string entry, a
+ * duplicate RAW entry, or a duplicate LOGICAL target representation (see below). `names` is always
+ * a real Set (never null/undefined, even when `ok:false`) -- the TARGET skill's own bare/namespaced
+ * identity is stripped out via `isTargetSkillReference` (the same closed allowlist every other
+ * identity check in this file uses, never a separately invented match) before computing the
+ * returned ambient set.
+ *
+ * `expectTargetPresent` (required, no default -- a caller must always be explicit about which
+ * condition this cell is) is `condition === 'current-skill'`. This is CONDITION-AWARE, not merely
+ * a stripping convenience: review-round-2 finding -- the original, condition-agnostic version
+ * stripped the target's identity out of ANY cell's `skills[]` unconditionally, so a no-skill cell
+ * whose `skills[]` anomalously ALSO advertised the (never-invoked) target skill passed every check
+ * cleanly -- nothing else inspects `skills[]` for the target's own presence (only `plugins[]`,
+ * via `pluginProfileOk`/`isSkillAvailable`, and actual invocation, via `findSkillInvocation`). A
+ * no-skill cell must show ZERO target references (bare or namespaced) in `skills[]` at all, not
+ * merely zero CONFIRMED invocations; a current-skill cell may legitimately show exactly ONE (either
+ * wire form). More than one target-matching entry (e.g. both the bare AND namespaced forms present
+ * simultaneously) is a duplicate LOGICAL representation -- fails closed regardless of condition,
+ * since a real init event never legitimately double-reports the same logical skill under two names.
+ * `structurallyWellFormed`/`targetIdentityOk` are exposed as their OWN separate booleans (not just
+ * folded into `ok`) specifically so a caller (e.g. cli.mjs's scenarioCellIntegrityOk/
+ * calibrationHardGate/smokeHardGate) can surface them as two independently-diagnosable named
+ * checks -- "the skills[] array itself is malformed" is a genuinely different fact from "the
+ * target's own presence doesn't match this condition", and this codebase's own convention keeps
+ * such distinct failure modes separately named wherever practical (see e.g. skillSelectionOk vs.
+ * foreignSkillToolResultsCompleteOk).
+ *
+ * Round-3 audit finding (P1): the previous `targetIdentityOk` expression --
+ * `!targetDuplicated && (expectTargetPresent || !targetPresent)` -- short-circuits to
+ * `!targetDuplicated` alone whenever `expectTargetPresent` is `true`, so it NEVER actually checked
+ * that the target was present for a current-skill cell; a current-skill condition whose `skills[]`
+ * did not contain the target AT ALL (e.g. `skills: []`) wrongly passed `targetIdentityOk: true`.
+ * Reproduced directly against the pre-fix code. Now an exact match per condition: no-skill requires
+ * `targetMatchCount === 0`, current-skill requires exactly `targetMatchCount === 1` (which also
+ * subsumes the not-duplicated requirement for that branch, but `!targetDuplicated` is kept explicit
+ * for both branches so the "duplicate fails closed regardless of condition" rule reads directly off
+ * the code, not only from `=== 1` happening to already exclude 2+).
+ * @returns {{ok: boolean, names: Set<string>, targetPresent: boolean, targetDuplicated: boolean, structurallyWellFormed: boolean, targetIdentityOk: boolean}}
+ */
+export function computeAmbientSkillProfile(initEvent, pluginName, skillName, { expectTargetPresent }) {
+  const raw = initEvent?.skills;
+  const structurallyWellFormed = initEvent != null
+    && Array.isArray(raw)
+    && raw.every((s) => typeof s === 'string' && s.length > 0)
+    && new Set(raw).size === raw.length;
+  const cleanEntries = Array.isArray(raw) ? raw.filter((s) => typeof s === 'string' && s.length > 0) : [];
+  const targetMatchCount = cleanEntries.filter((s) => isTargetSkillReference(s, pluginName, skillName)).length;
+  const names = new Set(cleanEntries.filter((s) => !isTargetSkillReference(s, pluginName, skillName)));
+  const targetPresent = targetMatchCount > 0;
+  const targetDuplicated = targetMatchCount > 1;
+  const targetIdentityOk = !targetDuplicated && (expectTargetPresent ? targetMatchCount === 1 : targetMatchCount === 0);
+  return { ok: structurallyWellFormed && targetIdentityOk, names, targetPresent, targetDuplicated, structurallyWellFormed, targetIdentityOk };
+}
+
+/** Canonical, order-independent string identity for an ambient-skill name Set -- the single
+ * source of truth both the cross-cell equality check (a matrix's cells must agree exactly) and
+ * `fingerprintAmbientSkillNames` (below) are built on, so "are these the same profile" and "what
+ * hashes to what" can never drift apart into two independently-maintained notions of equality. */
+export function canonicalAmbientSkillNamesKey(names) {
+  return JSON.stringify([...names].sort());
+}
+
+/**
+ * Privacy-safe fingerprint of an ambient-skill name Set, for committed evidence (never the raw
+ * names themselves -- see buildRunRecord's own `ambient_skill_profile` field). Review-round-2 fix:
+ * this is now HMAC-SHA256, keyed by a caller-supplied `key` (a `Buffer`/`Uint8Array`), NOT a bare
+ * unkeyed `SHA256(names)` -- the original unkeyed version was directly demonstrated to be
+ * reversible by dictionary attack (hashing every candidate in a short guess list against a small,
+ * guessable universe of real Claude Code skill names recovers the exact recorded fingerprint; an
+ * unkeyed hash over a small input space is pseudonymization, not anonymization). `key` MUST be a
+ * fresh random value generated once per harness invocation and shared by every cell in that
+ * matrix/pair (see cli.mjs's `generateAmbientProfileScope`), and MUST NEVER be persisted anywhere
+ * -- only its resulting digests are recorded. Two records fingerprinted under two DIFFERENT keys
+ * (i.e. two separate invocations) are never meaningfully comparable, by design: see
+ * `ambient_skill_profile.scope_id` (cli.mjs/schemas.mjs) for the opaque label that makes this
+ * explicit rather than leaving it to be assumed.
+ */
+export function fingerprintAmbientSkillNames(names, key) {
+  return createHmac('sha256', key).update(canonicalAmbientSkillNamesKey(names)).digest('hex');
 }
 
 /**

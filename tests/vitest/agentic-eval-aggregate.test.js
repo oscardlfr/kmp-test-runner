@@ -5,10 +5,22 @@
 // completely schema-valid, not just carry the partition/benchmark_eligible fields.
 import { describe, it, expect } from 'vitest';
 import { aggregateRuns, summarizeGroup } from '../../tools/agentic-eval/aggregate.mjs';
+import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 
+// schema:4 (review-round-2 fix) -- a benchmark-eligible scenario record now REQUIRES a real,
+// well-shaped ambient_skill_profile to aggregate at all (schemas.mjs's buildAggregateGroup
+// refuses schema<4 scenario+eligible records outright, since their ambient profile is genuinely
+// unknown, not "agreeing on absence"). Bumped from the historical schema:1 default this file used
+// to a fully valid CURRENT shape -- grading_checks/repetition_index (v2)/foreign_skill_summary
+// (v3)/ambient_skill_profile (v4) all added together, matching what a real current
+// buildRunRecord() output actually looks like end to end.
 function run(overrides = {}) {
   return {
-    schema: 1,
+    schema: 4,
+    grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), reason: null },
+    repetition_index: 0,
+    foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+    ambient_skill_profile: { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) },
     run_id: `r-${Math.random().toString(36).slice(2)}`,
     run_kind: 'scenario',
     benchmark_eligible: true,
@@ -132,6 +144,24 @@ describe('aggregateRuns', () => {
     expect(errors).toEqual([]);
     expect(groups.length).toBe(2);
     expect(groups.every((g) => g.run_count === 1)).toBe(true);
+  });
+
+  // Review-round-2 finding (P2): the bucket key here is built via
+  // JSON.stringify(HARD_PARTITION_FIELDS.map(f => run[f])) -- a bare JSON.stringify is NOT
+  // canonical w.r.t. an OBJECT field's own key insertion order, so two runs whose
+  // ambient_skill_profile is the SAME value but constructed with keys in a different order
+  // previously landed in two SEPARATE buckets here (never even reaching buildAggregateGroup's own
+  // mixing check, which would otherwise have treated them as comparable). Fixed by using the SAME
+  // canonicalStructuredValue serializer schemas.mjs's own partitionFieldKey uses, not a second,
+  // independently-drifting notion of "the same value".
+  it('does not bucket two runs whose ambient_skill_profile has the SAME values in a DIFFERENT key order into separate buckets', () => {
+    const scopeId = '00000000-0000-4000-8000-000000000000';
+    const runX = run({ run_id: 'r-x', ambient_skill_profile: { count: 1, scope_id: scopeId, fingerprint_hmac: 'f'.repeat(64) } });
+    const runY = run({ run_id: 'r-y', ambient_skill_profile: { fingerprint_hmac: 'f'.repeat(64), scope_id: scopeId, count: 1 } });
+    const { groups, errors } = aggregateRuns([runX, runY]);
+    expect(errors).toEqual([]);
+    expect(groups.length).toBe(1);
+    expect(groups[0].run_count).toBe(2);
   });
 });
 

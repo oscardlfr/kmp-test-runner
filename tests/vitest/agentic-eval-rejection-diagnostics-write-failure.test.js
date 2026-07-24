@@ -33,7 +33,7 @@ vi.mock('../../tools/agentic-eval/rejection-diagnostics.mjs', async (importOrigi
 // tripping on the EARLIER schema-validation step with a hand-rolled, incomplete record literal.
 function fakeConditionResult(overrides = {}) {
   return {
-    init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+    init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
     result: { subtype: 'success', is_error: false },
     invocation: null,
     hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
@@ -50,7 +50,7 @@ describe('finalizeAndWriteRecords -- a rejection-diagnostics write failure never
   it('preserves ok:false and the ORIGINAL gate.reason, surfaces the throw as a separate diagnosticsWriteError field, never throws uncaught', async () => {
     const { finalizeAndWriteRecords, buildRunRecord } = await import('../../tools/agentic-eval/cli.mjs');
 
-    const common = { runKind: 'calibration', scenarioId: 'test-diagnostics-write-failure', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(), modelRequested: 'fake-model-x' };
+    const common = { runKind: 'calibration', scenarioId: 'test-diagnostics-write-failure', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(), modelRequested: 'fake-model-x', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'a'.repeat(40), ...common });
 

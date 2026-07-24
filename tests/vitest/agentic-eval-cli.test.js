@@ -521,7 +521,7 @@ describe('writeRunRecordEvidence', () => {
 describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree', () => {
   function fakeConditionResult() {
     return {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
       result: { subtype: 'success', is_error: false },
       invocation: null,
       hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
@@ -535,7 +535,7 @@ describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree'
 
   it('refuses to write evidence -- and never calls the hard gate at all -- when a record carries a dirty_measured_code error', async () => {
     const policySha256 = computePolicySha256();
-    const common = { runKind: 'calibration', scenarioId: 'test-dirty-tree', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model' };
+    const common = { runKind: 'calibration', scenarioId: 'test-dirty-tree', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
     // Simulate what resolveHarnessProvenance() would have populated for a genuinely dirty
@@ -566,7 +566,7 @@ describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree'
   // never-risk-a-real-write discipline.
   it('a dirty_harness_tooling error (tools/agentic-eval itself) DOES block before reaching the hard gate, when writing to the default RUNS_ROOT', async () => {
     const policySha256 = computePolicySha256();
-    const common = { runKind: 'calibration', scenarioId: 'test-dirty-tooling', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model' };
+    const common = { runKind: 'calibration', scenarioId: 'test-dirty-tooling', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
     recordA.errors = [{ code: 'dirty_harness_tooling', message: 'tools/agentic-eval/cli.mjs has uncommitted local modifications' }];
@@ -670,7 +670,7 @@ describe('findBlockingHarnessToolingDirty', () => {
 describe('buildRunRecord -- raw_capture_location under the default (non-overridden) RUNS_ROOT', () => {
   it('reports the real tools/runs/ path and raises no override error, since this process never set KMP_EVAL_RUNS_ROOT', () => {
     const conditionResult = {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
       result: { subtype: 'success', is_error: false },
       invocation: null,
       hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
@@ -685,6 +685,7 @@ describe('buildRunRecord -- raw_capture_location under the default (non-overridd
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.raw_capture_location).toBe('tools/runs/agentic-eval-calibration/raw/');
     expect(record.errors.some((e) => e.code === 'raw_capture_location_overridden')).toBe(false);
@@ -700,7 +701,7 @@ describe('buildRunRecord -- raw_capture_location under the default (non-overridd
 describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded zero', () => {
   function fakeConditionResult() {
     return {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
       result: { subtype: 'success', is_error: false },
       invocation: null,
       hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
@@ -718,6 +719,7 @@ describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded ze
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.retries).toEqual({ value: null, reason: 'not tracked for calibration runs' });
   });
@@ -728,6 +730,7 @@ describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded ze
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.retries).toEqual({ value: null, reason: 'not tracked for smoke runs' });
   });
@@ -741,7 +744,7 @@ describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded ze
 describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2 fix)', () => {
   function fakeScenarioConditionResult() {
     return {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
       result: { subtype: 'success', is_error: false },
       invocation: null,
       hookStats: { hookCallCount: 1, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 1 },
@@ -770,6 +773,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ harnessEvidenceAmbiguous: true }),
     });
     expect(record.errors.some((e) => e.code === 'ambiguous_junit_evidence')).toBe(true);
@@ -781,6 +785,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ harnessEvidenceAmbiguous: false }),
     });
     expect(record.errors.some((e) => e.code === 'ambiguous_junit_evidence')).toBe(false);
@@ -792,6 +797,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.errors.some((e) => e.code === 'ambiguous_junit_evidence')).toBe(false);
   });
@@ -806,6 +812,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ parallelEvidenceMalformed: true }),
     });
     expect(record.errors.some((e) => e.code === 'malformed_parallel_evidence')).toBe(true);
@@ -817,6 +824,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ parallelEvidenceMalformed: false }),
     });
     expect(record.errors.some((e) => e.code === 'malformed_parallel_evidence')).toBe(false);
@@ -828,6 +836,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.errors.some((e) => e.code === 'malformed_parallel_evidence')).toBe(false);
   });
@@ -844,6 +853,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ gradleJunitEvidenceUnreliable: true }),
     });
     expect(record.errors.some((e) => e.code === 'unreliable_gradle_junit_evidence')).toBe(true);
@@ -855,6 +865,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ gradleJunitEvidenceUnreliable: false }),
     });
     expect(record.errors.some((e) => e.code === 'unreliable_gradle_junit_evidence')).toBe(false);
@@ -866,6 +877,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.errors.some((e) => e.code === 'unreliable_gradle_junit_evidence')).toBe(false);
   });
@@ -881,6 +893,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ gradleJunitEvidenceCaptureIncomplete: true }),
     });
     expect(record.errors.some((e) => e.code === 'junit_evidence_capture_incomplete')).toBe(true);
@@ -892,6 +905,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ gradleJunitEvidenceCaptureIncomplete: false }),
     });
     expect(record.errors.some((e) => e.code === 'junit_evidence_capture_incomplete')).toBe(false);
@@ -903,6 +917,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.errors.some((e) => e.code === 'junit_evidence_capture_incomplete')).toBe(false);
   });
@@ -915,6 +930,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ harnessEvidenceAmbiguous: true, gradleJunitEvidenceCaptureIncomplete: true }),
     });
     expect(record.errors.some((e) => e.code === 'ambiguous_junit_evidence')).toBe(true);
@@ -950,6 +966,7 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
       skillSourceSha: 'aeba6eaa8d027be999cdfeeb5bb2d1bbd0f688ee', daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     // 3 real Bash tool_use events + attemptCount:2 (NOT the old flat +1) = 5, not 4.
     expect(record.tool_calls_total).toEqual({ value: 5, reason: null });
@@ -958,7 +975,7 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
 
   it('falls back to 0 for the Skill contribution when invocation is null (no attempt at all)', () => {
     const conditionResult = {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
       result: { subtype: 'success', is_error: false },
       invocation: null,
       hookStats: { hookCallCount: 1, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 1 },
@@ -973,6 +990,7 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.tool_calls_total).toEqual({ value: 1, reason: null });
   });
@@ -1003,6 +1021,7 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
       skillSourceSha: 'aeba6eaa8d027be999cdfeeb5bb2d1bbd0f688ee', daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
       modelRequested: 'fake-model',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     // 0 Bash + 1 expected-skill attempt + 1 foreign-skill attempt = 2, not the pre-fix 1.
     expect(record.tool_calls_total).toEqual({ value: 2, reason: null });
@@ -1024,7 +1043,7 @@ describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {o
   it('returns {ok:false, reason} instead of throwing when the target evidence file already exists', async () => {
     function fakeConditionResult() {
       return {
-        init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+        init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
         result: { subtype: 'success', is_error: false },
         invocation: null,
         hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
@@ -1036,7 +1055,7 @@ describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {o
       };
     }
     const policySha256 = computePolicySha256();
-    const common = { runKind: 'calibration', scenarioId: 'test-collision-via-finalize', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model' };
+    const common = { runKind: 'calibration', scenarioId: 'test-collision-via-finalize', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
     // This test is specifically about the run_id-collision property, not dirty-tree behavior --

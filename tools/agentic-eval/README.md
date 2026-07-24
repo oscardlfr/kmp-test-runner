@@ -210,6 +210,75 @@ matrix is rejected anyway.
   real trace of having happened, instead of disappearing the moment it stops being treated as
   contamination.
 
+  **Ambient-skill-profile tolerance.** A real live scenario run's `no-skill` cells were wrongly
+  rejected for a CONFIRMED invocation of Claude Code's own bundled `run` skill — present in the
+  init event's `skills[]` array identically regardless of `--plugin-dir` (see "Skill identity vs.
+  wire representation" above), not third-party contamination. `skillSelectionOk` tolerates a
+  CONFIRMED non-target Skill call **only** when its exact `skillArg` was advertised in the
+  matrix-WIDE consensus ambient profile: `scenarioHardGate()` computes, for every cell,
+  `computeAmbientSkillProfile()` (`stream-parser.mjs`) — a strict, **condition-aware** parse/
+  validation of that cell's own `skills[]`. `no-skill` must show **zero** target references at
+  all (bare or namespaced) — not merely zero CONFIRMED invocations; an anomalous advertisement
+  with no invocation is real contamination `noSkillSafetyOk` (which only checks actual invocation)
+  and `pluginProfileOk` (which only checks `plugins[]`, never `skills[]`) cannot catch on their
+  own. `current-skill` may show at most one target representation (either wire form), stripped
+  before computing the ambient set; more than one simultaneous representation (both forms at once)
+  is a duplicate LOGICAL identity and fails closed regardless of condition. Once the target
+  identity is resolved per cell, every cell's REMAINING (ambient) set must agree EXACTLY with
+  every other cell's. Never a hardcoded `'run'` exception: any bundled skill name is tolerated
+  identically, as long as it is genuinely shared. Three new named checks make every failure mode
+  independently diagnosable: `ambientSkillProfileOk` (this cell's own `skills[]` failed to parse
+  structurally), `targetSkillAmbientIdentityOk` (the target's own presence/absence or duplication
+  doesn't match this condition), and `ambientProfileMatrixOk` (the SAME matrix-wide consensus
+  boolean, threaded into every cell — deliberately reuses the existing per-cell aggregation/
+  atomic-promotion machinery unchanged rather than adding only a separate top-level field, so a
+  genuine mismatch fails the whole batch exactly like any other integrity defect, and
+  `rejection-diagnostics.mjs`'s "some cell must show a real failure" invariant is satisfied for
+  free — `ambientProfileMatrixOk` is *also* returned as its own top-level field on
+  `scenarioHardGate()`'s result specifically so a caller building rejection diagnostics can record
+  it directly). `scenarioHardGate()` itself fails closed (never throwing) unless both its
+  `records`/`conditionResults` arguments are non-empty arrays of exactly equal length. An
+  unadvertised, malformed, or missing/incomplete foreign Skill use still fails closed exactly as
+  before — only a genuinely shared, confirmed ambient capability is now tolerated.
+  `calibrationHardGate()`/`smokeHardGate()` gained the identical `ambientSkillProfileOk`/
+  `targetSkillAmbientIdentityOk` checks too (a missing/malformed `skills[]` was previously
+  completely unchecked there, silently producing a "verified empty" ambient profile even when the
+  underlying data was genuinely unknown) — their own zero-tolerance `skillSelectionOk` is
+  otherwise entirely unaffected; this tolerance mechanism itself remains scenario-only.
+
+  Every record (any run_kind, schema v4+) also carries an `ambient_skill_profile: {count,
+  scope_id, fingerprint_hmac}` field — never the raw names. The fingerprint is **keyed**
+  (`fingerprintAmbientSkillNames()`, HMAC-SHA256), not a bare content hash: an earlier unkeyed
+  `SHA256(names)` design was directly demonstrated to be reversible by dictionary attack against
+  the small, guessable universe of real Claude Code skill names (pseudonymization, not
+  anonymization). `generateAmbientProfileScope()` (`cli.mjs`) generates ONE random 32-byte key plus
+  one opaque `scope_id` (a UUID) per harness invocation — shared by every cell that invocation
+  produces (so a matrix's own cells remain comparable to each other) and the key is **never
+  persisted anywhere**, only its resulting digests are recorded. Two records' fingerprints are
+  comparable **only** when their `scope_id`s match (i.e. only within the same invocation) — a
+  different `scope_id` means the comparison is meaningless regardless of what the fingerprints
+  look like, which is exactly why `scope_id` (not just the fingerprint) is itself part of the
+  Fairness Contract's partition key (below). See "Schemas" and "Fairness Contract" below.
+
+  **Known limitation, deliberately not addressed in this fix (round-3 audit note):** because the
+  HMAC key is random and freshly generated *per harness invocation* (never per measurement or
+  per scenario), and `ambient_skill_profile` -- `scope_id` included -- sits in
+  `HARD_PARTITION_FIELDS`, two runs of the **same scenario** captured in **different** harness
+  invocations can never be aggregated together, even when their underlying ambient environment was
+  genuinely identical. This is correct and intentional for a single invocation's own internal
+  fairness, but it means **no cross-invocation, longitudinal aggregation is possible with today's
+  key lifecycle** -- every fresh `calibrate`/`smoke`/`run` invocation starts an unrelated
+  comparability island. For a one-shot canary this is a non-issue; for a *publishable, repeated*
+  measurement program it is a real constraint that needs its own design decision before the next
+  live run, not a silent assumption: a stable, **per-measurement** (not per-invocation) HMAC key,
+  injected only into the specific commands that constitute one measurement, identified by a
+  **non-secret key id** (so a stale or rotated key is diagnosable from the record itself, the same
+  way `scope_id` already is), with explicit, deliberate rotation semantics rather than an implicit
+  one-key-forever default. This PR intentionally does **not** implement that redesign -- the
+  per-invocation key described above is correctly isolated and ships as-is; the redesign is future
+  work, gated on an explicit decision about the measurement program's actual longitudinal-comparison
+  needs.
+
   **JUnit-evidence attribution, per attempt, keyed by `tool_use_id`.** A `tests_executed`
   scenario condition can involve **multiple Bash attempts** (a first, wrong/failed try; a
   corrected retry). Earlier, JUnit-XML evidence for the raw-Gradle path was captured **once per
@@ -458,9 +527,16 @@ circular import either module living inside `cli.mjs` would create.
   the *existing* `.gitignore:` `tools/runs/agentic-eval-*/raw/**` rule — the `*` wildcard already
   matches `rejected` the same way it matches `scenario`/`smoke`/`calibration`, so no new
   `.gitignore` entry was needed.
-- **Shape**: `{schema, rejection_id, timestamp, run_kind, run_ids, model_requested, repo_commit,
+- **Shape** (`REJECTION_DIAGNOSTICS_SCHEMA` **2** — was 1; the row gained per-cell
+  `ambient_skill_profile` and top-level `ambient_profile_matrix_ok`, versioned exactly like every
+  other schema in this harness whenever its own shape changes; no historical committed rejection
+  files exist to preserve compatibility with, since this whole directory is local-only/gitignored
+  by design): `{schema, rejection_id, timestamp, run_kind, run_ids, model_requested, repo_commit,
   scenario_id, project_alias, project_commit, seed, policy_sha256, platform, privacy_status, cells,
-  foreign_skill_summary}`. The provenance fields mirror `buildRunRecord()`'s own field names
+  foreign_skill_summary, ambient_profile_matrix_ok}`. `ambient_profile_matrix_ok` is `null` for
+  calibration/smoke (no matrix/consensus concept applies to a plain A/B pair) and the real boolean
+  `scenarioHardGate()` computed for a scenario batch — a batch-wide fact, distinct from any one
+  cell's own data. The provenance fields mirror `buildRunRecord()`'s own field names
   exactly (read directly off the already-built records, never re-derived), each tied to the
   record's own `run_kind` rather than accepted in any shape unconditionally
   (`validateRejectionRow()` enforces this per run_kind, not just "null or a string"):
@@ -479,7 +555,9 @@ circular import either module living inside `cli.mjs` would create.
   real non-negative integers for scenario — enforced *together*, tied to the record's own
   `run_kind`)/`skill_source_sha` (`null` for no-skill, the real SHA for current-skill)/
   `model_resolved`/`claude_code_version` (each `null` only when no init event was ever captured)/
-  `failed_checks`/`foreign_skill_summary`. The top-level `foreign_skill_summary` is always the
+  `failed_checks`/`foreign_skill_summary`/`ambient_skill_profile` (read directly off that cell's own
+  already-built run record, `{count, scope_id, fingerprint_hmac}` — never the raw skill names,
+  exactly like `foreign_skill_summary`'s existing precedent). The top-level `foreign_skill_summary` is always the
   field-by-field sum across `cells[]` — `validateRejectionRow()` enforces this, never letting it
   drift into an independent second source of truth — `run_ids` must always exactly equal the set of
   `cells[].run_id`, and **at least one** cell must carry a non-empty `failed_checks`: a diagnostic
@@ -692,11 +770,17 @@ Run-record schema is versioned per-field-list, dispatched by an explicit if-chai
 ternary, which silently falls an unrecognized/future schema number through to v1) —
 `SUPPORTED_RUN_SCHEMAS` is every version `validateRun()` still accepts (so historical committed
 records never need retroactive edits); `LATEST_RUN_SCHEMA` is what every subcommand stamps on new
-records going forward. v2 added `grading_checks`/`repetition_index` (scenario-only); **v3** adds
+records going forward. v2 added `grading_checks`/`repetition_index` (scenario-only); v3 adds
 `foreign_skill_summary` — required, non-nullable, on **every** run_kind (not scenario-only, since
 it's always computable from the transcript even when empty) — and every v2 semantic rule is
 inherited via `>=` gates, not re-declared, so a v3 record can't silently skip validation a v2
-record would have been subject to.
+record would have been subject to. **v4** adds `ambient_skill_profile: {count, scope_id,
+fingerprint_hmac}` — mirrors `foreign_skill_summary` exactly (required, non-nullable, every
+run_kind, every prior semantic rule inherited via `>=`) — a privacy-safe, invocation-scoped-keyed
+summary of the init event's `skills[]` array (target identity stripped, see "Ambient-skill-profile
+tolerance" above), never the raw skill names themselves. `scope_id` is a full UUID string;
+`fingerprint_hmac` a lowercase 64-hex-char HMAC-SHA256 digest — both validated with the same
+regexes `rejection_id`/`policy_sha256` already use elsewhere in this schema.
 
 ## Fairness Contract
 
@@ -704,7 +788,8 @@ record would have been subject to.
 `HARD_PARTITION_FIELDS` key: `scenario_id`, `condition`, `family`, `run_kind`, `cache_state`,
 `project_commit`, `model_resolved`, `platform`, `skill_source_sha`, `policy_sha256`,
 `kmp_test_cli_source_sha`, `daemon_policy`, `env_allowlist_profile`, `policy_allowed_gradle_tasks`,
-`policy_allowed_kmptest_subcommands`, `claude_code_version`, `schema` — beyond the original guards
+`policy_allowed_kmptest_subcommands`, `claude_code_version`, `schema`, `ambient_skill_profile` —
+beyond the original guards
 (a re-pinned scenario commit, a different resolved model, host platform, skill snapshot,
 policy-hook version, or harness code version), the next three guard against silently averaging
 across a different environment-isolation profile or a materially different command-policy
@@ -717,11 +802,34 @@ additionally requires it to be a concrete, non-empty string (not just present), 
 both carrying `null` for an unknown CLI version can't be trusted to actually agree with one
 another. `schema` guards against silently averaging a v2 record (no `foreign_skill_summary`)
 together with a v3 one (has it) — different schema versions carry different measured fields, so
-they're never comparable data by definition. The two `policy_allowed_*` fields are arrays;
-`buildAggregateGroup()`'s
-mixing-check compares them by their `JSON.stringify()` representation, not by object reference —
-two runs with structurally identical arrays as separate object instances are correctly treated as
-matching, not spuriously rejected as "mixed". The bucket key itself is built via `JSON.stringify()`
+they're never comparable data by definition. `ambient_skill_profile` guards against silently
+averaging two SAME-schema runs whose ambient capability profiles are not actually comparable —
+including, specifically, two runs from DIFFERENT harness invocations: `scope_id` (part of this same
+object) is a fresh, opaque, per-invocation value, so two records with different `scope_id`s can
+never be folded together regardless of what their `fingerprint_hmac` happens to look like (the
+fingerprint's own HMAC key is random and never persisted, so a match/mismatch across invocations
+would be meaningless anyway — see "Ambient-skill-profile tolerance" above). A benchmark-eligible
+scenario record with NO `ambient_skill_profile` at all (any schema below v4) is refused from
+aggregation outright, exactly like the other completeness-matrix fields below — its ambient profile
+is genuinely unknown, not "agreeing on absence" with another such record (a real, demonstrated gap:
+two schema:3 records missing the field previously aggregated with zero errors, then failed
+`validateAggregateGroupKey`'s own contract the moment the group was JSON-round-tripped, since an
+`undefined` object value silently vanishes on serialization). `buildAggregateGroup()` also refuses,
+as a general safety net, to return ANY group whose own key would contain an `undefined`
+value for any `HARD_PARTITION_FIELDS` entry, for the identical round-trip reason. The two
+`policy_allowed_*` fields (and now `ambient_skill_profile`) are arrays or plain objects;
+`buildAggregateGroup()`'s mixing-check — and `aggregate.mjs`'s own bucketing key — both compare
+them via `canonicalStructuredValue()` (`schemas.mjs`): a single, shared serializer that recursively
+sorts object keys (arrays keep their own positional order) before `JSON.stringify()`, so two
+structurally-identical values are treated as matching regardless of BOTH object-vs-reference
+identity and key INSERTION order (a bare `JSON.stringify` is not canonical w.r.t. the latter — a
+real gap this closes: two `ambient_skill_profile` objects with the same `{count, scope_id,
+fingerprint_hmac}` values in a different key order previously landed in separate groups/buckets).
+`CURRENT_AGGREGATE_SCHEMA` is **2** (was 1) — `group_key`'s own shape changed (gained
+`ambient_skill_profile`), versioned exactly like `LATEST_RUN_SCHEMA` is whenever a run record's own
+shape changes; no historical committed aggregate-output files exist to preserve compatibility with
+(aggregate output is always computed on demand, never persisted under `tools/runs/`). The bucket
+key itself is built via `JSON.stringify()`
 of the field-value array, not a plain `.join(' ')` — a space-join lets two runs whose field values
 differ only in *where* a space falls collide into the same bucket key while their actual values
 differ (e.g. `project_commit:'abc def', model_resolved:'x'` vs. `project_commit:'abc',

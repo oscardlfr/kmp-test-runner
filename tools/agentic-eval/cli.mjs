@@ -35,14 +35,14 @@
 import { readFileSync, readdirSync, existsSync, rmSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
 import { LATEST_RUN_SCHEMA, SUPPORTED_RUN_SCHEMAS, validateRun, validateScenario, validateTriggerQueries } from './schemas.mjs';
 import { buildEvalEnv } from './env-builder.mjs';
 import { materializeCalibrationProject, materializeScenarioProject, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { buildBaseArgv } from './condition-launcher.mjs';
-import { isSkillAvailable, findForeignSkillUses, classifyForeignSkillUses, findBashToolUses, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, findTranscriptStructuralIssues, findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout, extractTokenUsage, deriveFirstUsefulSignalMs } from './stream-parser.mjs';
+import { isSkillAvailable, findForeignSkillUses, classifyForeignSkillUses, findBashToolUses, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, findTranscriptStructuralIssues, findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout, extractTokenUsage, deriveFirstUsefulSignalMs, computeAmbientSkillProfile, canonicalAmbientSkillNamesKey, fingerprintAmbientSkillNames } from './stream-parser.mjs';
 import { acquireSharedEvalResources, runSingleCondition, runScenarioMatrix, reportCleanupFailures } from './matrix-runner.mjs';
 import { gradeScenarioCondition } from './graders.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
@@ -461,6 +461,25 @@ const TARGET_PLUGIN_NAME = 'kmp-test-runner';
 const TARGET_SKILL_NAME = 'kmp-test-runner';
 
 /**
+ * Generates the ONE random HMAC key + opaque scope id for a single harness invocation
+ * (cmdCalibrate/cmdSmoke/cmdRun each call this exactly once, before building any records) --
+ * review-round-2 fix (correction 2): the original ambient-skill-profile fingerprint was an
+ * UNKEYED SHA-256 hash, directly demonstrated to be reversible by dictionary attack against the
+ * small, guessable universe of real Claude Code skill names. `key` (32 random bytes) is shared by
+ * EVERY cell within this SAME invocation (so a matrix's cells can still be meaningfully compared
+ * against each other) and MUST NEVER be persisted anywhere -- only the HMAC digests it produces
+ * are recorded (stream-parser.mjs's fingerprintAmbientSkillNames). `scopeId` is a separate, opaque
+ * per-invocation UUID that IS recorded (ambient_skill_profile.scope_id on every record from this
+ * invocation) specifically so two records can be told apart as "from the same invocation, hence
+ * comparable" vs. "from different invocations, hence never meaningfully comparable" without ever
+ * needing to reveal or reconstruct the key itself.
+ * @returns {{scopeId: string, key: Buffer}}
+ */
+function generateAmbientProfileScope() {
+  return { scopeId: randomUUID(), key: randomBytes(32) };
+}
+
+/**
  * Runs both conditions of a pair and returns everything buildRunRecord needs, plus a cleanup()
  * function the caller MUST invoke from a finally block -- removes every temp directory this
  * function created (shim, skill snapshot, GRADLE_USER_HOME, KMP_EVAL_TEMP_HOME, the generated
@@ -538,6 +557,11 @@ function buildRunRecord({
   // it only reports an already-computed verdict, keeping grading and record-construction as two
   // separately-testable concerns.
   seed = null, orderIndex = null, repetitionIndex = null, gradeResult = null,
+  // ambientProfileScopeId/ambientProfileKey (correction 2): the ONE opaque scope id + random HMAC
+  // key generated once per harness invocation (generateAmbientProfileScope), shared by every
+  // record this invocation produces -- REQUIRED (no default), so a caller can never silently fall
+  // back to an unkeyed/absent key.
+  ambientProfileScopeId, ambientProfileKey,
 }) {
   const { init, result, invocation, hookStats, byteMetrics, startedAt, endedAt } = conditionResult;
   const isScenario = runKind === 'scenario';
@@ -549,6 +573,23 @@ function buildRunRecord({
     rejected: foreignSkillUses.filter((u) => u.resultIsError === true).length,
     confirmed: foreignSkillUses.filter((u) => u.confirmed === true).length,
     incomplete: foreignSkillUses.filter((u) => u.resultIsError === null).length,
+  };
+  // ambient_skill_profile (schema V4): a privacy-safe {count, scope_id, fingerprint_hmac} summary
+  // of the init event's skills[] array with the TARGET skill's own bare/namespaced identity
+  // stripped out (computeAmbientSkillProfile, stream-parser.mjs) -- never the raw names
+  // themselves. Always computed regardless of run_kind or ambientProfile.ok: a malformed
+  // transcript still gets a real, non-null value recorded here (schema requires it non-null on
+  // every record); only scenarioCellIntegrityOk/calibrationHardGate/smokeHardGate (below) actually
+  // enforce strictness on `.ok`. `expectTargetPresent` is condition-aware (correction 1) -- a
+  // no-skill cell must show ZERO target references in skills[] (not merely zero CONFIRMED
+  // invocations), a current-skill cell may show exactly one. `fingerprintAmbientSkillNames` is now
+  // HMAC-keyed by this invocation's own random, never-persisted key (correction 2) -- see
+  // generateAmbientProfileScope's own doc comment for the full privacy rationale.
+  const ambientProfile = computeAmbientSkillProfile(init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: condition === 'current-skill' });
+  const ambientSkillProfile = {
+    count: ambientProfile.names.size,
+    scope_id: ambientProfileScopeId,
+    fingerprint_hmac: fingerprintAmbientSkillNames(ambientProfile.names, ambientProfileKey),
   };
   const provenance = resolveHarnessProvenance();
   // Shared by BOTH dirty_harness_tooling branches below so the two messages can't drift apart
@@ -674,6 +715,11 @@ function buildRunRecord({
     // leaves a real trace of having happened, instead of disappearing entirely the moment
     // scenarioCellIntegrityOk's result-aware skillSelectionOk stops treating it as contamination.
     foreign_skill_summary: foreignSkillSummary,
+    // ambient_skill_profile (schema v4): count + opaque scope_id + keyed HMAC fingerprint only,
+    // computed once above and shared with nothing else -- see its own computation comment above
+    // for why raw names never reach this record, and why the fingerprint is HMAC-keyed rather
+    // than a plain hash.
+    ambient_skill_profile: ambientSkillProfile,
     // repo_commit/kmp_test_cli_source_sha describe HEAD, not necessarily the exact bytes that
     // executed -- disclosed here rather than silently letting the recorded SHA imply a codebase
     // that isn't quite what actually ran. Two distinct codes: dirty_measured_code (bin/lib/
@@ -1141,7 +1187,11 @@ async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResult
       const foreignSkillNamesByRunId = Object.fromEntries(
         records.map((r, i) => [r.run_id, classifyForeignSkillUses(conditionResults[i].events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null)]),
       );
-      const diagnostics = buildRejectionDiagnostics({ runKind, records, failedChecksByRunId, foreignSkillNamesByRunId });
+      // ambientProfileMatrixOk (correction 6): scenarioHardGate's own matrix-wide consensus result
+      // (gate.ambientProfileMatrixOk, exposed on its return value) -- threaded straight through, so
+      // a rejection diagnostic for a scenario batch always records whether the ambient-profile
+      // consensus itself held, distinct from any individual cell's own failed_checks.
+      const diagnostics = buildRejectionDiagnostics({ runKind, records, failedChecksByRunId, foreignSkillNamesByRunId, ambientProfileMatrixOk: gate.ambientProfileMatrixOk });
       ({ rejectionId, relativePath: diagnosticsRelativePath } = writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride }));
     } catch (err) {
       diagnosticsWriteError = err.message;
@@ -1297,6 +1347,21 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   // protection smoke already has.
   const cleanTranscriptOkA = runAResult.malformedLines.length === 0;
   const cleanTranscriptOkB = runBResult.malformedLines.length === 0;
+  // Review-round-2 fix (correction 4): a missing/malformed init.skills[] previously let
+  // buildRunRecord silently report a "valid" {count:0, ...} ambient_skill_profile even though the
+  // underlying data was genuinely unknown, not a real, verified empty ambient set -- calibration/
+  // smoke never checked this at all (only scenarioCellIntegrityOk did). Same condition-aware
+  // target-identity handling as scenario's own gate (correction 1): A must show ZERO target
+  // references in skills[] (never merely zero confirmed invocations), B may show exactly one.
+  // Calibration/smoke's OWN skillSelectionOk (zero-tolerance for any foreign call, confirmed or
+  // not) is deliberately left completely untouched -- this only ADDS the two new checks below, it
+  // never relaxes the existing ones.
+  const ambientProfileA = computeAmbientSkillProfile(runAResult.init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: false });
+  const ambientProfileB = computeAmbientSkillProfile(runBResult.init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: true });
+  const ambientSkillProfileOkA = ambientProfileA.structurallyWellFormed;
+  const ambientSkillProfileOkB = ambientProfileB.structurallyWellFormed;
+  const targetSkillAmbientIdentityOkA = ambientProfileA.targetIdentityOk;
+  const targetSkillAmbientIdentityOkB = ambientProfileB.targetIdentityOk;
 
   const checksA = [
     ['availabilityOk', availabilityOkA], ['noSkillSafetyOk', noSkillSafetyOk],
@@ -1306,6 +1371,7 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
     ['resultOk', resultOkA], ['hookAccountingOk', hookAccountingOkA],
     ['toolResultsCompleteOk', toolResultsCompleteOkA], ['cleanTranscriptOk', cleanTranscriptOkA],
     ['transcriptStructureOk', transcriptStructureOkA],
+    ['ambientSkillProfileOk', ambientSkillProfileOkA], ['targetSkillAmbientIdentityOk', targetSkillAmbientIdentityOkA],
   ];
   const checksB = [
     ['availabilityOk', availabilityOkB], ['currentInvocationOk', currentInvocationOk],
@@ -1315,6 +1381,7 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
     ['processOk', processOkB], ['resultOk', resultOkB], ['hookAccountingOk', hookAccountingOkB],
     ['toolResultsCompleteOk', toolResultsCompleteOkB], ['cleanTranscriptOk', cleanTranscriptOkB],
     ['transcriptStructureOk', transcriptStructureOkB],
+    ['ambientSkillProfileOk', ambientSkillProfileOkB], ['targetSkillAmbientIdentityOk', targetSkillAmbientIdentityOkB],
   ];
   const evalA = evaluateNamedChecks(checksA);
   const evalB = evaluateNamedChecks(checksB);
@@ -1379,7 +1446,7 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
  * last one before a genuine timeout) -- a foreign Skill call's own incompleteness must fail closed
  * unconditionally, with no timeout exception.
  */
-function scenarioCellIntegrityOk(record, conditionResult) {
+function scenarioCellIntegrityOk(record, conditionResult, { sharedAmbientNames = new Set(), ambientProfileMatrixOk = true } = {}) {
   const expectSkillAvailable = record.condition === 'current-skill';
   const availabilityOk = record.skill_available.value === expectSkillAvailable;
   // Post-#385 review finding: a no-skill condition's plugin is never loaded (availabilityOk/
@@ -1395,7 +1462,33 @@ function scenarioCellIntegrityOk(record, conditionResult) {
   const pluginProfileOk = hasExpectedPluginProfile(conditionResult.init, TARGET_PLUGIN_NAME, expectSkillAvailable);
   const pluginSnapshotBindingOk = !expectSkillAvailable || isPluginBoundToSnapshot(conditionResult.init, conditionResult.snapshotDir);
   const foreignSkillUses = classifyForeignSkillUses(conditionResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME);
-  const skillSelectionOk = !foreignSkillUses.some((u) => u.confirmed === true);
+  // Ambient-skill-profile fix: a real live run's no-skill cells were wrongly rejected for
+  // confirming Claude Code's own bundled "run" skill -- present in init.skills[] regardless of
+  // --plugin-dir (see isSkillAvailable's doc comment, stream-parser.mjs), not genuine third-party
+  // contamination. A CONFIRMED foreign call is now tolerated ONLY when its exact skillArg was
+  // advertised in `sharedAmbientNames` -- the matrix-wide consensus ambient profile scenarioHardGate
+  // computes across every cell (never a hardcoded "run" special-case; a malformed/missing skillArg,
+  // or one absent from that set, still fails closed exactly as before). `ambientSkillProfileOk` is
+  // THIS cell's own init.skills[] parse validity (computeAmbientSkillProfile, self-derived -- a
+  // single cell can always judge its own transcript alone); `ambientProfileMatrixOk` is the SAME
+  // shared boolean threaded into every cell in the matrix by scenarioHardGate, so a cross-cell
+  // mismatch (or any cell's own malformed profile) blocks the WHOLE batch via the existing
+  // per-cell aggregation, with zero changes needed to that aggregation logic itself. Both default
+  // to the "everything's fine" value when this function is called in isolation (every existing
+  // 2-arg test call site) -- a single cell outside a real matrix context cannot meaningfully judge
+  // cross-cell agreement either way.
+  // Review-round-2 fix (correction 1): condition-aware -- a no-skill cell whose skills[]
+  // anomalously advertises the target's own bare/namespaced identity (even if never actually
+  // invoked) is real evidence contamination that neither pluginProfileOk (checks plugins[], not
+  // skills[]) nor noSkillSafetyOk (checks actual invocation, not mere advertisement) can catch.
+  // ambientSkillProfileOk covers pure structural validity; targetSkillAmbientIdentityOk covers the
+  // target-presence-appropriateness/no-duplicate-representation concern -- kept as two distinct
+  // named checks for independent diagnosability, mirroring this function's existing granularity.
+  const ambientProfile = computeAmbientSkillProfile(conditionResult.init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: expectSkillAvailable });
+  const ambientSkillProfileOk = ambientProfile.structurallyWellFormed;
+  const targetSkillAmbientIdentityOk = ambientProfile.targetIdentityOk;
+  const confirmedForeignSkillUses = foreignSkillUses.filter((u) => u.confirmed === true);
+  const skillSelectionOk = confirmedForeignSkillUses.every((u) => u.skillArg != null && sharedAmbientNames.has(u.skillArg));
   const foreignSkillToolResultsCompleteOk = !foreignSkillUses.some((u) => u.resultIsError === null);
   const initOk = conditionResult.init != null;
   const toolProfileOk = hasExpectedToolProfile(conditionResult.init, EXPECTED_TOOL_NAMES);
@@ -1427,6 +1520,8 @@ function scenarioCellIntegrityOk(record, conditionResult) {
     ['terminationOk', terminationOk], ['junitEvidenceOk', junitEvidenceOk],
     ['parallelEvidenceOk', parallelEvidenceOk], ['junitSkipEvidenceOk', junitSkipEvidenceOk],
     ['junitCaptureCompleteOk', junitCaptureCompleteOk],
+    ['ambientSkillProfileOk', ambientSkillProfileOk], ['targetSkillAmbientIdentityOk', targetSkillAmbientIdentityOk],
+    ['ambientProfileMatrixOk', ambientProfileMatrixOk],
   ]);
   return { ok: evaluation.ok, reason: evaluation.reason, failedChecks: evaluation.failedChecks };
 }
@@ -1444,12 +1539,51 @@ function scenarioCellIntegrityOk(record, conditionResult) {
  * blocks the whole matrix" means every cell is relevant to explaining a rejection, not just the
  * cell(s) that individually failed. Computed in this function's own single existing loop -- never
  * re-run scenarioCellIntegrityOk a second time to recover this.
+ *
+ * Ambient-skill-profile fix: before that per-cell loop, computes the matrix-WIDE consensus ambient
+ * profile once -- every cell's own init.skills[] (target identity stripped, condition-aware per
+ * correction 1) must parse cleanly AND agree exactly with every other cell's, or
+ * `sharedAmbientNames` collapses to the empty Set (fail-closed: no confirmed foreign Skill call is
+ * tolerated anywhere in the batch). The SAME `ambientProfileMatrixOk` boolean is threaded into
+ * every cell's own `scenarioCellIntegrityOk` call as a named check (not ONLY a separate top-level
+ * field) -- deliberately reuses the existing per-cell loop/reason-aggregation below completely
+ * unchanged: a genuine cross-cell mismatch (or one cell's own malformed profile) then fails EVERY
+ * cell via the existing machinery, which both correctly blocks the whole matrix (atomic promotion,
+ * unchanged) and automatically satisfies rejection-diagnostics.mjs's own "at least one cell must
+ * have a non-empty failed_checks" invariant with zero changes needed there. Also returned as its
+ * own top-level field (correction 6) so a caller building rejection diagnostics can record the
+ * matrix-wide consensus result directly, without re-deriving it from cellResults.
+ *
+ * Review-round-2 fix (correction 5): fails closed WITHOUT THROWING unless both arguments are
+ * non-empty arrays of exactly equal length -- the pre-fix version silently returned a vacuous
+ * `{ok:true, cellResults:[]}` for `records:[]` paired with a non-empty `conditionResults` (a
+ * meaningless "pass" for a mismatched, degenerate input the caller almost certainly never
+ * intended), and threw an uncaught TypeError for the reverse mismatch (`conditionResults:[]` with
+ * a non-empty `records`, since `ambientProfiles[0]` is then `undefined`). Both directly
+ * demonstrated against the pre-fix code. A real hard gate must never let a malformed invocation
+ * either silently vanish or crash its caller uncaught.
  */
 function scenarioHardGate(records, conditionResults) {
+  if (!Array.isArray(records) || !Array.isArray(conditionResults) || records.length === 0 || conditionResults.length === 0 || records.length !== conditionResults.length) {
+    const recordsLen = Array.isArray(records) ? records.length : typeof records;
+    const conditionResultsLen = Array.isArray(conditionResults) ? conditionResults.length : typeof conditionResults;
+    return {
+      ok: false,
+      reason: `scenario hard gate received an invalid matrix shape -- records.length=${recordsLen} conditionResults.length=${conditionResultsLen} (both must be non-empty arrays of exactly equal length)`,
+      cellResults: [],
+      ambientProfileMatrixOk: false,
+    };
+  }
+  const ambientProfiles = records.map((r, i) => computeAmbientSkillProfile(conditionResults[i].init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: r.condition === 'current-skill' }));
+  const allAmbientProfilesOk = ambientProfiles.every((p) => p.ok);
+  const canonicalKeys = ambientProfiles.map((p) => canonicalAmbientSkillNamesKey(p.names));
+  const ambientProfileMatrixOk = allAmbientProfilesOk && new Set(canonicalKeys).size <= 1;
+  const sharedAmbientNames = ambientProfileMatrixOk ? ambientProfiles[0].names : new Set();
+
   const failures = [];
   const cellResults = [];
   for (let i = 0; i < records.length; i++) {
-    const cell = scenarioCellIntegrityOk(records[i], conditionResults[i]);
+    const cell = scenarioCellIntegrityOk(records[i], conditionResults[i], { sharedAmbientNames, ambientProfileMatrixOk });
     cellResults.push({
       runId: records[i].run_id,
       condition: records[i].condition,
@@ -1462,7 +1596,7 @@ function scenarioHardGate(records, conditionResults) {
     }
   }
   const ok = failures.length === 0;
-  return { ok, reason: ok ? null : `scenario hard gate failed for ${failures.length}/${records.length} cell(s) -- ${failures.join(' || ')}`, cellResults };
+  return { ok, reason: ok ? null : `scenario hard gate failed for ${failures.length}/${records.length} cell(s) -- ${failures.join(' || ')}`, cellResults, ambientProfileMatrixOk };
 }
 
 async function cmdCalibrate(args) {
@@ -1502,7 +1636,10 @@ async function cmdCalibrate(args) {
   try {
     const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = conditionPair;
     const policySha256 = computePolicySha256();
-    const common = { runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus };
+    // One random HMAC key + opaque scope id for this ENTIRE calibrate invocation (correction 2) --
+    // shared by both A and B so they remain comparable to each other, never persisted.
+    const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = generateAmbientProfileScope();
+    const common = { runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey };
     const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
     const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
 
@@ -1606,6 +1743,16 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   // correlated tool_result is an incomplete capture, not a demonstrated outcome.
   const toolResultsCompleteOkA = findIncompleteToolResults(runAResult.events).length === 0;
   const toolResultsCompleteOkB = findIncompleteToolResults(runBResult.events).length === 0;
+  // See calibrationHardGate's identical check and doc comment (review-round-2 fix, correction 4) --
+  // a missing/malformed init.skills[] must not silently pass as a "verified empty" ambient
+  // profile, and A's skills[] must show zero target references (condition-aware, correction 1).
+  // smoke's own skillSelectionOk (zero-tolerance) is untouched.
+  const ambientProfileA = computeAmbientSkillProfile(runAResult.init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: false });
+  const ambientProfileB = computeAmbientSkillProfile(runBResult.init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: true });
+  const ambientSkillProfileOkA = ambientProfileA.structurallyWellFormed;
+  const ambientSkillProfileOkB = ambientProfileB.structurallyWellFormed;
+  const targetSkillAmbientIdentityOkA = ambientProfileA.targetIdentityOk;
+  const targetSkillAmbientIdentityOkB = ambientProfileB.targetIdentityOk;
 
   const checksA = [
     ['availabilityOk', availabilityOkA], ['noSkillSafetyOk', noSkillSafetyOkA],
@@ -1616,6 +1763,7 @@ function smokeHardGate(a, b, runAResult, runBResult) {
     ['realWorkOk', realWorkOkA], ['exactCommandsOk', exactCommandsOkA],
     ['cleanTranscriptOk', cleanTranscriptOkA], ['toolResultsCompleteOk', toolResultsCompleteOkA],
     ['transcriptStructureOk', transcriptStructureOkA],
+    ['ambientSkillProfileOk', ambientSkillProfileOkA], ['targetSkillAmbientIdentityOk', targetSkillAmbientIdentityOkA],
   ];
   const checksB = [
     ['availabilityOk', availabilityOkB], ['skillSelectionOk', skillSelectionOkB],
@@ -1626,6 +1774,7 @@ function smokeHardGate(a, b, runAResult, runBResult) {
     ['realWorkOk', realWorkOkB], ['exactCommandsOk', exactCommandsOkB],
     ['cleanTranscriptOk', cleanTranscriptOkB], ['toolResultsCompleteOk', toolResultsCompleteOkB],
     ['transcriptStructureOk', transcriptStructureOkB],
+    ['ambientSkillProfileOk', ambientSkillProfileOkB], ['targetSkillAmbientIdentityOk', targetSkillAmbientIdentityOkB],
   ];
   const evalA = evaluateNamedChecks(checksA);
   const evalB = evaluateNamedChecks(checksB);
@@ -1691,7 +1840,10 @@ async function cmdSmoke(args) {
   try {
     const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = conditionPair;
     const policySha256 = computePolicySha256();
-    const common = { runKind: 'smoke', scenarioId, skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, projectUrl, family: 'test-only', modelRequested: model, privacyStatus };
+    // One random HMAC key + opaque scope id for this ENTIRE smoke invocation (correction 2) --
+    // shared by both A and B so they remain comparable to each other, never persisted.
+    const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = generateAmbientProfileScope();
+    const common = { runKind: 'smoke', scenarioId, skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, projectUrl, family: 'test-only', modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey };
     const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
     const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
 
@@ -1955,6 +2107,10 @@ async function cmdRun(args) {
   }
   try {
     const policySha256 = computePolicySha256();
+    // One random HMAC key + opaque scope id for this ENTIRE scenario matrix invocation (correction
+    // 2) -- shared by every cell (all repetitions, both conditions) so they remain comparable to
+    // each other via scenarioHardGate's own cross-cell consensus check; never persisted.
+    const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = generateAmbientProfileScope();
     const records = [];
     const conditionResults = [];
     for (const cell of matrix.cellResults) {
@@ -1967,7 +2123,7 @@ async function cmdRun(args) {
         projectAlias: scenario.project_alias, projectCommit: scenario.project_commit,
         projectUrl: scenario.project_url, family: scenario.family, modelRequested: model,
         privacyStatus, seed: cell.seed, orderIndex: cell.orderIndex, repetitionIndex: cell.repetitionIndex,
-        gradeResult,
+        gradeResult, ambientProfileScopeId, ambientProfileKey,
       });
       records.push(record);
       conditionResults.push(cell.conditionResult);

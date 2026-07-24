@@ -2317,7 +2317,7 @@ describe('gradeScenarioCondition -- a wrong-module attempt whose decision sideca
     const record = buildRunRecord({
       conditionResult: {
         ...cr,
-        init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash'], mcp_servers: [], permissionMode: 'dontAsk' },
+        init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash'], mcp_servers: [], permissionMode: 'dontAsk' },
         invocation: null,
         hookStats: { hookCallCount: 2, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 2 },
         byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
@@ -2328,6 +2328,7 @@ describe('gradeScenarioCondition -- a wrong-module attempt whose decision sideca
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: SCENARIO_1.policy.allowed_gradle_tasks, allowedKmpTestSubcommands: SCENARIO_1.policy.allowed_kmptest_subcommands,
       policySha256: computePolicySha256(), modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: grade,
     });
     expect(record.errors.some((e) => e.code === 'junit_evidence_capture_incomplete')).toBe(true);

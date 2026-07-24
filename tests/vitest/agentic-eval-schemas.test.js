@@ -11,7 +11,10 @@ import {
   validateScenario,
   validateTriggerQueries,
   buildAggregateGroup,
+  validateAggregateGroupKey,
   HARD_PARTITION_FIELDS,
+  CURRENT_AGGREGATE_SCHEMA,
+  canonicalStructuredValue,
 } from '../../tools/agentic-eval/schemas.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 
@@ -382,10 +385,10 @@ describe('validateRun', () => {
 // to 2 would have made validateRun() reject every historical schema:1 record at its very first
 // check. This is the fix: explicit per-version dispatch, proven both synthetically (this describe
 // block) and against the actual 8 committed files (the next describe block).
-describe('schema v1/v2/v3 dispatch (decision 6, extended for v3 -- foreign_skill_summary)', () => {
-  it('SUPPORTED_RUN_SCHEMAS accepts 1, 2, and 3; LATEST_RUN_SCHEMA is 3', () => {
-    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3]);
-    expect(LATEST_RUN_SCHEMA).toBe(3);
+describe('schema v1/v2/v3/v4 dispatch (decision 6, extended for v3 -- foreign_skill_summary, v4 -- ambient_skill_profile)', () => {
+  it('SUPPORTED_RUN_SCHEMAS accepts 1, 2, 3, and 4; LATEST_RUN_SCHEMA is 4', () => {
+    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4]);
+    expect(LATEST_RUN_SCHEMA).toBe(4);
   });
 
   it('a schema:1 record WITHOUT grading_checks/repetition_index still validates cleanly -- those fields are never required for v1', () => {
@@ -554,6 +557,127 @@ describe('schema v1/v2/v3 dispatch (decision 6, extended for v3 -- foreign_skill
       grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [1, 2] })), reason: null },
       repetition_index: 0,
       foreign_skill_summary: { rejected: 1, confirmed: 0, incomplete: 0 },
+    };
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  // ambient_skill_profile (v4-introduced field) -- mirrors the v2-without-foreign_skill_summary/
+  // v2-rejected-with-foreign_skill_summary pair above, one schema level up. Like
+  // foreign_skill_summary (and unlike grading_checks/repetition_index), applies to EVERY run_kind,
+  // never scenario-only -- always computable from any condition's init event.
+  //
+  // Review-round-2 fix: the field is now {count, scope_id, fingerprint_hmac} (3 keys, not 2) --
+  // scope_id is an opaque per-invocation UUID (never reused across separate harness invocations,
+  // making clear that fingerprint_hmac is comparable only within one invocation);
+  // fingerprint_hmac replaces the old unkeyed fingerprint_sha256 name to be honest about the new
+  // keyed-HMAC construction (see stream-parser.mjs's fingerprintAmbientSkillNames).
+  const VALID_SCOPE_ID = '11111111-2222-4333-8444-555555555555';
+
+  it('a schema:3 record WITHOUT ambient_skill_profile still validates cleanly -- the field is never required below v4', () => {
+    const run = {
+      ...baseRun({ schema: 3, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+    };
+    expect('ambient_skill_profile' in run).toBe(false);
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  it('a schema:3 record is rejected if it DOES carry ambient_skill_profile -- introduced in v4, forbidden below it', () => {
+    const run = {
+      ...baseRun({ schema: 3, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: 0, scope_id: VALID_SCOPE_ID, fingerprint_hmac: 'a'.repeat(64) },
+    };
+    const { errors, warnings } = validateRun(run);
+    expect(warnings.some((w) => w.field === 'ambient_skill_profile')).toBe(true);
+    expect(errors.some((e) => e.field === 'ambient_skill_profile')).toBe(true);
+  });
+
+  it('a schema:4 record REQUIRES ambient_skill_profile as a non-null object -- applies to EVERY run_kind, not just scenario', () => {
+    const run = {
+      ...baseRun({ schema: 4, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+    };
+    expect('ambient_skill_profile' in run).toBe(false);
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'ambient_skill_profile')).toBe(true);
+  });
+
+  it('a schema:4 record REJECTS an ambient_skill_profile with the wrong key set', () => {
+    const run = {
+      ...baseRun({ schema: 4, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: 0, fingerprint_hmac: 'a'.repeat(64) }, // missing scope_id
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'ambient_skill_profile')).toBe(true);
+  });
+
+  it('a schema:4 record REJECTS a negative or non-integer count', () => {
+    const run = {
+      ...baseRun({ schema: 4, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: -1, scope_id: VALID_SCOPE_ID, fingerprint_hmac: 'a'.repeat(64) },
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'ambient_skill_profile.count')).toBe(true);
+  });
+
+  it('a schema:4 record REJECTS a fingerprint_hmac that is not a lowercase 64-hex-char string', () => {
+    const run = {
+      ...baseRun({ schema: 4, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: 0, scope_id: VALID_SCOPE_ID, fingerprint_hmac: 'NOT-HEX' },
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'ambient_skill_profile.fingerprint_hmac')).toBe(true);
+  });
+
+  it('a schema:4 record REJECTS a scope_id that is not a well-formed UUID string', () => {
+    const run = {
+      ...baseRun({ schema: 4, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: 0, scope_id: 'not-a-uuid', fingerprint_hmac: 'a'.repeat(64) },
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'ambient_skill_profile.scope_id')).toBe(true);
+  });
+
+  it('a fully well-formed schema:4 calibration record (no ambient skills -- the common case) validates cleanly', () => {
+    const run = {
+      ...baseRun({ schema: 4, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: 0, scope_id: VALID_SCOPE_ID, fingerprint_hmac: 'e'.repeat(64) },
+    };
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  it('a fully well-formed schema:4 scenario record (a real shared-ambient-skill count) validates cleanly', () => {
+    const run = {
+      ...baseRun({ schema: 4, run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'kampkit-android-host-test-discovery' }),
+      grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [1, 2] })), reason: null },
+      repetition_index: 0,
+      foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 },
+      ambient_skill_profile: { count: 1, scope_id: VALID_SCOPE_ID, fingerprint_hmac: 'f'.repeat(64) },
     };
     const { errors } = validateRun(run);
     expect(errors).toEqual([]);
@@ -1257,6 +1381,44 @@ describe('validateScenario', () => {
   });
 });
 
+// canonicalStructuredValue (review-round-2 fix): a bare JSON.stringify is NOT canonical w.r.t.
+// object key insertion order -- {a:1,b:2} and {b:2,a:1} serialize to different strings despite
+// being semantically identical. This recursively sorts object keys at every nesting level (arrays
+// keep their own order/positional identity -- only OBJECT keys are order-independent) so
+// partitionFieldKey/aggregate.mjs's own bucketing can use ONE shared, genuinely canonical
+// serializer in both places, instead of two independently-drifting notions of "the same value".
+describe('canonicalStructuredValue -- recursively sorted, order-independent structured serialization', () => {
+  it('primitives pass through unchanged', () => {
+    expect(canonicalStructuredValue('x')).toBe('x');
+    expect(canonicalStructuredValue(1)).toBe(1);
+    expect(canonicalStructuredValue(null)).toBeNull();
+  });
+
+  it('object key order does not affect the canonical form', () => {
+    const a = canonicalStructuredValue({ count: 1, fingerprint_hmac: 'x' });
+    const b = canonicalStructuredValue({ fingerprint_hmac: 'x', count: 1 });
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+
+  it('recurses into nested objects, not just the top level', () => {
+    const a = canonicalStructuredValue({ outer: { z: 1, a: 2 } });
+    const b = canonicalStructuredValue({ outer: { a: 2, z: 1 } });
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+
+  it('arrays keep their own positional order -- only object keys are reordered', () => {
+    const a = canonicalStructuredValue(['x', 'y']);
+    const b = canonicalStructuredValue(['y', 'x']);
+    expect(JSON.stringify(a)).not.toBe(JSON.stringify(b));
+  });
+
+  it('genuinely different values still produce different canonical serializations', () => {
+    const a = canonicalStructuredValue({ count: 1 });
+    const b = canonicalStructuredValue({ count: 2 });
+    expect(JSON.stringify(a)).not.toBe(JSON.stringify(b));
+  });
+});
+
 describe('buildAggregateGroup -- Fairness Contract as code', () => {
   function run(overrides = {}) {
     return {
@@ -1269,6 +1431,15 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
       daemon_policy: 'disabled-via-gradle-user-home-properties', env_allowlist_profile: 'narrow',
       skill_invoked: { value: false, reason: null }, success: { value: true, reason: null },
       expected_outcome_matched: { value: true, reason: null },
+      // schema:4 + a well-formed ambient_skill_profile/policy_allowed_* by default -- matches what
+      // a REAL current buildRunRecord() output always carries (review-round-2 fix: these three
+      // fields are now genuinely REQUIRED for a scenario+eligible record to aggregate at all, so a
+      // shared default that leaves them `undefined` is no longer a realistic baseline -- individual
+      // tests below override only the ONE field they're specifically exercising).
+      schema: 4,
+      policy_allowed_gradle_tasks: ['build'],
+      policy_allowed_kmptest_subcommands: ['doctor'],
+      ambient_skill_profile: { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) },
       ...overrides,
     };
   }
@@ -1406,12 +1577,94 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
     // schema (round-5 audit finding): without this, aggregate could silently fold schema:2
     // evidence (no foreign_skill_summary) together with schema:3 evidence (has it).
     expect(HARD_PARTITION_FIELDS).toContain('schema');
-    expect(HARD_PARTITION_FIELDS.length).toBe(17);
+    // ambient_skill_profile (ambient-skill-profile fix): without this, aggregate could silently
+    // fold two schema:4 runs together even when a Claude Code version bump changed the bundled-
+    // skill set between them -- `schema` alone only guards cross-SCHEMA-VERSION mixing, not two
+    // same-version runs with genuinely different measured ambient profiles.
+    expect(HARD_PARTITION_FIELDS).toContain('ambient_skill_profile');
+    expect(HARD_PARTITION_FIELDS.length).toBe(18);
   });
 
   it('refuses to mix schema within one aggregate group -- a schema:2 record (no foreign_skill_summary) must never fold in with a schema:3 record (has it)', () => {
     const { errors } = buildAggregateGroup([run({ run_id: 'r1', schema: 2 }), run({ run_id: 'r2', schema: 3 })]);
     expect(errors.some((e) => e.field === 'schema')).toBe(true);
+  });
+
+  it('refuses to mix ambient_skill_profile within one aggregate group -- two runs with genuinely different ambient counts/fingerprints must never fold together', () => {
+    const { errors } = buildAggregateGroup([
+      run({ run_id: 'r1', ambient_skill_profile: { count: 0, scope_id: 'a'.repeat(8) + '-aaaa-4aaa-8aaa-' + 'a'.repeat(12), fingerprint_hmac: 'a'.repeat(64) } }),
+      run({ run_id: 'r2', ambient_skill_profile: { count: 1, scope_id: 'b'.repeat(8) + '-bbbb-4bbb-8bbb-' + 'b'.repeat(12), fingerprint_hmac: 'b'.repeat(64) } }),
+    ]);
+    expect(errors.some((e) => e.field === 'ambient_skill_profile')).toBe(true);
+  });
+
+  // Regression coverage mirroring the identical policy_allowed_gradle_tasks precedent below: a
+  // plain `new Set(runs.map(r => r[f]))` compares OBJECT values by reference, so two runs with a
+  // structurally identical ambient_skill_profile as two separate object instances would be
+  // spuriously flagged as "mixed" without partitionFieldKey's object-vs-reference generalization.
+  it('does NOT mix two runs whose ambient_skill_profile is structurally identical but separate object instances', () => {
+    const scopeId = 'c'.repeat(8) + '-cccc-4ccc-8ccc-' + 'c'.repeat(12);
+    const { errors, group } = buildAggregateGroup([
+      run({ run_id: 'r1', ambient_skill_profile: { count: 1, scope_id: scopeId, fingerprint_hmac: 'c'.repeat(64) } }),
+      run({ run_id: 'r2', ambient_skill_profile: { count: 1, scope_id: scopeId, fingerprint_hmac: 'c'.repeat(64) } }),
+    ]);
+    expect(errors.filter((e) => e.field === 'ambient_skill_profile')).toEqual([]);
+    expect(group.run_count).toBe(2);
+  });
+
+  // Review-round-2 finding (P2): JSON.stringify is NOT canonical w.r.t. object key insertion
+  // order -- {count,fingerprint_hmac} and {fingerprint_hmac,count} (same values, different key
+  // order) previously produced two DIFFERENT serialized strings, spuriously splitting two
+  // semantically identical profiles into separate groups. partitionFieldKey now recursively sorts
+  // object keys before stringifying (canonicalStructuredValue), independent of insertion order.
+  it('does NOT mix two runs whose ambient_skill_profile has the SAME values in a DIFFERENT key order', () => {
+    const scopeId = 'd'.repeat(8) + '-dddd-4ddd-8ddd-' + 'd'.repeat(12);
+    const { errors, group } = buildAggregateGroup([
+      run({ run_id: 'r1', ambient_skill_profile: { count: 1, scope_id: scopeId, fingerprint_hmac: 'd'.repeat(64) } }),
+      run({ run_id: 'r2', ambient_skill_profile: { fingerprint_hmac: 'd'.repeat(64), scope_id: scopeId, count: 1 } }),
+    ]);
+    expect(errors.filter((e) => e.field === 'ambient_skill_profile')).toEqual([]);
+    expect(group.run_count).toBe(2);
+  });
+
+  // Review-round-2 finding (P1): two real schema:3 records (predating ambient_skill_profile)
+  // previously aggregated with ZERO errors because `undefined === undefined` "agreed" -- but the
+  // resulting group_key SILENTLY LOSES the key entirely once JSON-round-tripped (a real consequence
+  // of ANY committed/printed aggregate output), which then fails validateAggregateGroupKey against
+  // its own contract. Fixed at the source: a benchmark-eligible scenario record missing
+  // ambient_skill_profile entirely (schema<4) is now explicitly refused from aggregation, exactly
+  // like the existing project_commit/model_resolved/etc. completeness-matrix fields.
+  it('refuses to aggregate benchmark-eligible schema<4 scenario records -- their ambient profile is genuinely unknown, not "agreeing on absence"', () => {
+    for (const schema of [1, 2, 3]) {
+      // A real schema<4 record never carries this field at all -- explicitly undefined here
+      // (overriding run()'s own realistic schema:4 default) to match that real shape exactly.
+      const { errors, group } = buildAggregateGroup([
+        run({ run_id: 'r1', schema, ambient_skill_profile: undefined }),
+        run({ run_id: 'r2', schema, ambient_skill_profile: undefined }),
+      ]);
+      expect(errors.some((e) => e.field === 'ambient_skill_profile')).toBe(true);
+      expect(group).toBeNull();
+    }
+  });
+
+  // Direct proof of the round-trip failure mode the above fix closes -- a successful group's OWN
+  // group_key must survive JSON.stringify/JSON.parse and still satisfy validateAggregateGroupKey.
+  it('a successful group_key survives a real JSON round-trip and still validates against its own key contract', () => {
+    const scopeId = 'e'.repeat(8) + '-eeee-4eee-8eee-' + 'e'.repeat(12);
+    const { errors, group } = buildAggregateGroup([
+      run({ run_id: 'r1', schema: 4, ambient_skill_profile: { count: 0, scope_id: scopeId, fingerprint_hmac: 'e'.repeat(64) } }),
+      run({ run_id: 'r2', schema: 4, ambient_skill_profile: { count: 0, scope_id: scopeId, fingerprint_hmac: 'e'.repeat(64) } }),
+    ]);
+    expect(errors).toEqual([]);
+    const roundTripped = JSON.parse(JSON.stringify(group.group_key));
+    expect(validateAggregateGroupKey(roundTripped)).toEqual([]);
+  });
+
+  // group_key's own SHAPE changed (gained ambient_skill_profile) -- CURRENT_AGGREGATE_SCHEMA must
+  // reflect that, mirroring the exact discipline already applied to LATEST_RUN_SCHEMA whenever a
+  // run record's own shape changes.
+  it('CURRENT_AGGREGATE_SCHEMA is 2 -- group_key gained a field (ambient_skill_profile) and must be versioned', () => {
+    expect(CURRENT_AGGREGATE_SCHEMA).toBe(2);
   });
 
   it('refuses to mix policy_allowed_gradle_tasks within one aggregate group (a materially different command policy)', () => {

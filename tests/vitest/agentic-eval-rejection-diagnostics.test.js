@@ -49,6 +49,7 @@ function record(overrides = {}) {
     platform: 'linux',
     privacy_status: 'public',
     foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+    ambient_skill_profile: { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) },
     ...overrides,
   };
 }
@@ -74,6 +75,15 @@ function scenarioRecord(overrides = {}) {
     ...overrides,
   });
 }
+
+// REJECTION_DIAGNOSTICS_SCHEMA 1 -> 2 (correction 6): the row's own shape changed (gained
+// per-cell ambient_skill_profile + top-level ambient_profile_matrix_ok) -- versioned exactly like
+// every other schema in this harness whenever its own shape changes. No historical committed
+// rejection-diagnostics files exist (the whole directory is local-only/gitignored by design), so
+// this is a plain bump, never a dual-version dispatch.
+it('REJECTION_DIAGNOSTICS_SCHEMA is 2 -- the row gained fields and must be versioned', () => {
+  expect(REJECTION_DIAGNOSTICS_SCHEMA).toBe(2);
+});
 
 describe('buildRejectionDiagnostics -- pure construction', () => {
   it('builds a committed record with the closed field set, and a local companion with extra foreign_skill_names', () => {
@@ -113,6 +123,63 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
     const b = record({ run_id: 'calibration-current-skill-cccc3333', condition: 'current-skill', foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 } });
     const { committed } = buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } });
     expect(committed.foreign_skill_summary).toEqual({ rejected: 2, confirmed: 1, incomplete: 1 });
+  });
+
+  // ambient_skill_profile per cell (correction 6): read directly off each record's OWN field
+  // (buildRunRecord already populates it, exactly like foreign_skill_summary) -- never
+  // recomputed, never defaulted away.
+  it('carries each cell\'s own ambient_skill_profile through unchanged, read directly off the record', () => {
+    const profileA = { count: 1, scope_id: '11111111-1111-4111-8111-111111111111', fingerprint_hmac: 'a'.repeat(64) };
+    const profileB = { count: 0, scope_id: '11111111-1111-4111-8111-111111111111', fingerprint_hmac: 'b'.repeat(64) };
+    const a = record({ ambient_skill_profile: profileA });
+    const b = record({ run_id: 'calibration-current-skill-llll4444', condition: 'current-skill', ambient_skill_profile: profileB });
+    const { committed } = buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } });
+    expect(committed.cells[0].ambient_skill_profile).toEqual(profileA);
+    expect(committed.cells[1].ambient_skill_profile).toEqual(profileB);
+  });
+
+  // ambient_profile_matrix_ok (correction 6): optional param, defaults to null (calibration/smoke
+  // never compute a matrix consensus) -- scenario's own call site passes the real computed value.
+  it('ambient_profile_matrix_ok defaults to null when the caller omits it', () => {
+    const a = record();
+    const { committed } = buildRejectionDiagnostics({ runKind: 'calibration', records: [a], failedChecksByRunId: { [a.run_id]: [] } });
+    expect(committed.ambient_profile_matrix_ok).toBeNull();
+  });
+
+  it('ambient_profile_matrix_ok carries the real value the caller passes (scenario\'s own use)', () => {
+    const a = scenarioRecord({ run_id: 'scenario-no-skill-mmmm5555' });
+    const { committed } = buildRejectionDiagnostics({ runKind: 'scenario', records: [a], failedChecksByRunId: { [a.run_id]: ['ambientProfileMatrixOk'] }, ambientProfileMatrixOk: false });
+    expect(committed.ambient_profile_matrix_ok).toBe(false);
+  });
+
+  // Mandatory RED->GREEN reproduction (review-round-2, correction 6): "rejected profile mismatch
+  // is diagnosable from the structured sidecar" -- a rejection diagnostic for a genuine
+  // cross-cell ambient-profile mismatch must let a human actually SEE the mismatch: the top-level
+  // ambient_profile_matrix_ok:false flag, PLUS each cell's own distinct ambient_skill_profile
+  // (count/scope_id/fingerprint_hmac) preserved side by side -- never collapsed, averaged, or
+  // dropped. Two cells with deliberately DIFFERENT profiles here, standing in for what
+  // scenarioHardGate would have computed for a real mismatched matrix.
+  it('a genuine cross-cell mismatch is fully diagnosable: ambient_profile_matrix_ok:false plus each cell\'s own distinct ambient_skill_profile, side by side', () => {
+    const profileWithRun = { count: 1, scope_id: '22222222-2222-4222-8222-222222222222', fingerprint_hmac: 'a'.repeat(64) };
+    const profileWithRunAndReview = { count: 2, scope_id: '22222222-2222-4222-8222-222222222222', fingerprint_hmac: 'b'.repeat(64) };
+    const cellClean = scenarioRecord({ run_id: 'scenario-no-skill-nnnn6666', ambient_skill_profile: profileWithRun });
+    const cellDrifted = scenarioRecord({ run_id: 'scenario-no-skill-oooo7777', ambient_skill_profile: profileWithRunAndReview });
+    const { committed } = buildRejectionDiagnostics({
+      runKind: 'scenario',
+      records: [cellClean, cellDrifted],
+      failedChecksByRunId: { [cellClean.run_id]: ['ambientProfileMatrixOk'], [cellDrifted.run_id]: ['ambientProfileMatrixOk'] },
+      ambientProfileMatrixOk: false,
+    });
+    expect(committed.ambient_profile_matrix_ok).toBe(false);
+    // Both cells' own profiles survive independently and visibly differ -- a human reading this
+    // diagnostic can directly see WHY the consensus failed (different count AND fingerprint),
+    // not just that it did.
+    expect(committed.cells[0].ambient_skill_profile).toEqual(profileWithRun);
+    expect(committed.cells[1].ambient_skill_profile).toEqual(profileWithRunAndReview);
+    expect(committed.cells[0].ambient_skill_profile.count).not.toBe(committed.cells[1].ambient_skill_profile.count);
+    expect(committed.cells[0].ambient_skill_profile.fingerprint_hmac).not.toBe(committed.cells[1].ambient_skill_profile.fingerprint_hmac);
+    // Still schema-valid end to end -- the strongest proof this shape is real, not just asserted.
+    expect(validateRejectionRow(committed).errors).toEqual([]);
   });
 
   it('includes every cell, not only ones with failed_checks -- scenario batches need the whole matrix as context', () => {
@@ -199,7 +266,11 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
       project_url: 'https://github.com/example/kampkit', seed: 7, policy_sha256: 'b'.repeat(64),
       platform: 'linux', privacy_status: 'redacted-private',
     });
-    const { committed, local } = buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: ['toolResultsCompleteOk'], [b.run_id]: [] } });
+    // ambientProfileMatrixOk (round-3 audit finding): a real scenario diagnostic ALWAYS carries a
+    // real boolean here (cli.mjs's finalizeAndWriteMatrixRecords always passes gate.ambientProfileMatrixOk,
+    // never leaves the default) -- true, and coherent with neither cell's failed_checks below
+    // flagging 'ambientProfileMatrixOk', matching validateAmbientProfileMatrixOk's own coherence rule.
+    const { committed, local } = buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: ['toolResultsCompleteOk'], [b.run_id]: [] }, ambientProfileMatrixOk: true });
     expect(committed.scenario_id).toBe('kampkit-android-host-test-discovery');
     expect(committed.project_alias).toBe('kampkit');
     expect(committed.project_commit).toBe('d'.repeat(40));
@@ -223,9 +294,11 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
 });
 
 describe('validateRejectionRow -- schema validation', () => {
+  const AMBIENT_PROFILE_FIXTURE = { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) };
+
   function validRow(overrides = {}) {
-    const cellA = { run_id: 'r1', condition: 'no-skill', repetition_index: null, order_index: null, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 } };
-    const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 } };
+    const cellA = { run_id: 'r1', condition: 'no-skill', repetition_index: null, order_index: null, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE };
+    const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE };
     return {
       schema: REJECTION_DIAGNOSTICS_SCHEMA,
       rejection_id: '11111111-1111-1111-1111-111111111111',
@@ -245,6 +318,9 @@ describe('validateRejectionRow -- schema validation', () => {
       privacy_status: 'public',
       cells: [cellA, cellB],
       foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 },
+      // ambient_profile_matrix_ok (review-round-2 fix): null for calibration/smoke (no matrix
+      // consensus concept -- see cli.mjs's scenarioHardGate), a real boolean for scenario.
+      ambient_profile_matrix_ok: null,
       ...overrides,
     };
   }
@@ -298,6 +374,183 @@ describe('validateRejectionRow -- schema validation', () => {
     row.foreign_skill_summary = { rejected: -1, confirmed: 1, incomplete: 0 };
     const { errors } = validateRejectionRow(row);
     expect(errors.some((e) => e.field === 'foreign_skill_summary.rejected')).toBe(true);
+  });
+
+  // ambient_skill_profile per-cell (review-round-2 fix, correction 6): mirrors
+  // foreign_skill_summary's own validation coverage one field over -- every rejected batch now
+  // carries each cell's OWN profile validity/count/opaque-scope-fingerprint, never the raw skill
+  // names (those stay local-tier-only, exactly like foreign_skill_names already does).
+  describe('ambient_skill_profile per cell + ambient_profile_matrix_ok (correction 6)', () => {
+    it('accepts the well-formed default cleanly', () => {
+      const { errors } = validateRejectionRow(validRow());
+      expect(errors.filter((e) => e.field.includes('ambient_skill_profile') || e.field === 'ambient_profile_matrix_ok')).toEqual([]);
+    });
+
+    it('rejects a missing ambient_skill_profile on a cell', () => {
+      const row = validRow();
+      delete row.cells[0].ambient_skill_profile;
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].ambient_skill_profile')).toBe(true);
+    });
+
+    it('rejects an unrecognized field nested inside a cell\'s ambient_skill_profile (closed key set)', () => {
+      const row = validRow();
+      row.cells[0] = { ...row.cells[0], ambient_skill_profile: { ...row.cells[0].ambient_skill_profile, extra: 1 } };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].ambient_skill_profile.extra')).toBe(true);
+    });
+
+    it('rejects a negative count in a cell\'s ambient_skill_profile', () => {
+      const row = validRow();
+      row.cells[0] = { ...row.cells[0], ambient_skill_profile: { ...row.cells[0].ambient_skill_profile, count: -1 } };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].ambient_skill_profile.count')).toBe(true);
+    });
+
+    it('rejects a malformed scope_id in a cell\'s ambient_skill_profile', () => {
+      const row = validRow();
+      row.cells[0] = { ...row.cells[0], ambient_skill_profile: { ...row.cells[0].ambient_skill_profile, scope_id: 'not-a-uuid' } };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].ambient_skill_profile.scope_id')).toBe(true);
+    });
+
+    it('rejects a malformed fingerprint_hmac in a cell\'s ambient_skill_profile', () => {
+      const row = validRow();
+      row.cells[0] = { ...row.cells[0], ambient_skill_profile: { ...row.cells[0].ambient_skill_profile, fingerprint_hmac: 'not-hex' } };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].ambient_skill_profile.fingerprint_hmac')).toBe(true);
+    });
+
+    it('never carries a raw skill name anywhere in the committed shape -- count/scope_id/fingerprint_hmac only', () => {
+      const { errors } = validateRejectionRow(validRow());
+      expect(errors).toEqual([]);
+      expect(JSON.stringify(validRow())).not.toMatch(/"run"|"review"/);
+    });
+
+    // Builds a genuinely run_kind:'scenario'-shaped row (real project_alias/project_commit/seed,
+    // integer repetition_index/order_index on every cell -- mirrors the existing
+    // "run_kind-specific provenance shape" describe block's own scenario overrides below) so
+    // ambient_profile_matrix_ok's scenario-side rules are exercised on a row that is ACTUALLY
+    // scenario-shaped, not merely a calibration row with one field overridden.
+    function scenarioShapedValidRow(overrides = {}) {
+      const row = validRow({
+        run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery',
+        project_alias: 'kampkit', project_commit: 'd'.repeat(40), seed: 5,
+        ambient_profile_matrix_ok: true,
+      });
+      row.cells = row.cells.map((c, i) => ({ ...c, repetition_index: 0, order_index: i }));
+      return { ...row, ...overrides };
+    }
+
+    it('ambient_profile_matrix_ok accepts null for calibration', () => {
+      const { errors } = validateRejectionRow({ ...validRow(), ambient_profile_matrix_ok: null });
+      expect(errors.filter((e) => e.field === 'ambient_profile_matrix_ok')).toEqual([]);
+    });
+
+    it('ambient_profile_matrix_ok accepts null for smoke', () => {
+      const row = validRow({ run_kind: 'smoke', scenario_id: 'smoke-explicit-invocation', project_alias: 'kampkit', project_commit: 'd'.repeat(40), ambient_profile_matrix_ok: null });
+      const { errors } = validateRejectionRow(row);
+      expect(errors.filter((e) => e.field === 'ambient_profile_matrix_ok')).toEqual([]);
+    });
+
+    // Round-3 audit finding (CodeRabbit Major thread on commit 45e3522, unresolved until this fix):
+    // this test's own title previously claimed to cover "a real boolean (scenario)", but only ever
+    // overrode ambient_profile_matrix_ok on top of validRow()'s CALIBRATION default -- so it
+    // actually asserted a CALIBRATION row carrying a real boolean validated cleanly. Reproduced
+    // directly against the pre-fix validator before this correction. Now correctly a rejection:
+    // calibration requires EXACTLY null, no matrix/consensus concept applies to a plain A/B pair.
+    it('rejects a non-null ambient_profile_matrix_ok on a calibration row', () => {
+      const { errors } = validateRejectionRow({ ...validRow(), ambient_profile_matrix_ok: false });
+      expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok' && e.message.includes("must be null for run_kind:'calibration'"))).toBe(true);
+    });
+
+    it('ambient_profile_matrix_ok accepts a real boolean on a genuinely scenario-shaped row', () => {
+      const { errors } = validateRejectionRow(scenarioShapedValidRow({ ambient_profile_matrix_ok: true }));
+      expect(errors.filter((e) => e.field === 'ambient_profile_matrix_ok')).toEqual([]);
+    });
+
+    it('rejects a null ambient_profile_matrix_ok on a genuinely scenario-shaped row', () => {
+      const { errors } = validateRejectionRow(scenarioShapedValidRow({ ambient_profile_matrix_ok: null }));
+      expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok' && e.message.includes("must be a boolean for run_kind:'scenario'"))).toBe(true);
+    });
+
+    it('rejects a non-boolean, non-null ambient_profile_matrix_ok on a calibration row', () => {
+      const { errors } = validateRejectionRow({ ...validRow(), ambient_profile_matrix_ok: 'yes' });
+      expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok')).toBe(true);
+    });
+
+    it('rejects a non-boolean, non-null ambient_profile_matrix_ok on a scenario row', () => {
+      const { errors } = validateRejectionRow(scenarioShapedValidRow({ ambient_profile_matrix_ok: 'yes' }));
+      expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok')).toBe(true);
+    });
+
+    it('rejects a missing ambient_profile_matrix_ok key entirely (closed, required key set)', () => {
+      const row = validRow();
+      delete row.ambient_profile_matrix_ok;
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok')).toBe(true);
+    });
+
+    // Round-3 audit finding: "el diagnóstico no valida la coherencia interna del perfil" -- prior
+    // to this fix, cells[].ambient_skill_profile was validated ONLY in isolation per cell; nothing
+    // related cells to EACH OTHER or to the batch's own top-level ambient_profile_matrix_ok claim.
+    // Reproduced directly: a hand-built row with ambient_profile_matrix_ok:true but two DIFFERENT
+    // scope_id/count/fingerprint_hmac values across its cells validated with zero errors.
+    describe('cross-cell coherence (round-3 audit finding)', () => {
+      it('accepts a genuinely coherent scenario row unchanged (same scope_id, identical profiles, matrix_ok:true, no cell flags it)', () => {
+        const { errors } = validateRejectionRow(scenarioShapedValidRow());
+        expect(errors).toEqual([]);
+      });
+
+      it('rejects matrix_ok:true when cells disagree on scope_id', () => {
+        const row = scenarioShapedValidRow();
+        row.cells[1] = { ...row.cells[1], ambient_skill_profile: { ...row.cells[1].ambient_skill_profile, scope_id: '99999999-9999-4999-8999-999999999999' } };
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'cells' && e.message.includes('exactly one ambient_skill_profile.scope_id'))).toBe(true);
+      });
+
+      it('rejects matrix_ok:true when cells share one scope_id but disagree on count/fingerprint_hmac', () => {
+        const row = scenarioShapedValidRow();
+        row.cells[1] = { ...row.cells[1], ambient_skill_profile: { ...row.cells[1].ambient_skill_profile, count: 99, fingerprint_hmac: 'f'.repeat(64) } };
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok' && e.message.includes('differs across cells'))).toBe(true);
+      });
+
+      it('does NOT require identical profiles when matrix_ok:false -- a single malformed cell can fail the matrix while ambient names coincidentally still differ', () => {
+        const row = scenarioShapedValidRow({ ambient_profile_matrix_ok: false });
+        row.cells = row.cells.map((c) => ({ ...c, failed_checks: ['ambientProfileMatrixOk'] }));
+        row.cells[1] = { ...row.cells[1], ambient_skill_profile: { ...row.cells[1].ambient_skill_profile, count: 99, fingerprint_hmac: 'f'.repeat(64) } };
+        const { errors } = validateRejectionRow(row);
+        expect(errors.filter((e) => e.field === 'ambient_profile_matrix_ok')).toEqual([]);
+      });
+
+      // THE USER'S OWN REPRODUCTION, verbatim: a scenario diagnostic with ambient_profile_matrix_ok
+      // false must show that specific failure attributed on EVERY cell's own failed_checks -- it is
+      // one shared matrix-wide value (cli.mjs's scenarioCellIntegrityOk threads the identical
+      // boolean into every cell), so it can never legitimately fail for only some cells.
+      it('rejects matrix_ok:false when not every cell shows ambientProfileMatrixOk in its own failed_checks', () => {
+        const row = scenarioShapedValidRow({ ambient_profile_matrix_ok: false });
+        row.cells[0] = { ...row.cells[0], failed_checks: ['ambientProfileMatrixOk'] };
+        // row.cells[1].failed_checks stays [] -- the exact "rejection with no recorded cause on
+        // this cell" gap the user's own reproduction demonstrated.
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok' && e.message.includes('only 1/2 cells show'))).toBe(true);
+      });
+
+      it('rejects matrix_ok:true when some cell still shows ambientProfileMatrixOk in its own failed_checks (contradicts the claimed agreement)', () => {
+        const row = scenarioShapedValidRow({ ambient_profile_matrix_ok: true });
+        row.cells[0] = { ...row.cells[0], failed_checks: ['ambientProfileMatrixOk'] };
+        const { errors } = validateRejectionRow(row);
+        expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok' && e.message.includes('contradicts the batch-wide agreement'))).toBe(true);
+      });
+
+      it('never applies the failed_checks-coherence rule to calibration/smoke (ambient_profile_matrix_ok is always null there, not a boolean)', () => {
+        const row = validRow(); // calibration, ambient_profile_matrix_ok: null by default
+        row.cells = row.cells.map((c) => ({ ...c, failed_checks: [] }));
+        const { errors } = validateRejectionRow(row);
+        expect(errors.filter((e) => e.field === 'ambient_profile_matrix_ok')).toEqual([]);
+      });
+    });
   });
 
   it('rejects a top-level foreign_skill_summary that does not equal the sum across cells[]', () => {
