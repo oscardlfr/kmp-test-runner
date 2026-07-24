@@ -382,10 +382,10 @@ describe('validateRun', () => {
 // to 2 would have made validateRun() reject every historical schema:1 record at its very first
 // check. This is the fix: explicit per-version dispatch, proven both synthetically (this describe
 // block) and against the actual 8 committed files (the next describe block).
-describe('schema v1/v2/v3 dispatch (decision 6, extended for v3 -- foreign_skill_summary)', () => {
-  it('SUPPORTED_RUN_SCHEMAS accepts 1, 2, and 3; LATEST_RUN_SCHEMA is 3', () => {
-    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3]);
-    expect(LATEST_RUN_SCHEMA).toBe(3);
+describe('schema v1/v2/v3/v4 dispatch (decision 6, extended for v3 -- foreign_skill_summary, v4 -- ambient_skill_profile)', () => {
+  it('SUPPORTED_RUN_SCHEMAS accepts 1, 2, 3, and 4; LATEST_RUN_SCHEMA is 4', () => {
+    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4]);
+    expect(LATEST_RUN_SCHEMA).toBe(4);
   });
 
   it('a schema:1 record WITHOUT grading_checks/repetition_index still validates cleanly -- those fields are never required for v1', () => {
@@ -554,6 +554,107 @@ describe('schema v1/v2/v3 dispatch (decision 6, extended for v3 -- foreign_skill
       grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [1, 2] })), reason: null },
       repetition_index: 0,
       foreign_skill_summary: { rejected: 1, confirmed: 0, incomplete: 0 },
+    };
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  // ambient_skill_profile (v4-introduced field) -- mirrors the v2-without-foreign_skill_summary/
+  // v2-rejected-with-foreign_skill_summary pair above, one schema level up. Like
+  // foreign_skill_summary (and unlike grading_checks/repetition_index), applies to EVERY run_kind,
+  // never scenario-only -- always computable from any condition's init event.
+  it('a schema:3 record WITHOUT ambient_skill_profile still validates cleanly -- the field is never required below v4', () => {
+    const run = {
+      ...baseRun({ schema: 3, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+    };
+    expect('ambient_skill_profile' in run).toBe(false);
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  it('a schema:3 record is rejected if it DOES carry ambient_skill_profile -- introduced in v4, forbidden below it', () => {
+    const run = {
+      ...baseRun({ schema: 3, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: 0, fingerprint_sha256: 'a'.repeat(64) },
+    };
+    const { errors, warnings } = validateRun(run);
+    expect(warnings.some((w) => w.field === 'ambient_skill_profile')).toBe(true);
+    expect(errors.some((e) => e.field === 'ambient_skill_profile')).toBe(true);
+  });
+
+  it('a schema:4 record REQUIRES ambient_skill_profile as a non-null object -- applies to EVERY run_kind, not just scenario', () => {
+    const run = {
+      ...baseRun({ schema: 4, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+    };
+    expect('ambient_skill_profile' in run).toBe(false);
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'ambient_skill_profile')).toBe(true);
+  });
+
+  it('a schema:4 record REJECTS an ambient_skill_profile with the wrong key set', () => {
+    const run = {
+      ...baseRun({ schema: 4, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: 0 }, // missing fingerprint_sha256
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'ambient_skill_profile')).toBe(true);
+  });
+
+  it('a schema:4 record REJECTS a negative or non-integer count', () => {
+    const run = {
+      ...baseRun({ schema: 4, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: -1, fingerprint_sha256: 'a'.repeat(64) },
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'ambient_skill_profile.count')).toBe(true);
+  });
+
+  it('a schema:4 record REJECTS a fingerprint_sha256 that is not a lowercase 64-hex-char string', () => {
+    const run = {
+      ...baseRun({ schema: 4, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: 0, fingerprint_sha256: 'NOT-HEX' },
+    };
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === 'ambient_skill_profile.fingerprint_sha256')).toBe(true);
+  });
+
+  it('a fully well-formed schema:4 calibration record (no ambient skills -- the common case) validates cleanly', () => {
+    const run = {
+      ...baseRun({ schema: 4, run_kind: 'calibration' }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: 0, fingerprint_sha256: 'e'.repeat(64) },
+    };
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  it('a fully well-formed schema:4 scenario record (a real shared-ambient-skill count) validates cleanly', () => {
+    const run = {
+      ...baseRun({ schema: 4, run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'kampkit-android-host-test-discovery' }),
+      grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [1, 2] })), reason: null },
+      repetition_index: 0,
+      foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 },
+      ambient_skill_profile: { count: 1, fingerprint_sha256: 'f'.repeat(64) },
     };
     const { errors } = validateRun(run);
     expect(errors).toEqual([]);
@@ -1406,12 +1507,38 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
     // schema (round-5 audit finding): without this, aggregate could silently fold schema:2
     // evidence (no foreign_skill_summary) together with schema:3 evidence (has it).
     expect(HARD_PARTITION_FIELDS).toContain('schema');
-    expect(HARD_PARTITION_FIELDS.length).toBe(17);
+    // ambient_skill_profile (ambient-skill-profile fix): without this, aggregate could silently
+    // fold two schema:4 runs together even when a Claude Code version bump changed the bundled-
+    // skill set between them -- `schema` alone only guards cross-SCHEMA-VERSION mixing, not two
+    // same-version runs with genuinely different measured ambient profiles.
+    expect(HARD_PARTITION_FIELDS).toContain('ambient_skill_profile');
+    expect(HARD_PARTITION_FIELDS.length).toBe(18);
   });
 
   it('refuses to mix schema within one aggregate group -- a schema:2 record (no foreign_skill_summary) must never fold in with a schema:3 record (has it)', () => {
     const { errors } = buildAggregateGroup([run({ run_id: 'r1', schema: 2 }), run({ run_id: 'r2', schema: 3 })]);
     expect(errors.some((e) => e.field === 'schema')).toBe(true);
+  });
+
+  it('refuses to mix ambient_skill_profile within one aggregate group -- two runs with genuinely different ambient counts/fingerprints must never fold together', () => {
+    const { errors } = buildAggregateGroup([
+      run({ run_id: 'r1', ambient_skill_profile: { count: 0, fingerprint_sha256: 'a'.repeat(64) } }),
+      run({ run_id: 'r2', ambient_skill_profile: { count: 1, fingerprint_sha256: 'b'.repeat(64) } }),
+    ]);
+    expect(errors.some((e) => e.field === 'ambient_skill_profile')).toBe(true);
+  });
+
+  // Regression coverage mirroring the identical policy_allowed_gradle_tasks precedent below: a
+  // plain `new Set(runs.map(r => r[f]))` compares OBJECT values by reference, so two runs with a
+  // structurally identical ambient_skill_profile as two separate object instances would be
+  // spuriously flagged as "mixed" without partitionFieldKey's object-vs-reference generalization.
+  it('does NOT mix two runs whose ambient_skill_profile is structurally identical but separate object instances', () => {
+    const { errors, group } = buildAggregateGroup([
+      run({ run_id: 'r1', ambient_skill_profile: { count: 1, fingerprint_sha256: 'c'.repeat(64) } }),
+      run({ run_id: 'r2', ambient_skill_profile: { count: 1, fingerprint_sha256: 'c'.repeat(64) } }),
+    ]);
+    expect(errors.filter((e) => e.field === 'ambient_skill_profile')).toEqual([]);
+    expect(group.run_count).toBe(2);
   });
 
   it('refuses to mix policy_allowed_gradle_tasks within one aggregate group (a materially different command policy)', () => {

@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-run-shared-bundled-skill-confirmed/claude -- the closest possible
+# reproduction of the real live-scenario-matrix incident that motivated the ambient-skill-profile
+# fix (see stream-parser.mjs's computeAmbientSkillProfile doc comment): a CONFIRMED invocation of
+# an ambient, bundled Claude Code skill (here "run", present in init.skills[] regardless of
+# --plugin-dir -- unlike fake-claude-run-foreign-skill-confirmed/claude's "android-gradle-helper",
+# which is never advertised anywhere and must still block promotion) must NOT be treated as
+# third-party contamination. Identical to fake-claude-run-scenario-success/claude in every other
+# respect (same Bash call, same envelope, same final answer) -- only the extra ambient-skill
+# Skill probe differs.
+#
+# The confirmed "run" probe fires ONLY in the no-skill condition, mirroring the real incident
+# exactly (regression matrix: "shared bundled skill, confirmed only in no-skill: accepted"). The
+# OTHER two acceptance permutations (confirmed in current-skill only, confirmed in both arms) are
+# covered at the unit level (agentic-eval-hard-gates.test.js) instead of via more fixture scripts
+# -- see the ambient-skill-profile design's own scope notes for why.
+write_sidecar() {
+  local kind="$1" toolUseId="$2" recordJson="$3"
+  node -e '
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const [kind, toolUseId, recordJson] = process.argv.slice(1);
+const idHash = crypto.createHash("sha256").update(toolUseId).digest("hex");
+const dir = path.join(process.env.KMP_EVAL_JUNIT_EVIDENCE_DIR, kind);
+fs.mkdirSync(dir, { recursive: true });
+fs.writeFileSync(path.join(dir, idHash + ".json"), recordJson);
+' -- "$kind" "$toolUseId" "$recordJson"
+}
+
+HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  PREV_ARG="$arg"
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
+  # The ambient bundled skill ("run") is present identically regardless of --plugin-dir (the real
+  # incident's own finding) -- current-skill's own list ALSO carries the target's own namespaced
+  # identity once loaded, exactly mirroring the real fixture's convention
+  # (agentic-eval-stream-current-skill.jsonl).
+  SKILLS='["run","kmp-test-runner:kmp-test-runner"]'
+else
+  PLUGINS='[]'
+  SKILLS='["run"]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-0001\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"dontAsk\",\"plugins\":$PLUGINS,\"skills\":$SKILLS,\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+else
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
+
+  # The extra, genuinely-ambient, genuinely-CONFIRMED "run" probe -- present ONLY in the no-skill
+  # condition, matching the real incident exactly. Must NOT block promotion: "run" is advertised
+  # in this condition's own init.skills[] above, and (mirroring the real incident) the OTHER
+  # condition's skills[] agrees on it too once the target's own identity is stripped.
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakerun1","name":"Skill","input":{"skill":"run"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake run skill body]","tool_use_id":"toolu_fakerun1","is_error":false}]}}'
+fi
+
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test parallel --module-filter :fakemod --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+write_sidecar decisions toolu_fakebash1 '{"decision":"allow","command":"kmp-test parallel --module-filter :fakemod --json"}'
+
+# Built via `node -e` (never manual bash quote-escaping) specifically so the nested JSON envelope
+# survives as a byte-exact string VALUE inside the outer transcript line -- the tool_result's own
+# `content` field must be the literal stdout text a real `kmp-test parallel --json` would have
+# printed, i.e. a JSON-encoded STRING whose PARSED value is this envelope object, not the object
+# itself inlined.
+KMP_ENVELOPE='{"tool":"kmp-test","schema_version":2,"subcommand":"parallel","version":"0.14.0","project_root":"/fake","exit_code":2,"duration_ms":21,"tests":{"total":0,"passed":0,"failed":0,"skipped":0,"individual_total":0},"modules":[],"skipped":[{"module":"fakemod","reason":"no test source set"}],"coverage":{"tool":"auto","missed_lines":null,"modules_with_kover_plugin":[],"modules_with_jacoco_plugin":[]},"errors":[{"code":"no_test_modules","message":"No modules found matching filter: :fakemod","test_type":"","caused_by_filter":true}],"warnings":[],"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true}}'
+node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{type:'tool_result',content:process.argv[1],tool_use_id:'toolu_fakebash1'}]}}))" "$KMP_ENVELOPE"
+
+# The trailing KMP_EVAL_RESULT block is what graders.mjs's structured final-answer check (check
+# 8) actually reads -- the prose above it is retained in the record for human review only, never
+# inspected for grading (see graders.mjs's own header comment for why free-prose parsing was
+# removed from the grading path entirely).
+FINAL_ANSWER='The :fakemod module has no applicable unit tests -- kmp-test reported no test modules matching that filter.
+
+KMP_EVAL_RESULT
+{"module": ":fakemod", "outcome_kind": "no_applicable_tests"}
+KMP_EVAL_RESULT_END'
+node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
+exit 0

@@ -1357,6 +1357,11 @@ describe('scenarioCellIntegrityOk', () => {
       init: {
         model: 'claude-sonnet-5-fake-resolved',
         plugins: isCurrentSkill ? KMP_TEST_RUNNER_PLUGIN : [],
+        // Mirrors the real fixture's own convention (agentic-eval-stream-current-skill.jsonl) --
+        // a current-skill init event's skills[] naturally includes the target's own namespaced
+        // identity once loaded; a no-skill one never has it. Both are well-formed, empty-after-
+        // stripping ambient profiles, matching by construction across every existing test here.
+        skills: isCurrentSkill ? ['kmp-test-runner:kmp-test-runner'] : [],
         tools: ['Bash', 'Skill'],
         mcp_servers: [],
         permissionMode: 'dontAsk',
@@ -1670,6 +1675,109 @@ describe('scenarioCellIntegrityOk', () => {
     expect(ok).toBe(true);
     expect(reason).toBeNull();
   });
+
+  // Ambient-skill-profile fix: a real live scenario run failed its hard gate because a CONFIRMED
+  // invocation of Claude Code's own bundled "run" skill (present in init.skills[] regardless of
+  // --plugin-dir) was indistinguishable from genuine third-party contamination. skillSelectionOk
+  // is now tolerant of a confirmed non-target Skill call ONLY when that exact skillArg was
+  // advertised in the matrix-wide shared ambient profile (3rd, optional constructor arg -- callers
+  // that omit it, like every test above, get the empty-Set fail-closed default, so none of those
+  // existing tests are affected).
+  describe('ambient-skill-profile tolerance (3rd, optional context argument)', () => {
+    function confirmedForeignSkillCr(skillArg, overrides = {}) {
+      return passConditionResult('no-skill', {
+        events: [
+          initEventStub(),
+          { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: skillArg } }] } },
+          { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', is_error: false, content: 'real bundled skill output' }] } },
+          resultEventStub(),
+        ],
+        ...overrides,
+      });
+    }
+
+    it('tolerates a CONFIRMED non-target Skill call when it IS a member of the shared ambient profile -- ok:true', () => {
+      const cr = confirmedForeignSkillCr('run');
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr, { sharedAmbientNames: new Set(['run']) });
+      expect(ok).toBe(true);
+      expect(reason).toBeNull();
+    });
+
+    it('still rejects a CONFIRMED non-target Skill call when it is NOT a member of the (non-empty) shared ambient profile', () => {
+      const cr = confirmedForeignSkillCr('some-unadvertised-skill');
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr, { sharedAmbientNames: new Set(['run']) });
+      expect(ok).toBe(false);
+      expect(reason).toContain('skillSelectionOk:false');
+    });
+
+    it('never tolerates it via a hardcoded "run" special-case -- a differently-named shared ambient skill is tolerated identically', () => {
+      const cr = confirmedForeignSkillCr('some-other-bundled-capability');
+      const { ok } = scenarioCellIntegrityOk(passRecord('no-skill'), cr, { sharedAmbientNames: new Set(['some-other-bundled-capability']) });
+      expect(ok).toBe(true);
+    });
+
+    it('omitting the 3rd argument entirely defaults to the empty Set (fail-closed) -- identical to the pre-fix zero-tolerance behavior', () => {
+      const cr = confirmedForeignSkillCr('run');
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr);
+      expect(ok).toBe(false);
+      expect(reason).toContain('skillSelectionOk:false');
+    });
+
+    it('ambientProfileMatrixOk defaults to true when omitted -- an isolated single-cell call is never penalized for a matrix-wide fact it cannot know', () => {
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), passConditionResult('no-skill'));
+      expect(ok).toBe(true);
+      expect(reason).toBeNull();
+    });
+
+    it('an explicit ambientProfileMatrixOk:false fails the cell even with an otherwise-clean transcript', () => {
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), passConditionResult('no-skill'), { ambientProfileMatrixOk: false });
+      expect(ok).toBe(false);
+      expect(reason).toContain('ambientProfileMatrixOk:false');
+    });
+  });
+
+  // Ambient-skill-profile fix: computeAmbientSkillProfile's own strict validation, wired into
+  // this gate as a new, independent named check (ambientSkillProfileOk) -- proven here at the
+  // gate level (not just stream-parser.mjs's own direct unit tests), since a malformed
+  // conditionResult.init.skills[] must actually block promotion, not merely be detectable.
+  describe('ambientSkillProfileOk -- init.skills[] parse/validation wired into the gate', () => {
+    function crWithSkills(skills) {
+      return passConditionResult('no-skill', { init: { ...passConditionResult('no-skill').init, skills } });
+    }
+
+    it('a well-formed (even empty) skills[] passes -- ok:true', () => {
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), crWithSkills([]));
+      expect(ok).toBe(true);
+      expect(reason).toBeNull();
+    });
+
+    it('isolates ambientSkillProfileOk -- skills present but not an array fails closed', () => {
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), crWithSkills('not-an-array'));
+      expect(ok).toBe(false);
+      expect(reason).toContain('ambientSkillProfileOk:false');
+    });
+
+    it('isolates ambientSkillProfileOk -- a non-string entry fails closed', () => {
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), crWithSkills(['run', 42]));
+      expect(ok).toBe(false);
+      expect(reason).toContain('ambientSkillProfileOk:false');
+    });
+
+    it('isolates ambientSkillProfileOk -- a duplicate entry fails closed', () => {
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), crWithSkills(['run', 'run']));
+      expect(ok).toBe(false);
+      expect(reason).toContain('ambientSkillProfileOk:false');
+    });
+
+    it('isolates ambientSkillProfileOk -- a completely missing skills key fails closed', () => {
+      const init = { ...passConditionResult('no-skill').init };
+      delete init.skills;
+      const cr = passConditionResult('no-skill', { init });
+      const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), cr);
+      expect(ok).toBe(false);
+      expect(reason).toContain('ambientSkillProfileOk:false');
+    });
+  });
 });
 
 describe('scenarioHardGate', () => {
@@ -1681,7 +1789,11 @@ describe('scenarioHardGate', () => {
     };
     const isCurrentSkill = condition === 'current-skill';
     const conditionResult = {
-      init: { plugins: isCurrentSkill ? KMP_TEST_RUNNER_PLUGIN : [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      init: {
+        plugins: isCurrentSkill ? KMP_TEST_RUNNER_PLUGIN : [],
+        skills: isCurrentSkill ? ['kmp-test-runner:kmp-test-runner'] : [],
+        tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk',
+      },
       snapshotDir: isCurrentSkill ? FAKE_SNAPSHOT_DIR : null,
       hookStats: { everyCallHooked: true, hookAllowCount: 1, hookDenyCount: 0 },
       events: [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json'), toolResultEvent('t1'), resultEventStub()],
@@ -1724,5 +1836,105 @@ describe('scenarioHardGate', () => {
     wrongAnswerCell.record.expected_outcome_matched = { value: false, reason: null };
     const { ok } = scenarioHardGate([wrongAnswerCell.record], [wrongAnswerCell.conditionResult]);
     expect(ok).toBe(true);
+  });
+
+  // Ambient-skill-profile fix (mandatory regression matrix): the real live-run incident and its
+  // fix, proven end-to-end through the real cross-cell consensus computation scenarioHardGate
+  // itself performs (never hand-passed into scenarioCellIntegrityOk, unlike the isolated unit
+  // tests above) -- every cell's own init.skills[] genuinely agrees (mirroring the real incident's
+  // shape: the bundled skill is present identically regardless of --plugin-dir), and the
+  // CONFIRMED use is proven to be tolerated regardless of which arm(s) it appears in.
+  describe('ambient-skill-profile mandatory regression matrix (real cross-cell consensus, not hand-passed)', () => {
+    function confirmedBundledSkillCell(condition, repetitionIndex, skillArg, ambientSkills) {
+      const base = cell(condition, repetitionIndex, {
+        init: {
+          plugins: condition === 'current-skill' ? KMP_TEST_RUNNER_PLUGIN : [],
+          skills: ambientSkills,
+          tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk',
+        },
+        events: [
+          initEventStub(),
+          { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 's1', input: { skill: skillArg } }] } },
+          { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 's1', is_error: false, content: 'real bundled skill output' }] } },
+          resultEventStub(),
+        ],
+      });
+      return base;
+    }
+
+    // Ambient skills present identically regardless of --plugin-dir (the real incident's shape):
+    // no-skill shows just the bundled skill; current-skill shows it PLUS the target's own
+    // namespaced identity, which strips to the identical set once computeAmbientSkillProfile
+    // removes it.
+    const AMBIENT_NO_SKILL = ['run'];
+    const AMBIENT_CURRENT_SKILL = ['run', 'kmp-test-runner:kmp-test-runner'];
+
+    it('shared bundled skill, confirmed ONLY in no-skill: accepted', () => {
+      const cells = [
+        cell('current-skill', 0, { init: { plugins: KMP_TEST_RUNNER_PLUGIN, skills: AMBIENT_CURRENT_SKILL, tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' } }),
+        confirmedBundledSkillCell('no-skill', 0, 'run', AMBIENT_NO_SKILL),
+        cell('current-skill', 1, { init: { plugins: KMP_TEST_RUNNER_PLUGIN, skills: AMBIENT_CURRENT_SKILL, tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' } }),
+        confirmedBundledSkillCell('no-skill', 1, 'run', AMBIENT_NO_SKILL),
+      ];
+      const { ok, reason } = scenarioHardGate(cells.map((c) => c.record), cells.map((c) => c.conditionResult));
+      expect(ok).toBe(true);
+      expect(reason).toBeNull();
+    });
+
+    it('shared bundled skill, confirmed in CURRENT-SKILL only: accepted', () => {
+      const cells = [
+        confirmedBundledSkillCell('current-skill', 0, 'run', AMBIENT_CURRENT_SKILL),
+        cell('no-skill', 0, { init: { plugins: [], skills: AMBIENT_NO_SKILL, tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' } }),
+        confirmedBundledSkillCell('current-skill', 1, 'run', AMBIENT_CURRENT_SKILL),
+        cell('no-skill', 1, { init: { plugins: [], skills: AMBIENT_NO_SKILL, tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' } }),
+      ];
+      const { ok, reason } = scenarioHardGate(cells.map((c) => c.record), cells.map((c) => c.conditionResult));
+      expect(ok).toBe(true);
+      expect(reason).toBeNull();
+    });
+
+    it('shared bundled skill, confirmed in BOTH arms: accepted', () => {
+      const cells = [
+        confirmedBundledSkillCell('current-skill', 0, 'run', AMBIENT_CURRENT_SKILL),
+        confirmedBundledSkillCell('no-skill', 0, 'run', AMBIENT_NO_SKILL),
+      ];
+      const { ok, reason } = scenarioHardGate(cells.map((c) => c.record), cells.map((c) => c.conditionResult));
+      expect(ok).toBe(true);
+      expect(reason).toBeNull();
+    });
+
+    it('confirmed UNADVERTISED skill (not present in ANY cell\'s ambient profile): rejected', () => {
+      const cells = [
+        cell('current-skill', 0, { init: { plugins: KMP_TEST_RUNNER_PLUGIN, skills: AMBIENT_CURRENT_SKILL, tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' } }),
+        confirmedBundledSkillCell('no-skill', 0, 'totally-unadvertised-skill', AMBIENT_NO_SKILL),
+      ];
+      const { ok, reason } = scenarioHardGate(cells.map((c) => c.record), cells.map((c) => c.conditionResult));
+      expect(ok).toBe(false);
+      expect(reason).toContain('skillSelectionOk:false');
+    });
+
+    it('ambient profiles differ between repetitions of the SAME condition: rejected -- every cell reports ambientProfileMatrixOk:false', () => {
+      const cells = [
+        cell('no-skill', 0, { init: { plugins: [], skills: ['run'], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' } }),
+        cell('no-skill', 1, { init: { plugins: [], skills: ['run', 'review'], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' } }),
+      ];
+      const { ok, reason } = scenarioHardGate(cells.map((c) => c.record), cells.map((c) => c.conditionResult));
+      expect(ok).toBe(false);
+      expect(reason).toContain('ambientProfileMatrixOk:false');
+      // Genuinely a matrix-wide fact, not attributable to either cell alone -- both cells' own
+      // ambientSkillProfileOk (their OWN list is individually well-formed) stays true.
+      expect(reason).not.toContain('ambientSkillProfileOk:false');
+    });
+
+    it('a malformed init.skills[] on just ONE cell blocks the WHOLE matrix -- that cell shows its OWN ambientSkillProfileOk:false too', () => {
+      const cells = [
+        cell('no-skill', 0, { init: { plugins: [], skills: ['run'], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' } }),
+        cell('no-skill', 1, { init: { plugins: [], skills: ['run', 'run'], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' } }), // duplicate entry
+      ];
+      const { ok, reason } = scenarioHardGate(cells.map((c) => c.record), cells.map((c) => c.conditionResult));
+      expect(ok).toBe(false);
+      expect(reason).toContain('ambientProfileMatrixOk:false');
+      expect(reason).toContain('ambientSkillProfileOk:false');
+    });
   });
 });

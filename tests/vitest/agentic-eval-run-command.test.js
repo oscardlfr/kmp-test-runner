@@ -485,6 +485,49 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
     expect(listEvidenceFiles('scenario')).toEqual([]);
   }, 30000);
 
+  // The closest possible reproduction of the real live-scenario-matrix incident that motivated the
+  // ambient-skill-profile fix (see fake-claude-run-shared-bundled-skill-confirmed/claude's own
+  // header comment): a CONFIRMED invocation of an ambient, bundled Claude Code skill ("run",
+  // present in init.skills[] regardless of --plugin-dir) is genuinely different from the
+  // -foreign-skill-confirmed fixture above -- there, "android-gradle-helper" is never advertised
+  // anywhere and must still block; here, "run" IS advertised (agreeing across every cell once the
+  // target's own identity is stripped) and must be tolerated.
+  it('a CONFIRMED ambient (ubiquitous, bundled) ["run"] Skill invocation, confirmed only in no-skill, promotes the WHOLE matrix successfully end-to-end', async () => {
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '2']), fakeClaudeEnv('run-shared-bundled-skill-confirmed'), 30000);
+    expect(result.status).toBe(0);
+    expect(result.parsed).not.toBeNull();
+    const { records } = result.parsed;
+    expect(records.length).toBe(4);
+    expect(listEvidenceFiles('scenario').length).toBe(4);
+    for (const record of records) {
+      expect(record.benchmark_eligible).toBe(true);
+      expect(record.expected_outcome_matched.value).toBe(true);
+      // ambient_skill_profile (schema v4, populated end-to-end by buildRunRecord): exactly one
+      // ambient name ("run") on every record, regardless of condition -- proving the field
+      // population works through the real subprocess path, not just in unit tests. Never the raw
+      // name itself (privacy-safe count + fingerprint only).
+      expect(record.ambient_skill_profile.count).toBe(1);
+      expect(record.ambient_skill_profile.fingerprint_sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(Object.keys(record.ambient_skill_profile).sort()).toEqual(['count', 'fingerprint_sha256']);
+      // Privacy-safe: the committed record's ambient_skill_profile is exactly {count,
+      // fingerprint_sha256} -- the raw skill name ("run") never appears anywhere in it.
+      expect(JSON.stringify(record.ambient_skill_profile)).not.toContain('run');
+    }
+    // The no-skill records are the ones that actually confirmed "run" -- foreign_skill_summary
+    // (schema v3) still records it as a real, harmless, counted event (categorized counts only,
+    // never the raw name).
+    const noSkillRecords = records.filter((r) => r.condition === 'no-skill');
+    const currentSkillRecords = records.filter((r) => r.condition === 'current-skill');
+    expect(noSkillRecords.length).toBe(2);
+    expect(currentSkillRecords.length).toBe(2);
+    for (const record of noSkillRecords) {
+      expect(record.foreign_skill_summary).toEqual({ rejected: 0, confirmed: 1, incomplete: 0 });
+    }
+    for (const record of currentSkillRecords) {
+      expect(record.foreign_skill_summary).toEqual({ rejected: 0, confirmed: 0, incomplete: 0 });
+    }
+  }, 30000);
+
   it('leaves no registered git worktree behind after a passing run (removeScenarioWorktree ran)', async () => {
     const result = await runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('run-scenario-success'), 30000);
     expect(result.status).toBe(0);

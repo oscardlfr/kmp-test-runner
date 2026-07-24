@@ -42,7 +42,7 @@ import { LATEST_RUN_SCHEMA, SUPPORTED_RUN_SCHEMAS, validateRun, validateScenario
 import { buildEvalEnv } from './env-builder.mjs';
 import { materializeCalibrationProject, materializeScenarioProject, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { buildBaseArgv } from './condition-launcher.mjs';
-import { isSkillAvailable, findForeignSkillUses, classifyForeignSkillUses, findBashToolUses, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, findTranscriptStructuralIssues, findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout, extractTokenUsage, deriveFirstUsefulSignalMs } from './stream-parser.mjs';
+import { isSkillAvailable, findForeignSkillUses, classifyForeignSkillUses, findBashToolUses, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, findTranscriptStructuralIssues, findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout, extractTokenUsage, deriveFirstUsefulSignalMs, computeAmbientSkillProfile, canonicalAmbientSkillNamesKey, fingerprintAmbientSkillNames } from './stream-parser.mjs';
 import { acquireSharedEvalResources, runSingleCondition, runScenarioMatrix, reportCleanupFailures } from './matrix-runner.mjs';
 import { gradeScenarioCondition } from './graders.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
@@ -550,6 +550,17 @@ function buildRunRecord({
     confirmed: foreignSkillUses.filter((u) => u.confirmed === true).length,
     incomplete: foreignSkillUses.filter((u) => u.resultIsError === null).length,
   };
+  // ambient_skill_profile (schema V4): a privacy-safe {count, fingerprint_sha256} summary of the
+  // init event's skills[] array with the TARGET skill's own bare/namespaced identity stripped out
+  // (computeAmbientSkillProfile, stream-parser.mjs) -- never the raw names themselves. Always
+  // computed regardless of run_kind or ambientProfile.ok: a malformed transcript still gets a
+  // real, non-null value recorded here (schema requires it non-null on every record); only
+  // scenarioCellIntegrityOk (below) actually enforces strictness on `.ok`.
+  const ambientProfile = computeAmbientSkillProfile(init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME);
+  const ambientSkillProfile = {
+    count: ambientProfile.names.size,
+    fingerprint_sha256: fingerprintAmbientSkillNames(ambientProfile.names),
+  };
   const provenance = resolveHarnessProvenance();
   // Shared by BOTH dirty_harness_tooling branches below so the two messages can't drift apart
   // again -- this exact drift (the messages claiming "never blocks evidence" after
@@ -674,6 +685,10 @@ function buildRunRecord({
     // leaves a real trace of having happened, instead of disappearing entirely the moment
     // scenarioCellIntegrityOk's result-aware skillSelectionOk stops treating it as contamination.
     foreign_skill_summary: foreignSkillSummary,
+    // ambient_skill_profile (schema v4): count + SHA-256 fingerprint only, computed once above and
+    // shared with nothing else -- see its own computation comment above for why raw names never
+    // reach this record.
+    ambient_skill_profile: ambientSkillProfile,
     // repo_commit/kmp_test_cli_source_sha describe HEAD, not necessarily the exact bytes that
     // executed -- disclosed here rather than silently letting the recorded SHA imply a codebase
     // that isn't quite what actually ran. Two distinct codes: dirty_measured_code (bin/lib/
@@ -1379,7 +1394,7 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
  * last one before a genuine timeout) -- a foreign Skill call's own incompleteness must fail closed
  * unconditionally, with no timeout exception.
  */
-function scenarioCellIntegrityOk(record, conditionResult) {
+function scenarioCellIntegrityOk(record, conditionResult, { sharedAmbientNames = new Set(), ambientProfileMatrixOk = true } = {}) {
   const expectSkillAvailable = record.condition === 'current-skill';
   const availabilityOk = record.skill_available.value === expectSkillAvailable;
   // Post-#385 review finding: a no-skill condition's plugin is never loaded (availabilityOk/
@@ -1395,7 +1410,25 @@ function scenarioCellIntegrityOk(record, conditionResult) {
   const pluginProfileOk = hasExpectedPluginProfile(conditionResult.init, TARGET_PLUGIN_NAME, expectSkillAvailable);
   const pluginSnapshotBindingOk = !expectSkillAvailable || isPluginBoundToSnapshot(conditionResult.init, conditionResult.snapshotDir);
   const foreignSkillUses = classifyForeignSkillUses(conditionResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME);
-  const skillSelectionOk = !foreignSkillUses.some((u) => u.confirmed === true);
+  // Ambient-skill-profile fix: a real live run's no-skill cells were wrongly rejected for
+  // confirming Claude Code's own bundled "run" skill -- present in init.skills[] regardless of
+  // --plugin-dir (see isSkillAvailable's doc comment, stream-parser.mjs), not genuine third-party
+  // contamination. A CONFIRMED foreign call is now tolerated ONLY when its exact skillArg was
+  // advertised in `sharedAmbientNames` -- the matrix-wide consensus ambient profile scenarioHardGate
+  // computes across every cell (never a hardcoded "run" special-case; a malformed/missing skillArg,
+  // or one absent from that set, still fails closed exactly as before). `ambientSkillProfileOk` is
+  // THIS cell's own init.skills[] parse validity (computeAmbientSkillProfile, self-derived -- a
+  // single cell can always judge its own transcript alone); `ambientProfileMatrixOk` is the SAME
+  // shared boolean threaded into every cell in the matrix by scenarioHardGate, so a cross-cell
+  // mismatch (or any cell's own malformed profile) blocks the WHOLE batch via the existing
+  // per-cell aggregation, with zero changes needed to that aggregation logic itself. Both default
+  // to the "everything's fine" value when this function is called in isolation (every existing
+  // 2-arg test call site) -- a single cell outside a real matrix context cannot meaningfully judge
+  // cross-cell agreement either way.
+  const ambientProfile = computeAmbientSkillProfile(conditionResult.init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME);
+  const ambientSkillProfileOk = ambientProfile.ok;
+  const confirmedForeignSkillUses = foreignSkillUses.filter((u) => u.confirmed === true);
+  const skillSelectionOk = confirmedForeignSkillUses.every((u) => u.skillArg != null && sharedAmbientNames.has(u.skillArg));
   const foreignSkillToolResultsCompleteOk = !foreignSkillUses.some((u) => u.resultIsError === null);
   const initOk = conditionResult.init != null;
   const toolProfileOk = hasExpectedToolProfile(conditionResult.init, EXPECTED_TOOL_NAMES);
@@ -1427,6 +1460,7 @@ function scenarioCellIntegrityOk(record, conditionResult) {
     ['terminationOk', terminationOk], ['junitEvidenceOk', junitEvidenceOk],
     ['parallelEvidenceOk', parallelEvidenceOk], ['junitSkipEvidenceOk', junitSkipEvidenceOk],
     ['junitCaptureCompleteOk', junitCaptureCompleteOk],
+    ['ambientSkillProfileOk', ambientSkillProfileOk], ['ambientProfileMatrixOk', ambientProfileMatrixOk],
   ]);
   return { ok: evaluation.ok, reason: evaluation.reason, failedChecks: evaluation.failedChecks };
 }
@@ -1444,12 +1478,30 @@ function scenarioCellIntegrityOk(record, conditionResult) {
  * blocks the whole matrix" means every cell is relevant to explaining a rejection, not just the
  * cell(s) that individually failed. Computed in this function's own single existing loop -- never
  * re-run scenarioCellIntegrityOk a second time to recover this.
+ *
+ * Ambient-skill-profile fix: before that per-cell loop, computes the matrix-WIDE consensus ambient
+ * profile once -- every cell's own init.skills[] (target identity stripped) must parse cleanly AND
+ * agree exactly with every other cell's, or `sharedAmbientNames` collapses to the empty Set
+ * (fail-closed: no confirmed foreign Skill call is tolerated anywhere in the batch). The SAME
+ * `ambientProfileMatrixOk` boolean is threaded into every cell's own `scenarioCellIntegrityOk` call
+ * as a named check (not a separate top-level field) -- deliberately reuses the existing per-cell
+ * loop/reason-aggregation below completely unchanged: a genuine cross-cell mismatch (or one cell's
+ * own malformed profile) then fails EVERY cell via the existing machinery, which both correctly
+ * blocks the whole matrix (atomic promotion, unchanged) and automatically satisfies
+ * rejection-diagnostics.mjs's own "at least one cell must have a non-empty failed_checks"
+ * invariant with zero changes needed there.
  */
 function scenarioHardGate(records, conditionResults) {
+  const ambientProfiles = conditionResults.map((cr) => computeAmbientSkillProfile(cr.init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME));
+  const allAmbientProfilesOk = ambientProfiles.every((p) => p.ok);
+  const canonicalKeys = ambientProfiles.map((p) => canonicalAmbientSkillNamesKey(p.names));
+  const ambientProfileMatrixOk = allAmbientProfilesOk && new Set(canonicalKeys).size <= 1;
+  const sharedAmbientNames = ambientProfileMatrixOk ? ambientProfiles[0].names : new Set();
+
   const failures = [];
   const cellResults = [];
   for (let i = 0; i < records.length; i++) {
-    const cell = scenarioCellIntegrityOk(records[i], conditionResults[i]);
+    const cell = scenarioCellIntegrityOk(records[i], conditionResults[i], { sharedAmbientNames, ambientProfileMatrixOk });
     cellResults.push({
       runId: records[i].run_id,
       condition: records[i].condition,

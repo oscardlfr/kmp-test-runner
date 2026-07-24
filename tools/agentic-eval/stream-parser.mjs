@@ -20,6 +20,7 @@
 // Skill invocation is detected from a real `tool_use` content block with name:"Skill" --
 // never inferred from which CLI binary the agent happened to run (that conflation is exactly
 // what this harness exists to fix -- see the PR context).
+import { createHash } from 'node:crypto';
 
 /**
  * @param {string} rawJsonl - the full stdout capture from a `claude -p ... --output-format
@@ -128,6 +129,49 @@ export function isTargetSkillReference(skillArg, pluginName, skillName) {
   if (typeof pluginName !== 'string' || pluginName.length === 0) return false;
   if (typeof skillName !== 'string' || skillName.length === 0) return false;
   return skillArg === skillName || skillArg === `${pluginName}:${skillName}`;
+}
+
+/**
+ * Parses and strictly validates the init event's `skills[]` array (see `isSkillAvailable`'s own
+ * doc comment: an unrelated, ambient set of bundled/managed skills present identically regardless
+ * of `--plugin-dir` -- e.g. Claude Code's own bundled `run` skill, confirmed on a real live
+ * scenario run whose no-skill cells were wrongly rejected for confirming it as if it were foreign
+ * contamination). `ok:false` covers every way this array can fail to be trustworthy evidence: a
+ * missing init event, a missing `skills` key entirely (a real init event always carries it -- see
+ * this file's own header comment -- so a genuinely absent key is a structural anomaly, not a
+ * legitimate "no ambient skills" signal), a non-array value, any non-string/empty-string entry, or
+ * a duplicate entry. `names` is always a real Set (never null/undefined, even when `ok:false`) --
+ * the TARGET skill's own bare/namespaced identity is stripped out via `isTargetSkillReference`
+ * (the same closed allowlist every other identity check in this file uses, never a separately
+ * invented match), since a current-skill cell's own loaded skill naturally appears in `skills[]`
+ * and is not "ambient" -- it's the thing being measured.
+ * @returns {{ok: boolean, names: Set<string>}}
+ */
+export function computeAmbientSkillProfile(initEvent, pluginName, skillName) {
+  const raw = initEvent?.skills;
+  const wellFormed = initEvent != null
+    && Array.isArray(raw)
+    && raw.every((s) => typeof s === 'string' && s.length > 0)
+    && new Set(raw).size === raw.length;
+  const cleanEntries = Array.isArray(raw) ? raw.filter((s) => typeof s === 'string' && s.length > 0) : [];
+  const names = new Set(cleanEntries.filter((s) => !isTargetSkillReference(s, pluginName, skillName)));
+  return { ok: wellFormed, names };
+}
+
+/** Canonical, order-independent string identity for an ambient-skill name Set -- the single
+ * source of truth both the cross-cell equality check (a matrix's cells must agree exactly) and
+ * `fingerprintAmbientSkillNames` (below) are built on, so "are these the same profile" and "what
+ * hashes to what" can never drift apart into two independently-maintained notions of equality. */
+export function canonicalAmbientSkillNamesKey(names) {
+  return JSON.stringify([...names].sort());
+}
+
+/** Privacy-safe SHA-256 fingerprint of an ambient-skill name Set, for committed evidence (never
+ * the raw names themselves -- see buildRunRecord's own `ambient_skill_profile` field). Built
+ * directly on `canonicalAmbientSkillNamesKey` so two runs with the identical ambient profile
+ * always fingerprint identically regardless of Set insertion order. */
+export function fingerprintAmbientSkillNames(names) {
+  return createHash('sha256').update(canonicalAmbientSkillNamesKey(names)).digest('hex');
 }
 
 /**

@@ -22,8 +22,8 @@ import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 // alike) stamps on NEW records going forward; `SUPPORTED_RUN_SCHEMAS` is what validateRun()
 // still accepts, so the 8 historical files keep validating under their original v1 rules
 // unchanged (see the RUN_CANONICAL_FIELDS_V1/_V2/_V3 split and validateRun's dispatch, below).
-export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3];
-export const LATEST_RUN_SCHEMA = 3;
+export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3, 4];
+export const LATEST_RUN_SCHEMA = 4;
 export const CURRENT_SCENARIO_SCHEMA = 1;
 export const CURRENT_AGGREGATE_SCHEMA = 1;
 
@@ -70,11 +70,19 @@ const RUN_CANONICAL_FIELDS_V2 = [...RUN_CANONICAL_FIELDS_V1, 'grading_checks', '
 // non-null value on every schema:3 record.
 const RUN_CANONICAL_FIELDS_V3 = [...RUN_CANONICAL_FIELDS_V2, 'foreign_skill_summary'];
 
+// Schema v4 = v3 + ambient_skill_profile ({count, fingerprint_sha256} -- a privacy-safe summary of
+// the init event's `skills[]` array with the target skill's own identity stripped out, see
+// stream-parser.mjs's computeAmbientSkillProfile). Like foreign_skill_summary (and unlike
+// grading_checks/repetition_index), NOT scenario-only -- always computable from any condition's
+// init event, so every run_kind carries a real, non-null value on every schema:4 record.
+const RUN_CANONICAL_FIELDS_V4 = [...RUN_CANONICAL_FIELDS_V3, 'ambient_skill_profile'];
+
 // Explicit if-chain, not a ternary -- a bare `schema === 2 ? V2 : V1`-shaped chain, naively
-// extended with one more ternary branch for v3, silently falls through an unrecognized/future
-// schema number to V1 instead of the LATEST fields, which would make a schema:3 record validate
-// against the wrong (v1) field list entirely. schema===3 must resolve to V3, never V1.
+// extended with one more ternary branch for v3/v4, silently falls through an unrecognized/future
+// schema number to V1 instead of the LATEST fields, which would make a schema:4 record validate
+// against the wrong (v1) field list entirely. schema===4 must resolve to V4, never V1.
 function runCanonicalFieldsFor(schema) {
+  if (schema === 4) return RUN_CANONICAL_FIELDS_V4;
   if (schema === 3) return RUN_CANONICAL_FIELDS_V3;
   if (schema === 2) return RUN_CANONICAL_FIELDS_V2;
   return RUN_CANONICAL_FIELDS_V1;
@@ -313,6 +321,33 @@ export function validateRun(run) {
     }
   } else if ('foreign_skill_summary' in run && run.foreign_skill_summary != null) {
     errors.push({ field: 'foreign_skill_summary', message: `must be absent or null for schema ${run.schema} -- foreign_skill_summary was introduced in schema v3` });
+  }
+
+  // ambient_skill_profile (v4-introduced field) -- mirrors foreign_skill_summary's identical v3
+  // gate one version up: applies to EVERY run_kind (never scenario-only), always required once
+  // schema>=4 (a privacy-safe {count, fingerprint_sha256} summary is always computable from any
+  // condition's init event, never null), and must be entirely absent below schema v4 -- it did not
+  // exist in RUN_CANONICAL_FIELDS_V1/_V2/_V3, so a v1-v3 record carrying it would be
+  // self-contradictory relative to its own declared schema version.
+  if (run.schema >= 4) {
+    const profile = run.ambient_skill_profile;
+    if (profile == null || typeof profile !== 'object' || Array.isArray(profile)) {
+      errors.push({ field: 'ambient_skill_profile', message: 'required (non-null object) for a schema:4+ record' });
+    } else {
+      const allowedKeys = new Set(['count', 'fingerprint_sha256']);
+      const actualKeys = Object.keys(profile);
+      if (actualKeys.some((k) => !allowedKeys.has(k)) || actualKeys.length !== allowedKeys.size) {
+        errors.push({ field: 'ambient_skill_profile', message: `must have exactly the keys count/fingerprint_sha256, got ${JSON.stringify(actualKeys)}` });
+      }
+      if (!(Number.isInteger(profile.count) && profile.count >= 0)) {
+        errors.push({ field: 'ambient_skill_profile.count', message: 'must be a non-negative integer' });
+      }
+      if (typeof profile.fingerprint_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(profile.fingerprint_sha256)) {
+        errors.push({ field: 'ambient_skill_profile.fingerprint_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
+      }
+    }
+  } else if ('ambient_skill_profile' in run && run.ambient_skill_profile != null) {
+    errors.push({ field: 'ambient_skill_profile', message: `must be absent or null for schema ${run.schema} -- ambient_skill_profile was introduced in schema v4` });
   }
 
   for (const f of NULLABLE_METRIC_FIELDS) if (f in run) validateNullableMetric(run[f], f, errors);
@@ -768,22 +803,27 @@ const AGGREGATE_CANONICAL_FIELDS = ['schema', 'group_key', 'run_count', 'runs'];
 // itself controls. `schema` guards against silently averaging across different SCHEMA versions --
 // without it, a schema:2 record (no foreign_skill_summary) and a schema:3 record (has it) could be
 // folded into the same group, even though they don't carry the same measured fields at all.
+// `ambient_skill_profile` (ambient-skill-profile fix) guards against silently averaging across
+// different measured capability PROFILES within the SAME schema version -- e.g. a Claude Code
+// version bump that changes which skills are bundled would otherwise silently combine two runs
+// whose no-skill/current-skill baselines were not actually comparable.
 export const HARD_PARTITION_FIELDS = [
   'scenario_id', 'condition', 'family', 'run_kind', 'cache_state',
   'project_commit', 'model_resolved', 'platform', 'skill_source_sha', 'policy_sha256',
   'kmp_test_cli_source_sha', 'daemon_policy',
   'env_allowlist_profile', 'policy_allowed_gradle_tasks', 'policy_allowed_kmptest_subcommands',
-  'claude_code_version', 'schema',
+  'claude_code_version', 'schema', 'ambient_skill_profile',
 ];
 
-// Some HARD_PARTITION_FIELDS values (the two policy_allowed_* lists) are arrays -- a plain
-// `new Set(runs.map(r => r[f]))` compares array VALUES by reference, so two runs with
-// structurally identical arrays (e.g. both ['doctor']) as separate object instances would be
-// treated as "different" and spuriously rejected as mixed. Comparing the JSON.stringify
-// representation instead compares by structural equality, matching how aggregate.mjs's own
-// bucket key already treats array-valued fields.
+// Some HARD_PARTITION_FIELDS values (the two policy_allowed_* lists, and now the object-valued
+// ambient_skill_profile) are arrays or plain objects -- a bare `new Set(runs.map(r => r[f]))`
+// compares them by REFERENCE, so two runs with structurally identical values (e.g. both
+// ['doctor'], or both {count:0, fingerprint_sha256:'...'}) as separate instances would be treated
+// as "different" and spuriously rejected as mixed. Comparing the JSON.stringify representation
+// instead compares by structural equality, matching how aggregate.mjs's own bucket key already
+// treats array-valued fields.
 function partitionFieldKey(value) {
-  return Array.isArray(value) ? JSON.stringify(value) : value;
+  return (Array.isArray(value) || (value != null && typeof value === 'object')) ? JSON.stringify(value) : value;
 }
 
 export function validateAggregateGroupKey(key) {
