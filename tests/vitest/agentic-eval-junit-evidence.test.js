@@ -6,7 +6,7 @@
 // new per-attempt, tool_use_id-keyed correlation logic that replaces the old condition-wide pooled
 // snapshot entirely).
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, openSync, ftruncateSync, closeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -111,13 +111,32 @@ describe('countEvidenceTaskJunit -- skip/anomaly detection (never a false pass/f
     expect(result).toEqual({ status: 'integrity_error', reason: 'skipped_testcase_unsupported' });
   });
 
+  // A logically-extended (pre-sized), not a real 33 MiB write: forEachJunitXml's oversized-file
+  // guard (lib/parsers/junit-xml.js) is a bare `statSync(filePath).size > maxBytes` check BEFORE
+  // any readFileSync/XML parsing -- confirmed directly by reading it -- so this code path never
+  // inspects the file's actual byte content, only its logical size as fs.stat() reports it.
+  // ftruncateSync sets the file's end-of-file position directly, without JavaScript ever
+  // allocating or writing a 33 MiB string/buffer; the reported .size is identical to a
+  // fully-written file of the same length, so this exercises the exact same code path in well
+  // under 1ms. NOTE: this is deliberately NOT called a "sparse file" -- verified directly via
+  // `fsutil sparse queryflag` on Windows/NTFS that a plain ftruncateSync-grown file is NOT marked
+  // sparse, and `fsutil file queryExtents` shows NTFS fully allocates the extent on disk regardless
+  // (the speed win is from avoiding the JS-side materialize-then-write of 33 MiB, not from any
+  // filesystem-level sparse allocation). Content is never written at all (production never reads
+  // it either, for the same oversized-file reason) -- avoids leaving a fd open across a fallible
+  // write, closed unconditionally via try/finally.
   it('an oversized XML file (exceeds the real forEachJunitXml per-file size cap) is reported as a read anomaly, never silently undercounted', () => {
     workDir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-evidence-'));
     const taskDir = path.join(workDir, 'shared', 'build', 'test-results', 'testAndroidHostTest');
     mkdirSync(taskDir, { recursive: true });
-    // DEFAULT_JUNIT_XML_MAX_MB is 32 -- write something larger via a padded <system-out>.
-    const padding = 'x'.repeat(33 * 1024 * 1024);
-    writeFileSync(path.join(taskDir, 'TEST-Huge.xml'), `<testsuite><testcase name="a" classname="com.x.A"><system-out>${padding}</system-out></testcase></testsuite>`, 'utf8');
+    // DEFAULT_JUNIT_XML_MAX_MB is 32 -- logically extend a file past it via ftruncateSync.
+    const filePath = path.join(taskDir, 'TEST-Huge.xml');
+    const fd = openSync(filePath, 'w');
+    try {
+      ftruncateSync(fd, 33 * 1024 * 1024);
+    } finally {
+      closeSync(fd);
+    }
     const result = countEvidenceTaskJunit(workDir, ':shared:testAndroidHostTest');
     expect(result).toEqual({ status: 'integrity_error', reason: 'junit_xml_read_anomaly' });
   });
