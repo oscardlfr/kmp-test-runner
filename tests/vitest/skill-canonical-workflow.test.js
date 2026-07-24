@@ -86,12 +86,42 @@ describe('--test-type value contract (grounds the no-test-outcome caveat in real
 // through to the generic unknown-flag handler. Round 4's SKILL.md text wrongly grouped `changed`
 // alongside parallel/android/benchmark as accepting --module-filter; this is the real behavior
 // that the Decision-protocol assertion below is tied to.
-describe('changed module-filter contract (grounds the SKILL.md claim in the real parser)', () => {
+describe('changed unsupported-flag contract (grounds SKILL.md and reference-doc claims in the real parser)', () => {
   it('--module-filter is rejected as unknown_flag -- changed has no user-facing module filter', () => {
     const opts = parseChangedArgs(['--module-filter', 'app']);
     expect(opts.errors).toContainEqual(
       expect.objectContaining({ code: 'unknown_flag', flag: '--module-filter' })
     );
+  });
+
+  // Round-6 addition: the same bug class as --module-filter -- flags-reference.md marked
+  // `changed` as accepting --max-workers, and changed.md claimed it "behaves the same as setting
+  // it for parallel". But parseArgs has no case for --max-workers either, so it's also rejected
+  // as unknown_flag before ever reaching the in-process runParallel() delegation.
+  it('--max-workers is rejected as unknown_flag -- changed has no user-facing worker-count flag', () => {
+    const opts = parseChangedArgs(['--max-workers', '2']);
+    expect(opts.errors).toContainEqual(
+      expect.objectContaining({ code: 'unknown_flag', flag: '--max-workers' })
+    );
+  });
+
+  it('reference docs do not present --max-workers as supported by changed', () => {
+    const flagsRef = readFileSync(
+      path.join(SKILL_DIR, 'references', 'cli', 'flags-reference.md'), 'utf8'
+    );
+    const changedDoc = readFileSync(
+      path.join(SKILL_DIR, 'references', 'workflows', 'changed.md'), 'utf8'
+    );
+
+    // The --max-workers row's `changed` column (index 6 of the pipe-split cells: '', Flag,
+    // Default, parallel, coverage, benchmark, changed, android, Notes, '') must be a dash.
+    const row = flagsRef.split('\n').find((l) => l.includes('--max-workers'));
+    expect(row).toBeTruthy();
+    const cells = row.split('|').map((c) => c.trim());
+    expect(cells[6]).toBe('—');
+
+    expect(changedDoc).not.toMatch(/--max-workers[\s\S]{0,80}behaves the same/i);
+    expect(changedDoc).not.toMatch(/every `parallel` flag works the same way/i);
   });
 });
 

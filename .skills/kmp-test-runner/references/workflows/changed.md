@@ -101,11 +101,11 @@ Files outside any module (e.g. `README.md`, `gradle/`, `.github/`) are dropped s
 
 After resolving the module set, `changed` calls `runParallel()` in-process (no subprocess hop, no re-spawn). This means:
 
-- Every `parallel` flag works the same way (cascade-retry, auto-detect, console-mode injection, gradle-properties parallel respect since v0.10 #2).
+- Flags `changed` recognizes and forwards behave the same as they do for `parallel` (cascade-retry, auto-detect, console-mode injection, gradle-properties parallel respect since v0.10 #2) — but `changed` only recognizes its own documented flag subset (see Common flags above); an unrecognized `parallel` flag like `--max-workers` or `--module-filter` is rejected as `unknown_flag` before ever reaching `parallel`.
 - The envelope's `parallel:{}` block is present too — `changed` adds `changed:{}` on top.
 - Performance: ~100 ms faster than spawning a separate `kmp-test parallel` subprocess.
 
-The trade-off: the `parallel` orchestrator's behavior leaks into `changed`. Setting `--max-workers` here behaves the same as setting it for `parallel`.
+The trade-off: the `parallel` orchestrator's behavior leaks into `changed` for the flags it does forward.
 
 ### Soft `no_changed_modules` outcome
 

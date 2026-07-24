@@ -45,7 +45,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 
 | Flag | Default | parallel | coverage | benchmark | changed | android | Notes |
 |------|---------|:--------:|:--------:|:---------:|:-------:|:-------:|-------|
-| `--max-workers <N>` | `0` (auto) | ✓ | — | — | ✓ | — | Parallel gradle workers. `0` = gradle decides. |
+| `--max-workers <N>` | `0` (auto) | ✓ | — | — | — | — | Parallel gradle workers. `0` = gradle decides. Not accepted by `changed` (`unknown_flag`). |
 | `--timeout <seconds>` | `600` (parallel), per-config (benchmark) | ✓ | — | ✓ | — | — | Per-task gradle watchdog. `0` disables. |
 | `--ignore-gradle-timeout` | off | — | — | ✓ | — | — | Disable watchdog entirely. Wins over `--timeout` and `KMP_GRADLE_TIMEOUT_MS`. |
 | `--max-failures <N>` | `0` (run all) | — | — | — | ✓ | — | Stop after `N` per-module failures (changed only). |
