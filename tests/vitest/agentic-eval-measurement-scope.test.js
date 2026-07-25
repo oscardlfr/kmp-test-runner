@@ -219,7 +219,9 @@ describe('isMeasurementScopePathSafe -- real git integration', () => {
     commitFile(repoDir, 'scope.json', '{}');
     writeFileSync(path.join(repoDir, '.gitignore'), 'scope.json\n');
     expect(isMeasurementScopePathSafe(path.join(repoDir, 'scope.json')).safe).toBe(false);
-  });
+  }, 30000); // init + a commit + isMeasurementScopePathSafe's own git checks: several real git
+  // subprocess spawns, slow enough on Windows CI runners to trip vitest's default 5000ms per-test
+  // timeout (observed: build (windows-latest) timing out here with no other failure).
 });
 
 // ---------------------------------------------------------------------------------------------
