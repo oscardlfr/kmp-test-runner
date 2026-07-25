@@ -197,6 +197,31 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(protocol).toMatch(/known workflow.{0,20}no specific module/i);
   });
 
+  // RC3: the first Bash action after loading the skill must be the canonical global dispatch
+  // when the workflow is known and no exact module constraint exists -- generic preflight and
+  // repository exploration must not precede it.
+  it('step: no specific module dispatches globally as the first action, before any other exploration', () => {
+    const start = protocol.indexOf('Known workflow, no specific module');
+    const end = protocol.indexOf('**Known workflow, known module**');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const step2 = protocol.slice(start, end);
+    expect(step2.toLowerCase()).toMatch(/first\s+action/);
+    expect(step2).toContain('kmp-test parallel --json --project-root .');
+  });
+
+  // RC1: a conventional or descriptive platform label ("the Android module", "app", "shared")
+  // is intent/context, not a verified Gradle module path -- it must never satisfy the
+  // known-module step below.
+  it('step: descriptive platform or conventional wording never counts as a specific module', () => {
+    const start = protocol.indexOf('Known workflow, no specific module');
+    const end = protocol.indexOf('**Known workflow, known module**');
+    const step2 = protocol.slice(start, end);
+    expect(step2.toLowerCase()).toMatch(/\bapp\b/);
+    expect(step2.toLowerCase()).toMatch(/\bshared\b/);
+    expect(step2.toLowerCase()).toMatch(/isn.t\s+an\s+exact\s+module|not\s+an\s+exact\s+module/);
+  });
+
   it('step: known workflow + known module dispatches filtered using the already-known name', () => {
     // Round-2 fix: scoped to this step's own text (was previously an unscoped whole-section
     // match, which doesn't actually prove THIS step's content is correct/complete).
@@ -231,6 +256,20 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(step3.toLowerCase()).toContain('no glob');
   });
 
+  // RC1: a module is "known" only when the user explicitly supplied an exact Gradle module
+  // identity, or an earlier structured envelope in this conversation already established that
+  // exact modules[].name -- never from descriptive wording alone (previous step).
+  it('step: known module identity comes from an explicit statement or a prior envelope, never descriptive wording alone', () => {
+    const start = protocol.indexOf('Known workflow, known module');
+    const end = protocol.indexOf('**Known workflow, unclear module**');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const step3 = protocol.slice(start, end);
+    expect(step3.toLowerCase()).toMatch(/explicit/);
+    expect(step3).toMatch(/modules\[\]\.name/);
+    expect(step3.toLowerCase()).toMatch(/descriptive/);
+  });
+
   it('step: known workflow + unclear module runs describe once before a targeted dispatch', () => {
     // Scoped to this step's own text (not the whole section) -- the preceding step legitimately
     // mentions the module-scoping flags too, which would false-fail an unscoped
@@ -253,6 +292,34 @@ describe('Decision protocol -- single canonical entry point, first in the docume
 
   it('step: unclear module reads the exact value from modules[].name', () => {
     expect(protocol).toMatch(/modules\[\]\.name/);
+  });
+
+  // RC2: reading one modules[].name is insufficient when describe returns several modules --
+  // candidate selection must inspect every entry and filter by the structured task capability
+  // for the requested workflow/test type, never pick by a conventionally-likely name.
+  it('step: unclear-module dispatch inspects every returned module and filters by task capability, never by name alone', () => {
+    const start = protocol.indexOf('Known workflow, unclear module');
+    const end = protocol.indexOf('**Preview only**');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const step4 = protocol.slice(start, end);
+    expect(step4.toLowerCase()).toMatch(/\bevery\b/);
+    expect(step4.toLowerCase()).toMatch(/task field/);
+  });
+
+  // RC2: one eligible candidate dispatches directly; several eligible candidates dispatch
+  // globally for a broad request or ask for a single-target request; zero eligible candidates
+  // never manufacture a module name or task. Neither multi-candidate path guesses.
+  it('step: multiple eligible candidates dispatch globally for a broad request or ask for a single target; zero eligible never invents one', () => {
+    const start = protocol.indexOf('Known workflow, unclear module');
+    const end = protocol.indexOf('**Preview only**');
+    const step4 = protocol.slice(start, end);
+    expect(step4.toLowerCase()).toMatch(/\b1\s+eligible/);
+    expect(step4.toLowerCase()).toMatch(/2\+\s+eligible/);
+    expect(step4.toLowerCase()).toMatch(/dispatch\s+globally/);
+    expect(step4.toLowerCase()).toMatch(/\bask\b/);
+    expect(step4.toLowerCase()).toMatch(/\b0\s+eligible/);
+    expect(step4.toLowerCase()).toMatch(/don.t\s+invent/);
   });
 
   it('never presents --module-filter with a bracketed placeholder', () => {
@@ -301,6 +368,40 @@ describe('Decision protocol -- single canonical entry point, first in the docume
 
   it('step: stops once the outcome is proven', () => {
     expect(protocol).toMatch(/stop once proven/i);
+  });
+
+  // RC4: the terminal condition is operational, not abstract -- expected module/outcome present,
+  // exit_code and errors[] coherent, counts/failures answer the request for executed tests.
+  it('step: a successful non-dry-run envelope is terminal once it establishes the requested outcome', () => {
+    const start = protocol.indexOf('Stop once proven');
+    const end = protocol.indexOf('**Diagnose only on failure**');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const step7 = protocol.slice(start, end);
+    expect(step7).toMatch(/non-dry-run/i);
+    expect(step7).toMatch(/exit_code/);
+    expect(step7).toMatch(/errors\[\]/);
+  });
+
+  // RC4: no post-success confirmation probe of any of these shapes -- a skipped unrelated
+  // module is context, not a reason to keep exploring.
+  it('step: post-success probes are explicitly excluded -- dry-run, doctor, describe, version, ls/pwd/which', () => {
+    const start = protocol.indexOf('Stop once proven');
+    const end = protocol.indexOf('**Diagnose only on failure**');
+    const step7 = protocol.slice(start, end);
+    expect(step7.toLowerCase()).toMatch(/dry-run/);
+    expect(step7.toLowerCase()).toMatch(/\bdoctor\b/);
+    expect(step7.toLowerCase()).toMatch(/\bdescribe\b/);
+    expect(step7.toLowerCase()).toMatch(/version/);
+    expect(step7.toLowerCase()).toMatch(/ls\/pwd\/which/);
+  });
+
+  it('step: an unrelated skipped[] entry does not reopen discovery', () => {
+    const start = protocol.indexOf('Stop once proven');
+    const end = protocol.indexOf('**Diagnose only on failure**');
+    const step7 = protocol.slice(start, end);
+    expect(step7).toMatch(/skipped\[\]/);
+    expect(step7.toLowerCase()).toMatch(/keep\s+exploring/);
   });
 
   it('step: diagnose only for exit_code 3 or an explicit request', () => {
