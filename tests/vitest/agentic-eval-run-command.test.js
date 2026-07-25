@@ -39,6 +39,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
 import { LATEST_RUN_SCHEMA } from '../../tools/agentic-eval/schemas.mjs';
 import { gradeScenarioCondition } from '../../tools/agentic-eval/graders.mjs';
+import { aggregateRuns } from '../../tools/agentic-eval/aggregate.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -288,6 +289,153 @@ describe('cli.mjs run -- argument validation', () => {
       rmSync(wrongRemote, { recursive: true, force: true });
     }
   }, 15000);
+});
+
+describe('cli.mjs run --dry-run + --measurement-scope-file', () => {
+  it('reports scope_id in the preview JSON, and the raw key never appears anywhere in stdout', async () => {
+    const scopeDir = mkdtempSync(path.join(os.tmpdir(), 'aerc-scope-dryrun-'));
+    try {
+      const scopeFile = path.join(scopeDir, 'scope.json');
+      const init = await runCli(['scope', 'init', '--out', scopeFile], fakeClaudeEnv('run-scenario-success'));
+      expect(init.status).toBe(0);
+      const knownKeyBase64 = JSON.parse(readFileSync(scopeFile, 'utf8')).hmac_key_base64;
+
+      const result = await runCli(
+        ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7', '--repeats', '2', '--dry-run', '--measurement-scope-file', scopeFile],
+        fakeClaudeEnv('run-scenario-success'),
+      );
+      expect(result.status).toBe(0);
+      expect(result.parsed.measurement_scope.source).toBe('supplied');
+      expect(result.parsed.measurement_scope.scope_id).toBe(JSON.parse(readFileSync(scopeFile, 'utf8')).scope_id);
+      expect(Object.keys(result.parsed.measurement_scope).sort()).toEqual(['scope_id', 'source']);
+      expect(result.stdout).not.toContain(knownKeyBase64);
+      expect(result.stderr).not.toContain(knownKeyBase64);
+    } finally {
+      rmSync(scopeDir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it('bare --dry-run (no scope flag) keeps today\'s exact JSON shape -- no measurement_scope key at all', async () => {
+    const result = await runCli(
+      ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7', '--repeats', '2', '--dry-run'],
+      fakeClaudeEnv('run-scenario-success'),
+    );
+    expect(result.status).toBe(0);
+    expect('measurement_scope' in result.parsed).toBe(false);
+  });
+
+  it('a malformed --measurement-scope-file fails closed BEFORE the dry-run preview is ever printed', async () => {
+    const result = await runCli(
+      ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7', '--dry-run', '--measurement-scope-file', path.join(os.tmpdir(), 'aerc-does-not-exist-scope.json')],
+      fakeClaudeEnv('run-scenario-success'),
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--measurement-scope-file is invalid/);
+    expect(result.parsed).toBeNull();
+  });
+});
+
+describe('cli.mjs scope init', () => {
+  it('creates a scope file printing only {scope_id, path}, never the key', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aerc-scopeinit-'));
+    try {
+      const file = path.join(dir, 'scope.json');
+      const result = await runCli(['scope', 'init', '--out', file], fakeClaudeEnv('run-scenario-success'));
+      expect(result.status).toBe(0);
+      expect(Object.keys(result.parsed).sort()).toEqual(['path', 'scope_id']);
+      const written = JSON.parse(readFileSync(file, 'utf8'));
+      expect(result.parsed.scope_id).toBe(written.scope_id);
+      expect(result.stdout).not.toContain(written.hmac_key_base64);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to overwrite an existing scope file, leaves it byte-identical, exit 1', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aerc-scopeinit-noclobber-'));
+    try {
+      const file = path.join(dir, 'scope.json');
+      const first = await runCli(['scope', 'init', '--out', file], fakeClaudeEnv('run-scenario-success'));
+      expect(first.status).toBe(0);
+      const before = readFileSync(file, 'utf8');
+      const second = await runCli(['scope', 'init', '--out', file], fakeClaudeEnv('run-scenario-success'));
+      expect(second.status).toBe(1);
+      expect(readFileSync(file, 'utf8')).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('requires --out', async () => {
+    const result = await runCli(['scope', 'init'], fakeClaudeEnv('run-scenario-success'));
+    expect(result.status).toBe(1);
+  });
+
+  it('rejects an unknown extra positional after init', async () => {
+    const result = await runCli(['scope', 'init', 'unexpected', '--out', 'x.json'], fakeClaudeEnv('run-scenario-success'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/extra argument/);
+  });
+
+  it('rejects an unknown scope sub-subcommand', async () => {
+    const result = await runCli(['scope', 'bogus'], fakeClaudeEnv('run-scenario-success'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/usage: scope init/);
+  });
+});
+
+// Correction 1 (plan): calibrate/smoke are always benchmark_eligible:false and refused outright
+// by aggregateRuns(), so the longitudinal-aggregation proof must use `run`'s scenario records.
+// Further correction: `condition` is itself a HARD_PARTITION_FIELDS entry, so a scenario
+// matrix's no-skill and current-skill records can NEVER share a group with each other --
+// the correct expectation is exactly 2 groups (one per condition) for two same-scope
+// invocations of one scenario, not 1.
+describe('measurement scope + aggregation -- 2 groups (one per condition), shared scope merges, different scope stays separate', () => {
+  it('two run invocations sharing --measurement-scope-file aggregate into exactly 2 groups, each containing records from BOTH invocations; a third invocation with a different scope adds 2 more, separate groups', async () => {
+    const scopeDir = mkdtempSync(path.join(os.tmpdir(), 'aerc-scope-agg-'));
+    try {
+      const scopeFile = path.join(scopeDir, 'shared-scope.json');
+      const otherScopeFile = path.join(scopeDir, 'other-scope.json');
+      expect((await runCli(['scope', 'init', '--out', scopeFile], fakeClaudeEnv('run-scenario-success'))).status).toBe(0);
+      expect((await runCli(['scope', 'init', '--out', otherScopeFile], fakeClaudeEnv('run-scenario-success'))).status).toBe(0);
+
+      const run1 = await runCli(runArgs(['--seed', '11', '--repeats', '2', '--measurement-scope-file', scopeFile]), fakeClaudeEnv('run-scenario-success'), 60000);
+      const run2 = await runCli(runArgs(['--seed', '23', '--repeats', '2', '--measurement-scope-file', scopeFile]), fakeClaudeEnv('run-scenario-success'), 60000);
+      const run3 = await runCli(runArgs(['--seed', '37', '--repeats', '2', '--measurement-scope-file', otherScopeFile]), fakeClaudeEnv('run-scenario-success'), 60000);
+      for (const r of [run1, run2, run3]) expect(r.status).toBe(0);
+
+      const sharedScopeId = run1.parsed.records[0].ambient_skill_profile.scope_id;
+      for (const record of run2.parsed.records) expect(record.ambient_skill_profile.scope_id).toBe(sharedScopeId);
+      for (const record of run3.parsed.records) expect(record.ambient_skill_profile.scope_id).not.toBe(sharedScopeId);
+
+      const allRecords = [...run1.parsed.records, ...run2.parsed.records, ...run3.parsed.records];
+      expect(allRecords.length).toBe(12); // 4 + 4 + 4
+
+      const { groups, errors } = aggregateRuns(allRecords);
+      expect(errors).toEqual([]);
+      expect(groups.length).toBe(4); // 2 (shared scope, split by condition) + 2 (other scope, split by condition)
+
+      const sharedGroups = groups.filter((g) => g.group_key.ambient_skill_profile.scope_id === sharedScopeId);
+      expect(sharedGroups.length).toBe(2);
+      expect(sharedGroups.map((g) => g.group_key.condition).sort()).toEqual(['current-skill', 'no-skill']);
+      for (const g of sharedGroups) expect(g.run_count).toBe(4); // 2 (run1) + 2 (run2) per condition
+
+      const otherGroups = groups.filter((g) => g.group_key.ambient_skill_profile.scope_id !== sharedScopeId);
+      expect(otherGroups.length).toBe(2);
+      expect(otherGroups.map((g) => g.group_key.condition).sort()).toEqual(['current-skill', 'no-skill']);
+      for (const g of otherGroups) expect(g.run_count).toBe(2); // only run3
+
+      // Never merges: no group mixes runs from both scopes.
+      for (const g of groups) {
+        const runIdsFromRun3 = new Set(run3.parsed.records.map((r) => r.run_id));
+        const groupHasRun3 = g.runs.some((id) => runIdsFromRun3.has(id));
+        const groupScopeId = g.group_key.ambient_skill_profile.scope_id;
+        expect(groupHasRun3).toBe(groupScopeId !== sharedScopeId);
+      }
+    } finally {
+      rmSync(scopeDir, { recursive: true, force: true });
+    }
+  }, 180000);
 });
 
 describe('cli.mjs run -- real subprocess against fake claude (no live API cost)', () => {

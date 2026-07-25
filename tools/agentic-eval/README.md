@@ -260,24 +260,16 @@ matrix is rejected anyway.
   look like, which is exactly why `scope_id` (not just the fingerprint) is itself part of the
   Fairness Contract's partition key (below). See "Schemas" and "Fairness Contract" below.
 
-  **Known limitation, deliberately not addressed in this fix (round-3 audit note):** because the
-  HMAC key is random and freshly generated *per harness invocation* (never per measurement or
-  per scenario), and `ambient_skill_profile` -- `scope_id` included -- sits in
-  `HARD_PARTITION_FIELDS`, two runs of the **same scenario** captured in **different** harness
-  invocations can never be aggregated together, even when their underlying ambient environment was
-  genuinely identical. This is correct and intentional for a single invocation's own internal
-  fairness, but it means **no cross-invocation, longitudinal aggregation is possible with today's
-  key lifecycle** -- every fresh `calibrate`/`smoke`/`run` invocation starts an unrelated
-  comparability island. For a one-shot canary this is a non-issue; for a *publishable, repeated*
-  measurement program it is a real constraint that needs its own design decision before the next
-  live run, not a silent assumption: a stable, **per-measurement** (not per-invocation) HMAC key,
-  injected only into the specific commands that constitute one measurement, identified by a
-  **non-secret key id** (so a stale or rotated key is diagnosable from the record itself, the same
-  way `scope_id` already is), with explicit, deliberate rotation semantics rather than an implicit
-  one-key-forever default. This PR intentionally does **not** implement that redesign -- the
-  per-invocation key described above is correctly isolated and ships as-is; the redesign is future
-  work, gated on an explicit decision about the measurement program's actual longitudinal-comparison
-  needs.
+  **Longitudinal aggregation is addressed via an optional, local measurement-scope file** (this
+  was previously an open, deliberately-unaddressed limitation of the per-invocation ephemeral key
+  described above -- it no longer is). Supplying no `--measurement-scope-file` preserves the
+  per-invocation ephemeral key exactly as described above, byte-for-byte -- every fresh
+  `calibrate`/`smoke`/`run` invocation still starts its own unrelated comparability island by
+  default, which remains correct and sufficient for a one-shot canary. For a *publishable,
+  repeated* measurement program, `--measurement-scope-file <path>` (backed by `scope init --out
+  <path>`) supplies a stable, non-secret-identified (`scope_id`) key instead, so independent
+  invocations sharing the same scope file remain comparable. See "Measurement scope" below for
+  the full creation/reuse/rotation/privacy contract.
 
   **JUnit-evidence attribution, per attempt, keyed by `tool_use_id`.** A `tests_executed`
   scenario condition can involve **multiple Bash attempts** (a first, wrong/failed try; a
@@ -897,6 +889,68 @@ into place) so a mid-write failure can't leave a half-written record on disk, AN
 write-then-rename sequence for all four files (two records, two raw transcripts) is itself rolled
 back on any failure partway through — see "No committable evidence before every gate passes"
 above.
+
+## Measurement scope
+
+`calibrate`/`smoke`/`run` each generate a fresh, random `{scope_id, key}` pair per invocation by
+default (see "Ambient-skill-profile tolerance" above) — correct for a single invocation's own
+internal fairness, but since `ambient_skill_profile` (which embeds `scope_id`) is a
+`HARD_PARTITION_FIELDS` entry, two records from **different** invocations can never aggregate
+together under that default, even when the underlying environment was genuinely identical. A
+**measurement scope file** closes this gap: a local, secret, versioned file supplying a stable
+`{scope_id, key}` pair that independent invocations can share.
+
+**Creating one:**
+
+```
+node tools/agentic-eval/cli.mjs scope init --out <path>
+```
+
+Prints only `{scope_id, path}` — never the key. Recommend a path **outside any git
+repository** as the simplest, safest default (no dependency on `.gitignore` correctness at all).
+A path inside a repository is also accepted, but only if it is confirmed **both** untracked
+**and** covered by that repository's own `.gitignore` — enforced at runtime (`git ls-files`/
+`git check-ignore` against the actual containing repository, never assumed from the path's own
+string shape), not merely a documented convention. Every indeterminate git outcome (git missing,
+a spawn error, an unrecognized result) fails closed, never assumed safe. Creation is atomic and
+exclusive: it refuses to overwrite an existing file, and leaves no partial file behind on any
+failure. On POSIX (Linux/macOS) the file is created with mode `0600` (owner read/write only),
+verified on disk before publishing; on Windows, Node cannot set POSIX permission bits or enforce
+ACLs, so this is best-effort only there — no ACL guarantee is claimed.
+
+**Reusing one:** pass the same file to any combination of `calibrate`/`smoke`/`run` via
+`--measurement-scope-file <path>`:
+
+```
+node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <clone> --seed <n> \
+  --measurement-scope-file <path>
+```
+
+Every invocation that supplies the same file gets the identical `scope_id`/key, so their
+resulting `ambient_skill_profile` fields agree and `HARD_PARTITION_FIELDS` no longer separates
+them purely by invocation — they aggregate together via `aggregate` (still split by `condition`,
+`scenario_id`, and every other Fairness Contract field exactly as before; sharing a scope only
+removes the invocation-identity split, nothing else). Omitting the flag preserves today's exact
+ephemeral, per-invocation behavior byte-for-byte.
+
+**Rotating:** create a second file (`scope init --out <different-path>`) and point
+`--measurement-scope-file` at it instead — a new, separate comparability scope. There is no
+in-place "rotate" mutation of an existing file; a new file is a new scope by construction.
+
+**Privacy:** the file's `hmac_key_base64` is secret — never printed, logged, committed, or passed
+to a child Claude process (only used locally to compute `fingerprint_hmac`, exactly like the
+ephemeral key already is). `scope_id` is not secret — it is already a schema-v4 record field
+regardless of whether the scope is ephemeral or supplied. **Never commit a measurement scope
+file** — keep it outside the repository, or in a path your `.gitignore` genuinely covers (both
+enforced, not just advised, as described above).
+
+**Load-time safety:** `--measurement-scope-file` is validated with the identical rigor as
+`scope init`'s own target, applied to **both** the path as supplied and its realpath-resolved
+destination — a symlink whose own location looks safe but resolves to a tracked file is
+rejected, and (the reverse) a symlink that is itself tracked/unignored but resolves to an
+otherwise-safe destination is also rejected. Every malformed-file class (missing file,
+unparseable JSON, wrong schema value, invalid `scope_id`, non-canonical or wrong-length
+`hmac_key_base64`, an unsafe path) fails closed before any Claude session spawns.
 
 ## Explicit limitations
 

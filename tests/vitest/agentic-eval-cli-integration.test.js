@@ -251,6 +251,21 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     expect(result.stderr).toContain('noUnexpectedToolsOk:false');
     expect(readdirSync(isolatedTmp)).toEqual([]);
   }, 20000);
+
+  // A malformed --measurement-scope-file must fail closed BEFORE any Claude session spawns --
+  // proven here via a REAL subprocess against a fixture that would otherwise clearly succeed
+  // ('success'): zero fake-claude invocation ever happens (no evidence, no temp dirs used), not
+  // just "cmdCalibrate's own code resolves the scope early" as a static/unit-level claim.
+  it('a malformed --measurement-scope-file fails closed before spawning any Claude session', () => {
+    const result = runCli(
+      ['calibrate', '--model', 'fake-model-x', '--measurement-scope-file', path.join(isolatedTmp, 'does-not-exist-scope.json')],
+      fakeClaudeEnv('success'),
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--measurement-scope-file is invalid/);
+    expect(listEvidenceFiles('calibration')).toEqual([]);
+    expect(readdirSync(isolatedTmp)).toEqual([]);
+  }, 20000);
 });
 
 describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost)', () => {
@@ -537,6 +552,21 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   it('leaves no registered git worktree behind after a FAILING run either (cleanup runs in finally)', () => {
     const result = runCli(smokeArgs(), fakeClaudeEnv('all-denied'));
     expect(result.status).toBe(1);
+    const worktreeList = gitViaBash(['worktree', 'list'], sourceRepoDir);
+    expect(worktreeList.trim().split('\n').length).toBe(1);
+  }, 30000);
+
+  // Mirrors calibrate's identical proof above: a malformed --measurement-scope-file must fail
+  // closed before any Claude session spawns -- proven via a REAL subprocess against a fixture
+  // ('success') that would otherwise clearly succeed, so no worktree is ever materialized.
+  it('a malformed --measurement-scope-file fails closed before spawning any Claude session', () => {
+    const result = runCli(
+      smokeArgs(['--measurement-scope-file', path.join(isolatedTmp, 'does-not-exist-scope.json')]),
+      fakeClaudeEnv('success'),
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--measurement-scope-file is invalid/);
+    expect(listEvidenceFiles('smoke')).toEqual([]);
     const worktreeList = gitViaBash(['worktree', 'list'], sourceRepoDir);
     expect(worktreeList.trim().split('\n').length).toBe(1);
   }, 30000);
