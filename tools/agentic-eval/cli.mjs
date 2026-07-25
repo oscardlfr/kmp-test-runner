@@ -52,6 +52,7 @@ import { tokenize } from './policy-hook.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 import { RUNS_ROOT, resolveEvidenceOutDir, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
 import { buildRejectionDiagnostics, writeRejectedRunDiagnostics } from './rejection-diagnostics.mjs';
+import { loadMeasurementScopeFile, createMeasurementScopeFileExclusive } from './measurement-scope.mjs';
 
 // dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
 // but package.json declares "node": ">=18" (confirmed to actually matter on a real ubuntu-latest
@@ -175,12 +176,16 @@ const HELP = `tools/agentic-eval/cli.mjs -- reproducible skill evaluation harnes
 
 Usage:
   node tools/agentic-eval/cli.mjs calibrate [--model <name>] [--private-patterns-file <path>]
+                                             [--measurement-scope-file <path>]
   node tools/agentic-eval/cli.mjs smoke --source-repo-dir <local-clone> --pinned-commit <sha>
                                          [--project-alias <alias>] [--model <name>]
                                          [--private-patterns-file <path>]
+                                         [--measurement-scope-file <path>]
   node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
                                        [--repeats <n>] [--model <name>] [--dry-run]
                                        [--private-patterns-file <path>]
+                                       [--measurement-scope-file <path>]
+  node tools/agentic-eval/cli.mjs scope init --out <path>
   node tools/agentic-eval/cli.mjs corpus validate
   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
   node tools/agentic-eval/cli.mjs validate --run <path>
@@ -191,7 +196,12 @@ Skill mechanism invokes at all, not benchmark results. run executes a full --rep
 scenario matrix against a scenario in corpus/scenarios/ and grades each condition's transcript
 against that scenario's structured ground truth (tools/agentic-eval/graders.mjs); a resulting
 record's benchmark_eligible depends only on protocol/integrity completeness, never on whether the
-agent's answer was correct -- see tools/agentic-eval/README.md. No evidence is committable until
+agent's answer was correct -- see tools/agentic-eval/README.md. --measurement-scope-file <path>
+loads a local, secret scope file (created via scope init --out <path>) instead of generating a
+fresh ephemeral one, so independent invocations sharing the same file remain comparable for
+longitudinal aggregate -- omitting it preserves today's exact per-invocation behavior; see
+README.md's "Measurement scope" section for creation/reuse/rotation/privacy semantics. No
+evidence is committable until
 schema, policy-hash freshness, privacy, and the run-kind's hard acceptance gate all pass.
 `;
 
@@ -254,12 +264,13 @@ function parseArgs(argv) {
 // --private-patterns-file disabled redaction with no error and reported the run as 'public'. This
 // allowlist closes that: any flag not in the current subcommand's list is a hard error.
 const SUBCOMMAND_SHAPES = {
-  calibrate: { flags: ['model', 'private-patterns-file'], extraPositionals: 0 },
-  smoke: { flags: ['model', 'source-repo-dir', 'pinned-commit', 'project-alias', 'private-patterns-file'], extraPositionals: 0 },
-  run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'model', 'dry-run', 'private-patterns-file'], extraPositionals: 0 },
+  calibrate: { flags: ['model', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
+  smoke: { flags: ['model', 'source-repo-dir', 'pinned-commit', 'project-alias', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
+  run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'model', 'dry-run', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
   corpus: { flags: [], extraPositionals: 1 }, // corpus <validate>
   aggregate: { flags: ['runs-dir'], extraPositionals: 0 },
   validate: { flags: ['run'], extraPositionals: 0 },
+  scope: { flags: ['out'], extraPositionals: 1 }, // scope <init>
 };
 
 /** Validates a parsed `args` against SUBCOMMAND_SHAPES[sub] -- unknown flags and unexpected
@@ -293,6 +304,29 @@ function validatePrivatePatternsFileOrFail(privatePatternsFile) {
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: `--private-patterns-file is invalid: ${err.message}` };
+  }
+}
+
+/** The ONE abstraction cmdCalibrate/cmdSmoke/cmdRun each call exactly once, replacing the 3
+ * direct generateAmbientProfileScope() calls that used to sit later in each function (see that
+ * function's own doc comment, unchanged below). No --measurement-scope-file supplied preserves
+ * today's exact ephemeral behavior byte-for-byte; a supplied file is eagerly loaded/validated
+ * here -- fail-closed on every malformed class -- BEFORE any Claude session spawns (measurement-
+ * scope.mjs's own loadMeasurementScopeFile never throws a message containing the secret key).
+ * Returns {ok:true, scopeId, key, source:'ephemeral'|'supplied'} or {ok:false, reason}, mirroring
+ * validatePrivatePatternsFileOrFail's own shape -- never throws. */
+function resolveMeasurementScopeOrFail(measurementScopeFile) {
+  // Only null/undefined mean "flag omitted" -- an explicitly-supplied empty string (reachable via
+  // `--measurement-scope-file ''`, since parseArgs happily accepts an empty-but-present value) is
+  // NOT the same as omission and must fail closed as an invalid path, not silently fall back to
+  // ephemeral. A falsy check (`!measurementScopeFile`) previously treated '' the same as omitted.
+  if (measurementScopeFile == null) {
+    return { ok: true, source: 'ephemeral', ...generateAmbientProfileScope() };
+  }
+  try {
+    return { ok: true, source: 'supplied', ...loadMeasurementScopeFile(measurementScopeFile) };
+  } catch (err) {
+    return { ok: false, reason: `--measurement-scope-file is invalid: ${err.message}` };
   }
 }
 
@@ -461,9 +495,12 @@ const TARGET_PLUGIN_NAME = 'kmp-test-runner';
 const TARGET_SKILL_NAME = 'kmp-test-runner';
 
 /**
- * Generates the ONE random HMAC key + opaque scope id for a single harness invocation
- * (cmdCalibrate/cmdSmoke/cmdRun each call this exactly once, before building any records) --
- * review-round-2 fix (correction 2): the original ambient-skill-profile fingerprint was an
+ * Generates the ONE random HMAC key + opaque scope id for a single harness invocation --
+ * resolveMeasurementScopeOrFail's ephemeral branch calls this exactly once, when no
+ * --measurement-scope-file is supplied (its supplied branch loads a stable {scopeId, key} pair
+ * from a local secret file instead -- see measurement-scope.mjs). This function itself is
+ * unchanged: still private, still called before building any records. Review-round-2 fix
+ * (correction 2): the original ambient-skill-profile fingerprint was an
  * UNKEYED SHA-256 hash, directly demonstrated to be reversible by dictionary attack against the
  * small, guessable universe of real Claude Code skill names. `key` (32 random bytes) is shared by
  * EVERY cell within this SAME invocation (so a matrix's cells can still be meaningfully compared
@@ -1608,6 +1645,11 @@ async function cmdCalibrate(args) {
     console.error(patternsCheck.reason);
     return 1;
   }
+  const scopeCheck = resolveMeasurementScopeOrFail(args['measurement-scope-file'] ?? null);
+  if (!scopeCheck.ok) {
+    console.error(scopeCheck.reason);
+    return 1;
+  }
   const { computePolicySha256 } = await import('./policy-config.mjs');
   const templateDir = join(__dirname, 'fixtures', 'calibration-project');
   // Round-7 audit finding: this call sat OUTSIDE the try block below, unguarded -- any exception
@@ -1636,9 +1678,11 @@ async function cmdCalibrate(args) {
   try {
     const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = conditionPair;
     const policySha256 = computePolicySha256();
-    // One random HMAC key + opaque scope id for this ENTIRE calibrate invocation (correction 2) --
-    // shared by both A and B so they remain comparable to each other, never persisted.
-    const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = generateAmbientProfileScope();
+    // One HMAC key + opaque scope id for this ENTIRE calibrate invocation (correction 2) --
+    // shared by both A and B so they remain comparable to each other, never persisted. Ephemeral
+    // (freshly random) unless --measurement-scope-file supplied a stable one (resolved eagerly,
+    // above, before any spawn -- see resolveMeasurementScopeOrFail's own doc comment).
+    const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
     const common = { runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey };
     const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
     const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
@@ -1803,6 +1847,11 @@ async function cmdSmoke(args) {
     console.error(patternsCheck.reason);
     return 1;
   }
+  const scopeCheck = resolveMeasurementScopeOrFail(args['measurement-scope-file'] ?? null);
+  if (!scopeCheck.ok) {
+    console.error(scopeCheck.reason);
+    return 1;
+  }
   // scenario_id and project_url both derive from the ACTUAL project smoke is pointed at, never
   // hardcoded -- an earlier version hard-coded scenario_id to 'kampkit-android-host-test-
   // discovery' regardless of --source-repo-dir/--project-alias, so a run against a DIFFERENT
@@ -1840,9 +1889,11 @@ async function cmdSmoke(args) {
   try {
     const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = conditionPair;
     const policySha256 = computePolicySha256();
-    // One random HMAC key + opaque scope id for this ENTIRE smoke invocation (correction 2) --
-    // shared by both A and B so they remain comparable to each other, never persisted.
-    const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = generateAmbientProfileScope();
+    // One HMAC key + opaque scope id for this ENTIRE smoke invocation (correction 2) -- shared by
+    // both A and B so they remain comparable to each other, never persisted. Ephemeral (freshly
+    // random) unless --measurement-scope-file supplied a stable one (resolved eagerly, above,
+    // before any spawn -- see resolveMeasurementScopeOrFail's own doc comment).
+    const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
     const common = { runKind: 'smoke', scenarioId, skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, projectUrl, family: 'test-only', modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey };
     const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
     const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
@@ -2022,9 +2073,16 @@ const MAX_REPEATS = 20;
  * defaults to 4 (decision 15: even, benchmark_eligible-capable by construction), accepts any
  * positive integer up to MAX_REPEATS explicitly. `--dry-run` returns the resolved plan
  * immediately after matrix-build/policy-print, strictly before source-repo verification or any
- * spawn -- zero git calls against --source-repo-dir, zero subprocesses, by construction (the
- * early return is textually before either is ever reached); its own output states the real live
- * session count this run would spawn once pointed at a genuine `claude` binary.
+ * spawn -- it NEVER spawns Claude and NEVER touches --source-repo-dir, by construction (the early
+ * return is textually before either is ever reached); its own output states the real live session
+ * count this run would spawn once pointed at a genuine `claude` binary.
+ * Precisely scoped subprocess claim: without `--measurement-scope-file`, `--dry-run` is a genuine
+ * zero-subprocess preview. WITH that flag, `--dry-run` DOES invoke real `git` subprocesses --
+ * `resolveMeasurementScopeOrFail`'s own path-safety check, scoped exclusively to the supplied
+ * scope file's own location, never to --source-repo-dir -- resolved even earlier than the checks
+ * above (before this function's own `isDryRun` branch), so a malformed scope file fails closed
+ * before the plan is ever printed, and a supplied file's non-secret scope_id (never the key) is
+ * included in the preview.
  */
 async function cmdRun(args) {
   const scenarioId = args.scenario;
@@ -2061,6 +2119,14 @@ async function cmdRun(args) {
     console.error(patternsCheck.reason);
     return 1;
   }
+  // Resolved here, BEFORE the --dry-run early-return -- see this function's own doc comment above
+  // for the precise "--dry-run's subprocess guarantee, with vs. without a supplied scope file"
+  // contract this deliberately runs ahead of.
+  const scopeCheck = resolveMeasurementScopeOrFail(args['measurement-scope-file'] ?? null);
+  if (!scopeCheck.ok) {
+    console.error(scopeCheck.reason);
+    return 1;
+  }
   const loaded = loadScenarioById(scenarioId);
   if (!loaded.ok) {
     console.error(loaded.reason);
@@ -2073,7 +2139,11 @@ async function cmdRun(args) {
   // this is a genuine preview, never a separately-maintained summary that could drift.
   const plan = buildScenarioRunPlan(scenario.id, repeats, seed);
   if (isDryRun) {
-    console.log(JSON.stringify({ dry_run: true, scenario_id: scenario.id, repeats, seed, model, total_live_claude_sessions: repeats * 2, policy: scenario.policy, plan }, null, 2));
+    // measurement_scope is a NEW, OPTIONAL field -- present only when a scope file was supplied,
+    // so bare --dry-run (no scope flag) keeps its existing JSON shape byte-for-byte. Never the
+    // key, only the already-non-secret scope_id.
+    const measurementScope = scopeCheck.source === 'supplied' ? { measurement_scope: { scope_id: scopeCheck.scopeId, source: scopeCheck.source } } : {};
+    console.log(JSON.stringify({ dry_run: true, scenario_id: scenario.id, repeats, seed, model, total_live_claude_sessions: repeats * 2, policy: scenario.policy, plan, ...measurementScope }, null, 2));
     return 0;
   }
 
@@ -2107,10 +2177,12 @@ async function cmdRun(args) {
   }
   try {
     const policySha256 = computePolicySha256();
-    // One random HMAC key + opaque scope id for this ENTIRE scenario matrix invocation (correction
-    // 2) -- shared by every cell (all repetitions, both conditions) so they remain comparable to
-    // each other via scenarioHardGate's own cross-cell consensus check; never persisted.
-    const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = generateAmbientProfileScope();
+    // One HMAC key + opaque scope id for this ENTIRE scenario matrix invocation (correction 2) --
+    // shared by every cell (all repetitions, both conditions) so they remain comparable to each
+    // other via scenarioHardGate's own cross-cell consensus check; never persisted. Ephemeral
+    // (freshly random) unless --measurement-scope-file supplied a stable one (resolved eagerly,
+    // before the --dry-run early-return -- see resolveMeasurementScopeOrFail's own doc comment).
+    const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
     const records = [];
     const conditionResults = [];
     for (const cell of matrix.cellResults) {
@@ -2244,6 +2316,26 @@ function validateLoadedScenarios(loaded) {
   return { ok, results };
 }
 
+/** `scope init --out <path>` -- creates a new, local, secret measurement-scope file (see
+ * measurement-scope.mjs's own header for the full file contract and privacy rationale). Prints
+ * only {scope_id, path} on success -- never hmac_key_base64. Mirrors cmdCorpusValidate's
+ * simplicity as the other nested-subcommand handler in this file. */
+function cmdScopeInit(args) {
+  const outPath = args.out;
+  if (!outPath) {
+    console.error('scope init requires --out <path>');
+    return 1;
+  }
+  try {
+    const { scopeId } = createMeasurementScopeFileExclusive(outPath);
+    console.log(JSON.stringify({ scope_id: scopeId, path: outPath }, null, 2));
+    return 0;
+  } catch (err) {
+    console.error(`scope init failed: ${err.message}`);
+    return 1;
+  }
+}
+
 function cmdCorpusValidate() {
   const corpusDir = join(__dirname, 'corpus');
   const scenariosDir = join(corpusDir, 'scenarios');
@@ -2324,6 +2416,7 @@ async function main() {
   switch (sub) {
     case 'calibrate': return cmdCalibrate(args);
     case 'corpus': return args._[1] === 'validate' ? cmdCorpusValidate() : (process.stderr.write('usage: corpus validate\n'), 1);
+    case 'scope': return args._[1] === 'init' ? cmdScopeInit(args) : (process.stderr.write('usage: scope init --out <path>\n'), 1);
     case 'aggregate': return cmdAggregate(args);
     case 'validate': return cmdValidate(args);
     case 'smoke': return cmdSmoke(args);
@@ -2348,4 +2441,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, cmdCorpusValidate, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };
+export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, cmdCorpusValidate, cmdScopeInit, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };

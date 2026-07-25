@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
-import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
+import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -173,7 +173,46 @@ describe('validateSubcommandArgs', () => {
   });
 
   it('SUBCOMMAND_SHAPES covers every real subcommand main() actually dispatches', () => {
-    expect(Object.keys(SUBCOMMAND_SHAPES).sort()).toEqual(['aggregate', 'calibrate', 'corpus', 'run', 'smoke', 'validate']);
+    expect(Object.keys(SUBCOMMAND_SHAPES).sort()).toEqual(['aggregate', 'calibrate', 'corpus', 'run', 'scope', 'smoke', 'validate']);
+  });
+
+  // --measurement-scope-file: added to calibrate/smoke/run so an existing, sanity-checked
+  // measurement can be reused across independent invocations (see resolveMeasurementScopeOrFail
+  // below) -- accepting the new flag must never disturb any EXISTING flag's acceptance/rejection.
+  it('accepts --measurement-scope-file for calibrate/smoke/run', () => {
+    for (const sub of ['calibrate', 'smoke', 'run']) {
+      expect(SUBCOMMAND_SHAPES[sub].flags).toContain('measurement-scope-file');
+    }
+    const args = parseArgs(['calibrate', '--measurement-scope-file', 'x.json']);
+    expect(validateSubcommandArgs('calibrate', args)).toEqual([]);
+  });
+
+  it('an unrelated typo of the new flag is still rejected, exactly like every other flag', () => {
+    const args = parseArgs(['calibrate', '--measurement-scope-fil', 'x.json']);
+    const errors = validateSubcommandArgs('calibrate', args);
+    expect(errors.some((e) => e.includes('--measurement-scope-fil'))).toBe(true);
+  });
+
+  it('duplicating --measurement-scope-file is still a hard parseArgs error', () => {
+    const args = parseArgs(['calibrate', '--measurement-scope-file', 'a.json', '--measurement-scope-file', 'b.json']);
+    expect(args.errors.some((e) => e.includes('--measurement-scope-file') && e.includes('more than once'))).toBe(true);
+  });
+
+  it('accepts scope init\'s one expected extra positional plus --out', () => {
+    const args = parseArgs(['scope', 'init', '--out', 'x.json']);
+    expect(validateSubcommandArgs('scope', args)).toEqual([]);
+  });
+
+  it('rejects scope with an unknown flag', () => {
+    const args = parseArgs(['scope', 'init', '--out', 'x.json', '--bogus', 'y']);
+    const errors = validateSubcommandArgs('scope', args);
+    expect(errors.some((e) => e.includes('--bogus'))).toBe(true);
+  });
+
+  it('rejects scope with a second extra positional beyond init', () => {
+    const args = parseArgs(['scope', 'init', 'unexpected']);
+    const errors = validateSubcommandArgs('scope', args);
+    expect(errors.some((e) => e.includes('extra argument'))).toBe(true);
   });
 });
 
@@ -213,6 +252,86 @@ describe('validatePrivatePatternsFileOrFail', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// resolveMeasurementScopeOrFail is the ONE abstraction cmdCalibrate/cmdSmoke/cmdRun each call
+// (replacing the 3 direct generateAmbientProfileScope() calls) -- see measurement-scope.mjs's
+// own test file for the underlying module's coverage; this covers the cli.mjs-level wrapper's
+// own {ok,reason}/{ok,source,...} contract, mirroring validatePrivatePatternsFileOrFail's shape.
+describe('resolveMeasurementScopeOrFail', () => {
+  it('no path -> ephemeral, and two separate calls never produce the same scopeId/key', () => {
+    const a = resolveMeasurementScopeOrFail(null);
+    const b = resolveMeasurementScopeOrFail(null);
+    expect(a.ok).toBe(true);
+    expect(a.source).toBe('ephemeral');
+    expect(a.scopeId).not.toBe(b.scopeId);
+    expect(a.key.equals(b.key)).toBe(false);
+  });
+
+  it('the same supplied scope file loaded twice yields identical scopeId and key bytes', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-scope-'));
+    try {
+      const file = path.join(dir, 'scope.json');
+      const first = resolveMeasurementScopeOrFail(file);
+      // scope init doesn't exist as a bare function call here -- exercise the same file-creation
+      // path cmdScopeInit uses, directly, so this test doesn't depend on cli.mjs wiring order.
+      expect(first.ok).toBe(false); // file doesn't exist yet
+      writeFileSync(file, JSON.stringify({
+        schema: 1,
+        scope_id: '11111111-1111-4111-8111-111111111111',
+        hmac_key_base64: Buffer.alloc(32, 7).toString('base64'),
+      }), { mode: 0o600 });
+      const a = resolveMeasurementScopeOrFail(file);
+      const b = resolveMeasurementScopeOrFail(file);
+      expect(a.ok).toBe(true);
+      expect(a.source).toBe('supplied');
+      expect(a.scopeId).toBe('11111111-1111-4111-8111-111111111111');
+      expect(a.scopeId).toBe(b.scopeId);
+      expect(a.key.equals(b.key)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('every malformed-file class fails closed with ok:false and a reason, never throwing', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-scope-bad-'));
+    try {
+      expect(resolveMeasurementScopeOrFail(path.join(dir, 'missing.json')).ok).toBe(false);
+      // mode:0o600 on both -- otherwise, on POSIX, loadMeasurementScopeFile's own mode
+      // re-verification would reject these for the WRONG reason (permissions), masking whether
+      // the JSON-parse and shape-validation layers below actually discriminate as claimed.
+      const badJson = path.join(dir, 'bad.json');
+      writeFileSync(badJson, 'not json', { mode: 0o600 });
+      const badJsonResult = resolveMeasurementScopeOrFail(badJson);
+      expect(badJsonResult.ok).toBe(false);
+      expect(badJsonResult.reason).toMatch(/not valid JSON/);
+      const badShape = path.join(dir, 'shape.json');
+      writeFileSync(badShape, JSON.stringify({ schema: 1, scope_id: 'nope' }), { mode: 0o600 });
+      const badShapeResult = resolveMeasurementScopeOrFail(badShape);
+      expect(badShapeResult.ok).toBe(false);
+      expect(badShapeResult.reason).toMatch(/invalid/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Regression coverage: an explicitly-supplied empty string is reachable via
+  // `--measurement-scope-file ''` (parseArgs happily accepts an empty-but-present value -- see
+  // the sibling parseArgs test below) and previously fell through the falsy check
+  // (`!measurementScopeFile`) the same way an OMITTED flag (null) does, silently generating a
+  // fresh ephemeral scope instead of failing closed on the caller's actual (invalid) input.
+  it('an explicitly-supplied empty string is NOT treated as omitted -- fails closed, never silently ephemeral', () => {
+    const result = resolveMeasurementScopeOrFail('');
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBeTruthy();
+    expect(result.source).toBeUndefined();
+  });
+
+  it('parseArgs does not strip an explicitly empty --measurement-scope-file value', () => {
+    const args = parseArgs(['run', '--measurement-scope-file', '']);
+    expect(args['measurement-scope-file']).toBe('');
+    expect(args.errors).toEqual([]);
   });
 });
 
