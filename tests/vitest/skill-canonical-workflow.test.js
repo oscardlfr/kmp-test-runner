@@ -16,6 +16,8 @@ import { fileURLToPath } from 'node:url';
 import { discoverCoverageModules, parseArgs as parseCoverageArgs, runCoverage } from '../../lib/orchestrators/coverage-orchestrator.js';
 import { parseArgs as parseChangedArgs } from '../../lib/orchestrators/changed-orchestrator.js';
 import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
+import { SOFT_ERROR_CODES } from '../../lib/envelope/builder.js';
+import { ENV_ERROR_CODES } from '../../lib/envelope/exit-codes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -148,6 +150,23 @@ describe('Coverage dry-run verification contract (grounds the dry-run-vs-real-ru
   });
 });
 
+// CodeRabbit round (PR #395, HEAD 46ea8c9): grounds the Verification section's gradle_timeout
+// soft-code claim in the real envelope builder rather than documenting it from memory.
+// SOFT_ERROR_CODES proves gradle_timeout is genuinely treated as soft (WS-5 does not promote it);
+// ENV_ERROR_CODES proves it is otherwise a hard environment error -- together they prove the real
+// contract is a benchmark-partial-timeout EXCEPTION, not a universally-safe code.
+describe('gradle_timeout soft-code contract (grounds SKILL.md Verification claim in the real envelope builder)', () => {
+  it('gradle_timeout is a genuine SOFT_ERROR_CODES member, alongside no_summary and no_changed_modules', () => {
+    expect(SOFT_ERROR_CODES.has('gradle_timeout')).toBe(true);
+    expect(SOFT_ERROR_CODES.has('no_summary')).toBe(true);
+    expect(SOFT_ERROR_CODES.has('no_changed_modules')).toBe(true);
+  });
+
+  it('gradle_timeout is otherwise ENV_ERROR-classified -- soft only as the benchmark partial-timeout exception', () => {
+    expect(ENV_ERROR_CODES.has('gradle_timeout')).toBe(true);
+  });
+});
+
 describe('Decision protocol -- single canonical entry point, first in the document', () => {
   it('is the first ## heading in the document (not a fourth layer alongside old ones)', () => {
     const headings = [...skillMd.matchAll(/^## (.+)$/gm)];
@@ -197,29 +216,42 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(protocol).toMatch(/known workflow.{0,20}no specific module/i);
   });
 
-  // RC3: the first Bash action after loading the skill must be the canonical global dispatch
-  // when the workflow is known and no exact module constraint exists -- generic preflight and
-  // repository exploration must not precede it.
-  it('step: no specific module dispatches globally as the first action, before any other exploration', () => {
+  // RC3 + CodeRabbit round (PR #395 thread on line 32): the first Bash action after loading the
+  // skill must be THAT workflow's own resolved dispatch, not a hard-coded `parallel` -- an
+  // instrumented/coverage/benchmark request with no known module must still run its own
+  // workflow. Also asserts true ORDERING (CodeRabbit thread on test line 211): the canonical
+  // dispatch example must be the first backtick-quoted `kmp-test ...` command in the step, so a
+  // future edit inserting a preflight/exploration command ahead of it fails this test, not just
+  // co-occurrence within the same text window.
+  it('step: no specific module dispatches that workflow\'s own command globally as the first action, not hard-coded to parallel', () => {
     const start = protocol.indexOf('Known workflow, no specific module');
     const end = protocol.indexOf('**Known workflow, known module**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const step2 = protocol.slice(start, end);
-    expect(step2.toLowerCase()).toMatch(/first\s+action/);
+    expect(step2).toMatch(/dispatch\s+that\s+workflow.s\s+own\s+command\s+globally\s+as\s+the\s+first\s+action/i);
     expect(step2).toContain('kmp-test parallel --json --project-root .');
+    // Proves the rule isn't hard-coded to parallel -- the other dispatchable workflows are named.
+    expect(step2).toMatch(/\bandroid\b/);
+    expect(step2).toMatch(/\bcoverage\b/);
+    expect(step2).toMatch(/\bbenchmark\b/);
+    expect(step2).toMatch(/\bchanged\b/);
+    // Ordering: nothing else shaped like a `kmp-test <subcommand>` command precedes the example.
+    const firstKmpTestIdx = step2.search(/`kmp-test\s+\S+/);
+    const dispatchIdx = step2.indexOf('`kmp-test parallel --json --project-root .`');
+    expect(firstKmpTestIdx).toBeGreaterThan(-1);
+    expect(dispatchIdx).toBe(firstKmpTestIdx);
   });
 
-  // RC1: a conventional or descriptive platform label ("the Android module", "app", "shared")
-  // is intent/context, not a verified Gradle module path -- it must never satisfy the
-  // known-module step below.
-  it('step: descriptive platform or conventional wording never counts as a specific module', () => {
+  // RC1 + CodeRabbit round (thread on test line 223): a conventional or descriptive platform
+  // label ("app", "shared") is intent/context, not a verified Gradle module path. Asserted as ONE
+  // complete clause tying the examples directly to the negation -- not independent keyword
+  // checks that would still pass if the protocol contradicted itself elsewhere.
+  it('step: descriptive/conventional wording is explicitly rejected as an exact module -- one coherent clause', () => {
     const start = protocol.indexOf('Known workflow, no specific module');
     const end = protocol.indexOf('**Known workflow, known module**');
     const step2 = protocol.slice(start, end);
-    expect(step2.toLowerCase()).toMatch(/\bapp\b/);
-    expect(step2.toLowerCase()).toMatch(/\bshared\b/);
-    expect(step2.toLowerCase()).toMatch(/isn.t\s+an\s+exact\s+module|not\s+an\s+exact\s+module/);
+    expect(step2).toMatch(/descriptive\s+wording\s+\("app",\s*"shared"\)\s+isn.t\s+an\s+exact\s+module/i);
   });
 
   it('step: known workflow + known module dispatches filtered using the already-known name', () => {
@@ -256,18 +288,20 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(step3.toLowerCase()).toContain('no glob');
   });
 
-  // RC1: a module is "known" only when the user explicitly supplied an exact Gradle module
-  // identity, or an earlier structured envelope in this conversation already established that
-  // exact modules[].name -- never from descriptive wording alone (previous step).
-  it('step: known module identity comes from an explicit statement or a prior envelope, never descriptive wording alone', () => {
+  // RC1 + CodeRabbit round (thread on test line 223, "also applies to 259-271"): a module is
+  // "known" only when the user explicitly supplied an exact Gradle module identity, or an
+  // earlier structured envelope already established that exact modules[].name -- never from
+  // descriptive wording alone. Asserted as one ordered relationship (each anchor must appear,
+  // in order) rather than four independent word checks that would pass even if disconnected.
+  it('step: known module identity is sourced only from an explicit statement or a prior envelope, never descriptive wording -- one ordered relationship', () => {
     const start = protocol.indexOf('Known workflow, known module');
     const end = protocol.indexOf('**Known workflow, unclear module**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const step3 = protocol.slice(start, end);
-    expect(step3.toLowerCase()).toMatch(/explicit/);
-    expect(step3).toMatch(/modules\[\]\.name/);
-    expect(step3.toLowerCase()).toMatch(/descriptive/);
+    expect(step3).toMatch(
+      /already\s+known[\s\S]*?explicit\s+from\s+the\s+user[\s\S]*?prior\s+envelope.s[\s\S]*?modules\[\]\.name[\s\S]*?never\s+descriptive\s+wording\s+alone/i
+    );
   });
 
   it('step: known workflow + unclear module runs describe once before a targeted dispatch', () => {
@@ -294,32 +328,42 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(protocol).toMatch(/modules\[\]\.name/);
   });
 
-  // RC2: reading one modules[].name is insufficient when describe returns several modules --
-  // candidate selection must inspect every entry and filter by the structured task capability
-  // for the requested workflow/test type, never pick by a conventionally-likely name.
-  it('step: unclear-module dispatch inspects every returned module and filters by task capability, never by name alone', () => {
+  // RC2 + CodeRabbit round (thread on test line 223, "also applies to 300-308"): reading one
+  // modules[].name is insufficient when describe returns several modules -- candidate selection
+  // must inspect every entry and filter by task capability, as one complete clause.
+  it('step: unclear-module dispatch inspects every returned module and filters by task capability -- one complete clause', () => {
     const start = protocol.indexOf('Known workflow, unclear module');
     const end = protocol.indexOf('**Preview only**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const step4 = protocol.slice(start, end);
-    expect(step4.toLowerCase()).toMatch(/\bevery\b/);
-    expect(step4.toLowerCase()).toMatch(/task field/);
+    expect(step4).toMatch(/check\s+every\s+`modules\[\]`\s+entry.s\s+task\s+field\s+for\s+the\s+test\s+type/i);
   });
 
-  // RC2: one eligible candidate dispatches directly; several eligible candidates dispatch
-  // globally for a broad request or ask for a single-target request; zero eligible candidates
-  // never manufacture a module name or task. Neither multi-candidate path guesses.
-  it('step: multiple eligible candidates dispatch globally for a broad request or ask for a single target; zero eligible never invents one', () => {
+  // Reviewer finding beyond the 5 CodeRabbit threads: "task field for the test type" alone still
+  // lets an agent guess which field applies. Default parallel dispatch must be pinned to
+  // test_tasks.unit; an explicit platform must defer to the documented --test-type mapping; the
+  // field must never be derived from descriptive wording (the exact failure mode this whole PR
+  // targets -- "the Android module" reproducing the original wrong-module error).
+  it('step: default parallel is pinned to test_tasks.unit, explicit platforms defer to flags-reference.md, never derived from descriptive wording', () => {
     const start = protocol.indexOf('Known workflow, unclear module');
     const end = protocol.indexOf('**Preview only**');
     const step4 = protocol.slice(start, end);
-    expect(step4.toLowerCase()).toMatch(/\b1\s+eligible/);
-    expect(step4.toLowerCase()).toMatch(/2\+\s+eligible/);
-    expect(step4.toLowerCase()).toMatch(/dispatch\s+globally/);
-    expect(step4.toLowerCase()).toMatch(/\bask\b/);
-    expect(step4.toLowerCase()).toMatch(/\b0\s+eligible/);
-    expect(step4.toLowerCase()).toMatch(/don.t\s+invent/);
+    expect(step4).toMatch(/`test_tasks\.unit`\s+for\s+`parallel`.s\s+default/i);
+    expect(step4).toMatch(/`flags-reference\.md`\s+for\s+an\s+explicit\s+`--test-type`/i);
+    expect(step4).toMatch(/never\s+derive\s+it\s+from\s+descriptive\s+wording\s+like\s+"Android"/i);
+  });
+
+  // RC2 + CodeRabbit round (thread on test line 223, "also applies to 313-323"): the eligible-
+  // candidate branches must perform their stated action, not just co-occur with the count --
+  // asserted as three complete condition-to-action clauses.
+  it('step: the 1/2+/0 eligible-candidate branches perform their specified action -- condition tied to action, not co-occurring', () => {
+    const start = protocol.indexOf('Known workflow, unclear module');
+    const end = protocol.indexOf('**Preview only**');
+    const step4 = protocol.slice(start, end);
+    expect(step4).toMatch(/\b1\s+eligible:\s*dispatch\s+its\s+exact\s+name/i);
+    expect(step4).toMatch(/2\+\s+eligible:\s*dispatch\s+globally\s+if\s+broad,\s*else\s+ask/i);
+    expect(step4).toMatch(/\b0\s+eligible:\s*don.t\s+invent\s+one/i);
   });
 
   it('never presents --module-filter with a bracketed placeholder', () => {
@@ -370,38 +414,45 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(protocol).toMatch(/stop once proven/i);
   });
 
-  // RC4: the terminal condition is operational, not abstract -- expected module/outcome present,
-  // exit_code and errors[] coherent, counts/failures answer the request for executed tests.
-  it('step: a successful non-dry-run envelope is terminal once it establishes the requested outcome', () => {
+  // RC4 + CodeRabbit round (thread on test line 384): the terminal condition is operational, not
+  // abstract, AND must be verified as one complete condition -- expected outcome, coherent
+  // exit_code/errors[], and (for executed tests) matching counts/failures together, not as three
+  // independently-passable checks that would still pass on an incoherent envelope description.
+  it('step: a successful non-dry-run envelope is terminal only with expected outcome, coherent exit_code/errors[], and matching counts/failures', () => {
     const start = protocol.indexOf('Stop once proven');
     const end = protocol.indexOf('**Diagnose only on failure**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const step7 = protocol.slice(start, end);
-    expect(step7).toMatch(/non-dry-run/i);
-    expect(step7).toMatch(/exit_code/);
-    expect(step7).toMatch(/errors\[\]/);
+    expect(step7).toMatch(
+      /non-dry-run\s+envelope\s+with\s+expected\s+outcome,\s+coherent\s+`exit_code`\/`errors\[\]`,\s+and\s+\(when\s+tests\s+ran\)\s+matching\s+counts\/failures\s+is\s+terminal/i
+    );
   });
 
-  // RC4: no post-success confirmation probe of any of these shapes -- a skipped unrelated
-  // module is context, not a reason to keep exploring.
-  it('step: post-success probes are explicitly excluded -- dry-run, doctor, describe, version, ls/pwd/which', () => {
+  // RC4 + CodeRabbit round (thread on test line 384, "also applies to 388-397"): post-success
+  // probes must be NEGATED, not merely mentioned -- a prior version of this test would have
+  // passed even if the protocol affirmatively recommended running doctor/describe after success.
+  // Re-adds raw Gradle invocation and Gradle task-listing, the two probe shapes the forensic
+  // analysis flagged as missing from the prior exclusion list.
+  it('step: post-success probes are negated as one list, not merely present -- includes raw Gradle and task-listing', () => {
     const start = protocol.indexOf('Stop once proven');
     const end = protocol.indexOf('**Diagnose only on failure**');
     const step7 = protocol.slice(start, end);
-    expect(step7.toLowerCase()).toMatch(/dry-run/);
-    expect(step7.toLowerCase()).toMatch(/\bdoctor\b/);
-    expect(step7.toLowerCase()).toMatch(/\bdescribe\b/);
-    expect(step7.toLowerCase()).toMatch(/version/);
-    expect(step7.toLowerCase()).toMatch(/ls\/pwd\/which/);
+    // The full negated list, anchored on "no post-success ... probe" so this fails if the
+    // negation frame is ever dropped, inverted, or any listed probe shape is removed.
+    expect(step7).toMatch(
+      /no\s+post-success\s+dry-run,\s+doctor,\s+describe,\s+raw\s+or\s+task-listing\s+Gradle,\s+version,\s+or\s+ls\/pwd\/which\s+probe/i
+    );
+    // Negative control: the protocol must never affirmatively instruct running doctor/describe
+    // as a post-success confirmation step.
+    expect(step7).not.toMatch(/run\s+`kmp-test\s+(doctor|describe)/i);
   });
 
-  it('step: an unrelated skipped[] entry does not reopen discovery', () => {
+  it('step: an unrelated skipped[] entry is explicitly framed as context, not a reason to keep exploring -- one tied clause', () => {
     const start = protocol.indexOf('Stop once proven');
     const end = protocol.indexOf('**Diagnose only on failure**');
     const step7 = protocol.slice(start, end);
-    expect(step7).toMatch(/skipped\[\]/);
-    expect(step7.toLowerCase()).toMatch(/keep\s+exploring/);
+    expect(step7).toMatch(/unrelated\s+`skipped\[\]`\s+entry\s+isn.t\s+a\s+reason\s+to\s+keep\s+exploring/i);
   });
 
   it('step: diagnose only for exit_code 3 or an explicit request', () => {
@@ -611,6 +662,21 @@ describe('SKILL.md Verification section -- exit_code:1 covers WS-5 promotion too
 
   it('exit_code 1 guidance covers WS-5 hard-error promotion, not just a failed test', () => {
     expect(verification.toLowerCase()).toMatch(/ws-5/);
+  });
+
+  // CodeRabbit round (PR #395, thread on line 144): gradle_timeout is the benchmark
+  // partial-timeout soft code (grounded above in the real SOFT_ERROR_CODES/ENV_ERROR_CODES
+  // exports) and belongs in the exit_code:0 soft-codes list alongside no_summary/
+  // no_changed_modules. Scoped to item 1's own text so a future item wouldn't false-pass this.
+  it('exit_code 0 guidance lists gradle_timeout alongside the other real soft codes', () => {
+    const start = verification.indexOf('`0`');
+    const end = verification.indexOf('`1`');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const item1 = verification.slice(start, end);
+    expect(item1).toMatch(/no_summary/);
+    expect(item1).toMatch(/no_changed_modules/);
+    expect(item1).toMatch(/gradle_timeout/);
   });
 
   it('exit_code 1 guidance requires inspecting errors[] in addition to test_failures[]', () => {
