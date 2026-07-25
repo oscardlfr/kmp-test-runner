@@ -177,7 +177,11 @@ matrix is rejected anyway.
   value would let a single typo (`--repeats 100` for `--repeats 10`) silently authorize hundreds
   of live sessions; `--dry-run`'s own output states `total_live_claude_sessions` explicitly.
   `--dry-run` prints the fully resolved execution plan and returns before touching
-  `--source-repo-dir` or spawning anything. A real run first verifies `--source-repo-dir`'s own
+  `--source-repo-dir` or spawning Claude. Without `--measurement-scope-file`, this is a genuine
+  zero-subprocess preview; if that flag IS supplied, `--dry-run` does invoke `git` subprocesses —
+  exclusively to validate the supplied scope file (see "Measurement scope" below) — but still
+  never touches `--source-repo-dir` and never spawns Claude. A real run first verifies
+  `--source-repo-dir`'s own
   `origin` remote matches the scenario's declared `project_url`, its working tree is clean, and
   the scenario's pinned commit resolves inside it — before any git worktree is ever created from
   it. `scenarioHardGate()` (harness-integrity only, deliberately never the scenario OUTCOME —
@@ -707,7 +711,7 @@ node tools/agentic-eval/cli.mjs --help
 node tools/agentic-eval/cli.mjs calibrate            # explicit-invocation calibration, both conditions
 node tools/agentic-eval/cli.mjs smoke --source-repo-dir <local-clone> --pinned-commit <sha>
 node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
-                                     [--repeats <n>]  # full scenario matrix, --dry-run for a zero-spawn preview
+                                     [--repeats <n>]  # full scenario matrix, --dry-run for a no-Claude-spawn preview
 node tools/agentic-eval/cli.mjs corpus validate       # validates trigger-queries.json AND corpus/scenarios/*.json
 node tools/agentic-eval/cli.mjs validate --run <path> # validates a single run record against RUN_SCHEMA
 node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
@@ -913,8 +917,12 @@ A path inside a repository is also accepted, but only if it is confirmed **both*
 `git check-ignore` against the actual containing repository, never assumed from the path's own
 string shape), not merely a documented convention. Every indeterminate git outcome (git missing,
 a spawn error, an unrecognized result) fails closed, never assumed safe. Creation is atomic and
-exclusive: it refuses to overwrite an existing file, and leaves no partial file behind on any
-failure. On POSIX (Linux/macOS) the file is created with mode `0600` (owner read/write only),
+exclusive: it refuses to overwrite an existing file, and on failure attempts to remove anything
+this specific call created (the temp file always, plus the final path if the exclusive fallback
+had already created it) — a best-effort rollback, not an unconditional guarantee: a rare secondary
+failure during that cleanup itself (e.g. the filesystem becoming unwritable mid-operation) is
+swallowed rather than masking the original error, so a partial artifact is not structurally
+impossible in that narrow case. On POSIX (Linux/macOS) the file is created with mode `0600` (owner read/write only),
 verified on disk before publishing; on Windows, Node cannot set POSIX permission bits or enforce
 ACLs, so this is best-effort only there — no ACL guarantee is claimed.
 
@@ -934,11 +942,17 @@ node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <clone> --
 ```
 
 Every invocation that supplies the same file gets the identical `scope_id`/key, so their
-resulting `ambient_skill_profile` fields agree and `HARD_PARTITION_FIELDS` no longer separates
-them purely by invocation — they aggregate together via `aggregate` (still split by `condition`,
-`scenario_id`, and every other Fairness Contract field exactly as before; sharing a scope only
-removes the invocation-identity split, nothing else). Omitting the flag preserves today's exact
-ephemeral, per-invocation behavior byte-for-byte.
+resulting `ambient_skill_profile` fields agree — the stable scope makes `calibrate`/`smoke`/`run`
+records **comparable** across independent invocations regardless of command. Actually folding
+records together via `aggregate`, though, is narrower than "comparable": `aggregateRuns()` only
+ever accepts `run_kind: 'scenario'` records with `benchmark_eligible: true` (see "Fairness
+Contract" below) — `calibrate`/`smoke` are always `benchmark_eligible: false` by design
+(foundation-harness runs proving the Skill mechanism invokes at all, never benchmark data) and
+remain deliberately ineligible for aggregation, with or without a shared scope. For eligible
+`scenario` records, `HARD_PARTITION_FIELDS` no longer separates them purely by invocation (still
+split by `condition`, `scenario_id`, and every other Fairness Contract field exactly as before;
+sharing a scope only removes the invocation-identity split, nothing else). Omitting the flag
+preserves today's exact ephemeral, per-invocation behavior byte-for-byte.
 
 **Rotating:** create a second file (`scope init --out <different-path>`) and point
 `--measurement-scope-file` at it instead — a new, separate comparability scope. There is no

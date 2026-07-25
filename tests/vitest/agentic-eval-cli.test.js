@@ -298,12 +298,19 @@ describe('resolveMeasurementScopeOrFail', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-scope-bad-'));
     try {
       expect(resolveMeasurementScopeOrFail(path.join(dir, 'missing.json')).ok).toBe(false);
+      // mode:0o600 on both -- otherwise, on POSIX, loadMeasurementScopeFile's own mode
+      // re-verification would reject these for the WRONG reason (permissions), masking whether
+      // the JSON-parse and shape-validation layers below actually discriminate as claimed.
       const badJson = path.join(dir, 'bad.json');
-      writeFileSync(badJson, 'not json');
-      expect(resolveMeasurementScopeOrFail(badJson).ok).toBe(false);
+      writeFileSync(badJson, 'not json', { mode: 0o600 });
+      const badJsonResult = resolveMeasurementScopeOrFail(badJson);
+      expect(badJsonResult.ok).toBe(false);
+      expect(badJsonResult.reason).toMatch(/not valid JSON/);
       const badShape = path.join(dir, 'shape.json');
-      writeFileSync(badShape, JSON.stringify({ schema: 1, scope_id: 'nope' }));
-      expect(resolveMeasurementScopeOrFail(badShape).ok).toBe(false);
+      writeFileSync(badShape, JSON.stringify({ schema: 1, scope_id: 'nope' }), { mode: 0o600 });
+      const badShapeResult = resolveMeasurementScopeOrFail(badShape);
+      expect(badShapeResult.ok).toBe(false);
+      expect(badShapeResult.reason).toMatch(/invalid/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -198,6 +198,11 @@ function runArgs(extra = []) {
   return ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--model', 'fake-model-x', ...extra];
 }
 
+// "zero-spawn" here means what every test in THIS block actually exercises: no
+// --measurement-scope-file supplied. With that flag, --dry-run still never spawns Claude or
+// touches --source-repo-dir, but it DOES invoke real `git` subprocesses to validate the supplied
+// scope file -- see the "cli.mjs run --dry-run + --measurement-scope-file" describe block below,
+// and cmdRun's own doc comment in cli.mjs, for that precise, narrower contract.
 describe('cli.mjs run --dry-run -- zero-spawn plan preview', () => {
   it('prints the resolved plan and spawns nothing, even with a nonexistent --source-repo-dir', async () => {
     const result = await runCli(

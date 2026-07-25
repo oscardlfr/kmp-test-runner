@@ -2073,13 +2073,16 @@ const MAX_REPEATS = 20;
  * defaults to 4 (decision 15: even, benchmark_eligible-capable by construction), accepts any
  * positive integer up to MAX_REPEATS explicitly. `--dry-run` returns the resolved plan
  * immediately after matrix-build/policy-print, strictly before source-repo verification or any
- * spawn -- zero git calls against --source-repo-dir, zero subprocesses, by construction (the
- * early return is textually before either is ever reached); its own output states the real live
- * session count this run would spawn once pointed at a genuine `claude` binary.
- * `--measurement-scope-file` is resolved even earlier, before --dry-run's own check (a local file
- * read/validation, never a git call or subprocess against --source-repo-dir, so this doesn't
- * violate the guarantee above) -- a malformed scope file fails closed before the plan is ever
- * printed, and a supplied file's non-secret scope_id (never the key) is included in the preview.
+ * spawn -- it NEVER spawns Claude and NEVER touches --source-repo-dir, by construction (the early
+ * return is textually before either is ever reached); its own output states the real live session
+ * count this run would spawn once pointed at a genuine `claude` binary.
+ * Precisely scoped subprocess claim: without `--measurement-scope-file`, `--dry-run` is a genuine
+ * zero-subprocess preview. WITH that flag, `--dry-run` DOES invoke real `git` subprocesses --
+ * `resolveMeasurementScopeOrFail`'s own path-safety check, scoped exclusively to the supplied
+ * scope file's own location, never to --source-repo-dir -- resolved even earlier than the checks
+ * above (before this function's own `isDryRun` branch), so a malformed scope file fails closed
+ * before the plan is ever printed, and a supplied file's non-secret scope_id (never the key) is
+ * included in the preview.
  */
 async function cmdRun(args) {
   const scenarioId = args.scenario;
@@ -2116,13 +2119,9 @@ async function cmdRun(args) {
     console.error(patternsCheck.reason);
     return 1;
   }
-  // Resolved here, BEFORE the --dry-run early-return: a supplied --measurement-scope-file must
-  // fail closed (and, on success, have its scope_id previewable) without ever spawning Claude.
-  // This DOES run `git` subprocesses (isMeasurementScopePathSafe's own path-safety check) -- but
-  // only against the scope file's OWN location, never against --source-repo-dir, so it doesn't
-  // violate --dry-run's stated "zero git calls against --source-repo-dir, zero subprocesses [that
-  // spawn Claude or touch the source repo]" contract (see cmdRun's own doc comment above). See
-  // resolveMeasurementScopeOrFail's doc comment for the full rationale.
+  // Resolved here, BEFORE the --dry-run early-return -- see this function's own doc comment above
+  // for the precise "--dry-run's subprocess guarantee, with vs. without a supplied scope file"
+  // contract this deliberately runs ahead of.
   const scopeCheck = resolveMeasurementScopeOrFail(args['measurement-scope-file'] ?? null);
   if (!scopeCheck.ok) {
     console.error(scopeCheck.reason);
