@@ -281,7 +281,7 @@ describe('resolveMeasurementScopeOrFail', () => {
         schema: 1,
         scope_id: '11111111-1111-4111-8111-111111111111',
         hmac_key_base64: Buffer.alloc(32, 7).toString('base64'),
-      }));
+      }), { mode: 0o600 });
       const a = resolveMeasurementScopeOrFail(file);
       const b = resolveMeasurementScopeOrFail(file);
       expect(a.ok).toBe(true);
@@ -307,6 +307,24 @@ describe('resolveMeasurementScopeOrFail', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // Regression coverage: an explicitly-supplied empty string is reachable via
+  // `--measurement-scope-file ''` (parseArgs happily accepts an empty-but-present value -- see
+  // the sibling parseArgs test below) and previously fell through the falsy check
+  // (`!measurementScopeFile`) the same way an OMITTED flag (null) does, silently generating a
+  // fresh ephemeral scope instead of failing closed on the caller's actual (invalid) input.
+  it('an explicitly-supplied empty string is NOT treated as omitted -- fails closed, never silently ephemeral', () => {
+    const result = resolveMeasurementScopeOrFail('');
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBeTruthy();
+    expect(result.source).toBeUndefined();
+  });
+
+  it('parseArgs does not strip an explicitly empty --measurement-scope-file value', () => {
+    const args = parseArgs(['run', '--measurement-scope-file', '']);
+    expect(args['measurement-scope-file']).toBe('');
+    expect(args.errors).toEqual([]);
   });
 });
 

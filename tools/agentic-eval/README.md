@@ -902,7 +902,7 @@ together under that default, even when the underlying environment was genuinely 
 
 **Creating one:**
 
-```
+```bash
 node tools/agentic-eval/cli.mjs scope init --out <path>
 ```
 
@@ -919,9 +919,16 @@ verified on disk before publishing; on Windows, Node cannot set POSIX permission
 ACLs, so this is best-effort only there — no ACL guarantee is claimed.
 
 **Reusing one:** pass the same file to any combination of `calibrate`/`smoke`/`run` via
-`--measurement-scope-file <path>`:
+`--measurement-scope-file <path>`. On POSIX, every load **re-verifies** the file's real, on-disk
+mode is still exactly `0600` before its key is ever used — not just at creation time, since
+permissions can loosen afterward through no fault of this module (a backup/restore, a different
+tool, a manual copy). A mode of anything other than exactly `0600` (e.g. a world- or
+group-readable `0644`), or a stat that can't be completed at all, fails closed — the same
+"indeterminate is never treated as safe" discipline as the git-based path checks. On Windows this
+re-verification is skipped for the identical reason creation-time enforcement is best-effort
+there — no ACL guarantee is claimed or checked. For example:
 
-```
+```bash
 node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <clone> --seed <n> \
   --measurement-scope-file <path>
 ```

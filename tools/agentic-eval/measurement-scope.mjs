@@ -33,6 +33,12 @@ import { dirname, basename, join, resolve } from 'node:path';
 
 export const MEASUREMENT_SCOPE_FILE_SCHEMA = 1; // independent of LATEST_RUN_SCHEMA (schemas.mjs)
 
+/**
+ * Generates a fresh, independent measurement-scope payload: a new random UUID `scope_id` (not
+ * secret) and 32 random bytes as `hmac_key_base64` (secret -- never logged or returned anywhere
+ * else by this module except via `loadMeasurementScopeFile`'s own `{key: Buffer}` result).
+ * @returns {{schema: number, scope_id: string, hmac_key_base64: string}}
+ */
 export function createMeasurementScopePayload() {
   return {
     schema: MEASUREMENT_SCOPE_FILE_SCHEMA,
@@ -176,6 +182,20 @@ export function isMeasurementScopePathSafe(absolutePath, fsImpl = fs, spawnFn = 
   return isTargetPathSafe(resolveGitSafetyContext(dirname(absolutePath), fsImpl, spawnFn), absolutePath, spawnFn);
 }
 
+/** POSIX-only: verifies the file's real, on-disk mode is exactly 0600 -- shared by both creation
+ * (before publishing) and load (before returning the key, since permissions can loosen after
+ * creation without this module's involvement -- a backup/restore, a different tool, a copy).
+ * Windows cannot set POSIX permission bits or enforce ACLs via Node -- this is a deliberate no-op
+ * there, never a claimed guarantee. A `statSync` failure (indeterminate mode) propagates as-is
+ * and fails closed exactly like a wrong-mode result -- never treated as "probably fine." */
+function verifyPosixMode0600(fsImpl, targetPath) {
+  if (process.platform === 'win32') return;
+  const actualMode = fsImpl.statSync(targetPath).mode & 0o777;
+  if (actualMode !== 0o600) {
+    throw new Error(`could not confirm exclusive 0600 permissions on the secret scope file (got mode ${actualMode.toString(8)})`);
+  }
+}
+
 // --- Load ----------------------------------------------------------------------------------
 
 /**
@@ -190,6 +210,13 @@ export function isMeasurementScopePathSafe(absolutePath, fsImpl = fs, spawnFn = 
  * @returns {{scopeId: string, key: Buffer}}
  */
 export function loadMeasurementScopeFile(path, fsImpl = fs, spawnFn = spawnSync) {
+  // An empty string is not "no path" -- `path.resolve('')` falls back to process.cwd(), which
+  // would otherwise silently treat "no scope file" as "load the current working directory."
+  // Reject explicitly rather than relying on the incidental (and confusing) EISDIR failure that
+  // would eventually surface further down.
+  if (typeof path !== 'string' || path.length === 0) {
+    throw new Error('measurement scope file path must not be empty');
+  }
   const presentedPath = resolve(path);
   let resolvedPath;
   try {
@@ -204,6 +231,10 @@ export function loadMeasurementScopeFile(path, fsImpl = fs, spawnFn = spawnSync)
     const resolvedSafety = isMeasurementScopePathSafe(resolvedPath, fsImpl, spawnFn);
     if (!resolvedSafety.safe) throw new Error(`refusing to load measurement scope file: ${resolvedSafety.reason}`);
   }
+
+  // Re-verify 0600 on LOAD, not just at creation time -- see verifyPosixMode0600's own doc
+  // comment for why (permissions can loosen after creation without this module's involvement).
+  verifyPosixMode0600(fsImpl, resolvedPath);
 
   let raw;
   try {
@@ -228,17 +259,6 @@ export function loadMeasurementScopeFile(path, fsImpl = fs, spawnFn = spawnSync)
  * is written -- unlike a single raw writeSync call, which may short-write. */
 function writeAllToFd(fsImpl, fd, content) {
   fsImpl.writeFileSync(fd, content, 'utf8');
-}
-
-/** POSIX-only: verifies the file's real, on-disk mode is exactly 0600 (not merely trusted from
- * the mode argument passed at creation time). Windows cannot set POSIX permission bits or
- * enforce ACLs via Node -- this is a deliberate no-op there, never a claimed guarantee. */
-function verifyPosixMode0600(fsImpl, targetPath) {
-  if (process.platform === 'win32') return;
-  const actualMode = fsImpl.statSync(targetPath).mode & 0o777;
-  if (actualMode !== 0o600) {
-    throw new Error(`could not confirm exclusive 0600 permissions on the secret scope file (got mode ${actualMode.toString(8)})`);
-  }
 }
 
 /**

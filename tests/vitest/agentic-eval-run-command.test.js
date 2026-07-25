@@ -333,6 +333,19 @@ describe('cli.mjs run --dry-run + --measurement-scope-file', () => {
     expect(result.stderr).toMatch(/--measurement-scope-file is invalid/);
     expect(result.parsed).toBeNull();
   });
+
+  // Regression coverage: an explicitly-empty --measurement-scope-file value (a real, reachable
+  // argv shape -- parseArgs accepts an empty-but-present value without stripping it) must fail
+  // closed, never silently fall back to an ephemeral scope the way an OMITTED flag correctly does.
+  it('an explicitly empty --measurement-scope-file value fails closed, never silently ephemeral', async () => {
+    const result = await runCli(
+      ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7', '--dry-run', '--measurement-scope-file', ''],
+      fakeClaudeEnv('run-scenario-success'),
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--measurement-scope-file is invalid/);
+    expect(result.parsed).toBeNull();
+  });
 });
 
 describe('cli.mjs scope init', () => {

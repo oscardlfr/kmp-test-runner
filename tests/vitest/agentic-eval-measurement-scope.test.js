@@ -29,6 +29,14 @@ function initRepo(dir) {
   gitViaBash(['init', '-q'], dir);
   gitViaBash(['config', 'user.email', 'test@example.com'], dir);
   gitViaBash(['config', 'user.name', 'Test'], dir);
+  // Isolate from the host's global git config: a globally-enabled commit.gpgsign would make
+  // `commitFile`'s commits hang/fail without a usable GPG agent, and a globally-configured
+  // core.hooksPath would still apply to this freshly-`init`'d repo (a bare `git init` only ships
+  // inert *.sample files under its OWN .git/hooks/, but doesn't itself override a global
+  // core.hooksPath pointed elsewhere). Both set as LOCAL repo config -- portable on Windows/Git
+  // Bash since this is a plain `git config key value` call, no shell interpretation involved.
+  gitViaBash(['config', 'commit.gpgsign', 'false'], dir);
+  gitViaBash(['config', 'core.hooksPath', path.join(dir, '.git', 'hooks')], dir);
 }
 
 function commitFile(dir, relPath, content) {
@@ -220,17 +228,24 @@ describe('loadMeasurementScopeFile', () => {
     expect(() => loadMeasurementScopeFile(path.join(os.tmpdir(), 'ams-does-not-exist.json'))).toThrow(/not found/);
   });
 
+  // An empty string is not "no path" -- path.resolve('') falls back to process.cwd(), which
+  // would otherwise silently treat "" as "load the current working directory" instead of
+  // rejecting it outright.
+  it('rejects an empty string path explicitly, not via path.resolve("")\'s cwd fallback', () => {
+    expect(() => loadMeasurementScopeFile('')).toThrow(/must not be empty/);
+  });
+
   it('fails closed on unparseable JSON', () => {
     const dir = mkTemp('ams-badjson-');
     const file = path.join(dir, 'scope.json');
-    writeFileSync(file, 'not valid json');
+    writeFileSync(file, 'not valid json', { mode: 0o600 });
     expect(() => loadMeasurementScopeFile(file)).toThrow(/not valid JSON/);
   });
 
   it('fails closed on a shape violation', () => {
     const dir = mkTemp('ams-badshape-');
     const file = path.join(dir, 'scope.json');
-    writeFileSync(file, JSON.stringify({ schema: 1, scope_id: 'not-a-uuid', hmac_key_base64: 'x' }));
+    writeFileSync(file, JSON.stringify({ schema: 1, scope_id: 'not-a-uuid', hmac_key_base64: 'x' }), { mode: 0o600 });
     expect(() => loadMeasurementScopeFile(file)).toThrow(/invalid/);
   });
 
@@ -238,7 +253,7 @@ describe('loadMeasurementScopeFile', () => {
     const dir = mkTemp('ams-goodload-');
     const file = path.join(dir, 'scope.json');
     const payload = createMeasurementScopePayload();
-    writeFileSync(file, JSON.stringify(payload));
+    writeFileSync(file, JSON.stringify(payload), { mode: 0o600 });
     const { scopeId, key } = loadMeasurementScopeFile(file);
     expect(scopeId).toBe(payload.scope_id);
     expect(key.equals(Buffer.from(payload.hmac_key_base64, 'base64'))).toBe(true);
@@ -250,6 +265,45 @@ describe('loadMeasurementScopeFile', () => {
     const file = path.join(repoDir, 'scope.json');
     writeFileSync(file, JSON.stringify(createMeasurementScopePayload()));
     expect(() => loadMeasurementScopeFile(file)).toThrow(/refusing to load/);
+  });
+
+  // Permissions can loosen after creation through no fault of this module (a backup/restore, a
+  // different tool, a manual copy) -- re-verified on every LOAD, not just at creation time, since
+  // createMeasurementScopeFileExclusive's own guarantee only covers the moment of creation.
+  describe('POSIX mode re-verification on load (win32: no-op, no ACL guarantee claimed)', () => {
+    if (process.platform !== 'win32') {
+      it('accepts a file whose real mode is exactly 0600', () => {
+        const dir = mkTemp('ams-load-mode-0600-');
+        const file = path.join(dir, 'scope.json');
+        const created = createMeasurementScopeFileExclusive(file);
+        const { scopeId } = loadMeasurementScopeFile(file);
+        expect(scopeId).toBe(created.scopeId);
+      });
+
+      it('rejects a file whose mode was loosened to 0644 after creation', () => {
+        const dir = mkTemp('ams-load-mode-0644-');
+        const file = path.join(dir, 'scope.json');
+        createMeasurementScopeFileExclusive(file);
+        realFs.chmodSync(file, 0o644);
+        expect(() => loadMeasurementScopeFile(file)).toThrow(/0600/);
+      });
+
+      it('rejects when the file mode cannot be determined at all (indeterminate stat)', () => {
+        const dir = mkTemp('ams-load-mode-indeterminate-');
+        const file = path.join(dir, 'scope.json');
+        createMeasurementScopeFileExclusive(file);
+        const fakeFsImpl = { ...realFs, statSync: () => { throw new Error('simulated stat failure'); } };
+        expect(() => loadMeasurementScopeFile(file, fakeFsImpl)).toThrow(/simulated stat failure/);
+      });
+    } else {
+      it('is a deliberate no-op on Windows -- Node cannot set POSIX bits or enforce ACLs', () => {
+        const dir = mkTemp('ams-load-mode-win32-');
+        const file = path.join(dir, 'scope.json');
+        const created = createMeasurementScopeFileExclusive(file);
+        expect(() => loadMeasurementScopeFile(file)).not.toThrow();
+        expect(loadMeasurementScopeFile(file).scopeId).toBe(created.scopeId);
+      });
+    }
   });
 
   // Correction 3b, direction 1: a symlink whose OWN name is ignored, resolving to a TRACKED file

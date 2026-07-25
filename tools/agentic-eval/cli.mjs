@@ -316,7 +316,11 @@ function validatePrivatePatternsFileOrFail(privatePatternsFile) {
  * Returns {ok:true, scopeId, key, source:'ephemeral'|'supplied'} or {ok:false, reason}, mirroring
  * validatePrivatePatternsFileOrFail's own shape -- never throws. */
 function resolveMeasurementScopeOrFail(measurementScopeFile) {
-  if (!measurementScopeFile) {
+  // Only null/undefined mean "flag omitted" -- an explicitly-supplied empty string (reachable via
+  // `--measurement-scope-file ''`, since parseArgs happily accepts an empty-but-present value) is
+  // NOT the same as omission and must fail closed as an invalid path, not silently fall back to
+  // ephemeral. A falsy check (`!measurementScopeFile`) previously treated '' the same as omitted.
+  if (measurementScopeFile == null) {
     return { ok: true, source: 'ephemeral', ...generateAmbientProfileScope() };
   }
   try {
