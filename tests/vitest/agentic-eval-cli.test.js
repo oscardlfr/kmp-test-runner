@@ -3,16 +3,17 @@
 // Real subprocess end-to-end coverage (calibrate/smoke against fake claude) lives in
 // agentic-eval-cli-integration.test.js -- this file is for fast, in-process logic that doesn't
 // need a child process.
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
-import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
+import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
-import { LATEST_RUN_SCHEMA } from '../../tools/agentic-eval/schemas.mjs';
+import { LATEST_RUN_SCHEMA, validateRun, buildAggregateGroup } from '../../tools/agentic-eval/schemas.mjs';
+import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -1066,20 +1067,27 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
   function bashToolUseEvent(id) {
     return { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', id, input: { command: 'kmp-test doctor --json' } }] } };
   }
+  function skillToolUseEvent(id, skill) {
+    return { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id, input: { skill } }] } };
+  }
 
-  it('sums N real Bash tool_use events plus a multi-attempt invocation.attemptCount, not a flat 0-or-1', () => {
+  it('sums N real Bash tool_use events plus N real multi-attempt Skill tool_use events, not a flat 0-or-1', () => {
     const conditionResult = {
       init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [{ name: 'kmp-test-runner', path: '/fake', source: 'fake' }], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
       result: { subtype: 'success', is_error: false },
       // Simulates what findSkillInvocation() itself would return for 2 real Skill attempts
-      // (e.g. a failed-then-retried-successful invocation) -- attemptCount:2, not 1.
-      invocation: { attempted: true, confirmed: true, attemptCount: 2, type: 'assistant.tool_use.Skill', index: 0, receiptNs: 0n, input: { skill: 'kmp-test-runner' }, resultIsError: false },
+      // (e.g. a failed-then-retried-successful invocation) -- attemptCount:2, not 1. tool_calls_total
+      // now derives purely from the transcript's own tool_use blocks (findAllToolUsesWithResults),
+      // matching the accepted-run-audit sidecar's own derivation, so the events array below
+      // carries 2 REAL Skill tool_use blocks backing this attemptCount -- a decoupled
+      // attemptCount with no corresponding real event would no longer be reflected in the total.
+      invocation: { attempted: true, confirmed: true, attemptCount: 2, type: 'assistant.tool_use.Skill', index: 3, receiptNs: 0n, input: { skill: 'kmp-test-runner' }, resultIsError: false },
       hookStats: { hookCallCount: 3, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 3 },
       byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
       spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
-      events: [bashToolUseEvent('toolu_1'), bashToolUseEvent('toolu_2'), bashToolUseEvent('toolu_3')],
+      events: [bashToolUseEvent('toolu_1'), bashToolUseEvent('toolu_2'), bashToolUseEvent('toolu_3'), skillToolUseEvent('toolu_4', 'kmp-test-runner'), skillToolUseEvent('toolu_5', 'kmp-test-runner')],
     };
     const record = buildRunRecord({
       conditionResult, condition: 'current-skill', runKind: 'calibration', scenarioId: 'test-tool-calls-total',
@@ -1088,7 +1096,7 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
       modelRequested: 'fake-model',
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
-    // 3 real Bash tool_use events + attemptCount:2 (NOT the old flat +1) = 5, not 4.
+    // 3 real Bash tool_use events + 2 real Skill tool_use events = 5, not 4.
     expect(record.tool_calls_total).toEqual({ value: 5, reason: null });
     expect(record.shell_commands_total).toEqual({ value: 3, reason: null });
   });
@@ -1121,11 +1129,11 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
   // to ONLY the expected skill name) ever sees it. Zero Bash events and a single-attempt
   // expected-skill invocation isolate the foreign contribution precisely: 0 (Bash) + 1
   // (invocation.attemptCount) + 1 (the new foreignSkillUses.length term) = 2, not 1.
-  it('adds foreignSkillUses.length to the total -- a foreign Skill attempt is no longer silently uncounted', () => {
+  it('counts a foreign Skill attempt in the total -- it is no longer silently uncounted', () => {
     const conditionResult = {
       init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [{ name: 'kmp-test-runner', path: '/fake', source: 'fake' }], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
       result: { subtype: 'success', is_error: false },
-      invocation: { attempted: true, confirmed: true, attemptCount: 1, type: 'assistant.tool_use.Skill', index: 0, receiptNs: 0n, input: { skill: 'kmp-test-runner' }, resultIsError: false },
+      invocation: { attempted: true, confirmed: true, attemptCount: 1, type: 'assistant.tool_use.Skill', index: 2, receiptNs: 0n, input: { skill: 'kmp-test-runner' }, resultIsError: false },
       hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
       byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -1134,6 +1142,10 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
       events: [
         { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 'toolu_foreign1', input: { skill: 'totally-unrelated-skill' } }] } },
         { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_foreign1', is_error: true, content: '<tool_use_error>Unknown skill: totally-unrelated-skill</tool_use_error>' }] } },
+        // tool_calls_total now derives purely from real transcript tool_use blocks -- this event
+        // is what actually backs invocation.attemptCount:1 above (a decoupled attemptCount with no
+        // corresponding real event would no longer be reflected in the total).
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 'toolu_target1', input: { skill: 'kmp-test-runner' } }] } },
       ],
     };
     const record = buildRunRecord({
@@ -1143,7 +1155,7 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
       modelRequested: 'fake-model',
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
-    // 0 Bash + 1 expected-skill attempt + 1 foreign-skill attempt = 2, not the pre-fix 1.
+    // 0 Bash + 1 expected-skill tool_use event + 1 foreign-skill tool_use event = 2, not 1.
     expect(record.tool_calls_total).toEqual({ value: 2, reason: null });
     expect(record.foreign_skill_summary).toEqual({ rejected: 1, confirmed: 0, incomplete: 0 });
   });
@@ -1464,7 +1476,12 @@ describe('cmdAggregate -- does not recurse into a nested audit/ directory', () =
   it('reads only top-level *.json files; a malformed file inside audit/ is never touched', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-aggregate-noaudit-'));
     try {
-      const realRecord = readFileSync(path.join(REPO_ROOT, 'tools', 'runs', 'agentic-eval-scenario', 'scenario-current-skill-11794dda.json'), 'utf8');
+      // Discovered dynamically, never a hard-coded historical filename -- this test only needs
+      // SOME real, valid schema-conformant record; pinning one specific committed filename would
+      // make the test fragile to an unrelated future rename/cleanup of that exact file.
+      const scenarioDir = path.join(REPO_ROOT, 'tools', 'runs', 'agentic-eval-scenario');
+      const anyScenarioFile = readdirSync(scenarioDir).find((f) => f.endsWith('.json'));
+      const realRecord = readFileSync(path.join(scenarioDir, anyScenarioFile), 'utf8');
       writeFileSync(path.join(dir, 'r1.json'), realRecord);
       const auditDir = path.join(dir, 'audit');
       mkdirSync(auditDir, { recursive: true });
@@ -1607,5 +1624,236 @@ describe('buildRunRecord -- schema v5 post-signal metrics + accepted_audit place
     // even though t2's own RESULT (index 3) arrives after the signal.
     expect(record.policy_denials_before_first_signal.value).toBe(1);
     expect(record.policy_denials_after_first_signal.value).toBe(0);
+  });
+
+  // Review finding: tool_calls_total previously summed findBashToolUses().length +
+  // invocation?.attemptCount + foreignSkillUses.length -- a real, unexpected tool_use block (e.g.
+  // a bare Read call, never Bash and never Skill) was silently dropped by all three terms,
+  // producing tool_calls_total:0 for a transcript that genuinely made 1 tool call. The
+  // accepted-run-audit sidecar's own summary.tool_calls_total counts every tool_use block via
+  // findAllToolUsesWithResults regardless of name, so the old formula also made the record and its
+  // own sidecar disagree on an otherwise-unremarkable transcript.
+  it('tool_calls_total counts an UNEXPECTED tool_use block (e.g. Read), not just Bash/Skill', () => {
+    const events = [
+      { type: 'system', subtype: 'init', _receiptNs: 0n },
+      { type: 'assistant', _receiptNs: 1_000_000n, message: { content: [{ type: 'tool_use', name: 'Read', id: 'r1', input: { file_path: '/tmp/x' } }] } },
+      { type: 'user', _receiptNs: 2_000_000n, message: { content: [{ type: 'tool_result', tool_use_id: 'r1', content: 'ok', is_error: false }] } },
+    ];
+    const record = buildRunRecord({
+      conditionResult: fakeConditionResultWithEvents({ events }),
+      ...commonScenarioParams,
+      gradeResult: { expectedOutcomeMatched: false, success: false, checks: [], firstUsefulSignalEventIndex: null, testInvocationsTotal: 0, retries: 0 },
+    });
+    expect(record.tool_calls_total.value).toBe(1);
+  });
+});
+
+// Review finding 3: a hard-gate rejection must ALWAYS take precedence over accepted-audit-sidecar
+// processing -- no sidecar build/finalization/cross-validation failure may suppress the gate's own
+// reason or prevent writeRejectedRunDiagnostics. Accepted-audit work belongs only on the
+// gate-PASSING path (a sidecar audits an ACCEPTED run by definition). These are targeted unit
+// tests directly against finalizeAndWriteMatrixRecords with a fully-controlled synthetic
+// hardGateFn -- independent of whatever a REAL scenarioHardGate rejection looks like, and fast
+// (no subprocess).
+describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sidecar processing', () => {
+  function minimalScenarioRecord(overrides = {}) {
+    return {
+      run_id: overrides.run_id ?? 'scenario-current-skill-syn0001',
+      run_kind: 'scenario',
+      schema: LATEST_RUN_SCHEMA,
+      condition: 'current-skill',
+      repetition_index: 0,
+      order_index: 0,
+      policy_sha256: computePolicySha256(),
+      accepted_audit: null,
+      errors: [],
+      grading_checks: { value: null, reason: 'not graded in this synthetic fixture' },
+      success: { value: null, reason: null },
+      expected_outcome_matched: { value: null, reason: null },
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) },
+      // Only actually needed by buildRejectionDiagnostics's own (narrower) rejection-record schema
+      // -- exercised when the gate rejects this synthetic matrix.
+      model_requested: 'fake-model', repo_commit: 'c'.repeat(40), scenario_id: 'test-gate-precedence',
+      platform: 'linux', privacy_status: 'public', project_alias: 'test-gate-precedence-project',
+      project_commit: 'd'.repeat(40), seed: 1,
+      skill_source_sha: overrides.condition === 'no-skill' ? null : 'a'.repeat(40),
+      model_resolved: 'claude-sonnet-5-fake', claude_code_version: '1.2.3-fake',
+      ...overrides,
+    };
+  }
+
+  function twoCellMatrix() {
+    return [
+      minimalScenarioRecord({ run_id: 'scenario-current-skill-syn0001', condition: 'current-skill', order_index: 0 }),
+      minimalScenarioRecord({ run_id: 'scenario-no-skill-syn0002', condition: 'no-skill', order_index: 1, skill_source_sha: null }),
+    ];
+  }
+
+  const rejectingGate = () => ({
+    ok: false,
+    reason: 'synthetic-gate-rejection:true',
+    cellResults: [{ runId: 'scenario-current-skill-syn0001', failedChecks: ['syntheticCheck'] }, { runId: 'scenario-no-skill-syn0002', failedChecks: [] }],
+    ambientProfileMatrixOk: true,
+  });
+
+  // A sidecar callback that would ALWAYS fail if invoked -- proves it's never even attempted on
+  // the reject path (Requirement: "Accepted-audit work belongs only on the gate-passing path").
+  const alwaysFailingSidecarBuilder = () => ({ ok: false, reason: 'sidecar builder should never be invoked for a rejected matrix' });
+
+  it('a rejected matrix reports the GATE\'s own reason, never a sidecar failure reason', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-gate-precedence-'));
+    try {
+      const records = twoCellMatrix();
+      const conditionResults = [{ events: [] }, { events: [] }];
+      const result = await finalizeAndWriteMatrixRecords({
+        runKind: 'scenario', records, conditionResults, hardGateFn: rejectingGate,
+        repeats: 1, runsRootOverride: dir, buildSidecarsFn: alwaysFailingSidecarBuilder,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('synthetic-gate-rejection:true');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a rejected matrix still writes rejection diagnostics despite a sidecar builder that would fail', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-gate-precedence-diag-'));
+    try {
+      const records = twoCellMatrix();
+      const conditionResults = [{ events: [] }, { events: [] }];
+      const result = await finalizeAndWriteMatrixRecords({
+        runKind: 'scenario', records, conditionResults, hardGateFn: rejectingGate,
+        repeats: 1, runsRootOverride: dir, buildSidecarsFn: alwaysFailingSidecarBuilder,
+      });
+      expect(result.diagnosticsWriteError).toBeFalsy();
+      expect(typeof result.rejectionId).toBe('string');
+      expect(typeof result.diagnosticsRelativePath).toBe('string');
+      expect(existsSync(path.join(dir, result.diagnosticsRelativePath))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('an ACCEPTED matrix promotes NOTHING when the sidecar builder fails, and reports why', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-gate-precedence-accept-fail-'));
+    try {
+      const records = twoCellMatrix();
+      const conditionResults = [{ events: [] }, { events: [] }];
+      const acceptingGate = () => ({ ok: true, reason: null, cellResults: [], ambientProfileMatrixOk: true });
+      const result = await finalizeAndWriteMatrixRecords({
+        runKind: 'scenario', records, conditionResults, hardGateFn: acceptingGate,
+        repeats: 1, runsRootOverride: dir, buildSidecarsFn: alwaysFailingSidecarBuilder,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.reason).toContain('sidecar builder should never be invoked for a rejected matrix');
+      expect(existsSync(path.join(dir, 'agentic-eval-scenario'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// Review finding 2 (aggregate side): cmdAggregate previously fed every *.json file straight into
+// aggregateRuns(), which only ever runs schemas.mjs's validateRun() -- a purely OBJECT-SHAPE check
+// of accepted_audit (schema/relative_path regex/sha256 hex format), never a verification that the
+// sidecar FILE the record claims actually exists, hashes correctly, or agrees with the record's own
+// content. A record with a fabricated (well-formed but fictitious) accepted_audit therefore
+// aggregated cleanly with zero errors. cmdAggregate must now offline-validate every top-level run
+// file via validateRunRecordFile (record schema + on-disk sidecar) BEFORE handing anything to
+// aggregateRuns, excluding and reporting any schema-v5 scenario record whose sidecar is
+// missing/malformed/mismatched.
+describe('cmdAggregate -- schema-v5 scenario records require a verifiable on-disk sidecar', () => {
+  function fakeConditionResultWithEvents({ events = [] } = {}) {
+    return {
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      result: { subtype: 'success', is_error: false },
+      invocation: null,
+      hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      spawnResult: { terminated: false, terminationReason: null, exitCode: 0, spawnHrtimeNs: 0n, endedHrtimeNs: undefined },
+      events,
+      bashResults: [],
+      junitAttribution: { decisionByAttempt: new Map() },
+    };
+  }
+
+  /** A publicly complete, schema-v5-valid scenario record (built via the real buildRunRecord, not
+   * hand-typed) with a FABRICATED accepted_audit -- overriding the null placeholder buildRunRecord
+   * itself always leaves. */
+  function completeV5ScenarioRecordWithFabricatedAudit(auditOverrides = {}) {
+    const record = buildRunRecord({
+      conditionResult: fakeConditionResultWithEvents({}),
+      condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-aggregate-sidecar',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'],
+      policySha256: computePolicySha256(), modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      projectAlias: 'test-aggregate-project', projectCommit: 'd'.repeat(40), projectUrl: 'https://example.invalid/test-aggregate-project',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+      gradeResult: { expectedOutcomeMatched: true, success: true, checks: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), firstUsefulSignalEventIndex: null, testInvocationsTotal: 1, retries: 0 },
+    });
+    record.benchmark_eligible = true;
+    record.accepted_audit = { schema: 1, relative_path: `audit/${record.run_id}.json`, sha256: '0'.repeat(64), ...auditOverrides };
+    return record;
+  }
+
+  /** Sanity check the fixture itself: with a REMOVED accepted_audit requirement bypassed (a
+   * well-formed, if fabricated, sidecar reference), this record must otherwise aggregate cleanly
+   * -- proves any exclusion asserted below is attributable to the sidecar check this describe
+   * block exists to test, not some unrelated Fairness-Contract gap in the fixture. */
+  function expectFixtureWouldAggregateCleanlyOnItsOwnMerits(record) {
+    const { errors: runErrors } = validateRun(record);
+    expect(runErrors).toEqual([]);
+    const { errors: groupErrors, group } = buildAggregateGroup([record]);
+    expect(groupErrors).toEqual([]);
+    expect(group).not.toBeNull();
+  }
+
+  function captureAggregateOutput(dir) {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const exitCode = cmdAggregate({ 'runs-dir': dir });
+      const printed = JSON.parse(spy.mock.calls.at(-1)[0]);
+      return { exitCode, ...printed };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('excludes and reports a schema-5 scenario record whose sidecar file does not exist on disk', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-aggregate-sidecar-missing-'));
+    try {
+      const record = completeV5ScenarioRecordWithFabricatedAudit();
+      expectFixtureWouldAggregateCleanlyOnItsOwnMerits(record);
+      writeFileSync(path.join(dir, `${record.run_id}.json`), JSON.stringify(record));
+      // Deliberately no audit/ directory at all.
+      const { exitCode, groups, errors } = captureAggregateOutput(dir);
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.run_id === record.run_id)).toBe(true);
+      expect(groups.length).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('excludes and reports a schema-5 scenario record whose sidecar hash does not match', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-aggregate-sidecar-badhash-'));
+    try {
+      const record = completeV5ScenarioRecordWithFabricatedAudit();
+      expectFixtureWouldAggregateCleanlyOnItsOwnMerits(record);
+      writeFileSync(path.join(dir, `${record.run_id}.json`), JSON.stringify(record));
+      mkdirSync(path.join(dir, 'audit'), { recursive: true });
+      // A syntactically-valid but semantically-arbitrary sidecar -- its real SHA-256 will never
+      // equal the record's declared (fabricated) '000...0' digest.
+      writeFileSync(path.join(dir, 'audit', `${record.run_id}.json`), JSON.stringify({ schema: 1, run_id: record.run_id, run_schema: 5, run_kind: 'scenario', condition: record.condition, scenario_id: record.scenario_id, first_useful_signal_event: null, terminal_authoritative_event: null, tool_calls: [], summary: { tool_calls_total: 0, shell_commands_total: 0, post_signal_ms: null, post_signal_tool_calls: null, policy_denials_total: 0, policy_denials_before_first_signal: null, policy_denials_after_first_signal: null, policy_decisions_missing: 0 } }));
+      const { exitCode, groups, errors } = captureAggregateOutput(dir);
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.run_id === record.run_id)).toBe(true);
+      expect(groups.length).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

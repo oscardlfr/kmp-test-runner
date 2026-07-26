@@ -284,6 +284,38 @@ describe('cmdValidate / validateRunRecordFile -- schema:5 scenario (full sidecar
     }
   });
 
+  // Review finding 5 -- a sidecar file that PARSES as valid JSON but whose root is null, a
+  // scalar, or an array is rejected by validateAcceptedRunAuditSidecar's own shape check, but
+  // (before this fix) crossValidateAcceptedRunAuditAgainstRecord was still unconditionally called
+  // afterward and dereferenced sidecar.run_id, throwing a TypeError for the null case instead of
+  // returning the structured {errors, warnings} shape this command's own contract promises.
+  describe('never throws for valid JSON with a non-object sidecar root', () => {
+    it.each([
+      ['null', 'null'],
+      ['a bare number', '42'],
+      ['a bare string', '"just a string"'],
+      ['an empty array', '[]'],
+      ['a non-empty array', '[1,2,3]'],
+    ])('sidecar text %s does not throw, and reports structured errors', (_label, sidecarText) => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'aevc-v5-nonobject-'));
+      try {
+        const record = scenarioV5Base();
+        const runPath = writeRunAndSidecar(dir, record, {}, { sidecarText });
+        expect(() => validateRunRecordFile(runPath)).not.toThrow();
+        const { errors } = validateRunRecordFile(runPath);
+        expect(errors.length).toBeGreaterThan(0);
+        for (const e of errors) {
+          expect(typeof e.field).toBe('string');
+          expect(typeof e.message).toBe('string');
+        }
+        expect(() => cmdValidate({ run: runPath })).not.toThrow();
+        expect(cmdValidate({ run: runPath })).toBe(1);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   // Traversal/absolute-path/backslash-path protection: these are caught one layer UP, by
   // validateRun's own accepted_audit.relative_path regex (schemas.mjs) -- since a record file can
   // be hand-edited/tampered independently of any sidecar, this proves cmdValidate's own record

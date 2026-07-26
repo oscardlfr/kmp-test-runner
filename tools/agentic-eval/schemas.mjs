@@ -93,15 +93,17 @@ const RUN_CANONICAL_FIELDS_V4 = [...RUN_CANONICAL_FIELDS_V3, 'ambient_skill_prof
 // null+reason for a run_kind/condition where the underlying boundary doesn't apply. accepted_audit
 // itself IS scenario-only in VALUE (null for non-scenario, a real object for scenario) but the key
 // is still always present.
+// The 4 new v5 post-signal {value,reason} nullable metrics -- named ONCE here. RUN_CANONICAL_FIELDS_V5
+// spreads this array rather than re-listing the 4 names itself, and validateRun's own "forbidden
+// below v5" gate imports this same constant -- so the two can never independently drift apart the
+// way a second, separately-typed-out copy of the same 4 strings could.
+const V5_METRIC_FIELDS = ['post_signal_ms', 'post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal'];
+
 const RUN_CANONICAL_FIELDS_V5 = [
   ...RUN_CANONICAL_FIELDS_V4,
-  'post_signal_ms', 'post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal',
+  ...V5_METRIC_FIELDS,
   'accepted_audit',
 ];
-
-// The 4 new v5 post-signal {value,reason} nullable metrics -- named once, shared by validateRun's
-// own "forbidden below v5" gate below so the list can never drift out of sync with itself.
-const V5_METRIC_FIELDS = ['post_signal_ms', 'post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal'];
 
 // Closed charset (no `/`, no `\`) so a traversal sequence or absolute path can never match this
 // regex regardless of what a (possibly tampered) run_id contains -- see this regex's own call site

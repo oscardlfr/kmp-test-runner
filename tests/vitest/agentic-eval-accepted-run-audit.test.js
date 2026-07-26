@@ -50,6 +50,8 @@ function baseRecord(overrides = {}) {
     first_useful_signal_event: null,
     policy_allowed_gradle_tasks: [':shared:testAndroidHostTest'],
     policy_allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel'],
+    hook_call_count: 0,
+    hook_deny_count: 0,
     tool_calls_total: { value: 0, reason: null },
     shell_commands_total: { value: 0, reason: null },
     post_signal_ms: { value: null, reason: 'no first useful signal boundary' },
@@ -348,6 +350,56 @@ describe('buildAcceptedRunAuditSidecar -- summary', () => {
   });
 });
 
+// Builder-to-validator contract: every EARLIER test in this file feeds either an empty/near-empty
+// conditionResult into the builder, or a hand-constructed fixture directly into the validator --
+// never a REALISTIC, populated builder OUTPUT (several distinct tool_kinds at once) through the
+// validator. That gap matters specifically because validateAcceptedRunAuditSidecar's own
+// enum/operation-domain/phase-recompute checks are tightened below (accepted-run-observability PR
+// review round) to reject arbitrary/incoherent content -- this is the one test proving the
+// BUILDER's own legitimate output still satisfies its own VALIDATOR after that tightening, not a
+// tautology (the builder and validator are independently written, so they CAN drift).
+describe('buildAcceptedRunAuditSidecar -> validateAcceptedRunAuditSidecar (populated, multi-kind contract)', () => {
+  it('a realistic multi-tool-kind transcript, once built, validates with ZERO errors', () => {
+    const record = baseRecord({
+      first_useful_signal_event: { type: 'user.tool_result', index: 6 },
+      policy_allowed_gradle_tasks: [':shared:testAndroidHostTest'],
+      policy_allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel'],
+    });
+    const events = [
+      initEventStub(),
+      skillToolUseEvent('s1', 'kmp-test-runner'), // target-skill
+      toolResultEvent('s1'),
+      otherToolUseEvent('r1', 'Read'), // unexpected-tool
+      toolResultEvent('r1'),
+      bashToolUseEvent('k1', 'kmp-test doctor --json'), // kmp-test, allowed subcommand
+      toolResultEvent('k1'), // index 6 -- this IS the first-useful-signal event
+      bashToolUseEvent('k2', 'kmp-test clean'), // kmp-test, NOT in the allowlist -> 'other'
+      toolResultEvent('k2'),
+      bashToolUseEvent('g1', './gradlew :shared:testAndroidHostTest'), // gradle, allowed task
+      toolResultEvent('g1'),
+      bashToolUseEvent('g2', './gradlew :other:task'), // gradle, NOT allowed -> 'other'
+      toolResultEvent('g2'),
+      bashToolUseEvent('o1', 'ls -la'), // other-bash
+      toolResultEvent('o1'),
+      skillToolUseEvent('s2', 'some-foreign-skill'), // non-target-skill
+      toolResultEvent('s2'),
+      resultEventStub(),
+    ];
+    const cr = conditionResultFrom(events, { decisionByAttempt: new Map([['k1', 'allow'], ['k2', 'allow'], ['g1', 'allow'], ['g2', 'deny'], ['o1', 'allow']]) });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 6, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const { errors } = validateAcceptedRunAuditSidecar(sidecar);
+    expect(errors).toEqual([]);
+    // Sanity on the fixture itself -- proves the test actually exercises every tool_kind/phase it
+    // claims to, rather than accidentally validating a degenerate all-one-kind transcript clean.
+    expect(new Set(sidecar.tool_calls.map((tc) => tc.tool_kind))).toEqual(
+      new Set(['target-skill', 'unexpected-tool', 'kmp-test', 'gradle', 'other-bash', 'non-target-skill']),
+    );
+    expect(sidecar.tool_calls.some((tc) => tc.phase === 'pre-signal')).toBe(true);
+    expect(sidecar.tool_calls.some((tc) => tc.phase === 'produced-signal')).toBe(true);
+    expect(sidecar.tool_calls.some((tc) => tc.phase === 'post-signal')).toBe(true);
+  });
+});
+
 describe('validateAcceptedRunAuditSidecar', () => {
   function validSidecar(overrides = {}) {
     return {
@@ -451,6 +503,146 @@ describe('validateAcceptedRunAuditSidecar', () => {
     });
     expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
   });
+
+  // Event-ref strictness (review finding 1a) -- applies identically to BOTH
+  // first_useful_signal_event and terminal_authoritative_event, since both go through the same
+  // validateEventRefField helper.
+  describe('event ref strictness (first_useful_signal_event / terminal_authoritative_event)', () => {
+    const validEntryForSignal = (index) => ({ ordinal: 0, tool_use_event_index: 1, tool_result_event_index: index, tool_kind: 'other-bash', operation: null, plan_only: false, policy_decision: 'allow', result_status: 'success', phase: 'produced-signal' });
+
+    it('rejects an event ref with an extra key beyond type/index', () => {
+      const sidecar = validSidecar({ first_useful_signal_event: { type: 'user.tool_result', index: 2, extra: 'nope' }, tool_calls: [validEntryForSignal(2)], summary: { ...validSidecar().summary, tool_calls_total: 1, shell_commands_total: 1 } });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.length).toBeGreaterThan(0);
+    });
+
+    it('rejects an event ref missing the index key', () => {
+      const sidecar = validSidecar({ terminal_authoritative_event: { type: 'user.tool_result' } });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.length).toBeGreaterThan(0);
+    });
+
+    it('rejects an event ref whose type is not exactly "user.tool_result"', () => {
+      const sidecar = validSidecar({ terminal_authoritative_event: { type: 'assistant.tool_use', index: 2 } });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.length).toBeGreaterThan(0);
+    });
+
+    it('rejects a negative event-ref index', () => {
+      const sidecar = validSidecar({ terminal_authoritative_event: { type: 'user.tool_result', index: -1 } });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.length).toBeGreaterThan(0);
+    });
+
+    it('rejects a fractional event-ref index', () => {
+      const sidecar = validSidecar({ terminal_authoritative_event: { type: 'user.tool_result', index: 1.5 } });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.length).toBeGreaterThan(0);
+    });
+  });
+
+  // Per-tool_kind operation domain (review finding 1b/1c/1d) -- validateAcceptedRunAuditSidecar
+  // previously only checked `operation === null` for the non-Bash branch; a Bash-family entry's
+  // operation value was never checked against any domain at all, so an arbitrary/contradictory
+  // string (or an object) silently passed.
+  describe('per-tool_kind operation domain', () => {
+    const entry = (overrides) => ({ ordinal: 0, tool_use_event_index: 1, tool_result_event_index: 2, plan_only: false, policy_decision: 'allow', result_status: 'success', phase: 'no-signal', ...overrides });
+
+    it('rejects other-bash with a non-null operation', () => {
+      const sidecar = validSidecar({ tool_calls: [entry({ tool_kind: 'other-bash', operation: 'ls' })] });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.endsWith('.operation'))).toBe(true);
+    });
+
+    it('rejects gradle with an operation outside allowed-task|other', () => {
+      const sidecar = validSidecar({ tool_calls: [entry({ tool_kind: 'gradle', operation: 'made-up-operation' })] });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.endsWith('.operation'))).toBe(true);
+    });
+
+    it('accepts gradle with operation exactly "allowed-task"', () => {
+      const sidecar = validSidecar({ tool_calls: [entry({ tool_kind: 'gradle', operation: 'allowed-task' })], summary: { ...validSidecar().summary, tool_calls_total: 1, shell_commands_total: 1 } });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
+    });
+
+    it('accepts gradle with operation exactly "other"', () => {
+      const sidecar = validSidecar({ tool_calls: [entry({ tool_kind: 'gradle', operation: 'other' })], summary: { ...validSidecar().summary, tool_calls_total: 1, shell_commands_total: 1 } });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
+    });
+
+    it('rejects kmp-test with a null operation (basic shape -- membership is checked during cross-validation)', () => {
+      const sidecar = validSidecar({ tool_calls: [entry({ tool_kind: 'kmp-test', operation: null })] });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.endsWith('.operation'))).toBe(true);
+    });
+
+    it('rejects kmp-test with a non-string (object) operation', () => {
+      const sidecar = validSidecar({ tool_calls: [entry({ tool_kind: 'kmp-test', operation: { nope: true } })] });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.endsWith('.operation'))).toBe(true);
+    });
+  });
+
+  // Phase correctness + summary recompute (review finding 1e/1f) -- previously only the
+  // NULL-when-no-boundary direction was checked; the actual VALUE when a boundary exists (both
+  // per-entry phase and the 3 boundary-dependent summary counts) was never cross-checked against
+  // the tool_calls[] entries that are supposed to justify it.
+  describe('phase correctness + post-signal summary recompute', () => {
+    it('rejects any non-no-signal phase when there is no first_useful_signal_event boundary', () => {
+      const sidecar = validSidecar({
+        tool_calls: [{ ordinal: 0, tool_use_event_index: 1, tool_result_event_index: 2, tool_kind: 'other-bash', operation: null, plan_only: false, policy_decision: 'allow', result_status: 'success', phase: 'pre-signal' }],
+        summary: { ...validSidecar().summary, tool_calls_total: 1, shell_commands_total: 1 },
+      });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.includes('phase'))).toBe(true);
+    });
+
+    it('rejects a phase claiming pre-signal when the entry\'s own indices imply post-signal', () => {
+      const sidecar = validSidecar({
+        first_useful_signal_event: { type: 'user.tool_result', index: 2 },
+        tool_calls: [
+          { ordinal: 0, tool_use_event_index: 1, tool_result_event_index: 2, tool_kind: 'other-bash', operation: null, plan_only: false, policy_decision: 'allow', result_status: 'success', phase: 'produced-signal' },
+          { ordinal: 1, tool_use_event_index: 5, tool_result_event_index: 6, tool_kind: 'other-bash', operation: null, plan_only: false, policy_decision: 'allow', result_status: 'success', phase: 'pre-signal' }, // WRONG -- should be post-signal
+        ],
+        summary: { ...validSidecar().summary, tool_calls_total: 2, shell_commands_total: 2, post_signal_tool_calls: 1 },
+      });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.includes('phase'))).toBe(true);
+    });
+
+    it('rejects a first_useful_signal_event that does not correlate to any tool_calls[] entry\'s own result index', () => {
+      const sidecar = validSidecar({
+        first_useful_signal_event: { type: 'user.tool_result', index: 99 },
+        tool_calls: [{ ordinal: 0, tool_use_event_index: 1, tool_result_event_index: 2, tool_kind: 'other-bash', operation: null, plan_only: false, policy_decision: 'allow', result_status: 'success', phase: 'post-signal' }],
+        summary: { ...validSidecar().summary, tool_calls_total: 1, shell_commands_total: 1, post_signal_tool_calls: 1 },
+      });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field === 'first_useful_signal_event')).toBe(true);
+    });
+
+    it('rejects a post_signal_tool_calls count that does not match the actual post-signal entries', () => {
+      const sidecar = validSidecar({
+        first_useful_signal_event: { type: 'user.tool_result', index: 2 },
+        tool_calls: [
+          { ordinal: 0, tool_use_event_index: 1, tool_result_event_index: 2, tool_kind: 'other-bash', operation: null, plan_only: false, policy_decision: 'allow', result_status: 'success', phase: 'produced-signal' },
+          { ordinal: 1, tool_use_event_index: 5, tool_result_event_index: 6, tool_kind: 'other-bash', operation: null, plan_only: false, policy_decision: 'allow', result_status: 'success', phase: 'post-signal' },
+        ],
+        summary: { ...validSidecar().summary, tool_calls_total: 2, shell_commands_total: 2, post_signal_tool_calls: 0 }, // should be 1
+      });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field === 'summary.post_signal_tool_calls')).toBe(true);
+    });
+
+    it('rejects a policy_denials_before/after_first_signal split that does not match the actual denied entries', () => {
+      const sidecar = validSidecar({
+        first_useful_signal_event: { type: 'user.tool_result', index: 2 },
+        tool_calls: [
+          { ordinal: 0, tool_use_event_index: 1, tool_result_event_index: 2, tool_kind: 'other-bash', operation: null, plan_only: false, policy_decision: 'allow', result_status: 'success', phase: 'produced-signal' },
+          { ordinal: 1, tool_use_event_index: 5, tool_result_event_index: 6, tool_kind: 'other-bash', operation: null, plan_only: false, policy_decision: 'deny', result_status: 'success', phase: 'post-signal' },
+        ],
+        summary: { ...validSidecar().summary, tool_calls_total: 2, shell_commands_total: 2, post_signal_tool_calls: 1, policy_denials_total: 1, policy_denials_before_first_signal: 1, policy_denials_after_first_signal: 0 }, // swapped -- the real denial is AFTER, not before
+      });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field === 'summary.policy_denials_before_first_signal' || e.field === 'summary.policy_denials_after_first_signal')).toBe(true);
+    });
+  });
+
+  // Accepted-sidecar invariant (review finding 1h) -- a sidecar only ever accompanies an ACCEPTED
+  // run (see finalizeAndWriteMatrixRecords's gate-then-sidecar ordering), so an unresolved
+  // ("missing") policy decision on it is itself a defect the sidecar must surface, never tolerate.
+  it('rejects a non-zero policy_decisions_missing even when it correctly matches the actual missing-decision entries', () => {
+    const sidecar = validSidecar({
+      tool_calls: [{ ordinal: 0, tool_use_event_index: 1, tool_result_event_index: 2, tool_kind: 'other-bash', operation: null, plan_only: false, policy_decision: 'missing', result_status: 'success', phase: 'no-signal' }],
+      summary: { ...validSidecar().summary, tool_calls_total: 1, shell_commands_total: 1, policy_decisions_missing: 1 },
+    });
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field === 'summary.policy_decisions_missing')).toBe(true);
+  });
 });
 
 describe('crossValidateAcceptedRunAuditAgainstRecord', () => {
@@ -481,6 +673,67 @@ describe('crossValidateAcceptedRunAuditAgainstRecord', () => {
     const record = baseRecord({ tool_calls_total: { value: 5, reason: null } });
     const sidecar = { run_id: record.run_id, run_schema: 5, run_kind: 'scenario', condition: 'current-skill', scenario_id: record.scenario_id, first_useful_signal_event: null, summary: { tool_calls_total: 1, shell_commands_total: 0, post_signal_ms: null, post_signal_tool_calls: null, policy_denials_before_first_signal: null, policy_denials_after_first_signal: null } };
     expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record).some((e) => e.field === 'summary.tool_calls_total')).toBe(true);
+  });
+
+  // Review finding 1g -- policy_denials_total (a real, independently re-derived count) previously
+  // had no cross-check at all against the record's own hook_deny_count (a plain integer, not a
+  // {value,reason} metric -- so it was never part of the existing recordMetric() comparison loop).
+  it('flags a policy_denials_total that disagrees with the record\'s own hook_deny_count', () => {
+    const record = baseRecord({ hook_deny_count: 99, hook_call_count: 99 });
+    const sidecar = { run_id: record.run_id, run_schema: 5, run_kind: 'scenario', condition: 'current-skill', scenario_id: record.scenario_id, first_useful_signal_event: null, summary: { tool_calls_total: 0, shell_commands_total: 0, post_signal_ms: null, post_signal_tool_calls: null, policy_denials_before_first_signal: null, policy_denials_after_first_signal: null, policy_denials_total: 1 } };
+    expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record).some((e) => e.field === 'summary.policy_denials_total')).toBe(true);
+  });
+
+  it('accepts a policy_denials_total that DOES match the record\'s own hook_deny_count', () => {
+    const record = baseRecord({ hook_deny_count: 1, hook_call_count: 3 });
+    const sidecar = { run_id: record.run_id, run_schema: 5, run_kind: 'scenario', condition: 'current-skill', scenario_id: record.scenario_id, first_useful_signal_event: null, summary: { tool_calls_total: 0, shell_commands_total: 0, post_signal_ms: null, post_signal_tool_calls: null, policy_denials_before_first_signal: null, policy_denials_after_first_signal: null, policy_denials_total: 1 } };
+    expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record).some((e) => e.field === 'summary.policy_denials_total')).toBe(false);
+  });
+
+  // Review finding 1d -- kmp-test's operation membership against the record's OWN
+  // policy_allowed_kmptest_subcommands allowlist can only be checked here (cross-validation),
+  // never in the self-contained validator, which has no access to the record at all.
+  describe('kmp-test operation membership against the record\'s own allowlist', () => {
+    it('flags a kmp-test operation that is neither "other" nor a member of policy_allowed_kmptest_subcommands', () => {
+      const record = baseRecord({ policy_allowed_kmptest_subcommands: ['doctor', 'describe'] });
+      const sidecar = { run_id: record.run_id, run_schema: 5, run_kind: 'scenario', condition: 'current-skill', scenario_id: record.scenario_id, first_useful_signal_event: null, tool_calls: [{ ordinal: 0, tool_use_event_index: 1, tool_result_event_index: 2, tool_kind: 'kmp-test', operation: 'clean', plan_only: false, policy_decision: 'allow', result_status: 'success', phase: 'no-signal' }], summary: { tool_calls_total: 1, shell_commands_total: 1, post_signal_ms: null, post_signal_tool_calls: null, policy_denials_before_first_signal: null, policy_denials_after_first_signal: null } };
+      expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record).some((e) => e.field.includes('operation'))).toBe(true);
+    });
+
+    it('accepts a kmp-test operation that IS a member of policy_allowed_kmptest_subcommands', () => {
+      const record = baseRecord({ policy_allowed_kmptest_subcommands: ['doctor', 'describe'] });
+      const sidecar = { run_id: record.run_id, run_schema: 5, run_kind: 'scenario', condition: 'current-skill', scenario_id: record.scenario_id, first_useful_signal_event: null, tool_calls: [{ ordinal: 0, tool_use_event_index: 1, tool_result_event_index: 2, tool_kind: 'kmp-test', operation: 'doctor', plan_only: false, policy_decision: 'allow', result_status: 'success', phase: 'no-signal' }], summary: { tool_calls_total: 1, shell_commands_total: 1, post_signal_ms: null, post_signal_tool_calls: null, policy_denials_before_first_signal: null, policy_denials_after_first_signal: null } };
+      expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record).some((e) => e.field.includes('operation'))).toBe(false);
+    });
+
+    it('accepts a kmp-test operation of exactly "other" regardless of the allowlist', () => {
+      const record = baseRecord({ policy_allowed_kmptest_subcommands: ['doctor', 'describe'] });
+      const sidecar = { run_id: record.run_id, run_schema: 5, run_kind: 'scenario', condition: 'current-skill', scenario_id: record.scenario_id, first_useful_signal_event: null, tool_calls: [{ ordinal: 0, tool_use_event_index: 1, tool_result_event_index: 2, tool_kind: 'kmp-test', operation: 'other', plan_only: false, policy_decision: 'allow', result_status: 'success', phase: 'no-signal' }], summary: { tool_calls_total: 1, shell_commands_total: 1, post_signal_ms: null, post_signal_tool_calls: null, policy_denials_before_first_signal: null, policy_denials_after_first_signal: null } };
+      expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record).some((e) => e.field.includes('operation'))).toBe(false);
+    });
+  });
+
+  // Review finding 5 -- defense in depth: crossValidateAcceptedRunAuditAgainstRecord must never
+  // throw even when called directly (bypassing validateAcceptedAuditOnDisk's own
+  // shape-check-then-skip guard) with a non-object sidecar. null is the concrete case that threw
+  // (TypeError: Cannot read properties of null) via a bare `sidecar.run_id` dereference; scalars
+  // and arrays are covered too since they're equally "not a real sidecar object".
+  describe('defensive guard against a non-object sidecar (never throws)', () => {
+    it.each([null, 42, 'a string', [], [1, 2, 3]])('does not throw when sidecar is %j', (badSidecar) => {
+      const record = baseRecord();
+      expect(() => crossValidateAcceptedRunAuditAgainstRecord(badSidecar, record)).not.toThrow();
+    });
+
+    it('returns a non-empty, structured error array (never silently empty) for a null sidecar', () => {
+      const record = baseRecord();
+      const errors = crossValidateAcceptedRunAuditAgainstRecord(null, record);
+      expect(Array.isArray(errors)).toBe(true);
+      expect(errors.length).toBeGreaterThan(0);
+      for (const e of errors) {
+        expect(typeof e.field).toBe('string');
+        expect(typeof e.message).toBe('string');
+      }
+    });
   });
 });
 

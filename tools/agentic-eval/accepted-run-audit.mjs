@@ -196,10 +196,30 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
   };
 }
 
+const EVENT_REF_KEYS = ['type', 'index'];
+
+/**
+ * Strict event-ref shape (review finding 1a) -- must be null, or an object with EXACTLY the keys
+ * type/index (no more, no less), `type` exactly the literal `"user.tool_result"` (not merely any
+ * string), and `index` a non-negative INTEGER (not merely any number -- a fractional or negative
+ * value can never correlate to a real event position). Applies identically to both
+ * first_useful_signal_event and terminal_authoritative_event.
+ */
 function validateEventRefField(ref, field, errors) {
   if (ref == null) return;
-  if (typeof ref !== 'object' || typeof ref.type !== 'string' || typeof ref.index !== 'number') {
-    errors.push({ field, message: 'must be null or {type: string, index: number}' });
+  if (typeof ref !== 'object' || Array.isArray(ref)) {
+    errors.push({ field, message: 'must be null or an object with exactly the keys type/index' });
+    return;
+  }
+  const keys = Object.keys(ref);
+  if (keys.length !== EVENT_REF_KEYS.length || !EVENT_REF_KEYS.every((k) => keys.includes(k))) {
+    errors.push({ field, message: `must have exactly the keys ${EVENT_REF_KEYS.join('/')}, got ${JSON.stringify(keys)}` });
+  }
+  if (ref.type !== 'user.tool_result') {
+    errors.push({ field: `${field}.type`, message: 'must be exactly "user.tool_result"' });
+  }
+  if (!Number.isInteger(ref.index) || ref.index < 0) {
+    errors.push({ field: `${field}.index`, message: 'must be a non-negative integer' });
   }
 }
 
@@ -266,6 +286,22 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
       if (isBash) {
         if (typeof tc.plan_only !== 'boolean') errors.push({ field: `${label}.plan_only`, message: 'must be a boolean for a Bash-family tool_kind' });
         if (tc.policy_decision === 'not-applicable') errors.push({ field: `${label}.policy_decision`, message: 'a Bash-family entry must have a real decision category (allow/deny/missing), never not-applicable' });
+        // Per-tool_kind operation domain (review finding 1b/1c/1d) -- previously unchecked for
+        // EVERY Bash-family entry, so an arbitrary or contradictory operation string (or even a
+        // non-string value) silently passed. kmp-test's FULL domain (its own value must be "other"
+        // or a member of the record's policy_allowed_kmptest_subcommands) can only be checked
+        // during cross-validation, which has the record on hand -- this is the basic shape half.
+        if (tc.tool_kind === 'other-bash') {
+          if (tc.operation !== null) errors.push({ field: `${label}.operation`, message: 'must be null for tool_kind other-bash' });
+        } else if (tc.tool_kind === 'gradle') {
+          if (tc.operation !== 'allowed-task' && tc.operation !== 'other') {
+            errors.push({ field: `${label}.operation`, message: 'must be exactly "allowed-task" or "other" for tool_kind gradle' });
+          }
+        } else if (tc.tool_kind === 'kmp-test') {
+          if (typeof tc.operation !== 'string' || tc.operation.length === 0) {
+            errors.push({ field: `${label}.operation`, message: 'must be a non-empty string for tool_kind kmp-test (membership against the record\'s own allowlist is checked during cross-validation)' });
+          }
+        }
       } else {
         if (tc.plan_only !== null) errors.push({ field: `${label}.plan_only`, message: 'must be null for a Skill/unexpected-tool tool_kind' });
         if (tc.operation !== null) errors.push({ field: `${label}.operation`, message: 'must be null for a Skill/unexpected-tool tool_kind' });
@@ -328,6 +364,61 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
     }
   }
 
+  const summaryIsObject = summary != null && typeof summary === 'object' && !Array.isArray(summary);
+
+  // Accepted-sidecar invariant (review finding 1h): a sidecar only ever accompanies an ACCEPTED
+  // run (see finalizeAndWriteMatrixRecords's gate-then-sidecar ordering) -- an unresolved
+  // ("missing") policy decision on it is itself a defect this sidecar must surface, never
+  // tolerate. Checked only once the field is already known to be a well-typed non-negative
+  // integer, to avoid piling a second, redundant error onto an already-wrong-typed field.
+  if (summaryIsObject && Number.isInteger(summary.policy_decisions_missing) && summary.policy_decisions_missing !== 0) {
+    errors.push({ field: 'summary.policy_decisions_missing', message: 'must be exactly 0 -- a sidecar only ever accompanies an accepted run, so every Bash-family policy decision must have resolved to allow or deny' });
+  }
+
+  // Phase correctness + post-signal summary recompute (review finding 1e/1f) -- previously only
+  // the NULL-when-no-boundary direction was checked; neither each entry's own claimed `phase` nor
+  // the ACTUAL numeric value of the 3 boundary-dependent summary counts was ever cross-checked
+  // against the tool_calls[] entries that are supposed to justify them -- an arbitrary/incoherent
+  // phase or count silently passed as long as it was one of the 4 enum values / a non-negative
+  // integer.
+  if (toolCalls != null && summaryIsObject) {
+    const firstSignalIndex = sidecar.first_useful_signal_event != null && typeof sidecar.first_useful_signal_event === 'object' ? sidecar.first_useful_signal_event.index : null;
+    if (firstSignalIndex == null) {
+      toolCalls.forEach((tc, i) => {
+        if (tc != null && typeof tc === 'object' && tc.phase !== 'no-signal') {
+          errors.push({ field: `tool_calls[${i}].phase`, message: 'must be exactly no-signal when there is no first_useful_signal_event boundary' });
+        }
+      });
+    } else {
+      const correlates = toolCalls.some((tc) => tc?.tool_result_event_index === firstSignalIndex);
+      if (!correlates) {
+        errors.push({ field: 'first_useful_signal_event', message: 'does not correlate to any tool_calls[] entry\'s own result event index' });
+      }
+      const isBashKind = (tc) => BASH_FAMILY_TOOL_KINDS.has(tc?.tool_kind);
+      toolCalls.forEach((tc, i) => {
+        if (tc == null || typeof tc !== 'object' || !Number.isInteger(tc.tool_use_event_index)) return;
+        const expectedPhase = tc.tool_result_event_index === firstSignalIndex ? 'produced-signal'
+          : tc.tool_use_event_index > firstSignalIndex ? 'post-signal' : 'pre-signal';
+        if (tc.phase !== expectedPhase) {
+          errors.push({ field: `tool_calls[${i}].phase`, message: `must be exactly ${expectedPhase} given tool_use_event_index=${tc.tool_use_event_index}, tool_result_event_index=${tc.tool_result_event_index}, boundary=${firstSignalIndex}` });
+        }
+      });
+      const expectedPostSignalToolCalls = toolCalls.filter((tc) => Number.isInteger(tc?.tool_use_event_index) && tc.tool_use_event_index > firstSignalIndex).length;
+      if (summary.post_signal_tool_calls !== expectedPostSignalToolCalls) {
+        errors.push({ field: 'summary.post_signal_tool_calls', message: `must equal the number of tool_calls[] entries with tool_use_event_index > ${firstSignalIndex} (expected ${expectedPostSignalToolCalls}, got ${JSON.stringify(summary.post_signal_tool_calls)})` });
+      }
+      const bashEntries = toolCalls.filter(isBashKind);
+      const expectedBefore = bashEntries.filter((tc) => tc.policy_decision === 'deny' && Number.isInteger(tc.tool_use_event_index) && tc.tool_use_event_index <= firstSignalIndex).length;
+      if (summary.policy_denials_before_first_signal !== expectedBefore) {
+        errors.push({ field: 'summary.policy_denials_before_first_signal', message: `must equal the number of denied Bash-family entries at or before the boundary (expected ${expectedBefore}, got ${JSON.stringify(summary.policy_denials_before_first_signal)})` });
+      }
+      const expectedAfter = bashEntries.filter((tc) => tc.policy_decision === 'deny' && Number.isInteger(tc.tool_use_event_index) && tc.tool_use_event_index > firstSignalIndex).length;
+      if (summary.policy_denials_after_first_signal !== expectedAfter) {
+        errors.push({ field: 'summary.policy_denials_after_first_signal', message: `must equal the number of denied Bash-family entries after the boundary (expected ${expectedAfter}, got ${JSON.stringify(summary.policy_denials_after_first_signal)})` });
+      }
+    }
+  }
+
   return { errors, warnings };
 }
 
@@ -340,6 +431,16 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
  */
 export function crossValidateAcceptedRunAuditAgainstRecord(sidecar, record) {
   const errors = [];
+  // Defensive guard (review finding 5): a caller may invoke this directly without first running
+  // validateAcceptedRunAuditSidecar's own shape check -- a null sidecar previously reached a bare
+  // `sidecar.run_id` dereference below and threw a TypeError instead of returning a structured
+  // error. Scalars/arrays never threw here (property access on them just yields `undefined`,
+  // which then legitimately mismatches every real record field), but are still rejected up front
+  // for the same reason: none of them is a real sidecar object.
+  if (sidecar == null || typeof sidecar !== 'object' || Array.isArray(sidecar)) {
+    errors.push({ field: '(root)', message: 'sidecar is not an object' });
+    return errors;
+  }
   if (sidecar.run_id !== record.run_id) errors.push({ field: 'run_id', message: `sidecar run_id (${sidecar.run_id}) does not match record run_id (${record.run_id})` });
   if (sidecar.run_schema !== record.schema) errors.push({ field: 'run_schema', message: `sidecar run_schema (${sidecar.run_schema}) does not match record schema (${record.schema})` });
   if (sidecar.run_kind !== record.run_kind) errors.push({ field: 'run_kind', message: `sidecar run_kind (${sidecar.run_kind}) does not match record run_kind (${record.run_kind})` });
@@ -355,6 +456,28 @@ export function crossValidateAcceptedRunAuditAgainstRecord(sidecar, record) {
       errors.push({ field: `summary.${field}`, message: `sidecar summary.${field} does not match record.${field}.value` });
     }
   }
+
+  // hook_deny_count (review finding 1g) -- a PLAIN integer field on the record (never a
+  // {value,reason} metric, unlike every field in the loop above), so it was never part of that
+  // comparison and had no cross-check against the sidecar's own independently re-derived
+  // policy_denials_total at all.
+  if ((sidecar.summary?.policy_denials_total ?? null) !== (record.hook_deny_count ?? null)) {
+    errors.push({ field: 'summary.policy_denials_total', message: `sidecar summary.policy_denials_total (${sidecar.summary?.policy_denials_total}) does not match record hook_deny_count (${record.hook_deny_count})` });
+  }
+
+  // kmp-test operation membership against the record's OWN policy_allowed_kmptest_subcommands
+  // (review finding 1d) -- can only be checked here, never in the self-contained validator, which
+  // has no access to the record at all.
+  if (Array.isArray(sidecar.tool_calls)) {
+    const allowedKmpTestSubcommands = Array.isArray(record.policy_allowed_kmptest_subcommands) ? record.policy_allowed_kmptest_subcommands : [];
+    sidecar.tool_calls.forEach((tc, i) => {
+      if (tc?.tool_kind !== 'kmp-test') return;
+      if (tc.operation !== 'other' && !allowedKmpTestSubcommands.includes(tc.operation)) {
+        errors.push({ field: `tool_calls[${i}].operation`, message: `kmp-test operation "${tc.operation}" is neither "other" nor a member of the record's own policy_allowed_kmptest_subcommands (${JSON.stringify(allowedKmpTestSubcommands)})` });
+      }
+    });
+  }
+
   return errors;
 }
 
