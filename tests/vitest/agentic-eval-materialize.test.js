@@ -72,23 +72,27 @@ describe('materializeSkillSnapshot', () => {
   // above (mechanism-only) and from the live-HEAD test above (tracks develop's tip forever, never
   // references this constant). calibrate/smoke both materialize current-skill via
   // runConditionPair's one call site using exactly PINNED_SKILL_SHA. This is a tripwire, not a
-  // general staleness detector: it deliberately hardcodes 9e47a9d and will need its own edit on
+  // general staleness detector: it deliberately hardcodes 21f1894 and will need its own edit on
   // every future legitimate pin advance -- the next test verifies the semantics that should
   // survive such an advance. Split into two independent it() blocks on purpose: expect().toBe()
   // throws synchronously, so a single block with the equality check first would hide whether the
   // content assertions below actually discriminate -- two blocks means a run against a stale pin
   // shows both failing for real, not just the first one.
-  it('PINNED_SKILL_SHA is locked to the PR #395 evidence-driven-scope-selection fix', () => {
-    expect(PINNED_SKILL_SHA).toBe('9e47a9d132f5b9ea6ac5bc50a66c844458fd363e');
+  it('PINNED_SKILL_SHA is locked to the PR #399 execution-state-machine fix', () => {
+    expect(PINNED_SKILL_SHA).toBe('21f189403e86b4720f0d2c6a547353fb108252b4');
   });
 
-  it('the pinned current-skill snapshot reflects the evidence-driven scope-selection Decision protocol', async () => {
+  it('the pinned current-skill snapshot reflects the PR #399 execution state machine', async () => {
     const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runValidator });
     cleanupDirs.push(snapshotDir);
     expect(validation.ok).toBe(true);
     const materializedSkillMd = readFileSync(path.join(snapshotDir, '.skills', 'kmp-test-runner', 'SKILL.md'), 'utf8');
     // SKILL.md is CRLF on this Windows checkout; .gitattributes doesn't LF-pin .md files --
-    // normalize before line-anchored regex matching.
+    // normalize before line-anchored regex matching. Markdown line-wraps also mean a phrase that
+    // reads as one sentence in the source can straddle a real line break in the raw text (this
+    // file's own history has hit that trap more than once) -- multi-word assertions below use
+    // \s+ between words instead of a literal space specifically to stay correct regardless of
+    // exactly where a future edit happens to wrap a line.
     const normalizedSkillMd = materializedSkillMd.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     // Decision protocol must be the canonical entry point -- the first ## heading, not layered
     // alongside a surviving Quick start.
@@ -97,10 +101,10 @@ describe('materializeSkillSnapshot', () => {
     expect(normalizedSkillMd).toContain('kmp-test parallel --json --project-root .');
     // Workflow-specific scoping survives: `changed` has no user-facing module filter (always
     // git-derived), coverage scope is verified via plan.coverage_modules.
-    expect(normalizedSkillMd).toContain('`changed` has no such flag');
+    expect(normalizedSkillMd).toMatch(/`changed`\s+has\s+no\s+such\s+flag/);
     expect(normalizedSkillMd).toContain('plan.coverage_modules');
     // "### 1. Run the relevant test type" is deliberately NOT asserted absent below: it was
-    // Steps item 1 before the #388 fix and stays Steps item 1 through #395 -- only its sibling
+    // Steps item 1 before the #388 fix and stays Steps item 1 through #399 -- only its sibling
     // "### 2. Diagnose only if..." (and the old "## Quick start" heading) were folded into the
     // Decision protocol, back in #388. Asserting "### 1." absent would be false against the real
     // shipped file.
@@ -109,27 +113,78 @@ describe('materializeSkillSnapshot', () => {
     expect(normalizedSkillMd).not.toMatch(/^(bash|pwsh)\s+\.skills\/kmp-test-runner\//m);
     expect(normalizedSkillMd).not.toContain('current: 0.10.0+');
 
-    // #395-specific: descriptive/conventional module wording ("app", "shared") is explicitly
-    // rejected as an exact module identity -- a known module requires an explicit user statement
-    // or a prior envelope's `modules[].name`, never descriptive wording alone.
+    // Pre-#399 (still true): descriptive/conventional module wording ("app", "shared") is
+    // explicitly rejected as an exact module identity -- a known module requires an explicit
+    // user statement or a prior envelope's `modules[].name`, never descriptive wording alone.
     expect(normalizedSkillMd).toContain('descriptive wording ("app", "shared") isn\'t an exact module');
     expect(normalizedSkillMd).toContain("explicit from the user, or a prior envelope's");
-    expect(normalizedSkillMd).toContain('never descriptive wording alone');
-    // #395-specific: an unclear-scope describe result is resolved by inspecting EVERY modules[]
-    // entry's task field, then branching explicitly on 1 / 2+ / 0 eligible candidates -- never
-    // inventing a module name.
-    expect(normalizedSkillMd).toContain("check every `modules[]` entry's task field");
-    expect(normalizedSkillMd).toContain('1 eligible: dispatch its exact name');
-    expect(normalizedSkillMd).toContain('2+ eligible: dispatch globally if broad, else ask');
-    expect(normalizedSkillMd).toContain('0 eligible:');
-    expect(normalizedSkillMd).toContain('invent one');
-    // #395-specific: a coherent successful envelope is an operationally terminal condition --
-    // stop and report, no post-success dry-run/doctor/describe/raw-Gradle/version/ls/pwd/which
-    // probing, and an unrelated skipped[] entry doesn't reopen exploration.
+    expect(normalizedSkillMd).toMatch(/never\s+descriptive\s+wording\s+alone/);
+
+    // #399 (1/6): pre-inspection invocation guidance lives in the frontmatter description itself
+    // -- the schema-v5 canary's own forensic finding was that the skill was invoked first in only
+    // 1/4 current-skill cells (the other 3 spent 3-4 denied Bash probes first), and the Decision
+    // protocol body is only ever read AFTER the skill is already invoked -- so ordering guidance
+    // has to sit where it's read BEFORE any tool call, not inside the body.
+    expect(normalizedSkillMd).toMatch(
+      /Invoke\s+before\s+Bash\s+exploration,\s+file\s+traversal,\s+Gradle\s+task\s+listing,\s+or\s+project-structure\s+inspection/i
+    );
+
+    // #399 (2/6): scope classification names all four states as its own step, ahead of the four
+    // dispatch branches -- not folded into module-presence branching the way the prior fix's
+    // "known workflow, no/known/unclear module" framing did.
+    expect(normalizedSkillMd).toContain(
+      '**Classify scope** — broad, exact module, test-capability target, or likely-no-tests target'
+    );
+
+    // #399 (3/6): test-capability and likely-no-tests are two SEPARATE candidate rules, each with
+    // its OWN complete 0/1/2+ branching -- a follow-up review round found the first cut of this
+    // fix dropped the original protocol's "0 eligible: don't invent one" branch entirely, and left
+    // likely-no-tests referencing null task fields without ever saying how to obtain or select
+    // them. Both gaps are closed and asserted here explicitly so a future edit can't silently
+    // re-drop either branch or re-merge the two rules.
+    expect(normalizedSkillMd).toContain('1 eligible: its exact name');
+    expect(normalizedSkillMd).toMatch(/2\+\s+eligible:\s+dispatch\s+globally\s+if\s+broad,\s+else\s+ask/);
+    expect(normalizedSkillMd).toContain('0 eligible: report no');
+    expect(normalizedSkillMd).toContain(
+      '1 null: dispatch its exact `modules[].name` for one real filtered run'
+    );
+    expect(normalizedSkillMd).toContain('2+ null: ask for the');
+    expect(normalizedSkillMd).toMatch(/never\s+guess\s+from\s+names\s+or\s+types/);
+    expect(normalizedSkillMd).toContain('0 null: report no matching candidate');
+    // "don't invent one" (or the apostrophe-normalized equivalent) must appear twice -- once per
+    // 0-branch (test-capability's and likely-no-tests') -- not collapsed into one shared mention.
+    const inventOneMatches = normalizedSkillMd.match(/don.t\s+invent\s+one/gi) ?? [];
+    expect(inventOneMatches.length).toBe(2);
+
+    // #399 (4/6): a denied DECORATED command (redirection/pipe/chaining/wrapper) is a THIRD,
+    // distinct denial-recovery case -- one bare retry with the exact standalone canonical form,
+    // separate from "abandon an exploratory probe" (no retry needed) and "a denied exact-canonical
+    // command is final" (no retry in any form). A schema-v5 canary cell hit exactly this gap: it
+    // invoked the skill first, decorated the canonical describe call, got denied, then spiralled
+    // through 8 more denied commands instead of recovering with the bare form.
+    expect(normalizedSkillMd).toContain("A denied exploratory command isn't worth retrying");
+    expect(normalizedSkillMd).toContain('A denied EXACT canonical `kmp-test` command is final');
+    expect(normalizedSkillMd).toContain('A denied DECORATED command');
+    expect(normalizedSkillMd).toContain('issue the exact standalone command once');
+    expect(normalizedSkillMd).toContain('if denied too, stop and report');
+
+    // #399 (5/6): dry-run is never a substitute preflight ahead of an execution request -- two
+    // successful schema-v5 cells both ran an unrequested --dry-run before the real dispatch.
+    // Dry-run remains legitimate only for an explicit preview ask.
+    expect(normalizedSkillMd).toMatch(/not\s+a\s+preflight\s+for\s+an\s+execution/);
+
+    // #399 (6/6, preserved through both PR #399 rounds): a coherent successful envelope is an
+    // operationally terminal condition -- stop and report, no post-success dry-run/doctor/
+    // describe/raw-Gradle/version/ls-pwd-which probing, an unrelated skipped[] entry doesn't
+    // reopen exploration, and doctor only ever runs after a real failure (exit_code 3) or an
+    // explicit request.
     expect(normalizedSkillMd).toContain('is terminal');
     expect(normalizedSkillMd).toContain('no post-success dry-run, doctor, describe, raw or task-listing Gradle, version, or');
     expect(normalizedSkillMd).toContain('ls/pwd/which probe');
     expect(normalizedSkillMd).toContain("An unrelated `skipped[]` entry isn't a reason to keep exploring");
+    expect(normalizedSkillMd).toContain('Diagnose only on failure');
+    expect(normalizedSkillMd).toContain('kmp-test doctor --json --project-root .');
+    expect(normalizedSkillMd).toMatch(/`exit_code:\s*3`\s+or\s+an\s+explicit\s+request/);
   });
 
   it('cleans up its temp directory when validation fails partway through (not just on an invalid SHA)', async () => {
