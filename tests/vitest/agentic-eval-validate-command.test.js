@@ -393,3 +393,54 @@ describe('cmdValidate / validateRunRecordFile -- schema:5 scenario (full sidecar
     });
   }
 });
+
+// A second review round found validateRunRecordFile's own top-level readFileSync+JSON.parse was
+// itself unguarded -- a malformed *run* file (not a malformed sidecar, which was already handled)
+// threw a raw SyntaxError instead of returning the structured {errors,warnings} shape this
+// function's own contract promises, propagating uncaught through cmdValidate (and, separately,
+// through cmdAggregate -- see agentic-eval-cli.test.js).
+describe('validateRunRecordFile / cmdValidate -- malformed top-level run file (fails closed, never throws)', () => {
+  it('validateRunRecordFile never throws for malformed top-level JSON; record is null, errors non-empty', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aevc-malformed-run-'));
+    try {
+      const runPath = path.join(dir, 'bad.json');
+      writeFileSync(runPath, 'not valid json {{{');
+      let result;
+      expect(() => { result = validateRunRecordFile(runPath); }).not.toThrow();
+      expect(result.record).toBeNull();
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.warnings).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('validateRunRecordFile\'s error message never leaks the absolute path or the file\'s own content', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aevc-malformed-run-leak-'));
+    try {
+      const runPath = path.join(dir, 'bad.json');
+      const secretLookingContent = 'not valid json {{{ sk-ant-totally-not-a-real-secret-marker';
+      writeFileSync(runPath, secretLookingContent);
+      const { errors } = validateRunRecordFile(runPath);
+      const serialized = JSON.stringify(errors);
+      expect(serialized).not.toContain(runPath);
+      expect(serialized).not.toContain(dir);
+      expect(serialized).not.toContain('sk-ant-totally-not-a-real-secret-marker');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('cmdValidate returns structured errors and exit 1 for malformed JSON, never throws', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aevc-malformed-run-cmd-'));
+    try {
+      const runPath = path.join(dir, 'bad.json');
+      writeFileSync(runPath, 'not valid json {{{');
+      let exitCode;
+      expect(() => { exitCode = cmdValidate({ run: runPath }); }).not.toThrow();
+      expect(exitCode).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
-import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
+import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, validateRunRecordFile, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 import { LATEST_RUN_SCHEMA, validateRun, buildAggregateGroup } from '../../tools/agentic-eval/schemas.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
@@ -1852,6 +1852,96 @@ describe('cmdAggregate -- schema-v5 scenario records require a verifiable on-dis
       expect(exitCode).toBe(1);
       expect(errors.some((e) => e.run_id === record.run_id)).toBe(true);
       expect(groups.length).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// A second review round found validateRunRecordFile's own top-level readFileSync+JSON.parse was
+// itself unguarded -- cmdAggregate calls it directly with no try/catch, so one malformed
+// top-level *.json file in --runs-dir threw an uncaught SyntaxError and aborted the WHOLE batch,
+// instead of excluding just that file and continuing with its siblings. cmdAggregate also
+// re-read and re-parsed every VALID file's JSON a second time (validateRunRecordFile already
+// parses it once) -- fixed by having cmdAggregate reuse validateRunRecordFile's own returned
+// `record`.
+describe('cmdAggregate -- a malformed top-level run file never aborts the batch', () => {
+  function captureAggregateOutput(dir) {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const exitCode = cmdAggregate({ 'runs-dir': dir });
+      const printed = JSON.parse(spy.mock.calls.at(-1)[0]);
+      return { exitCode, ...printed };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('does not throw, excludes the malformed file, and reports it with run_id:"(unknown)"', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-aggregate-malformed-'));
+    try {
+      writeFileSync(path.join(dir, 'bad.json'), 'not valid json {{{');
+      let result;
+      expect(() => { result = captureAggregateOutput(dir); }).not.toThrow();
+      const { exitCode, errors } = result;
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.run_id === '(unknown)')).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('continues processing a valid sibling file -- it still aggregates while the malformed one is reported separately', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-aggregate-malformed-sibling-'));
+    try {
+      writeFileSync(path.join(dir, 'bad.json'), 'not valid json {{{');
+      const validRecord = {
+        schema: 1, run_id: 'calibration-no-skill-goodsib01', run_kind: 'calibration', benchmark_eligible: false,
+      };
+      // A deliberately minimal (schema-invalid) but PARSEABLE sibling -- this test only needs to
+      // prove the malformed file doesn't block the sibling from being CONSIDERED (it still shows
+      // up in `errors`, keyed by its own real run_id, rather than the batch aborting outright).
+      writeFileSync(path.join(dir, 'sib.json'), JSON.stringify(validRecord));
+      const { exitCode, errors } = captureAggregateOutput(dir);
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.run_id === '(unknown)')).toBe(true);
+      expect(errors.some((e) => e.run_id === 'calibration-no-skill-goodsib01')).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('never leaks the absolute path or the malformed file\'s own content in the reported errors', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-aggregate-malformed-leak-'));
+    try {
+      const runPath = path.join(dir, 'bad.json');
+      writeFileSync(runPath, 'not valid json {{{ sk-ant-totally-not-a-real-secret-marker');
+      const { errors } = captureAggregateOutput(dir);
+      const serialized = JSON.stringify(errors);
+      expect(serialized).not.toContain(runPath);
+      expect(serialized).not.toContain(dir);
+      expect(serialized).not.toContain('sk-ant-totally-not-a-real-secret-marker');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('parses each valid file\'s JSON exactly once -- reuses validateRunRecordFile\'s own returned record', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-aggregate-single-parse-'));
+    try {
+      const validRecord = { schema: 1, run_id: 'calibration-no-skill-onceonly01', run_kind: 'calibration' };
+      writeFileSync(path.join(dir, 'once.json'), JSON.stringify(validRecord));
+      const parseSpy = vi.spyOn(JSON, 'parse');
+      try {
+        cmdAggregate({ 'runs-dir': dir });
+        // String-level match, deliberately NOT a second JSON.parse call here -- JSON.parse is
+        // still spied at this point, and re-invoking it inside this inspection would itself be
+        // recorded, corrupting the very call count being measured.
+        const parsedThisFile = parseSpy.mock.calls.filter((args) => typeof args[0] === 'string' && args[0].includes('calibration-no-skill-onceonly01'));
+        expect(parsedThisFile.length).toBe(1);
+      } finally {
+        parseSpy.mockRestore();
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

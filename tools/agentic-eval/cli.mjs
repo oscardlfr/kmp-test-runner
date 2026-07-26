@@ -2546,19 +2546,16 @@ function cmdAggregate(args) {
   const runs = [];
   for (const file of readdirSync(runsDir).filter((f) => f.endsWith('.json'))) {
     const runPath = join(runsDir, file);
-    const { errors: fileErrors } = validateRunRecordFile(runPath);
+    // validateRunRecordFile now fails closed and returns its own parsed `record` (null only on a
+    // read/parse failure) -- reused directly below, never re-read/re-parsed a second time. A
+    // malformed file's run_id is genuinely unresolvable (record is null), so it falls back to
+    // '(unknown)', matching aggregateRuns' own fallback for the identical situation.
+    const { record, errors: fileErrors } = validateRunRecordFile(runPath);
     if (fileErrors.length > 0) {
-      let runId = '(unknown)';
-      try {
-        runId = JSON.parse(readFileSync(runPath, 'utf8'))?.run_id ?? '(unknown)';
-      } catch {
-        // Malformed JSON -- run_id stays '(unknown)', matching aggregateRuns' own fallback for an
-        // unresolvable run_id.
-      }
-      preFilterErrors.push({ run_id: runId, errors: fileErrors });
+      preFilterErrors.push({ run_id: record?.run_id ?? '(unknown)', errors: fileErrors });
       continue;
     }
-    runs.push(JSON.parse(readFileSync(runPath, 'utf8')));
+    runs.push(record);
   }
   const { groups, errors } = aggregateRuns(runs);
   console.log(JSON.stringify({ groups, errors: [...preFilterErrors, ...errors] }, null, 2));
@@ -2648,15 +2645,36 @@ function validateAcceptedAuditOnDisk(runPath, record) {
  * accepted_audit.relative_path/sha256 to resolve in the first place). Extracted as its own,
  * directly-testable function so cmdValidate itself stays a thin CLI wrapper (print + exit code),
  * matching this file's own cmdCorpusValidate/validateLoadedScenarios precedent.
- * @returns {{errors: Array<{field:string,message:string}>, warnings: Array}}
+ *
+ * Fails CLOSED, never throws (a review finding demonstrated the previous unguarded
+ * readFileSync+JSON.parse propagated a raw SyntaxError uncaught through cmdValidate and, more
+ * seriously, through cmdAggregate -- aborting an entire multi-file batch over one malformed file
+ * instead of excluding just that file). `record` is `null` only on a read/parse failure; a
+ * record that parses but fails schema validation still returns the real parsed object, unchanged
+ * from before. The read/parse failure message never includes the file's own path or content --
+ * `err.code` (e.g. 'ENOENT') for a read failure, a fixed generic string for a parse failure
+ * (JSON.parse's own error message embeds a snippet of the malformed text itself, so it is never
+ * interpolated here).
+ * @returns {{record: object|null, errors: Array<{field:string,message:string}>, warnings: Array}}
  */
 function validateRunRecordFile(runPath) {
-  const record = JSON.parse(readFileSync(runPath, 'utf8'));
+  let text;
+  try {
+    text = readFileSync(runPath, 'utf8');
+  } catch (err) {
+    return { record: null, errors: [{ field: '(root)', message: `the run file could not be read (${err.code ?? 'unknown error'})` }], warnings: [] };
+  }
+  let record;
+  try {
+    record = JSON.parse(text);
+  } catch {
+    return { record: null, errors: [{ field: '(root)', message: 'the run file is not valid JSON' }], warnings: [] };
+  }
   const { errors, warnings } = validateRun(record);
   if (errors.length === 0 && record.schema >= 5 && record.run_kind === 'scenario') {
     errors.push(...validateAcceptedAuditOnDisk(runPath, record));
   }
-  return { errors, warnings };
+  return { record, errors, warnings };
 }
 
 function cmdValidate(args) {
