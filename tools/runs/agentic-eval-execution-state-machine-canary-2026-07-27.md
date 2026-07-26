@@ -342,8 +342,15 @@ retry.
   performance one.
 - **Model nondeterminism**: `claude-sonnet-5` is not deterministic across invocations even at a
   fixed seed — every number above can vary run-to-run for reasons unrelated to any skill change.
-- **Time separation**: PR #398's batch ran 2026-07-26; this batch ran 2026-07-27 — roughly a 1-day
-  gap.
+- **Time separation**: measured directly from each batch's own record timestamps, not from report
+  dates. PR #398's batch ran `2026-07-26T14:54:18Z`–`2026-07-26T15:08:21Z` (UTC); this batch ran
+  `2026-07-26T22:27:49Z`–`2026-07-26T22:39:28Z` (UTC) — an actual gap of about **7.3 hours**, not a
+  full day. This report's filename and headline date (`2026-07-27`) reflect the execution machine's
+  local time zone (Europe/Madrid, UTC+2 in July): the batch's UTC `22:2x` start falls just after
+  local midnight into July 27, consistent with this session's own Phase-1 gate output, which was
+  independently timestamped `00:24:53` local time. The filename intentionally uses local execution
+  date, not UTC date; every timestamp elsewhere in this report (including both scenario tables) is
+  UTC, taken directly from each record's own `started_at`/`ended_at` fields.
 - **Skill-pin change is the object of measurement, and is confounded with normal repository
   drift**: `kmp_test_cli_source_sha` also advanced (`a9acb22...` → `f8dd1786...`) between the two
   batches as `develop` moved forward; `claude_code_version` did **not** change (`2.1.218` both
@@ -354,8 +361,14 @@ retry.
 - **The specific wrong module in `39e3bfdc` is not named anywhere in this report** because it is not
   present in the committed record or its `audit/` sidecar in either this batch or PR #398's —
   confirming it would require the raw transcript, which is deliberately out of scope.
-- **The `2>&1`-decoration and doctor/dry-run-probe failure modes are not independently verifiable
-  from committed evidence** in either batch — both would require raw transcript inspection.
+- **Only the `2>&1`-decoration failure mode is unverifiable from committed evidence.** The sidecar's
+  `tool_calls[]` records `tool_kind`/`operation`/`policy_decision`/`result_status`, never literal
+  command text, so confirming or ruling out command-line decoration would require the raw
+  transcript. The doctor/dry-run-probe failure mode is **not** in this category: it is independently
+  verifiable from the committed sidecar alone via each tool call's own `operation` and `plan_only`
+  fields (see "Explicit failure-mode evaluation" §4 above) — programmatically re-checked across all
+  8 sidecars for this correction: no `operation:"doctor"` and no `plan_only:true` appears anywhere in
+  this batch.
 - **No statistical significance, general speedup, token savings, or product-quality claim is made
   anywhere in this report.** Every numeric comparison above is a directional observation at `n=2`,
   explicitly confounded by the items above.
@@ -376,7 +389,8 @@ retry.
 2. **Scenario 2's `current-skill` arm is unchanged (2-of-2, both batches)**, and its pre-skill
    exploration pattern is ordinal-identical to PR #398's — PR #399 does not appear to have touched
    this scenario's behavior in either direction at `n=2`.
-3. **No harness, skill, policy, or scenario defect was found** in this session. This evidence-only
-   PR does not fix, tune, or otherwise change any harness, skill, policy, or scenario file. A larger
-   `n` or raw-transcript-level investigation of the persistent scenario-1 wrong-module correctness
-   failure would be the natural next step, as a separately authorized task.
+3. **No harness or evidence-integrity defect was found; one persistent behavioral module-selection
+   failure remains and requires separate forensic/skill work.** This evidence-only PR does not fix,
+   tune, or otherwise change any harness, skill, policy, or scenario file. A larger `n` or
+   raw-transcript-level investigation of the persistent scenario-1 wrong-module correctness failure
+   would be the natural next step, as a separately authorized task.
