@@ -230,6 +230,41 @@ describe('spawnCondition -- real subprocess (local shell only, no Claude, no net
     expect(result.terminationReason).toBe('error');
     expect(result.stderr).toContain('[spawn error]');
   });
+
+  // endedHrtimeNs (accepted-run-observability PR): the ONE monotonic-completion-time counterpart
+  // to spawnHrtimeNs -- captured immediately before resolving, on BOTH the child 'close' path
+  // (a normal exit, this test) and the child 'error' path (spawn failure, the next test). Without
+  // this, post_signal_ms has no monotonic end-of-condition time to subtract from at all.
+  describe('endedHrtimeNs -- monotonic completion time (accepted-run-observability)', () => {
+    it('is a bigint at or after spawnHrtimeNs and every tagged line\'s own receiptNs, on a normal close', async () => {
+      const argv = ['printf', 'line1\nline2\n'];
+      const result = await spawnCondition(argv, { env: process.env, cwd: process.cwd(), timeoutMs: 10000 });
+      expect(typeof result.endedHrtimeNs).toBe('bigint');
+      expect(result.endedHrtimeNs >= result.spawnHrtimeNs).toBe(true);
+      for (const { receiptNs } of result.taggedLines) {
+        expect(result.endedHrtimeNs >= receiptNs).toBe(true);
+      }
+    });
+
+    it('is a bigint at or after spawnHrtimeNs on the spawn-error (child "error" event) path too', async () => {
+      const missingDir = mkdtempSync(join(tmpdir(), 'aecl-missing-ended-'));
+      rmSync(missingDir, { recursive: true, force: true });
+      const result = await spawnCondition(['anything'], { env: process.env, cwd: missingDir, timeoutMs: 5000 });
+      expect(result.terminated).toBe(true);
+      expect(result.terminationReason).toBe('error');
+      expect(typeof result.endedHrtimeNs).toBe('bigint');
+      expect(result.endedHrtimeNs >= result.spawnHrtimeNs).toBe(true);
+    });
+
+    it('reflects the real elapsed wall-clock-ish gap for a command with a deliberate delay', async () => {
+      // node -e 'a busy-ish delay' -- avoids depending on a real `sleep` binary being on PATH
+      // (this repo's own portability discipline: spawnCondition always resolves via bash -c).
+      const argv = ['node', '-e', 'const t=Date.now(); while(Date.now()-t<50){}'];
+      const result = await spawnCondition(argv, { env: process.env, cwd: process.cwd(), timeoutMs: 10000 });
+      const elapsedMs = Number(result.endedHrtimeNs - result.spawnHrtimeNs) / 1e6;
+      expect(elapsedMs).toBeGreaterThanOrEqual(40); // comfortably below the real ~50ms delay, avoiding flakiness
+    });
+  });
 });
 
 describe('buildPolicySettingsFile', () => {

@@ -10,8 +10,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
-import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
+import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
+import { LATEST_RUN_SCHEMA } from '../../tools/agentic-eval/schemas.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -1451,5 +1452,160 @@ describe('normalizeGitRemoteForComparison', () => {
     const a = normalizeGitRemoteForComparison('https://github.com/touchlab/KaMPKit');
     const b = normalizeGitRemoteForComparison('https://gitlab.com/touchlab/KaMPKit');
     expect(a).not.toBe(b);
+  });
+});
+
+// accepted-run-observability PR: cmdAggregate's own file-discovery step (readdirSync, never
+// recursive) must never descend into a nested audit/ directory -- proven directly here rather
+// than only implicitly relying on Node's own non-recursive readdirSync default, since this is
+// exactly the kind of assumption a future refactor (e.g. a switch to a recursive glob) could
+// silently break.
+describe('cmdAggregate -- does not recurse into a nested audit/ directory', () => {
+  it('reads only top-level *.json files; a malformed file inside audit/ is never touched', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-aggregate-noaudit-'));
+    try {
+      const realRecord = readFileSync(path.join(REPO_ROOT, 'tools', 'runs', 'agentic-eval-scenario', 'scenario-current-skill-11794dda.json'), 'utf8');
+      writeFileSync(path.join(dir, 'r1.json'), realRecord);
+      const auditDir = path.join(dir, 'audit');
+      mkdirSync(auditDir, { recursive: true });
+      // Deliberately invalid JSON -- if cmdAggregate ever recursed into audit/, reading this
+      // would throw (JSON.parse) rather than silently succeed.
+      writeFileSync(path.join(auditDir, 'sidecar.json'), 'not valid json {{{');
+      expect(() => cmdAggregate({ 'runs-dir': dir })).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// Schema v5 (accepted-run-observability PR): buildRunRecord()'s own responsibility is limited to
+// the 4 new post-signal {value,reason} metrics (computed from conditionResult/gradeResult it
+// already receives) plus a null accepted_audit PLACEHOLDER -- the real accepted_audit object is
+// attached later, by matrix finalization, once the sidecar's own redacted SHA-256 is known (see
+// accepted-run-audit.mjs). Every OTHER schema-v5 field (schema itself now LATEST_RUN_SCHEMA=5) is
+// exercised implicitly by every OTHER buildRunRecord test in this file continuing to pass
+// unmodified.
+describe('buildRunRecord -- schema v5 post-signal metrics + accepted_audit placeholder', () => {
+  function fakeConditionResultWithEvents({ events, bashResults = [], decisionByAttempt = new Map(), endedHrtimeNs } = {}) {
+    return {
+      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      result: { subtype: 'success', is_error: false },
+      invocation: null,
+      hookStats: { hookCallCount: bashResults.length, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: bashResults.length },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      spawnResult: { terminated: false, terminationReason: null, exitCode: 0, spawnHrtimeNs: 0n, endedHrtimeNs },
+      events,
+      bashResults,
+      junitAttribution: { decisionByAttempt },
+    };
+  }
+
+  const commonScenarioParams = {
+    condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-post-signal',
+    skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+    allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'],
+    policySha256: computePolicySha256(), modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+    ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+  };
+
+  it('schema is now LATEST_RUN_SCHEMA (5), and every record carries accepted_audit:null at build time', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeConditionResultWithEvents({ events: [] }),
+      ...commonScenarioParams,
+      gradeResult: { expectedOutcomeMatched: false, success: false, checks: [], firstUsefulSignalEventIndex: null, testInvocationsTotal: 0, retries: 0 },
+    });
+    expect(record.schema).toBe(LATEST_RUN_SCHEMA);
+    expect(record.schema).toBe(5);
+    expect(record.accepted_audit).toBeNull();
+  });
+
+  it('a non-scenario (calibration) record reports all 4 new metrics null with a run-kind-specific reason', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeConditionResultWithEvents({ events: [] }),
+      condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-post-signal-calibration',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+    });
+    for (const f of ['post_signal_ms', 'post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal']) {
+      expect(record[f].value).toBeNull();
+      expect(record[f].reason).toBe('calibration run -- no scenario grader applies');
+    }
+    expect(record.accepted_audit).toBeNull();
+  });
+
+  it('a scenario record with NO first-useful-signal boundary reports all 4 metrics null with the exact reason', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeConditionResultWithEvents({ events: [] }),
+      ...commonScenarioParams,
+      gradeResult: { expectedOutcomeMatched: false, success: false, checks: [], firstUsefulSignalEventIndex: null, testInvocationsTotal: 0, retries: 0 },
+    });
+    for (const f of ['post_signal_ms', 'post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal']) {
+      expect(record[f].value).toBeNull();
+      expect(record[f].reason).toBe('no first useful signal boundary');
+    }
+  });
+
+  it('a scenario record WITH a real boundary computes real post_signal_ms/post_signal_tool_calls/policy_denials_{before,after}', () => {
+    // 0=init,1=tool_use(t1),2=result(t1, THE signal),3=tool_use(t2, dispatched AFTER signal, denied),4=result(t2)
+    const events = [
+      { type: 'system', subtype: 'init', _receiptNs: 0n },
+      { type: 'assistant', _receiptNs: 1_000_000n, message: { content: [{ type: 'tool_use', name: 'Bash', id: 't1', input: { command: 'kmp-test parallel --module-filter shared --json' } }] } },
+      { type: 'user', _receiptNs: 2_000_000n, message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok', is_error: false }] } },
+      { type: 'assistant', _receiptNs: 3_000_000n, message: { content: [{ type: 'tool_use', name: 'Bash', id: 't2', input: { command: 'kmp-test doctor --json' } }] } },
+      { type: 'user', _receiptNs: 4_000_000n, message: { content: [{ type: 'tool_result', tool_use_id: 't2', content: 'denied', is_error: true }] } },
+    ];
+    const bashResults = [
+      { index: 1, id: 't1', command: 'kmp-test parallel --module-filter shared --json', resultFound: true, resultIsError: false, resultIndex: 2, resultContent: 'ok' },
+      { index: 3, id: 't2', command: 'kmp-test doctor --json', resultFound: true, resultIsError: true, resultIndex: 4, resultContent: 'denied' },
+    ];
+    const decisionByAttempt = new Map([['t1', 'allow'], ['t2', 'deny']]);
+    const endedHrtimeNs = 10_000_000n;
+    const record = buildRunRecord({
+      conditionResult: fakeConditionResultWithEvents({ events, bashResults, decisionByAttempt, endedHrtimeNs }),
+      ...commonScenarioParams,
+      gradeResult: { expectedOutcomeMatched: true, success: true, checks: [], firstUsefulSignalEventIndex: 2, testInvocationsTotal: 1, retries: 0 },
+    });
+    expect(record.first_useful_signal_event).toEqual({ type: 'user.tool_result', index: 2 });
+    expect(record.post_signal_ms.value).toBe(8); // (10_000_000 - 2_000_000) ns = 8ms
+    expect(record.post_signal_ms.reason).toBeNull();
+    expect(record.post_signal_tool_calls.value).toBe(1); // t2's own tool_use is at index 3 > 2
+    expect(record.policy_denials_before_first_signal.value).toBe(0);
+    expect(record.policy_denials_after_first_signal.value).toBe(1); // t2 (denied, dispatched at index 3 > 2)
+  });
+
+  it('a denial dispatched BEFORE the signal boundary counts as "before", even one dispatched in the SAME assistant turn as the eventual signal-producing call', () => {
+    // 0=init,1=tool_use BATCH (t1 allowed-parallel + t2 denied-doctor, SAME assistant turn),2=result(t1, signal),3=result(t2)
+    const events = [
+      { type: 'system', subtype: 'init', _receiptNs: 0n },
+      {
+        type: 'assistant', _receiptNs: 1_000_000n,
+        message: {
+          content: [
+            { type: 'tool_use', name: 'Bash', id: 't1', input: { command: 'kmp-test parallel --module-filter shared --json' } },
+            { type: 'tool_use', name: 'Bash', id: 't2', input: { command: 'kmp-test doctor --json' } },
+          ],
+        },
+      },
+      { type: 'user', _receiptNs: 2_000_000n, message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok', is_error: false }] } },
+      { type: 'user', _receiptNs: 3_000_000n, message: { content: [{ type: 'tool_result', tool_use_id: 't2', content: 'denied', is_error: true }] } },
+    ];
+    const bashResults = [
+      { index: 1, id: 't1', command: 'kmp-test parallel --module-filter shared --json', resultFound: true, resultIsError: false, resultIndex: 2, resultContent: 'ok' },
+      { index: 1, id: 't2', command: 'kmp-test doctor --json', resultFound: true, resultIsError: true, resultIndex: 3, resultContent: 'denied' },
+    ];
+    const decisionByAttempt = new Map([['t1', 'allow'], ['t2', 'deny']]);
+    const record = buildRunRecord({
+      conditionResult: fakeConditionResultWithEvents({ events, bashResults, decisionByAttempt, endedHrtimeNs: 20_000_000n }),
+      ...commonScenarioParams,
+      gradeResult: { expectedOutcomeMatched: true, success: true, checks: [], firstUsefulSignalEventIndex: 2, testInvocationsTotal: 1, retries: 0 },
+    });
+    // t2's OWN tool-use index (1) is <= the signal's result index (2) -- classified "before",
+    // even though t2's own RESULT (index 3) arrives after the signal.
+    expect(record.policy_denials_before_first_signal.value).toBe(1);
+    expect(record.policy_denials_after_first_signal.value).toBe(0);
   });
 });

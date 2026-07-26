@@ -25,6 +25,8 @@ import {
   computeByteMetrics,
   extractTokenUsage,
   deriveFirstUsefulSignalMs,
+  derivePostSignalMs,
+  findAllToolUsesWithResults,
   computeAmbientSkillProfile,
   canonicalAmbientSkillNamesKey,
   fingerprintAmbientSkillNames,
@@ -772,6 +774,112 @@ describe('findBashToolUsesWithResults -- resultIndex/resultContent (additive fie
     expect(entry.command).toBe('./gradlew :app:test');
     expect(entry.resultFound).toBe(true);
     expect(entry.resultIsError).toBe(true);
+  });
+});
+
+function skillToolUseEvent(id, skill) {
+  return { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id, input: { skill } }] } };
+}
+function otherToolUseEvent(id, name) {
+  return { type: 'assistant', message: { content: [{ type: 'tool_use', name, id, input: {} }] } };
+}
+
+// findAllToolUsesWithResults -- the accepted-run-observability PR's shared, name-agnostic sibling
+// of findBashToolUsesWithResults: every tool_use block (Bash, Skill, or anything else), each
+// correlated with its own tool_result. Existing name-scoped functions (findBashToolUses,
+// findBashToolUsesWithResults, findUnexpectedToolUses) are never touched -- this is purely
+// additive, reusing the SAME findToolResultById correlation the other functions already use.
+describe('findAllToolUsesWithResults -- name-agnostic tool_use+result enumeration', () => {
+  it('enumerates Bash, Skill, and an unexpected tool name, each with its own correlated result', () => {
+    const events = [
+      initEventStub(),
+      bashToolUseEvent('t1', 'kmp-test doctor --json'),
+      toolResultEvent('t1', { content: 'doctor ok' }),
+      skillToolUseEvent('t2', 'kmp-test-runner'),
+      toolResultEvent('t2', { isError: true, content: 'Unknown skill' }),
+      otherToolUseEvent('t3', 'Read'),
+      resultEventStub(),
+    ];
+    const entries = findAllToolUsesWithResults(events);
+    expect(entries.length).toBe(3);
+    expect(entries.map((e) => e.name)).toEqual(['Bash', 'Skill', 'Read']);
+    expect(entries[0]).toMatchObject({ index: 1, id: 't1', resultFound: true, resultIsError: false, resultIndex: 2 });
+    expect(entries[1]).toMatchObject({ index: 3, id: 't2', resultFound: true, resultIsError: true, resultIndex: 4 });
+    expect(entries[2]).toMatchObject({ index: 5, id: 't3', resultFound: false, resultIsError: null, resultIndex: null, resultContent: null });
+  });
+
+  it('preserves stable transcript order for multiple tool_use blocks dispatched in ONE assistant event', () => {
+    const multiCallEvent = {
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', name: 'Bash', id: 'a1', input: { command: 'kmp-test doctor --json' } },
+          { type: 'tool_use', name: 'Bash', id: 'a2', input: { command: 'kmp-test describe --json' } },
+        ],
+      },
+    };
+    const events = [initEventStub(), multiCallEvent, toolResultEvent('a1'), toolResultEvent('a2'), resultEventStub()];
+    const entries = findAllToolUsesWithResults(events);
+    expect(entries.length).toBe(2);
+    expect(entries[0].id).toBe('a1');
+    expect(entries[1].id).toBe('a2');
+    // Both share the SAME containing assistant event index -- this is exactly what lets a
+    // post-signal-boundary comparison distinguish "same turn as the signal" from "a later turn".
+    expect(entries[0].index).toBe(entries[1].index);
+  });
+
+  it('returns an empty array for a transcript with no tool_use blocks at all', () => {
+    expect(findAllToolUsesWithResults([initEventStub(), resultEventStub()])).toEqual([]);
+  });
+});
+
+describe('derivePostSignalMs -- monotonic completion time minus the signal event\'s own receipt time', () => {
+  function eventsWithReceipts(receiptsNs) {
+    return receiptsNs.map((ns) => ({ type: 'user', _receiptNs: ns }));
+  }
+
+  it('derives a non-negative ms value when the end time is genuinely after the signal event', () => {
+    const events = eventsWithReceipts([0n, 5_000_000n, 20_000_000n]);
+    const ms = derivePostSignalMs(events, 1, 20_000_000n);
+    expect(ms).toBe(15); // (20_000_000 - 5_000_000) ns = 15ms
+  });
+
+  it('returns exactly 0 when the end time equals the signal event\'s own receipt time', () => {
+    const events = eventsWithReceipts([0n, 5_000_000n]);
+    expect(derivePostSignalMs(events, 1, 5_000_000n)).toBe(0);
+  });
+
+  it('returns null for a null event index', () => {
+    const events = eventsWithReceipts([0n, 5_000_000n]);
+    expect(derivePostSignalMs(events, null, 20_000_000n)).toBeNull();
+  });
+
+  it('returns null for an out-of-range event index', () => {
+    const events = eventsWithReceipts([0n, 5_000_000n]);
+    expect(derivePostSignalMs(events, 99999, 20_000_000n)).toBeNull();
+  });
+
+  it('returns null when the referenced event has no bigint receipt (absent/malformed)', () => {
+    const events = [{ type: 'user' }, { type: 'user', _receiptNs: 5_000_000n }];
+    expect(derivePostSignalMs(events, 0, 20_000_000n)).toBeNull();
+  });
+
+  it('returns null when endedHrtimeNs is not a bigint (absent/malformed)', () => {
+    const events = eventsWithReceipts([0n, 5_000_000n]);
+    expect(derivePostSignalMs(events, 1, undefined)).toBeNull();
+    expect(derivePostSignalMs(events, 1, 20)).toBeNull(); // a plain number, not a bigint
+  });
+
+  it('fails closed to null when the end time is earlier than the signal event -- never a negative ms value', () => {
+    const events = eventsWithReceipts([0n, 20_000_000n]);
+    expect(derivePostSignalMs(events, 1, 5_000_000n)).toBeNull();
+  });
+
+  it('never double-subtracts -- mirrors deriveFirstUsefulSignalMs\'s own single-subtraction contract against a realistic absolute t0', () => {
+    const REALISTIC_T0 = 123456789000000n;
+    const events = eventsWithReceipts([REALISTIC_T0, REALISTIC_T0 + 3_000_000n]);
+    const ms = derivePostSignalMs(events, 0, REALISTIC_T0 + 3_000_000n);
+    expect(ms).toBe(3);
   });
 });
 

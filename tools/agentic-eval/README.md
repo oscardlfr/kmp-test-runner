@@ -348,6 +348,115 @@ matrix is rejected anyway.
     case since decision- and evidence-collisions share one tombstone path keyed only by
     `tool_use_id`), the target removal above has already made the outcome safe.
 
+  **Accepted-run observability: post-signal metrics + a committed structural audit sidecar.**
+  Raw stream-json transcripts live only under the gitignored `raw/` subdirectory — once that
+  transcript is gone (a fresh clone, a pruned local disk), nothing previously let a reader confirm
+  what a record's own timing/order claims actually rested on. Schema **v5** adds four new
+  `{value,reason}` nullable metrics to every record, and every accepted **scenario** record gets one
+  companion structural sidecar committed alongside it.
+
+  The four new metrics, all anchored to the SAME boundary `gradeScenarioCondition()` already
+  computes — `firstUsefulSignalEventIndex`, the authoritative `user.tool_result` event that first
+  satisfied the scenario's expected outcome (never the *terminal* attempt, which can be a later,
+  possibly-wrong retry; see `terminalAuthoritativeEventIndex` below):
+  - **`post_signal_ms`** — monotonic process-completion time (`spawnCondition()`'s new
+    `endedHrtimeNs`, captured immediately before resolving on both its `error` and `close` paths)
+    minus the signal event's own monotonic receipt time (`derivePostSignalMs()`,
+    `stream-parser.mjs` — the exact sibling of `deriveFirstUsefulSignalMs()`, same single-subtraction
+    discipline, never wall-clock `Date` values). Fails closed to `null` for a missing event, a
+    non-bigint receipt/end time, or an end time earlier than the event.
+  - **`post_signal_tool_calls`** — every tool-use block (any kind: Bash, Skill, or an unexpected
+    tool) whose own **dispatching** assistant-event index is strictly greater than the signal's
+    result-event index. A call dispatched *before* the signal but whose own result arrives *after*
+    it is **not** post-signal work — classified by when it was DISPATCHED, never by when its result
+    landed, matching `post_signal_ms`'s own dispatch-time framing.
+  - **`policy_denials_before_first_signal`** / **`policy_denials_after_first_signal`** — every
+    denied Bash attempt (`resolveDecisions()`'s own `'deny'`), split by the identical boundary and
+    the identical dispatch-time rule — a denial in the SAME assistant turn as the eventual
+    signal-producing call classifies as *before*, even though its own result may arrive later.
+
+  All four are `null` with the exact reason `"no first useful signal boundary"` when
+  `firstUsefulSignalEventIndex` is `null` (nothing to anchor a boundary to at all), and `null` with a
+  run-kind-specific reason for `calibration`/`smoke` (no scenario grader ever applies to those run
+  kinds). A real, non-null value requires both a real boundary AND a scenario record.
+
+  **The structural sidecar** (`tools/agentic-eval/accepted-run-audit.mjs`) is a *second*,
+  independently-derived, privacy-safe view of the exact same transcript a scenario record's own
+  metrics were computed from — reproducible, from committed artifacts alone, without the raw
+  transcript ever being available. It is **structural, never content-bearing**: every `tool_calls[]`
+  entry is a closed-vocabulary category —
+  `tool_kind` (`target-skill|non-target-skill|kmp-test|gradle|other-bash|unexpected-tool`),
+  `operation` (the specific ALLOWED kmp-test subcommand/Gradle-task-membership bucket, or `"other"`
+  — never the raw subcommand/task/module value itself unless it's already a member of the record's
+  own `policy_allowed_*` list, and even then only that allowed value, never an arbitrary one),
+  `plan_only`, `policy_decision` (`allow|deny|missing|not-applicable`), `result_status`
+  (`success|error|missing`), and `phase` (`pre-signal|produced-signal|post-signal|no-signal`) — plus
+  each entry's own `tool_use_event_index`/`tool_result_event_index` (integers, not timestamps) and a
+  stable `ordinal` (`0..N-1`, transcript order, including multiple calls dispatched in one assistant
+  turn). The sidecar's own `terminal_authoritative_event` comes directly from the grader's own
+  additive `terminalAuthoritativeEventIndex` (never re-derived by parsing `grading_checks.detail` or
+  guessing from the last Bash call) — genuinely distinct from `first_useful_signal_event` whenever
+  more than one on-target attempt exists (terminal is the LAST on-target attempt; first-useful-signal
+  is the EARLIEST correct one). The sidecar **never stores**: raw command strings or argv, module
+  filters, task names, test filters, paths, cwd, environment variables, prompts, assistant text,
+  reasoning, tool-result content, raw skill names, tool-use IDs (or their hashes), session IDs,
+  usernames, repository URLs, or timestamps. A single sidecar is produced only for a scenario record
+  that reaches the finalization path, and is written **only if the whole matrix passes and is
+  promoted** — a rejected matrix (`scenarioHardGate()` failing) writes none of the three tiers
+  (record, raw transcript, sidecar), exactly as before this PR.
+
+  **Do not overclaim what the sidecar proves.** It proves the harness's own committed structural
+  derivation of the transcript, and makes the specific post-signal/ordering/decision-classification
+  facts a record's metrics rest on independently reproducible from committed artifacts — it does
+  **not** independently prove the original raw transcript's own content, which was never committed
+  in the first place and is not recoverable from the sidecar.
+
+  **Binding and location.** Every schema-v5 scenario record carries
+  `accepted_audit: {schema, relative_path, sha256}` — `relative_path` is always exactly
+  `"audit/<run_id>.json"`, POSIX-style, derived from that same record's own `run_id` (rejected by the
+  schema if it's an absolute path, contains a backslash, a traversal segment, or any other filename —
+  `schemas.mjs`'s own closed-charset regex has no `/` or `\` in it at all, so a path can never escape
+  via a crafted `run_id` either); `sha256` is the exact SHA-256 of the final, REDACTED sidecar text,
+  computed once redaction has already run (never over the raw, pre-redaction object). Non-scenario
+  records (`calibration`/`smoke`, any `run_kind` other than `scenario`) always carry
+  `accepted_audit: null` — sidecars are a scenario-only concept, and the pair-based
+  `writeRunRecordEvidence()` calibrate/smoke path is completely untouched by this PR: it writes no
+  `audit/` directory at all.
+
+  **Privacy and cross-validation order** (mirrors the existing record-redaction discipline exactly,
+  one tier over): build the sidecar → validate the original object → run it through
+  `assertCleanOrThrowObject()` field-by-field → validate the REDACTED object again (a replacement
+  placeholder could still make a field the wrong type) → SHA-256 the exact final redacted text →
+  attach that digest + the deterministic path to the run record → redact and revalidate the run
+  record itself (the pre-existing cycle, unchanged) → cross-validate the final redacted record
+  against the sidecar (`crossValidateAcceptedRunAuditAgainstRecord()` — identity fields
+  `run_id`/`run_schema`/`run_kind`/`condition`/`scenario_id`/`first_useful_signal_event` and every
+  metric total must agree). Any privacy, schema, digest, or cross-record failure at any step returns
+  `{ok:false}` and writes **none** of the three tiers — never a partial promotion.
+
+  **Transactional promotion.** `promoteTargetsAtomically()` (`evidence-io.mjs`) now accepts either a
+  single directory or an array of directories to create (`raw/` and, for a scenario matrix, `audit/`
+  too) — a conservative extension; every existing single-directory caller is unaffected. All `3×N`
+  targets (N redacted records, N raw transcripts, N sidecars) for one matrix are promoted as ONE
+  all-or-nothing batch: a collision or write/link failure on **any** target — including a sidecar —
+  rolls back every FINAL-path target this invocation already linked, across all three tiers, before
+  rethrowing. This inherits the exact same, already-accepted limits as every other write in this
+  harness: exception-safe and collision-safe, but **not** crash-safe against a hard kill/power-loss
+  between two sequential `linkSync` calls — that narrow window can still leave a `.tmp-<random>`
+  file, or one of a logically-paired set of targets promoted without its siblings, on disk.
+
+  **Offline validation** (`validate --run <path>`) is extended, not replaced: schemas 1-4 (and a
+  schema-5 non-scenario record) get exactly the pre-existing record-only behavior. A schema-5
+  scenario record ADDITIONALLY resolves `accepted_audit.relative_path` relative to the run record's
+  OWN directory, requires the sidecar file to exist and parse, verifies its strict internal schema
+  (`validateAcceptedRunAuditSidecar()`) and record coherence
+  (`crossValidateAcceptedRunAuditAgainstRecord()`), and SHA-256s the exact file text against the
+  record's own declared digest — every failure reported through the same `{errors,warnings}` JSON
+  output and nonzero exit this command has always used. Both the run directory and the resolved
+  sidecar path are `realpath`-resolved and containment-checked before either is ever read — a
+  symlink planted at the (schema-guaranteed-safe-looking) sidecar path whose target resolves outside
+  the run record's own directory is refused, never silently followed.
+
   This PR ships exactly two scenarios (`kampkit-android-host-test-discovery`,
   `kampkit-no-applicable-tests`, both against the pinned KaMPKit commit `smoke` already uses) and
   zero live scenario records — every number in `corpus/scenarios/*.json` was independently
@@ -713,7 +822,8 @@ node tools/agentic-eval/cli.mjs smoke --source-repo-dir <local-clone> --pinned-c
 node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
                                      [--repeats <n>]  # full scenario matrix, --dry-run for a no-Claude-spawn preview
 node tools/agentic-eval/cli.mjs corpus validate       # validates trigger-queries.json AND corpus/scenarios/*.json
-node tools/agentic-eval/cli.mjs validate --run <path> # validates a single run record against RUN_SCHEMA
+node tools/agentic-eval/cli.mjs validate --run <path> # validates a run record; a schema-v5 scenario
+                                                       # record also verifies its own committed audit/ sidecar
 node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
 ```
 
@@ -776,7 +886,17 @@ run_kind, every prior semantic rule inherited via `>=`) — a privacy-safe, invo
 summary of the init event's `skills[]` array (target identity stripped, see "Ambient-skill-profile
 tolerance" above), never the raw skill names themselves. `scope_id` is a full UUID string;
 `fingerprint_hmac` a lowercase 64-hex-char HMAC-SHA256 digest — both validated with the same
-regexes `rejection_id`/`policy_sha256` already use elsewhere in this schema.
+regexes `rejection_id`/`policy_sha256` already use elsewhere in this schema. **v5** (accepted-run
+observability) adds four new post-signal `{value,reason}` metrics —
+`post_signal_ms`/`post_signal_tool_calls`/`policy_denials_before_first_signal`/
+`policy_denials_after_first_signal`, present (possibly `null`+reason) on **every** run_kind, exactly
+like `ambient_skill_profile` — plus `accepted_audit` (a plain nullable structured field, never a
+`{value,reason}` metric): `null` for every non-scenario record, and a required
+`{schema, relative_path, sha256}` object for a scenario record, binding it to its own committed
+structural audit sidecar. All five fields (and every prior schema's own semantic rules, inherited
+via `>=`) are rejected as unrecognized/self-contradictory below v5, exactly like every earlier
+version-introduced field. See "Accepted-run observability" above for the full metric/sidecar
+contract.
 
 ## Fairness Contract
 

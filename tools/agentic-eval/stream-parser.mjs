@@ -663,6 +663,39 @@ export function findBashToolUsesWithResults(events) {
   });
 }
 
+/** Every `tool_use` block in the WHOLE transcript, any name (Bash, Skill, or anything else) --
+ * the name-agnostic sibling of findBashToolUses, added for the accepted-run-observability sidecar
+ * (accepted-run-audit.mjs) and buildRunRecord's own post-signal metrics, both of which need to
+ * enumerate every tool call regardless of kind, not just Bash. Every existing name-scoped function
+ * (findBashToolUses, findUnexpectedToolUses, findSkillInvocation, ...) is unchanged -- this is
+ * purely additive. */
+export function findAllToolUses(events) {
+  const out = [];
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type !== 'assistant') continue;
+    for (const c of ev.message?.content ?? []) {
+      if (c.type === 'tool_use') out.push({ index: i, receiptNs: ev._receiptNs, id: c.id, name: c.name, input: c.input });
+    }
+  }
+  return out;
+}
+
+/** findAllToolUses, each correlated with its OWN tool_result outcome -- mirrors
+ * findBashToolUsesWithResults' identical correlation pattern, generalized to every tool name. */
+export function findAllToolUsesWithResults(events) {
+  return findAllToolUses(events).map((u) => {
+    const result = u.id != null ? findToolResultById(events, u.id, u.index + 1) : null;
+    return {
+      ...u,
+      resultFound: result != null,
+      resultIsError: result ? result.isError : null,
+      resultIndex: result ? result.index : null,
+      resultContent: result ? result.content : null,
+    };
+  });
+}
+
 /** Proves every Bash call reached the policy hook (Round 6 evidence requirement) -- counts
  * hook_started/hook_response events and checks 1:1 correspondence against the actual Bash
  * tool_use count. This is more than an aggregate-count comparison (bashCallCount ===
@@ -751,4 +784,22 @@ export function deriveFirstUsefulSignalMs(events, eventIndex, spawnHrtimeNs) {
   const receiptNs = events[eventIndex]._receiptNs;
   if (typeof receiptNs !== 'bigint') return null;
   return Number(receiptNs - spawnHrtimeNs) / 1e6;
+}
+
+/**
+ * Derives post_signal_ms: monotonic process-completion time minus the first-useful-signal event's
+ * own receipt time -- the sibling of deriveFirstUsefulSignalMs for the OTHER end of a condition's
+ * timeline. Requires events[eventIndex]._receiptNs AND endedHrtimeNs to both be ABSOLUTE
+ * process.hrtime.bigint() values (endedHrtimeNs is condition-launcher.mjs's spawnCondition,
+ * tagged immediately before resolving in both its 'error' and 'close' paths) -- fails closed to
+ * null for an absent event, a non-bigint receipt, a non-bigint end time, or an end time earlier
+ * than the event itself (never a negative ms value).
+ */
+export function derivePostSignalMs(events, eventIndex, endedHrtimeNs) {
+  if (eventIndex == null || events[eventIndex] == null) return null;
+  const receiptNs = events[eventIndex]._receiptNs;
+  if (typeof receiptNs !== 'bigint') return null;
+  if (typeof endedHrtimeNs !== 'bigint') return null;
+  if (endedHrtimeNs < receiptNs) return null;
+  return Number(endedHrtimeNs - receiptNs) / 1e6;
 }

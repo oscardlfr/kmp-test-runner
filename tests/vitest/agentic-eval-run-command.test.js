@@ -36,10 +36,12 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, readFileSync, writeFileSy
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
 import { LATEST_RUN_SCHEMA } from '../../tools/agentic-eval/schemas.mjs';
 import { gradeScenarioCondition } from '../../tools/agentic-eval/graders.mjs';
 import { aggregateRuns } from '../../tools/agentic-eval/aggregate.mjs';
+import { validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -876,4 +878,64 @@ describe('cmdRun pipeline -- a legitimately timed-out cell is still recorded, ne
     expect(byName.tool_result_correlated).toBe(true);
     expect(byName.authoritative_evidence_well_formed).toBe(false);
   });
+});
+
+// accepted-run-observability PR: the accepted-run-audit sidecar's real, end-to-end promotion
+// behavior -- written alongside the record + raw transcript for every ACCEPTED cell, and for
+// NONE of the three tiers when the matrix is rejected. The wiring itself (buildAcceptedRunAuditSidecar
+// -> finalizeAcceptedRunAuditSidecar -> record.accepted_audit -> writeRunMatrixRecordEvidence) is
+// already exercised implicitly by every "real subprocess" test above continuing to pass; this
+// block adds EXPLICIT assertions on the sidecar files themselves -- digest binding, schema
+// validity, and cross-record coherence -- rather than relying on that implicit coverage alone.
+function listAuditFiles() {
+  const dir = path.join(evidenceDirFor('scenario'), 'audit');
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((f) => f.endsWith('.json'));
+}
+
+describe('accepted-run-audit sidecar -- real end-to-end promotion (accepted-run-observability PR)', () => {
+  it('a real fake-claude run promotes a record + a raw transcript + an audit sidecar for EVERY cell, digest-bound and cross-validating cleanly', async () => {
+    const result = await runCli(runArgs(['--seed', '13', '--repeats', '2']), fakeClaudeEnv('run-scenario-success'), 60000);
+    expect(result.status).toBe(0);
+    const { records } = result.parsed;
+    expect(records.length).toBe(4);
+
+    const auditFiles = listAuditFiles();
+    expect(auditFiles.length).toBe(4);
+
+    for (const record of records) {
+      expect(record.accepted_audit).not.toBeNull();
+      expect(record.accepted_audit.relative_path).toBe(`audit/${record.run_id}.json`);
+      expect(auditFiles).toContain(`${record.run_id}.json`);
+
+      const sidecarPath = path.join(evidenceDirFor('scenario'), 'audit', `${record.run_id}.json`);
+      const sidecarText = readFileSync(sidecarPath, 'utf8');
+      const actualSha256 = createHash('sha256').update(sidecarText, 'utf8').digest('hex');
+      expect(actualSha256).toBe(record.accepted_audit.sha256);
+
+      const sidecar = JSON.parse(sidecarText);
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
+      expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record)).toEqual([]);
+      // Privacy: no raw command/module-filter/path ever appears in the committed sidecar.
+      expect(sidecarText).not.toContain('--module-filter');
+      expect(sidecarText).not.toContain(':fakemod');
+    }
+  }, 60000);
+
+  it('a REJECTED matrix (CONFIRMED foreign-skill invocation) promotes NONE of the three tiers -- no record, no raw, no audit sidecar', async () => {
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('run-foreign-skill-confirmed'), 30000);
+    expect(result.status).toBe(1);
+    expect(listEvidenceFiles('scenario')).toEqual([]);
+    expect(existsSync(path.join(evidenceDirFor('scenario'), 'raw'))).toBe(false);
+    expect(listAuditFiles()).toEqual([]);
+  }, 30000);
+
+  it('--dry-run writes no audit directory at all (never spawns Claude, never reaches the matrix)', async () => {
+    const result = await runCli(
+      ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7', '--repeats', '2', '--dry-run'],
+      fakeClaudeEnv('run-scenario-success'),
+    );
+    expect(result.status).toBe(0);
+    expect(listAuditFiles()).toEqual([]);
+  }, 15000);
 });

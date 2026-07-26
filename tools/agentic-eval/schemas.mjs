@@ -12,6 +12,7 @@
 // value:null paired with reason:null.
 import { GRADLE_TASK_ENTRY_RE, KMPTEST_SUBCOMMAND_ENTRY_RE } from './policy-hook.mjs';
 import { GRADING_CHECK_NAMES } from './graders.mjs';
+import { ACCEPTED_AUDIT_SIDECAR_SCHEMA } from './accepted-run-audit.mjs';
 import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 
 // Run schema went from a single CURRENT_RUN_SCHEMA equality check to explicit per-version
@@ -22,8 +23,8 @@ import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 // alike) stamps on NEW records going forward; `SUPPORTED_RUN_SCHEMAS` is what validateRun()
 // still accepts, so the 8 historical files keep validating under their original v1 rules
 // unchanged (see the RUN_CANONICAL_FIELDS_V1/_V2/_V3 split and validateRun's dispatch, below).
-export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3, 4];
-export const LATEST_RUN_SCHEMA = 4;
+export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3, 4, 5];
+export const LATEST_RUN_SCHEMA = 5;
 export const CURRENT_SCENARIO_SCHEMA = 1;
 // v1 -> v2 (review-round-2 fix): group_key's own SHAPE changed -- it gained the
 // `ambient_skill_profile` partition field -- so this is bumped exactly like LATEST_RUN_SCHEMA is
@@ -83,11 +84,36 @@ const RUN_CANONICAL_FIELDS_V3 = [...RUN_CANONICAL_FIELDS_V2, 'foreign_skill_summ
 // every run_kind carries a real, non-null value on every schema:4 record.
 const RUN_CANONICAL_FIELDS_V4 = [...RUN_CANONICAL_FIELDS_V3, 'ambient_skill_profile'];
 
+// Schema v5 (accepted-run-observability PR) = v4 + 4 post-first-signal {value,reason} nullable
+// metrics (post_signal_ms/post_signal_tool_calls/policy_denials_before_first_signal/
+// policy_denials_after_first_signal) + accepted_audit (a plain nullable structured field -- the
+// record-to-sidecar SHA-256 binding, never a {value,reason} metric). Like ambient_skill_profile/
+// foreign_skill_summary (and unlike grading_checks/repetition_index), the 4 metrics are NOT
+// scenario-only fields -- they are always PRESENT on every schema:5 record (every run_kind), just
+// null+reason for a run_kind/condition where the underlying boundary doesn't apply. accepted_audit
+// itself IS scenario-only in VALUE (null for non-scenario, a real object for scenario) but the key
+// is still always present.
+const RUN_CANONICAL_FIELDS_V5 = [
+  ...RUN_CANONICAL_FIELDS_V4,
+  'post_signal_ms', 'post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal',
+  'accepted_audit',
+];
+
+// The 4 new v5 post-signal {value,reason} nullable metrics -- named once, shared by validateRun's
+// own "forbidden below v5" gate below so the list can never drift out of sync with itself.
+const V5_METRIC_FIELDS = ['post_signal_ms', 'post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal'];
+
+// Closed charset (no `/`, no `\`) so a traversal sequence or absolute path can never match this
+// regex regardless of what a (possibly tampered) run_id contains -- see this regex's own call site
+// in validateRun for the full rationale.
+const ACCEPTED_AUDIT_RELATIVE_PATH_RE = /^audit\/[A-Za-z0-9._-]+\.json$/;
+
 // Explicit if-chain, not a ternary -- a bare `schema === 2 ? V2 : V1`-shaped chain, naively
-// extended with one more ternary branch for v3/v4, silently falls through an unrecognized/future
-// schema number to V1 instead of the LATEST fields, which would make a schema:4 record validate
-// against the wrong (v1) field list entirely. schema===4 must resolve to V4, never V1.
+// extended with one more ternary branch per version, silently falls through an unrecognized/future
+// schema number to V1 instead of the LATEST fields, which would make a schema:5 record validate
+// against the wrong (v1) field list entirely. schema===5 must resolve to V5, never V1.
 function runCanonicalFieldsFor(schema) {
+  if (schema === 5) return RUN_CANONICAL_FIELDS_V5;
   if (schema === 4) return RUN_CANONICAL_FIELDS_V4;
   if (schema === 3) return RUN_CANONICAL_FIELDS_V3;
   if (schema === 2) return RUN_CANONICAL_FIELDS_V2;
@@ -102,6 +128,7 @@ const NULLABLE_METRIC_FIELDS = [
   'skill_available', 'skill_invocation_attempted', 'skill_invoked', 'success', 'expected_outcome_matched',
   'first_useful_signal_ms', 'tool_calls_total', 'shell_commands_total', 'test_invocations_total',
   'retries', 'output_bytes', 'stream_json_bytes', 'human_interventions', 'grading_checks',
+  'post_signal_ms', 'post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal',
 ];
 
 // Per-field value domain: 'boolean' for status metrics, 'count' for non-negative integer
@@ -118,6 +145,8 @@ const NULLABLE_METRIC_KIND = {
   retries: 'count', output_bytes: 'count', stream_json_bytes: 'count', human_interventions: 'count',
   'tokens.input': 'count', 'tokens.output': 'count', 'tokens.cache_read': 'count', 'tokens.cache_creation': 'count',
   grading_checks: 'checks-array',
+  post_signal_ms: 'timing', post_signal_tool_calls: 'count',
+  policy_denials_before_first_signal: 'count', policy_denials_after_first_signal: 'count',
 };
 
 function isNullableMetric(m) {
@@ -366,6 +395,60 @@ export function validateRun(run) {
     }
   } else if ('ambient_skill_profile' in run && run.ambient_skill_profile != null) {
     errors.push({ field: 'ambient_skill_profile', message: `must be absent or null for schema ${run.schema} -- ambient_skill_profile was introduced in schema v4` });
+  }
+
+  // accepted_audit (v5-introduced field) -- mirrors ambient_skill_profile's identical v4 gate one
+  // version up, but the VALUE relationship is scenario-only (unlike ambient_skill_profile, which
+  // is a real object for every run_kind): required as a non-null, well-formed object for a
+  // schema:5 scenario record (one sidecar per accepted scenario record), and required to be
+  // exactly null for every other run_kind (no scenario grader, no sidecar). Must be entirely
+  // absent below schema v5 -- it did not exist in RUN_CANONICAL_FIELDS_V1-4, so a pre-v5 record
+  // carrying it would be self-contradictory relative to its own declared schema version.
+  //
+  // relative_path is validated via a STRICT, closed charset regex (never merely "equals a value
+  // derived from run.run_id") -- run_id itself is only checked elsewhere for non-emptiness, never
+  // for a safe charset, so a tampered/malicious record could otherwise smuggle a traversal
+  // sequence or an absolute path through by crafting a matching run_id. The regex's charset has no
+  // `/` or `\` at all, so a path with either can never match regardless of what run_id contains.
+  if (run.schema >= 5) {
+    if (run.run_kind === 'scenario') {
+      const audit = run.accepted_audit;
+      if (audit == null || typeof audit !== 'object' || Array.isArray(audit)) {
+        errors.push({ field: 'accepted_audit', message: 'required (non-null object) for a schema:5+ run_kind:scenario record' });
+      } else {
+        const allowedKeys = new Set(['schema', 'relative_path', 'sha256']);
+        const actualKeys = Object.keys(audit);
+        if (actualKeys.some((k) => !allowedKeys.has(k)) || actualKeys.length !== allowedKeys.size) {
+          errors.push({ field: 'accepted_audit', message: `must have exactly the keys schema/relative_path/sha256, got ${JSON.stringify(actualKeys)}` });
+        }
+        if (audit.schema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA) {
+          errors.push({ field: 'accepted_audit.schema', message: `must be exactly ${ACCEPTED_AUDIT_SIDECAR_SCHEMA}` });
+        }
+        const expectedRelativePath = typeof run.run_id === 'string' ? `audit/${run.run_id}.json` : null;
+        if (typeof audit.relative_path !== 'string' || !ACCEPTED_AUDIT_RELATIVE_PATH_RE.test(audit.relative_path) || audit.relative_path !== expectedRelativePath) {
+          errors.push({ field: 'accepted_audit.relative_path', message: `must be exactly "audit/<run_id>.json" derived from this record's own run_id, POSIX-style, no traversal/backslash/absolute path, got ${JSON.stringify(audit.relative_path)}` });
+        }
+        if (typeof audit.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(audit.sha256)) {
+          errors.push({ field: 'accepted_audit.sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
+        }
+      }
+    } else if (run.accepted_audit !== null) {
+      errors.push({ field: 'accepted_audit', message: `must be null for run_kind "${run.run_kind}" -- a sidecar only ever exists for a scenario record` });
+    }
+  } else if ('accepted_audit' in run && run.accepted_audit != null) {
+    errors.push({ field: 'accepted_audit', message: `must be absent or null for schema ${run.schema} -- accepted_audit was introduced in schema v5` });
+  }
+
+  // The 4 new v5 post-signal metrics -- like foreign_skill_summary/ambient_skill_profile (and
+  // unlike grading_checks/repetition_index), forbidden below the schema version that introduces
+  // them via a DEDICATED error, not merely the generic unrecognized-field warning every
+  // not-yet-canonical field already gets.
+  if (run.schema < 5) {
+    for (const f of V5_METRIC_FIELDS) {
+      if (f in run && run[f] != null) {
+        errors.push({ field: f, message: `must be absent or null for schema ${run.schema} -- ${f} was introduced in schema v5` });
+      }
+    }
   }
 
   for (const f of NULLABLE_METRIC_FIELDS) if (f in run) validateNullableMetric(run[f], f, errors);

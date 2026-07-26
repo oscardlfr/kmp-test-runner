@@ -385,10 +385,10 @@ describe('validateRun', () => {
 // to 2 would have made validateRun() reject every historical schema:1 record at its very first
 // check. This is the fix: explicit per-version dispatch, proven both synthetically (this describe
 // block) and against the actual 8 committed files (the next describe block).
-describe('schema v1/v2/v3/v4 dispatch (decision 6, extended for v3 -- foreign_skill_summary, v4 -- ambient_skill_profile)', () => {
-  it('SUPPORTED_RUN_SCHEMAS accepts 1, 2, 3, and 4; LATEST_RUN_SCHEMA is 4', () => {
-    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4]);
-    expect(LATEST_RUN_SCHEMA).toBe(4);
+describe('schema v1/v2/v3/v4/v5 dispatch (decision 6, extended for v3 -- foreign_skill_summary, v4 -- ambient_skill_profile, v5 -- accepted-run-observability)', () => {
+  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 5; LATEST_RUN_SCHEMA is 5', () => {
+    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5]);
+    expect(LATEST_RUN_SCHEMA).toBe(5);
   });
 
   it('a schema:1 record WITHOUT grading_checks/repetition_index still validates cleanly -- those fields are never required for v1', () => {
@@ -683,6 +683,207 @@ describe('schema v1/v2/v3/v4 dispatch (decision 6, extended for v3 -- foreign_sk
     expect(errors).toEqual([]);
   });
 
+  // Schema v5 (accepted-run-observability PR) = v4 + post_signal_ms, post_signal_tool_calls,
+  // policy_denials_before_first_signal, policy_denials_after_first_signal (all {value,reason}
+  // nullable metrics), and accepted_audit (a plain nullable structured field, mirroring
+  // ambient_skill_profile's own v4-introduced gate one version up).
+  function v4Base(overrides = {}) {
+    return {
+      ...baseRun({ schema: 4, run_kind: 'calibration', ...overrides }),
+      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+      repetition_index: null,
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: 0, scope_id: VALID_SCOPE_ID, fingerprint_hmac: '0'.repeat(64) },
+      ...overrides,
+    };
+  }
+  const V5_METRIC_NOT_APPLICABLE = { value: null, reason: 'calibration run -- no first-useful-signal predicate applies' };
+  function v5Base(overrides = {}) {
+    return {
+      ...v4Base(overrides),
+      schema: 5,
+      post_signal_ms: V5_METRIC_NOT_APPLICABLE,
+      post_signal_tool_calls: V5_METRIC_NOT_APPLICABLE,
+      policy_denials_before_first_signal: V5_METRIC_NOT_APPLICABLE,
+      policy_denials_after_first_signal: V5_METRIC_NOT_APPLICABLE,
+      accepted_audit: null,
+      ...overrides,
+    };
+  }
+
+  it('a schema:4 record WITHOUT any of the 5 new v5 fields still validates cleanly -- none are required below v5', () => {
+    const run = v4Base();
+    for (const f of ['post_signal_ms', 'post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal', 'accepted_audit']) {
+      expect(f in run).toBe(false);
+    }
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  it('a schema:4 record is rejected if it DOES carry any of the 5 new v5 fields -- forbidden below v5', () => {
+    for (const [field, value] of [
+      ['post_signal_ms', { value: null, reason: 'x' }],
+      ['post_signal_tool_calls', { value: null, reason: 'x' }],
+      ['policy_denials_before_first_signal', { value: null, reason: 'x' }],
+      ['policy_denials_after_first_signal', { value: null, reason: 'x' }],
+      ['accepted_audit', null],
+    ]) {
+      const run = { ...v4Base(), [field]: value };
+      const { errors, warnings } = validateRun(run);
+      expect(warnings.some((w) => w.field === field)).toBe(true);
+      if (value !== null) expect(errors.some((e) => e.field === field)).toBe(true);
+    }
+  });
+
+  it('a fully well-formed schema:5 non-scenario record (all 5 new fields null/not-applicable) validates cleanly', () => {
+    const { errors } = validateRun(v5Base());
+    expect(errors).toEqual([]);
+  });
+
+  it('a fully well-formed schema:5 scenario record (all 4 metrics real values, accepted_audit populated) validates cleanly', () => {
+    const run = v5Base({
+      run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'kampkit-android-host-test-discovery',
+      grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [1, 2] })), reason: null },
+      repetition_index: 0,
+      post_signal_ms: { value: 42.5, reason: null },
+      post_signal_tool_calls: { value: 2, reason: null },
+      policy_denials_before_first_signal: { value: 0, reason: null },
+      policy_denials_after_first_signal: { value: 1, reason: null },
+      accepted_audit: { schema: 1, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) },
+      run_id: 'scenario-current-skill-abcd1234',
+    });
+    const { errors } = validateRun(run);
+    expect(errors).toEqual([]);
+  });
+
+  describe('post_signal_ms / post_signal_tool_calls / policy_denials_{before,after}_first_signal -- nullable metric domains', () => {
+    it('post_signal_ms accepts a non-negative finite timing value', () => {
+      const run = v5Base({ post_signal_ms: { value: 0, reason: null } });
+      expect(validateRun(run).errors).toEqual([]);
+      const run2 = v5Base({ post_signal_ms: { value: 1234.5, reason: null } });
+      expect(validateRun(run2).errors).toEqual([]);
+    });
+
+    it('post_signal_ms rejects a negative value', () => {
+      const run = v5Base({ post_signal_ms: { value: -1, reason: null } });
+      expect(validateRun(run).errors.some((e) => e.field === 'post_signal_ms')).toBe(true);
+    });
+
+    it('post_signal_ms rejects a non-numeric value', () => {
+      const run = v5Base({ post_signal_ms: { value: 'soon', reason: null } });
+      expect(validateRun(run).errors.some((e) => e.field === 'post_signal_ms')).toBe(true);
+    });
+
+    for (const field of ['post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal']) {
+      it(`${field} accepts a non-negative integer count`, () => {
+        expect(validateRun(v5Base({ [field]: { value: 0, reason: null } })).errors).toEqual([]);
+        expect(validateRun(v5Base({ [field]: { value: 5, reason: null } })).errors).toEqual([]);
+      });
+
+      it(`${field} rejects a negative integer`, () => {
+        expect(validateRun(v5Base({ [field]: { value: -1, reason: null } })).errors.some((e) => e.field === field)).toBe(true);
+      });
+
+      it(`${field} rejects a non-integer (fractional) value`, () => {
+        expect(validateRun(v5Base({ [field]: { value: 1.5, reason: null } })).errors.some((e) => e.field === field)).toBe(true);
+      });
+    }
+
+    it('rejects value:null paired with reason:null on any of the 4 new metrics (never infer, always explain)', () => {
+      for (const field of ['post_signal_ms', 'post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal']) {
+        const run = v5Base({ [field]: { value: null, reason: null } });
+        expect(validateRun(run).errors.some((e) => e.field === field)).toBe(true);
+      }
+    });
+  });
+
+  describe('accepted_audit -- scenario/non-scenario relationship, exact path/SHA/closed-key validation', () => {
+    it('is REQUIRED to be null for a non-scenario schema:5 record', () => {
+      const run = v5Base({ run_kind: 'smoke' });
+      expect(validateRun(run).errors).toEqual([]);
+    });
+
+    it('REJECTS a non-null accepted_audit on a non-scenario record', () => {
+      const run = v5Base({ run_kind: 'smoke', accepted_audit: { schema: 1, relative_path: 'audit/x.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit')).toBe(true);
+    });
+
+    function scenarioBase(overrides = {}) {
+      return v5Base({
+        run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'kampkit-android-host-test-discovery',
+        grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), reason: null },
+        repetition_index: 0, run_id: 'scenario-current-skill-abcd1234',
+        ...overrides,
+      });
+    }
+
+    it('is REQUIRED (non-null) for a schema:5 scenario record', () => {
+      const run = scenarioBase({ accepted_audit: null });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit')).toBe(true);
+    });
+
+    it('REQUIRES exactly the keys schema/relative_path/sha256 -- no more, no fewer', () => {
+      const missingKey = scenarioBase({ accepted_audit: { relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(missingKey).errors.some((e) => e.field === 'accepted_audit')).toBe(true);
+      const extraKey = scenarioBase({ accepted_audit: { schema: 1, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64), extra: 'nope' } });
+      expect(validateRun(extraKey).errors.some((e) => e.field === 'accepted_audit')).toBe(true);
+    });
+
+    it('REQUIRES schema to be exactly 1', () => {
+      const run = scenarioBase({ accepted_audit: { schema: 2, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(true);
+    });
+
+    it('REQUIRES relative_path to equal exactly audit/<this record\'s run_id>.json', () => {
+      const wrongId = scenarioBase({ accepted_audit: { schema: 1, relative_path: 'audit/some-other-run-id.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(wrongId).errors.some((e) => e.field === 'accepted_audit.relative_path')).toBe(true);
+    });
+
+    it('REJECTS an absolute path', () => {
+      const run = scenarioBase({ accepted_audit: { schema: 1, relative_path: '/audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.relative_path')).toBe(true);
+    });
+
+    it('REJECTS a Windows-drive-absolute path', () => {
+      const run = scenarioBase({ accepted_audit: { schema: 1, relative_path: 'C:\\audit\\scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.relative_path')).toBe(true);
+    });
+
+    it('REJECTS a backslash path separator', () => {
+      const run = scenarioBase({ run_id: 'scenario-current-skill-abcd1234', accepted_audit: { schema: 1, relative_path: 'audit\\scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.relative_path')).toBe(true);
+    });
+
+    it('REJECTS a traversal path even when it would otherwise "equal" a maliciously-crafted run_id', () => {
+      const run = scenarioBase({ run_id: '../../../etc/passwd', accepted_audit: { schema: 1, relative_path: 'audit/../../../etc/passwd.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.relative_path')).toBe(true);
+    });
+
+    it('REJECTS an alternate filename (not literally "<run_id>.json")', () => {
+      const run = scenarioBase({ accepted_audit: { schema: 1, relative_path: 'audit/some-other-name.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.relative_path')).toBe(true);
+    });
+
+    it('REQUIRES sha256 to be a lowercase 64-char hex string', () => {
+      const tooShort = scenarioBase({ accepted_audit: { schema: 1, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(10) } });
+      expect(validateRun(tooShort).errors.some((e) => e.field === 'accepted_audit.sha256')).toBe(true);
+      const uppercase = scenarioBase({ accepted_audit: { schema: 1, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'A'.repeat(64) } });
+      expect(validateRun(uppercase).errors.some((e) => e.field === 'accepted_audit.sha256')).toBe(true);
+    });
+  });
+
+  // Inheritance proof (mirrors the round-4 audit-finding pattern already applied at v3): a
+  // schema:5 record must still enforce every v2/v3/v4 semantic rule, not just the v5 field list.
+  it('a schema:5 scenario record still REQUIRES a non-null grading_checks.value -- v2 semantics inherited', () => {
+    const run = v5Base({ run_kind: 'scenario', benchmark_eligible: true, grading_checks: { value: null, reason: 'x' }, repetition_index: 0 });
+    expect(validateRun(run).errors.some((e) => e.field === 'grading_checks')).toBe(true);
+  });
+
+  it('a schema:5 record still REQUIRES ambient_skill_profile as a non-null object -- v4 semantics inherited', () => {
+    const { ambient_skill_profile, ...run } = v5Base();
+    expect(validateRun(run).errors.some((e) => e.field === 'ambient_skill_profile')).toBe(true);
+  });
+
   describe('grading_checks canonical 8-name-set (decision 14)', () => {
     function fullGradingChecks(overrides = {}) {
       const checks = GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] }));
@@ -768,6 +969,37 @@ describe('backward validation of every PR #373/#378 committed run record', () =>
     it(`${relPath} validates cleanly under the (unchanged) v1 path`, () => {
       const record = JSON.parse(readFileSync(path.join(REPO_ROOT, relPath), 'utf8'));
       expect(record.schema).toBe(1);
+      const { errors } = validateRun(record);
+      expect(errors).toEqual([]);
+    });
+  }
+});
+
+// Generic scan of EVERY currently committed run-record directory (accepted-run-observability PR)
+// -- the historical-8 block above only ever covered calibration/smoke's schema:1 files; this
+// walks agentic-eval-{calibration,scenario,smoke}/*.json generically (top-level only, mirroring
+// cmdAggregate's own non-recursive readdirSync), so the 16 schema:3/4 scenario records this repo
+// already has committed are proven to still validate too -- not merely assumed from the
+// hand-picked historical-8 list still passing.
+describe('every currently committed agentic-eval run record validates cleanly (generic scan)', () => {
+  const RUN_KIND_DIRS = ['agentic-eval-calibration', 'agentic-eval-scenario', 'agentic-eval-smoke'];
+  const runsRoot = path.join(REPO_ROOT, 'tools', 'runs');
+
+  const allCommittedRecordPaths = RUN_KIND_DIRS.flatMap((dirName) => {
+    const dir = path.join(runsRoot, dirName);
+    return readdirSync(dir)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => path.join(dir, f));
+  });
+
+  it('finds at least the 24 records already known to be committed as of this PR', () => {
+    expect(allCommittedRecordPaths.length).toBeGreaterThanOrEqual(24);
+  });
+
+  for (const p of allCommittedRecordPaths) {
+    it(`${path.relative(REPO_ROOT, p)} validates cleanly under its own declared schema`, () => {
+      const record = JSON.parse(readFileSync(p, 'utf8'));
+      expect(SUPPORTED_RUN_SCHEMAS).toContain(record.schema);
       const { errors } = validateRun(record);
       expect(errors).toEqual([]);
     });
