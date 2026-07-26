@@ -1,23 +1,26 @@
 // tests/vitest/skill-canonical-workflow.test.js
 // Regression coverage for SKILL.md's canonical agent workflow: ONE authoritative Decision
-// protocol section (first heading in the document) drives known-scope dispatch, uncertain-scope
-// discovery via describe, preview-only dry-run, envelope-as-authority, stop-after-evidence, and
-// conditional doctor -- replacing the old split across Quick start / Steps section 1 / Steps
-// section 2. Also locks: no policy-unsafe placeholder commands, no policy-denied commands in the
-// "optional" Environment detection section, no stale hardcoded version, no unconditional
-// `kmp-test --version` check, frontmatter description covers module/task discovery, no
-// agentic-eval-harness-internal leakage, and relative doc references still resolve.
-// Section-scoped (not whole-file substring checks) so a fix landing in the wrong section can't
-// produce a false green.
-import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
+// protocol section (first heading in the document) drives scope classification (broad / exact
+// module / test-capability target / likely-no-tests target), preview-only dry-run,
+// envelope-as-authority, stop-after-evidence, and conditional doctor -- replacing the old split
+// across Quick start / Steps section 1 / Steps section 2. Also locks: no policy-unsafe
+// placeholder commands, no policy-denied commands in the "optional" Environment detection
+// section, no stale hardcoded version, no unconditional `kmp-test --version` check, frontmatter
+// description covers module/task discovery and pre-inspection invocation, canonical-vs-decorated
+// command denial exercised against the REAL policy-hook decide() function (not just prose), and
+// no agentic-eval-harness-internal leakage. Section-scoped (not whole-file substring checks) so a
+// fix landing in the wrong section can't produce a false green.
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { discoverCoverageModules, parseArgs as parseCoverageArgs, runCoverage } from '../../lib/orchestrators/coverage-orchestrator.js';
 import { parseArgs as parseChangedArgs } from '../../lib/orchestrators/changed-orchestrator.js';
 import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
 import { SOFT_ERROR_CODES } from '../../lib/envelope/builder.js';
 import { ENV_ERROR_CODES } from '../../lib/envelope/exit-codes.js';
+import { decide } from '../../tools/agentic-eval/policy-hook.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -203,7 +206,7 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   // just match the word "workflow" appearing anywhere else in the section.
   it('step: resolves the workflow first; describe does not decide it; asks if ambiguous', () => {
     const start = protocol.indexOf('Resolve the workflow first');
-    const end = protocol.indexOf('**Known workflow, no specific module**');
+    const end = protocol.indexOf('**Classify scope**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const step1 = protocol.slice(start, end);
@@ -212,8 +215,40 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(step1.toLowerCase()).toMatch(/\bask\b/);
   });
 
-  it('step: known workflow with no specific module dispatches globally', () => {
-    expect(protocol).toMatch(/known workflow.{0,20}no specific module/i);
+  // Schema-v5 canary forensic fact #1/#2 (tools/runs/agentic-eval-evidence-driven-scope-canary-
+  // 2026-07-26.md): the skill was invoked first in only 1/4 current-skill cells (the other 3
+  // spent 3-4 denied Bash probes before invocation), and a separate cell landed on a wrong,
+  // conventionally-named module despite correct describe evidence. This state machine makes scope
+  // classification its own explicit step, BEFORE any of the four dispatch branches, and states the
+  // naming-vs-capability principle once with a concrete worked example rather than repeating it.
+  it('step: classify names all four scope categories', () => {
+    const start = protocol.indexOf('**Classify scope**');
+    const end = protocol.indexOf('**Broad**');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const step2 = protocol.slice(start, end);
+    expect(step2).toMatch(/\bbroad\b/i);
+    expect(step2).toMatch(/exact module/i);
+    expect(step2).toMatch(/test-capability target/i);
+    expect(step2).toMatch(/likely-no-tests target/i);
+  });
+
+  // Generic worked example locking task evidence over module naming/type -- the exact failure
+  // shape the runbook and forensic finding #2 both name: an Android-named module with a null unit
+  // task field must lose to a differently-named KMP module whose own field is populated.
+  it('step: classify locks task evidence over naming/platform wording with a generic worked example', () => {
+    const start = protocol.indexOf('**Classify scope**');
+    const end = protocol.indexOf('**Broad**');
+    const step2 = protocol.slice(start, end);
+    expect(step2.toLowerCase()).toMatch(/never settles task capability/);
+    expect(step2).toMatch(/android-named module/i);
+    expect(step2).toContain('test_tasks.unit: null');
+    expect(step2).toMatch(/differently-named KMP module/i);
+    expect(step2).toContain('"testAndroidHostTest"');
+  });
+
+  it('step: broad scope with no specific module dispatches globally', () => {
+    expect(protocol).toMatch(/\bBroad\b[\s\S]{0,30}dispatch/i);
   });
 
   // RC3 + CodeRabbit round (PR #395 thread on line 32): the first Bash action after loading the
@@ -223,22 +258,22 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   // dispatch example must be the first backtick-quoted `kmp-test ...` command in the step, so a
   // future edit inserting a preflight/exploration command ahead of it fails this test, not just
   // co-occurrence within the same text window.
-  it('step: no specific module dispatches that workflow\'s own command globally as the first action, not hard-coded to parallel', () => {
-    const start = protocol.indexOf('Known workflow, no specific module');
-    const end = protocol.indexOf('**Known workflow, known module**');
+  it('step: broad dispatches that workflow\'s own command globally as the first action, not hard-coded to parallel', () => {
+    const start = protocol.indexOf('**Broad**');
+    const end = protocol.indexOf('**Exact module**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
-    const step2 = protocol.slice(start, end);
-    expect(step2).toMatch(/dispatch\s+that\s+workflow.s\s+own\s+command\s+globally\s+as\s+the\s+first\s+action/i);
-    expect(step2).toContain('kmp-test parallel --json --project-root .');
+    const step3 = protocol.slice(start, end);
+    expect(step3).toMatch(/dispatch\s+that\s+workflow.s\s+own\s+command\s+globally\s+as\s+the\s+first\s+action/i);
+    expect(step3).toContain('kmp-test parallel --json --project-root .');
     // Proves the rule isn't hard-coded to parallel -- the other dispatchable workflows are named.
-    expect(step2).toMatch(/\bandroid\b/);
-    expect(step2).toMatch(/\bcoverage\b/);
-    expect(step2).toMatch(/\bbenchmark\b/);
-    expect(step2).toMatch(/\bchanged\b/);
+    expect(step3).toMatch(/\bandroid\b/);
+    expect(step3).toMatch(/\bcoverage\b/);
+    expect(step3).toMatch(/\bbenchmark\b/);
+    expect(step3).toMatch(/\bchanged\b/);
     // Ordering: nothing else shaped like a `kmp-test <subcommand>` command precedes the example.
-    const firstKmpTestIdx = step2.search(/`kmp-test\s+\S+/);
-    const dispatchIdx = step2.indexOf('`kmp-test parallel --json --project-root .`');
+    const firstKmpTestIdx = step3.search(/`kmp-test\s+\S+/);
+    const dispatchIdx = step3.indexOf('`kmp-test parallel --json --project-root .`');
     expect(firstKmpTestIdx).toBeGreaterThan(-1);
     expect(dispatchIdx).toBe(firstKmpTestIdx);
   });
@@ -248,22 +283,22 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   // complete clause tying the examples directly to the negation -- not independent keyword
   // checks that would still pass if the protocol contradicted itself elsewhere.
   it('step: descriptive/conventional wording is explicitly rejected as an exact module -- one coherent clause', () => {
-    const start = protocol.indexOf('Known workflow, no specific module');
-    const end = protocol.indexOf('**Known workflow, known module**');
-    const step2 = protocol.slice(start, end);
-    expect(step2).toMatch(/descriptive\s+wording\s+\("app",\s*"shared"\)\s+isn.t\s+an\s+exact\s+module/i);
+    const start = protocol.indexOf('**Broad**');
+    const end = protocol.indexOf('**Exact module**');
+    const step3 = protocol.slice(start, end);
+    expect(step3).toMatch(/descriptive\s+wording\s+\("app",\s*"shared"\)\s+isn.t\s+an\s+exact\s+module/i);
   });
 
-  it('step: known workflow + known module dispatches filtered using the already-known name', () => {
+  it('step: exact module dispatches filtered using the already-known name', () => {
     // Round-2 fix: scoped to this step's own text (was previously an unscoped whole-section
     // match, which doesn't actually prove THIS step's content is correct/complete).
-    const start = protocol.indexOf('Known workflow, known module');
-    const end = protocol.indexOf('**Known workflow, unclear module**');
+    const start = protocol.indexOf('**Exact module**');
+    const end = protocol.indexOf('**Test-capability target**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
-    const step3 = protocol.slice(start, end);
-    expect(step3).toMatch(/already known|already-known/i);
-    expect(step3).toMatch(/--module-filter/);
+    const step4 = protocol.slice(start, end);
+    expect(step4).toMatch(/already known|already-known/i);
+    expect(step4).toMatch(/--module-filter/);
     // Round-5 fix: changed has NO user-facing --module-filter at all (proven against the real
     // parser in the "changed module-filter contract" describe block above -- parseArgs returns
     // unknown_flag) -- round 4 wrongly grouped it alongside parallel/android/benchmark. Scoped to
@@ -271,21 +306,21 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     // the old bug ("(parallel/android/benchmark/changed)"), so this doesn't just re-match the
     // unscoped word "changed" appearing anywhere else in the step (e.g. a future unrelated
     // mention would not false-fail this check).
-    const filterIdx = step3.indexOf('--module-filter');
-    const parenWindow = step3.slice(filterIdx, filterIdx + 60);
+    const filterIdx = step4.indexOf('--module-filter');
+    const parenWindow = step4.slice(filterIdx, filterIdx + 60);
     expect(parenWindow).not.toMatch(/\bchanged\b/);
-    expect(step3).toMatch(/`changed`/);
-    expect(step3.toLowerCase()).toMatch(/git-derived/);
+    expect(step4).toMatch(/`changed`/);
+    expect(step4.toLowerCase()).toMatch(/git-derived/);
     // Round-3 fix: coverage silently accepts --module-filter but ignores it (its own scoping
     // flag is --coverage-modules, confirmed in lib/orchestrators/coverage-orchestrator.js) -- an
     // agent following workflow-agnostic advice here would believe it scoped to one module while
     // actually aggregating coverage across all of them.
-    expect(step3).toContain('--coverage-modules');
+    expect(step4).toContain('--coverage-modules');
     // Round-4 fix: --coverage-modules is exact/colonless-match only (proven against the real
     // discoverCoverageModules() in the "Coverage module-scoping contract" describe block above) --
     // round 3's wording wrongly implied it shared --module-filter's substring/glob semantics.
-    expect(step3.toLowerCase()).toContain('stripped');
-    expect(step3.toLowerCase()).toContain('no glob');
+    expect(step4.toLowerCase()).toContain('stripped');
+    expect(step4.toLowerCase()).toContain('no glob');
   });
 
   // RC1 + CodeRabbit round (thread on test line 223, "also applies to 259-271"): a module is
@@ -293,77 +328,80 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   // earlier structured envelope already established that exact modules[].name -- never from
   // descriptive wording alone. Asserted as one ordered relationship (each anchor must appear,
   // in order) rather than four independent word checks that would pass even if disconnected.
-  it('step: known module identity is sourced only from an explicit statement or a prior envelope, never descriptive wording -- one ordered relationship', () => {
-    const start = protocol.indexOf('Known workflow, known module');
-    const end = protocol.indexOf('**Known workflow, unclear module**');
+  it('step: exact module identity is sourced only from an explicit statement or a prior envelope, never descriptive wording -- one ordered relationship', () => {
+    const start = protocol.indexOf('**Exact module**');
+    const end = protocol.indexOf('**Test-capability target**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
-    const step3 = protocol.slice(start, end);
-    expect(step3).toMatch(
+    const step4 = protocol.slice(start, end);
+    expect(step4).toMatch(
       /already\s+known[\s\S]*?explicit\s+from\s+the\s+user[\s\S]*?prior\s+envelope.s[\s\S]*?modules\[\]\.name[\s\S]*?never\s+descriptive\s+wording\s+alone/i
     );
   });
 
-  it('step: known workflow + unclear module runs describe once before a targeted dispatch', () => {
+  it('step: test-capability target runs describe once before a targeted dispatch', () => {
     // Scoped to this step's own text (not the whole section) -- the preceding step legitimately
     // mentions the module-scoping flags too, which would false-fail an unscoped
     // describe-before-dispatch check even after a correct implementation.
-    const start = protocol.indexOf('Known workflow, unclear module');
-    const end = protocol.indexOf('**Preview only**');
+    const start = protocol.indexOf('**Test-capability target**');
+    const end = protocol.indexOf('**Likely-no-tests target**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
-    const step4 = protocol.slice(start, end);
-    const describeIdx = step4.indexOf('kmp-test describe --json --project-root .');
-    const dispatchIdx = step4.toLowerCase().indexOf('dispatch');
+    const step5 = protocol.slice(start, end);
+    const describeIdx = step5.indexOf('kmp-test describe --json --project-root .');
+    const dispatchIdx = step5.toLowerCase().indexOf('dispatch');
     expect(describeIdx).toBeGreaterThan(-1);
     expect(dispatchIdx).toBeGreaterThan(-1);
     expect(describeIdx).toBeLessThan(dispatchIdx);
     // Round-4 fix: describe returns modules[].name WITH the leading colon: stripping it before
-    // use is required specifically for --coverage-modules (proven above), so step 4 must repeat
-    // this instruction rather than leaving it implicit.
-    expect(step4.toLowerCase()).toContain('strip');
+    // use is required specifically for --coverage-modules (proven above), so this step must
+    // repeat this instruction rather than leaving it implicit.
+    expect(step5.toLowerCase()).toContain('strip');
   });
 
-  it('step: unclear module reads the exact value from modules[].name', () => {
+  it('step: exact module reads the exact value from modules[].name', () => {
     expect(protocol).toMatch(/modules\[\]\.name/);
   });
 
   // RC2 + CodeRabbit round (thread on test line 223, "also applies to 300-308"): reading one
   // modules[].name is insufficient when describe returns several modules -- candidate selection
   // must inspect every entry and filter by task capability, as one complete clause.
-  it('step: unclear-module dispatch inspects every returned module and filters by task capability -- one complete clause', () => {
-    const start = protocol.indexOf('Known workflow, unclear module');
-    const end = protocol.indexOf('**Preview only**');
+  it('step: test-capability dispatch inspects every returned module and filters by task capability -- one complete clause', () => {
+    const start = protocol.indexOf('**Test-capability target**');
+    const end = protocol.indexOf('**Likely-no-tests target**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
-    const step4 = protocol.slice(start, end);
-    expect(step4).toMatch(/check\s+every\s+`modules\[\]`\s+entry.s\s+task\s+field\s+for\s+the\s+test\s+type/i);
+    const step5 = protocol.slice(start, end);
+    expect(step5).toMatch(/check\s+every\s+`modules\[\]`\s+entry.s\s+task\s+field\s+for\s+the\s+test\s+type/i);
   });
 
   // Reviewer finding beyond the 5 CodeRabbit threads: "task field for the test type" alone still
   // lets an agent guess which field applies. Default parallel dispatch must be pinned to
-  // test_tasks.unit; an explicit platform must defer to the documented --test-type mapping; the
-  // field must never be derived from descriptive wording (the exact failure mode this whole PR
-  // targets -- "the Android module" reproducing the original wrong-module error).
-  it('step: default parallel is pinned to test_tasks.unit, explicit platforms defer to flags-reference.md, never derived from descriptive wording', () => {
-    const start = protocol.indexOf('Known workflow, unclear module');
-    const end = protocol.indexOf('**Preview only**');
-    const step4 = protocol.slice(start, end);
-    expect(step4).toMatch(/`test_tasks\.unit`\s+for\s+`parallel`.s\s+default/i);
-    expect(step4).toMatch(/`flags-reference\.md`\s+for\s+an\s+explicit\s+`--test-type`/i);
-    expect(step4).toMatch(/never\s+derive\s+it\s+from\s+descriptive\s+wording\s+like\s+"Android"/i);
+  // test_tasks.unit; an explicit platform must defer to the documented --test-type mapping.
+  it('step: test-capability default is pinned to test_tasks.unit, explicit platforms defer to flags-reference.md', () => {
+    const start = protocol.indexOf('**Test-capability target**');
+    const end = protocol.indexOf('**Likely-no-tests target**');
+    const step5 = protocol.slice(start, end);
+    expect(step5).toMatch(/`test_tasks\.unit`\s+for\s+`parallel`.s\s+default/i);
+    expect(step5).toMatch(/`flags-reference\.md`\s+for\s+an\s+explicit\s+`--test-type`/i);
   });
 
-  // RC2 + CodeRabbit round (thread on test line 223, "also applies to 313-323"): the eligible-
-  // candidate branches must perform their stated action, not just co-occur with the count --
-  // asserted as three complete condition-to-action clauses.
-  it('step: the 1/2+/0 eligible-candidate branches perform their specified action -- condition tied to action, not co-occurring', () => {
-    const start = protocol.indexOf('Known workflow, unclear module');
-    const end = protocol.indexOf('**Preview only**');
-    const step4 = protocol.slice(start, end);
-    expect(step4).toMatch(/\b1\s+eligible:\s*dispatch\s+its\s+exact\s+name/i);
-    expect(step4).toMatch(/2\+\s+eligible:\s*dispatch\s+globally\s+if\s+broad,\s*else\s+ask/i);
-    expect(step4).toMatch(/\b0\s+eligible:\s*don.t\s+invent\s+one/i);
+  // Schema-v5 canary forensic fact #2 + runbook requirement: expected-tests and likely-no-tests
+  // are now two SEPARATE candidate rules (not one merged "1/2+/0 eligible" step), each with its
+  // own scoped test below -- so a future edit can't quietly re-merge them without failing here.
+  //
+  // Follow-up review finding (post-PR #399): the schema-v5 restructure dropped the ORIGINAL
+  // protocol's own "0 eligible: don't invent one" branch when test-capability was split out of the
+  // old merged step -- 0-eligible silently had no defined outcome at all. Restored as its own
+  // explicit fail-closed branch, asserted here alongside 1/2+ so a future edit can't drop it again
+  // without this test catching the gap.
+  it('step: test-capability 0/1/2+ eligible-candidate branches all have a defined, fail-closed outcome', () => {
+    const start = protocol.indexOf('**Test-capability target**');
+    const end = protocol.indexOf('**Likely-no-tests target**');
+    const step5 = protocol.slice(start, end);
+    expect(step5).toMatch(/\b1\s+eligible:\s*its\s+exact\s+name/i);
+    expect(step5).toMatch(/2\+\s+eligible:\s*dispatch\s+globally\s+if\s+broad,\s*else\s+ask/i);
+    expect(step5).toMatch(/\b0\s+eligible:\s*report\s+no\s+match;\s*don.t\s+invent\s+one/i);
   });
 
   it('never presents --module-filter with a bracketed placeholder', () => {
@@ -387,13 +425,13 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     const end = protocol.indexOf('**Trust the real envelope**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
-    const step5 = protocol.slice(start, end);
-    expect(step5).not.toMatch(/any subcommand/i);
-    expect(step5).toMatch(/\bparallel\b/);
-    expect(step5).toMatch(/\bcoverage\b/);
-    expect(step5).toMatch(/\bbenchmark\b/);
-    expect(step5).toMatch(/\bchanged\b/);
-    expect(step5).toMatch(/\bandroid\b/);
+    const step7 = protocol.slice(start, end);
+    expect(step7).not.toMatch(/any subcommand/i);
+    expect(step7).toMatch(/\bparallel\b/);
+    expect(step7).toMatch(/\bcoverage\b/);
+    expect(step7).toMatch(/\bbenchmark\b/);
+    expect(step7).toMatch(/\bchanged\b/);
+    expect(step7).toMatch(/\bandroid\b/);
   });
 
   // Round-5 addition: changed's own preview mechanism is --show-modules-only (lists the
@@ -402,8 +440,18 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   it('step: preview mentions --show-modules-only as changed\'s own preview flag', () => {
     const start = protocol.indexOf('**Preview only**');
     const end = protocol.indexOf('**Trust the real envelope**');
-    const step5 = protocol.slice(start, end);
-    expect(step5).toMatch(/--show-modules-only/);
+    const step7 = protocol.slice(start, end);
+    expect(step7).toMatch(/--show-modules-only/);
+  });
+
+  // Schema-v5 canary forensic fact #4: successful cells still ran an unrequested --dry-run
+  // preflight before the real dispatch. Dry-run remains legitimate for an explicit preview ask,
+  // but must never stand in as a preflight step for an execution request.
+  it('step: preview-only dry-run is not a preflight for an execution request', () => {
+    const start = protocol.indexOf('**Preview only**');
+    const end = protocol.indexOf('**Trust the real envelope**');
+    const step7 = protocol.slice(start, end);
+    expect(step7).toMatch(/not\s+a\s+preflight\s+for\s+an\s+execution\s+request/i);
   });
 
   it('step: trusts the real (non-dry-run) envelope as authoritative', () => {
@@ -423,8 +471,8 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     const end = protocol.indexOf('**Diagnose only on failure**');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
-    const step7 = protocol.slice(start, end);
-    expect(step7).toMatch(
+    const step9 = protocol.slice(start, end);
+    expect(step9).toMatch(
       /non-dry-run\s+envelope\s+with\s+expected\s+outcome,\s+coherent\s+`exit_code`\/`errors\[\]`,\s+and\s+\(when\s+tests\s+ran\)\s+matching\s+counts\/failures\s+is\s+terminal/i
     );
   });
@@ -437,22 +485,22 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   it('step: post-success probes are negated as one list, not merely present -- includes raw Gradle and task-listing', () => {
     const start = protocol.indexOf('Stop once proven');
     const end = protocol.indexOf('**Diagnose only on failure**');
-    const step7 = protocol.slice(start, end);
+    const step9 = protocol.slice(start, end);
     // The full negated list, anchored on "no post-success ... probe" so this fails if the
     // negation frame is ever dropped, inverted, or any listed probe shape is removed.
-    expect(step7).toMatch(
+    expect(step9).toMatch(
       /no\s+post-success\s+dry-run,\s+doctor,\s+describe,\s+raw\s+or\s+task-listing\s+Gradle,\s+version,\s+or\s+ls\/pwd\/which\s+probe/i
     );
     // Negative control: the protocol must never affirmatively instruct running doctor/describe
     // as a post-success confirmation step.
-    expect(step7).not.toMatch(/run\s+`kmp-test\s+(doctor|describe)/i);
+    expect(step9).not.toMatch(/run\s+`kmp-test\s+(doctor|describe)/i);
   });
 
   it('step: an unrelated skipped[] entry is explicitly framed as context, not a reason to keep exploring -- one tied clause', () => {
     const start = protocol.indexOf('Stop once proven');
     const end = protocol.indexOf('**Diagnose only on failure**');
-    const step7 = protocol.slice(start, end);
-    expect(step7).toMatch(/unrelated\s+`skipped\[\]`\s+entry\s+isn.t\s+a\s+reason\s+to\s+keep\s+exploring/i);
+    const step9 = protocol.slice(start, end);
+    expect(step9).toMatch(/unrelated\s+`skipped\[\]`\s+entry\s+isn.t\s+a\s+reason\s+to\s+keep\s+exploring/i);
   });
 
   it('step: diagnose only for exit_code 3 or an explicit request', () => {
@@ -517,18 +565,89 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(protocol.toLowerCase()).toMatch(/next canonical/);
   });
 
-  it('denial recovery: a denied canonical command is final -- stop, report, no retry', () => {
-    expect(protocol.toLowerCase()).toMatch(/stop and report/);
-    expect(protocol.toLowerCase()).toMatch(/don.t retry|no retry/);
+  // CodeRabbit round (PR #399): scoped to the exact-canonical clause itself, matching the
+  // neighboring DECORATED-command test's own slicing -- an unscoped whole-protocol match doesn't
+  // prove THIS clause's content is correct/complete (this file's own header comment and the
+  // round-2-fix precedent both call out exactly this anti-pattern).
+  it('denial recovery: a denied exact-canonical command is final -- stop, report, no retry', () => {
+    const start = protocol.indexOf('A denied EXACT canonical');
+    expect(start).toBeGreaterThan(-1);
+    const clause = protocol.slice(start, start + 220).toLowerCase();
+    expect(clause).toMatch(/stop and report/);
+    expect(clause).toMatch(/don.t retry/);
   });
 
-  // Round-3 fix: round 2's version let describe's test_tasks.unit:null ALONE justify "no
-  // applicable tests" -- reproduced against the real canary scenario ground truth
-  // (kampkit-no-applicable-tests.json, which requires an ACTUAL executed parallel envelope, not
-  // a describe-only inference) and against real describe output shape: a module can have
-  // test_tasks.unit:null while test_tasks.ios:"iosX64Test" is populated and genuinely
-  // dispatchable via --test-type ios -- unit:null alone would have wrongly short-circuited that.
-  const NO_TEST_PARAGRAPH_ANCHOR = /For the default unit-test `parallel` workflow[\s\S]*?(?=\n\n|$)/;
+  // Schema-v5 canary forensic fact #3: a cell decorated the canonical describe command (e.g. with
+  // shell redirection); policy correctly denied the decorated form, and the agent then spiralled
+  // through further denied commands instead of recovering with the bare canonical command. This is
+  // a THIRD, distinct denial-recovery case -- neither "abandon an exploratory probe" (no retry
+  // needed) nor "a denied exact-canonical command is final" (no retry in any form): a decorated
+  // command is not yet canonical at all, so exactly one bare retry with the undecorated form is the
+  // correct recovery, tested here separately so a merged/vague rule can't silently satisfy both.
+  it('denial recovery: a denied DECORATED command gets one bare retry with the exact form, distinct from a denied exact-canonical command\'s no-retry rule', () => {
+    const start = protocol.indexOf('A denied DECORATED command');
+    expect(start).toBeGreaterThan(-1);
+    const clause = protocol.slice(start, start + 220);
+    expect(clause).toMatch(/redirection/i);
+    expect(clause).toMatch(/\bpipe\b/i);
+    expect(clause).toMatch(/chaining/i);
+    expect(clause).toMatch(/isn.t yet canonical/i);
+    expect(clause).toMatch(/issue the exact standalone command once/i);
+    expect(clause).toMatch(/if denied too, stop and report/i);
+  });
+
+  // Round-3 fix (preserved through the schema-v5 restructure): round 2's version let describe's
+  // test_tasks.unit:null ALONE justify "no applicable tests" -- reproduced against the real canary
+  // scenario ground truth (kampkit-no-applicable-tests.json, which requires an ACTUAL executed
+  // parallel envelope, not a describe-only inference) and against real describe output shape: a
+  // module can have test_tasks.unit:null while test_tasks.ios:"iosX64Test" is populated and
+  // genuinely dispatchable via --test-type ios -- unit:null alone would have wrongly
+  // short-circuited that. Now scoped to its own numbered step (Likely-no-tests target) instead of
+  // a disconnected trailing paragraph -- the schema-v5 canary's forensic fact #5 found the old
+  // paragraph's prose was present but not operationally salient.
+  it('step: likely-no-tests requires a REAL non-dry-run parallel envelope, not describe alone -- its own separate rule from test-capability\'s eligible-count branches', () => {
+    const start = protocol.indexOf('**Likely-no-tests target**');
+    const end = protocol.indexOf('**Preview only**');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const step6 = protocol.slice(start, end);
+    expect(step6).toMatch(/non-dry-run/i);
+    expect(step6).toContain('no_test_modules');
+    expect(step6).toContain('caused_by_filter:true');
+    expect(step6.toLowerCase()).toMatch(/\balone\b/);
+    expect(step6).toContain('test_tasks.unit');
+    expect(step6).toMatch(/no applicable tests/i);
+    expect(step6.toLowerCase()).toMatch(/\bstop\b/);
+  });
+
+  // Follow-up review finding (post-PR #399): likely-no-tests referenced null task fields but never
+  // instructed HOW to obtain or select them -- not an executable state. Fixed to explicitly order
+  // describe (once, reusing a prior envelope if one already exists so test-capability and
+  // likely-no-tests never double-probe) before inspecting test_tasks.unit.
+  it('step: likely-no-tests orders describe (once, reusing any prior envelope) before inspecting test_tasks.unit', () => {
+    const start = protocol.indexOf('**Likely-no-tests target**');
+    const end = protocol.indexOf('**Preview only**');
+    const step6 = protocol.slice(start, end);
+    const describeIdx = step6.indexOf('kmp-test describe --json --project-root .');
+    const inspectIdx = step6.toLowerCase().indexOf('inspect every');
+    expect(describeIdx).toBeGreaterThan(-1);
+    expect(inspectIdx).toBeGreaterThan(-1);
+    expect(describeIdx).toBeLessThan(inspectIdx);
+    expect(step6).toMatch(/once\s+if\s+not\s+already\s+run/i);
+  });
+
+  // Follow-up review finding (post-PR #399): likely-no-tests never resolved cardinality when
+  // describe returns zero, one, or several null-task-field candidates -- these are precisely the
+  // decisions the state machine must close, mirroring test-capability's own 0/1/2+ split (but
+  // inverted polarity: candidates identified by a NULL field, not a non-null one).
+  it('step: likely-no-tests 0/1/2+ null-candidate branches each perform their specified action', () => {
+    const start = protocol.indexOf('**Likely-no-tests target**');
+    const end = protocol.indexOf('**Preview only**');
+    const step6 = protocol.slice(start, end);
+    expect(step6).toMatch(/\b1\s+null:\s*dispatch\s+its\s+exact\s+`modules\[\]\.name`\s+for\s+one\s+real\s+filtered\s+run/i);
+    expect(step6).toMatch(/2\+\s+null:\s*ask\s+for\s+the\s+exact\s+target,\s*never\s+guess\s+from\s+names\s+or\s+types/i);
+    expect(step6).toMatch(/\b0\s+null:\s*report\s+no\s+matching\s+candidate;\s*don.t\s+invent\s+one/i);
+  });
 
   // Round-5 fix: the round-4 version of this check only looked for the literal concatenation
   // "--test-type device" / "--test-type web" -- but the ACTUAL old (round-3-era) bug never wrote
@@ -540,19 +659,6 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   function mentionsDeviceOrWebNearTestType(text) {
     return /--test-type/.test(text) && /`device`|`web`/.test(text);
   }
-
-  it('a confirmed no-test result requires a REAL non-dry-run parallel envelope, not describe alone', () => {
-    const match = protocol.match(NO_TEST_PARAGRAPH_ANCHOR);
-    expect(match).not.toBeNull();
-    const paragraph = match[0];
-    expect(paragraph).toMatch(/non-dry-run/i);
-    expect(paragraph).toContain('no_test_modules');
-    expect(paragraph).toContain('caused_by_filter:true');
-    expect(paragraph.toLowerCase()).toMatch(/\balone\b/);
-    expect(paragraph).toContain('test_tasks.unit');
-    expect(paragraph).toMatch(/no applicable tests/i);
-    expect(paragraph.toLowerCase()).toMatch(/\bstop\b/);
-  });
 
   // Round-4 fix: round 3 named device/web as things a module can "run via ... under an explicit
   // --test-type" -- but device and web are describe's OWN test_tasks field names, not real
@@ -574,22 +680,70 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   });
 
   it('does not present device/web as literal --test-type values; points to the real enum', () => {
-    const match = protocol.match(NO_TEST_PARAGRAPH_ANCHOR);
-    expect(match).not.toBeNull();
-    const paragraph = match[0];
-    expect(mentionsDeviceOrWebNearTestType(paragraph)).toBe(false);
-    expect(paragraph).toMatch(/test_tasks/);
-    expect(paragraph).toMatch(/flags-reference/i);
+    const start = protocol.indexOf('**Likely-no-tests target**');
+    const end = protocol.indexOf('**Preview only**');
+    const step6 = protocol.slice(start, end);
+    expect(mentionsDeviceOrWebNearTestType(step6)).toBe(false);
+    expect(step6).toMatch(/test_tasks/);
+    expect(step6).toMatch(/flags-reference/i);
   });
 
   it('the no-test-outcome guidance does not enumerate specific alternate subcommands', () => {
-    const match = protocol.match(NO_TEST_PARAGRAPH_ANCHOR);
-    expect(match).not.toBeNull();
-    const paragraph = match[0];
-    expect(paragraph).not.toMatch(/\bandroid\b/i);
-    expect(paragraph).not.toMatch(/\bcoverage\b/i);
-    expect(paragraph).not.toMatch(/\bchanged\b/i);
-    expect(paragraph).not.toMatch(/\binfo\b/i);
+    const start = protocol.indexOf('**Likely-no-tests target**');
+    const end = protocol.indexOf('**Preview only**');
+    const step6 = protocol.slice(start, end);
+    expect(step6).not.toMatch(/\bandroid\b/i);
+    expect(step6).not.toMatch(/\bcoverage\b/i);
+    expect(step6).not.toMatch(/\bchanged\b/i);
+    expect(step6).not.toMatch(/\binfo\b/i);
+  });
+});
+
+// Schema-v5 canary forensic fact #3 (tools/runs/agentic-eval-evidence-driven-scope-canary-2026-07-
+// 26.md): a cell decorated the canonical describe command; policy correctly denied it, but the
+// agent then spiralled through more denied commands rather than recovering. This describe block
+// exercises the REAL policy-hook decide() function (tools/agentic-eval/policy-hook.mjs) directly --
+// not just SKILL.md's own prose -- so a future divergence between what SKILL.md claims is
+// "canonical" and what the live policy actually allows/denies would fail here, not just look
+// plausible in the doc.
+describe('Decision protocol canonical-command policy -- exercises the REAL policy-hook decide() function', () => {
+  let fixtureRoot;
+
+  beforeAll(() => {
+    fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'skill-canonical-policy-'));
+  });
+
+  afterAll(() => {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  });
+
+  function decisionFor(command) {
+    const raw = JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      cwd: fixtureRoot,
+      tool_input: { command },
+    });
+    const env = {
+      KMP_EVAL_EXPECTED_FIXTURE_ROOT: fixtureRoot,
+      KMP_EVAL_ALLOWED_GRADLE_TASKS: JSON.stringify(['build']),
+      KMP_EVAL_ALLOWED_KMPTEST_SUBCOMMANDS: JSON.stringify(['describe', 'parallel', 'doctor']),
+    };
+    return JSON.parse(decide(raw, env)).hookSpecificOutput.permissionDecision;
+  }
+
+  const CANONICAL_DESCRIBE = 'kmp-test describe --json --project-root .';
+
+  it('the exact canonical describe command SKILL.md documents is allowed by the real policy', () => {
+    expect(decisionFor(CANONICAL_DESCRIBE)).toBe('allow');
+  });
+
+  it.each([
+    `${CANONICAL_DESCRIBE} 2>&1`,
+    `${CANONICAL_DESCRIBE} | cat`,
+    `${CANONICAL_DESCRIBE} && echo done`,
+  ])('the same command decorated (%s) is denied -- proves the "decorated" case is a real policy outcome, not just documented prose', (decorated) => {
+    expect(decisionFor(decorated)).toBe('deny');
   });
 });
 
@@ -754,6 +908,19 @@ describe('SKILL.md frontmatter description triggers on running tests and on modu
 
   it('new: triggers when the target module or Gradle test task is unclear', () => {
     expect(description).toMatch(/module[\s\S]{0,60}unclear/i);
+  });
+
+  // Schema-v5 canary forensic fact #1: the skill was invoked first in only 1/4 current-skill
+  // cells; the other cells spent 3-4 denied Bash probes before ever invoking it. Pushing this
+  // ordering into the frontmatter description itself (read before any tool call) is the only
+  // lever that can influence invocation order -- the Decision protocol body is only read AFTER
+  // the skill is already invoked.
+  it('new: pushes invocation ahead of Bash/file/Gradle-task exploration for test or module-selection intents', () => {
+    expect(description).toMatch(/invoke before/i);
+    expect(description.toLowerCase()).toMatch(/bash exploration/);
+    expect(description.toLowerCase()).toMatch(/file traversal/);
+    expect(description.toLowerCase()).toMatch(/gradle task listing/);
+    expect(description.toLowerCase()).toMatch(/project-structure inspection/);
   });
 });
 
