@@ -1,0 +1,229 @@
+{
+  "schema": 5,
+  "run_id": "scenario-current-skill-ccff419c",
+  "run_kind": "scenario",
+  "benchmark_eligible": true,
+  "scenario_id": "kampkit-no-applicable-tests",
+  "query_id": null,
+  "condition": "current-skill",
+  "skill_source_sha": "9e47a9d132f5b9ea6ac5bc50a66c844458fd363e",
+  "kmp_test_cli_version": "0.14.0",
+  "kmp_test_cli_source_sha": "a9acb22d7b58d6720248bcbd09f4b4818e8ad2be",
+  "resolved_kmp_test_executable_path": "C:\\kmp-eval\\agentic-evidence-driven-scope-canary\\bin\\kmp-test.js",
+  "model_requested": "claude-sonnet-5",
+  "model_resolved": "claude-sonnet-5",
+  "session_id_observed": "da427aff-977f-4e34-856f-f200b027f692",
+  "claude_code_version": "2.1.218",
+  "repo_commit": "a9acb22d7b58d6720248bcbd09f4b4818e8ad2be",
+  "project_alias": "kampkit",
+  "project_commit": "b3a7784fb969a8558b88c80674c8b596944cdab7",
+  "project_url": "https://github.com/touchlab/KaMPKit",
+  "platform": "windows",
+  "family": "test-only",
+  "cache_state": "cold",
+  "daemon_policy": "disabled-via-gradle-user-home-properties",
+  "env_allowlist_profile": "narrow",
+  "seed": 20260722,
+  "order_index": 2,
+  "started_at": "2026-07-26T15:05:04.383Z",
+  "ended_at": "2026-07-26T15:07:11.311Z",
+  "wall_clock_ms": 126928,
+  "skill_available": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invocation_attempted": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invoked": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invocation_event": {
+    "type": "assistant.tool_use.Skill",
+    "index": 22
+  },
+  "success": {
+    "value": true,
+    "reason": null
+  },
+  "expected_outcome_matched": {
+    "value": true,
+    "reason": null
+  },
+  "first_useful_signal_ms": {
+    "value": 113989.3688,
+    "reason": null
+  },
+  "first_useful_signal_event": {
+    "type": "user.tool_result",
+    "index": 79
+  },
+  "post_signal_ms": {
+    "value": 12935.1873,
+    "reason": null
+  },
+  "post_signal_tool_calls": {
+    "value": 2,
+    "reason": null
+  },
+  "policy_denials_before_first_signal": {
+    "value": 6,
+    "reason": null
+  },
+  "policy_denials_after_first_signal": {
+    "value": 1,
+    "reason": null
+  },
+  "accepted_audit": {
+    "schema": 1,
+    "relative_path": "audit/scenario-current-skill-ccff419c.json",
+    "sha256": "8bb7cd2c87f617016cafc22dc655367a19a7133dff3cf11315faf7a9f233a32a"
+  },
+  "tokens": {
+    "input": {
+      "value": 26,
+      "reason": null
+    },
+    "output": {
+      "value": 4389,
+      "reason": null
+    },
+    "cache_read": {
+      "value": 276376,
+      "reason": null
+    },
+    "cache_creation": {
+      "value": 10951,
+      "reason": null
+    }
+  },
+  "tool_calls_total": {
+    "value": 12,
+    "reason": null
+  },
+  "shell_commands_total": {
+    "value": 11,
+    "reason": null
+  },
+  "test_invocations_total": {
+    "value": 1,
+    "reason": null
+  },
+  "retries": {
+    "value": 0,
+    "reason": null
+  },
+  "output_bytes": {
+    "value": 4699,
+    "reason": null
+  },
+  "stream_json_bytes": {
+    "value": 85106,
+    "reason": null
+  },
+  "human_interventions": {
+    "value": 0,
+    "reason": null
+  },
+  "terminated": false,
+  "termination_reason": null,
+  "exit_code": 0,
+  "permission_mode_used": "dontAsk",
+  "policy_allowed_gradle_tasks": [
+    ":app:tasks",
+    ":app:testDebugUnitTest",
+    ":app:test"
+  ],
+  "policy_allowed_kmptest_subcommands": [
+    "doctor",
+    "describe",
+    "parallel"
+  ],
+  "policy_sha256": "f2ec18f5dde8f230d0b09aecaf02f1adaf4244c6f8464461483936c5fe48b5bc",
+  "hook_call_count": 11,
+  "hook_deny_count": 7,
+  "privacy_status": "public",
+  "raw_capture_committed": false,
+  "raw_capture_location": "tools/runs/agentic-eval-scenario/raw/",
+  "notes": "Scenario run -- benchmark_eligible reflects protocol/integrity completeness, not answer correctness; see grading_checks and success for the actual outcome.",
+  "grading_checks": {
+    "value": [
+      {
+        "name": "no_transcript_structural_issues",
+        "passed": true,
+        "detail": "no structural issues",
+        "evidence_event_indices": []
+      },
+      {
+        "name": "bash_tool_use_present",
+        "passed": true,
+        "detail": "4 policy-allowed command(s) attempted",
+        "evidence_event_indices": [
+          26,
+          67,
+          76,
+          86
+        ]
+      },
+      {
+        "name": "tool_result_correlated",
+        "passed": true,
+        "detail": "every relevant tool_use has a correlated tool_result",
+        "evidence_event_indices": []
+      },
+      {
+        "name": "authoritative_evidence_well_formed",
+        "passed": true,
+        "detail": "the terminal attempt produced well-formed evidence",
+        "evidence_event_indices": [
+          79
+        ]
+      },
+      {
+        "name": "authoritative_target_matches_expected",
+        "passed": true,
+        "detail": "terminal attempt targeted the expected module",
+        "evidence_event_indices": [
+          79
+        ]
+      },
+      {
+        "name": "authoritative_outcome_matches_expected",
+        "passed": true,
+        "detail": "terminal attempt outcome matches expected",
+        "evidence_event_indices": [
+          79
+        ]
+      },
+      {
+        "name": "no_provider_contradiction",
+        "passed": true,
+        "detail": "only one provider (or neither) produced evidence -- trivially no contradiction",
+        "evidence_event_indices": [
+          79
+        ]
+      },
+      {
+        "name": "final_answer_consistent_with_evidence",
+        "passed": true,
+        "detail": "the KMP_EVAL_RESULT block exactly matches the expected module, outcome_kind, and counts",
+        "evidence_event_indices": []
+      }
+    ],
+    "reason": null
+  },
+  "repetition_index": 0,
+  "foreign_skill_summary": {
+    "rejected": 0,
+    "confirmed": 0,
+    "incomplete": 0
+  },
+  "ambient_skill_profile": {
+    "count": 16,
+    "scope_id": "4b9913f9-3c28-4fd9-afc2-275613b66520",
+    "fingerprint_hmac": "359e10a2401e6d1e3d194fd55b3eb97887eed834306b4e0ab93994f02c3a231a"
+  },
+  "errors": []
+}

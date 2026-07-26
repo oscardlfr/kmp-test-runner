@@ -1,0 +1,223 @@
+{
+  "schema": 5,
+  "run_id": "scenario-current-skill-08d5daaa",
+  "run_kind": "scenario",
+  "benchmark_eligible": true,
+  "scenario_id": "kampkit-android-host-test-discovery",
+  "query_id": null,
+  "condition": "current-skill",
+  "skill_source_sha": "9e47a9d132f5b9ea6ac5bc50a66c844458fd363e",
+  "kmp_test_cli_version": "0.14.0",
+  "kmp_test_cli_source_sha": "a9acb22d7b58d6720248bcbd09f4b4818e8ad2be",
+  "resolved_kmp_test_executable_path": "C:\\kmp-eval\\agentic-evidence-driven-scope-canary\\bin\\kmp-test.js",
+  "model_requested": "claude-sonnet-5",
+  "model_resolved": "claude-sonnet-5",
+  "session_id_observed": "3d567122-adbe-442b-aeae-81c453da7d5a",
+  "claude_code_version": "2.1.218",
+  "repo_commit": "a9acb22d7b58d6720248bcbd09f4b4818e8ad2be",
+  "project_alias": "kampkit",
+  "project_commit": "b3a7784fb969a8558b88c80674c8b596944cdab7",
+  "project_url": "https://github.com/touchlab/KaMPKit",
+  "platform": "windows",
+  "family": "test-only",
+  "cache_state": "cold",
+  "daemon_policy": "disabled-via-gradle-user-home-properties",
+  "env_allowlist_profile": "narrow",
+  "seed": 20260722,
+  "order_index": 2,
+  "started_at": "2026-07-26T14:56:01.309Z",
+  "ended_at": "2026-07-26T14:57:30.396Z",
+  "wall_clock_ms": 89087,
+  "skill_available": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invocation_attempted": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invoked": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invocation_event": {
+    "type": "assistant.tool_use.Skill",
+    "index": 28
+  },
+  "success": {
+    "value": false,
+    "reason": null
+  },
+  "expected_outcome_matched": {
+    "value": false,
+    "reason": null
+  },
+  "first_useful_signal_ms": {
+    "value": null,
+    "reason": "no correlated authoritative outcome event found"
+  },
+  "first_useful_signal_event": null,
+  "post_signal_ms": {
+    "value": null,
+    "reason": "no first useful signal boundary"
+  },
+  "post_signal_tool_calls": {
+    "value": null,
+    "reason": "no first useful signal boundary"
+  },
+  "policy_denials_before_first_signal": {
+    "value": null,
+    "reason": "no first useful signal boundary"
+  },
+  "policy_denials_after_first_signal": {
+    "value": null,
+    "reason": "no first useful signal boundary"
+  },
+  "accepted_audit": {
+    "schema": 1,
+    "relative_path": "audit/scenario-current-skill-08d5daaa.json",
+    "sha256": "c2c2c8f1c9beed847928f3583029b34bd7394cde01cffd984e1209eb9512b11f"
+  },
+  "tokens": {
+    "input": {
+      "value": 16,
+      "reason": null
+    },
+    "output": {
+      "value": 1835,
+      "reason": null
+    },
+    "cache_read": {
+      "value": 151916,
+      "reason": null
+    },
+    "cache_creation": {
+      "value": 7026,
+      "reason": null
+    }
+  },
+  "tool_calls_total": {
+    "value": 7,
+    "reason": null
+  },
+  "shell_commands_total": {
+    "value": 6,
+    "reason": null
+  },
+  "test_invocations_total": {
+    "value": 1,
+    "reason": null
+  },
+  "retries": {
+    "value": 0,
+    "reason": null
+  },
+  "output_bytes": {
+    "value": 2336,
+    "reason": null
+  },
+  "stream_json_bytes": {
+    "value": 56488,
+    "reason": null
+  },
+  "human_interventions": {
+    "value": 0,
+    "reason": null
+  },
+  "terminated": false,
+  "termination_reason": null,
+  "exit_code": 0,
+  "permission_mode_used": "dontAsk",
+  "policy_allowed_gradle_tasks": [
+    ":shared:tasks",
+    ":shared:testAndroidHostTest"
+  ],
+  "policy_allowed_kmptest_subcommands": [
+    "doctor",
+    "describe",
+    "parallel"
+  ],
+  "policy_sha256": "f2ec18f5dde8f230d0b09aecaf02f1adaf4244c6f8464461483936c5fe48b5bc",
+  "hook_call_count": 6,
+  "hook_deny_count": 4,
+  "privacy_status": "public",
+  "raw_capture_committed": false,
+  "raw_capture_location": "tools/runs/agentic-eval-scenario/raw/",
+  "notes": "Scenario run -- benchmark_eligible reflects protocol/integrity completeness, not answer correctness; see grading_checks and success for the actual outcome.",
+  "grading_checks": {
+    "value": [
+      {
+        "name": "no_transcript_structural_issues",
+        "passed": true,
+        "detail": "no structural issues",
+        "evidence_event_indices": []
+      },
+      {
+        "name": "bash_tool_use_present",
+        "passed": true,
+        "detail": "2 policy-allowed command(s) attempted",
+        "evidence_event_indices": [
+          34,
+          48
+        ]
+      },
+      {
+        "name": "tool_result_correlated",
+        "passed": true,
+        "detail": "every relevant tool_use has a correlated tool_result",
+        "evidence_event_indices": []
+      },
+      {
+        "name": "authoritative_evidence_well_formed",
+        "passed": true,
+        "detail": "the terminal attempt produced well-formed evidence",
+        "evidence_event_indices": [
+          55
+        ]
+      },
+      {
+        "name": "authoritative_target_matches_expected",
+        "passed": false,
+        "detail": "terminal attempt targeted the WRONG module",
+        "evidence_event_indices": [
+          55
+        ]
+      },
+      {
+        "name": "authoritative_outcome_matches_expected",
+        "passed": false,
+        "detail": "no well-formed, correctly-targeted terminal evidence to check",
+        "evidence_event_indices": [
+          55
+        ]
+      },
+      {
+        "name": "no_provider_contradiction",
+        "passed": true,
+        "detail": "only one provider (or neither) produced evidence -- trivially no contradiction",
+        "evidence_event_indices": [
+          55
+        ]
+      },
+      {
+        "name": "final_answer_consistent_with_evidence",
+        "passed": false,
+        "detail": "the KMP_EVAL_RESULT block does not exactly match the expected module/outcome_kind/counts (or carries unexpected/missing keys)",
+        "evidence_event_indices": []
+      }
+    ],
+    "reason": null
+  },
+  "repetition_index": 0,
+  "foreign_skill_summary": {
+    "rejected": 0,
+    "confirmed": 0,
+    "incomplete": 0
+  },
+  "ambient_skill_profile": {
+    "count": 16,
+    "scope_id": "4b9913f9-3c28-4fd9-afc2-275613b66520",
+    "fingerprint_hmac": "359e10a2401e6d1e3d194fd55b3eb97887eed834306b4e0ab93994f02c3a231a"
+  },
+  "errors": []
+}
