@@ -414,6 +414,45 @@ describe('gradeScenarioCondition -- decision 5: retry tolerance, last-relevant-a
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     // Event 2 is the FIRST tool_result (index 0=init, 1=tool_use, 2=tool_result).
     expect(grade.firstUsefulSignalEventIndex).toBe(2);
+    // terminalAuthoritativeEventIndex (accepted-run-observability PR, additive): the grader's own
+    // selected TERMINAL attempt is the LATER, second call (index 0=init, 1=tool_use1, 2=result1,
+    // 3=tool_use2, 4=result2) -- genuinely DIFFERENT from firstUsefulSignalEventIndex, proving this
+    // is never merely a copy of the first-signal index.
+    expect(grade.terminalAuthoritativeEventIndex).toBe(4);
+    expect(grade.terminalAuthoritativeEventIndex).not.toBe(grade.firstUsefulSignalEventIndex);
+  });
+});
+
+describe('gradeScenarioCondition -- terminalAuthoritativeEventIndex (additive, accepted-run-observability PR)', () => {
+  it('is the SAME event as firstUsefulSignalEventIndex when there is only one on-target attempt', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.terminalAuthoritativeEventIndex).toBe(2);
+    expect(grade.terminalAuthoritativeEventIndex).toBe(grade.firstUsefulSignalEventIndex);
+  });
+
+  it('is null when no attempt capable of producing target evidence was ever made', () => {
+    const cr = buildConditionResult([], SCENARIO_1_CORRECT_ANSWER);
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.terminalAuthoritativeEventIndex).toBeNull();
+    expect(grade.firstUsefulSignalEventIndex).toBeNull();
+  });
+
+  it('tracks the terminal attempt even when it is WRONG (a later, incorrect retry) -- never falls back to the first correct one', () => {
+    const cr = buildConditionResult(
+      [
+        { command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS }, // correct, first
+        { command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS }, // wrong module's shape, later
+      ],
+      'Not sure what happened.',
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    // Event 4 is the second (terminal, wrong) tool_result (0=init,1=tool_use1,2=result1,3=tool_use2,4=result2).
+    expect(grade.terminalAuthoritativeEventIndex).toBe(4);
+    expect(grade.expectedOutcomeMatched).toBe(false);
   });
 });
 

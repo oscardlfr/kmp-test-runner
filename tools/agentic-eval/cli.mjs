@@ -33,16 +33,16 @@
 // record, never confusable with real evidence by aggregate/validate) -- see
 // rejection-diagnostics.mjs.
 import { readFileSync, readdirSync, existsSync, rmSync, statSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID, randomBytes } from 'node:crypto';
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
 import { LATEST_RUN_SCHEMA, SUPPORTED_RUN_SCHEMAS, validateRun, validateScenario, validateTriggerQueries } from './schemas.mjs';
 import { buildEvalEnv } from './env-builder.mjs';
 import { materializeCalibrationProject, materializeScenarioProject, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { buildBaseArgv } from './condition-launcher.mjs';
-import { isSkillAvailable, findForeignSkillUses, classifyForeignSkillUses, findBashToolUses, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, findTranscriptStructuralIssues, findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout, extractTokenUsage, deriveFirstUsefulSignalMs, computeAmbientSkillProfile, canonicalAmbientSkillNamesKey, fingerprintAmbientSkillNames } from './stream-parser.mjs';
+import { isSkillAvailable, findForeignSkillUses, classifyForeignSkillUses, findBashToolUses, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, findTranscriptStructuralIssues, findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout, extractTokenUsage, deriveFirstUsefulSignalMs, derivePostSignalMs, findAllToolUsesWithResults, computeAmbientSkillProfile, canonicalAmbientSkillNamesKey, fingerprintAmbientSkillNames } from './stream-parser.mjs';
 import { acquireSharedEvalResources, runSingleCondition, runScenarioMatrix, reportCleanupFailures } from './matrix-runner.mjs';
 import { gradeScenarioCondition } from './graders.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
@@ -52,6 +52,7 @@ import { tokenize } from './policy-hook.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 import { RUNS_ROOT, resolveEvidenceOutDir, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
 import { buildRejectionDiagnostics, writeRejectedRunDiagnostics } from './rejection-diagnostics.mjs';
+import { acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from './accepted-run-audit.mjs';
 import { loadMeasurementScopeFile, createMeasurementScopeFileExclusive } from './measurement-scope.mjs';
 
 // dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
@@ -628,6 +629,48 @@ function buildRunRecord({
     scope_id: ambientProfileScopeId,
     fingerprint_hmac: fingerprintAmbientSkillNames(ambientProfile.names, ambientProfileKey),
   };
+  // post_signal_ms/post_signal_tool_calls/policy_denials_{before,after}_first_signal (schema V5):
+  // the ONE unified boundary (gradeResult.firstUsefulSignalEventIndex) decides all 4 -- computed
+  // once, here, so they can never independently drift on what "the boundary" means. Non-scenario
+  // records (and a scenario record with no boundary at all) get null+reason for all 4, mirroring
+  // first_useful_signal_ms's own established convention.
+  const firstUsefulSignalEventIndex = isScenario ? gradeResult.firstUsefulSignalEventIndex : null;
+  const hasSignalBoundary = firstUsefulSignalEventIndex != null;
+  const noSignalBoundaryReason = 'no first useful signal boundary';
+  let postSignalMs;
+  let postSignalToolCalls;
+  let policyDenialsBeforeFirstSignal;
+  let policyDenialsAfterFirstSignal;
+  if (!isScenario) {
+    postSignalMs = nullableMetric(null, notApplicableReason);
+    postSignalToolCalls = nullableMetric(null, notApplicableReason);
+    policyDenialsBeforeFirstSignal = nullableMetric(null, notApplicableReason);
+    policyDenialsAfterFirstSignal = nullableMetric(null, notApplicableReason);
+  } else if (!hasSignalBoundary) {
+    postSignalMs = nullableMetric(null, noSignalBoundaryReason);
+    postSignalToolCalls = nullableMetric(null, noSignalBoundaryReason);
+    policyDenialsBeforeFirstSignal = nullableMetric(null, noSignalBoundaryReason);
+    policyDenialsAfterFirstSignal = nullableMetric(null, noSignalBoundaryReason);
+  } else {
+    postSignalMs = nullableMetric(derivePostSignalMs(conditionResult.events, firstUsefulSignalEventIndex, conditionResult.spawnResult.endedHrtimeNs));
+    // post_signal_tool_calls: every tool_use block (any kind) whose OWN assistant event index is
+    // strictly greater than the signal's result event index -- a call dispatched before the
+    // signal but completed after it (its own tool_use index is still <= the boundary) is never
+    // post-signal work, matching derivePostSignalMs's own dispatch-time (never completion-time)
+    // framing.
+    postSignalToolCalls = nullableMetric(findAllToolUsesWithResults(conditionResult.events).filter((u) => u.index > firstUsefulSignalEventIndex).length);
+    // policy_denials_before/after_first_signal: classify each Bash attempt by its OWN tool-use
+    // event index (never its later tool-result index) against the identical boundary.
+    const decisionByAttempt = conditionResult.junitAttribution?.decisionByAttempt ?? new Map();
+    let before = 0;
+    let after = 0;
+    for (const b of conditionResult.bashResults ?? []) {
+      if (decisionByAttempt.get(b.id) !== 'deny') continue;
+      if (b.index > firstUsefulSignalEventIndex) after++; else before++;
+    }
+    policyDenialsBeforeFirstSignal = nullableMetric(before);
+    policyDenialsAfterFirstSignal = nullableMetric(after);
+  }
   const provenance = resolveHarnessProvenance();
   // Shared by BOTH dirty_harness_tooling branches below so the two messages can't drift apart
   // again -- this exact drift (the messages claiming "never blocks evidence" after
@@ -689,19 +732,34 @@ function buildRunRecord({
     first_useful_signal_event: isScenario && gradeResult.firstUsefulSignalEventIndex != null
       ? { type: 'user.tool_result', index: gradeResult.firstUsefulSignalEventIndex }
       : null,
+    // post_signal_ms/post_signal_tool_calls/policy_denials_before_first_signal/
+    // policy_denials_after_first_signal (schema V5) -- computed once, above, shared by nothing
+    // else. accepted_audit is deliberately NOT set here: buildRunRecord always stamps the null
+    // placeholder. cmdRun supplies finalizeAndWriteMatrixRecords a buildSidecarsFn closure, which
+    // that function invokes ONLY once the hard gate has confirmed acceptance (accepted-audit work
+    // belongs strictly on the gate-passing path) -- THAT callback is what mutates the real
+    // {schema, relative_path, sha256} value into each record in place, once the sidecar's own
+    // redacted SHA-256 is known. Mirrors the "buildRunRecord stamps a placeholder, something else
+    // mutates the real value in before redaction" pattern benchmark_eligible already uses, but via
+    // a caller-supplied callback rather than a direct mutation inside this same function.
+    post_signal_ms: postSignalMs,
+    post_signal_tool_calls: postSignalToolCalls,
+    policy_denials_before_first_signal: policyDenialsBeforeFirstSignal,
+    policy_denials_after_first_signal: policyDenialsAfterFirstSignal,
+    accepted_audit: null,
     tokens: {
       input: nullableMetric(extractTokenUsage(result)?.input ?? null, extractTokenUsage(result) ? undefined : 'no result event'),
       output: nullableMetric(extractTokenUsage(result)?.output ?? null, extractTokenUsage(result) ? undefined : 'no result event'),
       cache_read: nullableMetric(extractTokenUsage(result)?.cache_read ?? null, extractTokenUsage(result) ? undefined : 'no result event'),
       cache_creation: nullableMetric(extractTokenUsage(result)?.cache_creation ?? null, extractTokenUsage(result) ? undefined : 'no result event'),
     },
-    // Counts EVERY Skill attempt (invocation?.attemptCount), not just presence/absence -- a
-    // version that added a flat 0-or-1 undercounted a real multi-attempt transcript (e.g. a
-    // failed attempt followed by a retry) by construction. Also counts every FOREIGN Skill
-    // attempt (foreignSkillUses.length) -- a rejected/confirmed/incomplete attempt at some OTHER
-    // skill is a real tool call the agent made and previously went uncounted entirely, undercounting
-    // any transcript with a foreign-skill probe alongside the expected skill.
-    tool_calls_total: nullableMetric(findBashToolUses(conditionResult.events).length + (invocation?.attemptCount ?? 0) + foreignSkillUses.length),
+    // Counts EVERY tool_use block in the transcript, regardless of name (findAllToolUsesWithResults
+    // -- the identical helper the accepted-run-audit sidecar's own summary.tool_calls_total uses) --
+    // a review finding demonstrated the previous formula (findBashToolUses().length +
+    // invocation?.attemptCount + foreignSkillUses.length) silently dropped a genuinely unexpected
+    // tool call (e.g. a bare Read) that is neither Bash nor Skill, undercounting the transcript and
+    // making the record disagree with its own sidecar on an otherwise-unremarkable run.
+    tool_calls_total: nullableMetric(findAllToolUsesWithResults(conditionResult.events).length),
     shell_commands_total: nullableMetric(findBashToolUses(conditionResult.events).length),
     // decision 12: real, non-null counts for a scenario record -- directly reusing the SAME
     // attempt list gradeScenarioCondition already built (never a second, independently-derived
@@ -886,18 +944,26 @@ function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedT
  *   (for conditionResults[i].spawnResult.rawStdout)
  * @param {string[]} redactedTexts - parallel array, each record[i]'s own redacted JSON text
  * @param {string} [runsRootOverride]
+ * @param {string[]|null} [sidecarTexts] - accepted-run-observability PR: parallel array, each
+ *   record[i]'s own already-redacted accepted-run-audit sidecar JSON text (written to
+ *   `audit/<run_id>.json`, alongside the summary + raw tiers, as one all-or-nothing batch). `null`
+ *   (the default) writes NO audit/ directory or sidecar files at all -- calibrate/smoke's own
+ *   pair-based writeRunRecordEvidence sibling never gains this parameter at all, since sidecars are
+ *   a scenario-only concept and that pair-based path is deliberately left unchanged.
  */
-function writeRunMatrixRecordEvidence(runKind, records, conditionResults, redactedTexts, runsRootOverride = RUNS_ROOT) {
+function writeRunMatrixRecordEvidence(runKind, records, conditionResults, redactedTexts, runsRootOverride = RUNS_ROOT, sidecarTexts = null) {
   const outDir = resolveEvidenceOutDir(runKind, runsRootOverride);
   const rawDir = join(outDir, 'raw');
+  const auditDir = join(outDir, 'audit');
   if (!isRawDirSafeFromAccidentalCommit(rawDir, runsRootOverride)) {
     throw new Error(`refusing to write raw transcripts: ${rawDir} is inside this repo's worktree but not covered by .gitignore -- would risk an accidental commit of unredacted data`);
   }
   const targets = records.flatMap((record, i) => [
     [join(outDir, `${record.run_id}.json`), redactedTexts[i]],
     [join(rawDir, `${record.run_id}.jsonl`), conditionResults[i].spawnResult.rawStdout],
+    ...(sidecarTexts ? [[join(auditDir, `${record.run_id}.json`), sidecarTexts[i]]] : []),
   ]);
-  promoteTargetsAtomically(targets, rawDir);
+  promoteTargetsAtomically(targets, sidecarTexts ? [rawDir, auditDir] : rawDir);
   return outDir;
 }
 
@@ -1141,29 +1207,29 @@ function scenarioMatrixIsBenchmarkEligible(records, gate) {
 
 /**
  * The N-record sibling of finalizeAndWriteRecords, for a whole scenario matrix. Same philosophy,
- * same 9-step gate sequence generalized from a hardcoded pair to `records.entries()`, PLUS
- * decision 11's completeness proof ahead of everything else (an incomplete matrix must never
- * even reach schema validation, let alone get promoted). `hardGateFn` here is `scenarioHardGate`,
- * which takes the whole `(records, conditionResults)` arrays, not a fixed A/B pair -- harness-
- * integrity failure on ANY one cell blocks the WHOLE batch (decision 4's "one bad cell blocks the
- * whole matrix" design), never a partial promotion. The hard gate is computed BEFORE redaction
- * here (the two-record finalizeAndWriteRecords computes it AFTER) specifically so
- * `benchmark_eligible` -- itself derived from the gate's own result -- can be set on each record
- * before the one-and-only redacted-text serialization captures it; the FAILURE-reporting position
- * (`if (!gate.ok) return`) stays exactly where the two-record sibling has it, after redacted-record
- * re-validation, so error-reporting behavior is otherwise unchanged.
+ * generalized from a hardcoded pair to `records.entries()`, PLUS decision 11's completeness proof
+ * ahead of everything else (an incomplete matrix must never even reach the gate, let alone get
+ * promoted). `hardGateFn` here is `scenarioHardGate`, which takes the whole
+ * `(records, conditionResults)` arrays, not a fixed A/B pair -- harness-integrity failure on ANY
+ * one cell blocks the WHOLE batch (decision 4's "one bad cell blocks the whole matrix" design),
+ * never a partial promotion.
+ *
+ * The gate is computed EARLY -- right after the completeness/dirty-tree/policy-hash checks, before
+ * schema validation, before any accepted-audit-sidecar work -- and a rejection returns immediately
+ * (diagnostics written, gate.reason preserved). This ordering exists specifically because
+ * `accepted_audit` is a required non-null schema-v5 scenario field that can only be legitimately
+ * populated for an ACCEPTED run (a sidecar audits acceptance -- see accepted-run-audit.mjs), so
+ * schema validation of that field can't run before the gate decision either. A review finding
+ * demonstrated the previous ordering (schema validate -> ... -> gate compute -> sidecar
+ * cross-validate -> `if (!gate.ok)`) let a sidecar build/finalization/cross-validation problem
+ * return its OWN reason and skip writeRejectedRunDiagnostics entirely, silently swallowing a
+ * genuine hard-gate rejection. `buildSidecarsFn`, when supplied, is invoked ONLY once gate.ok is
+ * confirmed true -- accepted-audit work belongs strictly on the gate-passing promotion path.
  */
-async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResults, hardGateFn, privatePatternsFile, runsRootOverride = RUNS_ROOT, repeats }) {
+async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResults, hardGateFn, privatePatternsFile, runsRootOverride = RUNS_ROOT, repeats, buildSidecarsFn = null }) {
   const completenessGap = findMatrixCompletenessGap(records, repeats);
   if (completenessGap) {
     return { ok: false, reason: `Matrix is incomplete, refusing to consider it for promotion: ${completenessGap}` };
-  }
-
-  for (const [i, record] of records.entries()) {
-    const { errors } = validateRun(record);
-    if (errors.length > 0) {
-      return { ok: false, reason: `Run record [${i}] (repetition ${record.repetition_index}, ${record.condition}) failed schema validation: ${JSON.stringify(errors)}` };
-    }
   }
   for (const [i, record] of records.entries()) {
     const dirty = record.errors.find((e) => e.code === 'dirty_measured_code');
@@ -1185,30 +1251,12 @@ async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResult
       return { ok: false, reason: `Run record [${i}] policy_sha256 (${record.policy_sha256}) does not match the current policy-hook.mjs (${freshHash}) -- evidence is stale relative to the code that produced it` };
     }
   }
-  // Computed here (before redaction) specifically so benchmark_eligible -- derived from gate.ok --
-  // is set on each record before the one redacted-text serialization below captures it. The
-  // FAILURE check itself (`if (!gate.ok) return`) stays at its later, established position.
-  const gate = hardGateFn(records, conditionResults);
-  const eligible = scenarioMatrixIsBenchmarkEligible(records, gate);
-  for (const record of records) record.benchmark_eligible = eligible;
 
-  const redactedRecords = [];
-  const redactedTexts = [];
-  try {
-    for (const record of records) {
-      const { redactedObj, redactedText } = assertCleanOrThrowObject(record, { privatePatternsFile });
-      redactedRecords.push(redactedObj);
-      redactedTexts.push(redactedText);
-    }
-  } catch (err) {
-    return { ok: false, reason: `Privacy check refused to clear evidence for writing: ${err.message}` };
-  }
-  for (const [i, record] of redactedRecords.entries()) {
-    const { errors } = validateRun(record);
-    if (errors.length > 0) {
-      return { ok: false, reason: `Redacted run record [${i}] failed schema validation (redaction corrupted a field) -- refusing to write: ${JSON.stringify(errors)}` };
-    }
-  }
+  // Gate decision -- BEFORE schema validation and BEFORE any accepted-audit-sidecar work (see this
+  // function's own doc comment for why). A rejection returns here, unconditionally: nothing below
+  // this point (schema validation, sidecar build/cross-validation) can ever suppress gate.reason
+  // or prevent writeRejectedRunDiagnostics from running.
+  const gate = hardGateFn(records, conditionResults);
   if (!gate.ok) {
     // Privacy-safe rejected-run diagnostics (closes BACKLOG.md's "leave no auditable trace" gap)
     // -- gate.cellResults (scenarioHardGate's own new field) already correlates every cell to its
@@ -1235,6 +1283,80 @@ async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResult
     }
     return { ok: false, reason: gate.reason, diagnosticsWriteError, rejectionId, diagnosticsRelativePath };
   }
+
+  const eligible = scenarioMatrixIsBenchmarkEligible(records, gate);
+  for (const record of records) record.benchmark_eligible = eligible;
+
+  // Accepted-audit sidecar work -- ONLY reached once gate.ok is confirmed true. buildSidecarsFn
+  // builds+finalizes+attaches record.accepted_audit for every record (cmdRun supplies the
+  // closure); a failure here means promotion cannot proceed (the sidecar contract can't be
+  // satisfied), but it is never confused with a gate rejection -- writeRejectedRunDiagnostics is
+  // never called for this failure class, matching how a privacy-check-refusal failure below is
+  // also never treated as a rejection.
+  let sidecarTexts = null;
+  if (buildSidecarsFn != null) {
+    const sidecarBuild = await buildSidecarsFn(records, conditionResults);
+    if (!sidecarBuild.ok) {
+      return { ok: false, reason: `Cannot promote: ${sidecarBuild.reason}` };
+    }
+    sidecarTexts = sidecarBuild.sidecarTexts;
+  }
+
+  for (const [i, record] of records.entries()) {
+    const { errors } = validateRun(record);
+    if (errors.length > 0) {
+      return { ok: false, reason: `Run record [${i}] (repetition ${record.repetition_index}, ${record.condition}) failed schema validation: ${JSON.stringify(errors)}` };
+    }
+  }
+
+  const redactedRecords = [];
+  const redactedTexts = [];
+  try {
+    for (const record of records) {
+      const { redactedObj, redactedText } = assertCleanOrThrowObject(record, { privatePatternsFile });
+      redactedRecords.push(redactedObj);
+      redactedTexts.push(redactedText);
+    }
+  } catch (err) {
+    return { ok: false, reason: `Privacy check refused to clear evidence for writing: ${err.message}` };
+  }
+  for (const [i, record] of redactedRecords.entries()) {
+    const { errors } = validateRun(record);
+    if (errors.length > 0) {
+      return { ok: false, reason: `Redacted run record [${i}] failed schema validation (redaction corrupted a field) -- refusing to write: ${JSON.stringify(errors)}` };
+    }
+  }
+  // accepted_audit binding + cross-validation (accepted-run-observability PR, privacy/binding
+  // steps 7-8): sidecarTexts[i] is the ALREADY build->redact->hash'd sidecar text buildSidecarsFn
+  // produced above. Here, AFTER the record's own redact+revalidate cycle, re-hash the exact
+  // sidecar text one more time and cross-validate the FINAL redacted record against it -- catches
+  // a redaction pass that somehow touched accepted_audit's own sha256/relative_path (never
+  // expected in practice, since neither is a private-pattern-shaped value, but this is the one
+  // point in the pipeline that can still prove the binding survived intact before anything is
+  // written). This can only ever run on the confirmed gate-passing path now, so a mismatch here
+  // is unambiguously a "cannot promote" failure, never confusable with (or reported instead of) a
+  // gate rejection.
+  if (sidecarTexts != null) {
+    for (const [i, record] of redactedRecords.entries()) {
+      const actualSha256 = createHash('sha256').update(sidecarTexts[i], 'utf8').digest('hex');
+      if (record.accepted_audit?.sha256 !== actualSha256) {
+        return { ok: false, reason: `Record [${i}] (${record.run_id}) accepted_audit.sha256 no longer matches its own sidecar's redacted content -- refusing to write a broken digest binding` };
+      }
+      if (record.accepted_audit?.relative_path !== acceptedAuditRelativePathFor(record.run_id)) {
+        return { ok: false, reason: `Record [${i}] (${record.run_id}) accepted_audit.relative_path no longer matches the deterministic audit/<run_id>.json convention` };
+      }
+      let sidecarObj;
+      try {
+        sidecarObj = JSON.parse(sidecarTexts[i]);
+      } catch (err) {
+        return { ok: false, reason: `Record [${i}] (${record.run_id})'s own sidecar text is not valid JSON: ${err.message}` };
+      }
+      const crossErrors = crossValidateAcceptedRunAuditAgainstRecord(sidecarObj, record);
+      if (crossErrors.length > 0) {
+        return { ok: false, reason: `Record [${i}] (${record.run_id}) sidecar/record cross-validation failed: ${JSON.stringify(crossErrors)}` };
+      }
+    }
+  }
   const outDir = resolveEvidenceOutDir(runKind, runsRootOverride);
   let redactedOutDir;
   try {
@@ -1243,7 +1365,7 @@ async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResult
     return { ok: false, reason: `Privacy check refused to report the evidence directory path: ${err.message}` };
   }
   try {
-    writeRunMatrixRecordEvidence(runKind, records, conditionResults, redactedTexts, runsRootOverride);
+    writeRunMatrixRecordEvidence(runKind, records, conditionResults, redactedTexts, runsRootOverride, sidecarTexts);
   } catch (err) {
     return { ok: false, reason: `Evidence write refused: ${err.message}` };
   }
@@ -2185,6 +2307,14 @@ async function cmdRun(args) {
     const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
     const records = [];
     const conditionResults = [];
+    // terminalAuthoritativeEventIndices: parallel to records/conditionResults -- the ONE additional
+    // per-cell ingredient (beyond record + conditionResult) buildSidecarsFn below needs from
+    // gradeScenarioCondition() to build a sidecar. Sidecar construction itself is deliberately NOT
+    // done in this loop (see buildSidecarsFn below): accepted_audit can only be legitimately
+    // populated once the matrix is known to pass the hard gate, so building it here -- before the
+    // gate has even run -- both wastes work on a matrix that may be rejected anyway, and (per a
+    // review finding) risks a sidecar problem masking the real rejection reason.
+    const terminalAuthoritativeEventIndices = [];
     for (const cell of matrix.cellResults) {
       const gradeResult = gradeScenarioCondition(cell.conditionResult, scenario);
       const record = buildRunRecord({
@@ -2199,14 +2329,37 @@ async function cmdRun(args) {
       });
       records.push(record);
       conditionResults.push(cell.conditionResult);
+      terminalAuthoritativeEventIndices.push(gradeResult.terminalAuthoritativeEventIndex);
     }
+
+    // Invoked by finalizeAndWriteMatrixRecords ONLY once the hard gate has confirmed acceptance --
+    // accepted-audit work belongs strictly on the gate-passing promotion path (see that function's
+    // own doc comment). Builds + finalizes + attaches record.accepted_audit for every record, and
+    // returns the parallel array of already-redacted sidecar texts for atomic promotion.
+    const buildSidecars = (recs, condResults) => {
+      const texts = [];
+      for (const [i, record] of recs.entries()) {
+        const builtSidecar = buildAcceptedRunAuditSidecar({
+          record, conditionResult: condResults[i],
+          terminalAuthoritativeEventIndex: terminalAuthoritativeEventIndices[i],
+          targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
+        });
+        const sidecarResult = finalizeAcceptedRunAuditSidecar(builtSidecar, { privatePatternsFile });
+        if (!sidecarResult.ok) {
+          return { ok: false, reason: `accepted-run-audit sidecar for record [${i}] (repetition ${record.repetition_index}, ${record.condition}): ${sidecarResult.reason}` };
+        }
+        record.accepted_audit = { schema: 1, relative_path: acceptedAuditRelativePathFor(record.run_id), sha256: sidecarResult.sha256 };
+        texts.push(sidecarResult.redactedText);
+      }
+      return { ok: true, sidecarTexts: texts };
+    };
 
     // scenarioHardGate (decision 4): one bad cell's harness-integrity failure blocks the WHOLE
     // matrix's promotion -- never a partial one. A cell where the AGENT got the task wrong, or
     // legitimately timed out, still passes this gate and is promoted with its true outcome.
     const result = await finalizeAndWriteMatrixRecords({
       runKind: 'scenario', records, conditionResults, hardGateFn: scenarioHardGate,
-      privatePatternsFile, repeats,
+      privatePatternsFile, repeats, buildSidecarsFn: buildSidecars,
     });
     if (!result.ok) {
       console.error(`RUN FAILED: ${result.reason}`);
@@ -2368,19 +2521,160 @@ function cmdCorpusValidate() {
   return ok ? 0 : 1;
 }
 
+/**
+ * cmdAggregate reads only TOP-LEVEL *.json files (readdirSync is non-recursive by default, so a
+ * nested audit/ sidecar directory is never descended into or mistaken for a run record).
+ *
+ * A review finding demonstrated that aggregateRuns() alone is not enough: it only ever runs
+ * validateRun() (schemas.mjs), a purely OBJECT-SHAPE check of accepted_audit (schema/relative_path
+ * regex/sha256 hex format) -- never a verification that the sidecar FILE a schema-v5 scenario
+ * record claims actually exists, hashes correctly, or agrees with the record's own content. A
+ * record with a fabricated (well-formed but fictitious) accepted_audit previously aggregated
+ * cleanly with zero errors. Every file is now offline-validated via validateRunRecordFile (record
+ * schema + on-disk sidecar, for schema-v5 scenario records) BEFORE anything reaches aggregateRuns
+ * -- a file that fails is excluded and reported by run_id, exactly like aggregateRuns' own
+ * schema-invalid exclusions, so the two error shapes merge into one consistent list. aggregateRuns
+ * itself is untouched: schemas 1-4 (and schema-5 non-scenario records) behave exactly as before.
+ */
 function cmdAggregate(args) {
   const runsDir = args['runs-dir'];
   if (!runsDir || !existsSync(runsDir)) {
     console.error('--runs-dir <dir> is required and must exist');
     return 1;
   }
-  // aggregateRuns() validates every record against the full run schema itself (schema-invalid
-  // records are excluded and reported in `errors`, keyed by run_id) -- no separate pre-filter
-  // needed here.
-  const runs = readdirSync(runsDir).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(readFileSync(join(runsDir, f), 'utf8')));
+  const preFilterErrors = [];
+  const runs = [];
+  for (const file of readdirSync(runsDir).filter((f) => f.endsWith('.json'))) {
+    const runPath = join(runsDir, file);
+    // validateRunRecordFile now fails closed and returns its own parsed `record` (null only on a
+    // read/parse failure) -- reused directly below, never re-read/re-parsed a second time. A
+    // malformed file's run_id is genuinely unresolvable (record is null), so it falls back to
+    // '(unknown)', matching aggregateRuns' own fallback for the identical situation.
+    const { record, errors: fileErrors } = validateRunRecordFile(runPath);
+    if (fileErrors.length > 0) {
+      preFilterErrors.push({ run_id: record?.run_id ?? '(unknown)', errors: fileErrors });
+      continue;
+    }
+    runs.push(record);
+  }
   const { groups, errors } = aggregateRuns(runs);
-  console.log(JSON.stringify({ groups, errors }, null, 2));
-  return errors.length > 0 ? 1 : 0;
+  console.log(JSON.stringify({ groups, errors: [...preFilterErrors, ...errors] }, null, 2));
+  return (preFilterErrors.length > 0 || errors.length > 0) ? 1 : 0;
+}
+
+/**
+ * Offline verification of one schema-v5 scenario record's own accepted-run-audit sidecar
+ * (accepted-run-observability PR): resolves `accepted_audit.relative_path` relative to the run
+ * record's OWN directory (never string-concatenated -- `relative_path` is already schema-guaranteed
+ * safe by validateRun's own regex, below, but the resolved path is still containment-checked
+ * before ever being read), requires the file to exist and parse, verifies its strict schema and
+ * record coherence (validateAcceptedRunAuditSidecar + crossValidateAcceptedRunAuditAgainstRecord),
+ * and SHA-256s the exact file text against the record's own declared digest. Never follows a
+ * symlink whose resolved target escapes the run directory -- both the run directory and the
+ * sidecar path are realpath-resolved and containment-checked first. Returns an array of
+ * {field,message} errors (empty if everything checks out); never throws.
+ */
+function validateAcceptedAuditOnDisk(runPath, record) {
+  const errors = [];
+  const runDir = dirname(runPath);
+  let runDirReal;
+  try {
+    runDirReal = realpath(runDir);
+  } catch (err) {
+    errors.push({ field: 'accepted_audit', message: `could not resolve the run record's own directory: ${err.message}` });
+    return errors;
+  }
+  // relative_path is already schema-guaranteed (validateRun, schemas.mjs) to be exactly
+  // "audit/<run_id>.json" in a closed, traversal/backslash/absolute-path-free charset -- joined via
+  // path.join (platform-correct separators), never raw string concatenation.
+  const sidecarPath = join(runDir, ...record.accepted_audit.relative_path.split('/'));
+  if (!existsSync(sidecarPath)) {
+    errors.push({ field: 'accepted_audit', message: `sidecar file does not exist: ${record.accepted_audit.relative_path}` });
+    return errors;
+  }
+  let sidecarPathReal;
+  try {
+    sidecarPathReal = realpath(sidecarPath);
+  } catch (err) {
+    errors.push({ field: 'accepted_audit', message: `could not resolve the sidecar path: ${err.message}` });
+    return errors;
+  }
+  const relFromRunDir = relative(runDirReal, sidecarPathReal);
+  if (relFromRunDir.startsWith('..') || isAbsolute(relFromRunDir)) {
+    errors.push({ field: 'accepted_audit', message: 'sidecar path resolves outside the run record\'s own directory -- refusing to follow (symlink escape?)' });
+    return errors;
+  }
+  let sidecarText;
+  try {
+    sidecarText = readFileSync(sidecarPathReal, 'utf8');
+  } catch (err) {
+    errors.push({ field: 'accepted_audit', message: `could not read the sidecar file: ${err.message}` });
+    return errors;
+  }
+  let sidecarObj;
+  try {
+    sidecarObj = JSON.parse(sidecarText);
+  } catch (err) {
+    errors.push({ field: 'accepted_audit', message: `sidecar file is not valid JSON: ${err.message}` });
+    return errors;
+  }
+  const { errors: shapeErrors } = validateAcceptedRunAuditSidecar(sidecarObj);
+  errors.push(...shapeErrors.map((e) => ({ field: `accepted_audit.sidecar.${e.field}`, message: e.message })));
+  // Cross-validation is skipped once the sidecar's own shape is already invalid (review finding
+  // 5) -- a null/scalar/array sidecar root (valid JSON, but not a real sidecar object) is caught
+  // above by shapeErrors alone; comparing it field-by-field against the record adds nothing but
+  // noisy "undefined does not match ..." entries, and crossValidateAcceptedRunAuditAgainstRecord's
+  // own defensive guard (never throws even if called directly) is a second, independent layer,
+  // not a substitute for this one.
+  if (shapeErrors.length === 0) {
+    const crossErrors = crossValidateAcceptedRunAuditAgainstRecord(sidecarObj, record);
+    errors.push(...crossErrors.map((e) => ({ field: `accepted_audit.cross.${e.field}`, message: e.message })));
+  }
+  const actualSha256 = createHash('sha256').update(sidecarText, 'utf8').digest('hex');
+  if (actualSha256 !== record.accepted_audit.sha256) {
+    errors.push({ field: 'accepted_audit.sha256', message: `sidecar file's actual SHA-256 (${actualSha256}) does not match the record's declared accepted_audit.sha256 (${record.accepted_audit.sha256})` });
+  }
+  return errors;
+}
+
+/**
+ * Validates one run record file at `runPath` -- schemas 1-4 (and a schema-5 non-scenario record)
+ * get exactly the pre-existing record-only behavior; a schema-5 scenario record ADDITIONALLY gets
+ * its own accepted-run-audit sidecar verified offline (see validateAcceptedAuditOnDisk), only once
+ * the record itself already validates cleanly (a structurally invalid record has no reliable
+ * accepted_audit.relative_path/sha256 to resolve in the first place). Extracted as its own,
+ * directly-testable function so cmdValidate itself stays a thin CLI wrapper (print + exit code),
+ * matching this file's own cmdCorpusValidate/validateLoadedScenarios precedent.
+ *
+ * Fails CLOSED, never throws (a review finding demonstrated the previous unguarded
+ * readFileSync+JSON.parse propagated a raw SyntaxError uncaught through cmdValidate and, more
+ * seriously, through cmdAggregate -- aborting an entire multi-file batch over one malformed file
+ * instead of excluding just that file). `record` is `null` only on a read/parse failure; a
+ * record that parses but fails schema validation still returns the real parsed object, unchanged
+ * from before. The read/parse failure message never includes the file's own path or content --
+ * `err.code` (e.g. 'ENOENT') for a read failure, a fixed generic string for a parse failure
+ * (JSON.parse's own error message embeds a snippet of the malformed text itself, so it is never
+ * interpolated here).
+ * @returns {{record: object|null, errors: Array<{field:string,message:string}>, warnings: Array}}
+ */
+function validateRunRecordFile(runPath) {
+  let text;
+  try {
+    text = readFileSync(runPath, 'utf8');
+  } catch (err) {
+    return { record: null, errors: [{ field: '(root)', message: `the run file could not be read (${err.code ?? 'unknown error'})` }], warnings: [] };
+  }
+  let record;
+  try {
+    record = JSON.parse(text);
+  } catch {
+    return { record: null, errors: [{ field: '(root)', message: 'the run file is not valid JSON' }], warnings: [] };
+  }
+  const { errors, warnings } = validateRun(record);
+  if (errors.length === 0 && record.schema >= 5 && record.run_kind === 'scenario') {
+    errors.push(...validateAcceptedAuditOnDisk(runPath, record));
+  }
+  return { record, errors, warnings };
 }
 
 function cmdValidate(args) {
@@ -2389,8 +2683,7 @@ function cmdValidate(args) {
     console.error('--run <path> is required and must exist');
     return 1;
   }
-  const record = JSON.parse(readFileSync(runPath, 'utf8'));
-  const { errors, warnings } = validateRun(record);
+  const { errors, warnings } = validateRunRecordFile(runPath);
   console.log(JSON.stringify({ errors, warnings }, null, 2));
   return errors.length > 0 ? 1 : 0;
 }
@@ -2441,4 +2734,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, cmdCorpusValidate, cmdScopeInit, cmdAggregate, cmdValidate, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };
+export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, cmdCorpusValidate, cmdScopeInit, cmdAggregate, cmdValidate, validateRunRecordFile, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };

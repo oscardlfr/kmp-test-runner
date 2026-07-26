@@ -131,6 +131,74 @@ describe('writeRunMatrixRecordEvidence -- N-record atomic promotion (decision 3/
       rmSync(runsRoot, { recursive: true, force: true });
     }
   });
+
+  // accepted-run-observability PR: the optional 6th `sidecarTexts` param writes a THIRD tier
+  // (audit/<run_id>.json) alongside the existing summary + raw tiers, as ONE atomic batch.
+  describe('sidecarTexts (accepted-run-observability PR) -- the audit/ tier', () => {
+    function fakeRecordsConditionResultsAndSidecars(n) {
+      const records = [];
+      const conditionResults = [];
+      const redactedTexts = [];
+      const sidecarTexts = [];
+      for (let i = 0; i < n; i++) {
+        records.push({ run_id: `MATRIX-TARGET-r${i}-0001` });
+        conditionResults.push({ spawnResult: { rawStdout: `{"raw":${i}}\n` } });
+        redactedTexts.push(`{"redacted":${i}}`);
+        sidecarTexts.push(`{"audit":${i}}`);
+      }
+      return { records, conditionResults, redactedTexts, sidecarTexts };
+    }
+
+    it('writes exactly 3N files (N summaries + N raw + N audit sidecars) for a 4-record matrix', async () => {
+      const { writeRunMatrixRecordEvidence } = await import('../../tools/agentic-eval/cli.mjs');
+      const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aemc-write-sidecar-'));
+      try {
+        const { records, conditionResults, redactedTexts, sidecarTexts } = fakeRecordsConditionResultsAndSidecars(4);
+        const outDir = writeRunMatrixRecordEvidence('matrix-kind', records, conditionResults, redactedTexts, runsRoot, sidecarTexts);
+        const summaryFiles = readdirSync(outDir).filter((f) => f.endsWith('.json'));
+        const rawFiles = readdirSync(path.join(outDir, 'raw')).filter((f) => f.endsWith('.jsonl'));
+        const auditFiles = readdirSync(path.join(outDir, 'audit')).filter((f) => f.endsWith('.json'));
+        expect(summaryFiles.length).toBe(4);
+        expect(rawFiles.length).toBe(4);
+        expect(auditFiles.length).toBe(4);
+        for (let i = 0; i < 4; i++) {
+          expect(JSON.parse(readFileSync(path.join(outDir, 'audit', `MATRIX-TARGET-r${i}-0001.json`), 'utf8'))).toEqual({ audit: i });
+        }
+      } finally {
+        rmSync(runsRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('a collision on ONLY the audit tier still rolls back EVERY target this invocation created, across ALL THREE tiers', async () => {
+      const { writeRunMatrixRecordEvidence } = await import('../../tools/agentic-eval/cli.mjs');
+      const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aemc-partial-sidecar-'));
+      try {
+        const { records, conditionResults, redactedTexts, sidecarTexts } = fakeRecordsConditionResultsAndSidecars(4);
+        const outDir = path.join(runsRoot, 'agentic-eval-matrix-kind-partial-sidecar');
+        const auditDir = path.join(outDir, 'audit');
+        mkdirSync(auditDir, { recursive: true });
+        // Pre-create ONLY the third record's AUDIT target -- every record/raw target is untouched.
+        writeFileSync(path.join(auditDir, 'MATRIX-TARGET-r2-0001.json'), '{"pre-existing":true}');
+
+        expect(() => writeRunMatrixRecordEvidence('matrix-kind-partial-sidecar', records, conditionResults, redactedTexts, runsRoot, sidecarTexts))
+          .toThrow(/already exists/);
+
+        for (const i of [0, 1, 3]) {
+          expect(realExistsSync(path.join(outDir, `MATRIX-TARGET-r${i}-0001.json`))).toBe(false);
+          expect(realExistsSync(path.join(outDir, 'raw', `MATRIX-TARGET-r${i}-0001.jsonl`))).toBe(false);
+          expect(realExistsSync(path.join(auditDir, `MATRIX-TARGET-r${i}-0001.json`))).toBe(false);
+        }
+        // Record r2's own summary/raw targets (NOT the colliding one) must also be rolled back --
+        // a collision on ANY one tier blocks the whole 3-tier batch, not just its own tier.
+        expect(realExistsSync(path.join(outDir, 'MATRIX-TARGET-r2-0001.json'))).toBe(false);
+        expect(realExistsSync(path.join(outDir, 'raw', 'MATRIX-TARGET-r2-0001.jsonl'))).toBe(false);
+        expect(readFileSync(path.join(auditDir, 'MATRIX-TARGET-r2-0001.json'), 'utf8')).toBe('{"pre-existing":true}');
+        expect(readdirSync(outDir).filter((f) => f.includes('.tmp-'))).toEqual([]);
+      } finally {
+        rmSync(runsRoot, { recursive: true, force: true });
+      }
+    });
+  });
 });
 
 // findMatrixCompletenessGap (decision 11) -- a genuine identity PROOF, not a count. Pure function,

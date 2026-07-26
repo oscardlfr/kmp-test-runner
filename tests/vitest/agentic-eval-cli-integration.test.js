@@ -126,7 +126,13 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
       // Regression lock: calibrate/smoke's notes must stay EXACTLY this foundation-harness
       // string, unchanged by the scenario-specific notes branch added alongside this test.
       expect(record.notes).toBe('Foundation-harness run; not a benchmark result.');
+      // accepted-run-observability PR: calibrate's pair-based writer is untouched -- no sidecar,
+      // no accepted_audit, for a non-scenario record.
+      expect(record.accepted_audit).toBeNull();
     }
+    // The pair-based writer never creates an audit/ directory at all (only the scenario-matrix
+    // writer does, and only for accepted records).
+    expect(existsSync(path.join(evidenceDirFor('calibration'), 'audit'))).toBe(false);
   }, 20000);
 
   // Regression coverage for a real gap an independent review pass found: raw_capture_location was
@@ -321,6 +327,11 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
     expect(recordA.privacy_status).toBe('public');
 
     expect(listEvidenceFiles('smoke').length).toBe(2);
+    // accepted-run-observability PR: smoke's pair-based writer is untouched -- no sidecar, no
+    // accepted_audit, no audit/ directory at all for a non-scenario record.
+    expect(recordA.accepted_audit).toBeNull();
+    expect(recordB.accepted_audit).toBeNull();
+    expect(existsSync(path.join(evidenceDirFor('smoke'), 'audit'))).toBe(false);
   }, 30000);
 
   // See calibrate's identical regression test above for the full rationale -- smoke goes through

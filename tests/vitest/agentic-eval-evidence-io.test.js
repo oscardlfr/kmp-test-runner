@@ -7,7 +7,7 @@
 // covers what has no other coverage: direct importability from the new module, and
 // resolveRejectedDiagnosticsDir, which is brand new.
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {
@@ -72,6 +72,55 @@ describe('evidence-io.mjs -- promoteTargetsAtomically, imported directly', () =>
     } finally {
       rmSync(runsRoot, { recursive: true, force: true });
     }
+  });
+
+  // accepted-run-observability PR: promoteTargetsAtomically's own `ensureDir` param now ALSO
+  // accepts an array of directories (e.g. both raw/ and audit/, siblings under one outDir) --
+  // conservative extension, a bare string still works exactly as before (every test above this one
+  // passes a single string, unchanged).
+  describe('ensureDir accepts an array of directories (raw/ + audit/ siblings)', () => {
+    it('creates every directory in the array before writing, even when none exist yet', () => {
+      const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aeio-promote-multidir-'));
+      try {
+        const outDir = path.join(runsRoot, 'agentic-eval-scenario');
+        const rawDir = path.join(outDir, 'raw');
+        const auditDir = path.join(outDir, 'audit');
+        const targetSummary = path.join(outDir, 'r1.json');
+        const targetRaw = path.join(rawDir, 'r1.jsonl');
+        const targetAudit = path.join(auditDir, 'r1.json');
+        promoteTargetsAtomically(
+          [[targetSummary, '{"summary":true}'], [targetRaw, '{"raw":true}\n'], [targetAudit, '{"audit":true}']],
+          [rawDir, auditDir],
+        );
+        expect(readFileSync(targetSummary, 'utf8')).toBe('{"summary":true}');
+        expect(readFileSync(targetRaw, 'utf8')).toBe('{"raw":true}\n');
+        expect(readFileSync(targetAudit, 'utf8')).toBe('{"audit":true}');
+        expect(readdirSync(outDir).some((f) => f.includes('.tmp-'))).toBe(false);
+      } finally {
+        rmSync(runsRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('a collision on one target still rolls back every target this invocation created, across BOTH directories', () => {
+      const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aeio-promote-multidir-rollback-'));
+      try {
+        const outDir = path.join(runsRoot, 'agentic-eval-scenario');
+        const rawDir = path.join(outDir, 'raw');
+        const auditDir = path.join(outDir, 'audit');
+        mkdirSync(auditDir, { recursive: true });
+        // Pre-create the audit target -- simulating a collision on that specific tier.
+        writeFileSync(path.join(auditDir, 'r1.json'), '{"pre-existing":true}');
+        expect(() => promoteTargetsAtomically(
+          [[path.join(outDir, 'r1.json'), '{"summary":true}'], [path.join(rawDir, 'r1.jsonl'), '{"raw":true}\n'], [path.join(auditDir, 'r1.json'), '{"audit":true}']],
+          [rawDir, auditDir],
+        )).toThrow(/already exists/);
+        expect(existsSync(path.join(outDir, 'r1.json'))).toBe(false);
+        expect(existsSync(path.join(rawDir, 'r1.jsonl'))).toBe(false);
+        expect(readFileSync(path.join(auditDir, 'r1.json'), 'utf8')).toBe('{"pre-existing":true}');
+      } finally {
+        rmSync(runsRoot, { recursive: true, force: true });
+      }
+    });
   });
 });
 

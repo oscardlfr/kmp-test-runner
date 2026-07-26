@@ -103,6 +103,27 @@ describe('aggregateRuns', () => {
     expect(groups.length).toBe(2);
   });
 
+  // accepted-run-observability PR: `schema` is already a HARD_PARTITION_FIELDS entry (pre-existing,
+  // guards against averaging a v2 record together with a v3 one) -- this proves the identical
+  // guarantee extends to v4 vs v5 with zero code changes needed, since a v5 record carries 5 new
+  // fields (and a genuinely different accepted_audit binding) a v4 record doesn't have at all.
+  it('keeps schema:4 and schema:5 records in SEPARATE buckets, never merged', () => {
+    const v4 = run({ schema: 4, run_id: 'r-v4' });
+    const v5RunId = 'r-v5';
+    const v5 = run({
+      schema: 5, run_id: v5RunId,
+      post_signal_ms: { value: null, reason: 'no first useful signal boundary' },
+      post_signal_tool_calls: { value: null, reason: 'no first useful signal boundary' },
+      policy_denials_before_first_signal: { value: null, reason: 'no first useful signal boundary' },
+      policy_denials_after_first_signal: { value: null, reason: 'no first useful signal boundary' },
+      accepted_audit: { schema: 1, relative_path: `audit/${v5RunId}.json`, sha256: 'a'.repeat(64) },
+    });
+    const { groups, errors } = aggregateRuns([v4, v5]);
+    expect(errors).toEqual([]);
+    expect(groups.length).toBe(2);
+    expect(groups.map((g) => g.group_key.schema).sort()).toEqual([4, 5]);
+  });
+
   it('surfaces a per-bucket error for benchmark_eligible:false runs without dropping other buckets', () => {
     const { groups, errors } = aggregateRuns([
       run({ scenario_id: 's1' }), // clean bucket

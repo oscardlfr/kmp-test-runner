@@ -196,6 +196,11 @@ export function spawnCondition(argv, { env, cwd, timeoutMs = 300000 }) {
       if (settled) return;
       settled = true;
       clearTimers();
+      // endedHrtimeNs (accepted-run-observability PR): the monotonic completion-time counterpart
+      // to spawnHrtimeNs -- captured immediately before resolving, exactly mirroring how t0 itself
+      // is captured immediately before spawn. Kept in memory only (never persisted raw); derivePostSignalMs
+      // (stream-parser.mjs) is the only place that turns it into a millisecond value.
+      const endedHrtimeNs = process.hrtime.bigint();
       // terminated:true here (never false) -- the schema itself rejects terminated:false paired
       // with a non-null termination_reason, and a spawn-level failure (e.g. ENOENT) is exactly
       // an abnormal, non-'timeout' termination: the run never reached a normal conclusion.
@@ -207,6 +212,7 @@ export function spawnCondition(argv, { env, cwd, timeoutMs = 300000 }) {
         stderr: stderr + `\n[spawn error] ${err.message}`,
         taggedLines,
         spawnHrtimeNs: t0,
+        endedHrtimeNs,
         policySha256: computePolicySha256(),
       });
     });
@@ -216,6 +222,9 @@ export function spawnCondition(argv, { env, cwd, timeoutMs = 300000 }) {
       settled = true;
       clearTimers();
       if (buf) taggedLines.push({ line: buf, receiptNs: process.hrtime.bigint() });
+      // endedHrtimeNs: see the identical 'error'-path comment above -- captured here too so a
+      // normal (or timed-out/killed) close path always carries a real monotonic completion time.
+      const endedHrtimeNs = process.hrtime.bigint();
       // A merely nonzero exit code is NOT a "termination" -- the process ran to a normal
       // conclusion and exit_code alone conveys the failure (terminated:false, reason:null, per
       // the schema's own contract). terminated:true is reserved for OUR OWN timeout firing, or
@@ -232,6 +241,7 @@ export function spawnCondition(argv, { env, cwd, timeoutMs = 300000 }) {
         stderr,
         taggedLines,
         spawnHrtimeNs: t0,
+        endedHrtimeNs,
         policySha256: computePolicySha256(),
       });
     });

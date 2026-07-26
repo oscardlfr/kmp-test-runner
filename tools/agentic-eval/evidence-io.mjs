@@ -105,9 +105,11 @@ export function isRawDirSafeFromAccidentalCommit(rawDir, runsRootOverride) {
  * The shared write/link/rollback body -- arity-independent (iterates whatever `targets` array
  * it's given), extracted so callers with different record shapes (a pair, N scenario-matrix
  * records, or a rejection-diagnostics pair) share the identical atomic-promotion mechanism rather
- * than one being a subtly-different duplicate of the other. `ensureDir` is the deepest directory
- * that must exist before any tmp file can be written (mkdirSync's recursive:true also creates
- * every parent, e.g. a `raw/` subdirectory's own parent `outDir`).
+ * than one being a subtly-different duplicate of the other. `ensureDir` is the deepest
+ * directory (or directories -- accepted-run-observability PR: a single string OR an array of
+ * strings, for callers with more than one sibling subdirectory to create, e.g. both `raw/` and
+ * `audit/` under one outDir) that must exist before any tmp file can be written (mkdirSync's
+ * recursive:true also creates every parent, e.g. a `raw/` subdirectory's own parent `outDir`).
  *
  * Contract, precisely (do not overclaim beyond this): exception-safe (a JS throw partway through
  * rolls back every target THIS invocation successfully linked) and collision-safe (linkSync fails
@@ -133,7 +135,7 @@ export function promoteTargetsAtomically(targets, ensureDir) {
       throw new Error(`refusing to write evidence: ${target} already exists (run_id collision?) -- nothing was written or touched`);
     }
   }
-  mkdirSync(ensureDir, { recursive: true });
+  for (const dir of Array.isArray(ensureDir) ? ensureDir : [ensureDir]) mkdirSync(dir, { recursive: true });
   const tmpSuffix = `.tmp-${randomUUID().slice(0, 8)}`;
   const tmpPaths = targets.map(([target]) => target + tmpSuffix);
   // linkSync (not renameSync) for promotion: creates a hard link to the fully-written tmp file at

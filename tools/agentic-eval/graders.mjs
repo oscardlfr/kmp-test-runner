@@ -1058,6 +1058,13 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     success,
     checks,
     firstUsefulSignalEventIndex: firstCorrect ? firstCorrect.resultIndex : null,
+    // terminalAuthoritativeEventIndex (accepted-run-observability PR, additive): this function's
+    // OWN already-selected `terminal` attempt's result event index -- never re-derived by a
+    // caller parsing grading_checks.detail or guessing from the last Bash call. Genuinely distinct
+    // from firstUsefulSignalEventIndex whenever more than one on-target attempt exists (the
+    // terminal one is the LAST on-target attempt, firstCorrect is the EARLIEST correct one) --
+    // null when `terminal` itself is null (no attempt capable of producing target evidence).
+    terminalAuthoritativeEventIndex: terminal ? terminal.resultIndex : null,
     testInvocationsTotal,
     retries,
     // Ambiguous JUnit evidence (a proven same-assistant-turn conflict between two or more

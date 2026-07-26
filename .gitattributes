@@ -141,6 +141,13 @@ tools/agentic-eval/fixtures/calibration-project/src/commonTest/kotlin/*.kt text 
 tests/vitest/agentic-eval-*.test.js text eol=lf
 tests/vitest/fixtures/agentic-eval-stream-*.jsonl text eol=lf
 tools/runs/agentic-eval-*/*.json text eol=lf
+# accepted-run-observability PR: the existing rule above (`agentic-eval-*/*.json`) matches ONE
+# path segment after the run-kind directory -- it does NOT match the new nested `audit/` subdirectory
+# (glob `*` never crosses a `/` in gitattributes patterns). Without this, a fresh Windows checkout
+# (core.autocrlf=true) would convert a committed sidecar's LF bytes to CRLF, breaking the record's
+# own accepted_audit.sha256 binding against the checked-out file -- the exact class of bug this
+# repo has hit before (see every other eol=lf entry in this file).
+tools/runs/agentic-eval-*/audit/*.json text eol=lf
 
 # CodeRabbit/Codex review fix pass -- new bash-script fixtures need the same LF pin as
 # .skills/**/*.sh and scripts/**/*.sh above (CRLF corrupts bash control-flow constructs under
