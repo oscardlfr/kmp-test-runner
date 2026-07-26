@@ -72,17 +72,17 @@ describe('materializeSkillSnapshot', () => {
   // above (mechanism-only) and from the live-HEAD test above (tracks develop's tip forever, never
   // references this constant). calibrate/smoke both materialize current-skill via
   // runConditionPair's one call site using exactly PINNED_SKILL_SHA. This is a tripwire, not a
-  // general staleness detector: it deliberately hardcodes 6d45dde and will need its own edit on
+  // general staleness detector: it deliberately hardcodes 9e47a9d and will need its own edit on
   // every future legitimate pin advance -- the next test verifies the semantics that should
   // survive such an advance. Split into two independent it() blocks on purpose: expect().toBe()
   // throws synchronously, so a single block with the equality check first would hide whether the
   // content assertions below actually discriminate -- two blocks means a run against a stale pin
   // shows both failing for real, not just the first one.
-  it('PINNED_SKILL_SHA is locked to the PR #388 decision-protocol fix', () => {
-    expect(PINNED_SKILL_SHA).toBe('6d45dde88956ad33f0725b863e8fff8960c1fc07');
+  it('PINNED_SKILL_SHA is locked to the PR #395 evidence-driven-scope-selection fix', () => {
+    expect(PINNED_SKILL_SHA).toBe('9e47a9d132f5b9ea6ac5bc50a66c844458fd363e');
   });
 
-  it('the pinned current-skill snapshot reflects the Decision protocol canonical workflow', async () => {
+  it('the pinned current-skill snapshot reflects the evidence-driven scope-selection Decision protocol', async () => {
     const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runValidator });
     cleanupDirs.push(snapshotDir);
     expect(validation.ok).toBe(true);
@@ -100,13 +100,36 @@ describe('materializeSkillSnapshot', () => {
     expect(normalizedSkillMd).toContain('`changed` has no such flag');
     expect(normalizedSkillMd).toContain('plan.coverage_modules');
     // "### 1. Run the relevant test type" is deliberately NOT asserted absent below: it was
-    // Steps item 1 before this fix and stays Steps item 1 after -- only its sibling "### 2.
-    // Diagnose only if..." (and the old "## Quick start" heading) were folded into the new
-    // Decision protocol. Asserting "### 1." absent would be false against the real shipped file.
+    // Steps item 1 before the #388 fix and stays Steps item 1 through #395 -- only its sibling
+    // "### 2. Diagnose only if..." (and the old "## Quick start" heading) were folded into the
+    // Decision protocol, back in #388. Asserting "### 1." absent would be false against the real
+    // shipped file.
     expect(normalizedSkillMd).not.toContain('## Quick start');
     expect(normalizedSkillMd).not.toContain('### 2. Diagnose only if the environment blocks the run');
     expect(normalizedSkillMd).not.toMatch(/^(bash|pwsh)\s+\.skills\/kmp-test-runner\//m);
     expect(normalizedSkillMd).not.toContain('current: 0.10.0+');
+
+    // #395-specific: descriptive/conventional module wording ("app", "shared") is explicitly
+    // rejected as an exact module identity -- a known module requires an explicit user statement
+    // or a prior envelope's `modules[].name`, never descriptive wording alone.
+    expect(normalizedSkillMd).toContain('descriptive wording ("app", "shared") isn\'t an exact module');
+    expect(normalizedSkillMd).toContain("explicit from the user, or a prior envelope's");
+    expect(normalizedSkillMd).toContain('never descriptive wording alone');
+    // #395-specific: an unclear-scope describe result is resolved by inspecting EVERY modules[]
+    // entry's task field, then branching explicitly on 1 / 2+ / 0 eligible candidates -- never
+    // inventing a module name.
+    expect(normalizedSkillMd).toContain("check every `modules[]` entry's task field");
+    expect(normalizedSkillMd).toContain('1 eligible: dispatch its exact name');
+    expect(normalizedSkillMd).toContain('2+ eligible: dispatch globally if broad, else ask');
+    expect(normalizedSkillMd).toContain('0 eligible:');
+    expect(normalizedSkillMd).toContain('invent one');
+    // #395-specific: a coherent successful envelope is an operationally terminal condition --
+    // stop and report, no post-success dry-run/doctor/describe/raw-Gradle/version/ls/pwd/which
+    // probing, and an unrelated skipped[] entry doesn't reopen exploration.
+    expect(normalizedSkillMd).toContain('is terminal');
+    expect(normalizedSkillMd).toContain('no post-success dry-run, doctor, describe, raw or task-listing Gradle, version, or');
+    expect(normalizedSkillMd).toContain('ls/pwd/which probe');
+    expect(normalizedSkillMd).toContain("An unrelated `skipped[]` entry isn't a reason to keep exploring");
   });
 
   it('cleans up its temp directory when validation fails partway through (not just on an invalid SHA)', async () => {
