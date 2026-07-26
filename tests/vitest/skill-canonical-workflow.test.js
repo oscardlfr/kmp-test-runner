@@ -389,12 +389,19 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   // Schema-v5 canary forensic fact #2 + runbook requirement: expected-tests and likely-no-tests
   // are now two SEPARATE candidate rules (not one merged "1/2+/0 eligible" step), each with its
   // own scoped test below -- so a future edit can't quietly re-merge them without failing here.
-  it('step: test-capability 1/2+ eligible-candidate branches perform their specified action', () => {
+  //
+  // Follow-up review finding (post-PR #399): the schema-v5 restructure dropped the ORIGINAL
+  // protocol's own "0 eligible: don't invent one" branch when test-capability was split out of the
+  // old merged step -- 0-eligible silently had no defined outcome at all. Restored as its own
+  // explicit fail-closed branch, asserted here alongside 1/2+ so a future edit can't drop it again
+  // without this test catching the gap.
+  it('step: test-capability 0/1/2+ eligible-candidate branches all have a defined, fail-closed outcome', () => {
     const start = protocol.indexOf('**Test-capability target**');
     const end = protocol.indexOf('**Likely-no-tests target**');
     const step5 = protocol.slice(start, end);
     expect(step5).toMatch(/\b1\s+eligible:\s*its\s+exact\s+name/i);
     expect(step5).toMatch(/2\+\s+eligible:\s*dispatch\s+globally\s+if\s+broad,\s*else\s+ask/i);
+    expect(step5).toMatch(/\b0\s+eligible:\s*report\s+no\s+match;\s*don.t\s+invent\s+one/i);
   });
 
   it('never presents --module-filter with a bracketed placeholder', () => {
@@ -558,9 +565,16 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(protocol.toLowerCase()).toMatch(/next canonical/);
   });
 
+  // CodeRabbit round (PR #399): scoped to the exact-canonical clause itself, matching the
+  // neighboring DECORATED-command test's own slicing -- an unscoped whole-protocol match doesn't
+  // prove THIS clause's content is correct/complete (this file's own header comment and the
+  // round-2-fix precedent both call out exactly this anti-pattern).
   it('denial recovery: a denied exact-canonical command is final -- stop, report, no retry', () => {
-    expect(protocol.toLowerCase()).toMatch(/stop and report/);
-    expect(protocol.toLowerCase()).toMatch(/don.t retry|no retry/);
+    const start = protocol.indexOf('A denied EXACT canonical');
+    expect(start).toBeGreaterThan(-1);
+    const clause = protocol.slice(start, start + 220).toLowerCase();
+    expect(clause).toMatch(/stop and report/);
+    expect(clause).toMatch(/don.t retry/);
   });
 
   // Schema-v5 canary forensic fact #3: a cell decorated the canonical describe command (e.g. with
@@ -604,6 +618,35 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(step6).toContain('test_tasks.unit');
     expect(step6).toMatch(/no applicable tests/i);
     expect(step6.toLowerCase()).toMatch(/\bstop\b/);
+  });
+
+  // Follow-up review finding (post-PR #399): likely-no-tests referenced null task fields but never
+  // instructed HOW to obtain or select them -- not an executable state. Fixed to explicitly order
+  // describe (once, reusing a prior envelope if one already exists so test-capability and
+  // likely-no-tests never double-probe) before inspecting test_tasks.unit.
+  it('step: likely-no-tests orders describe (once, reusing any prior envelope) before inspecting test_tasks.unit', () => {
+    const start = protocol.indexOf('**Likely-no-tests target**');
+    const end = protocol.indexOf('**Preview only**');
+    const step6 = protocol.slice(start, end);
+    const describeIdx = step6.indexOf('kmp-test describe --json --project-root .');
+    const inspectIdx = step6.toLowerCase().indexOf('inspect every');
+    expect(describeIdx).toBeGreaterThan(-1);
+    expect(inspectIdx).toBeGreaterThan(-1);
+    expect(describeIdx).toBeLessThan(inspectIdx);
+    expect(step6).toMatch(/once\s+if\s+not\s+already\s+run/i);
+  });
+
+  // Follow-up review finding (post-PR #399): likely-no-tests never resolved cardinality when
+  // describe returns zero, one, or several null-task-field candidates -- these are precisely the
+  // decisions the state machine must close, mirroring test-capability's own 0/1/2+ split (but
+  // inverted polarity: candidates identified by a NULL field, not a non-null one).
+  it('step: likely-no-tests 0/1/2+ null-candidate branches each perform their specified action', () => {
+    const start = protocol.indexOf('**Likely-no-tests target**');
+    const end = protocol.indexOf('**Preview only**');
+    const step6 = protocol.slice(start, end);
+    expect(step6).toMatch(/\b1\s+null:\s*dispatch\s+its\s+exact\s+`modules\[\]\.name`\s+for\s+one\s+real\s+filtered\s+run/i);
+    expect(step6).toMatch(/2\+\s+null:\s*ask\s+for\s+the\s+exact\s+target,\s*never\s+guess\s+from\s+names\s+or\s+types/i);
+    expect(step6).toMatch(/\b0\s+null:\s*report\s+no\s+matching\s+candidate;\s*don.t\s+invent\s+one/i);
   });
 
   // Round-5 fix: the round-4 version of this check only looked for the literal concatenation

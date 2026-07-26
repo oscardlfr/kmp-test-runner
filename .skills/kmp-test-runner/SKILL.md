@@ -1,8 +1,8 @@
 ---
 name: kmp-test-runner
-description: "Parallel test runner for Kotlin Multiplatform (KMP) and Android Gradle projects via the kmp-test CLI. Runs unit, instrumented, coverage (kover/jacoco), and benchmark tests across modules. Use when the user asks to run tests, gradle's default dispatch is slow, the target module or Gradle test task is unclear, or the agent needs structured JSON to parse failures and module attribution. Invoke before Bash exploration, file traversal, Gradle task listing, or project-structure inspection."
+description: "Parallel test runner for Kotlin Multiplatform (KMP) and Android Gradle projects via the kmp-test CLI. Runs unit, instrumented, coverage (kover/jacoco), and benchmark tests. Use when the user asks to run tests, gradle's default dispatch is slow, the target module or Gradle test task is unclear, or the agent needs structured JSON output. Invoke before Bash exploration, file traversal, Gradle task listing, or project-structure inspection."
 license: MIT
-compatibility: "Requires kmp-test CLI + gradlew. Recommended for instrumented tests: Google's android CLI (https://developer.android.com/tools/agents/android-cli) for emulator/screen-capture/UI-debug workflows."
+compatibility: "Requires kmp-test CLI + gradlew. For instrumented tests, Google's android CLI (https://developer.android.com/tools/agents/android-cli) for emulator/UI-debug."
 metadata:
   author: oscardlfr
   homepage: https://github.com/oscardlfr/kmp-test-runner
@@ -34,19 +34,24 @@ Resolve scope before acting; stop once proven.
    `kmp-test parallel --json --project-root .` (or `android`/`coverage`/`benchmark`/`changed`);
    descriptive wording ("app", "shared") isn't an exact module.
 4. **Exact module** — dispatch with the workflow's module-scoping flag set to a module already known:
-   explicit from the user, or a prior envelope's `modules[].name` — never descriptive wording
-   alone. `--module-filter` (parallel/android/benchmark) takes the name as-is; `changed` has no
-   such flag — its module set is always git-derived. `--coverage-modules` (coverage; `coverage`
-   ignores `--module-filter`) needs the exact name with any leading `:` stripped, comma-separated,
-   no glob.
+   explicit from the user, or a prior envelope's `modules[].name` — never descriptive
+   wording alone. `--module-filter` (parallel/android/benchmark) takes the name as-is; `changed`
+   has no such flag — its module set is always git-derived. `--coverage-modules` (coverage;
+   `coverage` ignores `--module-filter`) needs the exact name with any leading `:` stripped,
+   comma-separated, no glob.
 5. **Test-capability target** — run `kmp-test describe --json --project-root .` once; check every
    `modules[]` entry's task field for the test type — `test_tasks.unit` for `parallel`'s default,
-   `flags-reference.md` for an explicit `--test-type` — non-null only. 1 eligible: its exact name
-   (strip `:` for `--coverage-modules`). 2+ eligible: dispatch globally if broad, else ask.
-6. **Likely-no-tests target** — a null `test_tasks.unit` alone never proves it, only identifies a
-   candidate (see `flags-reference.md` for other `--test-type` tasks). Require a real, filtered,
-   non-dry-run `parallel` envelope with `no_test_modules` + `caused_by_filter:true` before
-   reporting "no applicable tests" and stop; `describe` only confirms it exists.
+   `flags-reference.md` for an explicit `--test-type`. 1 eligible: its exact name (strip `:` for
+   `--coverage-modules`). 2+ eligible: dispatch globally if broad, else ask. 0 eligible: report no
+   match; don't invent one.
+6. **Likely-no-tests target** — for `parallel`'s default (others: `flags-reference.md`): run
+   `kmp-test describe --json --project-root .` once if not already run; inspect every `modules[]`
+   entry's `test_tasks.unit`.
+   1 null: dispatch its exact `modules[].name` for one real filtered run. 2+ null: ask for the
+   exact target, never guess from names or types. 0 null: report no matching candidate; don't
+   invent one. `test_tasks.unit: null` alone is candidate evidence, never proof — require that
+   real, filtered, non-dry-run envelope with `no_test_modules` + `caused_by_filter:true` before
+   reporting "no applicable tests" and stop.
 7. **Preview only** — add `--dry-run` to parallel/android/coverage/benchmark/changed, or
    `changed --show-modules-only` for its git-derived list; not a preflight for an execution
    request, and don't loop through guessed filters.
@@ -71,27 +76,27 @@ or `coverage.module_buckets` on a real run.
 A denied exploratory command isn't worth retrying — abandon it and go to the next canonical step.
 A denied EXACT canonical `kmp-test` command is final: stop and report the blockage; don't retry
 with a different flag, subcommand, or shell wrapper. A denied DECORATED command — redirection, a
-pipe, chaining, `head`, or a shell wrapper — isn't yet canonical:
-issue the exact standalone command once; if denied too, stop and report.
+pipe, chaining, `head`, or a shell wrapper — isn't yet canonical: issue the exact standalone command once;
+if denied too, stop and report.
 
 ## Prerequisites
 
 1. `kmp-test` CLI installed — npm: `npm install -g kmp-test-runner`.
-2. `gradlew` (`gradlew.bat` on Windows) at the project root — if missing, report the prerequisite
-   failure; ask the user to initialize it.
+2. `gradlew` (`gradlew.bat` on Windows) at project root — if missing, report the prerequisite
+   failure.
 3. JDK 17+ — auto-selected from `~/.kmp-test/config.json`, `JAVA_HOME`, or catalogue.
 
 ## Environment detection
 
 Optional — running tests never needs it. `kmp-test doctor --json --project-root .` reports
 ADB/SDK status; `kmp-test android --json --project-root .` works alone. Google's
-`android` CLI is separate (Tool selection) — it never changes `kmp-test`'s envelope.
+`android` CLI (Tool selection) never changes `kmp-test`'s envelope.
 
 ## Tool selection — `kmp-test` vs `android` CLI overlap
 
 Default to `kmp-test`: versioned JSON, cross-platform, side-effect-free on `--dry-run`. `android
-info`/`describe` overlap but stay plain text (`describe` has a Windows bug) — use `android` CLI
-only for SDK/emulator/UI work. Mapping:
+info`/`describe` overlap but stay plain text (`describe` has a Windows bug) — use it only for
+SDK/emulator/UI work. Mapping:
 [`envelope-schema.md`](references/cli/envelope-schema.md#cross-tool-comparison-android-cli-analogues).
 
 ## Steps
@@ -103,11 +108,11 @@ Use the right subcommand based on what the user asked for:
 | User intent | Subcommand | Notes |
 |-------------|-----------|-------|
 | "run tests" / "run unit tests" / "test this" | `kmp-test parallel --json --project-root .` | `test`/`jvmTest`/`desktopTest` per module |
-| "run instrumented tests" / "run on device" | `kmp-test android --json --project-root .` | `connectedAndroidTest`; needs a device/emulator |
-| "run coverage" / "with coverage" | `kmp-test coverage --json --project-root .` | Aggregates kover/jacoco XML |
-| "run benchmarks" | `kmp-test benchmark --json --project-root .` | Macro/microbenchmark tasks |
+| "run instrumented tests" / "run on device" | `kmp-test android --json --project-root .` | `connectedAndroidTest`; needs a device |
+| "run coverage" / "with coverage" | `kmp-test coverage --json --project-root .` | kover/jacoco XML |
+| "run benchmarks" | `kmp-test benchmark --json --project-root .` | Macro/microbenchmark |
 | "what would run?" / "dry run" | append `--dry-run` to the matching command above | No spawn — plan as JSON |
-| "run only changed tests" | `kmp-test changed --json --project-root .` | Modules touched in the git tree |
+| "run only changed tests" | `kmp-test changed --json --project-root .` | Touched in the git tree |
 
 > Per-subcommand deep-dives: [`workflows/overview.md`](references/workflows/overview.md).
 
@@ -115,25 +120,24 @@ Use the right subcommand based on what the user asked for:
 
 Full shape: [`references/cli/envelope-schema.md`](references/cli/envelope-schema.md); exit codes:
 [`references/cli/exit-codes.md`](references/cli/exit-codes.md). `errors[{message,code?,...extra}]`
-carries discriminated codes (`no_test_modules`+`caused_by_filter` — full list in the reference
-docs).
+carries discriminated codes (`no_test_modules`+`caused_by_filter` — see the reference docs).
 
 ### 3. Report failures with module attribution
 
 Per `errors[]` entry, surface `code`, discriminators, and `message`; include `module` only when present.
 For test failures, drill into `modules[].test_failures[{test,cause,type}]` — `test` is
-fully-qualified `ClassName.methodName`, `cause` the message, `type` optional exception class.
+`ClassName.methodName`, `cause` the message, `type` optional.
 
 ## Convenience scripts
 
-Optional, source-checkout only — may not resolve once plugin-installed or via agentskills.io;
+Optional, source-checkout only — may not resolve once installed via plugin or agentskills.io;
 prefer `kmp-test`. `run-tests.sh` / `run-tests.ps1` wrap the same JSON envelope;
 `detect-env.sh` / `detect-env.ps1` print a plain token instead.
 
 | Script | Purpose |
 |---|---|
-| `detect-env.sh` / `detect-env.ps1` | Prints `HAS_ANDROID_CLI`/`NO_ANDROID_CLI`; exits 0 either way. `run-tests.sh`'s env preamble; also standalone. |
-| `run-tests.sh` / `run-tests.ps1` | Dispatcher — first positional (`-Type` on PowerShell) selects the workflow; remaining args forward verbatim, `--json` + `--project-root .` auto-inject. |
+| `detect-env.sh` / `detect-env.ps1` | Prints `HAS_ANDROID_CLI`/`NO_ANDROID_CLI`; exits 0; `run-tests.sh` env preamble. |
+| `run-tests.sh` / `run-tests.ps1` | Dispatcher — first positional (`-Type` on PowerShell) picks the workflow; args forward verbatim, `--json`/`--project-root .` auto-inject. |
 
 ## Verification
 
@@ -149,9 +153,9 @@ Confirm the envelope matches `exit_code`:
 
 ## Guidelines
 
-- **Never run `gradle clean`** first — dispatch is already incremental.
+- **Never run `gradle clean`** — dispatch is already incremental.
 - **`--module-filter` / `--coverage-modules`** narrow scope by module — rules differ by
-  flag/workflow (see Decision protocol).
+  flag (see Decision protocol).
 - **`--test-filter`** narrows to one test — `FullyQualifiedClassName#methodName`.
 - **Avoid `--no-coverage`** unless coverage doesn't apply.
 - **`--dry-run`** plans without running — same envelope shape, `dry_run: true`.
@@ -165,14 +169,14 @@ Branch on `errors[].code` — details in
 [`references/troubleshooting/overview.md`](references/troubleshooting/overview.md), keyed by code:
 
 - `no_test_modules` — `caused_by_filter` splits CONFIG_ERROR (2) from ENV_ERROR (3).
-- `task_not_found` / `module_failed` / `unsupported_class_version` — wrong subcommand, real
+- `task_not_found` / `module_failed` / `unsupported_class_version` — wrong subcommand,
   failure, or JDK mismatch.
 - `instrumented_setup_failed` / `flavor_unused` / `isolated_runtime_race` / `lock_held` —
-  device/flavor/race/lock problem.
+  device/flavor/race/lock.
 
 ## References
 
-- [`references/cli/envelope-schema.md`](references/cli/envelope-schema.md) — envelope shape (schema:2)
+- [`references/cli/envelope-schema.md`](references/cli/envelope-schema.md) — shape (schema:2)
 - [`references/cli/exit-codes.md`](references/cli/exit-codes.md) — exit-code semantics + WS-5
 - [`references/cli/flags-reference.md`](references/cli/flags-reference.md) — CLI flags table
 - [`references/workflows/overview.md`](references/workflows/overview.md) — workflow hub
