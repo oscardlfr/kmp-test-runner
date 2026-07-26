@@ -72,7 +72,7 @@ this; it occurred entirely within the zero-cost preflight phase.
 | Model | `claude-sonnet-5` |
 | Seed | `20260722` (frozen protocol value, not the execution date) |
 | Repeats / conditions | 2 repeats × {`no-skill`, `current-skill`} |
-| Measurement-scope id (non-secret) | `4b9913f9-3c28-4fd9-afc2-275613b66520` (same scope id every prior canary used) |
+| Measurement-scope id (non-secret) | `4b9913f9-3c28-4fd9-afc2-275613b66520` (shared by the schema-v4 and schema-v5 batches; schema-v3 predates the persistent-scope mechanism and `ambient_skill_profile` entirely, and carries no scope id at all) |
 | Branch | `feature/agentic-evidence-driven-scope-canary` |
 | Fresh KaMPKit clone | dedicated, isolated clone — the pre-existing shared `C:\kmp-eval\KaMPKit` was neither reused nor altered |
 
@@ -198,8 +198,10 @@ Expected ground truth: the agent discovers and runs the non-obvious Android host
     appear in the v3→v4 lineage (v4's `202a12d6` was itself a correctness failure, not a denial
     failure — so this is a new failure shape for this scenario's `current-skill` arm specifically).
   - Neither new `current-skill` cell reached a `first_useful_signal_ms` boundary (both null), unlike
-    v4's one success (154278.20ms) — consistent with neither cell producing accepted terminal
-    evidence this time.
+    v4's one success (154278.20ms) — neither reached a correctly-targeted signal satisfying the
+    expected outcome. This is not "no terminal evidence" for both cells alike: `08d5daaa`'s own
+    committed sidecar carries a real `terminal_authoritative_event` (well-formed evidence, wrong
+    module); `27d0c3c6` produced no terminal evidence at all (100% Bash denial).
 - **`no-skill` remains 0-of-2**, identical in count to v4 — both conditions' failure mode is
   unchanged (100% Bash denial in every no-skill cell, both batches).
 - **Both `no-skill` cells now show `foreign_skill_summary.confirmed:1`** (v4 showed this on only 1
@@ -313,7 +315,9 @@ The two new `current-skill` failures are of **different kinds**, and are not col
    `policy_denials_before_first_signal`, `policy_denials_after_first_signal`) present on all 8** —
    real numeric values with `reason:null` on the 2 cells that reached a first-useful-signal
    boundary; `value:null, reason:"no first useful signal boundary"` on the other 6, consistent with
-   those 6 cells never producing accepted terminal evidence.
+   those 6 cells never reaching a correctly-targeted first useful signal that satisfied the expected
+   outcome (one of the six, `scenario-current-skill-08d5daaa`, still produced well-formed terminal
+   evidence for the wrong module — see Scenario 1's own discussion above).
 6. **Sidecar identity, event indices, tool categories, policy decisions, first useful signal,
    terminal authoritative event, and metric totals reconciled with the record on all 8** — every
    sidecar's own `run_id`/`run_schema`/`run_kind`/`condition`/`scenario_id`/`first_useful_signal_event`
@@ -340,10 +344,13 @@ the same 4 expected schema-v3 `ambient_skill_profile` errors** — no other grou
 exit code 1, caused only by those 4 expected historical errors, correctly not misclassified as a new
 failure. The schema-v4 and schema-v5 groups deliberately did **not** merge, even though every other
 hard-partition field (`scenario_id`, `condition`, `project_commit`, `model_resolved`,
-`ambient_skill_profile`, etc.) matches between them — `schema` itself, `skill_source_sha` (the pin
-changed), and `claude_code_version` (same value, but a different underlying capture) are all
-`HARD_PARTITION_FIELDS` entries that keep these two genuinely-different captures apart by design,
-not by defect. No claim is made that they should be pooled.
+`ambient_skill_profile`, etc.) matches between them — `schema` itself (4 vs. 5),
+`kmp_test_cli_source_sha` (the harness's own source commit changed, `ae508a1c...` vs. `a9acb22d...`),
+and, on every `current-skill` record, `skill_source_sha` (the pin changed) are the
+`HARD_PARTITION_FIELDS` entries that actually keep these two genuinely-different captures apart.
+`claude_code_version` is also a `HARD_PARTITION_FIELDS` entry, but it carries the identical value
+(`2.1.218`) in both batches, so it plays no active role in this particular separation. No claim is
+made that they should be pooled.
 
 ## Gates passed
 
@@ -421,23 +428,31 @@ independently reconfirmed byte-identical/untouched.
 - **New v5 metrics are only meaningfully non-null on cells that reached a first-useful-signal
   boundary** — 2 of the 8 new cells (both scenario 2 `current-skill`). The other 6 correctly carry
   `value:null, reason:"no first useful signal boundary"`; this is not a data gap, it is the accurate
-  reflection of those cells never producing accepted terminal evidence.
+  reflection of those cells never reaching a correctly-targeted signal that satisfied the expected
+  outcome — not that all 6 lack terminal evidence outright (`scenario-current-skill-08d5daaa`'s own
+  sidecar carries a real `terminal_authoritative_event`, well-formed but for the wrong module; the
+  other 5 produced no terminal evidence at all).
 - **`no-skill` is a skill-ablation arm under the identical narrow scenario policy, not an
   unrestricted-agent baseline.** Both conditions operate under the same
   `allowed_gradle_tasks`/`allowed_kmptest_subcommands` policy; the only difference is skill
   availability. A `no-skill` cell's 100% denial rate reflects the agent exploring outside that
   narrow policy without the skill's guidance — not a claim about what an unrestricted agent would do.
 - **Stable measurement scope makes captures comparable; hard-partition fields correctly prevent
-  invalid pooling.** All three canaries (v3, v4, v5) share the identical non-secret scope id
-  `4b9913f9-3c28-4fd9-afc2-275613b66520`, which is what makes this report's cross-batch comparison
-  meaningful at all — but `schema`, `skill_source_sha`, and `claude_code_version` (all
-  `HARD_PARTITION_FIELDS` entries) correctly keep the three batches in separate aggregate groups
-  regardless of the shared scope, exactly as intended.
+  invalid pooling.** The schema-v4 and schema-v5 batches share the identical non-secret scope id
+  `4b9913f9-3c28-4fd9-afc2-275613b66520`, which is what makes this report's v4-vs-v5 comparison
+  meaningful at all. Schema-v3 is non-scoped historical context, not a third scope-sharing batch —
+  it predates the persistent measurement-scope mechanism and the `ambient_skill_profile` field
+  entirely, and carries no scope id at all. `schema`, `kmp_test_cli_source_sha`, and (for
+  `current-skill` records) `skill_source_sha` are the `HARD_PARTITION_FIELDS` entries that actually
+  keep the v4 and v5 batches in separate aggregate groups despite the shared scope, exactly as
+  intended; `claude_code_version` is also a hard-partition field but was equal between them this
+  time, so it did not itself cause the separation.
 - **No statistical significance, general speedup, token savings, unrestricted-agent superiority, or
   product-quality claim is made anywhere in this report.** Every numeric comparison above is
   presented as a directional observation at `n=2`, explicitly confounded by the items above.
 - **Failures are preserved without smoothing**: 6 of the 8 new cells are honest `success:false` —
-  more than the v4 batch's 3 of 8 — disclosed in full in the per-scenario tables above, none hidden,
+  more than the v4 batch's 5 of 8 (3 in scenario 1, 2 in scenario 2) — disclosed in full in the
+  per-scenario tables above, none hidden,
   softened, or excluded. Scenario 1's `current-skill` regression (1-of-2 → 0-of-2) and scenario 2's
   `current-skill` efficiency regression (fewer allowed calls/less wall time in v4 vs. more in v5) are
   both stated plainly above, not downplayed.
