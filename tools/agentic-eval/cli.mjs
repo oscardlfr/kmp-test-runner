@@ -60,7 +60,7 @@ import { loadMeasurementScopeFile, createMeasurementScopeFileExclusive } from '.
 // CI job -- see condition-launcher.mjs's identical fix for the full story).
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
-const PINNED_SKILL_SHA = '6d45dde88956ad33f0725b863e8fff8960c1fc07';
+const PINNED_SKILL_SHA = '9e47a9d132f5b9ea6ac5bc50a66c844458fd363e';
 // KMP_EVAL_RUNS_ROOT override exists specifically so tests never write to (or, worse, clean up
 // inside) the real committable tools/runs/ directory -- an earlier version of the integration
 // test suite listed and deleted files directly under the real RUNS_ROOT, including an
