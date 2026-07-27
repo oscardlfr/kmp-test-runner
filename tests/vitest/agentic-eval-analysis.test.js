@@ -836,6 +836,31 @@ describe('buildSummary', () => {
     // '-' (U+002D) < '_' (U+005F) in code-point order -- "a-b" must always sort first.
     expect(summary.groups.map((g) => g.group_key.scenario_id)).toEqual(['a-b', 'a_b']);
   });
+
+  // Review-round P2 (coverage gap): the test above only re-proves the OLD localeCompare bug
+  // (scenario_id "a-b" vs "a_b") -- it never exercises the tie-break fix itself, since both
+  // pairs there already differ on scenario_id, the FIRST field the old code compared. Two groups
+  // that are equal on scenario_id AND condition but differ in some OTHER HARD_PARTITION_FIELDS
+  // value (e.g. platform) are exactly the case the old code left non-deterministic: lacking a
+  // tie-break beyond those two fields, their relative order fell back to Map/file-processing
+  // insertion order -- a property of which record happened to be read first, not of the data.
+  // Feeding the identical two groups in BOTH orders and asserting the SAME resulting order proves
+  // the fix is genuinely input-order-independent, not merely a comparator that happens to return
+  // non-zero for this one pair of inputs.
+  it('orders two groups sharing scenario_id and condition but differing in platform identically, regardless of input order', () => {
+    const windowsFirst = buildSummary([
+      pair({ run_id: 'r1', platform: 'windows' }, {}),
+      pair({ run_id: 'r2', platform: 'linux' }, {}),
+    ]);
+    const linuxFirst = buildSummary([
+      pair({ run_id: 'r3', platform: 'linux' }, {}),
+      pair({ run_id: 'r4', platform: 'windows' }, {}),
+    ]);
+    // 'l' (U+006C) < 'w' (U+0077) -- the "linux" group must sort first in BOTH input orders.
+    const expectedOrder = ['linux', 'windows'];
+    expect(windowsFirst.groups.map((g) => g.group_key.platform)).toEqual(expectedOrder);
+    expect(linuxFirst.groups.map((g) => g.group_key.platform)).toEqual(expectedOrder);
+  });
 });
 
 describe('analyzeRunsDir -- end-to-end, fail-closed directory scan', () => {
