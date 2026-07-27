@@ -5,21 +5,32 @@
 // Claude call. Mirrors agentic-eval-validate-command.test.js's fixture style (a full, schema-valid
 // v5 scenario record + a matching, hash-bound sidecar written to a real temp directory) since
 // analyzeRunsDir's own end-to-end path is a thin wrapper over the exact same validateRunRecordFile
-// gate cmdValidate/cmdAggregate already use.
+// gate cmdValidate/cmdAggregate already use (now via run-record-loader.mjs).
+//
+// Review-round correction (2026-07-27): the ordinal semantics, post-skill nulling on failed runs,
+// bidirectional record<->sidecar coherence, failure_class causal precision, set-integrity gaps
+// (duplicate run_id, benchmark_eligible pooling), and privacy gaps (untrusted run_id echo, no
+// final scan) this file now tests were all real defects found by an independent review pass
+// against this module's first version -- see git history for the exact before/after. The 5
+// real-record regression tests below were hand-computed against the ACTUAL committed record+
+// sidecar pairs (read-only, tools/runs/agentic-eval-scenario/) specifically because the review
+// demonstrated the previous ordinal semantic silently collapsed every real delayed-activation run
+// to a constant 1.
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import {
   ANALYSIS_SCHEMA, FAILURE_CLASS_VALUES, classifyFailure, deriveSkillRelativeFields,
-  analyzeRunRecord, buildSummary, analyzeRunsDir, loadAcceptedAuditSidecar,
+  analyzeRunRecord, buildSummary, analyzeRunsDir,
 } from '../../tools/agentic-eval/analysis.mjs';
 import { cmdAnalyze } from '../../tools/agentic-eval/cli.mjs';
 import { ACCEPTED_AUDIT_SIDECAR_SCHEMA } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 
 const VALID_SCOPE_ID = '11111111-2222-4333-8444-555555555555';
+const REAL_RUNS_DIR = path.join(process.cwd(), 'tools', 'runs', 'agentic-eval-scenario');
 
 // ---------------------------------------------------------------------------------------------
 // Fixture builders -- mirror agentic-eval-validate-command.test.js's baseCalibrationRecordV1/
@@ -42,7 +53,7 @@ function gradingChecks(overrides = {}) {
 function scenarioRecord(overrides = {}) {
   const condition = overrides.condition ?? 'current-skill';
   const skillInvoked = overrides.skill_invoked ?? { value: condition === 'current-skill', reason: null };
-  return {
+  const base = {
     schema: 5, run_id: overrides.run_id ?? 'scenario-current-skill-abcd1234', run_kind: 'scenario', benchmark_eligible: true,
     scenario_id: 'kampkit-android-host-test-discovery', query_id: null, condition,
     skill_source_sha: condition === 'current-skill' ? '9e47a9d132f5b9ea6ac5bc50a66c844458fd363e' : null,
@@ -88,8 +99,12 @@ function scenarioRecord(overrides = {}) {
     foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
     ambient_skill_profile: { count: 16, scope_id: VALID_SCOPE_ID, fingerprint_hmac: '0'.repeat(64) },
     errors: [],
-    ...Object.fromEntries(Object.entries(overrides).filter(([k]) => !['grading_checks', 'skill_invoked', 'hook_call_count', 'hook_deny_count'].includes(k))),
   };
+  const skip = new Set(['grading_checks', 'skill_invoked', 'hook_call_count', 'hook_deny_count']);
+  for (const [k, v] of Object.entries(overrides)) {
+    if (!skip.has(k)) base[k] = v;
+  }
+  return base;
 }
 
 const BASH_KINDS = new Set(['kmp-test', 'gradle', 'other-bash']);
@@ -123,7 +138,7 @@ function bashEntry(useIdx, { kind = 'other-bash', resultIdx = useIdx + 1, decisi
  * ordinal/phase and recomputes `summary` from the entries themselves, exactly mirroring
  * buildAcceptedRunAuditSidecar's own formulas, so every fixture independently satisfies
  * validateAcceptedRunAuditSidecar's cross-checks rather than merely analysis.mjs's own reading. */
-function sidecarFor(record, { entries = [], firstUsefulSignalEvent = null } = {}) {
+function sidecarFor(record, { entries = [], firstUsefulSignalEvent = null, terminalAuthoritativeEvent } = {}) {
   const sorted = [...entries].sort((a, b) => a.tool_use_event_index - b.tool_use_event_index);
   const boundaryIndex = firstUsefulSignalEvent?.index ?? null;
   const toolCalls = sorted.map((tc, ordinal) => ({ ordinal, ...tc, phase: phaseFor(tc, boundaryIndex) }));
@@ -133,7 +148,8 @@ function sidecarFor(record, { entries = [], firstUsefulSignalEvent = null } = {}
   return {
     schema: ACCEPTED_AUDIT_SIDECAR_SCHEMA, run_id: record.run_id, run_schema: 5, run_kind: 'scenario',
     condition: record.condition, scenario_id: record.scenario_id,
-    first_useful_signal_event: firstUsefulSignalEvent, terminal_authoritative_event: firstUsefulSignalEvent,
+    first_useful_signal_event: firstUsefulSignalEvent,
+    terminal_authoritative_event: terminalAuthoritativeEvent !== undefined ? terminalAuthoritativeEvent : firstUsefulSignalEvent,
     tool_calls: toolCalls,
     summary: {
       tool_calls_total: toolCalls.length,
@@ -188,81 +204,73 @@ function withTempDir(fn) {
 
 // ---------------------------------------------------------------------------------------------
 
-describe('classifyFailure -- explicit closed-vocabulary precedence', () => {
+describe('classifyFailure -- explicit, non-causal closed-vocabulary precedence', () => {
   const base = {
-    success: false, activationExpected: true, targetSkillInvoked: true, preSkillToolCalls: 0,
-    hookDenyCount: 0, authoritativeEvidencePresent: true, targetMatchesExpected: true,
-    outcomeMatchesExpected: true, finalAnswerConsistent: true,
+    success: false, activationExpected: true, targetSkillInvoked: true, hookDenyCount: 0,
+    terminalEvidencePresent: true, terminalEvidenceWellFormed: true,
+    targetMatchesExpected: true, outcomeMatchesExpected: true, finalAnswerConsistent: true,
   };
 
   it('every returned value is a member of the published closed vocabulary', () => {
     expect(FAILURE_CLASS_VALUES).toEqual([
-      'success', 'target-skill-not-invoked', 'pre-skill-exploration', 'policy-blocked',
-      'no-authoritative-evidence', 'wrong-target', 'outcome-mismatch', 'unclassified',
+      'success', 'target-skill-not-invoked', 'policy-denial-observed-without-terminal-evidence',
+      'no-authoritative-evidence', 'wrong-target', 'outcome-mismatch', 'final-answer-mismatch', 'unclassified',
     ]);
   });
 
   it('success:true always wins, regardless of any other signal', () => {
     expect(classifyFailure({ ...base, success: true })).toBe('success');
-    // Competing causes present -- must NOT leak through once success is true.
-    expect(classifyFailure({ ...base, success: true, targetSkillInvoked: false, hookDenyCount: 9, preSkillToolCalls: 9 })).toBe('success');
+    expect(classifyFailure({ ...base, success: true, targetSkillInvoked: false, hookDenyCount: 9, terminalEvidencePresent: false })).toBe('success');
   });
 
   it('target-skill-not-invoked beats every downstream cause when activation was expected', () => {
     expect(classifyFailure({ ...base, targetSkillInvoked: false })).toBe('target-skill-not-invoked');
-    // Competing cause: also has denials and no evidence -- activation still wins (most upstream axis).
-    expect(classifyFailure({ ...base, targetSkillInvoked: false, hookDenyCount: 3, authoritativeEvidencePresent: false })).toBe('target-skill-not-invoked');
+    expect(classifyFailure({ ...base, targetSkillInvoked: false, hookDenyCount: 3, terminalEvidencePresent: false })).toBe('target-skill-not-invoked');
   });
 
   it('target-skill-not-invoked never fires when activation was not expected (no-skill baseline)', () => {
     expect(classifyFailure({ ...base, activationExpected: false, targetSkillInvoked: null })).not.toBe('target-skill-not-invoked');
   });
 
-  it('pre-skill-exploration fires when invoked-but-delayed AND no evidence resulted', () => {
-    expect(classifyFailure({ ...base, authoritativeEvidencePresent: false, preSkillToolCalls: 3, hookDenyCount: 0 })).toBe('pre-skill-exploration');
+  it('policy-denial-observed-without-terminal-evidence fires only when there is no USABLE evidence and a denial occurred', () => {
+    expect(classifyFailure({ ...base, terminalEvidencePresent: false, terminalEvidenceWellFormed: false, hookDenyCount: 2 })).toBe('policy-denial-observed-without-terminal-evidence');
+    // "present but not well-formed" also counts as not-usable.
+    expect(classifyFailure({ ...base, terminalEvidencePresent: true, terminalEvidenceWellFormed: false, hookDenyCount: 1 })).toBe('policy-denial-observed-without-terminal-evidence');
   });
 
-  it('policy-blocked beats pre-skill-exploration when both apply (an active denial outranks passive delay)', () => {
-    expect(classifyFailure({ ...base, authoritativeEvidencePresent: false, preSkillToolCalls: 3, hookDenyCount: 5 })).toBe('policy-blocked');
-  });
-
-  it('policy-blocked fires when no evidence resulted, a denial occurred, and there was no pre-skill delay', () => {
-    expect(classifyFailure({ ...base, authoritativeEvidencePresent: false, preSkillToolCalls: 0, hookDenyCount: 2 })).toBe('policy-blocked');
-  });
-
-  it('policy-blocked applies to a no-skill-condition run too (activation axis does not gate it)', () => {
-    expect(classifyFailure({ ...base, activationExpected: false, targetSkillInvoked: null, preSkillToolCalls: null, authoritativeEvidencePresent: false, hookDenyCount: 1 })).toBe('policy-blocked');
+  it('policy-denial-observed-without-terminal-evidence applies to a no-skill-condition run too (activation axis does not gate it)', () => {
+    expect(classifyFailure({ ...base, activationExpected: false, targetSkillInvoked: null, terminalEvidencePresent: false, terminalEvidenceWellFormed: false, hookDenyCount: 1 })).toBe('policy-denial-observed-without-terminal-evidence');
   });
 
   it('no-authoritative-evidence fires when nothing else explains the missing evidence', () => {
-    expect(classifyFailure({ ...base, authoritativeEvidencePresent: false, preSkillToolCalls: 0, hookDenyCount: 0 })).toBe('no-authoritative-evidence');
+    expect(classifyFailure({ ...base, terminalEvidencePresent: false, terminalEvidenceWellFormed: false, hookDenyCount: 0 })).toBe('no-authoritative-evidence');
   });
 
-  it('a denial that happened but did NOT prevent well-formed evidence does not override a more specific downstream cause', () => {
+  it('a denial that happened but did NOT prevent well-formed, present evidence does not override a more specific downstream cause', () => {
     // Real-world shape (mirrors the committed kampkit-android-host-test-discovery fixture): the
     // run had denied pre-skill Bash attempts, but a LATER attempt still produced well-formed
-    // evidence for the wrong module -- wrong-target must win, not policy-blocked.
-    expect(classifyFailure({ ...base, hookDenyCount: 4, preSkillToolCalls: 3, authoritativeEvidencePresent: true, targetMatchesExpected: false })).toBe('wrong-target');
+    // evidence for the wrong module -- wrong-target must win, never the policy-denial class.
+    expect(classifyFailure({ ...base, hookDenyCount: 4, terminalEvidencePresent: true, terminalEvidenceWellFormed: true, targetMatchesExpected: false })).toBe('wrong-target');
   });
 
-  it('wrong-target fires once evidence is well-formed but targets the wrong module', () => {
+  it('wrong-target fires once evidence is present+well-formed but targets the wrong module', () => {
     expect(classifyFailure({ ...base, targetMatchesExpected: false })).toBe('wrong-target');
   });
 
-  it('outcome-mismatch fires once evidence+target are fine but the outcome counts disagree', () => {
+  it('outcome-mismatch and final-answer-mismatch are DISTINCT classes, never folded together', () => {
     expect(classifyFailure({ ...base, outcomeMatchesExpected: false })).toBe('outcome-mismatch');
+    // finalAnswerConsistent alone, with outcomeMatchesExpected genuinely true -- must NOT read as outcome-mismatch.
+    expect(classifyFailure({ ...base, outcomeMatchesExpected: true, finalAnswerConsistent: false })).toBe('final-answer-mismatch');
   });
 
-  it('outcome-mismatch also covers a final-answer/evidence inconsistency alone', () => {
-    expect(classifyFailure({ ...base, finalAnswerConsistent: false })).toBe('outcome-mismatch');
+  it('outcome-mismatch beats final-answer-mismatch when both are false (dependency order: target -> outcome -> final-answer)', () => {
+    expect(classifyFailure({ ...base, outcomeMatchesExpected: false, finalAnswerConsistent: false })).toBe('outcome-mismatch');
   });
 
   it('never returns unclassified for any input covered by the documented precedence', () => {
-    // Sweep every axis independently off of the "everything fine" base -- with success:false forced,
-    // each single-axis failure must resolve to a specific class, never fall through to the catch-all.
     const singleAxisFailures = [
       { ...base, targetSkillInvoked: false },
-      { ...base, authoritativeEvidencePresent: false },
+      { ...base, terminalEvidencePresent: false, terminalEvidenceWellFormed: false },
       { ...base, targetMatchesExpected: false },
       { ...base, outcomeMatchesExpected: false },
       { ...base, finalAnswerConsistent: false },
@@ -274,33 +282,46 @@ describe('classifyFailure -- explicit closed-vocabulary precedence', () => {
 });
 
 describe('deriveSkillRelativeFields', () => {
+  const allNullShape = {
+    ok: true, target_skill_invocation_ordinal: null, target_skill_attempt_ordinal: null,
+    pre_skill_tool_calls: null, pre_skill_policy_denials: null,
+    post_skill_tool_calls_total: null, post_skill_policy_denials_total: null,
+    post_skill_tool_calls_through_signal: null, post_skill_policy_denials_through_signal: null,
+  };
+
   it('returns all-null when activation is not expected (no-skill condition)', () => {
-    const result = deriveSkillRelativeFields({ skill_invocation_event: null }, null, false, null);
-    expect(result).toEqual({
-      ok: true, target_skill_invocation_ordinal: null, pre_skill_tool_calls: null,
-      pre_skill_policy_denials: null, post_skill_pre_signal_tool_calls: null, post_skill_pre_signal_policy_denials: null,
-    });
+    expect(deriveSkillRelativeFields({ skill_invocation_event: null }, null, false, null)).toEqual(allNullShape);
   });
 
-  it('returns all-null when the target skill was never invoked', () => {
-    const result = deriveSkillRelativeFields({ skill_invocation_event: null }, null, true, false);
-    expect(result.ok).toBe(true);
-    expect(result.target_skill_invocation_ordinal).toBeNull();
-    expect(result.pre_skill_tool_calls).toBeNull();
+  it('returns all-null when the target skill was never invoked and the sidecar agrees (no confirmed entry)', () => {
+    const sidecar = { first_useful_signal_event: null, tool_calls: [bashEntry(0)].map((tc, i) => ({ ordinal: i, ...tc, phase: 'no-signal' })) };
+    expect(deriveSkillRelativeFields({ skill_invocation_event: null }, sidecar, true, false)).toEqual(allNullShape);
   });
 
-  it('ordinal 1 + zero pre-skill calls for an immediate, first-attempt invocation', () => {
+  it('global ordinal 0 + attempt ordinal 1 + zero pre-skill calls for an immediate, first-attempt invocation', () => {
     const record = { skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 5 } };
     const sidecar = { first_useful_signal_event: null, tool_calls: [targetSkillEntry(5)].map((tc, i) => ({ ordinal: i, ...tc, phase: 'no-signal' })) };
     const result = deriveSkillRelativeFields(record, sidecar, true, true);
     expect(result).toEqual({
-      ok: true, target_skill_invocation_ordinal: 1, pre_skill_tool_calls: 0,
-      pre_skill_policy_denials: 0, post_skill_pre_signal_tool_calls: null, post_skill_pre_signal_policy_denials: null,
+      ...allNullShape, target_skill_invocation_ordinal: 0, target_skill_attempt_ordinal: 1,
+      pre_skill_tool_calls: 0, pre_skill_policy_denials: 0,
+      post_skill_tool_calls_total: 0, post_skill_policy_denials_total: 0,
     });
   });
 
-  it('counts pre-skill tool calls (including an earlier failed attempt at the SAME skill) before the confirmed invocation', () => {
-    const record = { skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 20 } }; // representative = the CONFIRMED attempt
+  it('global ordinal reflects delayed activation (unrelated calls first) -- distinct from attempt ordinal', () => {
+    const record = { skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 30 } };
+    const entries = [bashEntry(2), bashEntry(8), bashEntry(15), bashEntry(22), targetSkillEntry(30)];
+    const sidecar = sidecarFor(record, { entries });
+    const result = deriveSkillRelativeFields(record, sidecar, true, true);
+    expect(result.ok).toBe(true);
+    expect(result.target_skill_invocation_ordinal).toBe(4); // 4 unrelated calls precede it (global, 0-based)
+    expect(result.target_skill_attempt_ordinal).toBe(1); // still only 1 attempt AT THE SKILL itself
+    expect(result.pre_skill_tool_calls).toBe(4);
+  });
+
+  it('attempt ordinal reflects a retried invocation -- distinct from global ordinal', () => {
+    const record = { skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 20 } };
     const entries = [
       bashEntry(5), // unrelated exploration
       targetSkillEntry(10, { resultStatus: 'error' }), // 1st attempt at the target skill: failed
@@ -309,7 +330,8 @@ describe('deriveSkillRelativeFields', () => {
     const sidecar = sidecarFor(record, { entries });
     const result = deriveSkillRelativeFields(record, sidecar, true, true);
     expect(result.ok).toBe(true);
-    expect(result.target_skill_invocation_ordinal).toBe(2); // 2nd attempt AT THE SKILL succeeded
+    expect(result.target_skill_invocation_ordinal).toBe(2); // global ordinal of the confirmed entry
+    expect(result.target_skill_attempt_ordinal).toBe(2); // 2nd attempt AT THE SKILL succeeded
     expect(result.pre_skill_tool_calls).toBe(2); // the bash call AND the failed attempt both precede it
   });
 
@@ -327,30 +349,40 @@ describe('deriveSkillRelativeFields', () => {
     expect(result.pre_skill_policy_denials).toBe(2);
   });
 
-  it('post-skill-pre-signal fields are null when there is no first-useful-signal boundary at all', () => {
-    const record = { skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 10 } };
-    const entries = [targetSkillEntry(10), bashEntry(20, { kind: 'kmp-test', operation: 'describe' })];
+  it('post_skill_tool_calls_total/denials are populated even with NO signal boundary (the failed-run case)', () => {
+    const record = { skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 4 } };
+    const entries = [
+      targetSkillEntry(4),
+      bashEntry(9, { kind: 'kmp-test', decision: 'deny', resultStatus: 'error' }),
+      bashEntry(16, { decision: 'deny', resultStatus: 'error' }),
+      bashEntry(24, { decision: 'deny', resultStatus: 'error' }),
+    ];
     const sidecar = sidecarFor(record, { entries }); // no firstUsefulSignalEvent
     const result = deriveSkillRelativeFields(record, sidecar, true, true);
-    expect(result.post_skill_pre_signal_tool_calls).toBeNull();
-    expect(result.post_skill_pre_signal_policy_denials).toBeNull();
+    expect(result.post_skill_tool_calls_total).toBe(3);
+    expect(result.post_skill_policy_denials_total).toBe(3);
+    // The narrower, signal-relative pair remains null -- there is no boundary to bound it against.
+    expect(result.post_skill_tool_calls_through_signal).toBeNull();
+    expect(result.post_skill_policy_denials_through_signal).toBeNull();
   });
 
-  it('counts post-skill, pre-signal tool calls and denials once a real signal boundary exists', () => {
+  it('post_skill_tool_calls_through_signal counts calls through (inclusive of) the signal-producing attempt', () => {
     const record = { skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 10 } };
     const entries = [
       targetSkillEntry(10),
-      bashEntry(15, { kind: 'kmp-test', operation: 'describe', resultIdx: 16 }), // pre-signal exploration after invoking
-      bashEntry(20, { kind: 'kmp-test', operation: 'doctor', decision: 'deny', resultStatus: 'error', resultIdx: 21 }), // denied, still pre-signal
+      bashEntry(15, { kind: 'kmp-test', operation: 'describe', resultIdx: 16 }),
+      bashEntry(20, { kind: 'kmp-test', operation: 'doctor', decision: 'deny', resultStatus: 'error', resultIdx: 21 }),
       bashEntry(25, { kind: 'kmp-test', operation: 'parallel', resultIdx: 26 }), // produces the signal
       bashEntry(30, { kind: 'kmp-test', operation: 'parallel', resultIdx: 31 }), // AFTER the signal
     ];
     const firstUsefulSignalEvent = { type: 'user.tool_result', index: 26 };
     const sidecar = sidecarFor(record, { entries, firstUsefulSignalEvent });
     const result = deriveSkillRelativeFields(record, sidecar, true, true);
-    // Post-skill (index > 10), phase pre-signal/produced-signal: the two exploration calls (15, 20) + the signal-producing call (25) = 3.
-    expect(result.post_skill_pre_signal_tool_calls).toBe(3);
-    expect(result.post_skill_pre_signal_policy_denials).toBe(1);
+    // Through the signal (index 15, 20, 25 -- inclusive of the produced-signal call): 3.
+    expect(result.post_skill_tool_calls_through_signal).toBe(3);
+    expect(result.post_skill_policy_denials_through_signal).toBe(1);
+    // Total post-skill is unconditional -- includes the call AFTER the signal too: 4.
+    expect(result.post_skill_tool_calls_total).toBe(4);
   });
 
   it('fails closed when skill_invoked is true but skill_invocation_event is missing', () => {
@@ -374,6 +406,32 @@ describe('deriveSkillRelativeFields', () => {
       expect(typeof result.error).toBe('string');
     }
   });
+
+  // Bidirectional record<->sidecar coherence (review finding P1): neither side is trusted alone.
+  describe('bidirectional record<->sidecar coherence', () => {
+    it('fails closed when the record says NOT invoked but the sidecar shows a confirmed target-skill entry', () => {
+      const sidecar = { first_useful_signal_event: null, tool_calls: [{ ordinal: 0, ...targetSkillEntry(5), phase: 'no-signal' }] };
+      const result = deriveSkillRelativeFields({ skill_invocation_event: null }, sidecar, true, false);
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/not invoked/i);
+    });
+
+    it('fails closed when the record says invoked but the sidecar entry at that index was NOT confirmed (result_status error)', () => {
+      const record = { skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 5 } };
+      // The sidecar's OWN entry at index 5 is an ERRORED target-skill attempt, never confirmed --
+      // a record claiming invoked:true here disagrees with what the sidecar actually shows.
+      const sidecar = { first_useful_signal_event: null, tool_calls: [{ ordinal: 0, ...targetSkillEntry(5, { resultStatus: 'error' }), phase: 'no-signal' }] };
+      const result = deriveSkillRelativeFields(record, sidecar, true, true);
+      expect(result.ok).toBe(false);
+    });
+
+    it('does not accept an unrelated confirmed target-skill entry at a DIFFERENT index as satisfying invoked:true', () => {
+      const record = { skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 999 } };
+      const sidecar = { first_useful_signal_event: null, tool_calls: [{ ordinal: 0, ...targetSkillEntry(5), phase: 'no-signal' }] };
+      const result = deriveSkillRelativeFields(record, sidecar, true, true);
+      expect(result.ok).toBe(false);
+    });
+  });
 });
 
 describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
@@ -384,28 +442,25 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
     expect(ok).toBe(true);
     expect(entry.activation_expected).toBe(true);
     expect(entry.target_skill_invoked).toBe(true);
-    expect(entry.target_skill_invocation_ordinal).toBe(1);
+    expect(entry.target_skill_invocation_ordinal).toBe(0);
+    expect(entry.target_skill_attempt_ordinal).toBe(1);
     expect(entry.pre_skill_tool_calls).toBe(0);
     expect(entry.success).toBe(true);
     expect(entry.failure_class).toBe('success');
   });
 
-  it('delayed activation: invocation succeeds only on its second attempt, after unrelated exploration', () => {
+  it('delayed activation: several unrelated calls precede a first-attempt invocation', () => {
     const record = scenarioRecord({
       success: { value: true, reason: null }, expected_outcome_matched: { value: true, reason: null },
-      skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 12 },
+      skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 22 },
     });
-    const entries = [
-      bashEntry(2), // unrelated pre-skill exploration
-      targetSkillEntry(6, { resultStatus: 'error' }), // 1st attempt at the skill fails
-      targetSkillEntry(12, { resultStatus: 'success' }), // 2nd attempt confirmed
-      bashEntry(18, { kind: 'kmp-test', operation: 'parallel' }),
-    ];
+    const entries = [bashEntry(2), bashEntry(8), bashEntry(15), targetSkillEntry(22), bashEntry(28, { kind: 'kmp-test', operation: 'parallel' })];
     const sidecar = sidecarFor(record, { entries });
     const { ok, entry } = analyzeRunRecord(record, sidecar);
     expect(ok).toBe(true);
-    expect(entry.target_skill_invocation_ordinal).toBe(2);
-    expect(entry.pre_skill_tool_calls).toBe(2);
+    expect(entry.target_skill_invocation_ordinal).toBe(3); // GLOBAL ordinal -- must reflect the delay, never collapse to 1
+    expect(entry.target_skill_attempt_ordinal).toBe(1);
+    expect(entry.pre_skill_tool_calls).toBe(3);
     expect(entry.success).toBe(true);
   });
 
@@ -421,14 +476,14 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
     expect(entry.activation_expected).toBe(true);
     expect(entry.target_skill_invoked).toBe(false);
     expect(entry.target_skill_invocation_ordinal).toBeNull();
+    expect(entry.target_skill_attempt_ordinal).toBeNull();
     expect(entry.pre_skill_tool_calls).toBeNull();
     expect(entry.failure_class).toBe('target-skill-not-invoked');
   });
 
-  it('pre-skill denials: Bash attempts before invocation were denied by policy', () => {
+  it('pre-skill denials: Bash attempts before invocation were denied, no evidence ever resulted', () => {
     const record = scenarioRecord({
       skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 15 },
-      hook_deny_count: 2, hook_call_count: 3,
       grading_checks: gradingChecks({ authoritative_evidence_well_formed: { passed: false, detail: 'no attempt capable of producing target evidence was ever made' } }),
     });
     const entries = [
@@ -436,11 +491,39 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
       bashEntry(8, { decision: 'deny', resultStatus: 'error' }),
       targetSkillEntry(15),
     ];
+    record.hook_deny_count = 2; record.hook_call_count = 3;
     const sidecar = sidecarFor(record, { entries });
     const { ok, entry } = analyzeRunRecord(record, sidecar);
     expect(ok).toBe(true);
     expect(entry.pre_skill_policy_denials).toBe(2);
-    expect(entry.failure_class).toBe('policy-blocked');
+    expect(entry.failure_class).toBe('policy-denial-observed-without-terminal-evidence');
+  });
+
+  it('post-skill work (no signal reached): 9 denied calls after invocation are visible, not nulled -- the exact failed-run gap the review found', () => {
+    // Mirrors the real committed scenario-current-skill-27d0c3c6 shape: invoked immediately, then
+    // every subsequent attempt denied, terminal_authoritative_event stays null.
+    const record = scenarioRecord({
+      skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 4 },
+      grading_checks: gradingChecks({
+        bash_tool_use_present: { passed: false, detail: 'no policy-allowed command was ever attempted' },
+        authoritative_evidence_well_formed: { passed: false, detail: 'no attempt capable of producing target evidence was ever made' },
+        authoritative_target_matches_expected: { passed: false, detail: 'no well-formed terminal evidence to check' },
+        authoritative_outcome_matches_expected: { passed: false, detail: 'no well-formed, correctly-targeted terminal evidence to check' },
+        final_answer_consistent_with_evidence: { passed: false, detail: 'final answer contains no KMP_EVAL_RESULT block' },
+      }),
+    });
+    record.hook_deny_count = 9; record.hook_call_count = 9;
+    const entries = [
+      targetSkillEntry(4),
+      ...[9, 16, 24, 32, 39, 44, 49, 58].map((idx) => bashEntry(idx, { decision: 'deny', resultStatus: 'error' })),
+    ];
+    const sidecar = sidecarFor(record, { entries, terminalAuthoritativeEvent: null });
+    const { ok, entry } = analyzeRunRecord(record, sidecar);
+    expect(ok).toBe(true);
+    expect(entry.post_skill_tool_calls_total).toBe(8);
+    expect(entry.post_skill_policy_denials_total).toBe(8);
+    expect(entry.terminal_authoritative_evidence_present).toBe(false);
+    expect(entry.failure_class).toBe('policy-denial-observed-without-terminal-evidence');
   });
 
   it('post-skill/pre-signal work: extra tool calls happen after invocation but before the authoritative signal', () => {
@@ -460,21 +543,23 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
     const sidecar = sidecarFor(record, { entries, firstUsefulSignalEvent });
     const { ok, entry } = analyzeRunRecord(record, sidecar);
     expect(ok).toBe(true);
-    expect(entry.post_skill_pre_signal_tool_calls).toBe(3);
+    expect(entry.post_skill_tool_calls_through_signal).toBe(3);
+    expect(entry.post_skill_tool_calls_total).toBe(3);
     expect(entry.post_signal_tool_calls).toBe(0);
     expect(entry.success).toBe(true);
+    expect(entry.failure_class).toBe('success');
   });
 
   it('wrong target: well-formed evidence, but it targets the wrong module (mirrors the committed kampkit fixture shape)', () => {
     const record = scenarioRecord({
       skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 28 },
-      hook_deny_count: 3,
       grading_checks: gradingChecks({
         authoritative_target_matches_expected: { passed: false, detail: 'terminal attempt targeted the WRONG module' },
         authoritative_outcome_matches_expected: { passed: false, detail: 'no well-formed, correctly-targeted terminal evidence to check' },
         final_answer_consistent_with_evidence: { passed: false, detail: 'mismatch' },
       }),
     });
+    record.hook_deny_count = 3; record.hook_call_count = 3;
     const entries = [
       bashEntry(6, { decision: 'deny', resultStatus: 'error' }),
       bashEntry(13, { decision: 'deny', resultStatus: 'error' }),
@@ -482,10 +567,11 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
       targetSkillEntry(28),
       bashEntry(48, { kind: 'kmp-test', operation: 'parallel', resultIdx: 55 }),
     ];
-    const sidecar = sidecarFor(record, { entries });
+    const sidecar = sidecarFor(record, { entries, terminalAuthoritativeEvent: { type: 'user.tool_result', index: 55 } });
     const { ok, entry } = analyzeRunRecord(record, sidecar);
     expect(ok).toBe(true);
-    expect(entry.authoritative_evidence_present).toBe(true);
+    expect(entry.terminal_authoritative_evidence_present).toBe(true);
+    expect(entry.terminal_authoritative_evidence_well_formed).toBe(true);
     expect(entry.pre_skill_policy_denials).toBe(3);
     expect(entry.failure_class).toBe('wrong-target');
   });
@@ -503,7 +589,7 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
     const sidecar = sidecarFor(record, { entries: [targetSkillEntry(0)] });
     const { ok, entry } = analyzeRunRecord(record, sidecar);
     expect(ok).toBe(true);
-    expect(entry.authoritative_evidence_present).toBe(false);
+    expect(entry.terminal_authoritative_evidence_well_formed).toBe(false);
     expect(entry.failure_class).toBe('no-authoritative-evidence');
   });
 
@@ -515,11 +601,27 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
         final_answer_consistent_with_evidence: { passed: false, detail: 'mismatch' },
       }),
     });
-    const sidecar = sidecarFor(record, { entries: [targetSkillEntry(0), bashEntry(1, { kind: 'kmp-test', operation: 'parallel' })] });
+    const sidecar = sidecarFor(record, { entries: [targetSkillEntry(0), bashEntry(1, { kind: 'kmp-test', operation: 'parallel' })], terminalAuthoritativeEvent: { type: 'user.tool_result', index: 2 } });
     const { ok, entry } = analyzeRunRecord(record, sidecar);
     expect(ok).toBe(true);
-    expect(entry.authoritative_evidence_present).toBe(true);
+    expect(entry.terminal_authoritative_evidence_present).toBe(true);
     expect(entry.failure_class).toBe('outcome-mismatch');
+  });
+
+  it('final-answer mismatch alone: outcome genuinely matches, only the final-answer check failed -- never contradicts expected_outcome_matched', () => {
+    const record = scenarioRecord({
+      expected_outcome_matched: { value: true, reason: null },
+      skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 0 },
+      grading_checks: gradingChecks({
+        final_answer_consistent_with_evidence: { passed: false, detail: 'the KMP_EVAL_RESULT block does not exactly match' },
+      }),
+    });
+    const sidecar = sidecarFor(record, { entries: [targetSkillEntry(0), bashEntry(1, { kind: 'kmp-test', operation: 'parallel' })], terminalAuthoritativeEvent: { type: 'user.tool_result', index: 2 } });
+    const { ok, entry } = analyzeRunRecord(record, sidecar);
+    expect(ok).toBe(true);
+    expect(entry.expected_outcome_matched).toBe(true);
+    expect(entry.final_answer_consistent).toBe(false);
+    expect(entry.failure_class).toBe('final-answer-mismatch');
   });
 
   it('activation not expected (no-skill condition): every skill-relative field is null, evidence/outcome still graded', () => {
@@ -533,9 +635,10 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
     expect(entry.activation_expected).toBe(false);
     expect(entry.target_skill_invoked).toBeNull();
     expect(entry.target_skill_invocation_ordinal).toBeNull();
+    expect(entry.target_skill_attempt_ordinal).toBeNull();
     expect(entry.pre_skill_tool_calls).toBeNull();
     expect(entry.pre_skill_policy_denials).toBeNull();
-    expect(entry.post_skill_pre_signal_tool_calls).toBeNull();
+    expect(entry.post_skill_tool_calls_total).toBeNull();
     expect(entry.failure_class).toBe('success');
   });
 
@@ -545,6 +648,14 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
       grading_checks: gradingChecks().filter((c) => c.name !== 'authoritative_target_matches_expected'),
     });
     const sidecar = sidecarFor(record, { entries: [targetSkillEntry(0)] });
+    const { ok, error } = analyzeRunRecord(record, sidecar);
+    expect(ok).toBe(false);
+    expect(typeof error).toBe('string');
+  });
+
+  it('fails closed on a record<->sidecar coherence violation (invoked:false but sidecar shows a confirmed entry)', () => {
+    const record = scenarioRecord({ skill_invoked: { value: false, reason: null }, skill_invocation_event: null });
+    const sidecar = sidecarFor(record, { entries: [targetSkillEntry(0)] }); // sidecar DISAGREES: shows a confirmed entry
     const { ok, error } = analyzeRunRecord(record, sidecar);
     expect(ok).toBe(false);
     expect(typeof error).toBe('string');
@@ -568,10 +679,13 @@ describe('buildSummary', () => {
     const record = scenarioRecord(recordOverrides);
     const entry = {
       run_id: record.run_id, scenario_id: record.scenario_id, condition: record.condition,
-      activation_expected: true, target_skill_invoked: true, target_skill_invocation_ordinal: 1,
-      pre_skill_tool_calls: 0, pre_skill_policy_denials: 0, post_skill_pre_signal_tool_calls: null,
-      post_skill_pre_signal_policy_denials: null, post_signal_tool_calls: null,
-      authoritative_evidence_present: true, expected_outcome_matched: true, success: true,
+      activation_expected: true, target_skill_invoked: true, target_skill_invocation_ordinal: 0,
+      target_skill_attempt_ordinal: 1, pre_skill_tool_calls: 0, pre_skill_policy_denials: 0,
+      post_skill_tool_calls_total: 0, post_skill_policy_denials_total: 0,
+      post_skill_tool_calls_through_signal: null, post_skill_policy_denials_through_signal: null,
+      post_signal_tool_calls: null, first_useful_signal_present: false,
+      terminal_authoritative_evidence_present: true, terminal_authoritative_evidence_well_formed: true,
+      expected_outcome_matched: true, final_answer_consistent: true, success: true,
       failure_class: 'success', ...entryOverrides,
     };
     return { record, entry };
@@ -580,22 +694,32 @@ describe('buildSummary', () => {
   it('groups by scenario_id and condition, never pooling them together', () => {
     const pairs = [
       pair({ run_id: 'r1', scenario_id: 's1', condition: 'current-skill' }, {}),
-      pair({ run_id: 'r2', scenario_id: 's1', condition: 'no-skill' }, { activation_expected: false, target_skill_invoked: null, target_skill_invocation_ordinal: null, pre_skill_tool_calls: null, pre_skill_policy_denials: null }),
+      pair({ run_id: 'r2', scenario_id: 's1', condition: 'no-skill' }, { activation_expected: false, target_skill_invoked: null, target_skill_invocation_ordinal: null, target_skill_attempt_ordinal: null, pre_skill_tool_calls: null, pre_skill_policy_denials: null }),
       pair({ run_id: 'r3', scenario_id: 's2', condition: 'current-skill' }, {}),
     ];
     const summary = buildSummary(pairs);
     expect(summary.groups.length).toBe(3);
   });
 
-  it('never pools two different schema versions into the same group', () => {
+  // CodeRabbit nitpick fix: this test's own setup drives the split via `platform`, not `schema` --
+  // renamed to match what it actually asserts (both pairs share schema:5).
+  it('never pools two different platforms into the same group', () => {
     const pairs = [
       pair({ run_id: 'r1', schema: 5 }, {}),
       pair({ run_id: 'r2', schema: 5 }, {}),
     ];
-    // Force a provenance difference the Fairness Contract already treats as a hard partition key.
+    // platform is one of HARD_PARTITION_FIELDS -- a provenance difference must never be pooled.
     pairs[1].record.platform = 'linux';
     const summary = buildSummary(pairs);
     expect(summary.groups.length).toBe(2);
+  });
+
+  it('never pools two different schema versions into the same group', () => {
+    const pairs = [pair({ run_id: 'r1' }, {}), pair({ run_id: 'r2' }, {})];
+    pairs[1].record.schema = 4;
+    const summary = buildSummary(pairs);
+    expect(summary.groups.length).toBe(2);
+    expect(summary.groups.map((g) => g.group_key.schema).sort()).toEqual([4, 5]);
   });
 
   it('computes rates and never divides by zero', () => {
@@ -611,24 +735,24 @@ describe('buildSummary', () => {
   });
 
   it('returns a null rate rather than NaN when the denominator is zero', () => {
-    const pairs = [
-      pair({ run_id: 'r1', condition: 'no-skill' }, { activation_expected: false, target_skill_invoked: null }),
-    ];
+    const pairs = [pair({ run_id: 'r1', condition: 'no-skill' }, { activation_expected: false, target_skill_invoked: null })];
     const summary = buildSummary(pairs);
     expect(summary.groups[0].target_skill_invoked_rate).toBeNull();
   });
 
-  it('builds a compact distribution for invocation ordinal and pre/post-skill call counts', () => {
+  it('builds compact distributions for global ordinal, attempt ordinal, pre-skill, and post-skill-total calls', () => {
     const pairs = [
-      pair({ run_id: 'r1' }, { target_skill_invocation_ordinal: 1, pre_skill_tool_calls: 0 }),
-      pair({ run_id: 'r2' }, { target_skill_invocation_ordinal: 1, pre_skill_tool_calls: 3 }),
-      pair({ run_id: 'r3' }, { target_skill_invocation_ordinal: 2, pre_skill_tool_calls: 3 }),
-      pair({ run_id: 'r4' }, { target_skill_invocation_ordinal: null, pre_skill_tool_calls: null, target_skill_invoked: false, failure_class: 'target-skill-not-invoked' }),
+      pair({ run_id: 'r1' }, { target_skill_invocation_ordinal: 0, target_skill_attempt_ordinal: 1, pre_skill_tool_calls: 0, post_skill_tool_calls_total: 2 }),
+      pair({ run_id: 'r2' }, { target_skill_invocation_ordinal: 3, target_skill_attempt_ordinal: 1, pre_skill_tool_calls: 3, post_skill_tool_calls_total: 9 }),
+      pair({ run_id: 'r3' }, { target_skill_invocation_ordinal: 3, target_skill_attempt_ordinal: 2, pre_skill_tool_calls: 3, post_skill_tool_calls_total: 0 }),
+      pair({ run_id: 'r4' }, { target_skill_invocation_ordinal: null, target_skill_attempt_ordinal: null, pre_skill_tool_calls: null, post_skill_tool_calls_total: null, target_skill_invoked: false, failure_class: 'target-skill-not-invoked' }),
     ];
     const summary = buildSummary(pairs);
     const [group] = summary.groups;
-    expect(group.invocation_ordinal_distribution).toEqual({ '1': 2, '2': 1, null: 1 });
+    expect(group.target_skill_invocation_ordinal_distribution).toEqual({ '0': 1, '3': 2, null: 1 });
+    expect(group.target_skill_attempt_ordinal_distribution).toEqual({ '1': 2, '2': 1, null: 1 });
     expect(group.pre_skill_tool_calls_distribution).toEqual({ '0': 1, '3': 2, null: 1 });
+    expect(group.post_skill_tool_calls_total_distribution).toEqual({ '0': 1, '2': 1, '9': 1, null: 1 });
   });
 
   it('tallies failure_class counts across every published class', () => {
@@ -639,7 +763,7 @@ describe('buildSummary', () => {
     const summary = buildSummary(pairs);
     expect(summary.groups[0].failure_class_counts.success).toBe(1);
     expect(summary.groups[0].failure_class_counts['wrong-target']).toBe(1);
-    expect(summary.groups[0].failure_class_counts['policy-blocked']).toBe(0);
+    expect(summary.groups[0].failure_class_counts['policy-denial-observed-without-terminal-evidence']).toBe(0);
   });
 
   it('handles an empty input without throwing', () => {
@@ -664,13 +788,14 @@ describe('analyzeRunsDir -- end-to-end, fail-closed directory scan', () => {
     });
   });
 
-  it('a malformed record file is excluded, reported per-file, and the command exits non-zero -- following cmdAggregate precedent', () => {
+  it('a malformed record file is excluded, reported per-file with run_id:null, and the command exits non-zero', () => {
     withTempDir((dir) => {
       writeFileSync(path.join(dir, 'bad.json'), 'not valid json {{{');
       const result = analyzeRunsDir(dir);
       expect(result.per_run).toEqual([]);
       expect(result.errors.length).toBe(1);
-      expect(result.errors[0].run_id).toBe('(unknown)');
+      expect(result.errors[0].run_id).toBeNull();
+      expect(typeof result.errors[0].file_index).toBe('number');
       expect(cmdAnalyze({ 'runs-dir': dir })).toBe(1);
     });
   });
@@ -680,13 +805,14 @@ describe('analyzeRunsDir -- end-to-end, fail-closed directory scan', () => {
       const good = scenarioRecord({ run_id: 'scenario-current-skill-good0001' });
       writeRunAndSidecar(dir, good, { entries: [targetSkillEntry(0)] });
       const missingSidecar = scenarioRecord({ run_id: 'scenario-current-skill-nosidecar' });
-      const runPath = writeRunAndSidecar(dir, missingSidecar, { entries: [targetSkillEntry(0)] });
+      writeRunAndSidecar(dir, missingSidecar, { entries: [targetSkillEntry(0)] });
       rmSync(path.join(dir, 'audit', 'scenario-current-skill-nosidecar.json'));
       const result = analyzeRunsDir(dir);
       expect(result.per_run.length).toBe(1);
       expect(result.per_run[0].run_id).toBe('scenario-current-skill-good0001');
-      expect(result.errors.some((e) => e.run_id === 'scenario-current-skill-nosidecar')).toBe(true);
-      expect(runPath).toContain('scenario-current-skill-nosidecar');
+      // run_id:null here too -- the FAILING file's own record.run_id is never trusted enough to echo,
+      // even though in THIS specific case it happens to be well-formed; the rule is uniform.
+      expect(result.errors.some((e) => e.run_id === null)).toBe(true);
     });
   });
 
@@ -751,6 +877,39 @@ describe('analyzeRunsDir -- end-to-end, fail-closed directory scan', () => {
     });
   });
 
+  it('excludes a benchmark_eligible:false scenario record, separately from not-applicable, never pooled', () => {
+    withTempDir((dir) => {
+      const eligible = scenarioRecord({ run_id: 'scenario-current-skill-eligible1' });
+      writeRunAndSidecar(dir, eligible, { entries: [targetSkillEntry(0)] });
+      const ineligible = scenarioRecord({ run_id: 'scenario-current-skill-ineligib1', benchmark_eligible: false });
+      writeRunAndSidecar(dir, ineligible, { entries: [targetSkillEntry(0)] });
+      const result = analyzeRunsDir(dir);
+      expect(result.per_run.length).toBe(1);
+      expect(result.per_run[0].run_id).toBe('scenario-current-skill-eligible1');
+      expect(result.errors).toEqual([]);
+      expect(result.summary.files_excluded_benchmark_ineligible).toBe(1);
+      expect(result.summary.files_excluded_not_applicable).toBe(0);
+    });
+  });
+
+  it('rejects a duplicate run_id (same id, second file) without inflating the group', () => {
+    withTempDir((dir) => {
+      const record = scenarioRecord({ run_id: 'scenario-current-skill-dupe0001' });
+      writeRunAndSidecar(dir, record, { entries: [targetSkillEntry(0)] });
+      const recordText = readFileSync(path.join(dir, 'scenario-current-skill-dupe0001.json'), 'utf8');
+      const sidecarText = readFileSync(path.join(dir, 'audit', 'scenario-current-skill-dupe0001.json'), 'utf8');
+      // A second file, alphabetically LATER, carrying the exact same run_id + sidecar.
+      writeFileSync(path.join(dir, 'zzz-copy.json'), recordText);
+      mkdirSync(path.join(dir, 'audit'), { recursive: true });
+      writeFileSync(path.join(dir, 'audit', 'zzz-copy.json'), sidecarText);
+      const result = analyzeRunsDir(dir);
+      expect(result.per_run.length).toBe(1); // never 2 -- the duplicate must not inflate the group
+      expect(result.summary.groups[0].run_count).toBe(1);
+      expect(result.errors.some((e) => e.run_id === 'scenario-current-skill-dupe0001')).toBe(true);
+      expect(cmdAnalyze({ 'runs-dir': dir })).toBe(1);
+    });
+  });
+
   it('processes files in deterministic (sorted-by-filename) order, independent of directory listing order', () => {
     withTempDir((dir) => {
       const ids = ['scenario-current-skill-ccccccc1', 'scenario-current-skill-aaaaaaa1', 'scenario-current-skill-bbbbbbb1'];
@@ -762,14 +921,25 @@ describe('analyzeRunsDir -- end-to-end, fail-closed directory scan', () => {
     });
   });
 
-  it('every file is accounted for exactly once: seen == analyzed + excluded_not_applicable + errored', () => {
+  it('every file is accounted for exactly once: seen == analyzed + excluded_not_applicable + excluded_benchmark_ineligible + errored', () => {
     withTempDir((dir) => {
       writeRunAndSidecar(dir, scenarioRecord({ run_id: 'scenario-current-skill-good0002' }), { entries: [targetSkillEntry(0)] });
       writeFileSync(path.join(dir, 'malformed.json'), 'nope {{{');
       const result = analyzeRunsDir(dir);
       const s = result.summary;
-      expect(s.files_seen).toBe(s.files_analyzed + s.files_excluded_not_applicable + s.files_errored);
+      expect(s.files_seen).toBe(s.files_analyzed + s.files_excluded_not_applicable + s.files_excluded_benchmark_ineligible + s.files_errored);
       expect(s.files_seen).toBe(2);
+    });
+  });
+
+  it('a directory literally named "*.json" is never treated as a candidate file (CodeRabbit finding)', () => {
+    withTempDir((dir) => {
+      mkdirSync(path.join(dir, 'looks-like-a-file.json'));
+      writeRunAndSidecar(dir, scenarioRecord({ run_id: 'scenario-current-skill-good0003' }), { entries: [targetSkillEntry(0)] });
+      const result = analyzeRunsDir(dir);
+      expect(result.per_run.length).toBe(1);
+      expect(result.errors).toEqual([]);
+      expect(result.summary.files_seen).toBe(1); // the directory entry is never counted as a candidate at all
     });
   });
 
@@ -803,31 +973,154 @@ describe('analyzeRunsDir -- end-to-end, fail-closed directory scan', () => {
   it('returns 1 from cmdAnalyze when --runs-dir does not exist', () => {
     expect(cmdAnalyze({ 'runs-dir': path.join(os.tmpdir(), 'definitely-does-not-exist-aeva') })).toBe(1);
   });
-});
 
-describe('loadAcceptedAuditSidecar', () => {
-  it('fails closed (never throws) when the sidecar file does not exist', () => {
-    withTempDir((dir) => {
-      const record = { run_id: 'r1', accepted_audit: { relative_path: 'audit/r1.json' } };
-      const runPath = path.join(dir, 'r1.json');
-      writeFileSync(runPath, '{}');
-      let result;
-      expect(() => { result = loadAcceptedAuditSidecar(runPath, record); }).not.toThrow();
-      expect(result.ok).toBe(false);
+  // CodeRabbit MAJOR finding: --runs-dir pointing at a regular FILE must never crash with an
+  // uncaught ENOTDIR (readdirSync on a file). Tested at BOTH layers: cmdAnalyze's own pre-flight
+  // check, and analyzeRunsDir itself (a direct caller bypassing the CLI wrapper gets the identical
+  // guarantee -- never throws, always returns the documented envelope shape).
+  describe('--runs-dir pointing at a regular file, not a directory', () => {
+    it('cmdAnalyze rejects it cleanly with exit 1, never a crash', () => {
+      withTempDir((dir) => {
+        const filePath = path.join(dir, 'not-a-directory.json');
+        writeFileSync(filePath, '{}');
+        expect(() => cmdAnalyze({ 'runs-dir': filePath })).not.toThrow();
+        expect(cmdAnalyze({ 'runs-dir': filePath })).toBe(1);
+      });
+    });
+
+    it('analyzeRunsDir itself never throws and returns the documented envelope shape', () => {
+      withTempDir((dir) => {
+        const filePath = path.join(dir, 'not-a-directory.json');
+        writeFileSync(filePath, '{}');
+        let result;
+        expect(() => { result = analyzeRunsDir(filePath); }).not.toThrow();
+        expect(result.schema).toBe(ANALYSIS_SCHEMA);
+        expect(result.per_run).toEqual([]);
+        expect(result.errors.length).toBeGreaterThan(0);
+      });
     });
   });
 
-  it('loads and parses a real sidecar file successfully', () => {
-    withTempDir((dir) => {
-      const record = scenarioRecord({ run_id: 'scenario-current-skill-loadtest1' });
-      const runPath = writeRunAndSidecar(dir, record, { entries: [targetSkillEntry(0)] });
-      const written = JSON.parse(readFileSync(runPath, 'utf8'));
-      const result = loadAcceptedAuditSidecar(runPath, written);
-      expect(result.ok).toBe(true);
-      expect(Array.isArray(result.sidecar.tool_calls)).toBe(true);
+  // Adversarial privacy tests (review finding P1): reproduce the EXACT two demonstrated exploits.
+  describe('adversarial privacy: private-path/secret-shaped sentinels never round-trip', () => {
+    it('a tampered run_id shaped like a private Windows path never appears in errors[] for a file that otherwise fails validation', () => {
+      withTempDir((dir) => {
+        // Schema-invalid (missing almost everything) AND carries a private-path-shaped run_id --
+        // reproduces the exact exploit: a record that fails validation for an unrelated reason must
+        // never have ITS OWN run_id echoed back, tampered or not.
+        const tampered = { schema: 5, run_kind: 'scenario', run_id: 'C:\\Users\\realname\\secret-project\\evidence' };
+        writeFileSync(path.join(dir, 'tampered.json'), JSON.stringify(tampered));
+        const result = analyzeRunsDir(dir);
+        const serialized = JSON.stringify(result);
+        expect(serialized).not.toContain('realname');
+        expect(serialized).not.toContain('secret-project');
+        expect(result.errors[0].run_id).toBeNull();
+      });
+    });
+
+    it('a leak-shaped value in a HARD_PARTITION_FIELDS entry (group_key) is redacted by the final privacy scan, never emitted raw', () => {
+      withTempDir((dir) => {
+        // project_commit carries no format constraint in validateRun -- a fully schema-valid record
+        // can still smuggle a private-path-shaped string through it. The per-run/group_key output
+        // must never contain the raw value once analyzeRunsDir's final privacy pass runs.
+        const record = scenarioRecord({
+          run_id: 'scenario-current-skill-leaktest1',
+          project_commit: 'C:\\Users\\realname\\secret-project\\checkout',
+        });
+        writeRunAndSidecar(dir, record, { entries: [targetSkillEntry(0)] });
+        const result = analyzeRunsDir(dir);
+        const serialized = JSON.stringify(result);
+        expect(serialized).not.toContain('realname');
+        expect(serialized).not.toContain('secret-project');
+        expect(result.summary.groups[0].group_key.project_commit).not.toBe(record.project_commit);
+      });
     });
   });
 });
+
+// Real-committed-record regression tests (review-round correction): read-only against
+// tools/runs/agentic-eval-scenario/, hand-verified against each record+sidecar's own actual
+// content. These specifically guard against the previous version's ordinal semantic silently
+// collapsing every one of these delayed-activation runs to a constant 1, and against the
+// previous version nulling out post-skill counts on every one of these non-signal-reaching runs.
+describe('real committed-record regression coverage (read-only, tools/runs/agentic-eval-scenario)', () => {
+  const EXPECTED = {
+    'scenario-current-skill-08d5daaa': {
+      target_skill_invocation_ordinal: 3, target_skill_attempt_ordinal: 1,
+      pre_skill_tool_calls: 3, pre_skill_policy_denials: 3,
+      post_skill_tool_calls_total: 3, post_skill_policy_denials_total: 1,
+      terminal_authoritative_evidence_present: true, terminal_authoritative_evidence_well_formed: true,
+      first_useful_signal_present: false, failure_class: 'wrong-target',
+    },
+    'scenario-current-skill-27d0c3c6': {
+      target_skill_invocation_ordinal: 0, target_skill_attempt_ordinal: 1,
+      pre_skill_tool_calls: 0, pre_skill_policy_denials: 0,
+      post_skill_tool_calls_total: 9, post_skill_policy_denials_total: 9,
+      terminal_authoritative_evidence_present: false, terminal_authoritative_evidence_well_formed: false,
+      first_useful_signal_present: false, failure_class: 'policy-denial-observed-without-terminal-evidence',
+    },
+    'scenario-current-skill-39e3bfdc': {
+      target_skill_invocation_ordinal: 0, target_skill_attempt_ordinal: 1,
+      pre_skill_tool_calls: 0, pre_skill_policy_denials: 0,
+      post_skill_tool_calls_total: 2, post_skill_policy_denials_total: 0,
+      terminal_authoritative_evidence_present: true, terminal_authoritative_evidence_well_formed: true,
+      first_useful_signal_present: false, failure_class: 'wrong-target',
+    },
+    'scenario-current-skill-77491559': {
+      target_skill_invocation_ordinal: 3, target_skill_attempt_ordinal: 1,
+      pre_skill_tool_calls: 3, pre_skill_policy_denials: 3,
+      post_skill_tool_calls_total: 2, post_skill_policy_denials_total: 0,
+      terminal_authoritative_evidence_present: true, terminal_authoritative_evidence_well_formed: true,
+      first_useful_signal_present: true, failure_class: 'success',
+    },
+    'scenario-current-skill-21843c0e': {
+      target_skill_invocation_ordinal: 4, target_skill_attempt_ordinal: 1,
+      pre_skill_tool_calls: 4, pre_skill_policy_denials: 4,
+      post_skill_tool_calls_total: 4, post_skill_policy_denials_total: 1,
+      terminal_authoritative_evidence_present: true, terminal_authoritative_evidence_well_formed: true,
+      first_useful_signal_present: true, failure_class: 'success',
+    },
+  };
+
+  it('every documented real record analyzes to its hand-verified expected values', () => {
+    if (!existsRealRunsDir()) return; // see helper below -- skips gracefully outside a full checkout
+    const result = analyzeRunsDir(REAL_RUNS_DIR);
+    expect(result.errors).toEqual([]);
+    for (const [runId, expected] of Object.entries(EXPECTED)) {
+      const entry = result.per_run.find((e) => e.run_id === runId);
+      expect(entry, `expected ${runId} in per_run`).toBeDefined();
+      for (const [field, value] of Object.entries(expected)) {
+        expect(entry[field], `${runId}.${field}`).toBe(value);
+      }
+    }
+  });
+
+  it('confirms delayed-activation runs report their real GLOBAL ordinal (3 or 4), never collapsed to 1', () => {
+    if (!existsRealRunsDir()) return;
+    const result = analyzeRunsDir(REAL_RUNS_DIR);
+    const delayed = ['scenario-current-skill-08d5daaa', 'scenario-current-skill-77491559', 'scenario-current-skill-21843c0e']
+      .map((id) => result.per_run.find((e) => e.run_id === id));
+    for (const entry of delayed) {
+      expect(entry.target_skill_invocation_ordinal).toBeGreaterThan(0);
+    }
+  });
+
+  it('confirms a failed (no-signal) run still reports real, non-null post-skill counts', () => {
+    if (!existsRealRunsDir()) return;
+    const result = analyzeRunsDir(REAL_RUNS_DIR);
+    const entry = result.per_run.find((e) => e.run_id === 'scenario-current-skill-27d0c3c6');
+    expect(entry.post_skill_tool_calls_total).toBe(9);
+    expect(entry.post_skill_tool_calls_total).not.toBeNull();
+  });
+});
+
+function existsRealRunsDir() {
+  try {
+    return statSync(REAL_RUNS_DIR).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 describe('module self-consistency', () => {
   it('every grading-check name this module reads by literal string still exists in GRADING_CHECK_NAMES', () => {
