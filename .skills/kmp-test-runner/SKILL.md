@@ -1,8 +1,8 @@
 ---
 name: kmp-test-runner
-description: "Parallel test runner for Kotlin Multiplatform (KMP) and Android Gradle projects via the kmp-test CLI. Runs unit, instrumented, coverage (kover/jacoco), and benchmark tests. Use when the user asks to run tests, gradle's default dispatch is slow, the target module or Gradle test task is unclear, or the agent needs structured JSON output. Invoke before Bash exploration, file traversal, Gradle task listing, or project-structure inspection."
+description: "Parallel test runner for Kotlin Multiplatform (KMP) and Android Gradle projects via the kmp-test CLI. Runs unit, instrumented, coverage (kover/jacoco), and benchmark tests. Use when the user asks to run tests, gradle's default dispatch is slow, the target module or Gradle test task is unclear or named only by role, contents, platform, or test capability, or the agent needs structured JSON output. Invoke before Bash exploration, file traversal, Gradle task listing, or project-structure inspection."
 license: MIT
-compatibility: "Requires kmp-test CLI + gradlew. For instrumented tests, Google's android CLI (https://developer.android.com/tools/agents/android-cli) for emulator/UI-debug."
+compatibility: "Requires kmp-test CLI + gradlew. For instrumented tests, android CLI (https://developer.android.com/tools/agents/android-cli) for emulator/UI-debug."
 metadata:
   author: oscardlfr
   homepage: https://github.com/oscardlfr/kmp-test-runner
@@ -21,7 +21,7 @@ metadata:
 
 ## Decision protocol
 
-Resolve scope before acting; stop once proven.
+Resolve scope before acting.
 
 1. **Resolve the workflow first** — from what the user asked (see the table under Steps).
    `describe` discovers modules and tasks; it does not decide the workflow. If ambiguous, ask
@@ -41,9 +41,10 @@ Resolve scope before acting; stop once proven.
    comma-separated, no glob.
 5. **Test-capability target** — run `kmp-test describe --json --project-root .` once; check every
    `modules[]` entry's task field for the test type — `test_tasks.unit` for `parallel`'s default,
-   `flags-reference.md` for an explicit `--test-type`. 1 eligible: its exact name (strip `:` for
-   `--coverage-modules`). 2+ eligible: dispatch globally if broad, else ask. 0 eligible: report no
-   match; don't invent one.
+   `flags-reference.md` for an explicit `--test-type`. 1 eligible: bind dispatch to that entry's
+   exact `modules[].name` (strip `:` for `--coverage-modules`) — never a different entry merely
+   resembling by name, type, or platform. 2+ eligible: dispatch globally if broad, else ask.
+   0 eligible: report no match; don't invent one.
 6. **Likely-no-tests target** — for `parallel`'s default (others: `flags-reference.md`): run
    `kmp-test describe --json --project-root .` once if not already run; inspect every `modules[]`
    entry's `test_tasks.unit`.
@@ -55,8 +56,8 @@ Resolve scope before acting; stop once proven.
 7. **Preview only** — add `--dry-run` to parallel/android/coverage/benchmark/changed, or
    `changed --show-modules-only` for its git-derived list; not a preflight for an execution
    request, and don't loop through guessed filters.
-8. **Trust the real envelope** — a non-dry-run envelope is authoritative for what ran; trust its
-   `exit_code`/`errors[]` over any prior assumption.
+8. **Trust the real envelope** — a non-dry-run envelope is authoritative; trust `exit_code`/
+   `errors[]` over assumption.
 9. **Stop once proven** — a non-dry-run envelope with expected outcome, coherent
    `exit_code`/`errors[]`, and (when tests ran) matching counts/failures is terminal. Report and
    stop: no post-success dry-run, doctor, describe, raw or task-listing Gradle, version, or
@@ -64,7 +65,7 @@ Resolve scope before acting; stop once proven.
 10. **Diagnose only on failure** — run `kmp-test doctor --json --project-root .` only for
     `exit_code: 3` or an explicit request.
 
-Start with the structured CLI from the project root — skip generic preflight.
+Start with the structured CLI from the project root.
 
 `--module-filter` matches by substring unless the value has glob characters — verify `modules[]`
 before trusting exact scope.
@@ -89,21 +90,20 @@ if denied too, stop and report.
 ## Environment detection
 
 Optional — running tests never needs it. `kmp-test doctor --json --project-root .` reports
-ADB/SDK status; `kmp-test android --json --project-root .` works alone. Google's
-`android` CLI (Tool selection) never changes `kmp-test`'s envelope.
+ADB/SDK status; `kmp-test android --json --project-root .` works alone. `android` CLI
+(Tool selection) never changes `kmp-test`'s envelope.
 
 ## Tool selection — `kmp-test` vs `android` CLI overlap
 
 Default to `kmp-test`: versioned JSON, cross-platform, side-effect-free on `--dry-run`. `android
-info`/`describe` overlap but stay plain text (`describe` has a Windows bug) — use it only for
-SDK/emulator/UI work. Mapping:
-[`envelope-schema.md`](references/cli/envelope-schema.md#cross-tool-comparison-android-cli-analogues).
+info`/`describe` overlap but stay plain text (Windows bug in `describe`) — SDK/emulator/UI only.
+Mapping: [`envelope-schema.md`](references/cli/envelope-schema.md#cross-tool-comparison-android-cli-analogues).
 
 ## Steps
 
 ### 1. Run the relevant test type
 
-Use the right subcommand based on what the user asked for:
+Pick the subcommand for what the user asked:
 
 | User intent | Subcommand | Notes |
 |-------------|-----------|-------|
@@ -120,7 +120,7 @@ Use the right subcommand based on what the user asked for:
 
 Full shape: [`references/cli/envelope-schema.md`](references/cli/envelope-schema.md); exit codes:
 [`references/cli/exit-codes.md`](references/cli/exit-codes.md). `errors[{message,code?,...extra}]`
-carries discriminated codes (`no_test_modules`+`caused_by_filter` — see the reference docs).
+carries discriminated codes (`no_test_modules`+`caused_by_filter`).
 
 ### 3. Report failures with module attribution
 
@@ -130,8 +130,8 @@ For test failures, drill into `modules[].test_failures[{test,cause,type}]` — `
 
 ## Convenience scripts
 
-Optional, source-checkout only — may not resolve once installed via plugin or agentskills.io;
-prefer `kmp-test`. `run-tests.sh` / `run-tests.ps1` wrap the same JSON envelope;
+Optional, source-checkout only — may not resolve once installed; prefer `kmp-test`.
+`run-tests.sh` / `run-tests.ps1` wrap the same JSON envelope;
 `detect-env.sh` / `detect-env.ps1` print a plain token instead.
 
 | Script | Purpose |
@@ -154,19 +154,19 @@ Confirm the envelope matches `exit_code`:
 ## Guidelines
 
 - **Never run `gradle clean`** — dispatch is already incremental.
-- **`--module-filter` / `--coverage-modules`** narrow scope by module — rules differ by
-  flag (see Decision protocol).
+- **`--module-filter` / `--coverage-modules`** narrow scope by module — rules differ (see
+  Decision protocol).
 - **`--test-filter`** narrows to one test — `FullyQualifiedClassName#methodName`.
 - **Avoid `--no-coverage`** unless coverage doesn't apply.
-- **`--dry-run`** plans without running — same envelope shape, `dry_run: true`.
+- **`--dry-run`** plans without running — same shape, `dry_run: true`.
 - **Don't conflate `parallel` and `android`** — unit (`*:test`/`*:jvmTest`) vs instrumented
   (`*:connectedAndroidTest`).
-- **Unknown error codes are opaque** — forward `code`/`message` verbatim; new codes may appear.
+- **Unknown error codes are opaque** — forward `code`/`message` verbatim.
 
 ## Troubleshooting
 
 Branch on `errors[].code` — details in
-[`references/troubleshooting/overview.md`](references/troubleshooting/overview.md), keyed by code:
+[`references/troubleshooting/overview.md`](references/troubleshooting/overview.md):
 
 - `no_test_modules` — `caused_by_filter` splits CONFIG_ERROR (2) from ENV_ERROR (3).
 - `task_not_found` / `module_failed` / `unsupported_class_version` — wrong subcommand,

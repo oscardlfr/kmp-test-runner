@@ -6,10 +6,13 @@
 // across Quick start / Steps section 1 / Steps section 2. Also locks: no policy-unsafe
 // placeholder commands, no policy-denied commands in the "optional" Environment detection
 // section, no stale hardcoded version, no unconditional `kmp-test --version` check, frontmatter
-// description covers module/task discovery and pre-inspection invocation, canonical-vs-decorated
-// command denial exercised against the REAL policy-hook decide() function (not just prose), and
-// no agentic-eval-harness-internal leakage. Section-scoped (not whole-file substring checks) so a
-// fix landing in the wrong section can't produce a false green.
+// description covers module/task discovery and pre-inspection invocation -- including a module
+// identified only indirectly (role/contents/platform/test capability), tied to that same
+// pre-inspection instruction -- canonical-vs-decorated command denial exercised against the REAL
+// policy-hook decide() function (not just prose), the test-capability step's dispatch filter
+// bound to the one eligible modules[] entry's own exact name (never a differently-named/typed/
+// platformed entry), and no agentic-eval-harness-internal leakage. Section-scoped (not whole-file
+// substring checks) so a fix landing in the wrong section can't produce a false green.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
@@ -399,9 +402,27 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     const start = protocol.indexOf('**Test-capability target**');
     const end = protocol.indexOf('**Likely-no-tests target**');
     const step5 = protocol.slice(start, end);
-    expect(step5).toMatch(/\b1\s+eligible:\s*its\s+exact\s+name/i);
+    expect(step5).toMatch(/\b1\s+eligible:\s*bind\s+dispatch\s+to\s+that\s+entry.s\s+exact\s+`modules\[\]\.name`/i);
     expect(step5).toMatch(/2\+\s+eligible:\s*dispatch\s+globally\s+if\s+broad,\s*else\s+ask/i);
     expect(step5).toMatch(/\b0\s+eligible:\s*report\s+no\s+match;\s*don.t\s+invent\s+one/i);
+  });
+
+  // evidence-driven-scope-canary follow-up (android-host-test-discovery cell, skill 21f1894): both
+  // current-skill cells ran describe then correctly identified the eligible candidate, but one
+  // still dispatched a DIFFERENT, wrong structured target -- describe evidence was gathered
+  // correctly and then not actually used to pick the dispatch value. Step 2's classify-scope
+  // principle already states naming never settles capability (tested above); repeating that same
+  // warning here would be "another warning", not a fix. Instead this step's own dispatch action
+  // must name the exact binding operation -- selecting the one eligible entry and reusing THAT
+  // entry's own name as the dispatch value -- tied to the guard in one clause, not two
+  // independently-passable checks that would still pass if the two halves were disconnected.
+  it('step: test-capability binds the dispatch filter to the SAME eligible entry\'s exact name, never a differently-named/typed/platformed entry -- one tied clause', () => {
+    const start = protocol.indexOf('**Test-capability target**');
+    const end = protocol.indexOf('**Likely-no-tests target**');
+    const step5 = protocol.slice(start, end);
+    expect(step5).toMatch(
+      /1\s+eligible:\s*bind\s+dispatch\s+to\s+that\s+entry.s\s+exact\s+`modules\[\]\.name`[\s\S]{0,80}never\s+a\s+different\s+entry\s+merely\s+resembling\s+by\s+name,\s*type,\s*or\s+platform/i
+    );
   });
 
   it('never presents --module-filter with a bracketed placeholder', () => {
@@ -921,6 +942,20 @@ describe('SKILL.md frontmatter description triggers on running tests and on modu
     expect(description.toLowerCase()).toMatch(/file traversal/);
     expect(description.toLowerCase()).toMatch(/gradle task listing/);
     expect(description.toLowerCase()).toMatch(/project-structure inspection/);
+  });
+
+  // evidence-driven-scope-canary follow-up (android-host-test-discovery cell, skill 21f1894):
+  // both current-skill cells now invoke the skill at ordinal 0 for an EXPLICIT module ask, but
+  // the no-applicable-tests cell still burns 2 denied Bash probes (ordinals 3-4) before invoking
+  // it at all -- that scenario identifies its target indirectly, by capability, not by an exact
+  // name. Only the frontmatter can move invocation earlier than the first tool call, so the
+  // indirect-identification trigger must live in the SAME clause the pre-inspection instruction
+  // governs, not just be present somewhere in the document.
+  it('new: the indirect-identification trigger (role/contents/platform/capability) precedes and is governed by the pre-inspection instruction -- one tied clause', () => {
+    const indirectMatch = description.match(/named only by role, contents, platform, or test capability/i);
+    expect(indirectMatch).not.toBeNull();
+    const invokeIdx = description.toLowerCase().indexOf('invoke before');
+    expect(invokeIdx).toBeGreaterThan(indirectMatch.index);
   });
 });
 
