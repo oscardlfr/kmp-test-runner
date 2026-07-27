@@ -1,8 +1,8 @@
 ---
 name: kmp-test-runner
-description: "Parallel test runner for Kotlin Multiplatform (KMP) and Android Gradle projects via the kmp-test CLI. Runs unit, instrumented, coverage (kover/jacoco), and benchmark tests. Use when the user asks to run tests, gradle's default dispatch is slow, the target module or Gradle test task is unclear or named only by role, contents, platform, or test capability, or the agent needs structured JSON output. Invoke before Bash exploration, file traversal, Gradle task listing, or project-structure inspection."
+description: "Parallel test runner for Kotlin Multiplatform (KMP) and Android Gradle projects via the kmp-test CLI. Runs unit, instrumented, coverage (kover/jacoco), and benchmark tests. Use when the user asks to run tests, gradle's default dispatch is slow, the target module or Gradle test task is unclear, or the agent needs structured JSON output. Invoke before Bash exploration, file traversal, Gradle task listing, or project-structure inspection — including when named only by role, contents, platform, or test capability."
 license: MIT
-compatibility: "Requires kmp-test CLI + gradlew. For instrumented tests, android CLI (https://developer.android.com/tools/agents/android-cli) for emulator/UI-debug."
+compatibility: "Requires kmp-test CLI + gradlew. Instrumented tests: android CLI (https://developer.android.com/tools/agents/android-cli), emulator/UI-debug."
 metadata:
   author: oscardlfr
   homepage: https://github.com/oscardlfr/kmp-test-runner
@@ -43,8 +43,10 @@ Resolve scope before acting.
    `modules[]` entry's task field for the test type — `test_tasks.unit` for `parallel`'s default,
    `flags-reference.md` for an explicit `--test-type`. 1 eligible: bind dispatch to that entry's
    exact `modules[].name` (strip `:` for `--coverage-modules`) — never a different entry merely
-   resembling by name, type, or platform. 2+ eligible: dispatch globally if broad, else ask.
-   0 eligible: report no match; don't invent one.
+   resembling by name, type, or platform. For `--module-filter`, first check `modules[]`: if the
+   bound name's substring also matches another entry, ask instead of dispatching (`--coverage-modules`
+   is already exact). 2+ eligible: dispatch globally if broad, else ask. 0 eligible: report no
+   match; don't invent one.
 6. **Likely-no-tests target** — for `parallel`'s default (others: `flags-reference.md`): run
    `kmp-test describe --json --project-root .` once if not already run; inspect every `modules[]`
    entry's `test_tasks.unit`.
@@ -90,13 +92,13 @@ if denied too, stop and report.
 ## Environment detection
 
 Optional — running tests never needs it. `kmp-test doctor --json --project-root .` reports
-ADB/SDK status; `kmp-test android --json --project-root .` works alone. `android` CLI
-(Tool selection) never changes `kmp-test`'s envelope.
+ADB/SDK status; `kmp-test android --json --project-root .` works alone. `android` CLI never
+changes `kmp-test`'s envelope.
 
 ## Tool selection — `kmp-test` vs `android` CLI overlap
 
 Default to `kmp-test`: versioned JSON, cross-platform, side-effect-free on `--dry-run`. `android
-info`/`describe` overlap but stay plain text (Windows bug in `describe`) — SDK/emulator/UI only.
+info`/`describe` overlap (plain text; Windows bug in `describe`) — SDK/emulator/UI only.
 Mapping: [`envelope-schema.md`](references/cli/envelope-schema.md#cross-tool-comparison-android-cli-analogues).
 
 ## Steps
@@ -107,8 +109,8 @@ Pick the subcommand for what the user asked:
 
 | User intent | Subcommand | Notes |
 |-------------|-----------|-------|
-| "run tests" / "run unit tests" / "test this" | `kmp-test parallel --json --project-root .` | `test`/`jvmTest`/`desktopTest` per module |
-| "run instrumented tests" / "run on device" | `kmp-test android --json --project-root .` | `connectedAndroidTest`; needs a device |
+| "run tests" / "test this" | `kmp-test parallel --json --project-root .` | `test`/`jvmTest`/`desktopTest` per module |
+| "run instrumented tests" / "run on device" | `kmp-test android --json --project-root .` | `connectedAndroidTest`, needs device |
 | "run coverage" / "with coverage" | `kmp-test coverage --json --project-root .` | kover/jacoco XML |
 | "run benchmarks" | `kmp-test benchmark --json --project-root .` | Macro/microbenchmark |
 | "what would run?" / "dry run" | append `--dry-run` to the matching command above | No spawn — plan as JSON |
@@ -136,8 +138,8 @@ Optional, source-checkout only — may not resolve once installed; prefer `kmp-t
 
 | Script | Purpose |
 |---|---|
-| `detect-env.sh` / `detect-env.ps1` | Prints `HAS_ANDROID_CLI`/`NO_ANDROID_CLI`; exits 0; `run-tests.sh` env preamble. |
-| `run-tests.sh` / `run-tests.ps1` | Dispatcher — first positional (`-Type` on PowerShell) picks the workflow; args forward verbatim, `--json`/`--project-root .` auto-inject. |
+| `detect-env.sh` / `detect-env.ps1` | Prints `HAS_ANDROID_CLI`/`NO_ANDROID_CLI`; `run-tests.sh` env preamble. |
+| `run-tests.sh` / `run-tests.ps1` | Dispatcher — first positional (`-Type` on PowerShell) picks the workflow; `--json`/`--project-root .` auto-inject. |
 
 ## Verification
 
@@ -149,17 +151,16 @@ Confirm the envelope matches `exit_code`:
    `errors[]`.
 3. `2` — CLI usage error: check `errors[].code` (e.g. `no_test_modules` + `caused_by_filter:true`).
 4. `3` — environment error: run `kmp-test doctor --json --project-root .` to localize
-   (`task_not_found`, `no_test_modules`+`caused_by_filter:false` — see Troubleshooting).
+   (`task_not_found`, `no_test_modules`+`caused_by_filter:false`).
 
 ## Guidelines
 
 - **Never run `gradle clean`** — dispatch is already incremental.
-- **`--module-filter` / `--coverage-modules`** narrow scope by module — rules differ (see
-  Decision protocol).
+- **`--module-filter` / `--coverage-modules`** narrow scope — see Decision protocol.
 - **`--test-filter`** narrows to one test — `FullyQualifiedClassName#methodName`.
 - **Avoid `--no-coverage`** unless coverage doesn't apply.
 - **`--dry-run`** plans without running — same shape, `dry_run: true`.
-- **Don't conflate `parallel` and `android`** — unit (`*:test`/`*:jvmTest`) vs instrumented
+- **Don't conflate `parallel`/`android`** — unit (`*:test`/`*:jvmTest`) vs instrumented
   (`*:connectedAndroidTest`).
 - **Unknown error codes are opaque** — forward `code`/`message` verbatim.
 
