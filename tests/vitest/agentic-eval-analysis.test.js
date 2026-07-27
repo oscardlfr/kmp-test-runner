@@ -431,6 +431,50 @@ describe('deriveSkillRelativeFields', () => {
       const result = deriveSkillRelativeFields(record, sidecar, true, true);
       expect(result.ok).toBe(false);
     });
+
+    // Review-round correction: multiple tool_use blocks can share ONE assistant event -- the
+    // sidecar schema only requires `ordinal` non-decreasing across ties, never a unique event
+    // index per entry. A failed attempt, its successful retry, and a third unrelated call ALL
+    // dispatched in the same turn (same tool_use_event_index) previously broke attempt-ordinal and
+    // pre/post-skill counting, which compared by the (possibly tied) event index instead of the
+    // sidecar's own always-unique `ordinal`.
+    it('disambiguates multiple tool_calls sharing the SAME event index via ordinal, not tool_use_event_index', () => {
+      const record = { skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 10 } };
+      const entries = [
+        targetSkillEntry(10, { resultStatus: 'error' }), // ordinal 0: 1st attempt at the skill, same event, fails
+        targetSkillEntry(10, { resultStatus: 'success' }), // ordinal 1: 2nd attempt, same event, confirmed
+        bashEntry(10), // ordinal 2: a third call, also dispatched in the same turn
+      ];
+      const sidecar = sidecarFor(record, { entries });
+      const result = deriveSkillRelativeFields(record, sidecar, true, true);
+      expect(result.ok).toBe(true);
+      expect(result.target_skill_invocation_ordinal).toBe(1); // global ordinal of the CONFIRMED entry specifically
+      expect(result.target_skill_attempt_ordinal).toBe(2); // 2nd attempt at the skill succeeded
+      expect(result.pre_skill_tool_calls).toBe(1); // the failed 1st attempt, same event, still precedes it
+      expect(result.post_skill_tool_calls_total).toBe(1); // the third call, same event, still follows it
+    });
+
+    // findSkillInvocation()'s own documented contract (stream-parser.mjs): the representative is
+    // the FIRST confirmed match in transcript order whenever more than one exists. A record
+    // correlating to a LATER confirmed entry (event 5) while an EARLIER one (event 2) also exists
+    // contradicts that contract and must fail closed, never silently accepted.
+    it('fails closed when the record correlates to a LATER confirmed entry while an EARLIER confirmed entry also exists', () => {
+      const record = { skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 5 } };
+      const entries = [targetSkillEntry(2, { resultStatus: 'success' }), targetSkillEntry(5, { resultStatus: 'success' })];
+      const sidecar = sidecarFor(record, { entries });
+      const result = deriveSkillRelativeFields(record, sidecar, true, true);
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/earliest/i);
+    });
+
+    it('accepts the record when it correlates to the EARLIEST of two confirmed entries', () => {
+      const record = { skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 2 } };
+      const entries = [targetSkillEntry(2, { resultStatus: 'success' }), targetSkillEntry(5, { resultStatus: 'success' })];
+      const sidecar = sidecarFor(record, { entries });
+      const result = deriveSkillRelativeFields(record, sidecar, true, true);
+      expect(result.ok).toBe(true);
+      expect(result.target_skill_invocation_ordinal).toBe(0);
+    });
   });
 });
 
@@ -770,6 +814,23 @@ describe('buildSummary', () => {
     expect(() => buildSummary([])).not.toThrow();
     expect(buildSummary([]).groups).toEqual([]);
   });
+
+  // Review-round correction: group ordering must use plain code-point comparison, never
+  // localeCompare() -- ICU collation is locale/Node-build-dependent (confirmed on the reviewer's
+  // own machine: "a_b" sorted BEFORE "a-b" under localeCompare, the opposite of code-point order,
+  // since '-' is U+002D and '_' is U+005F). This assertion is deterministic on EVERY machine/locale
+  // specifically because plain `<`/`>` string comparison is never locale-aware, per the ECMAScript
+  // spec -- unlike a localeCompare()-based assertion, which could pass or fail depending on which
+  // machine runs it.
+  it('orders groups by plain code-point comparison, independent of locale/ICU collation', () => {
+    const pairs = [
+      pair({ run_id: 'r1', scenario_id: 'a_b' }, {}),
+      pair({ run_id: 'r2', scenario_id: 'a-b' }, {}),
+    ];
+    const summary = buildSummary(pairs);
+    // '-' (U+002D) < '_' (U+005F) in code-point order -- "a-b" must always sort first.
+    expect(summary.groups.map((g) => g.group_key.scenario_id)).toEqual(['a-b', 'a_b']);
+  });
 });
 
 describe('analyzeRunsDir -- end-to-end, fail-closed directory scan', () => {
@@ -889,6 +950,37 @@ describe('analyzeRunsDir -- end-to-end, fail-closed directory scan', () => {
       expect(result.errors).toEqual([]);
       expect(result.summary.files_excluded_benchmark_ineligible).toBe(1);
       expect(result.summary.files_excluded_not_applicable).toBe(0);
+    });
+  });
+
+  // Review-round correction: benchmark_eligible:true alone does not prove a record is complete.
+  // validateRun() does not require success.value to be non-null for a schema-5 scenario record
+  // (unlike grading_checks, which it DOES require non-null for schema:2+ scenario records) --
+  // reproduced directly by hand-tampering a real record's success to {value:null, reason:'...'}.
+  // schemas.mjs's own buildAggregateGroup() already refuses this; analyze must match that
+  // Fairness Contract exactly, not merely trust the benchmark_eligible boolean.
+  it('excludes (as an error, not a silent exclusion) a benchmark_eligible:true record with a null success.value', () => {
+    withTempDir((dir) => {
+      const record = scenarioRecord({ run_id: 'scenario-current-skill-incomplete1' });
+      record.success = { value: null, reason: 'grading did not run for this synthetic fixture' };
+      writeRunAndSidecar(dir, record, { entries: [targetSkillEntry(0)] });
+      const result = analyzeRunsDir(dir);
+      expect(result.per_run).toEqual([]);
+      expect(result.errors.length).toBe(1);
+      expect(result.errors[0].run_id).toBe('scenario-current-skill-incomplete1');
+      expect(result.errors[0].errors.some((e) => e.field === 'success')).toBe(true);
+      expect(result.summary.files_excluded_benchmark_ineligible).toBe(0); // this is an ERROR, not a silent exclusion
+      expect(cmdAnalyze({ 'runs-dir': dir })).toBe(1);
+    });
+  });
+
+  it('excludes a benchmark_eligible:true record missing a required provenance field (mirrors the same matrix)', () => {
+    withTempDir((dir) => {
+      const record = scenarioRecord({ run_id: 'scenario-current-skill-incomplete2', project_commit: '' });
+      writeRunAndSidecar(dir, record, { entries: [targetSkillEntry(0)] });
+      const result = analyzeRunsDir(dir);
+      expect(result.per_run).toEqual([]);
+      expect(result.errors[0].errors.some((e) => e.field === 'project_commit')).toBe(true);
     });
   });
 

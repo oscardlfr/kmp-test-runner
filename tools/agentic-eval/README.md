@@ -1043,7 +1043,14 @@ subprocess/network access/filesystem write of any kind. A schema-valid record th
 accepted-run-audit sidecar to read in the first place. A schema-valid, in-domain record whose own
 `benchmark_eligible` is `false` is separately excluded (`summary.files_excluded_benchmark_
 ineligible`) — mirroring `aggregate.mjs`'s Fairness Contract, which refuses a benchmark-ineligible
-run outright; eligible and ineligible records are never pooled.
+run outright; eligible and ineligible records are never pooled. `benchmark_eligible:true` alone
+does not prove a record is complete enough to analyze — `validateRun()` does not itself require
+`success`/`expected_outcome_matched` to be non-null for a schema-5 scenario record — so a record
+additionally passes the SAME completeness matrix `aggregate.mjs`'s `buildAggregateGroup()`
+enforces (the 7 provenance fields, `success`/`expected_outcome_matched` strictly boolean,
+`ambient_skill_profile` well-shaped) before being analyzed; failing it is reported as a per-file
+error (never a silent exclusion, since a benchmark-eligible record claiming completeness but
+lacking it is an integrity problem with that file, unlike a legitimate ineligible result).
 
 **Fail-closed, following `cmdAggregate`'s own precedent**: only regular files (never a directory
 merely named `*.json/`) are listed, in sorted-filename order (deterministic regardless of the
@@ -1067,13 +1074,20 @@ files_excluded_not_applicable + files_excluded_benchmark_ineligible + files_erro
 sidecar's own `tool_calls[]` (never from a raw transcript, which this module never reads), with
 BIDIRECTIONAL record↔sidecar coherence enforced before any of them are computed: `target_skill_
 invoked:false` requires the sidecar to show ZERO confirmed (`tool_kind:'target-skill'`,
-`result_status:'success'`) entries anywhere, and `target_skill_invoked:true` requires exactly one
-such entry correlating to `skill_invocation_event.index` — a record and sidecar that disagree here
-fail closed (excluded from `per_run`, reported in `errors[]`) rather than silently trusting one
-side. `target_skill_invocation_ordinal` is the sidecar's own GLOBAL, zero-based `tool_calls[].
-ordinal` for that confirmed entry — the same convention the sidecar already uses for every other
-entry, so a delayed activation (several unrelated calls first) is directly visible as ordinal 3,
-4, ... rather than collapsing to a constant. `target_skill_attempt_ordinal` is a SEPARATE,
+`result_status:'success'`) entries anywhere, and `target_skill_invoked:true` requires a confirmed
+entry correlating to `skill_invocation_event.index` — and, whenever more than one confirmed entry
+exists anywhere in the sidecar, that entry must be the ordinal-EARLIEST one, matching
+`findSkillInvocation()`'s own documented "first confirmed match wins" contract (stream-parser.mjs)
+— a record and sidecar that disagree on any of this fail closed (excluded from `per_run`, reported
+in `errors[]`) rather than silently trusting one side. Every comparison here (and the pre/post-
+skill partition below) uses the sidecar's own always-unique `ordinal`, never `tool_use_event_
+index` — one assistant turn can dispatch several tool_use blocks sharing the same event index (the
+sidecar schema only requires `ordinal` non-decreasing across such ties, never unique per event),
+so `tool_use_event_index` alone cannot disambiguate which of several same-event entries is meant.
+`target_skill_invocation_ordinal` is the sidecar's own GLOBAL, zero-based `tool_calls[].ordinal`
+for that confirmed entry — the same convention the sidecar already uses for every other entry, so
+a delayed activation (several unrelated calls first) is directly visible as ordinal 3, 4, ...
+rather than collapsing to a constant. `target_skill_attempt_ordinal` is a SEPARATE,
 1-based count of attempts at the target skill specifically (distinct question: "did it take
 multiple tries at the skill itself" vs. "how much unrelated work happened first", the latter being
 `pre_skill_tool_calls`). `post_skill_tool_calls_total`/`post_skill_policy_denials_total` are

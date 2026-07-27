@@ -85,6 +85,36 @@ function safeRunIdOrNull(runId) {
   return typeof runId === 'string' && SAFE_RUN_ID_RE.test(runId) ? runId : null;
 }
 
+// Mirrors schemas.mjs's buildAggregateGroup() own completeness matrix for run_kind:'scenario' +
+// benchmark_eligible:true records, FIELD FOR FIELD -- validateRun() alone does not require these
+// to be non-null/non-empty (a scenario record can pass full schema validation with a legitimately
+// null success.value, unlike grading_checks/repetition_index, which validateRun DOES require
+// non-null for schema:2+ scenario records), so benchmark_eligible:true alone does not prove a
+// record is complete enough to analyze. Duplicated here rather than imported because
+// aggregate.mjs's own check is embedded inline inside buildAggregateGroup (which also
+// groups/mixes/keys -- not something this module should invoke wholesale for a single record) and
+// this correction's own scope excludes touching schemas.mjs -- kept intentionally identical so the
+// two can be diffed against each other if either is ever revised.
+const BENCHMARK_COMPLETENESS_STRING_FIELDS = ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha', 'repo_commit', 'daemon_policy', 'env_allowlist_profile', 'scenario_id'];
+const BENCHMARK_COMPLETENESS_BOOLEAN_FIELDS = ['success', 'expected_outcome_matched'];
+
+/** Returns the list of field names that violate the benchmark-completeness matrix (empty if the
+ * record is fully complete) -- never a boolean, so a caller can report exactly which field(s)
+ * failed rather than a single opaque "incomplete" flag. */
+function findBenchmarkCompletenessViolations(record) {
+  const violations = [];
+  for (const field of BENCHMARK_COMPLETENESS_STRING_FIELDS) {
+    if (typeof record[field] !== 'string' || record[field].length === 0) violations.push(field);
+  }
+  for (const field of BENCHMARK_COMPLETENESS_BOOLEAN_FIELDS) {
+    if (typeof record[field]?.value !== 'boolean') violations.push(field);
+  }
+  if (record.ambient_skill_profile == null || typeof record.ambient_skill_profile !== 'object' || Array.isArray(record.ambient_skill_profile)) {
+    violations.push('ambient_skill_profile');
+  }
+  return violations;
+}
+
 /**
  * Resolves exactly one closed-vocabulary failure_class per run, per this module's own documented
  * precedence (checked top to bottom, first match wins -- so one run can never receive two competing
@@ -185,27 +215,54 @@ export function deriveSkillRelativeFields(record, sidecar, activationExpected, t
   if (!Number.isInteger(invocationIndex)) {
     return { ok: false, error: 'skill_invoked is true but skill_invocation_event.index is missing or not an integer' };
   }
-  const invocationEntry = confirmedTargetSkillCalls.find((tc) => tc.tool_use_event_index === invocationIndex);
-  if (invocationEntry == null) {
+  // Matched by tool_use_event_index first (this is the only correlation record<->sidecar share),
+  // but ONE assistant event can carry several tool_use blocks -- the sidecar schema only requires
+  // `ordinal` to be non-decreasing across entries sharing an event index, never unique per event.
+  // When more than one confirmed target-skill entry shares this exact event index, `ordinal` (the
+  // sidecar's own unique, strictly 0..N-1 position) is the only reliable disambiguator; falling
+  // back to the first `tool_use_event_index` match alone previously misidentified the wrong entry.
+  const candidateInvocationEntries = confirmedTargetSkillCalls.filter((tc) => tc.tool_use_event_index === invocationIndex);
+  if (candidateInvocationEntries.length === 0) {
     return { ok: false, error: 'record reports the target skill as invoked, but no confirmed sidecar entry correlates to skill_invocation_event.index' };
   }
+  const invocationEntry = candidateInvocationEntries.length === 1
+    ? candidateInvocationEntries[0]
+    : candidateInvocationEntries.reduce((min, tc) => (Number.isInteger(tc.ordinal) && tc.ordinal < min.ordinal ? tc : min));
   if (!Number.isInteger(invocationEntry.ordinal)) {
     return { ok: false, error: 'the correlated sidecar entry is missing a valid ordinal' };
   }
+  // findSkillInvocation()'s own documented contract (stream-parser.mjs): the record's
+  // skill_invocation_event always represents the FIRST confirmed match in transcript order, never
+  // a later one, whenever more than one confirmed target-skill entry exists anywhere in the
+  // sidecar. A record correlating to anything but the ordinal-earliest confirmed entry disagrees
+  // with that contract -- fail closed rather than silently accept a later one.
+  const earliestConfirmedOrdinal = Math.min(...confirmedTargetSkillCalls.filter((tc) => Number.isInteger(tc.ordinal)).map((tc) => tc.ordinal));
+  if (invocationEntry.ordinal !== earliestConfirmedOrdinal) {
+    return { ok: false, error: 'record correlates to a confirmed target-skill entry that is not the ordinal-earliest one, contradicting findSkillInvocation\'s own representative-match contract' };
+  }
 
   const target_skill_invocation_ordinal = invocationEntry.ordinal;
+  // Already in strictly ascending ordinal order by construction (validateAcceptedRunAuditSidecar
+  // guarantees `tool_calls[]` ordinals are exactly 0..N-1 in order) -- filtering preserves that
+  // order, so no separate sort is needed; a defensive sort-by-ordinal (never by the possibly-tied
+  // tool_use_event_index) is kept anyway in case a caller ever hands this function an unordered array.
   const allTargetSkillAttempts = toolCalls
-    .filter((tc) => tc?.tool_kind === 'target-skill' && Number.isInteger(tc?.tool_use_event_index))
+    .filter((tc) => tc?.tool_kind === 'target-skill' && Number.isInteger(tc?.ordinal))
     .slice()
-    .sort((a, b) => a.tool_use_event_index - b.tool_use_event_index);
-  const attemptIdx = allTargetSkillAttempts.findIndex((tc) => tc.tool_use_event_index === invocationIndex);
+    .sort((a, b) => a.ordinal - b.ordinal);
+  const attemptIdx = allTargetSkillAttempts.findIndex((tc) => tc.ordinal === invocationEntry.ordinal);
   const target_skill_attempt_ordinal = attemptIdx + 1;
 
-  const preEntries = toolCalls.filter((tc) => Number.isInteger(tc?.tool_use_event_index) && tc.tool_use_event_index < invocationIndex);
+  // Pre/post-skill counts partition by ORDINAL (the sidecar's own unique position marker), never
+  // by tool_use_event_index -- ties on the event index would otherwise silently vanish from BOTH
+  // the pre and post buckets (neither `<` nor `>` an equal value), exactly the gap a real repro
+  // (a failed attempt, its successful retry, and a third call all dispatched in one assistant
+  // turn) demonstrated.
+  const preEntries = toolCalls.filter((tc) => Number.isInteger(tc?.ordinal) && tc.ordinal < invocationEntry.ordinal);
   const pre_skill_tool_calls = preEntries.length;
   const pre_skill_policy_denials = preEntries.filter((tc) => tc.policy_decision === 'deny').length;
 
-  const postEntries = toolCalls.filter((tc) => Number.isInteger(tc?.tool_use_event_index) && tc.tool_use_event_index > invocationIndex);
+  const postEntries = toolCalls.filter((tc) => Number.isInteger(tc?.ordinal) && tc.ordinal > invocationEntry.ordinal);
   const post_skill_tool_calls_total = postEntries.length;
   const post_skill_policy_denials_total = postEntries.filter((tc) => tc.policy_decision === 'deny').length;
 
@@ -377,11 +434,20 @@ export function buildSummary(pairs) {
     for (const f of HARD_PARTITION_FIELDS) groupKey[f] = record[f];
     groups.push(buildGroupSummary(groupKey, entries));
   }
+  // Plain code-point comparison (`<`/`>`), never localeCompare() -- ICU collation is
+  // locale/Node-build-dependent (e.g. "a_b" vs "a-b" can order oppositely across environments),
+  // which would make this command's own claimed deterministic JSON output vary by machine. Matches
+  // the exact ordering plain Array.prototype.sort() already uses for `files` in analyzeRunsDir, so
+  // group order and file order are governed by the same, single notion of "sorted".
   groups.sort((a, b) => {
-    const s = a.group_key.scenario_id.localeCompare(b.group_key.scenario_id);
-    return s !== 0 ? s : String(a.group_key.condition).localeCompare(String(b.group_key.condition));
+    const s = codePointCompare(a.group_key.scenario_id, b.group_key.scenario_id);
+    return s !== 0 ? s : codePointCompare(String(a.group_key.condition), String(b.group_key.condition));
   });
   return { groups };
+}
+
+function codePointCompare(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** Lists `runsDir`'s own top-level `*.json` FILES (never a directory merely named `*.json/`, and
@@ -476,6 +542,14 @@ export function analyzeRunsDir(runsDir) {
     }
     if (record.benchmark_eligible !== true) {
       filesExcludedBenchmarkIneligible++;
+      return;
+    }
+    const completenessViolations = findBenchmarkCompletenessViolations(record);
+    if (completenessViolations.length > 0) {
+      errors.push({
+        file_index: fileIndex, run_id: safeRunIdOrNull(record.run_id),
+        errors: completenessViolations.map((field) => ({ field, message: 'benchmark_eligible:true but this field is incomplete, per the same completeness matrix aggregate.mjs enforces' })),
+      });
       return;
     }
     const safeRunId = safeRunIdOrNull(record.run_id);
