@@ -6,10 +6,15 @@
 // across Quick start / Steps section 1 / Steps section 2. Also locks: no policy-unsafe
 // placeholder commands, no policy-denied commands in the "optional" Environment detection
 // section, no stale hardcoded version, no unconditional `kmp-test --version` check, frontmatter
-// description covers module/task discovery and pre-inspection invocation, canonical-vs-decorated
-// command denial exercised against the REAL policy-hook decide() function (not just prose), and
-// no agentic-eval-harness-internal leakage. Section-scoped (not whole-file substring checks) so a
-// fix landing in the wrong section can't produce a false green.
+// description covers module/task discovery and pre-inspection invocation -- as one rule binding a
+// module identified only indirectly (role/contents/platform/test capability) to that same
+// pre-inspection instruction -- canonical-vs-decorated command denial exercised against the REAL
+// policy-hook decide() function (not just prose), the test-capability step's dispatch filter
+// bound to the one eligible modules[] entry's own exact name (never a differently-named/typed/
+// platformed entry) with a pre-dispatch check against the real matchModuleFilter substring
+// semantics (binding to an exact name alone doesn't stop --module-filter from also matching a
+// differently-named module), and no agentic-eval-harness-internal leakage. Section-scoped (not
+// whole-file substring checks) so a fix landing in the wrong section can't produce a false green.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
@@ -17,6 +22,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { discoverCoverageModules, parseArgs as parseCoverageArgs, runCoverage } from '../../lib/orchestrators/coverage-orchestrator.js';
 import { parseArgs as parseChangedArgs } from '../../lib/orchestrators/changed-orchestrator.js';
+import { matchModuleFilter } from '../../lib/orchestrators/orchestrator-utils.js';
 import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
 import { SOFT_ERROR_CODES } from '../../lib/envelope/builder.js';
 import { ENV_ERROR_CODES } from '../../lib/envelope/exit-codes.js';
@@ -66,6 +72,28 @@ describe('Coverage module-scoping contract (grounds SKILL.md claims in the real 
   it('app* (glob-shaped) matches ZERO modules -- no glob or substring support', () => {
     const r = discoverCoverageModules(projectModel, parseCoverageArgs(['--coverage-modules', 'app*']));
     expect(r.dispatched).toHaveLength(0);
+  });
+});
+
+// Post-merge CodeRabbit + human review round (PR #403, HEAD 87278cd): step 5's "bind dispatch to
+// that entry's exact modules[].name" is necessary but not sufficient for --module-filter workflows
+// (parallel/android/benchmark) -- matchModuleFilter's own non-glob branch is a SUBSTRING match, so
+// binding to :foo still lets --module-filter :foo ALSO select a co-resident :fooApp module. Grounds
+// the SKILL.md pre-dispatch ambiguity check (added below) in the REAL matcher, not just asserted
+// prose -- reproduces the exact :foo / :fooApp collision the reviewer flagged.
+describe('Module-filter substring-widening contract (grounds the SKILL.md pre-dispatch ambiguity check in the real matcher)', () => {
+  it(':foo (the bound modules[].name, passed as-is to --module-filter per step 4) matches BOTH :foo and a co-resident :fooApp', () => {
+    expect(matchModuleFilter(':foo', ':foo')).toBe(true);
+    expect(matchModuleFilter(':fooApp', ':foo')).toBe(true);
+  });
+
+  it('a colon-stripped bound name collides the same way (relevant if a workflow ever passed it colonless)', () => {
+    expect(matchModuleFilter(':fooApp', 'foo')).toBe(true);
+  });
+
+  it('a glob-shaped filter is unaffected -- this contract is specific to the non-glob substring branch', () => {
+    expect(matchModuleFilter(':fooApp', ':foo*')).toBe(true);
+    expect(matchModuleFilter(':bar', ':foo*')).toBe(false);
   });
 });
 
@@ -399,9 +427,45 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     const start = protocol.indexOf('**Test-capability target**');
     const end = protocol.indexOf('**Likely-no-tests target**');
     const step5 = protocol.slice(start, end);
-    expect(step5).toMatch(/\b1\s+eligible:\s*its\s+exact\s+name/i);
+    expect(step5).toMatch(/\b1\s+eligible:\s*bind\s+dispatch\s+to\s+that\s+entry.s\s+exact\s+`modules\[\]\.name`/i);
     expect(step5).toMatch(/2\+\s+eligible:\s*dispatch\s+globally\s+if\s+broad,\s*else\s+ask/i);
     expect(step5).toMatch(/\b0\s+eligible:\s*report\s+no\s+match;\s*don.t\s+invent\s+one/i);
+  });
+
+  // evidence-driven-scope-canary follow-up (android-host-test-discovery cell, skill 21f1894): both
+  // current-skill cells ran describe successfully, but one still dispatched a DIFFERENT, wrong
+  // structured target. The sidecars show that observable shape -- a successful describe followed
+  // by a wrong-target dispatch -- not why the agent picked that target, so this test asserts only
+  // what's actually observable. Step 2's classify-scope principle already states naming never
+  // settles capability (tested above); repeating that same warning here would be "another
+  // warning", not a fix. Instead this step's own dispatch action must name the exact binding
+  // operation -- selecting the one eligible entry and reusing THAT entry's own name as the
+  // dispatch value -- tied to the guard in one clause, not two independently-passable checks that
+  // would still pass if the two halves were disconnected.
+  it('step: test-capability binds the dispatch filter to the SAME eligible entry\'s exact name, never a differently-named/typed/platformed entry -- one tied clause', () => {
+    const start = protocol.indexOf('**Test-capability target**');
+    const end = protocol.indexOf('**Likely-no-tests target**');
+    const step5 = protocol.slice(start, end);
+    expect(step5).toMatch(
+      /1\s+eligible:\s*bind\s+dispatch\s+to\s+that\s+entry.s\s+exact\s+`modules\[\]\.name`[\s\S]{0,80}never\s+a\s+different\s+entry\s+merely\s+resembling\s+by\s+name,\s*type,\s*or\s+platform/i
+    );
+  });
+
+  // Post-merge CodeRabbit + human review round (PR #403, HEAD 87278cd): the binding test above is
+  // necessary but not sufficient. Even a correctly-bound exact modules[].name can still widen
+  // dispatch scope, because --module-filter's own non-glob matching is a SUBSTRING contract
+  // (proven against the real matchModuleFilter() in the "Module-filter substring-widening
+  // contract" describe block above: binding to :foo also matches a co-resident :fooApp). The
+  // protocol must close that gap with an explicit pre-dispatch check against the SAME already-
+  // fetched modules[] list, scoped to --module-filter workflows only -- --coverage-modules is
+  // separately exact-match (tested above) and needs no such check.
+  it('step: before an exact-bind dispatch via --module-filter, the SAME modules[] must be checked for a substring collision -- ask instead of silently widening scope', () => {
+    const start = protocol.indexOf('**Test-capability target**');
+    const end = protocol.indexOf('**Likely-no-tests target**');
+    const step5 = protocol.slice(start, end);
+    expect(step5).toMatch(
+      /`--module-filter`,\s*first\s+check\s+`modules\[\]`:\s*if\s+the\s+bound\s+name.s\s+substring\s+also\s+matches\s+another\s+entry,\s*ask\s+instead\s+of\s+dispatching\s*\(`--coverage-modules`\s+is\s+already\s+exact\)/i
+    );
   });
 
   it('never presents --module-filter with a bracketed placeholder', () => {
@@ -921,6 +985,26 @@ describe('SKILL.md frontmatter description triggers on running tests and on modu
     expect(description.toLowerCase()).toMatch(/file traversal/);
     expect(description.toLowerCase()).toMatch(/gradle task listing/);
     expect(description.toLowerCase()).toMatch(/project-structure inspection/);
+  });
+
+  // evidence-driven-scope-canary follow-up (android-host-test-discovery cell, skill 21f1894):
+  // both current-skill cells now invoke the skill at ordinal 0 for an EXPLICIT module ask, but
+  // the no-applicable-tests cell's pre-skill invocation ordinals remain exactly 3 and 4 across its
+  // two batches -- every attempt at an earlier ordinal is a denied Bash probe. That scenario
+  // identifies its target indirectly, by capability, not by an exact name. Only the frontmatter
+  // can move invocation earlier than the first tool call, so the indirect-identification trigger
+  // must be bound to the SAME instruction that governs pre-inspection invocation, not just be
+  // present somewhere in the document.
+  //
+  // CodeRabbit round (PR #403, HEAD 87278cd): `indexOf('invoke before')` only proved ordering --
+  // an unrelated later occurrence of that phrase would have satisfied the old assertion while the
+  // actual Bash/file-traversal/Gradle pre-inspection instruction stayed absent or detached. Now
+  // matches the complete canonical instruction as one regex, directly adjacent to the indirect
+  // clause, so the two can't be satisfied independently.
+  it('new: invoking before Bash/file/Gradle-task exploration is bound to indirect module identification as ONE causal rule, not two independently-satisfiable clauses', () => {
+    expect(description).toMatch(
+      /invoke before bash exploration, file traversal, gradle task listing, or project-structure inspection[\s\S]{0,20}including when named only by role, contents, platform, or test capability/i
+    );
   });
 });
 
