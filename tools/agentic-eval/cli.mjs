@@ -13,6 +13,7 @@
 //                                        [--private-patterns-file <path>]
 //   node tools/agentic-eval/cli.mjs corpus validate
 //   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
+//   node tools/agentic-eval/cli.mjs analyze --runs-dir <dir>
 //   node tools/agentic-eval/cli.mjs validate --run <path-to-run.json>
 //   node tools/agentic-eval/cli.mjs --help
 //
@@ -33,7 +34,7 @@
 // record, never confusable with real evidence by aggregate/validate) -- see
 // rejection-diagnostics.mjs.
 import { readFileSync, readdirSync, existsSync, rmSync, statSync } from 'node:fs';
-import { join, dirname, relative, isAbsolute } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -52,8 +53,15 @@ import { tokenize } from './policy-hook.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 import { RUNS_ROOT, resolveEvidenceOutDir, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
 import { buildRejectionDiagnostics, writeRejectedRunDiagnostics } from './rejection-diagnostics.mjs';
-import { acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from './accepted-run-audit.mjs';
+import { acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from './accepted-run-audit.mjs';
 import { loadMeasurementScopeFile, createMeasurementScopeFileExclusive } from './measurement-scope.mjs';
+// validateRunRecordFile now lives in run-record-loader.mjs (extracted so analysis.mjs can import
+// the identical trusted-input gate without a circular cli.mjs<->analysis.mjs dependency, and so it
+// can return the already-parsed sidecar object instead of a second caller re-reading the same file
+// -- see that module's own header). Re-exported below for every existing caller (cmdValidate,
+// cmdAggregate, and this file's own tests) unchanged.
+import { validateRunRecordFile } from './run-record-loader.mjs';
+import { analyzeRunsDir } from './analysis.mjs';
 
 // dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
 // but package.json declares "node": ">=18" (confirmed to actually matter on a real ubuntu-latest
@@ -189,6 +197,7 @@ Usage:
   node tools/agentic-eval/cli.mjs scope init --out <path>
   node tools/agentic-eval/cli.mjs corpus validate
   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
+  node tools/agentic-eval/cli.mjs analyze --runs-dir <dir>
   node tools/agentic-eval/cli.mjs validate --run <path>
   node tools/agentic-eval/cli.mjs --help
 
@@ -204,6 +213,13 @@ longitudinal aggregate -- omitting it preserves today's exact per-invocation beh
 README.md's "Measurement scope" section for creation/reuse/rotation/privacy semantics. No
 evidence is committable until
 schema, policy-hash freshness, privacy, and the run-kind's hard acceptance gate all pass.
+
+analyze reads ONLY already-committed schema-v5 scenario run records + their validated accepted-
+run-audit sidecars under --runs-dir (never a raw transcript, never a live Claude call) and emits a
+deterministic per-run + summary breakdown across 5 separated axes (activation, post-invocation
+execution, policy interaction, authoritative evidence, final outcome) plus one closed-vocabulary
+failure_class per run -- see tools/agentic-eval/analysis.mjs and README.md's "Axis-separated
+analysis" section.
 `;
 
 /** Flags that are pure presence/absence booleans -- never consume the next token as a value.
@@ -270,6 +286,7 @@ const SUBCOMMAND_SHAPES = {
   run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'model', 'dry-run', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
   corpus: { flags: [], extraPositionals: 1 }, // corpus <validate>
   aggregate: { flags: ['runs-dir'], extraPositionals: 0 },
+  analyze: { flags: ['runs-dir'], extraPositionals: 0 },
   validate: { flags: ['run'], extraPositionals: 0 },
   scope: { flags: ['out'], extraPositionals: 1 }, // scope <init>
 };
@@ -2563,118 +2580,32 @@ function cmdAggregate(args) {
 }
 
 /**
- * Offline verification of one schema-v5 scenario record's own accepted-run-audit sidecar
- * (accepted-run-observability PR): resolves `accepted_audit.relative_path` relative to the run
- * record's OWN directory (never string-concatenated -- `relative_path` is already schema-guaranteed
- * safe by validateRun's own regex, below, but the resolved path is still containment-checked
- * before ever being read), requires the file to exist and parse, verifies its strict schema and
- * record coherence (validateAcceptedRunAuditSidecar + crossValidateAcceptedRunAuditAgainstRecord),
- * and SHA-256s the exact file text against the record's own declared digest. Never follows a
- * symlink whose resolved target escapes the run directory -- both the run directory and the
- * sidecar path are realpath-resolved and containment-checked first. Returns an array of
- * {field,message} errors (empty if everything checks out); never throws.
+ * Thin CLI wrapper over analysis.mjs's analyzeRunsDir -- mirrors cmdAggregate/cmdValidate's own
+ * "wrapper stays a print + exit-code shell, all real logic lives in a directly-testable function"
+ * precedent. Exit 1 whenever ANY file failed validation (mirrors cmdAggregate's identical
+ * fail-closed contract) -- a clean run with zero errors, even one that analyzed zero applicable
+ * files, exits 0.
  */
-function validateAcceptedAuditOnDisk(runPath, record) {
-  const errors = [];
-  const runDir = dirname(runPath);
-  let runDirReal;
+function cmdAnalyze(args) {
+  const runsDir = args['runs-dir'];
+  // existsSync alone also succeeds for an existing regular FILE -- statSync().isDirectory() closes
+  // that gap here with a clean, plain-text pre-flight message; analyzeRunsDir's own defensive
+  // directory check (for any caller that reaches it directly, bypassing this CLI wrapper) still
+  // returns a full, never-throwing JSON envelope either way, so this is a UX improvement layered on
+  // top of an already-fail-closed function, not the only thing preventing a crash.
+  let runsDirOk = false;
   try {
-    runDirReal = realpath(runDir);
-  } catch (err) {
-    errors.push({ field: 'accepted_audit', message: `could not resolve the run record's own directory: ${err.message}` });
-    return errors;
-  }
-  // relative_path is already schema-guaranteed (validateRun, schemas.mjs) to be exactly
-  // "audit/<run_id>.json" in a closed, traversal/backslash/absolute-path-free charset -- joined via
-  // path.join (platform-correct separators), never raw string concatenation.
-  const sidecarPath = join(runDir, ...record.accepted_audit.relative_path.split('/'));
-  if (!existsSync(sidecarPath)) {
-    errors.push({ field: 'accepted_audit', message: `sidecar file does not exist: ${record.accepted_audit.relative_path}` });
-    return errors;
-  }
-  let sidecarPathReal;
-  try {
-    sidecarPathReal = realpath(sidecarPath);
-  } catch (err) {
-    errors.push({ field: 'accepted_audit', message: `could not resolve the sidecar path: ${err.message}` });
-    return errors;
-  }
-  const relFromRunDir = relative(runDirReal, sidecarPathReal);
-  if (relFromRunDir.startsWith('..') || isAbsolute(relFromRunDir)) {
-    errors.push({ field: 'accepted_audit', message: 'sidecar path resolves outside the run record\'s own directory -- refusing to follow (symlink escape?)' });
-    return errors;
-  }
-  let sidecarText;
-  try {
-    sidecarText = readFileSync(sidecarPathReal, 'utf8');
-  } catch (err) {
-    errors.push({ field: 'accepted_audit', message: `could not read the sidecar file: ${err.message}` });
-    return errors;
-  }
-  let sidecarObj;
-  try {
-    sidecarObj = JSON.parse(sidecarText);
-  } catch (err) {
-    errors.push({ field: 'accepted_audit', message: `sidecar file is not valid JSON: ${err.message}` });
-    return errors;
-  }
-  const { errors: shapeErrors } = validateAcceptedRunAuditSidecar(sidecarObj);
-  errors.push(...shapeErrors.map((e) => ({ field: `accepted_audit.sidecar.${e.field}`, message: e.message })));
-  // Cross-validation is skipped once the sidecar's own shape is already invalid (review finding
-  // 5) -- a null/scalar/array sidecar root (valid JSON, but not a real sidecar object) is caught
-  // above by shapeErrors alone; comparing it field-by-field against the record adds nothing but
-  // noisy "undefined does not match ..." entries, and crossValidateAcceptedRunAuditAgainstRecord's
-  // own defensive guard (never throws even if called directly) is a second, independent layer,
-  // not a substitute for this one.
-  if (shapeErrors.length === 0) {
-    const crossErrors = crossValidateAcceptedRunAuditAgainstRecord(sidecarObj, record);
-    errors.push(...crossErrors.map((e) => ({ field: `accepted_audit.cross.${e.field}`, message: e.message })));
-  }
-  const actualSha256 = createHash('sha256').update(sidecarText, 'utf8').digest('hex');
-  if (actualSha256 !== record.accepted_audit.sha256) {
-    errors.push({ field: 'accepted_audit.sha256', message: `sidecar file's actual SHA-256 (${actualSha256}) does not match the record's declared accepted_audit.sha256 (${record.accepted_audit.sha256})` });
-  }
-  return errors;
-}
-
-/**
- * Validates one run record file at `runPath` -- schemas 1-4 (and a schema-5 non-scenario record)
- * get exactly the pre-existing record-only behavior; a schema-5 scenario record ADDITIONALLY gets
- * its own accepted-run-audit sidecar verified offline (see validateAcceptedAuditOnDisk), only once
- * the record itself already validates cleanly (a structurally invalid record has no reliable
- * accepted_audit.relative_path/sha256 to resolve in the first place). Extracted as its own,
- * directly-testable function so cmdValidate itself stays a thin CLI wrapper (print + exit code),
- * matching this file's own cmdCorpusValidate/validateLoadedScenarios precedent.
- *
- * Fails CLOSED, never throws (a review finding demonstrated the previous unguarded
- * readFileSync+JSON.parse propagated a raw SyntaxError uncaught through cmdValidate and, more
- * seriously, through cmdAggregate -- aborting an entire multi-file batch over one malformed file
- * instead of excluding just that file). `record` is `null` only on a read/parse failure; a
- * record that parses but fails schema validation still returns the real parsed object, unchanged
- * from before. The read/parse failure message never includes the file's own path or content --
- * `err.code` (e.g. 'ENOENT') for a read failure, a fixed generic string for a parse failure
- * (JSON.parse's own error message embeds a snippet of the malformed text itself, so it is never
- * interpolated here).
- * @returns {{record: object|null, errors: Array<{field:string,message:string}>, warnings: Array}}
- */
-function validateRunRecordFile(runPath) {
-  let text;
-  try {
-    text = readFileSync(runPath, 'utf8');
-  } catch (err) {
-    return { record: null, errors: [{ field: '(root)', message: `the run file could not be read (${err.code ?? 'unknown error'})` }], warnings: [] };
-  }
-  let record;
-  try {
-    record = JSON.parse(text);
+    runsDirOk = !!runsDir && statSync(runsDir).isDirectory();
   } catch {
-    return { record: null, errors: [{ field: '(root)', message: 'the run file is not valid JSON' }], warnings: [] };
+    runsDirOk = false;
   }
-  const { errors, warnings } = validateRun(record);
-  if (errors.length === 0 && record.schema >= 5 && record.run_kind === 'scenario') {
-    errors.push(...validateAcceptedAuditOnDisk(runPath, record));
+  if (!runsDirOk) {
+    console.error('--runs-dir <dir> is required and must be an existing, readable directory');
+    return 1;
   }
-  return { record, errors, warnings };
+  const result = analyzeRunsDir(runsDir);
+  console.log(JSON.stringify(result, null, 2));
+  return result.errors.length > 0 ? 1 : 0;
 }
 
 function cmdValidate(args) {
@@ -2711,6 +2642,7 @@ async function main() {
     case 'corpus': return args._[1] === 'validate' ? cmdCorpusValidate() : (process.stderr.write('usage: corpus validate\n'), 1);
     case 'scope': return args._[1] === 'init' ? cmdScopeInit(args) : (process.stderr.write('usage: scope init --out <path>\n'), 1);
     case 'aggregate': return cmdAggregate(args);
+    case 'analyze': return cmdAnalyze(args);
     case 'validate': return cmdValidate(args);
     case 'smoke': return cmdSmoke(args);
     case 'run': return cmdRun(args);
@@ -2734,4 +2666,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, cmdCorpusValidate, cmdScopeInit, cmdAggregate, cmdValidate, validateRunRecordFile, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };
+export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, cmdCorpusValidate, cmdScopeInit, cmdAggregate, cmdAnalyze, cmdValidate, validateRunRecordFile, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };

@@ -963,6 +963,38 @@ export function validateAggregateGroupKey(key) {
   return errors;
 }
 
+// Per-record completeness predicate for run_kind:'scenario' + benchmark_eligible:true records --
+// extracted as its own exported function (rather than left inline inside buildAggregateGroup's own
+// batch loop below) specifically so a caller that needs to judge ONE record's own completeness
+// (tools/agentic-eval/analysis.mjs's `analyze` command) can reuse the EXACT SAME requirement
+// without invoking buildAggregateGroup's own grouping/mixing machinery for a single record. This is
+// now the ONE place either caller ever asks "is this record complete enough" -- a second,
+// independently-maintained copy of this same list previously existed in analysis.mjs and would
+// have inevitably drifted from this one the next time either changed.
+//
+// validateRun() alone does not require these fields to be non-null/non-empty for a scenario record
+// (unlike grading_checks/repetition_index, which it DOES require non-null for schema:2+ scenario
+// records) -- project_commit/model_resolved/kmp_test_cli_source_sha/repo_commit/daemon_policy/
+// env_allowlist_profile/scenario_id must be concrete non-empty strings, success/
+// expected_outcome_matched.value must be strictly boolean (benchmark_eligible:true requires
+// grading to have actually produced a real verdict, never an absence -- see buildAggregateGroup's
+// own doc comment on why `true` is never required, only non-null), and ambient_skill_profile must
+// be a real, well-shaped object. Returns the list of violated field names (empty if fully
+// complete) -- never a boolean, so a caller can report exactly which field(s) failed.
+export function findScenarioBenchmarkCompletenessViolations(record) {
+  const violations = [];
+  for (const field of ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha', 'repo_commit', 'daemon_policy', 'env_allowlist_profile', 'scenario_id']) {
+    if (typeof record[field] !== 'string' || record[field].length === 0) violations.push(field);
+  }
+  for (const field of ['success', 'expected_outcome_matched']) {
+    if (typeof record[field]?.value !== 'boolean') violations.push(field);
+  }
+  if (record.ambient_skill_profile == null || typeof record.ambient_skill_profile !== 'object' || Array.isArray(record.ambient_skill_profile)) {
+    violations.push('ambient_skill_profile');
+  }
+  return violations;
+}
+
 // Fairness Contract as code: refuses to fold runs into one aggregate group unless they agree
 // on every hard partition key (HARD_PARTITION_FIELDS) -- mixing any of them is a validation
 // error, any benchmark_eligible:false run is refused outright (calibration/corpus-probe/smoke
@@ -1020,8 +1052,12 @@ export function buildAggregateGroup(runs) {
   // checked here as its own distinct schema field regardless, since nothing prevents them from
   // diverging in the future and an independent review pass named it specifically.
   if (runs.every((r) => r.run_kind === 'scenario') && runs.every((r) => r.benchmark_eligible === true)) {
+    // Computed once per run via the shared predicate above -- every field-specific check below
+    // filters by membership in THIS SAME list, so the actual violation condition is defined in
+    // exactly one place regardless of how many fields/messages are reported off of it.
+    const violationsByRun = runs.map((r) => findScenarioBenchmarkCompletenessViolations(r));
     for (const field of ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha', 'repo_commit', 'daemon_policy', 'env_allowlist_profile', 'scenario_id']) {
-      const unknown = runs.filter((r) => typeof r[field] !== 'string' || r[field].length === 0);
+      const unknown = runs.filter((r, i) => violationsByRun[i].includes(field));
       if (unknown.length > 0) {
         errors.push({ field, message: `${unknown.length} run(s) have a missing/empty ${field} and cannot be folded into a publishable scenario aggregate -- an unknown value can't be trusted to match another unknown value` });
       }
@@ -1033,7 +1069,7 @@ export function buildAggregateGroup(runs) {
     // RAN and produced a real, non-null verdict either way -- `.value` must be strictly boolean,
     // never `null`, and never required to be `true`.
     for (const field of ['success', 'expected_outcome_matched']) {
-      const ungraded = runs.filter((r) => typeof r[field]?.value !== 'boolean');
+      const ungraded = runs.filter((r, i) => violationsByRun[i].includes(field));
       if (ungraded.length > 0) {
         errors.push({ field, message: `${ungraded.length} run(s) have a null/missing ${field}.value and cannot be folded into a publishable scenario aggregate -- benchmark_eligible:true requires grading to have actually produced a real verdict (true OR false), not an absence` });
       }
@@ -1045,7 +1081,7 @@ export function buildAggregateGroup(runs) {
     // Mirrors the exact same "an unknown value can't be trusted to match another unknown value"
     // principle the string-valued fields above already enforce, generalized to this object-valued
     // field: required to be a real, well-shaped object, never null/undefined/wrong-typed.
-    const unknownAmbientProfile = runs.filter((r) => r.ambient_skill_profile == null || typeof r.ambient_skill_profile !== 'object' || Array.isArray(r.ambient_skill_profile));
+    const unknownAmbientProfile = runs.filter((r, i) => violationsByRun[i].includes('ambient_skill_profile'));
     if (unknownAmbientProfile.length > 0) {
       errors.push({ field: 'ambient_skill_profile', message: `${unknownAmbientProfile.length} run(s) have a missing/malformed ambient_skill_profile (introduced in schema v4) and cannot be folded into a publishable scenario aggregate -- an unknown ambient capability profile can't be trusted to match another` });
     }

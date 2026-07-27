@@ -825,6 +825,7 @@ node tools/agentic-eval/cli.mjs corpus validate       # validates trigger-querie
 node tools/agentic-eval/cli.mjs validate --run <path> # validates a run record; a schema-v5 scenario
                                                        # record also verifies its own committed audit/ sidecar
 node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
+node tools/agentic-eval/cli.mjs analyze --runs-dir <dir>   # offline, axis-separated per-run + summary breakdown
 ```
 
 Every subcommand's flags are validated against an explicit per-subcommand allowlist
@@ -1014,6 +1015,167 @@ write-then-rename sequence for all four files (two records, two raw transcripts)
 back on any failure partway through — see "No committable evidence before every gate passes"
 above.
 
+## Axis-separated analysis
+
+`analyze --runs-dir <dir>` (`tools/agentic-eval/analysis.mjs`) is a deterministic, fully offline
+command that separates what a single `benchmark_eligible`/`success` pair otherwise collapses
+together, into 5 independent axes per run:
+
+1. **target-skill activation** — `activation_expected` (`condition === 'current-skill'`),
+   `target_skill_invoked`, `target_skill_invocation_ordinal`, `target_skill_attempt_ordinal`
+2. **post-invocation execution** — `post_skill_tool_calls_total`, `post_signal_tool_calls`
+3. **policy interaction** — `pre_skill_policy_denials`, `post_skill_policy_denials_total`
+4. **authoritative evidence** — `terminal_authoritative_evidence_present`,
+   `terminal_authoritative_evidence_well_formed`
+5. **final task outcome** — `expected_outcome_matched`, `final_answer_consistent`, `success`
+
+plus one closed-vocabulary `failure_class` per run (see below). It operates ONLY on already-
+committed schema-v5 `run_kind:'scenario'` records and their validated accepted-run-audit sidecars
+— reusing `run-record-loader.mjs`'s `validateRunRecordFile()` as the ONLY gate for trusting a
+file, exactly like `aggregate`/`validate` already do (that module also returns the sidecar's own
+already-parsed object, so this command never re-opens the file a second time) — never a raw
+transcript (this harness's raw captures are gitignored and never committed at all; `analyze`
+doesn't read them even when they happen to exist locally), never a live Claude call, and no
+subprocess/network access/filesystem write of any kind. A schema-valid record that is not
+`schema >= 5` and `run_kind: 'scenario'` (a pre-v5 record, or a `calibration`/`smoke`/
+`corpus-probe` record) is silently out of this command's domain — counted in
+`summary.files_excluded_not_applicable`, never treated as an error, since it never had an
+accepted-run-audit sidecar to read in the first place. A schema-valid, in-domain record whose own
+`benchmark_eligible` is `false` is separately excluded (`summary.files_excluded_benchmark_
+ineligible`) — mirroring `aggregate.mjs`'s Fairness Contract, which refuses a benchmark-ineligible
+run outright; eligible and ineligible records are never pooled. `benchmark_eligible:true` alone
+does not prove a record is complete enough to analyze — `validateRun()` does not itself require
+`success`/`expected_outcome_matched` to be non-null for a schema-5 scenario record — so a record
+additionally passes the SAME completeness matrix `aggregate.mjs`'s `buildAggregateGroup()`
+enforces (the 7 provenance fields, `success`/`expected_outcome_matched` strictly boolean,
+`ambient_skill_profile` well-shaped) before being analyzed; failing it is reported as a per-file
+error (never a silent exclusion, since a benchmark-eligible record claiming completeness but
+lacking it is an integrity problem with that file, unlike a legitimate ineligible result).
+
+**Fail-closed, following `cmdAggregate`'s own precedent**: only regular files (never a directory
+merely named `*.json/`) are listed, in sorted-filename order (deterministic regardless of the
+filesystem's own `readdirSync` order); a file that fails `validateRunRecordFile` (malformed JSON,
+schema violation, missing/invalid/tampered sidecar) is excluded from `per_run` and reported in
+`errors[]`, and processing continues past it — one malformed sibling never aborts the whole batch.
+`--runs-dir` itself is verified to be an existing, readable directory before any listing is
+attempted — pointing it at a regular file or an unreadable path fails with the documented exit-1
+contract, never an uncaught exception. A `run_id` that repeats across two files (a copy under a
+different filename) is rejected on the second occurrence as a duplicate, never silently inflating
+a group's counts. `errors[]` entries carry `file_index` (the file's 0-based sorted position — an
+always-safe, content-free identifier) and `run_id`: `null` for any file that failed
+`validateRunRecordFile` itself (an invalid file's own self-reported fields, including its run_id,
+are never trustworthy enough to echo back), a real value only for a duplicate-run_id rejection
+(the record there fully validated; only its uniqueness failed). The command exits `1` whenever
+`errors.length > 0`, `0` otherwise (including a clean run that found zero applicable files).
+Every file is accounted for exactly once: `files_seen === files_analyzed +
+files_excluded_not_applicable + files_excluded_benchmark_ineligible + files_errored`.
+
+**Per-run derivation.** Every skill-relative field is derived from the accepted-run-audit
+sidecar's own `tool_calls[]` (never from a raw transcript, which this module never reads), with
+BIDIRECTIONAL record↔sidecar coherence enforced before any of them are computed: `target_skill_
+invoked:false` requires the sidecar to show ZERO confirmed (`tool_kind:'target-skill'`,
+`result_status:'success'`) entries anywhere, and `target_skill_invoked:true` requires a confirmed
+entry correlating to `skill_invocation_event.index` — and, whenever more than one confirmed entry
+exists anywhere in the sidecar, that entry must be the ordinal-EARLIEST one, matching
+`findSkillInvocation()`'s own documented "first confirmed match wins" contract (stream-parser.mjs)
+— a record and sidecar that disagree on any of this fail closed (excluded from `per_run`, reported
+in `errors[]`) rather than silently trusting one side. Every comparison here (and the pre/post-
+skill partition below) uses the sidecar's own always-unique `ordinal`, never `tool_use_event_
+index` — one assistant turn can dispatch several tool_use blocks sharing the same event index (the
+sidecar schema only requires `ordinal` non-decreasing across such ties, never unique per event),
+so `tool_use_event_index` alone cannot disambiguate which of several same-event entries is meant.
+`target_skill_invocation_ordinal` is the sidecar's own GLOBAL, zero-based `tool_calls[].ordinal`
+for that confirmed entry — the same convention the sidecar already uses for every other entry, so
+a delayed activation (several unrelated calls first) is directly visible as ordinal 3, 4, ...
+rather than collapsing to a constant. `target_skill_attempt_ordinal` is a SEPARATE,
+1-based count of attempts at the target skill specifically (distinct question: "did it take
+multiple tries at the skill itself" vs. "how much unrelated work happened first", the latter being
+`pre_skill_tool_calls`). `post_skill_tool_calls_total`/`post_skill_policy_denials_total` are
+ALWAYS populated once invoked, independent of whether any signal boundary exists — a failed run
+that never reached a correct signal still reports real, non-null counts here; only the additional,
+narrower `post_skill_tool_calls_through_signal`/`post_skill_policy_denials_through_signal` pair
+(calls after invocation up to and including whichever attempt produced the signal — "through", not
+"pre", since the signal-producing call itself is included) is `null` when there is no signal
+boundary to bound it against. `terminal_authoritative_evidence_present` (from the sidecar's own
+`terminal_authoritative_event != null`) and `terminal_authoritative_evidence_well_formed` (from
+`grading_checks.value`'s `authoritative_evidence_well_formed` check) are deliberately DISTINCT —
+an attempt can exist without being parseable, or never exist at all — and both are distinct again
+from `first_useful_signal_present` (`first_useful_signal_event != null`), which additionally
+requires CORRECTNESS, not just a well-formed attempt. Every skill-relative field is `null` only
+when activation is not expected (`no-skill`/`candidate-skill` condition) — "never infer, never
+guess": a condition where activation is out of scope has no invocation-relative boundary to split
+calls around. `post_signal_tool_calls` is a direct passthrough of the run record's own schema-v5
+field — it is NOT skill-relative (a `no-skill` condition run still has a real, meaningful value),
+so it is never nulled by activation status.
+
+**`failure_class`** is exactly one of `success`, `target-skill-not-invoked`,
+`policy-denial-observed-without-terminal-evidence`, `no-authoritative-evidence`, `wrong-target`,
+`outcome-mismatch`, `final-answer-mismatch`, `unclassified` — resolved by `classifyFailure()`'s
+own explicit, unit-tested precedence (checked top to bottom, first match wins, so one run can
+never receive two competing causes), and deliberately NON-CAUSAL throughout: every class describes
+what was OBSERVED, never asserts an unproven cause. `success:true` always wins regardless of any
+other signal; then, when activation was expected, a target skill never confirmed-invoked; then,
+only when there is no USABLE terminal evidence at all (`terminal_authoritative_evidence_present`
+AND `..._well_formed` both required), a policy denial observation (`hook_deny_count > 0` — named
+`policy-denial-observed-without-terminal-evidence`, not "blocked", since this harness has no
+attempt-level mechanism to prove the denial specifically CAUSED the absence of evidence); then the
+evidence-chain checks in the same dependency order `graders.mjs`'s own checks 4/5/6/8 already
+encode (`authoritative_target_matches_expected` → `authoritative_outcome_matches_expected` →
+`final_answer_consistent_with_evidence`, each its own distinct class). A denial that happened but
+did NOT prevent well-formed evidence from being produced is deliberately NOT treated as the cause
+once usable evidence exists — verified directly against a real committed record
+(`kampkit-android-host-test-discovery`): 4 policy denials occurred, but the run still produced
+well-formed evidence for the WRONG module, so `wrong-target` is correctly reported, not the
+policy-denial class. `outcome-mismatch` and `final-answer-mismatch` are two DISTINCT classes
+(never folded together) precisely so a run with `expected_outcome_matched:true` can never be
+labeled in a way that contradicts that field — only a `final_answer_consistent:false` on its own
+produces `final-answer-mismatch`. `wrong-target` specifically means the grading check
+`authoritative_target_matches_expected` failed (the terminal attempt targeted the wrong Gradle
+module) — distinct from invoking a foreign Skill entirely, which collapses into
+`target-skill-not-invoked` (the target skill genuinely was never confirmed either way).
+`pre_skill_tool_calls` is intentionally never a `failure_class` input — it remains an independent,
+always-visible field, never promoted into a causal label.
+
+**Summary.** Runs are grouped by the FULL `HARD_PARTITION_FIELDS` tuple (the identical Fairness
+Contract key `aggregate.mjs` already enforces, reused verbatim via `schemas.mjs`'s own
+`canonicalStructuredValue` serializer) — `scenario_id` and `condition` are 2 of its 17 fields, so
+"aggregate by scenario_id and condition" holds, while every OTHER field in that same tuple
+(`schema`, `platform`, `skill_source_sha`, `model_resolved`, `policy_sha256`, ...) keeps a
+differing schema/provenance run in its own separate group rather than silently pooled together.
+Each group reports counts + rates (`target_skill_invoked_rate`, `terminal_authoritative_evidence_
+present_rate`, `terminal_authoritative_evidence_well_formed_rate`, `expected_outcome_matched_
+rate`, `success_rate` — `null`, never `NaN`, when the denominator is 0) plus `failure_class_counts`
+and compact frequency-map distributions for `target_skill_invocation_ordinal`, `target_skill_
+attempt_ordinal`, `pre_skill_tool_calls`, and `post_skill_tool_calls_total`. `analyze` never
+computes a cross-condition comparison (e.g. a `current-skill`-vs-`no-skill` lift/delta) — each
+condition's runs land in their own group, exactly like the Fairness Contract already treats
+`condition` as a hard partition key; a `no-skill` run's own `success`/`failure_class` is still
+real, individually meaningful data, never reinterpreted as an efficacy baseline to subtract from.
+
+**Privacy.** Every LEAF value this module computes is a boolean, a non-negative integer, a
+closed-vocabulary string, or `null` — never a raw command, tool input, path, or skill name, exactly
+like the sidecar it reads (`accepted-run-audit.mjs`'s own "deliberately structural, never
+content-bearing" design). `run_id` and `scenario_id` are the only free-form-looking strings
+surfaced for a fully-validated record, and both are already treated as safe/loggable everywhere
+else in this harness (`scenario_id` is a public, committed corpus identifier; a validated schema-5
+scenario record's `run_id` is additionally charset-constrained by its own `accepted_audit.
+relative_path` cross-check). An INVALID file's own content — including a tampered `run_id` — is
+never echoed (see the fail-closed `errors[]` contract above). `group_key`, unlike every per-run
+leaf value, DOES carry approved STRUCTURED metadata verbatim (the `policy_allowed_gradle_tasks`/
+`policy_allowed_kmptest_subcommands` arrays, the `ambient_skill_profile` object) — pre-existing,
+already-committed run-record configuration inherited via `HARD_PARTITION_FIELDS`, not raw commands
+the agent ran, so this introduces no new exposure. As defense-in-depth beyond this module's own
+structural design, `analyzeRunsDir`'s complete return value is passed through a final scan
+(`tools/lib/redact.mjs`'s `PUBLIC_SHAPE_RULES`, via `privacy.mjs`) before being returned; a value
+that still matches even after redaction — which nothing this module structurally emits should ever
+do — withholds the entire batch rather than returning content that failed its own safety check.
+
+**Explicit limitation**: no timing metric is derived or reported anywhere in this command's output
+— the committed schema-v5 sidecars carry event-INDEX ordering only, never per-event wall-clock
+timestamps, so a duration between any two axis boundaries (e.g. "how long was the pre-skill
+delay") cannot be honestly computed from what's on disk today. Only counts and closed-vocabulary
+classifications are ever emitted.
+
 ## Measurement scope
 
 `calibrate`/`smoke`/`run` each generate a fresh, random `{scope_id, key}` pair per invocation by
@@ -1126,3 +1288,6 @@ unparseable JSON, wrong schema value, invalid `scope_id`, non-canonical or wrong
 - `docs/agentic-usage-measurement.md` is intentionally not edited by this PR even though its
   "Registry relationship" section is effectively fulfilled here — cross-linking it is reasonable
   follow-up, flagged in the PR body.
+- `analyze` (see "Axis-separated analysis" above) never derives or reports a timing metric —
+  committed schema-v5 sidecars carry event-index ordering only, never per-event wall-clock
+  timestamps, so no honest duration exists to compute between any two axis boundaries.
