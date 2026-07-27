@@ -72,17 +72,17 @@ describe('materializeSkillSnapshot', () => {
   // above (mechanism-only) and from the live-HEAD test above (tracks develop's tip forever, never
   // references this constant). calibrate/smoke both materialize current-skill via
   // runConditionPair's one call site using exactly PINNED_SKILL_SHA. This is a tripwire, not a
-  // general staleness detector: it deliberately hardcodes 21f1894 and will need its own edit on
+  // general staleness detector: it deliberately hardcodes 20d109e and will need its own edit on
   // every future legitimate pin advance -- the next test verifies the semantics that should
   // survive such an advance. Split into two independent it() blocks on purpose: expect().toBe()
   // throws synchronously, so a single block with the equality check first would hide whether the
   // content assertions below actually discriminate -- two blocks means a run against a stale pin
   // shows both failing for real, not just the first one.
-  it('PINNED_SKILL_SHA is locked to the PR #399 execution-state-machine fix', () => {
-    expect(PINNED_SKILL_SHA).toBe('21f189403e86b4720f0d2c6a547353fb108252b4');
+  it('PINNED_SKILL_SHA is locked to the PR #403 target-binding fix', () => {
+    expect(PINNED_SKILL_SHA).toBe('20d109e21a9f0b4147b08148f89701c9e6f58e43');
   });
 
-  it('the pinned current-skill snapshot reflects the PR #399 execution state machine', async () => {
+  it('the pinned current-skill snapshot reflects the PR #403 target-binding fix', async () => {
     const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runValidator });
     cleanupDirs.push(snapshotDir);
     expect(validation.ok).toBe(true);
@@ -129,6 +129,23 @@ describe('materializeSkillSnapshot', () => {
       /Invoke\s+before\s+Bash\s+exploration,\s+file\s+traversal,\s+Gradle\s+task\s+listing,\s+or\s+project-structure\s+inspection/i
     );
 
+    // #403 (1/3): the pre-inspection instruction above is bound, as ONE causal rule, to a module
+    // identified only INDIRECTLY (role/contents/platform/test capability) -- a later
+    // evidence-driven-scope-canary finding was that a scenario identifying its target by capability
+    // (not an exact name) still burned 2-3 denied Bash probes before the skill was ever invoked,
+    // because only frontmatter (read before any tool call) can move invocation earlier -- and a
+    // bare "appears somewhere later" ordering check can't tell a genuinely bound rule from two
+    // independently-satisfiable clauses. CodeRabbit round (PR #404): an earlier version of this
+    // regex used `[\s\S]{0,30}` between the two halves, which still let an unrelated injected
+    // sentence ("...inspection. This rule is important. including...") bridge two independently-
+    // scoped occurrences within that budget -- proven against a synthetic case built from exactly
+    // that shape. The real text joins the two halves with a single em-dash connector and nothing
+    // else, so matching that literal connector (whitespace-tolerant, not a wildcard span) is both
+    // tighter AND simpler than trying to pick a "safe" character budget.
+    expect(normalizedSkillMd).toMatch(
+      /invoke\s+before\s+bash\s+exploration,\s+file\s+traversal,\s+gradle\s+task\s+listing,\s+or\s+project-structure\s+inspection\s*—\s*including\s+when\s+named\s+only\s+by\s+role,\s+contents,\s+platform,\s+or\s+test\s+capability/i
+    );
+
     // #399 (2/6): scope classification names all four states as its own step, ahead of the four
     // dispatch branches -- not folded into module-presence branching the way the prior fix's
     // "known workflow, no/known/unclear module" framing did.
@@ -142,9 +159,33 @@ describe('materializeSkillSnapshot', () => {
     // likely-no-tests referencing null task fields without ever saying how to obtain or select
     // them. Both gaps are closed and asserted here explicitly so a future edit can't silently
     // re-drop either branch or re-merge the two rules.
-    expect(normalizedSkillMd).toContain('1 eligible: its exact name');
+    //
+    // #403 (2/3) supersedes the "1 eligible" half of this same assertion: binding dispatch to the
+    // one eligible candidate's OWN exact modules[].name (never a different, merely-resembling
+    // entry) replaced the earlier "its exact name" wording -- a review round found a successful
+    // describe followed by a wrong-target dispatch anyway, so the binding operation itself now has
+    // to be named explicitly at the point dispatch happens, not just as a classification principle
+    // elsewhere in the doc. CodeRabbit round (PR #404): the apostrophe in "entry's" was matched
+    // with a bare `.` wildcard, which would also accept a malformed "entryXs" -- narrowed to an
+    // explicit straight/curly-apostrophe character class.
+    expect(normalizedSkillMd).toMatch(
+      /1\s+eligible:\s*bind\s+dispatch\s+to\s+that\s+entry['’]s\s+exact\s+`modules\[\]\.name`[\s\S]{0,80}never\s+a\s+different\s+entry\s+merely\s+resembling\s+by\s+name,\s*type,\s*or\s+platform/i
+    );
     expect(normalizedSkillMd).toMatch(/2\+\s+eligible:\s+dispatch\s+globally\s+if\s+broad,\s+else\s+ask/);
     expect(normalizedSkillMd).toContain('0 eligible: report no');
+
+    // #403 (3/3): binding to the exact name alone is necessary but not sufficient for
+    // `--module-filter` workflows (parallel/android/benchmark) -- a review round caught that
+    // `--module-filter`'s own non-glob matching is a SUBSTRING contract (`matchModuleFilter`,
+    // lib/orchestrators/orchestrator-utils.js), so binding dispatch to `:foo` doesn't stop a
+    // co-resident `:fooApp` module from ALSO matching. The protocol must check the same
+    // already-fetched modules[] list before dispatch and ask rather than silently widen scope;
+    // `--coverage-modules` needs no such check (already exact-match, asserted separately in
+    // skill-canonical-workflow.test.js against the live working-tree file). CodeRabbit round
+    // (PR #404): same wildcard-apostrophe fix as #403 (2/3) above, applied to "name's".
+    expect(normalizedSkillMd).toMatch(
+      /`--module-filter`,\s*first\s+check\s+`modules\[\]`:\s*if\s+the\s+bound\s+name['’]s\s+substring\s+also\s+matches\s+another\s+entry,\s*ask\s+instead\s+of\s+dispatching\s*\(`--coverage-modules`\s+is\s+already\s+exact\)/i
+    );
     expect(normalizedSkillMd).toContain(
       '1 null: dispatch its exact `modules[].name` for one real filtered run'
     );
