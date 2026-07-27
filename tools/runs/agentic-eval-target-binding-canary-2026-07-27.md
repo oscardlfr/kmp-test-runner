@@ -162,7 +162,7 @@ applicable unit tests.
 | `skill_available`/`attempted`/`invoked` | F/F/F | F/F/F | T/T/T | T/T/T |
 | skill ordinal (first tool?) | n/a | n/a | **0 (yes)** | **2 (no)** |
 | pre-skill tool calls / denials | n/a | n/a | 0 / 0 | 2 / 2 |
-| `hook_call_count` / `hook_deny_count` | 9 / 9 (n/a — see note) | — | 10 / 7 | 4 / 2 |
+| `hook_call_count` / `hook_deny_count` | 11 / 11 | 8 / 8 | 10 / 7 | 4 / 2 |
 | post-skill tool calls / denials | n/a | n/a | 10 / 7 | 2 / 0 |
 | `wall_clock_ms` | 58883 | 33271 | 148427 | 75855 |
 | tokens in/out/cache_read/cache_creation | 20/3991/167767/12495 | 18/1839/153051/2124 | 22/6146/235584/14084 | 12/1167/110159/6258 |
@@ -189,10 +189,9 @@ different in *when* the skill activated:
   invoked; `afb0ecb5`'s post-skill path was longer (10 tool calls, 7 denied) than `844eee1e`'s (2
   tool calls, 0 denied) despite `afb0ecb5` invoking the skill earlier.
 - **`no-skill` remains 0-of-2**, unchanged in shape from every prior batch (structural 100% Bash
-  denial in both cells; `no-skill r1`'s `hook_call_count`/`hook_deny_count` of 9/9 is read directly
-  from its own record — the table's "n/a" for `no-skill r0` reflects that this session did not
-  re-extract that specific field for the second no-skill cell beyond confirming `success:false`
-  structurally, consistent with every no-skill cell across every batch).
+  denial in both cells; `no-skill r1`'s `hook_call_count`/`hook_deny_count` is 11/11 and
+  `no-skill r0`'s is 8/8 — `hook_deny_count == hook_call_count` on both, read directly from each
+  record, consistent with every no-skill cell across every batch).
 
 **Net for scenario 2: this is the clearest positive signal in this canary — activation timing moved
 substantially and consistently earlier across both `current-skill` cells, exactly matching what
