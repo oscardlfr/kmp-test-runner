@@ -1,0 +1,227 @@
+{
+  "schema": 5,
+  "run_id": "scenario-current-skill-afb0ecb5",
+  "run_kind": "scenario",
+  "benchmark_eligible": true,
+  "scenario_id": "kampkit-no-applicable-tests",
+  "query_id": null,
+  "condition": "current-skill",
+  "skill_source_sha": "20d109e21a9f0b4147b08148f89701c9e6f58e43",
+  "kmp_test_cli_version": "0.14.0",
+  "kmp_test_cli_source_sha": "44cae622dd88dfc224955a0ffc538ea21e9c7bf6",
+  "resolved_kmp_test_executable_path": "C:\\kmp-eval\\agentic-target-binding-canary\\bin\\kmp-test.js",
+  "model_requested": "claude-sonnet-5",
+  "model_resolved": "claude-sonnet-5",
+  "session_id_observed": "38bec75f-12e2-401c-a50b-313adf67eaa5",
+  "claude_code_version": "2.1.218",
+  "repo_commit": "44cae622dd88dfc224955a0ffc538ea21e9c7bf6",
+  "project_alias": "kampkit",
+  "project_commit": "b3a7784fb969a8558b88c80674c8b596944cdab7",
+  "project_url": "https://github.com/touchlab/KaMPKit",
+  "platform": "windows",
+  "family": "test-only",
+  "cache_state": "cold",
+  "daemon_policy": "disabled-via-gradle-user-home-properties",
+  "env_allowlist_profile": "narrow",
+  "seed": 20260722,
+  "order_index": 1,
+  "started_at": "2026-07-27T19:52:36.593Z",
+  "ended_at": "2026-07-27T19:55:05.020Z",
+  "wall_clock_ms": 148427,
+  "skill_available": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invocation_attempted": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invoked": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invocation_event": {
+    "type": "assistant.tool_use.Skill",
+    "index": 5
+  },
+  "success": {
+    "value": true,
+    "reason": null
+  },
+  "expected_outcome_matched": {
+    "value": true,
+    "reason": null
+  },
+  "first_useful_signal_ms": {
+    "value": 142668.7169,
+    "reason": null
+  },
+  "first_useful_signal_event": {
+    "type": "user.tool_result",
+    "index": 103
+  },
+  "post_signal_ms": {
+    "value": 5708.1218,
+    "reason": null
+  },
+  "post_signal_tool_calls": {
+    "value": 0,
+    "reason": null
+  },
+  "policy_denials_before_first_signal": {
+    "value": 7,
+    "reason": null
+  },
+  "policy_denials_after_first_signal": {
+    "value": 0,
+    "reason": null
+  },
+  "accepted_audit": {
+    "schema": 1,
+    "relative_path": "audit/scenario-current-skill-afb0ecb5.json",
+    "sha256": "a4d6d1b89ba2c294a62178428b3ded773503c37eccdcc4fac2c86205cb25317f"
+  },
+  "tokens": {
+    "input": {
+      "value": 22,
+      "reason": null
+    },
+    "output": {
+      "value": 6146,
+      "reason": null
+    },
+    "cache_read": {
+      "value": 235584,
+      "reason": null
+    },
+    "cache_creation": {
+      "value": 14084,
+      "reason": null
+    }
+  },
+  "tool_calls_total": {
+    "value": 11,
+    "reason": null
+  },
+  "shell_commands_total": {
+    "value": 10,
+    "reason": null
+  },
+  "test_invocations_total": {
+    "value": 1,
+    "reason": null
+  },
+  "retries": {
+    "value": 0,
+    "reason": null
+  },
+  "output_bytes": {
+    "value": 2480,
+    "reason": null
+  },
+  "stream_json_bytes": {
+    "value": 90571,
+    "reason": null
+  },
+  "human_interventions": {
+    "value": 0,
+    "reason": null
+  },
+  "terminated": false,
+  "termination_reason": null,
+  "exit_code": 0,
+  "permission_mode_used": "dontAsk",
+  "policy_allowed_gradle_tasks": [
+    ":app:tasks",
+    ":app:testDebugUnitTest",
+    ":app:test"
+  ],
+  "policy_allowed_kmptest_subcommands": [
+    "doctor",
+    "describe",
+    "parallel"
+  ],
+  "policy_sha256": "f2ec18f5dde8f230d0b09aecaf02f1adaf4244c6f8464461483936c5fe48b5bc",
+  "hook_call_count": 10,
+  "hook_deny_count": 7,
+  "privacy_status": "public",
+  "raw_capture_committed": false,
+  "raw_capture_location": "tools/runs/agentic-eval-scenario/raw/",
+  "notes": "Scenario run -- benchmark_eligible reflects protocol/integrity completeness, not answer correctness; see grading_checks and success for the actual outcome.",
+  "grading_checks": {
+    "value": [
+      {
+        "name": "no_transcript_structural_issues",
+        "passed": true,
+        "detail": "no structural issues",
+        "evidence_event_indices": []
+      },
+      {
+        "name": "bash_tool_use_present",
+        "passed": true,
+        "detail": "2 policy-allowed command(s) attempted",
+        "evidence_event_indices": [
+          83,
+          100
+        ]
+      },
+      {
+        "name": "tool_result_correlated",
+        "passed": true,
+        "detail": "every relevant tool_use has a correlated tool_result",
+        "evidence_event_indices": []
+      },
+      {
+        "name": "authoritative_evidence_well_formed",
+        "passed": true,
+        "detail": "the terminal attempt produced well-formed evidence",
+        "evidence_event_indices": [
+          103
+        ]
+      },
+      {
+        "name": "authoritative_target_matches_expected",
+        "passed": true,
+        "detail": "terminal attempt targeted the expected module",
+        "evidence_event_indices": [
+          103
+        ]
+      },
+      {
+        "name": "authoritative_outcome_matches_expected",
+        "passed": true,
+        "detail": "terminal attempt outcome matches expected",
+        "evidence_event_indices": [
+          103
+        ]
+      },
+      {
+        "name": "no_provider_contradiction",
+        "passed": true,
+        "detail": "only one provider (or neither) produced evidence -- trivially no contradiction",
+        "evidence_event_indices": [
+          103
+        ]
+      },
+      {
+        "name": "final_answer_consistent_with_evidence",
+        "passed": true,
+        "detail": "the KMP_EVAL_RESULT block exactly matches the expected module, outcome_kind, and counts",
+        "evidence_event_indices": []
+      }
+    ],
+    "reason": null
+  },
+  "repetition_index": 1,
+  "foreign_skill_summary": {
+    "rejected": 0,
+    "confirmed": 0,
+    "incomplete": 0
+  },
+  "ambient_skill_profile": {
+    "count": 16,
+    "scope_id": "4b9913f9-3c28-4fd9-afc2-275613b66520",
+    "fingerprint_hmac": "359e10a2401e6d1e3d194fd55b3eb97887eed834306b4e0ab93994f02c3a231a"
+  },
+  "errors": []
+}
