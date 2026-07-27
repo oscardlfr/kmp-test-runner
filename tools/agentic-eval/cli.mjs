@@ -13,6 +13,7 @@
 //                                        [--private-patterns-file <path>]
 //   node tools/agentic-eval/cli.mjs corpus validate
 //   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
+//   node tools/agentic-eval/cli.mjs analyze --runs-dir <dir>
 //   node tools/agentic-eval/cli.mjs validate --run <path-to-run.json>
 //   node tools/agentic-eval/cli.mjs --help
 //
@@ -54,6 +55,13 @@ import { RUNS_ROOT, resolveEvidenceOutDir, isRawDirSafeFromAccidentalCommit, pro
 import { buildRejectionDiagnostics, writeRejectedRunDiagnostics } from './rejection-diagnostics.mjs';
 import { acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from './accepted-run-audit.mjs';
 import { loadMeasurementScopeFile, createMeasurementScopeFileExclusive } from './measurement-scope.mjs';
+// analyzeRunsDir lives in analysis.mjs, which itself imports validateRunRecordFile back from THIS
+// file (see analysis.mjs's own header) -- a deliberate circular import, safe because both sides
+// only ever call the other's export from inside a function body (cmdAnalyze/analyzeRunsDir), never
+// at module-evaluation time; validateRunRecordFile is a hoisted function declaration, so it's
+// already bound by the time analysis.mjs's own top-level `import` resolves it, regardless of which
+// of the two modules Node happens to load first.
+import { analyzeRunsDir } from './analysis.mjs';
 
 // dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
 // but package.json declares "node": ">=18" (confirmed to actually matter on a real ubuntu-latest
@@ -189,6 +197,7 @@ Usage:
   node tools/agentic-eval/cli.mjs scope init --out <path>
   node tools/agentic-eval/cli.mjs corpus validate
   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
+  node tools/agentic-eval/cli.mjs analyze --runs-dir <dir>
   node tools/agentic-eval/cli.mjs validate --run <path>
   node tools/agentic-eval/cli.mjs --help
 
@@ -204,6 +213,13 @@ longitudinal aggregate -- omitting it preserves today's exact per-invocation beh
 README.md's "Measurement scope" section for creation/reuse/rotation/privacy semantics. No
 evidence is committable until
 schema, policy-hash freshness, privacy, and the run-kind's hard acceptance gate all pass.
+
+analyze reads ONLY already-committed schema-v5 scenario run records + their validated accepted-
+run-audit sidecars under --runs-dir (never a raw transcript, never a live Claude call) and emits a
+deterministic per-run + summary breakdown across 5 separated axes (activation, post-invocation
+execution, policy interaction, authoritative evidence, final outcome) plus one closed-vocabulary
+failure_class per run -- see tools/agentic-eval/analysis.mjs and README.md's "Axis-separated
+analysis" section.
 `;
 
 /** Flags that are pure presence/absence booleans -- never consume the next token as a value.
@@ -270,6 +286,7 @@ const SUBCOMMAND_SHAPES = {
   run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'model', 'dry-run', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
   corpus: { flags: [], extraPositionals: 1 }, // corpus <validate>
   aggregate: { flags: ['runs-dir'], extraPositionals: 0 },
+  analyze: { flags: ['runs-dir'], extraPositionals: 0 },
   validate: { flags: ['run'], extraPositionals: 0 },
   scope: { flags: ['out'], extraPositionals: 1 }, // scope <init>
 };
@@ -2563,6 +2580,24 @@ function cmdAggregate(args) {
 }
 
 /**
+ * Thin CLI wrapper over analysis.mjs's analyzeRunsDir -- mirrors cmdAggregate/cmdValidate's own
+ * "wrapper stays a print + exit-code shell, all real logic lives in a directly-testable function"
+ * precedent. Exit 1 whenever ANY file failed validation (mirrors cmdAggregate's identical
+ * fail-closed contract) -- a clean run with zero errors, even one that analyzed zero applicable
+ * files, exits 0.
+ */
+function cmdAnalyze(args) {
+  const runsDir = args['runs-dir'];
+  if (!runsDir || !existsSync(runsDir)) {
+    console.error('--runs-dir <dir> is required and must exist');
+    return 1;
+  }
+  const result = analyzeRunsDir(runsDir);
+  console.log(JSON.stringify(result, null, 2));
+  return result.errors.length > 0 ? 1 : 0;
+}
+
+/**
  * Offline verification of one schema-v5 scenario record's own accepted-run-audit sidecar
  * (accepted-run-observability PR): resolves `accepted_audit.relative_path` relative to the run
  * record's OWN directory (never string-concatenated -- `relative_path` is already schema-guaranteed
@@ -2711,6 +2746,7 @@ async function main() {
     case 'corpus': return args._[1] === 'validate' ? cmdCorpusValidate() : (process.stderr.write('usage: corpus validate\n'), 1);
     case 'scope': return args._[1] === 'init' ? cmdScopeInit(args) : (process.stderr.write('usage: scope init --out <path>\n'), 1);
     case 'aggregate': return cmdAggregate(args);
+    case 'analyze': return cmdAnalyze(args);
     case 'validate': return cmdValidate(args);
     case 'smoke': return cmdSmoke(args);
     case 'run': return cmdRun(args);
@@ -2734,4 +2770,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, cmdCorpusValidate, cmdScopeInit, cmdAggregate, cmdValidate, validateRunRecordFile, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };
+export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, cmdCorpusValidate, cmdScopeInit, cmdAggregate, cmdAnalyze, cmdValidate, validateRunRecordFile, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA };
