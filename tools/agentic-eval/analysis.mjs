@@ -42,7 +42,7 @@
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateRunRecordFile } from './run-record-loader.mjs';
-import { HARD_PARTITION_FIELDS, canonicalStructuredValue } from './schemas.mjs';
+import { HARD_PARTITION_FIELDS, canonicalStructuredValue, findScenarioBenchmarkCompletenessViolations } from './schemas.mjs';
 import { redactObjectAndVerify } from './privacy.mjs';
 
 export const ANALYSIS_SCHEMA = 1;
@@ -83,36 +83,6 @@ function findCheck(checks, name) {
  * unvalidated or partially-invalid record is safe to display. */
 function safeRunIdOrNull(runId) {
   return typeof runId === 'string' && SAFE_RUN_ID_RE.test(runId) ? runId : null;
-}
-
-// Mirrors schemas.mjs's buildAggregateGroup() own completeness matrix for run_kind:'scenario' +
-// benchmark_eligible:true records, FIELD FOR FIELD -- validateRun() alone does not require these
-// to be non-null/non-empty (a scenario record can pass full schema validation with a legitimately
-// null success.value, unlike grading_checks/repetition_index, which validateRun DOES require
-// non-null for schema:2+ scenario records), so benchmark_eligible:true alone does not prove a
-// record is complete enough to analyze. Duplicated here rather than imported because
-// aggregate.mjs's own check is embedded inline inside buildAggregateGroup (which also
-// groups/mixes/keys -- not something this module should invoke wholesale for a single record) and
-// this correction's own scope excludes touching schemas.mjs -- kept intentionally identical so the
-// two can be diffed against each other if either is ever revised.
-const BENCHMARK_COMPLETENESS_STRING_FIELDS = ['project_commit', 'model_resolved', 'kmp_test_cli_source_sha', 'repo_commit', 'daemon_policy', 'env_allowlist_profile', 'scenario_id'];
-const BENCHMARK_COMPLETENESS_BOOLEAN_FIELDS = ['success', 'expected_outcome_matched'];
-
-/** Returns the list of field names that violate the benchmark-completeness matrix (empty if the
- * record is fully complete) -- never a boolean, so a caller can report exactly which field(s)
- * failed rather than a single opaque "incomplete" flag. */
-function findBenchmarkCompletenessViolations(record) {
-  const violations = [];
-  for (const field of BENCHMARK_COMPLETENESS_STRING_FIELDS) {
-    if (typeof record[field] !== 'string' || record[field].length === 0) violations.push(field);
-  }
-  for (const field of BENCHMARK_COMPLETENESS_BOOLEAN_FIELDS) {
-    if (typeof record[field]?.value !== 'boolean') violations.push(field);
-  }
-  if (record.ambient_skill_profile == null || typeof record.ambient_skill_profile !== 'object' || Array.isArray(record.ambient_skill_profile)) {
-    violations.push('ambient_skill_profile');
-  }
-  return violations;
 }
 
 /**
@@ -164,11 +134,16 @@ export function classifyFailure({
  * Enforces BIDIRECTIONAL record<->sidecar coherence, failing closed (`{ok:false, error}`) on
  * disagreement rather than trusting either side alone: `targetSkillInvoked !== true` requires the
  * sidecar to show ZERO confirmed (`tool_kind:'target-skill'`, `result_status:'success'`) entries
- * anywhere; `targetSkillInvoked === true` requires EXACTLY one confirmed entry whose own
- * `tool_use_event_index` correlates to `record.skill_invocation_event.index`. A record and sidecar
- * that disagree here can only mean the two files were tampered independently in a way
- * validateRunRecordFile's own schema+hash checks didn't happen to catch -- never in normal
- * operation, and never silently resolved by trusting one side over the other.
+ * anywhere; `targetSkillInvoked === true` requires AT LEAST ONE confirmed entry whose own
+ * `tool_use_event_index` correlates to `record.skill_invocation_event.index` (ties on that index
+ * are disambiguated by the sidecar's own unique `ordinal` -- one assistant turn can dispatch
+ * several tool_use blocks) -- and, whenever more than one confirmed target-skill entry exists
+ * ANYWHERE in the sidecar, the correlated one must be the ordinal-earliest of them, matching
+ * `findSkillInvocation()`'s own documented "first confirmed match wins" contract (stream-
+ * parser.mjs). A record and sidecar that disagree on any of this can only mean the two files were
+ * tampered independently in a way validateRunRecordFile's own schema+hash checks didn't happen to
+ * catch -- never in normal operation, and never silently resolved by trusting one side over the
+ * other.
  *
  * `target_skill_invocation_ordinal` is the sidecar's OWN global, zero-based `tool_calls[].ordinal`
  * for the confirmed entry -- the SAME convention the sidecar already uses for every other entry, so
@@ -425,25 +400,30 @@ export function buildSummary(pairs) {
   const buckets = new Map();
   for (const { record, entry } of pairs) {
     const key = JSON.stringify(HARD_PARTITION_FIELDS.map((f) => canonicalStructuredValue(record[f])));
-    if (!buckets.has(key)) buckets.set(key, { record, entries: [] });
+    if (!buckets.has(key)) buckets.set(key, { record, entries: [], sortKey: key });
     buckets.get(key).entries.push(entry);
   }
   const groups = [];
-  for (const { record, entries } of buckets.values()) {
+  for (const { record, entries, sortKey } of buckets.values()) {
     const groupKey = {};
     for (const f of HARD_PARTITION_FIELDS) groupKey[f] = record[f];
-    groups.push(buildGroupSummary(groupKey, entries));
+    groups.push({ ...buildGroupSummary(groupKey, entries), __sortKey: sortKey });
   }
-  // Plain code-point comparison (`<`/`>`), never localeCompare() -- ICU collation is
-  // locale/Node-build-dependent (e.g. "a_b" vs "a-b" can order oppositely across environments),
-  // which would make this command's own claimed deterministic JSON output vary by machine. Matches
-  // the exact ordering plain Array.prototype.sort() already uses for `files` in analyzeRunsDir, so
-  // group order and file order are governed by the same, single notion of "sorted".
-  groups.sort((a, b) => {
-    const s = codePointCompare(a.group_key.scenario_id, b.group_key.scenario_id);
-    return s !== 0 ? s : codePointCompare(String(a.group_key.condition), String(b.group_key.condition));
-  });
-  return { groups };
+  // Tie-break with the FULL canonical bucket key (every HARD_PARTITION_FIELDS value, the exact
+  // same string already used to construct the bucket -- never re-derived a second way), not just
+  // scenario_id/condition -- two groups differing only in, say, `platform` or `schema` otherwise
+  // preserved Map/JS-engine insertion order, which is a function of which record was PROCESSED
+  // first (itself downstream of file-listing order), not a property of the data itself: reordering
+  // which file happens to come first for an otherwise-identical set of records could silently
+  // reorder the output. Plain code-point comparison (`<`/`>`), never localeCompare() -- ICU
+  // collation is locale/Node-build-dependent (e.g. "a_b" vs "a-b" can order oppositely across
+  // environments), which would make this command's own claimed deterministic JSON output vary by
+  // machine; this matches the exact ordering plain Array.prototype.sort() already uses for `files`
+  // in analyzeRunsDir. The bucketing key is guaranteed unique per group (two groups sharing every
+  // HARD_PARTITION_FIELDS value would have been the SAME bucket), so this comparator can never
+  // return 0 for two genuinely different groups.
+  groups.sort((a, b) => codePointCompare(a.__sortKey, b.__sortKey));
+  return { groups: groups.map(({ __sortKey, ...group }) => group) };
 }
 
 function codePointCompare(a, b) {
@@ -544,7 +524,7 @@ export function analyzeRunsDir(runsDir) {
       filesExcludedBenchmarkIneligible++;
       return;
     }
-    const completenessViolations = findBenchmarkCompletenessViolations(record);
+    const completenessViolations = findScenarioBenchmarkCompletenessViolations(record);
     if (completenessViolations.length > 0) {
       errors.push({
         file_index: fileIndex, run_id: safeRunIdOrNull(record.run_id),

@@ -16,9 +16,10 @@
 // sidecar pairs (read-only, tools/runs/agentic-eval-scenario/) specifically because the review
 // demonstrated the previous ordinal semantic silently collapsed every real delayed-activation run
 // to a constant 1.
-import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, statSync } from 'node:fs';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import {
@@ -30,7 +31,11 @@ import { ACCEPTED_AUDIT_SIDECAR_SCHEMA } from '../../tools/agentic-eval/accepted
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 
 const VALID_SCOPE_ID = '11111111-2222-4333-8444-555555555555';
-const REAL_RUNS_DIR = path.join(process.cwd(), 'tools', 'runs', 'agentic-eval-scenario');
+// Resolved from THIS FILE's own location (never process.cwd(), which depends on where the test
+// runner happens to be invoked FROM and is not something a test should depend on) -- this file
+// lives at tests/vitest/, so the repo root is two levels up.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REAL_RUNS_DIR = path.join(__dirname, '..', '..', 'tools', 'runs', 'agentic-eval-scenario');
 
 // ---------------------------------------------------------------------------------------------
 // Fixture builders -- mirror agentic-eval-validate-command.test.js's baseCalibrationRecordV1/
@@ -1136,6 +1141,16 @@ describe('analyzeRunsDir -- end-to-end, fail-closed directory scan', () => {
 // collapsing every one of these delayed-activation runs to a constant 1, and against the
 // previous version nulling out post-skill counts on every one of these non-signal-reaching runs.
 describe('real committed-record regression coverage (read-only, tools/runs/agentic-eval-scenario)', () => {
+  beforeAll(() => {
+    if (!existsSync(REAL_RUNS_DIR) || !statSync(REAL_RUNS_DIR).isDirectory()) {
+      throw new Error(
+        `Expected versioned fixture directory not found: ${REAL_RUNS_DIR}\n` +
+        'These real committed-record regression tests must fail loudly, not skip silently, ' +
+        'when this always-present fixture directory is missing.'
+      );
+    }
+  });
+
   const EXPECTED = {
     'scenario-current-skill-08d5daaa': {
       target_skill_invocation_ordinal: 3, target_skill_attempt_ordinal: 1,
@@ -1175,7 +1190,6 @@ describe('real committed-record regression coverage (read-only, tools/runs/agent
   };
 
   it('every documented real record analyzes to its hand-verified expected values', () => {
-    if (!existsRealRunsDir()) return; // see helper below -- skips gracefully outside a full checkout
     const result = analyzeRunsDir(REAL_RUNS_DIR);
     expect(result.errors).toEqual([]);
     for (const [runId, expected] of Object.entries(EXPECTED)) {
@@ -1188,7 +1202,6 @@ describe('real committed-record regression coverage (read-only, tools/runs/agent
   });
 
   it('confirms delayed-activation runs report their real GLOBAL ordinal (3 or 4), never collapsed to 1', () => {
-    if (!existsRealRunsDir()) return;
     const result = analyzeRunsDir(REAL_RUNS_DIR);
     const delayed = ['scenario-current-skill-08d5daaa', 'scenario-current-skill-77491559', 'scenario-current-skill-21843c0e']
       .map((id) => result.per_run.find((e) => e.run_id === id));
@@ -1198,21 +1211,12 @@ describe('real committed-record regression coverage (read-only, tools/runs/agent
   });
 
   it('confirms a failed (no-signal) run still reports real, non-null post-skill counts', () => {
-    if (!existsRealRunsDir()) return;
     const result = analyzeRunsDir(REAL_RUNS_DIR);
     const entry = result.per_run.find((e) => e.run_id === 'scenario-current-skill-27d0c3c6');
     expect(entry.post_skill_tool_calls_total).toBe(9);
     expect(entry.post_skill_tool_calls_total).not.toBeNull();
   });
 });
-
-function existsRealRunsDir() {
-  try {
-    return statSync(REAL_RUNS_DIR).isDirectory();
-  } catch {
-    return false;
-  }
-}
 
 describe('module self-consistency', () => {
   it('every grading-check name this module reads by literal string still exists in GRADING_CHECK_NAMES', () => {
