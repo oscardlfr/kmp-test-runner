@@ -135,9 +135,15 @@ describe('materializeSkillSnapshot', () => {
     // (not an exact name) still burned 2-3 denied Bash probes before the skill was ever invoked,
     // because only frontmatter (read before any tool call) can move invocation earlier -- and a
     // bare "appears somewhere later" ordering check can't tell a genuinely bound rule from two
-    // independently-satisfiable clauses. Matched as one regex, directly adjacent, for that reason.
+    // independently-satisfiable clauses. CodeRabbit round (PR #404): an earlier version of this
+    // regex used `[\s\S]{0,30}` between the two halves, which still let an unrelated injected
+    // sentence ("...inspection. This rule is important. including...") bridge two independently-
+    // scoped occurrences within that budget -- proven against a synthetic case built from exactly
+    // that shape. The real text joins the two halves with a single em-dash connector and nothing
+    // else, so matching that literal connector (whitespace-tolerant, not a wildcard span) is both
+    // tighter AND simpler than trying to pick a "safe" character budget.
     expect(normalizedSkillMd).toMatch(
-      /invoke\s+before\s+bash\s+exploration,\s+file\s+traversal,\s+gradle\s+task\s+listing,\s+or\s+project-structure\s+inspection[\s\S]{0,30}including\s+when\s+named\s+only\s+by\s+role,\s+contents,\s+platform,\s+or\s+test\s+capability/i
+      /invoke\s+before\s+bash\s+exploration,\s+file\s+traversal,\s+gradle\s+task\s+listing,\s+or\s+project-structure\s+inspection\s*—\s*including\s+when\s+named\s+only\s+by\s+role,\s+contents,\s+platform,\s+or\s+test\s+capability/i
     );
 
     // #399 (2/6): scope classification names all four states as its own step, ahead of the four
@@ -156,12 +162,14 @@ describe('materializeSkillSnapshot', () => {
     //
     // #403 (2/3) supersedes the "1 eligible" half of this same assertion: binding dispatch to the
     // one eligible candidate's OWN exact modules[].name (never a different, merely-resembling
-    // entry) replaced the earlier "its exact name" wording -- a review round found describe
-    // evidence being gathered correctly and then a wrong-target dispatch happening anyway, so the
-    // binding operation itself now has to be named explicitly at the point dispatch happens, not
-    // just as a classification principle elsewhere in the doc.
+    // entry) replaced the earlier "its exact name" wording -- a review round found a successful
+    // describe followed by a wrong-target dispatch anyway, so the binding operation itself now has
+    // to be named explicitly at the point dispatch happens, not just as a classification principle
+    // elsewhere in the doc. CodeRabbit round (PR #404): the apostrophe in "entry's" was matched
+    // with a bare `.` wildcard, which would also accept a malformed "entryXs" -- narrowed to an
+    // explicit straight/curly-apostrophe character class.
     expect(normalizedSkillMd).toMatch(
-      /1\s+eligible:\s*bind\s+dispatch\s+to\s+that\s+entry.s\s+exact\s+`modules\[\]\.name`[\s\S]{0,80}never\s+a\s+different\s+entry\s+merely\s+resembling\s+by\s+name,\s*type,\s*or\s+platform/i
+      /1\s+eligible:\s*bind\s+dispatch\s+to\s+that\s+entry['’]s\s+exact\s+`modules\[\]\.name`[\s\S]{0,80}never\s+a\s+different\s+entry\s+merely\s+resembling\s+by\s+name,\s*type,\s*or\s+platform/i
     );
     expect(normalizedSkillMd).toMatch(/2\+\s+eligible:\s+dispatch\s+globally\s+if\s+broad,\s+else\s+ask/);
     expect(normalizedSkillMd).toContain('0 eligible: report no');
@@ -173,9 +181,10 @@ describe('materializeSkillSnapshot', () => {
     // co-resident `:fooApp` module from ALSO matching. The protocol must check the same
     // already-fetched modules[] list before dispatch and ask rather than silently widen scope;
     // `--coverage-modules` needs no such check (already exact-match, asserted separately in
-    // skill-canonical-workflow.test.js against the live working-tree file).
+    // skill-canonical-workflow.test.js against the live working-tree file). CodeRabbit round
+    // (PR #404): same wildcard-apostrophe fix as #403 (2/3) above, applied to "name's".
     expect(normalizedSkillMd).toMatch(
-      /`--module-filter`,\s*first\s+check\s+`modules\[\]`:\s*if\s+the\s+bound\s+name.s\s+substring\s+also\s+matches\s+another\s+entry,\s*ask\s+instead\s+of\s+dispatching\s*\(`--coverage-modules`\s+is\s+already\s+exact\)/i
+      /`--module-filter`,\s*first\s+check\s+`modules\[\]`:\s*if\s+the\s+bound\s+name['’]s\s+substring\s+also\s+matches\s+another\s+entry,\s*ask\s+instead\s+of\s+dispatching\s*\(`--coverage-modules`\s+is\s+already\s+exact\)/i
     );
     expect(normalizedSkillMd).toContain(
       '1 null: dispatch its exact `modules[].name` for one real filtered run'
