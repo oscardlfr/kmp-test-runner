@@ -1,0 +1,110 @@
+{
+  "schema": 1,
+  "run_id": "scenario-no-skill-9dc9b104",
+  "run_schema": 5,
+  "run_kind": "scenario",
+  "condition": "no-skill",
+  "scenario_id": "kampkit-no-applicable-tests",
+  "first_useful_signal_event": null,
+  "terminal_authoritative_event": null,
+  "tool_calls": [
+    {
+      "ordinal": 0,
+      "tool_use_event_index": 4,
+      "tool_result_event_index": 7,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 1,
+      "tool_use_event_index": 8,
+      "tool_result_event_index": 11,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 2,
+      "tool_use_event_index": 15,
+      "tool_result_event_index": 18,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 3,
+      "tool_use_event_index": 22,
+      "tool_result_event_index": 25,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 4,
+      "tool_use_event_index": 29,
+      "tool_result_event_index": 32,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 5,
+      "tool_use_event_index": 36,
+      "tool_result_event_index": 39,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 6,
+      "tool_use_event_index": 43,
+      "tool_result_event_index": 46,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 7,
+      "tool_use_event_index": 53,
+      "tool_result_event_index": 56,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    }
+  ],
+  "summary": {
+    "tool_calls_total": 8,
+    "shell_commands_total": 8,
+    "post_signal_ms": null,
+    "post_signal_tool_calls": null,
+    "policy_denials_total": 8,
+    "policy_denials_before_first_signal": null,
+    "policy_denials_after_first_signal": null,
+    "policy_decisions_missing": 0
+  }
+}
