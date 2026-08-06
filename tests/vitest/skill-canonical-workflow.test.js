@@ -763,13 +763,10 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   });
 });
 
-// Schema-v5 canary forensic fact #3 (tools/runs/agentic-eval-evidence-driven-scope-canary-2026-07-
-// 26.md): a cell decorated the canonical describe command; policy correctly denied it, but the
-// agent then spiralled through more denied commands rather than recovering. This describe block
-// exercises the REAL policy-hook decide() function (tools/agentic-eval/policy-hook.mjs) directly --
-// not just SKILL.md's own prose -- so a future divergence between what SKILL.md claims is
-// "canonical" and what the live policy actually allows/denies would fail here, not just look
-// plausible in the doc.
+// Three schema-v5 canaries showed that agents naturally append a terminal `2>&1` when capturing
+// kmp-test output. The policy tolerates only that non-mutating stderr merge; pipes, chaining, and
+// file redirection remain denied. This block exercises the REAL policy-hook decide() function
+// (tools/agentic-eval/policy-hook.mjs) directly, not just SKILL.md's prose.
 describe('Decision protocol canonical-command policy -- exercises the REAL policy-hook decide() function', () => {
   let fixtureRoot;
 
@@ -802,11 +799,15 @@ describe('Decision protocol canonical-command policy -- exercises the REAL polic
     expect(decisionFor(CANONICAL_DESCRIBE)).toBe('allow');
   });
 
+  it('the canonical describe command with only a terminal stderr-to-stdout merge is also allowed', () => {
+    expect(decisionFor(`${CANONICAL_DESCRIBE} 2>&1`)).toBe('allow');
+  });
+
   it.each([
-    `${CANONICAL_DESCRIBE} 2>&1`,
     `${CANONICAL_DESCRIBE} | cat`,
     `${CANONICAL_DESCRIBE} && echo done`,
-  ])('the same command decorated (%s) is denied -- proves the "decorated" case is a real policy outcome, not just documented prose', (decorated) => {
+    `${CANONICAL_DESCRIBE} > out.txt`,
+  ])('other decorated forms remain denied: %s', (decorated) => {
     expect(decisionFor(decorated)).toBe('deny');
   });
 });
