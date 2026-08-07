@@ -457,11 +457,13 @@ matrix is rejected anyway.
   symlink planted at the (schema-guaranteed-safe-looking) sidecar path whose target resolves outside
   the run record's own directory is refused, never silently followed.
 
-  This PR ships exactly two scenarios (`kampkit-android-host-test-discovery`,
-  `kampkit-no-applicable-tests`, both against the pinned KaMPKit commit `smoke` already uses) and
-  zero live scenario records — every number in `corpus/scenarios/*.json` was independently
-  re-verified via direct local CLI/Gradle execution (never through this PR's own `run` command, and
-  never through a live Claude session).
+  `corpus/scenarios/` holds three scenarios today (`kampkit-android-host-test-discovery` and
+  `kampkit-no-applicable-tests`, both targeting KaMPKit commit
+  `b3a7784fb969a8558b88c80674c8b596944cdab7` — the same commit the shipped `smoke` evidence uses;
+  `nowinandroid-core-common` against a pinned NowInAndroid commit) and zero live scenario
+  records — every number in `corpus/scenarios/*.json` is independently re-verified via direct
+  local CLI/Gradle execution (never through the `run` command, and never through a live Claude
+  session).
 - **`corpus-probe`** — accepted in the schema as a future `run_kind` value; not produced by
   anything in this PR.
 
@@ -845,8 +847,8 @@ before that write actually flushes — the same class of bug this harness alread
 `calibrate`, `smoke`, and `run` all accept `--model <name>` and an optional
 `--private-patterns-file <path>` — supplying the latter loads additional private-project
 redaction rules (via `tools/lib/redact.mjs`'s `loadPrivateRules`) and marks the resulting
-records `privacy_status: 'redacted-private'` instead of `'public'`. This PR's own usage
-(the synthetic calibration fixture and public KaMPKit) never supplies it. The file is loaded and
+records `privacy_status: 'redacted-private'` instead of `'public'`. This harness's own usage today
+(the synthetic calibration fixture, public KaMPKit, and public NowInAndroid) never supplies it. The file is loaded and
 validated eagerly, before either condition's session runs — a missing or malformed patterns file
 fails the command immediately rather than only surfacing after both sessions have already
 completed. `cli.mjs`'s flag parsing requires an exact, known flag name per subcommand and rejects
@@ -860,8 +862,8 @@ before it's written to disk (and printed to stdout); it has no effect on, and ca
 undo, whatever the `scenario`/`smoke` project's own files or command output exposed to the model
 during the session. Pointing this harness at a private project requires separate, explicit
 authorization for the live session to see that project's content in the first place — this flag
-alone is not that authorization, and no scenario in this PR (public KaMPKit, the synthetic
-calibration fixture) currently exercises a private project at all.
+alone is not that authorization, and no scenario in this corpus (public KaMPKit, public
+NowInAndroid, the synthetic calibration fixture) currently exercises a private project at all.
 
 Raw transcripts always stay local under `tools/runs/agentic-eval-*/raw/` (gitignored). Only
 sanitized, schema-valid, `findLeaks()`-clean run records are ever committed — and only once
@@ -1267,10 +1269,11 @@ unparseable JSON, wrong schema value, invalid `scope_id`, non-canonical or wrong
   invoked against a live Claude session here, so this PR commits zero scenario-run evidence.
 - Public-project scenarios only; no private project is referenced.
 - `candidate-skill` is schema-supported but not implemented.
-- Exactly 2 of the 6 originally-sketched scenarios ship in this PR (`kampkit-android-host-test-
-  discovery`, `kampkit-no-applicable-tests`, both against KaMPKit); `nowinandroid-core-common`,
-  `deterministic-unit-test-failure`, `coverage-threshold-failure`, and
-  `changed-module-verification` remain deferred to a follow-up PR — see BACKLOG.md.
+- 3 of the 6 originally-sketched scenarios exist in `corpus/scenarios/` today
+  (`kampkit-android-host-test-discovery`, `kampkit-no-applicable-tests` against KaMPKit;
+  `nowinandroid-core-common` against NowInAndroid); `deterministic-unit-test-failure`,
+  `coverage-threshold-failure`, and `changed-module-verification` remain deferred — see
+  BACKLOG.md.
   `corpus/trigger-queries.json` (the natural-trigger query set) remains separately in scope and is
   validated by the same `corpus validate` command.
 - The real end-to-end Claude Code `tool_result.content` shape for a live `kmp-test`/`gradle`

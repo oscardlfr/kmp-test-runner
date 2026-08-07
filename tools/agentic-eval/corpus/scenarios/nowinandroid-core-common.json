@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "id": "nowinandroid-core-common",
+  "family": "test-only",
+  "project_alias": "nowinandroid",
+  "project_url": "https://github.com/android/nowinandroid",
+  "project_commit": "7d45eae4f8720a0c77f507712ba2437ff974b6ed",
+  "prompt": "This is a large, multi-module Android project. Somewhere in it there's a small shared module that holds common Result-handling utility code used across the other modules. Can you find that module, run its tests, and tell me what happened? Once you know the result, end your reply with a block in exactly this format (substitute the real module path and counts you found; keep the two marker lines exactly as shown, with valid JSON in between):\n\nKMP_EVAL_RESULT\n{\"module\": \"<the Gradle module path you tested>\", \"outcome_kind\": \"tests_executed\", \"total\": <integer>, \"passed\": <integer>, \"failed\": <integer>}\nKMP_EVAL_RESULT_END\n\nIf the module turns out to have no applicable tests instead, use {\"module\": \"<the Gradle module path you tested>\", \"outcome_kind\": \"no_applicable_tests\"} (omit total/passed/failed).",
+  "expected_outcome": "The agent discovers and runs the shared Result-handling module's unit tests and reports the accurate pass/fail count.",
+  "policy": {
+    "allowed_kmptest_subcommands": ["doctor", "describe", "parallel"],
+    "allowed_gradle_tasks": [":core:common:tasks", ":core:common:test"]
+  },
+  "expected": {
+    "module": ":core:common",
+    "outcome_kind": "tests_executed",
+    "kmp_test": {
+      "tests": { "total": 1, "passed": 1, "failed": 0, "skipped": 0, "individual_total": 1 },
+      "exit_code": 0
+    },
+    "gradle": {
+      "allowed_invocations": [":core:common:test"],
+      "evidence_task": ":core:common:test",
+      "tests": { "total": 1, "passed": 1, "failed": 0 },
+      "exit_code": 0
+    }
+  },
+  "first_useful_signal_predicate": {
+    "description": "first well-formed evidence confirming :core:common 1/1"
+  },
+  "tags": ["held-out"]
+}
