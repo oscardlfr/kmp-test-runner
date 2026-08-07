@@ -729,7 +729,13 @@ circular import either module living inside `cli.mjs` would create.
   object, so invalid grammar/duplicates/non-array input fail loudly at harness-construction time
   instead of surfacing only as an opaque runtime hook denial. The hook's own response is flushed
   (gated on `process.stdout.write()`'s completion callback) before the hook process exits —
-  `process.exit()` immediately after starting a write can truncate it on a piped stdout.
+  `process.exit()` immediately after starting a write can truncate it on a piped stdout. The one
+  shell-operator exception is an exact terminal `2>&1` on an otherwise-valid `kmp-test` command:
+  it only merges stderr into the already-captured stdout stream. It remains denied for Gradle and
+  every other command, and pipes, chaining, file redirection, substitution, wrappers, embedded or
+  repeated operators, and multiline commands remain fail-closed. Because the hook's source bytes
+  feed `policy_sha256`, records produced with this grammar partition from earlier evidence rather
+  than being aggregated as if their execution policy were identical.
 - **Bash resolution**: every `bash -c` invocation in this harness (git/tar piping, the measured
   `claude` spawn) goes through `resolve-bash.mjs`'s `resolveBash()`. **On Windows specifically**,
   this never resolves to an ambiguous bare `'bash'`: PATH resolution of a bare `'bash'` is

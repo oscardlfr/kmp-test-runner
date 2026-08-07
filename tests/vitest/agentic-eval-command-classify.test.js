@@ -55,6 +55,12 @@ describe('classifyBashCommand', () => {
     expect(classifyBashCommand('kmp-test doctor --json')).toEqual({ kind: 'kmp-test', subcommand: 'doctor', moduleFilter: null, testType: null, isPlanOnly: false });
   });
 
+  it('a kmp-test command with a terminal stderr merge retains its operation classification', () => {
+    expect(classifyBashCommand('kmp-test parallel --module-filter :shared --json 2>&1')).toEqual({
+      kind: 'kmp-test', subcommand: 'parallel', moduleFilter: ':shared', testType: null, isPlanOnly: false,
+    });
+  });
+
   it('a Gradle command via ./gradlew.bat extracts task tokens and strips flag-shaped tokens', () => {
     const c = classifyBashCommand('./gradlew.bat :shared:testAndroidHostTest --console=plain');
     expect(c).toEqual({ kind: 'gradle', taskTokens: [':shared:testAndroidHostTest'], isPlanOnly: false });

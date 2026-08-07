@@ -101,6 +101,29 @@ describe('policy-hook grammar -- approved shapes', () => {
   });
 });
 
+describe('policy-hook grammar -- exact trailing stderr merge on canonical kmp-test commands', () => {
+  it.each([
+    'kmp-test describe --json --project-root . 2>&1',
+    'kmp-test parallel --json --project-root . --module-filter :shared 2>&1',
+    'kmp-test --version\t2>&1   ',
+  ])('allows the narrow stderr-to-stdout capture form: %s', (cmd) => {
+    expect(decision(payload(cmd))).toBe('allow');
+  });
+
+  it.each([
+    './gradlew build 2>&1',
+    'echo test 2>&1',
+    'kmp-test describe --json --project-root . > out.txt 2>&1',
+    'kmp-test describe --json --project-root . < in.txt 2>&1',
+    'kmp-test describe --json --project-root . 2>&1 && whoami',
+    'kmp-test describe --json --project-root . 2>&1 | cat',
+    'kmp-test describe --json --project-root . 2>&1\nwhoami',
+    'kmp-test describe --json --project-root . 2>&1 2>&1',
+  ])('does not widen the exception to: %s', (cmd) => {
+    expect(decision(payload(cmd))).toBe('deny');
+  });
+});
+
 describe('policy-hook grammar -- non-grammar commands denied', () => {
   it.each([
     'whoami', 'pwd', 'echo test > out.txt', 'cat C:\\Users\\someone\\secrets.txt',

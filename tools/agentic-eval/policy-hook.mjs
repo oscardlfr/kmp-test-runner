@@ -100,6 +100,7 @@ export function loadConfig(env = process.env) {
 // --- dangerous-shape reject list (whole-command, before tokenization) ---
 export const DANGEROUS_SUBSTRING_RE = /[;&|<>`\n\r]|\$\(|\$\{/;
 export const ENV_ASSIGNMENT_PREFIX_RE = /^\s*[A-Za-z_][A-Za-z0-9_]*=/;
+const STDERR_MERGE_SUFFIX_RE = /^(.*\S)[ \t]+2>&1[ \t]*$/;
 export const SHELL_WRAPPER_TOKENS = new Set([
   'bash', 'sh', 'zsh', 'ksh', 'dash',
   'cmd', 'cmd.exe',
@@ -299,16 +300,24 @@ export function decide(raw, env = process.env) {
     const command = toolInput.command;
     if (typeof command !== 'string' || command.length === 0) return denyOutput();
 
-    if (DANGEROUS_SUBSTRING_RE.test(command)) return denyOutput();
-    if (ENV_ASSIGNMENT_PREFIX_RE.test(command)) return denyOutput();
+    // Claude commonly appends this non-mutating stderr merge while capturing CLI output. Strip
+    // only the exact terminal form for policy evaluation; every other shell operator remains in
+    // the command and is rejected below. The raw command still executes unchanged after approval.
+    const stderrMergeMatch = command.match(STDERR_MERGE_SUFFIX_RE);
+    const commandToEvaluate = stderrMergeMatch?.[1] ?? command;
+    const hasStderrMerge = stderrMergeMatch != null;
 
-    const tokens = tokenize(command);
+    if (DANGEROUS_SUBSTRING_RE.test(commandToEvaluate)) return denyOutput();
+    if (ENV_ASSIGNMENT_PREFIX_RE.test(commandToEvaluate)) return denyOutput();
+
+    const tokens = tokenize(commandToEvaluate);
     if (tokens == null || tokens.length === 0) return denyOutput();
     if (SHELL_WRAPPER_TOKENS.has(tokens[0].toLowerCase())) return denyOutput();
 
     if (tokens[0] === 'kmp-test') {
       return evaluateKmpTest(tokens, cwdReal, config) ? allowOutput() : denyOutput();
     }
+    if (hasStderrMerge) return denyOutput();
     if (GRADLE_LEADING_TOKENS.has(tokens[0])) {
       return evaluateGradle(tokens, cwdReal, config) ? allowOutput() : denyOutput();
     }
