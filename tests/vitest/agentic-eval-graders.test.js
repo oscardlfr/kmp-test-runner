@@ -14,9 +14,11 @@ import { extractKmpTestEnvelope, gradeScenarioCondition, GRADING_CHECK_NAMES, va
 import { buildRunRecord } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 
-// The exact two scenario shapes this PR ships, matching corpus/scenarios/*.json byte-for-byte
-// (kept here as plain objects so grader tests don't depend on file I/O -- schema-shape coverage
-// for the actual committed files lives in agentic-eval-schemas.test.js).
+// The three scenario shapes shipped in corpus/scenarios/*.json, kept here as plain objects so
+// grader tests don't depend on file I/O -- manually mirrored against the committed files, not
+// automatically drift-checked (agentic-eval-corpus.test.js independently asserts the real,
+// committed files' id/module/outcome_kind/tags/counts directly, which is the actual drift
+// protection this repo relies on for those fields).
 const SCENARIO_1 = {
   schema: 1,
   id: 'kampkit-android-host-test-discovery',
@@ -61,6 +63,32 @@ const SCENARIO_2 = {
   },
   first_useful_signal_predicate: { description: 'first well-formed evidence confirming :app has no applicable tests' },
   tags: ['train'],
+};
+
+// The 3rd scenario shape (nowinandroid-core-common) -- see the SCENARIO_1 comment above for the
+// manual-mirror/drift-protection note. `prompt`/`expected_outcome` are abbreviated with "..."
+// here the same way SCENARIO_1/SCENARIO_2 are above, since grading never reads those fields.
+const SCENARIO_3 = {
+  schema: 1,
+  id: 'nowinandroid-core-common',
+  family: 'test-only',
+  project_alias: 'nowinandroid',
+  project_url: 'https://github.com/android/nowinandroid',
+  project_commit: '7d45eae4f8720a0c77f507712ba2437ff974b6ed',
+  prompt: "This is a large, multi-module Android project. Somewhere in it there's a small shared module that holds common Result-handling utility code used across the other modules. Can you find that module, run its tests, and tell me what happened? Once you know the result, end your reply with a block in exactly this format...",
+  expected_outcome: "The agent discovers and runs the shared Result-handling module's unit tests and reports the accurate pass/fail count.",
+  policy: {
+    allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel'],
+    allowed_gradle_tasks: [':core:common:tasks', ':core:common:test'],
+  },
+  expected: {
+    module: ':core:common',
+    outcome_kind: 'tests_executed',
+    kmp_test: { tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 }, exit_code: 0 },
+    gradle: { allowed_invocations: [':core:common:test'], evidence_task: ':core:common:test', tests: { total: 1, passed: 1, failed: 0 }, exit_code: 0 },
+  },
+  first_useful_signal_predicate: { description: 'first well-formed evidence confirming :core:common 1/1' },
+  tags: ['held-out'],
 };
 
 // --- synthetic event/conditionResult builders (matches the real stream-json shapes used
@@ -155,6 +183,10 @@ const SCENARIO_2_CORRECT_ANSWER = kmpEvalResultText(
   'The :app module has no applicable unit tests -- no test source set.',
   { module: ':app', outcome_kind: 'no_applicable_tests' },
 );
+const SCENARIO_3_CORRECT_ANSWER = kmpEvalResultText(
+  '1/1 tests passed in the :core:common module via test.',
+  { module: ':core:common', outcome_kind: 'tests_executed', total: 1, passed: 1, failed: 0 },
+);
 
 // `parallel` mirrors the EXACT real shape `lib/orchestrators/parallel-orchestrator.js`'s per-leg
 // dispatch loop constructs for a genuine `--module-filter shared` dispatch with NO explicit
@@ -211,6 +243,28 @@ const GRADLE_SCENARIO1_PASS_STDOUT = `> Task :shared:compileAndroidHostTest UP-T
 const GRADLE_SCENARIO2_NO_SOURCE_VIA_DIRECT = `> Task :app:compileDebugUnitTestJavaWithJavac NO-SOURCE\n> Task :app:processDebugUnitTestJavaRes NO-SOURCE\n> Task :app:testDebugUnitTest NO-SOURCE\n\nBUILD SUCCESSFUL in 7s\n32 actionable tasks: 32 executed\n`;
 
 const GRADLE_SCENARIO2_NO_SOURCE_VIA_ALIAS = `> Task :app:testDebugUnitTest NO-SOURCE\n> Task :app:test UP-TO-DATE\n\nBUILD SUCCESSFUL in 1s\n2 actionable tasks: 2 executed\n`;
+
+// `:core:common` is a plain `jvm` module (no Android lifecycle-alias ambiguity, unlike scenario
+// 2's `:app`) -- one leg, `fresh:1`, mirroring KMP_TEST_ENVELOPE_SCENARIO1_PASS's shape with
+// counts/module substituted for the ground-truth-verified 1/1/0 result.
+const KMP_TEST_ENVELOPE_SCENARIO3_PASS = JSON.stringify({
+  tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+  project_root: 'C:\\fake', exit_code: 0, duration_ms: 5231,
+  tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 },
+  modules: [{ name: 'core:common', type: 'jvm' }], skipped: [], coverage: {}, errors: [], warnings: [],
+  parallel: {
+    test_type: 'auto',
+    legs: [{
+      test_type: 'auto', exit_code: 0,
+      execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
+      cascade_detected: false, retry_fired: false,
+    }],
+    max_workers: 0, timeout_s: 600,
+  },
+  isolated: DEFAULT_ISOLATED_FIELD,
+});
+
+const GRADLE_SCENARIO3_PASS_STDOUT = `> Task :core:common:compileTestKotlin\n> Task :core:common:test\n\nBUILD SUCCESSFUL in 3s\n5 actionable tasks: 5 executed\n`;
 
 describe('GRADING_CHECK_NAMES', () => {
   it('is exactly 8 unique names', () => {
@@ -349,6 +403,127 @@ describe('gradeScenarioCondition -- scenario 2 (:app, no_applicable_tests) happy
     expect(targetCheck.passed).toBe(true);
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);
+  });
+});
+
+describe('gradeScenarioCondition -- scenario 3 (:core:common, tests_executed) happy paths', () => {
+  // Titled without "task-level + individual counts" (unlike SCENARIO_1's equivalent test): this
+  // module's real total and individual_total are both 1, so unlike SCENARIO_1 (1 vs 24) this
+  // fixture cannot itself discriminate that specific two-counter distinction -- it only proves an
+  // exact-match envelope for this scenario's real shape passes.
+  it('kmp-test path: exact match on module, outcome, and counts -> full pass', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter core:common --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO3_PASS }],
+      SCENARIO_3_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_3);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+    expect(grade.checks.every((c) => c.passed)).toBe(true);
+  });
+
+  it('gradle path (direct evidence_task invocation): exact match -> full pass', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :core:common:test --console=plain', resultContent: GRADLE_SCENARIO3_PASS_STDOUT, evidence: okJunit(1, 1, 0) }],
+      SCENARIO_3_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_3);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+});
+
+describe('gradeScenarioCondition -- scenario 3 (:core:common) negative cases: wrong module, wrong task, wrong counts', () => {
+  it('scenario 3: a well-formed envelope for the WRONG module, with coincidentally-matching counts, fails target AND outcome -- never a match', () => {
+    // Carries the same parallel/isolated shape as KMP_TEST_ENVELOPE_SCENARIO3_PASS (unlike this
+    // being a bare-bones fixture) so this test genuinely exercises the module-identity guard at
+    // computeKmpTestTargetMatch, not an incidentally-missing-parallel-block failure instead.
+    const wrongModuleEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100,
+      tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 }, // identical shape to SCENARIO_3's expectation
+      modules: [{ name: 'some-other-module', type: 'jvm' }], // but the WRONG module
+      skipped: [], coverage: {}, errors: [], warnings: [],
+      parallel: {
+        test_type: 'auto',
+        legs: [{
+          test_type: 'auto', exit_code: 0,
+          execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
+          cascade_detected: false, retry_fired: false,
+        }],
+        max_workers: 0, timeout_s: 600,
+      },
+      isolated: DEFAULT_ISOLATED_FIELD,
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter some-other-module --json', resultContent: wrongModuleEnvelope }],
+      kmpEvalResultText('1/1 tests passed.', { module: ':some-other-module', outcome_kind: 'tests_executed', total: 1, passed: 1, failed: 0 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_3);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a well-formed envelope for the RIGHT module but WRONG individual_total fails outcome (not just a final-answer-block mismatch)', () => {
+    const wrongCountEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100,
+      tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 2 }, // WRONG: ground truth is 1
+      modules: [{ name: 'core:common', type: 'jvm' }],
+      skipped: [], coverage: {}, errors: [], warnings: [],
+      parallel: {
+        test_type: 'auto',
+        legs: [{
+          test_type: 'auto', exit_code: 0,
+          execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
+          cascade_detected: false, retry_fired: false,
+        }],
+        max_workers: 0, timeout_s: 600,
+      },
+      isolated: DEFAULT_ISOLATED_FIELD,
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter core:common --json', resultContent: wrongCountEnvelope }],
+      kmpEvalResultText('2 tests passed.', { module: ':core:common', outcome_kind: 'tests_executed', total: 2, passed: 2, failed: 0 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_3);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a Gradle command for a task outside allowed_invocations (wrong task, even for the right module) is never even a candidate attempt', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :core:common:build --console=plain', resultContent: `> Task :core:common:build\n\nBUILD SUCCESSFUL in 4s\n8 actionable tasks: 8 executed\n`, evidence: okJunit(1, 1, 0) }],
+      SCENARIO_3_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_3);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a KMP_EVAL_RESULT block naming the WRONG module must fail even though outcome_kind and counts are otherwise correct', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter core:common --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO3_PASS }],
+      kmpEvalResultText('1/1 tests passed.', { module: ':some-other-module', outcome_kind: 'tests_executed', total: 1, passed: 1, failed: 0 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_3);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a KMP_EVAL_RESULT block with WRONG counts (claims 1 failed when the real evidence is 0 failed) must fail', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter core:common --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO3_PASS }],
+      kmpEvalResultText('The :core:common module ran 1 test, but it failed.', { module: ':core:common', outcome_kind: 'tests_executed', total: 1, passed: 0, failed: 1 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_3);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
   });
 });
 

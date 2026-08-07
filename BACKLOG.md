@@ -673,10 +673,11 @@
   picked up automatically by the existing required `build` job -- no new CI job. No
   runtime/wet validation applicable (repo-review config only, not CLI behavior).
 
-- **`tools/agentic-eval/` corpus scenarios + graders — 2 of 6 scenarios + `graders.mjs` + `run`
-  subcommand implemented, PR open (not yet merged) (deferred from PR #372, surfaced 2026-07-18
-  during independent review).** PR #372 shipped the reproducible skill-evaluation harness
-  FOUNDATION only: isolation (fresh temp fixtures, narrow env allowlist, the `PreToolUse` policy
+- **`tools/agentic-eval/` corpus scenarios + graders — 3 of 6 scenarios + `graders.mjs` + `run`
+  subcommand implemented; first 2 scenarios + `graders.mjs` + `run` merged to develop (deferred
+  from PR #372, surfaced 2026-07-18 during independent review).** PR #372 shipped the reproducible
+  skill-evaluation harness FOUNDATION only: isolation (fresh temp fixtures, narrow env allowlist,
+  the `PreToolUse` policy
   hook), schemas, the trigger-queries corpus, and one bounded `calibrate` + `smoke` run against a
   single hardcoded prompt. It deliberately did NOT include the 6 scenario definitions originally
   sketched in that PR's plan (`kampkit-android-host-test-discovery`,
@@ -684,7 +685,7 @@
   `coverage-threshold-failure`, `changed-module-verification`) or `graders.mjs` — both referenced
   as future work by `tests/vitest/agentic-eval-corpus.test.js`'s own header comment and by
   `docs/agentic-usage-measurement.md`'s "Registry relationship" section.
-  **This PR ships exactly 2 of the 6**, both against the same pinned KaMPKit commit `smoke`
+  **That PR shipped exactly 2 of the 6**, both against the same pinned KaMPKit commit `smoke`
   already uses (`b3a7784fb969a8558b88c80674c8b596944cdab7`), independently re-verified live
   (3× each, cold `GRADLE_USER_HOME`, no dependency prewarming) rather than copied from a prior
   measurement round:
@@ -694,6 +695,12 @@
   - `kampkit-no-applicable-tests` — `outcome_kind:no_applicable_tests`, `:app`, kmp-test's
     `no_test_modules` discriminator vs. Gradle's own `NO-SOURCE` status line on
     `:app:testDebugUnitTest` (also reachable via the `:app:test` lifecycle alias).
+
+  A follow-up PR added the 3rd: `nowinandroid-core-common` — `outcome_kind:tests_executed`,
+  NowInAndroid's small `:core:common` module (shared Result-handling utilities), 1/1 tests pass
+  across both providers (kmp-test JSON + raw Gradle/JUnit-XML), independently re-verified live
+  (3× each, cold `GRADLE_USER_HOME`, no dependency prewarming). Tagged `held-out` — the first
+  scenario in this corpus tagged that way (both KaMPKit scenarios are `train`).
 
   New `tools/agentic-eval/graders.mjs`: 8 named, structurally-anchored checks correlating a
   tokenized Bash `tool_use`, its `tool_result`, and an authoritative kmp-test JSON envelope or
@@ -714,9 +721,9 @@
   scenario-run record this PR's own code CAN produce still requires a real live invocation, which
   is explicitly out of scope here (a future live-validation PR, mirroring #373/#378 relative to
   #372).
-  **Still deferred**: `nowinandroid-core-common`, `deterministic-unit-test-failure`,
-  `coverage-threshold-failure`, `changed-module-verification` — own PR(s), small increments
-  preferred over one large one — milestone unassigned, user's call on timing.
+  **Still deferred**: `deterministic-unit-test-failure`, `coverage-threshold-failure`,
+  `changed-module-verification` — own PR(s), small increments preferred over one large one —
+  milestone unassigned, user's call on timing.
 - ✅ **`KMP_EVAL_RUNS_ROOT` real-world scope — SHIPPED in #372 itself (2026-07-18, closed across
   three independent-review rounds).** The env var is a test-only escape hatch so vitest never
   writes to (or cleans up inside) the real `tools/runs/` tree — nothing stops an operator from

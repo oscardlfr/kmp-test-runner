@@ -9,9 +9,10 @@
 //
 // `run`'s --scenario always resolves against a FIXED, non-parameterizable corpus/scenarios/
 // directory by default (mirroring cmdCorpusValidate's same fixed-path design) -- but that
-// directory is scoped to exactly the two real, pinned-commit KaMPKit scenarios this PR ships
-// (kampkit-android-host-test-discovery, kampkit-no-applicable-tests), and neither can be
-// materialized here without a real KaMPKit clone at that exact pinned commit. This suite instead
+// directory holds three real, pinned-commit scenarios (kampkit-android-host-test-discovery,
+// kampkit-no-applicable-tests against KaMPKit; nowinandroid-core-common against NowInAndroid),
+// and none of them can be materialized here without a real clone at that exact pinned commit.
+// This suite instead
 // points KMP_EVAL_SCENARIOS_DIR (a test-only override mirroring KMP_EVAL_RUNS_ROOT's own
 // rationale) at a throwaway, synthetic scenario, and --source-repo-dir at a tiny, real, local git
 // repo standing in for a real project -- exactly like agentic-eval-cli-integration.test.js's own
@@ -87,8 +88,8 @@ beforeEach(() => {
   gitViaBash(['remote', 'add', 'origin', PROJECT_URL], sourceRepoDir);
 
   // KMP_EVAL_SCENARIOS_DIR (test-only override, see cli.mjs's own comment) -- a throwaway
-  // scenario file, never touching the real, committed corpus/scenarios/ directory (scoped to
-  // exactly the two real KaMPKit scenarios this PR ships).
+  // scenario file, never touching the real, committed corpus/scenarios/ directory (which holds
+  // the three real scenarios: two KaMPKit-based, one NowInAndroid-based).
   scenariosDir = mkdtempSync(path.join(os.tmpdir(), 'aerc-scenarios-'));
   writeFileSync(path.join(scenariosDir, `${SCENARIO_ID}.json`), JSON.stringify({
     schema: 1,
