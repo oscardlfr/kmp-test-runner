@@ -495,9 +495,15 @@ describe('gradeScenarioCondition -- scenario 3 (:core:common) negative cases: wr
     expect(grade.success).toBe(false);
   });
 
-  it('a Gradle command for a task outside allowed_invocations (wrong task, even for the right module) is never even a candidate attempt', () => {
+  // Uses :core:common:tasks specifically (not an arbitrary out-of-policy task like
+  // :core:common:build) so this test isolates the allowed_invocations relevance gate on its own:
+  // :core:common:tasks IS in policy.allowed_gradle_tasks (the hook would really allow the agent
+  // to run it), but is NOT in expected.gradle.allowed_invocations -- proving it can't become
+  // authoritative evidence even though it's a legitimate, policy-permitted command, never
+  // conflating this with "the policy hook would have denied it anyway."
+  it('a Gradle command for a task outside allowed_invocations (policy-allowed, but not this scenario\'s evidence task) is never even a candidate attempt', () => {
     const cr = buildConditionResult(
-      [{ command: './gradlew.bat :core:common:build --console=plain', resultContent: `> Task :core:common:build\n\nBUILD SUCCESSFUL in 4s\n8 actionable tasks: 8 executed\n`, evidence: okJunit(1, 1, 0) }],
+      [{ command: './gradlew.bat :core:common:tasks --console=plain', resultContent: `> Task :core:common:tasks\n\ntest - Runs the test suite.\n\nBUILD SUCCESSFUL in 1s\n1 actionable task: 1 executed\n`, evidence: okJunit(1, 1, 0) }],
       SCENARIO_3_CORRECT_ANSWER,
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_3);

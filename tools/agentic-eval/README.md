@@ -457,8 +457,9 @@ matrix is rejected anyway.
   symlink planted at the (schema-guaranteed-safe-looking) sidecar path whose target resolves outside
   the run record's own directory is refused, never silently followed.
 
-  `corpus/scenarios/` holds three scenarios today (`kampkit-android-host-test-discovery`,
-  `kampkit-no-applicable-tests` against the pinned KaMPKit commit `smoke` already uses;
+  `corpus/scenarios/` holds three scenarios today (`kampkit-android-host-test-discovery` and
+  `kampkit-no-applicable-tests`, both targeting KaMPKit commit
+  `b3a7784fb969a8558b88c80674c8b596944cdab7` — the same commit the shipped `smoke` evidence uses;
   `nowinandroid-core-common` against a pinned NowInAndroid commit) and zero live scenario
   records — every number in `corpus/scenarios/*.json` is independently re-verified via direct
   local CLI/Gradle execution (never through the `run` command, and never through a live Claude
