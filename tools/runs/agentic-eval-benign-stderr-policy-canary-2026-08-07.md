@@ -15,8 +15,9 @@ This is an **`n=2` directional canary, not a statistically meaningful benchmark*
 evidence of general speed, cost, token, quality, or product-efficacy improvement**. The eight new
 records are compared directionally against PR #405's own eight already-committed records — same
 schema, same skill pin, same source project/commit, same model, same measurement scope, so the
-comparison isolates the policy-hook change as the one experimental variable (confirmed below, not
-assumed).
+comparison isolates the policy-hook change as the only intentional code/configuration difference
+between the two batches (confirmed below, not assumed) — model nondeterminism and the ~11-day
+temporal separation between the two batches are not, and cannot be, controlled for.
 
 ## Version confound and how it was closed
 
@@ -121,23 +122,37 @@ fingerprint_hmac:"359e10a2401e6d1e3d194fd55b3eb97887eed834306b4e0ab93994f02c3a23
 Authorized narrow raw-transcript inspection (structural only: counted whether a Bash tool call's
 command matched the exact suffix `policy-hook.mjs` tests for — `^(.*\S)[ \t]+2>&1[ \t]*$` — cross-
 referenced against each committed sidecar's own `policy_decision`; no prompt, response, path, or
-free-text content is quoted anywhere in this report):
+free-text content is quoted anywhere in this report). PR #405's own raw transcripts (kept locally in
+that PR's own worktree, never committed, not part of this PR) were inspected the same way, so the
+before/after comparison is homogeneous rather than one-sided:
 
-| `run_id` | Canonical `kmp-test ... 2>&1` calls | Decision |
-|---|---|---|
-| `scenario-current-skill-f0c525b7` | 2 | allow, allow |
-| `scenario-current-skill-7ad46ae6` | 2 | allow, allow |
-| `scenario-current-skill-c8bf4542` | 0 | n/a |
-| `scenario-current-skill-57e5af3f` | 0 | n/a |
-| all 4 `no-skill` records | 0 | n/a |
+| `run_id` | Batch | Canonical `kmp-test ... 2>&1` calls (event index) | Decision |
+|---|---|---|---|
+| `scenario-current-skill-547485c8` | PR #405, scenario 1 | 1 (event 10) | deny |
+| `scenario-current-skill-62e1e392` | PR #405, scenario 1 | 1 (event 10) | deny |
+| `scenario-current-skill-f0c525b7` | this run, scenario 1 | 2 (events 12, 26) | allow, allow |
+| `scenario-current-skill-7ad46ae6` | this run, scenario 1 | 2 (events 9, 29) | allow, allow |
+| `scenario-current-skill-afb0ecb5` | PR #405, scenario 2 | 1 (event 12) | deny |
+| `scenario-current-skill-844eee1e` | PR #405, scenario 2 | 0 | n/a |
+| `scenario-current-skill-c8bf4542` | this run, scenario 2 | 0 | n/a |
+| `scenario-current-skill-57e5af3f` | this run, scenario 2 | 0 | n/a |
+| all 4 `no-skill` records, this run | this run | 0 | n/a |
 
-**Only scenario 1's two `current-skill` sessions actually exercised the pattern PR #406 fixes — 4
-instances total, 4/4 allowed, 0 denied.** This is the direct, positive confirmation the fix works
-when exercised. **Scenario 2's `current-skill` sessions never attempted this form at all** (0
-instances each) — their 3 and 5 policy denials (below) come from some other cause, unrelated to
-the stderr-merge grammar, and are **not** attributed to PR #406 one way or the other. The four
-`no-skill` cells never reach a policy-allowed command shape at all (by construction of that
-ablation condition), so none of them exercise this form either.
+**Scenario 1 — homogeneous whole-cell comparison: PR #405 attempted the exact form twice, 0/2
+allowed (both denied); this run attempted it 4 times, 4/4 allowed.** The allow-vs-deny outcome on
+this exact string is a deterministic consequence of the policy-hook diff (`STDERR_MERGE_SUFFIX_RE`
+is the only thing that changed how either policy generation evaluates this shape) — that specific
+mechanism is not in question. What each session's *overall* success/failure and token cost end up
+being is a separate, non-deterministic question addressed below, not assumed to follow automatically
+from the allow/deny result.
+
+**Scenario 2 has no equivalent whole-cell comparison, and an earlier draft of this report
+mischaracterized it.** PR #405's two `current-skill` sessions split 1 attempt (`afb0ecb5`, denied) /
+0 attempts (`844eee1e`); this run's two `current-skill` sessions made 0 attempts each. With only one
+PR #405 session ever reaching this form here, and zero in this run, there is no before/after pair on
+this scenario — a session that never attempts the form cannot demonstrate whether it would now be
+allowed. The four `no-skill` cells in this run never reach a policy-allowed command shape at all (by
+construction of that ablation condition), so none of them exercise this form either.
 
 ## Scenario 1 — `kampkit-android-host-test-discovery`
 
@@ -146,18 +161,20 @@ ablation condition), so none of them exercise this form either.
 | `success` | false | false | **true** | **true** |
 | `hook_call_count` / `hook_deny_count` | 9 / 9 | 7 / 7 | 2 / **0** | 2 / **0** |
 | `wall_clock_ms` | 34013 | 38006 | 150621 | 157758 |
-| total tokens (in+out+cache_read+cache_creation) | 159404 | 178401 | 91613 | 172787 |
+| total tokens (in+out+cache_read+cache_creation) | 159404 | 140711 | 83593 | 84969 |
 | `terminal_authoritative_evidence_present` | false | false | true | true |
 
 ### Comparison against PR #405 (same pin, same scope, `policy_sha256` differs by construction)
 
 PR #405's `current-skill` arm on this scenario was **1-of-2** (`62e1e392` failed with 8/8 post-skill
-denials and zero evidence produced; `547485c8` succeeded with 6/9 denials). This batch's
-`current-skill` arm is **2-of-2**, and — critically — **0 denials on either cell** (down from 6/9
-and 8/8). The structural scan above confirms this specific improvement is directly attributable to
-#406: both sessions issued a canonical `kmp-test ... 2>&1` command that PR #405's policy hook would
-have denied and this run's policy hook allowed. Average tokens for this scenario's `current-skill`
-cells: PR #405 ≈227,515 → this run ≈132,200 (≈42% lower), consistent with fewer denial/retry loops.
+denials and zero evidence produced; `547485c8` succeeded with 6/9 denials) — including, per the
+table above, one denied `2>&1` attempt each. This batch's `current-skill` arm is **2-of-2**, with
+**0 whole-cell denials** (down from 6/9 and 8/8), including the specific `2>&1` attempts, each of
+which was allowed this time (deterministic policy effect, see above). Average tokens for this
+scenario's `current-skill` cells: PR #405 ≈227,515 → this run ≈84,281 (≈63% lower). **These
+whole-cell success and token figures are directional co-observations at `n=2`, not something the
+allow/deny change on its own proves** — model nondeterminism and the ~11-day gap between the two
+batches are real, uncontrolled confounds on anything beyond the specific allow/deny decision itself.
 
 ## Scenario 2 — `kampkit-no-applicable-tests`
 
@@ -166,17 +183,19 @@ cells: PR #405 ≈227,515 → this run ≈132,200 (≈42% lower), consistent wit
 | `success` | false | false | **true** | **true** |
 | `hook_call_count` / `hook_deny_count` | 7 / 7 | 10 / 10 | 6 / 3 | 7 / 5 |
 | `wall_clock_ms` | 59109 | 44625 | 94187 | 117502 |
-| total tokens (in+out+cache_read+cache_creation) | 140307 | 196336 | 162157 | 202002 |
+| total tokens (in+out+cache_read+cache_creation) | 140307 | 196336 | 162157 | 202003 |
 | `terminal_authoritative_evidence_present` | false | false | true | true |
 
 ### Comparison against PR #405
 
-PR #405's `current-skill` arm was **2-of-2** with 7/10 and 2/4 denials. This batch's `current-skill`
-arm is **also 2-of-2**, with 3/6 and 5/7 denials — **essentially unchanged**, and per the structural
-scan above, neither batch's denials on this scenario involve the `2>&1` form at all, so this is the
-expected result, not a gap in the fix: PR #406 has no mechanism to affect a scenario that never
-exercises the pattern it changes. No causal claim is made about what does cause this scenario's
-denials; that is outside this canary's authorized scope.
+PR #405's `current-skill` arm was **2-of-2** with 7/10 and 2/4 denials (one of the ten, `afb0ecb5`'s
+event 12, was the `2>&1` form, denied — per the table above). This batch's `current-skill` arm is
+**also 2-of-2**, with 3/6 and 5/7 denials — none of which are the `2>&1` form (zero attempts either
+cell). This is **not evidence that PR #406 has no effect here**, nor evidence that it does: with
+only one PR #405 session and zero this-run sessions ever attempting the form on this scenario, there
+is not enough data on either side to say anything about this scenario's relationship to PR #406. No
+causal claim is made about what does cause this scenario's non-`2>&1` denials; identifying that
+cause is outside this canary's authorized scope.
 
 ## Explicit finding evaluation
 
@@ -184,13 +203,21 @@ Evaluated against the single hypothesis this canary was authorized to check, usi
 records, sidecars, and the narrow structural `2>&1` scan above:
 
 **Does PR #406 remove denials on a canonical `kmp-test` command with a terminal `2>&1`, when that
-form is actually attempted?** **Confirmed at `n=2` (4 instances).** Every one of the 4 observed
-`kmp-test ... 2>&1` attempts was allowed; the two sessions that made them went from PR #405's mixed
-6/9 and 8/8-denial, 1-of-2-success profile to 0/2-denial, 2-of-2-success. **This is not evidence
-that PR #406 improves outcomes generally**: it only ever had the opportunity to matter in the 2 of
-8 sessions (25%) that happened to reach for this specific command shape; the other 6 sessions'
-outcomes (unchanged in scenario 2, structurally unreachable in the `no-skill` ablation) are
-unaffected by construction, not because the fix failed anywhere.
+form is actually attempted?** **Confirmed, and this part is a deterministic policy-hook effect, not
+a directional observation**: on the one scenario with a matched before/after pair (scenario 1), the
+identical command shape went from 0/2 allowed (PR #405) to 4/4 allowed (this run) — reproduced from
+the policy-hook diff itself, not inferred from outcomes.
+
+**Separately, and only directionally at `n=2`**: the two sessions that made those `2>&1` attempts in
+this run also happened to move from PR #405's mixed 6/9 and 8/8-denial, 1-of-2-success profile to
+0-whole-cell-denial, 2-of-2-success, with lower token totals. This co-occurrence is consistent with
+the allow/deny change mattering for the whole session, but is **not proven causal** at `n=2` under
+model nondeterminism and an ~11-day temporal gap — a different explanation (e.g. an unrelated shift
+in how the model approaches this scenario) cannot be ruled out from this evidence alone. **This is
+not evidence that PR #406 improves outcomes generally** either way: it only had the opportunity to
+matter in the 2 of 8 sessions (25%) that happened to reach for this specific command shape; the
+other 6 sessions' outcomes (no comparable pair in scenario 2, structurally unreachable in the
+`no-skill` ablation) say nothing about the fix one way or the other.
 
 ## Reconciliation checklist — all 8 cells
 
@@ -290,22 +317,34 @@ no partial promotion, no timeout, no retry.
 - **Cost figures reflect a Max/OAuth-authenticated session** (`subscriptionType: max`,
   `apiProvider: firstParty`) — an internal plan-usage budget ceiling, not a per-token dollar charge;
   no dollar cost is claimed anywhere in this report.
-- Every numeric value in this report's tables was read directly from the corresponding record's own
-  JSON field, the corresponding committed `audit/` sidecar, or the harness's own
+- **The `2>&1` usage table and its event indices are not reproducible from this PR's 17 committed
+  files alone.** Committed `audit/*.json` sidecars preserve each tool call's `tool_use_event_index`,
+  `tool_kind`, `operation`, and `policy_decision` — but not the literal command text — so they alone
+  cannot reproduce *which* calls were the `2>&1` form. That identification required reading the raw
+  `.jsonl` transcripts, which are gitignored, kept only in each canary's own local worktree, and
+  never staged, committed, or published (see "Evidence integrity"). A reader with only this PR's 17
+  files can verify every other number in this report, but not the `2>&1` table's specific event
+  indices or per-run counts, without independent access to those local raw transcripts.
+- All other numeric values in this report's tables were read directly from the corresponding
+  record's own JSON field, the corresponding committed `audit/` sidecar, or the harness's own
   `aggregate`/`analyze --runs-dir` output, in this session (extracted programmatically, not
   hand-transcribed) — none invented, estimated, or hand-derived without a corresponding source
-  field.
+  field. The `2>&1` table is the one exception, whose reproducibility limit is stated in the bullet
+  directly above.
 
 ## Recommended next action
 
-1. **This canary's evidence directly supports PR #406's intended effect** in the one scenario that
-   naturally exercises the `2>&1` form: 4/4 allowed (vs. PR #405's mixed 6/9 and 8/8 denial
-   profile on the equivalent cells), with both sessions moving from a degraded/failed profile to a
-   clean 0-denial success.
-2. **Scenario 2's unrelated denials (3/6, 5/7) are unexplained by this canary and by design** — this
-   report does not investigate their cause, consistent with the evidence-only, no-harness-changes
-   scope authorized for this session. A future, separately authorized session could look at what
-   those specific denials are (raw-transcript-level, narrowly scoped) if this friction is judged
-   worth removing too.
+1. **This canary's evidence directly confirms PR #406's intended mechanism** on the one matched
+   before/after pair that exercised it: the exact `2>&1` command shape went 0/2 allowed (PR #405,
+   both denied) → 4/4 allowed (this run) — a deterministic policy-hook effect. Those same two
+   sessions' whole-cell success (1-of-2 → 2-of-2) and lower token totals are a directional,
+   `n=2`, non-deterministic co-observation, not separately proven causal.
+2. **Scenario 2's denials in this run (3/6, 5/7) never involved the `2>&1` form and are unexplained
+   by this canary, by design** — this report does not investigate their cause, consistent with the
+   evidence-only, no-harness-changes scope authorized for this session. PR #405's own scenario-2
+   baseline did attempt the form once (`afb0ecb5`, denied) with no equivalent attempt in this run to
+   compare it against; a future, separately authorized session could look at what does cause this
+   run's non-`2>&1` denials (raw-transcript-level, narrowly scoped) if that friction is judged worth
+   removing too.
 3. **No harness, skill, pin, policy, or scenario file was modified by this session.** This is an
    evidence-only PR.
