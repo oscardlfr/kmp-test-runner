@@ -197,6 +197,43 @@ describe('policy-hook grammar -- unrecognized subcommand/flag rejected', () => {
   });
 });
 
+// --min-missed-lines -- the coverage-threshold-failure scenario's ground-truth command needs this
+// admitted at all (it fits none of the 4 pre-existing categories: not bare, not a path, not a
+// filter value, not boolean). Narrow numeric-value-flag grammar: exactly two tokens (flag + value
+// as separate tokens -- the `=` combined form is deliberately NOT admitted, unlike the filter
+// flags), value a canonical non-negative decimal integer (no leading sign, no decimal point, no
+// exponent notation, no leading zero) -- deliberately narrower than the real CLI's own
+// validateNonNegativeInt (which accepts "1e3"/"3.0" via a bare Number() coercion): this hook
+// validates SHAPE only; the grader separately enforces the scenario's exact expected N and N>0.
+describe('policy-hook grammar -- --min-missed-lines numeric-value flag', () => {
+  it.each([
+    'kmp-test parallel --min-missed-lines 50 --json',
+    'kmp-test parallel --min-missed-lines 0',
+    'kmp-test parallel --min-missed-lines 999999',
+  ])('allows: %s', (cmd) => {
+    expect(decision(payload(cmd))).toBe('allow');
+  });
+
+  it.each([
+    ['kmp-test parallel --min-missed-lines -5', 'leading minus sign'],
+    ['kmp-test parallel --min-missed-lines +5', 'leading plus sign'],
+    ['kmp-test parallel --min-missed-lines 5.0', 'decimal point'],
+    ['kmp-test parallel --min-missed-lines 1e3', 'exponent notation -- the real CLI accepts this, the hook deliberately does not'],
+    ['kmp-test parallel --min-missed-lines 05', 'leading zero -- not the canonical single representation'],
+    ['kmp-test parallel --min-missed-lines', 'dangling flag, no value token at all'],
+    ['kmp-test parallel --min-missed-lines=50', 'combined "=" form -- the contract requires exactly two separate tokens'],
+    ['kmp-test parallel --min-missed-lines "50 extra"', 'quoted value with embedded space/trailing payload'],
+    ['kmp-test parallel --min-missed-lines abc', 'non-numeric value'],
+  ])('denies: %s (%s)', (cmd) => {
+    expect(decision(payload(cmd))).toBe('deny');
+  });
+
+  it('does not loosen any pre-existing category -- the filter/boolean/path flags still behave exactly as before alongside the new category', () => {
+    expect(decision(payload('kmp-test parallel --module-filter core-common --min-missed-lines 50 --json'))).toBe('allow');
+    expect(decision(payload('kmp-test parallel --min-missed-lines 50 --dry-run'))).toBe('allow');
+  });
+});
+
 describe('policy-hook grammar -- shell/env expansion in path arguments rejected (never lexically trusted)', () => {
   it.each([
     'kmp-test parallel --json --project-root "$HOME"',

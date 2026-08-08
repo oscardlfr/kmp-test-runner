@@ -1237,6 +1237,201 @@ describe('validateScenario', () => {
     });
   });
 
+  // Ground truth (independently verified 6x -- 3x kmp-test, 3x direct Gradle + independent XML
+  // parse, cold GRADLE_USER_HOME each, fixed JDK 17 -- against android/nowinandroid @
+  // 7d45eae4f8720a0c77f507712ba2437ff974b6ed, :core:datastore module): tests genuinely pass on
+  // both providers (kmp_test aggregate 2 dispatched modules/28 individual testcases across both
+  // demo+prod flavors; gradle corroboration deliberately scoped to the SAME flavor/variant the
+  // coverage claim is about, :core:datastore:testDemoDebugUnitTest, 14 testcases) -- missed_lines
+  // (76) exceeds min_missed_lines (50) on both providers' independently-derived JaCoCo XML.
+  function baseScenarioCoverageThresholdExceeded(overrides = {}) {
+    return baseScenario({
+      id: 'sample-coverage-threshold-exceeded-scenario',
+      family: 'coverage',
+      expected: {
+        module: ':core:datastore',
+        outcome_kind: 'coverage_threshold_exceeded',
+        kmp_test: {
+          tests: { total: 2, passed: 2, failed: 0, individual_total: 28, skipped: 0 },
+          exit_code: 1,
+          coverage: { tool: 'auto', min_missed_lines: 50, missed_lines: 76, with_data: [':core:datastore'] },
+        },
+        gradle: {
+          allowed_invocations: [':core:datastore:testDemoDebugUnitTest'],
+          evidence_task: ':core:datastore:testDemoDebugUnitTest',
+          tests: { total: 14, passed: 14, failed: 0 },
+          exit_code: 0,
+        },
+      },
+      policy: {
+        allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel'],
+        allowed_gradle_tasks: [':core:datastore:testDemoDebugUnitTest'],
+      },
+      ...overrides,
+    });
+  }
+
+  describe('expected -- coverage_threshold_exceeded outcome_kind (a genuine, deterministic coverage-gate failure)', () => {
+    it('accepts a well-formed coverage_threshold_exceeded scenario', () => {
+      const { errors } = validateScenario(baseScenarioCoverageThresholdExceeded());
+      expect(errors).toEqual([]);
+    });
+
+    it('rejects missing coverage sub-object on kmp_test', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      delete s.expected.kmp_test.coverage;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.coverage')).toBe(true);
+    });
+
+    it('rejects coverage.min_missed_lines absent -- threshold must be declared', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      delete s.expected.kmp_test.coverage.min_missed_lines;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.min_missed_lines')).toBe(true);
+    });
+
+    it('rejects coverage.min_missed_lines:0 -- a threshold of 0 permanently disables the real gate', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.coverage.min_missed_lines = 0;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.min_missed_lines')).toBe(true);
+    });
+
+    it('rejects coverage.min_missed_lines negative', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.coverage.min_missed_lines = -5;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.min_missed_lines')).toBe(true);
+    });
+
+    it('rejects coverage.missed_lines <= min_missed_lines -- the gate could never have fired', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.coverage.missed_lines = 50;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.missed_lines')).toBe(true);
+    });
+
+    it('rejects coverage.missed_lines absent', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      delete s.expected.kmp_test.coverage.missed_lines;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.missed_lines')).toBe(true);
+    });
+
+    it('rejects coverage.with_data with zero entries', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.coverage.with_data = [];
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.with_data')).toBe(true);
+    });
+
+    it('rejects coverage.with_data with more than one entry', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.coverage.with_data = [':core:datastore', ':core:datastore-test'];
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.with_data')).toBe(true);
+    });
+
+    it('rejects coverage.with_data not matching expected.module (cross-check)', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.coverage.with_data = [':core:common'];
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.with_data')).toBe(true);
+    });
+
+    it('rejects coverage.tool "none" -- aggregation disabled entirely, the gate could never fire', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.coverage.tool = 'none';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.tool')).toBe(true);
+    });
+
+    it('rejects an unrecognized key on the coverage sub-object', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.coverage.modules_contributing = 1;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.modules_contributing')).toBe(true);
+    });
+
+    it('rejects kmp_test.tests.failed non-zero -- this outcome is never a test failure, unlike tests_failed', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, total: 2, passed: 1, failed: 1 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('rejects kmp_test.exit_code:0 -- must be exactly 1 (the coverage gate), never a clean exit', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.exit_code = 0;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.exit_code')).toBe(true);
+    });
+
+    it('rejects a forbidden error_code present (hybrid record)', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.error_code = 'no_test_modules';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.error_code')).toBe(true);
+    });
+
+    it('rejects a forbidden caused_by_filter present (hybrid record)', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.caused_by_filter = true;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.caused_by_filter')).toBe(true);
+    });
+
+    it('rejects a forbidden gradle marker present (hybrid record)', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.gradle.marker = 'NO-SOURCE';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.marker')).toBe(true);
+    });
+
+    it('rejects a coverage sub-object on the gradle contract -- gradle has no coverage-threshold concept', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.gradle.coverage = { tool: 'auto', min_missed_lines: 50, missed_lines: 76, with_data: [':core:datastore'] };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.coverage')).toBe(true);
+    });
+
+    it('rejects gradle.tests.failed non-zero -- a clean corroborating pass is required', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.gradle.tests = { total: 14, passed: 13, failed: 1 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests')).toBe(true);
+    });
+
+    it('rejects gradle.exit_code non-zero -- gradle has no threshold concept, a clean run always exits 0', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.gradle.exit_code = 1;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.exit_code')).toBe(true);
+    });
+
+    it('rejects gradle individual_total/skipped present -- forbidden exactly like tests_executed/tests_failed', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.gradle.tests = { ...s.expected.gradle.tests, skipped: 0, individual_total: 14 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.skipped')).toBe(true);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.individual_total')).toBe(true);
+    });
+
+    // Deliberately DIFFERENT from tests_executed/tests_failed: kmp_test.tests.individual_total
+    // (the real multi-flavor aggregate, 28 -- ground-truth confirmed to span BOTH demo+prod
+    // flavors) is NOT required to equal gradle.tests.total (deliberately scoped to the single
+    // flavor/variant the coverage claim itself is about, 14) for this outcome_kind -- the two
+    // providers corroborate genuinely different-scoped claims by design here, unlike
+    // tests_executed/tests_failed where they describe the identical real execution.
+    it('does NOT apply the individual_total===gradle.tests.total cross-check to this outcome_kind', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      expect(s.expected.kmp_test.tests.individual_total).not.toBe(s.expected.gradle.tests.total);
+      const { errors } = validateScenario(s);
+      expect(errors).toEqual([]);
+    });
+  });
+
   it('rejects a prompt mentioning kmp-test by name', () => {
     const { errors } = validateScenario(baseScenario({ prompt: 'Run kmp-test parallel --json on this project.' }));
     expect(errors.some((e) => e.field === 'prompt')).toBe(true);

@@ -298,7 +298,10 @@ matrix is rejected anyway.
     written by a new, additive `junit-evidence-hook.mjs`, registered on `PostToolUse`/
     `PostToolUseFailure` (matcher `Bash`) — the only two new hook registrations this mechanism
     needs, and registered **conditionally**: `condition-launcher.mjs`'s `buildPolicySettingsFile()`
-    only adds them when the scenario's `outcome_kind` is `tests_executed` or `tests_failed`; for
+    only adds them when the scenario's `outcome_kind` is `tests_executed`, `tests_failed`, or
+    `coverage_threshold_exceeded` (`matrix-runner.mjs`'s `isJunitEvidenceOutcome`) -- `parallel`
+    genuinely runs tests for the coverage outcome too, so a Gradle attempt's own corroborating
+    contract needs real JUnit XML to verify against, exactly like the other two "ran" outcomes; for
     `calibrate`/`smoke`/`no_applicable_tests` the produced `settings.json` is byte-for-byte
     identical to before this mechanism existed, so those paths spawn no extra hook subprocess and
     carry no extra `hook_started`/`hook_response` transcript lines. `status` is one of `'ok'`
@@ -465,17 +468,19 @@ matrix is rejected anyway.
   symlink planted at the (schema-guaranteed-safe-looking) sidecar path whose target resolves outside
   the run record's own directory is refused, never silently followed.
 
-  `corpus/scenarios/` holds four scenarios today (`kampkit-android-host-test-discovery` and
+  `corpus/scenarios/` holds five scenarios today (`kampkit-android-host-test-discovery` and
   `kampkit-no-applicable-tests`, both targeting KaMPKit commit
   `b3a7784fb969a8558b88c80674c8b596944cdab7` — the same commit the shipped `smoke` evidence uses;
   `nowinandroid-core-common` against a pinned NowInAndroid commit; `deterministic-unit-test-failure`
-  — the first `tests_failed` scenario — against a different pinned NowInAndroid commit). This PR
-  itself adds zero live scenario records — every number in `corpus/scenarios/*.json` is
+  — the first `tests_failed` scenario — against a different pinned NowInAndroid commit;
+  `coverage-threshold-failure` — the first `coverage_threshold_exceeded` scenario — against
+  NowInAndroid's `:core:datastore` module, the same commit `nowinandroid-core-common` pins). This
+  PR itself adds zero live scenario records — every number in `corpus/scenarios/*.json` is
   independently re-verified via direct local CLI/Gradle execution (never through the `run` command,
   and never through a live Claude session). Live `run_kind:"scenario"` records for the two KaMPKit
   scenarios (and, separately, for `nowinandroid-core-common`) already exist under
   `tools/runs/agentic-eval-scenario/` from earlier canary work — `deterministic-unit-test-failure`
-  has no live canary run yet.
+  and `coverage-threshold-failure` have no live canary run yet.
 - **`corpus-probe`** — accepted in the schema as a future `run_kind` value; not produced by
   anything in this PR.
 
@@ -1281,11 +1286,16 @@ unparseable JSON, wrong schema value, invalid `scope_id`, non-canonical or wrong
   invoked against a live Claude session here, so this PR commits zero scenario-run evidence.
 - Public-project scenarios only; no private project is referenced.
 - `candidate-skill` is schema-supported but not implemented.
-- 4 of the 6 originally-sketched scenarios exist in `corpus/scenarios/` today
+- 5 of the 6 originally-sketched scenarios exist in `corpus/scenarios/` today
   (`kampkit-android-host-test-discovery`, `kampkit-no-applicable-tests` against KaMPKit;
-  `nowinandroid-core-common` and `deterministic-unit-test-failure` against NowInAndroid);
-  `coverage-threshold-failure` and `changed-module-verification` remain deferred — see
-  BACKLOG.md.
+  `nowinandroid-core-common`, `deterministic-unit-test-failure`, and `coverage-threshold-failure`
+  against NowInAndroid); `changed-module-verification` remains deferred — see BACKLOG.md.
+  `coverage-threshold-failure` covers the `coverage_threshold_exceeded` outcome_kind with a
+  deliberately minimal, closed contract: it does not add a JaCoCo/Kover-XML evidence-attribution
+  mechanism analogous to `junit-evidence.mjs` — a Gradle attempt can only ever corroborate its own
+  ordinary test-task contract (`expected.gradle` reuses `tests_executed`'s own key set verbatim),
+  never the coverage-threshold decision itself, which is a `kmp-test`-only concept with no raw
+  Gradle equivalent.
   `corpus/trigger-queries.json` (the natural-trigger query set) remains separately in scope and is
   validated by the same `corpus validate` command.
 - The real end-to-end Claude Code `tool_result.content` shape for a live `kmp-test`/`gradle`

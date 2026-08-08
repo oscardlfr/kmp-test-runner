@@ -28,7 +28,7 @@ describe('classifyBashCommand', () => {
 
   it('kmp-test parallel with --module-filter (space form) extracts the module and subcommand', () => {
     const c = classifyBashCommand('kmp-test parallel --module-filter shared --json');
-    expect(c).toEqual({ kind: 'kmp-test', subcommand: 'parallel', moduleFilter: 'shared', testType: null, isPlanOnly: false });
+    expect(c).toEqual({ kind: 'kmp-test', subcommand: 'parallel', moduleFilter: 'shared', testType: null, minMissedLines: null, isPlanOnly: false });
   });
 
   it('kmp-test parallel with --module-filter=shared (equals form) extracts the module identically', () => {
@@ -52,12 +52,12 @@ describe('classifyBashCommand', () => {
   });
 
   it('a non-parallel kmp-test subcommand (doctor) is classified with subcommand:"doctor", moduleFilter:null', () => {
-    expect(classifyBashCommand('kmp-test doctor --json')).toEqual({ kind: 'kmp-test', subcommand: 'doctor', moduleFilter: null, testType: null, isPlanOnly: false });
+    expect(classifyBashCommand('kmp-test doctor --json')).toEqual({ kind: 'kmp-test', subcommand: 'doctor', moduleFilter: null, testType: null, minMissedLines: null, isPlanOnly: false });
   });
 
   it('a kmp-test command with a terminal stderr merge retains its operation classification', () => {
     expect(classifyBashCommand('kmp-test parallel --module-filter :shared --json 2>&1')).toEqual({
-      kind: 'kmp-test', subcommand: 'parallel', moduleFilter: ':shared', testType: null, isPlanOnly: false,
+      kind: 'kmp-test', subcommand: 'parallel', moduleFilter: ':shared', testType: null, minMissedLines: null, isPlanOnly: false,
     });
   });
 
@@ -79,6 +79,33 @@ describe('classifyBashCommand', () => {
 
   it('a Gradle --dry-run invocation sets isPlanOnly:true', () => {
     expect(classifyBashCommand('./gradlew.bat :shared:testAndroidHostTest --dry-run --console=plain').isPlanOnly).toBe(true);
+  });
+
+  // --min-missed-lines -- extracted the same way moduleFilter/testType are: a raw string token,
+  // never parsed to a number here (interpretation/validation is the caller's job -- graders.mjs's
+  // exact-string comparison against the scenario's own String(min_missed_lines) implicitly
+  // rejects non-canonical forms like "050"/"5e1" without a second regex).
+  it('kmp-test parallel with --min-missed-lines (space form) extracts the raw string token', () => {
+    expect(classifyBashCommand('kmp-test parallel --min-missed-lines 50 --json').minMissedLines).toBe('50');
+  });
+
+  it('kmp-test parallel with --min-missed-lines=50 (equals form) extracts identically', () => {
+    expect(classifyBashCommand('kmp-test parallel --min-missed-lines=50 --json').minMissedLines).toBe('50');
+  });
+
+  it('absent --min-missed-lines yields minMissedLines:null', () => {
+    expect(classifyBashCommand('kmp-test parallel --module-filter shared --json').minMissedLines).toBeNull();
+  });
+
+  it('a dangling --min-missed-lines (last token, no value) yields minMissedLines:null, mirroring moduleFilter\'s own ?? null pattern', () => {
+    expect(classifyBashCommand('kmp-test parallel --min-missed-lines').minMissedLines).toBeNull();
+  });
+
+  it('--min-missed-lines combined with --module-filter and --test-type on the same command line extracts all three independently', () => {
+    const c = classifyBashCommand('kmp-test parallel --module-filter :core:datastore --test-type androidUnit --min-missed-lines 50 --json');
+    expect(c.moduleFilter).toBe(':core:datastore');
+    expect(c.testType).toBe('androidUnit');
+    expect(c.minMissedLines).toBe('50');
   });
 });
 

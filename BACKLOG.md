@@ -770,8 +770,63 @@
   scenario-run record this PR's own code CAN produce still requires a real live invocation, which
   is explicitly out of scope here (a future live-validation PR, mirroring #373/#378 relative to
   #372).
-  **Still deferred**: `coverage-threshold-failure`, `changed-module-verification` — own PR(s),
-  small increments preferred over one large one — milestone unassigned, user's call on timing.
+
+  A further follow-up PR added the 5th scenario and first `coverage_threshold_exceeded` outcome:
+  `coverage-threshold-failure` — NowInAndroid's `:core:datastore` module (a flavored, JaCoCo-backed
+  Android library, `demo`/`prod` product flavors) at the same commit `nowinandroid-core-common`
+  already pins, `7d45eae4f8720a0c77f507712ba2437ff974b6ed`. `--min-missed-lines` already existed
+  and worked in `lib/orchestrators/coverage-orchestrator.js` — this PR is harness-only, adding no
+  product feature. Ground truth independently verified 6× (3× `kmp-test parallel
+  --module-filter :core:datastore --min-missed-lines 50 --json`, 3× direct Gradle
+  `:core:datastore:testDemoDebugUnitTest` + `:core:datastore:createDemoDebugCombinedCoverageReport`
+  + an independent PowerShell `[xml]` DOM parse of the JaCoCo report, cold `GRADLE_USER_HOME`/fixed
+  JDK 17 each, all 6 runs 128–143s, well under the 600s ceiling): all 6 converge on `:core:datastore`,
+  JaCoCo, 76 missed lines, `76 > 50`, and a clean 14-test pass, every time. A real, ground-truth-
+  discovered wrinkle reshaped the design mid-implementation: `--module-filter :core:datastore` is a
+  substring match, so it also dispatches a sibling test-fixtures module
+  (`:core:datastore-test`, no coverage plugin, never contributes) — `computeKmpTestTargetMatch`
+  needed its own coverage-specific branch (target merely PRESENT among `envelope.modules[]`, not
+  the sole entry) rather than reusing `tests_executed`'s `modules.length===1` exclusivity, since
+  that exclusivity exists to protect PASS/FAIL attribution ambiguity this outcome doesn't have
+  (every dispatched module must pass cleanly, never a mix) — coverage attribution itself stays
+  exact via `coverage.module_buckets.with_data`. Similarly, kmp-test dispatches tests for BOTH
+  `demo`+`prod` flavors (28 individual tests) while coverage aggregation resolves only `demo` (76
+  missed lines) — the schema's existing `kmp_test.tests.individual_total === gradle.tests.total`
+  cross-check (shared by `tests_executed`/`tests_failed`) is deliberately NOT extended to this
+  outcome; Gradle corroboration stays scoped to the single flavor/variant the coverage claim is
+  about (`:core:datastore:testDemoDebugUnitTest`, 14 tests) rather than replicating kmp-test's
+  broader multi-flavor dispatch.
+
+  Provider model: Gradle can corroborate its own ordinary test-task contract (schema reuses
+  `tests_executed`'s Gradle key set verbatim — no raw Gradle task ever evaluates a coverage
+  threshold) but can never become `terminal` or produce `first_useful_signal` — a new
+  `isTerminalEligibleAttempt`/`terminalEligible` restriction, scoped to this outcome_kind only (the
+  other 3 keep both providers eligible, no regression). An early design (Gradle's `outcomeMatches`
+  hardcoded `false`) was caught and corrected during implementation: it would have let a legitimate
+  Gradle corroboration AFTER a correct kmp-test attempt silently win terminal selection and flip a
+  correct answer to a graded failure, and would have made check 7
+  (`no_provider_contradiction`) fire a false positive on every healthy run. `evaluateGradleAttempt`
+  instead computes a REAL `outcomeMatches` (reusing `tests_executed`'s own footer+JUnit check
+  byte-for-byte, since the underlying claim is identical) and `isJunitEvidenceOutcome`
+  (`matrix-runner.mjs`) now includes this outcome so that check has real JUnit XML to verify
+  against. `KMP_EVAL_RESULT`'s closed key set grows `missed_lines`/`threshold`/
+  `modules_contributing` (the one thing this scenario exists to test — whether the agent correctly
+  read and reported the coverage-gate numbers — would go unverified by check 8 otherwise).
+  `policy-hook.mjs` gains a 5th flag category (`--min-missed-lines` fit none of the 4 existing
+  ones): a canonical non-negative-integer grammar, exactly two tokens (the `=` combined form is
+  deliberately not admitted), shape-only — the grader separately enforces the scenario's exact
+  expected N and N>0.
+
+  **Known, deliberately-unfixed documentation contradiction** (registered here, not fixed in this
+  PR — `.skills/**` is out of scope): `.skills/kmp-test-runner/references/workflows/coverage.md:49`
+  correctly says a `0` threshold disables the gate; `:95` of the same file and
+  `.skills/kmp-test-runner/references/troubleshooting/coverage-threshold-exceeded.md:35` both
+  incorrectly claim `0` requires perfect coverage. `coverage-orchestrator.js:747`
+  (`gateThreshold > 0 && ...`) confirms the first reading is correct. Register as a blocker to fix
+  before any live canary runs against the pinned skill snapshot.
+
+  **Still deferred**: `changed-module-verification` — own PR(s), small increments preferred over
+  one large one — milestone unassigned, user's call on timing.
 - ✅ **`KMP_EVAL_RUNS_ROOT` real-world scope — SHIPPED in #372 itself (2026-07-18, closed across
   three independent-review rounds).** The env var is a test-only escape hatch so vitest never
   writes to (or cleans up inside) the real `tools/runs/` tree — nothing stops an operator from

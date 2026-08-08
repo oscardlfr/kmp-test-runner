@@ -447,7 +447,7 @@ function isWellFormedTestFailureEntry(entry) {
   return true;
 }
 
-function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsError, scenario, invokedTestType) {
+function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsError, scenario, invokedTestType, invokedMinMissedLines) {
   if (envelope.subcommand !== invokedSubcommand) return false;
   // Execution/plan-mode coherence: the envelope's OWN self-reported mode must agree with a real
   // execution, not merely with what the invoking command's text happened to say. A fresh review
@@ -576,6 +576,52 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
       && envelope.tests?.skipped === kt.tests.skipped
       && envelope.tests?.individual_total === kt.tests.individual_total;
   }
+  if (scenario.expected.outcome_kind === 'coverage_threshold_exceeded') {
+    // Corroborating (parallel genuinely runs tests -- fact #4/#6): the real test execution must
+    // show a genuine clean pass -- never itself a failure (the core distinction from tests_failed,
+    // even though both produce exit_code:1).
+    const testsOk = validateParallelEvidence(envelope, invokedTestType)
+      && envelope.tests?.total === kt.tests.total
+      && envelope.tests?.passed === kt.tests.passed
+      && envelope.tests?.failed === 0
+      && envelope.tests?.skipped === kt.tests.skipped
+      && envelope.tests?.individual_total === kt.tests.individual_total;
+
+    // Coherence: the ACTUALLY-INVOKED --min-missed-lines token must agree with what the envelope's
+    // own errors[] entry echoes back as `threshold` -- mirrors computeKmpTestTargetMatch's own
+    // moduleFilter-vs-envelope coherence check (a mismatched/stale tool_result attached to the
+    // wrong tool_use cannot be trusted regardless of whether its own number happens to match this
+    // scenario's expected constant). The real CLI's default (0, flag omitted) can never
+    // legitimately trigger this outcome, so an absent invokedMinMissedLines is always
+    // disqualifying.
+    const cov = kt.coverage;
+    if (invokedMinMissedLines == null || String(cov.min_missed_lines) !== invokedMinMissedLines) return false;
+
+    // The authoritative proof itself -- envelope.coverage.*, NOT envelope.tests (fact #1/#3: Gradle
+    // has no equivalent event, so only the real coverage envelope + errors[] can prove this).
+    const covBlock = envelope.coverage;
+    const buckets = covBlock?.module_buckets;
+    const withData = buckets?.with_data;
+    const targetModule = normalizeModuleName(scenario.expected.module);
+    const bucketExclusive = Array.isArray(buckets?.no_xml) && !buckets.no_xml.some((m) => normalizeModuleName(m) === targetModule)
+      && Array.isArray(buckets?.parse_errored) && !buckets.parse_errored.some((m) => normalizeModuleName(m) === targetModule)
+      && Array.isArray(buckets?.skipped_by_user) && !buckets.skipped_by_user.some((m) => normalizeModuleName(m) === targetModule);
+    const coverageOk = covBlock != null && typeof covBlock === 'object'
+      && covBlock.tool === cov.tool
+      && covBlock.missed_lines === cov.missed_lines
+      && covBlock.modules_contributing === 1
+      && Array.isArray(withData) && withData.length === 1 && normalizeModuleName(withData[0]) === targetModule
+      && bucketExclusive;
+
+    // errors[] -- EXACTLY one entry, and it is the matching coverage_threshold_exceeded one (this
+    // outcome's exit_code:1 is caused by a SINGLE coherent threshold error, never anything else).
+    const matchingErrors = envelope.errors.filter((e) => e && e.code === 'coverage_threshold_exceeded');
+    const soleError = matchingErrors.length === 1 ? matchingErrors[0] : null;
+    const errorOk = envelope.errors.length === 1 && soleError != null
+      && soleError.threshold === cov.min_missed_lines && soleError.missed_lines === cov.missed_lines;
+
+    return testsOk && coverageOk && errorOk && envelope.exit_code === kt.exit_code;
+  }
   // `errors.length === 1` (exactly the matching entry, nothing else): a second, unrelated error
   // entry contradicts "cleanly determined that no tests apply". `individual_total === 0`/
   // `skipped === 0` are the converse of the tests_executed branch's own checks: a no_test_modules
@@ -610,7 +656,18 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
 // third "ran" outcome_kind would otherwise need updating at every site individually; this single
 // predicate is now the one place that ever changes.
 function isRanOutcome(outcomeKind) {
-  return outcomeKind === 'tests_executed' || outcomeKind === 'tests_failed';
+  return outcomeKind === 'tests_executed' || outcomeKind === 'tests_failed' || outcomeKind === 'coverage_threshold_exceeded';
+}
+
+// terminalEligible -- coverage_threshold_exceeded is the one outcome_kind where Gradle can never
+// become the authoritative "terminal" attempt (or produce first_useful_signal): --min-missed-lines
+// is a kmp-test-only decision (no raw Gradle task ever evaluates a coverage threshold), so a
+// Gradle attempt can at most CORROBORATE its own contract (a clean, matching test-task pass) --
+// it can never prove the threshold itself. The other 3 outcome_kinds keep both providers eligible
+// (no regression -- ground truth for tests_executed/tests_failed/no_applicable_tests never
+// depended on this distinction).
+function isTerminalEligibleAttempt(attempt, outcomeKind) {
+  return outcomeKind !== 'coverage_threshold_exceeded' || attempt.provider === 'kmp_test';
 }
 
 /**
@@ -663,6 +720,21 @@ function computeKmpTestTargetMatch(envelope, classification, scenario) {
   // still resolves and lists the module it attempted (envelope.modules[]) regardless of whether the
   // task ultimately passed or failed, ground-truth confirmed directly against a real capture.
   if (isRanOutcome(scenario.expected.outcome_kind)) {
+    if (scenario.expected.outcome_kind === 'coverage_threshold_exceeded') {
+      // A substring --module-filter can legitimately sweep in a sibling module alongside the real
+      // target (ground truth: NowInAndroid's :core:datastore also dispatches its own dedicated
+      // test-fixtures sibling, :core:datastore-test, which has no coverage plugin and so never
+      // contributes) -- envelope.modules[] is NOT required to be exclusively the target here,
+      // unlike tests_executed/tests_failed just below. That exclusivity exists to protect
+      // aggregate PASS/FAIL attribution (which module does a failure belong to in a mixed
+      // multi-module response?) -- this outcome requires EVERY dispatched module to have passed
+      // cleanly (never a mix, enforced in validateProviderContract), so there is no such ambiguity
+      // to protect against here. Coverage attribution itself is independently, exactly proven
+      // elsewhere via coverage.module_buckets.with_data (see validateKmpEnvelopeForAttempt).
+      const present = envelope.modules.some((m) => normalizeModuleName(m?.name) === targetModule);
+      if (!present) return false;
+      return classification.moduleFilter == null || matchModuleFilter(targetModule, classification.moduleFilter);
+    }
     if (envelope.modules.length !== 1) return false;
     const envelopeModule = normalizeModuleName(envelope.modules[0]?.name);
     if (envelopeModule !== targetModule) return false;
@@ -722,7 +794,7 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
   const targetMatches = hasEvidence && computeKmpTestTargetMatch(envelope, classification, scenario);
 
   const outcomeMatches = hasEvidence && targetMatches
-    && validateKmpEnvelopeForAttempt(envelope, classification.subcommand, bashResult.resultIsError, scenario, classification.testType);
+    && validateKmpEnvelopeForAttempt(envelope, classification.subcommand, bashResult.resultIsError, scenario, classification.testType, classification.minMissedLines);
 
   // A systematic-closure review found this: `validateParallelEvidence` rejecting a genuinely
   // incoherent `parallel` block was previously laundered ONLY through `outcomeMatches`, which check
@@ -905,7 +977,11 @@ function evaluateGradleAttempt(bashResult, scenario, decision, resolvedEvidence)
       && resolvedEvidence.junit.total === g.tests?.total
       && resolvedEvidence.junit.passed === g.tests?.passed
       && resolvedEvidence.junit.failed === g.tests?.failed;
-    if (scenario.expected.outcome_kind === 'tests_executed') {
+    // coverage_threshold_exceeded shares tests_executed's Gradle-side claim byte-for-byte: a raw
+    // Gradle task has no coverage-threshold concept at all (--min-missed-lines is a kmp-test-only
+    // flag), so its own contract (schemas.mjs reuses GRADLE_CONTRACT_KEYS_TESTS_EXECUTED verbatim)
+    // is just an ordinary clean, executed test-task pass -- the identical claim, identical check.
+    if (scenario.expected.outcome_kind === 'tests_executed' || scenario.expected.outcome_kind === 'coverage_threshold_exceeded') {
       const executedModes = new Set(['fresh', 'up_to_date', 'from_cache']);
       outcomeMatches = observedExitCode === (g.exit_code ?? 0) && executedModes.has(mode) && junitOk;
     } else if (scenario.expected.outcome_kind === 'tests_failed') {
@@ -993,6 +1069,11 @@ function extractKmpEvalResultBlock(text) {
 // identical shape either way (it reports the same real total/passed/failed triple it observed);
 // only the VALUES (failed:0 vs failed>=1) and the compared outcome_kind differ.
 const KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS = new Set(['module', 'outcome_kind', 'total', 'passed', 'failed']);
+
+// coverage_threshold_exceeded's own closed key set -- deliberately NOT the tests_executed shape:
+// the whole point of this scenario is that the agent correctly read and reported the coverage-gate
+// numbers, which check 8 cannot verify at all unless the block actually carries them.
+const KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS = new Set(['module', 'outcome_kind', 'total', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing']);
 const KMP_EVAL_RESULT_NO_APPLICABLE_KEYS = new Set(['module', 'outcome_kind']);
 const KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS = ['total', 'passed', 'failed'];
 
@@ -1021,6 +1102,27 @@ function kmpEvalResultBlockMatchesScenario(block, scenario) {
   if (block.outcome_kind !== scenario.expected.outcome_kind) return false;
 
   const keys = Object.keys(block);
+  // Checked BEFORE the isRanOutcome() call below -- coverage_threshold_exceeded's own key set
+  // genuinely differs (it needs missed_lines/threshold/modules_contributing, which the shared
+  // tests_executed/tests_failed shape has no room for), so it must not fall into that branch just
+  // because isRanOutcome() also returns true for it (that predicate governs envelope-side
+  // module-attribution reuse elsewhere -- it was never meant to imply an identical final-answer
+  // shape too).
+  if (scenario.expected.outcome_kind === 'coverage_threshold_exceeded') {
+    if (keys.length !== KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS.size || keys.some((k) => !KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS.has(k))) return false;
+    // total/passed/failed compare against expected.gradle.tests (the single-flavor/variant
+    // corroborating-scope counts the agent would see from the actual test task it ran), never
+    // expected.kmp_test.tests (kmp_test's own multi-flavor aggregate) -- ground truth confirmed
+    // these are genuinely different-scoped numbers for this outcome_kind (see this file's
+    // validateKmpEnvelopeForAttempt branch and schemas.mjs's own cross-check doc comment).
+    const expectedTests = scenario.expected.gradle.tests;
+    const cov = scenario.expected.kmp_test.coverage;
+    return Number.isInteger(block.total) && Number.isInteger(block.passed) && Number.isInteger(block.failed)
+      && block.total === expectedTests.total && block.passed === expectedTests.passed && block.failed === expectedTests.failed
+      && Number.isInteger(block.missed_lines) && block.missed_lines === cov.missed_lines
+      && Number.isInteger(block.threshold) && block.threshold === cov.min_missed_lines
+      && Number.isInteger(block.modules_contributing) && block.modules_contributing === 1;
+  }
   if (isRanOutcome(scenario.expected.outcome_kind)) {
     if (keys.length !== KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS.size || keys.some((k) => !KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS.has(k))) return false;
     const expectedTests = scenario.expected.gradle.tests;
@@ -1170,8 +1272,15 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   const kmpTestAttempts = bashResults.map((b) => evaluateKmpTestAttempt(b, scenario, junitAttribution.decisionByAttempt.get(b.id))).filter(Boolean);
   const gradleAttempts = bashResults.map((b) => evaluateGradleAttempt(b, scenario, junitAttribution.decisionByAttempt.get(b.id), junitAttribution.perAttemptJunit.get(b.id))).filter(Boolean);
   const allAttempts = [...kmpTestAttempts, ...gradleAttempts].sort((a, b) => a.bashIndex - b.bashIndex);
-  const onTargetAttempts = allAttempts.filter((a) => a.intendedTargetMatches);
-  const terminalPool = onTargetAttempts.length > 0 ? onTargetAttempts : allAttempts;
+  // terminalEligible (isTerminalEligibleAttempt) restricts which attempts can ever become
+  // `terminal` -- for coverage_threshold_exceeded, Gradle attempts are excluded entirely (see that
+  // function's own doc comment); the other 3 outcome_kinds keep both providers eligible, no
+  // regression. Applied BEFORE the on-target filter so a Gradle-only condition correctly has an
+  // EMPTY eligible pool (never falls back to "last of all attempts", which would silently make an
+  // ineligible Gradle attempt terminal by default).
+  const eligibleAttempts = allAttempts.filter((a) => isTerminalEligibleAttempt(a, scenario.expected.outcome_kind));
+  const onTargetAttempts = eligibleAttempts.filter((a) => a.intendedTargetMatches);
+  const terminalPool = onTargetAttempts.length > 0 ? onTargetAttempts : eligibleAttempts;
   const terminal = terminalPool.length > 0 ? terminalPool[terminalPool.length - 1] : null;
 
   // Check 4. `!terminal.parallelEvidenceInvalid` closes a gap a fresh review found: a genuinely
@@ -1233,7 +1342,11 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   // first_useful_signal: the EARLIEST attempt (by resultIndex, across either provider) whose own
   // result already matched its own expected contract -- never tied to which attempt ended up
   // "terminal", and never a textual match (decision 13).
-  const firstCorrect = allAttempts
+  // Same terminalEligible restriction as `terminal`, above (decision: first_useful_signal must
+  // never be attributed to a provider that could never have proven the outcome in the first
+  // place -- a Gradle attempt with a real, matching corroborating contract is still not proof the
+  // coverage threshold was exceeded, for coverage_threshold_exceeded specifically).
+  const firstCorrect = eligibleAttempts
     .filter((a) => a.hasEvidence && a.targetMatches && a.outcomeMatches && a.resultIndex != null)
     .sort((a, b) => a.resultIndex - b.resultIndex)[0] ?? null;
 

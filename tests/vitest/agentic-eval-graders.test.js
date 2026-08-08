@@ -349,6 +349,91 @@ const GRADLE_SCENARIO4_FAIL_STDOUT = `> Task :lint:compileKotlin\n> Task :lint:c
 // classify :lint:test from at all, so its mode is 'no_evidence', never 'failed'.
 const GRADLE_COMPILE_FAILURE_STDOUT = `> Task :lint:compileKotlin FAILED\n\nFAILURE: Build failed with an exception.\n\n* What went wrong:\nExecution failed for task ':lint:compileKotlin'.\n> Compilation error. See log for more details\n\n* Try:\n> Run with --stacktrace option to get the stack trace.\n\nBUILD FAILED in 12s\n1 actionable task: 1 executed\n`;
 
+// The 5th scenario shape (coverage-threshold-failure) -- the first `coverage_threshold_exceeded`
+// scenario. Ground truth independently verified 6x (3x kmp-test, 3x direct Gradle + independent
+// XML parse, cold GRADLE_USER_HOME each, fixed JDK 17) against android/nowinandroid @
+// 7d45eae4f8720a0c77f507712ba2437ff974b6ed's `:core:datastore` module: 14 real unit tests pass
+// cleanly (--module-filter :core:datastore substring-matches a sibling test-fixtures module too,
+// :core:datastore-test, so kmp_test's own aggregate is 2 dispatched modules/28 individual
+// testcases across both demo+prod flavors -- but coverage attribution is independently, exactly
+// :core:datastore alone, since the sibling has no coverage plugin applied); 76 lines left
+// uncovered, exceeding a 50-line budget on both providers' independently-derived JaCoCo XML.
+const SCENARIO_5 = {
+  schema: 1,
+  id: 'coverage-threshold-failure',
+  family: 'coverage',
+  project_alias: 'nowinandroid',
+  project_url: 'https://github.com/android/nowinandroid',
+  project_commit: '7d45eae4f8720a0c77f507712ba2437ff974b6ed',
+  prompt: "This is a large, multi-module Android project. Somewhere in it there's a module responsible for persisting user preferences locally on-device...",
+  expected_outcome: "The agent discovers NowInAndroid's :core:datastore module, confirms its 14 unit tests pass, discovers it leaves 76 lines uncovered (exceeding a 50-line budget), and reports coverage_threshold_exceeded accurately.",
+  policy: {
+    allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel'],
+    allowed_gradle_tasks: [':core:datastore:testDemoDebugUnitTest'],
+  },
+  expected: {
+    module: ':core:datastore',
+    outcome_kind: 'coverage_threshold_exceeded',
+    kmp_test: {
+      tests: { total: 2, passed: 2, failed: 0, skipped: 0, individual_total: 28 },
+      exit_code: 1,
+      coverage: { tool: 'auto', min_missed_lines: 50, missed_lines: 76, with_data: [':core:datastore'] },
+    },
+    gradle: { allowed_invocations: [':core:datastore:testDemoDebugUnitTest'], evidence_task: ':core:datastore:testDemoDebugUnitTest', tests: { total: 14, passed: 14, failed: 0 }, exit_code: 0 },
+  },
+  first_useful_signal_predicate: { description: 'first well-formed kmp_test evidence confirming :core:datastore coverage gate fired at 76 missed lines > 50' },
+  tags: ['train'],
+};
+
+// total/passed/failed here match expected.gradle.tests (14/14/0 -- the single flavor/variant
+// corroborating-scope count), NOT expected.kmp_test.tests (2/2/0 -- kmp_test's own TASK-level
+// dispatch count across 2 modules) -- see kmpEvalResultBlockMatchesScenario's own doc comment.
+const SCENARIO_5_CORRECT_ANSWER = kmpEvalResultText(
+  "The :core:datastore module's 14 tests pass, but it leaves 76 lines uncovered, exceeding the 50-line budget.",
+  { module: ':core:datastore', outcome_kind: 'coverage_threshold_exceeded', total: 14, passed: 14, failed: 0, missed_lines: 76, threshold: 50, modules_contributing: 1 },
+);
+
+// Real envelope shape (condensed from an actual captured `kmp-test parallel --module-filter
+// :core:datastore --min-missed-lines 50 --json` ground-truth run, 3x reproduced identically):
+// 2 dispatched modules (the target + its sibling test-fixtures module, which has no coverage
+// plugin and so never contributes), 28 individual testcases across both flavors, and a single
+// coherent `coverage_threshold_exceeded` error whose own threshold/missed_lines echo the real
+// invoked flag and the real aggregated total exactly.
+function coverageEnvelope(overrides = {}) {
+  return JSON.stringify({
+    tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+    project_root: 'C:\\fake', exit_code: 1, duration_ms: 143214,
+    tests: { total: 2, passed: 2, failed: 0, skipped: 0, individual_total: 28 },
+    modules: [
+      { name: 'core:datastore', type: 'android', coverage_plugin: 'jacoco' },
+      { name: 'core:datastore-test', type: 'android', coverage_plugin: null },
+    ],
+    skipped: [{ module: 'core:datastore-proto', reason: 'no test source set' }],
+    coverage: {
+      tool: 'auto', missed_lines: 76, modules_contributing: 1,
+      modules_with_kover_plugin: [],
+      modules_with_jacoco_plugin: ['core:datastore'],
+      module_buckets: { with_data: ['core:datastore'], no_xml: [], parse_errored: [], skipped_by_user: [] },
+    },
+    errors: [{ code: 'coverage_threshold_exceeded', message: 'Coverage threshold exceeded: 76 missed lines > 50 (--min-missed-lines)', threshold: 50, missed_lines: 76 }],
+    warnings: [],
+    parallel: {
+      test_type: 'auto',
+      legs: [{
+        test_type: 'auto', exit_code: 0,
+        execution: { fresh: 2, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
+        cascade_detected: false, retry_fired: false,
+      }],
+      max_workers: 0, timeout_s: 600,
+    },
+    isolated: DEFAULT_ISOLATED_FIELD,
+    ...overrides,
+  });
+}
+const KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED = coverageEnvelope();
+
+const GRADLE_SCENARIO5_PASS_STDOUT = `> Task :core:datastore:compileDemoDebugUnitTestKotlin\n> Task :core:datastore:testDemoDebugUnitTest\n\nBUILD SUCCESSFUL in 2m 11s\n54 actionable tasks: 54 executed\n`;
+
 describe('GRADING_CHECK_NAMES', () => {
   it('is exactly 8 unique names', () => {
     expect(GRADING_CHECK_NAMES.length).toBe(8);
@@ -3261,5 +3346,319 @@ describe('gradeScenarioCondition -- a wrong-module attempt whose decision sideca
     // agent answer -- the blocking is carried entirely by errors[], never by these fields.
     expect(record.success.value).toBe(true);
     expect(record.expected_outcome_matched.value).toBe(true);
+  });
+});
+
+describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the 5th outcome_kind)', () => {
+  it('accepts a well-formed condition -- single kmp_test attempt, terminal, success:true, all 8 checks pass', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+    expect(grade.checks).toHaveLength(8);
+    expect(grade.checks.every((c) => c.passed)).toBe(true);
+  });
+
+  it('rejects when the envelope threshold differs from the scenario expected constant (both command and envelope agree with each other, but not with the scenario)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 40 --json', resultContent: coverageEnvelope({ errors: [{ code: 'coverage_threshold_exceeded', message: 'x', threshold: 40, missed_lines: 76 }] }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects when the invoked --min-missed-lines disagrees with the envelope\'s own echoed threshold (incoherent/stale tool_result)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: coverageEnvelope({ errors: [{ code: 'coverage_threshold_exceeded', message: 'x', threshold: 40, missed_lines: 76 }] }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects when missed_lines differs from the expected constant', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 60, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:datastore'], module_buckets: { with_data: ['core:datastore'], no_xml: [], parse_errored: [], skipped_by_user: [] } },
+        errors: [{ code: 'coverage_threshold_exceeded', message: 'x', threshold: 50, missed_lines: 60 }],
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects the wrong module (a different --module-filter entirely)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:common --min-missed-lines 50 --json', resultContent: coverageEnvelope({ modules: [{ name: 'core:common', type: 'jvm', coverage_plugin: null }] }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects a self-contradictory envelope: with_data empty (no real coverage data) yet errors[] still claims coverage_threshold_exceeded', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 76, modules_contributing: 0, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:datastore'], module_buckets: { with_data: [], no_xml: ['core:datastore'], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects modules_contributing incoherent with with_data (with_data has the target, but modules_contributing:0)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 76, modules_contributing: 0, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:datastore'], module_buckets: { with_data: ['core:datastore'], no_xml: [], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects bucket-exclusivity violation: target module present in BOTH with_data and no_xml simultaneously', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 76, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:datastore'], module_buckets: { with_data: ['core:datastore'], no_xml: ['core:datastore'], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects an incompatible extra error alongside coverage_threshold_exceeded (errors.length !== 1)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: coverageEnvelope({
+        errors: [
+          { code: 'coverage_threshold_exceeded', message: 'x', threshold: 50, missed_lines: 76 },
+          { code: 'module_failed', module: 'core:datastore', task: ':core:datastore:testDemoDebugUnitTest', message: '[FAIL]' },
+        ],
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('excludes a --dry-run attempt entirely -- never becomes a candidate, never terminal', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --dry-run --json', resultContent: coverageEnvelope() }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.testInvocationsTotal).toBe(0);
+    expect(grade.terminalAuthoritativeEventIndex).toBe(null);
+    expect(grade.success).toBe(false);
+  });
+
+  it('excludes a policy-denied attempt', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED, decision: 'deny' }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.testInvocationsTotal).toBe(0);
+    expect(grade.success).toBe(false);
+  });
+
+  it('excludes an attempt whose decision record is missing/incoherent (null)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED, decision: null }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.testInvocationsTotal).toBe(0);
+    expect(grade.success).toBe(false);
+  });
+
+  describe('provider model -- Gradle corroborates, but is never terminal-eligible for this outcome_kind', () => {
+    it('a Gradle-only condition (no kmp_test attempt at all) fails -- there is no terminal-eligible evidence, even though the Gradle attempt itself is clean and well-targeted', () => {
+      const cr = buildConditionResult(
+        [{ command: './gradlew.bat :core:datastore:testDemoDebugUnitTest --console=plain', resultContent: GRADLE_SCENARIO5_PASS_STDOUT, evidence: okJunit(14, 14, 0) }],
+        SCENARIO_5_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.terminalAuthoritativeEventIndex).toBe(null);
+      expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('a genuinely correct kmp_test attempt followed by a clean, corroborating Gradle attempt AFTERWARD still succeeds -- the later Gradle attempt does not steal terminal selection', () => {
+      const cr = buildConditionResult(
+        [
+          { command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED },
+          { command: './gradlew.bat :core:datastore:testDemoDebugUnitTest --console=plain', resultContent: GRADLE_SCENARIO5_PASS_STDOUT, evidence: okJunit(14, 14, 0) },
+        ],
+        SCENARIO_5_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.expectedOutcomeMatched).toBe(true);
+      expect(grade.success).toBe(true);
+      // terminal is the kmp_test attempt's own resultIndex (event index 2: init, tool_use, tool_result)
+      expect(grade.terminalAuthoritativeEventIndex).toBe(2);
+    });
+
+    it('terminal selection within kmp_test: an early WRONG attempt followed by a later CORRECT one -- the later, correct attempt wins', () => {
+      const wrongEnvelope = coverageEnvelope({ coverage: { tool: 'auto', missed_lines: 5, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:datastore'], module_buckets: { with_data: ['core:datastore'], no_xml: [], parse_errored: [], skipped_by_user: [] } }, errors: [{ code: 'coverage_threshold_exceeded', message: 'x', threshold: 50, missed_lines: 5 }] });
+      // missed_lines:5 does not exceed threshold:50 in reality, but this fixture only needs to be a
+      // real, well-formed, WRONG envelope for terminal-selection purposes (mismatched missed_lines).
+      const cr = buildConditionResult(
+        [
+          { command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: wrongEnvelope },
+          { command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED },
+        ],
+        SCENARIO_5_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.success).toBe(true);
+    });
+
+    it('terminal selection within kmp_test: an early CORRECT attempt followed by a later WRONG one -- the later (wrong) attempt wins, flipping success to false; first_useful_signal and terminal are genuinely distinct', () => {
+      const wrongEnvelope = coverageEnvelope({ coverage: { tool: 'auto', missed_lines: 5, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:datastore'], module_buckets: { with_data: ['core:datastore'], no_xml: [], parse_errored: [], skipped_by_user: [] } }, errors: [{ code: 'coverage_threshold_exceeded', message: 'x', threshold: 50, missed_lines: 5 }] });
+      const cr = buildConditionResult(
+        [
+          { command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED },
+          { command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: wrongEnvelope },
+        ],
+        SCENARIO_5_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.success).toBe(false);
+      expect(grade.firstUsefulSignalEventIndex).not.toBe(grade.terminalAuthoritativeEventIndex);
+      expect(grade.firstUsefulSignalEventIndex).toBe(2); // the early, correct attempt's result event
+      expect(grade.terminalAuthoritativeEventIndex).toBe(4); // the later, wrong attempt's result event
+    });
+
+    it('first_useful_signal respects the same terminal-eligibility restriction: a clean, correct Gradle attempt BEFORE any kmp_test attempt does not produce a first_useful_signal by itself', () => {
+      const cr = buildConditionResult(
+        [
+          { command: './gradlew.bat :core:datastore:testDemoDebugUnitTest --console=plain', resultContent: GRADLE_SCENARIO5_PASS_STDOUT, evidence: okJunit(14, 14, 0) },
+          { command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED },
+        ],
+        SCENARIO_5_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      // event indices: init(0), gradle tool_use(1)/result(2), kmp_test tool_use(3)/result(4)
+      expect(grade.firstUsefulSignalEventIndex).toBe(4);
+      expect(grade.success).toBe(true);
+    });
+
+    it('a Gradle-only condition has first_useful_signal:null end to end (no kmp_test attempt ever exists)', () => {
+      const cr = buildConditionResult(
+        [{ command: './gradlew.bat :core:datastore:testDemoDebugUnitTest --console=plain', resultContent: GRADLE_SCENARIO5_PASS_STDOUT, evidence: okJunit(14, 14, 0) }],
+        SCENARIO_5_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.firstUsefulSignalEventIndex).toBe(null);
+    });
+
+    it('check 7 (no_provider_contradiction) is a genuine, non-trivial comparison: kmp_test correct + a Gradle attempt whose OWN corroborating contract also genuinely matches -- no contradiction', () => {
+      const cr = buildConditionResult(
+        [
+          { command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED },
+          { command: './gradlew.bat :core:datastore:testDemoDebugUnitTest --console=plain', resultContent: GRADLE_SCENARIO5_PASS_STDOUT, evidence: okJunit(14, 14, 0) },
+        ],
+        SCENARIO_5_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.checks.find((c) => c.name === 'no_provider_contradiction').passed).toBe(true);
+    });
+
+    it('check 7 detects a genuine disagreement: kmp_test correct + a Gradle attempt whose OWN JUnit evidence does not match expected.gradle.tests -- flagged, but stays diagnostic-only (does not block success)', () => {
+      const cr = buildConditionResult(
+        [
+          { command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED },
+          { command: './gradlew.bat :core:datastore:testDemoDebugUnitTest --console=plain', resultContent: GRADLE_SCENARIO5_PASS_STDOUT, evidence: okJunit(14, 13, 1) },
+        ],
+        SCENARIO_5_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.checks.find((c) => c.name === 'no_provider_contradiction').passed).toBe(false);
+      expect(grade.success).toBe(true);
+    });
+
+    it('two Gradle attempts sharing the same transcript index (a genuine same-turn JUnit-producer conflict, faithfully reproduced) -- harnessEvidenceAmbiguous:true, blocks success', () => {
+      const cr = buildConditionResult(
+        [{ command: './gradlew.bat :core:datastore:testDemoDebugUnitTest --console=plain', resultContent: GRADLE_SCENARIO5_PASS_STDOUT, resultIsError: false, evidence: { status: 'conflict' } }],
+        SCENARIO_5_CORRECT_ANSWER,
+        { ambiguousJunitEvidence: true },
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.harnessEvidenceAmbiguous).toBe(true);
+      expect(grade.success).toBe(false);
+    });
+  });
+
+  describe('final-answer (check 8) -- closed KMP_EVAL_RESULT key set for this outcome_kind', () => {
+    it('rejects a block missing missed_lines/threshold/modules_contributing (the tests_executed-shaped subset alone is insufficient for this outcome)', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+        kmpEvalResultText('Tests pass, coverage exceeded.', { module: ':core:datastore', outcome_kind: 'coverage_threshold_exceeded', total: 2, passed: 2, failed: 0 }),
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('rejects a block with an unrecognized extra key', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+        kmpEvalResultText('Tests pass, coverage exceeded.', { module: ':core:datastore', outcome_kind: 'coverage_threshold_exceeded', total: 2, passed: 2, failed: 0, missed_lines: 76, threshold: 50, modules_contributing: 1, extra_field: 'x' }),
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('rejects a final answer with no KMP_EVAL_RESULT block at all', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+        'The tests pass but coverage is too low.',
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('rejects two ambiguous KMP_EVAL_RESULT blocks in the same final answer', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+        SCENARIO_5_CORRECT_ANSWER + '\n' + SCENARIO_5_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('accepts missed_lines/threshold/modules_contributing matching the scenario exactly, with total/passed/failed matching expected.gradle.tests (the corroborating-scope counts, not kmp_test\'s own multi-flavor aggregate)', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --module-filter :core:datastore --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+        kmpEvalResultText('14 tests pass; 76 lines uncovered, exceeding the 50-line budget.', { module: ':core:datastore', outcome_kind: 'coverage_threshold_exceeded', total: 14, passed: 14, failed: 0, missed_lines: 76, threshold: 50, modules_contributing: 1 }),
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
+      expect(grade.success).toBe(true);
+    });
+  });
+
+  it('module attribution reuses real matchModuleFilter semantics: a correct anchored-glob filter still resolves target match', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter "*:datastore" --min-missed-lines 50 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.success).toBe(true);
   });
 });

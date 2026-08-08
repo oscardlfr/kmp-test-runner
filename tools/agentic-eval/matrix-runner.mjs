@@ -273,7 +273,10 @@ export async function runSingleCondition({ condition, materializeFixture, previo
 // re-narrowed this back to `'tests_executed'` only would never have been caught by that route.
 // `agentic-eval-matrix-runner.test.js` calls this function directly.
 export function isJunitEvidenceOutcome(outcomeKind) {
-  return outcomeKind === 'tests_executed' || outcomeKind === 'tests_failed';
+  // coverage_threshold_exceeded included: parallel genuinely runs tests for this outcome too, and
+  // a Gradle corroborating attempt needs real JUnit XML for its own outcomeMatches to be genuine
+  // (graders.mjs's evaluateGradleAttempt), not fabricated.
+  return outcomeKind === 'tests_executed' || outcomeKind === 'tests_failed' || outcomeKind === 'coverage_threshold_exceeded';
 }
 
 export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs }) {
