@@ -1052,6 +1052,30 @@ describe('validateScenario', () => {
     });
   }
 
+  // Ground truth (independently verified 6x -- 3x kmp-test, 3x direct Gradle, cold
+  // GRADLE_USER_HOME each -- against android/nowinandroid @
+  // 058f0e4375ec51ff8811ba2d0bb10bc4c1b4fdb8, :lint module): kmp_test.tests is TASK-level (one
+  // :lint:test Gradle task ran and was classified failed), gradle.tests is the real per-testcase
+  // JUnit count (3 individual tests in TestMethodDetectorTest, all failing on stale expected
+  // literals) -- the two intentionally differ, per decision "never equate kmp-test task-level
+  // counts with Gradle/JUnit testcase counts".
+  function baseScenarioTestsFailed(overrides = {}) {
+    return baseScenario({
+      id: 'sample-tests-failed-scenario',
+      expected: {
+        module: ':lint',
+        outcome_kind: 'tests_failed',
+        kmp_test: { tests: { total: 1, passed: 0, failed: 1, individual_total: 3, skipped: 0 }, exit_code: 1 },
+        gradle: { allowed_invocations: [':lint:test'], evidence_task: ':lint:test', tests: { total: 3, passed: 0, failed: 3 }, exit_code: 1 },
+      },
+      policy: {
+        allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel'],
+        allowed_gradle_tasks: [':lint:tasks', ':lint:test'],
+      },
+      ...overrides,
+    });
+  }
+
   it('accepts a well-formed tests_executed scenario', () => {
     const { errors } = validateScenario(baseScenario());
     expect(errors).toEqual([]);
@@ -1060,6 +1084,157 @@ describe('validateScenario', () => {
   it('accepts a well-formed no_applicable_tests scenario', () => {
     const { errors } = validateScenario(baseScenarioNoTests());
     expect(errors).toEqual([]);
+  });
+
+  describe('expected -- tests_failed outcome_kind (a genuine, deterministic test failure)', () => {
+    it('accepts a well-formed tests_failed scenario', () => {
+      const { errors } = validateScenario(baseScenarioTestsFailed());
+      expect(errors).toEqual([]);
+    });
+
+    it('rejects tests_failed missing tests on kmp_test', () => {
+      const s = baseScenarioTestsFailed();
+      delete s.expected.kmp_test.tests;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('rejects tests_failed missing exit_code', () => {
+      const s = baseScenarioTestsFailed();
+      delete s.expected.kmp_test.exit_code;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.exit_code')).toBe(true);
+    });
+
+    it('rejects tests_failed with kmp_test.exit_code:0 -- a genuine failure can never cleanly exit', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.kmp_test.exit_code = 0;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.exit_code')).toBe(true);
+    });
+
+    it('rejects tests_failed with kmp_test.exit_code:2 (CONFIG_ERROR) -- must be exactly 1, never a different real exit code', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.kmp_test.exit_code = 2;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.exit_code')).toBe(true);
+    });
+
+    it('rejects tests_failed with kmp_test.exit_code:3 (ENV_ERROR) -- must be exactly 1', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.kmp_test.exit_code = 3;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.exit_code')).toBe(true);
+    });
+
+    it('rejects tests_failed with kmp_test.tests.failed:0 -- zero failures contradicts tests_failed by definition', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.kmp_test.tests = { total: 1, passed: 1, failed: 0, individual_total: 3, skipped: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    // Round-2 review finding: this scenario shape is deliberately scoped to exactly ONE target
+    // task whose individual test cases ALL fail (see graders.mjs's own "exactly one target task"
+    // doc comment on its tests_failed branch) -- multi-task/mixed-result scope is explicitly OUT
+    // for this PR, not merely undocumented. The schema previously allowed
+    // kmp_test.tests.failed > 1 (any positive count) even though the grader can only ever validate
+    // the single-task shape (exactly one module_failed entry, never more) -- a scenario author
+    // could have authored a schema-valid contract the grader could never correctly grade. Tightened
+    // to total===1/passed===0/failed===1 EXACTLY, closing that gap at the source rather than
+    // broadening the grader to match the old, wider schema.
+    it('rejects kmp_test.tests.failed > 1 -- this scenario shape is exactly one target task, all its cases failed, never a multi-task claim', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.kmp_test.tests = { total: 2, passed: 0, failed: 2, individual_total: 6, skipped: 0 };
+      s.expected.gradle.tests = { total: 6, passed: 0, failed: 6 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('rejects a Gradle mixed result (passed > 0) -- every individual test case must have failed, never a partial/mixed run', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.gradle.tests = { total: 3, passed: 1, failed: 2 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests')).toBe(true);
+    });
+
+    it('rejects tests_failed with a negative failed count', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.kmp_test.tests = { total: -1, passed: 0, failed: -1, individual_total: 3, skipped: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('rejects tests_failed with kmp_test total not equal to passed + failed', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, total: 5 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('rejects tests_failed with kmp_test.tests.individual_total:0 -- must be positive, same as tests_executed', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, individual_total: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('rejects tests_failed with a non-zero kmp_test.tests.skipped -- the Gradle/JUnit-XML path can never corroborate a non-zero skip claim', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.kmp_test.tests = { ...s.expected.kmp_test.tests, skipped: 1 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('rejects tests_failed with a forbidden error_code present (hybrid record)', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.kmp_test.error_code = 'no_test_modules';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.error_code')).toBe(true);
+    });
+
+    it('rejects tests_failed with a forbidden caused_by_filter present (hybrid record)', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.kmp_test.caused_by_filter = true;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.caused_by_filter')).toBe(true);
+    });
+
+    it('rejects tests_failed with a forbidden gradle marker present (hybrid record)', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.gradle.marker = 'NO-SOURCE';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.marker')).toBe(true);
+    });
+
+    it('rejects tests_failed with gradle.tests.failed:0 -- zero failures contradicts tests_failed by definition', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.gradle.tests = { total: 3, passed: 3, failed: 0 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests')).toBe(true);
+    });
+
+    it('rejects tests_failed with gradle.exit_code:0 -- a genuine test failure always fails the Gradle build', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.gradle.exit_code = 0;
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.exit_code')).toBe(true);
+    });
+
+    it('rejects tests_failed with gradle individual_total/skipped present -- forbidden on the gradle provider exactly like tests_executed (the capture mechanism cannot verify either)', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.gradle.tests = { ...s.expected.gradle.tests, skipped: 0, individual_total: 3 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.skipped')).toBe(true);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests.individual_total')).toBe(true);
+    });
+
+    it('cross-provider consistency: kmp_test.tests.individual_total must equal gradle.tests.total for tests_failed too', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.gradle.tests = { ...s.expected.gradle.tests, total: 4, passed: 1 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests.individual_total')).toBe(true);
+    });
   });
 
   it('rejects a prompt mentioning kmp-test by name', () => {

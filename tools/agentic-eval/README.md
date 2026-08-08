@@ -167,7 +167,8 @@ matrix is rejected anyway.
   against one scenario from `corpus/scenarios/` and grades each condition's transcript with
   `graders.mjs`'s 8 structured, evidence-anchored checks (never a free-text keyword scan — see
   `graders.mjs`'s own header comment for why that design was rejected once already). For a
-  `tests_executed` scenario, target-module identity (`authoritative_target_matches_expected`)
+  `tests_executed`/`tests_failed` scenario (both represent a genuine test execution, just with a
+  different real outcome), target-module identity (`authoritative_target_matches_expected`)
   resolves the condition's own `--module-filter` argument through the exact same `matchModuleFilter`
   function (`lib/orchestrators/module-filter.js`) the real CLI dispatch itself uses — never a second,
   independently-maintained comparison — so an agent correctly targeting a nested module via a short
@@ -282,8 +283,8 @@ matrix is rejected anyway.
   invocations sharing the same scope file remain comparable. See "Measurement scope" below for
   the full creation/reuse/rotation/privacy contract.
 
-  **JUnit-evidence attribution, per attempt, keyed by `tool_use_id`.** A `tests_executed`
-  scenario condition can involve **multiple Bash attempts** (a first, wrong/failed try; a
+  **JUnit-evidence attribution, per attempt, keyed by `tool_use_id`.** A `tests_executed`/
+  `tests_failed` scenario condition can involve **multiple Bash attempts** (a first, wrong/failed try; a
   corrected retry). Earlier, JUnit-XML evidence for the raw-Gradle path was captured **once per
   condition, after every attempt had already run**, then handed identically to every
   Gradle-classified attempt during grading — a pooled snapshot that could never say *which*
@@ -297,7 +298,7 @@ matrix is rejected anyway.
     written by a new, additive `junit-evidence-hook.mjs`, registered on `PostToolUse`/
     `PostToolUseFailure` (matcher `Bash`) — the only two new hook registrations this mechanism
     needs, and registered **conditionally**: `condition-launcher.mjs`'s `buildPolicySettingsFile()`
-    only adds them when the scenario's `outcome_kind` is `tests_executed`; for
+    only adds them when the scenario's `outcome_kind` is `tests_executed` or `tests_failed`; for
     `calibrate`/`smoke`/`no_applicable_tests` the produced `settings.json` is byte-for-byte
     identical to before this mechanism existed, so those paths spawn no extra hook subprocess and
     carry no extra `hook_started`/`hook_response` transcript lines. `status` is one of `'ok'`
@@ -464,13 +465,17 @@ matrix is rejected anyway.
   symlink planted at the (schema-guaranteed-safe-looking) sidecar path whose target resolves outside
   the run record's own directory is refused, never silently followed.
 
-  `corpus/scenarios/` holds three scenarios today (`kampkit-android-host-test-discovery` and
+  `corpus/scenarios/` holds four scenarios today (`kampkit-android-host-test-discovery` and
   `kampkit-no-applicable-tests`, both targeting KaMPKit commit
   `b3a7784fb969a8558b88c80674c8b596944cdab7` — the same commit the shipped `smoke` evidence uses;
-  `nowinandroid-core-common` against a pinned NowInAndroid commit) and zero live scenario
-  records — every number in `corpus/scenarios/*.json` is independently re-verified via direct
-  local CLI/Gradle execution (never through the `run` command, and never through a live Claude
-  session).
+  `nowinandroid-core-common` against a pinned NowInAndroid commit; `deterministic-unit-test-failure`
+  — the first `tests_failed` scenario — against a different pinned NowInAndroid commit). This PR
+  itself adds zero live scenario records — every number in `corpus/scenarios/*.json` is
+  independently re-verified via direct local CLI/Gradle execution (never through the `run` command,
+  and never through a live Claude session). Live `run_kind:"scenario"` records for the two KaMPKit
+  scenarios (and, separately, for `nowinandroid-core-common`) already exist under
+  `tools/runs/agentic-eval-scenario/` from earlier canary work — `deterministic-unit-test-failure`
+  has no live canary run yet.
 - **`corpus-probe`** — accepted in the schema as a future `run_kind` value; not produced by
   anything in this PR.
 
@@ -1276,10 +1281,10 @@ unparseable JSON, wrong schema value, invalid `scope_id`, non-canonical or wrong
   invoked against a live Claude session here, so this PR commits zero scenario-run evidence.
 - Public-project scenarios only; no private project is referenced.
 - `candidate-skill` is schema-supported but not implemented.
-- 3 of the 6 originally-sketched scenarios exist in `corpus/scenarios/` today
+- 4 of the 6 originally-sketched scenarios exist in `corpus/scenarios/` today
   (`kampkit-android-host-test-discovery`, `kampkit-no-applicable-tests` against KaMPKit;
-  `nowinandroid-core-common` against NowInAndroid); `deterministic-unit-test-failure`,
-  `coverage-threshold-failure`, and `changed-module-verification` remain deferred — see
+  `nowinandroid-core-common` and `deterministic-unit-test-failure` against NowInAndroid);
+  `coverage-threshold-failure` and `changed-module-verification` remain deferred — see
   BACKLOG.md.
   `corpus/trigger-queries.json` (the natural-trigger query set) remains separately in scope and is
   validated by the same `corpus validate` command.

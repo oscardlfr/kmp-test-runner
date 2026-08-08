@@ -73,8 +73,9 @@ describe('trigger-queries.json', () => {
 describe('corpus/scenarios/', () => {
   const scenarioFiles = readdirSync(SCENARIOS_DIR).filter((f) => f.endsWith('.json'));
 
-  it('contains exactly the 3 expected scenario files', () => {
+  it('contains exactly the 4 expected scenario files', () => {
     expect(scenarioFiles.sort()).toEqual([
+      'deterministic-unit-test-failure.json',
       'kampkit-android-host-test-discovery.json',
       'kampkit-no-applicable-tests.json',
       'nowinandroid-core-common.json',
@@ -111,5 +112,41 @@ describe('corpus/scenarios/', () => {
       total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1,
     });
     expect(scenario.expected.gradle.tests).toEqual({ total: 1, passed: 1, failed: 0 });
+  });
+
+  // deterministic-unit-test-failure -- the first tests_failed scenario. Ground truth
+  // independently verified 6x (3x kmp-test, 3x direct Gradle, cold GRADLE_USER_HOME each)
+  // against android/nowinandroid @ 058f0e4375ec51ff8811ba2d0bb10bc4c1b4fdb8's :lint module.
+  function loadDeterministicTestFailureScenario() {
+    const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, 'deterministic-unit-test-failure.json');
+    if (parseError) throw new Error(`deterministic-unit-test-failure.json: ${parseError}`);
+    return scenario;
+  }
+
+  it('validateScenario reports zero errors for deterministic-unit-test-failure.json', () => {
+    const { errors } = validateScenario(loadDeterministicTestFailureScenario());
+    expect(errors).toEqual([]);
+  });
+
+  it('targets :lint, expects tests_failed, and is tagged held-out', () => {
+    const scenario = loadDeterministicTestFailureScenario();
+    expect(scenario.expected.module).toBe(':lint');
+    expect(scenario.expected.outcome_kind).toBe('tests_failed');
+    expect(scenario.tags).toEqual(['held-out']);
+  });
+
+  it('expects the ground-truth-verified counts on both providers -- kmp_test is TASK-level (1 task, failed), gradle is per-testcase JUnit (3 tests, all failed)', () => {
+    const scenario = loadDeterministicTestFailureScenario();
+    expect(scenario.expected.kmp_test.tests).toEqual({
+      total: 1, passed: 0, failed: 1, skipped: 0, individual_total: 3,
+    });
+    expect(scenario.expected.gradle.tests).toEqual({ total: 3, passed: 0, failed: 3 });
+    expect(scenario.expected.kmp_test.exit_code).toBe(1);
+    expect(scenario.expected.gradle.exit_code).toBe(1);
+  });
+
+  it('does not reveal the module, task, or failing test in its prompt', () => {
+    const scenario = loadDeterministicTestFailureScenario();
+    expect(scenario.prompt).not.toMatch(/:lint|TestMethodDetectorTest|detect prefix|detect format|detect underscores/);
   });
 });

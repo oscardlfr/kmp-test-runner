@@ -159,8 +159,9 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
  *   junit-evidence-hook.mjs on PostToolUse/PostToolUseFailure and sets the two Gradle-JUnit-XML-
  *   specific env vars (evidenceTask/allowedInvocations) -- only meaningful on top of
  *   decisionAttributionEnabled:true, since without a real scratch dir there is nowhere for that
- *   hook to write. Scoped to 'tests_executed' scenarios only (real JUnit XML only ever exists
- *   there); calibrate/smoke and no_applicable_tests scenarios never set this.
+ *   hook to write. Scoped to 'tests_executed'/'tests_failed' scenarios only (real JUnit XML only
+ *   ever exists there -- both represent a genuine test execution, just with a different real
+ *   outcome); calibrate/smoke and no_applicable_tests scenarios never set this.
  * @param {string} [opts.evidenceTask] - scenario.expected.gradle.evidence_task (only meaningful
  *   when junitEvidenceEnabled).
  * @param {string[]} [opts.allowedInvocations] - scenario.expected.gradle.allowed_invocations (only
@@ -261,17 +262,32 @@ export async function runSingleCondition({ condition, materializeFixture, previo
  *   conditionResult: object}>, snapshotDir: string, daemonPolicy: string, allowedGradleTasks: string[],
  *   allowedKmpTestSubcommands: string[], cleanup: () => Promise<string[]>}>}
  */
+// Whether a scenario's own `outcome_kind` represents a genuine test EXECUTION whose real JUnit XML
+// is worth per-attempt attribution -- `tests_executed` and `tests_failed` both do (the target task
+// genuinely ran, just with a different real outcome); `no_applicable_tests` never does (no test
+// task ever ran, so there is no real JUnit XML to attribute). Extracted as its own small, pure,
+// directly-testable function -- reviewed and confirmed as a real gap: the inline boolean
+// expression this replaced was previously exercised only by grader-level tests that inject
+// `perAttemptJunit` evidence manually (agentic-eval-graders.test.js's own `buildConditionResult`
+// helper), which stay green regardless of what THIS function returns -- a regression that
+// re-narrowed this back to `'tests_executed'` only would never have been caught by that route.
+// `agentic-eval-matrix-runner.test.js` calls this function directly.
+export function isJunitEvidenceOutcome(outcomeKind) {
+  return outcomeKind === 'tests_executed' || outcomeKind === 'tests_failed';
+}
+
 export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs }) {
   // Decision attribution (allow/deny per Bash attempt) is needed for EVERY scenario regardless of
   // outcome_kind (round-7 fix): a no_applicable_tests condition's denied kmp-test-parallel
   // attempts were previously phantom-counted as real executions (test_invocations_total/retries),
   // since decisionByAttempt was never populated at all for that outcome_kind. Real JUnit-XML
-  // attribution, in contrast, is only ever relevant for a `tests_executed` scenario -- a
-  // `no_applicable_tests` scenario never reads JUnit XML at all (three independent layers already
-  // guarantee this; junitEvidenceEnabled additionally keeps junit-evidence-hook.mjs unregistered
-  // and its two Gradle-specific env vars unset for that outcome_kind, not merely inert internally).
+  // attribution, in contrast, is only ever relevant for a scenario whose evidence genuinely
+  // involves real test execution -- see isJunitEvidenceOutcome, above -- a `no_applicable_tests`
+  // scenario never reads JUnit XML at all (three independent layers already guarantee this;
+  // junitEvidenceEnabled additionally keeps junit-evidence-hook.mjs unregistered and its two
+  // Gradle-specific env vars unset for that outcome_kind, not merely inert internally).
   const decisionAttributionEnabled = true;
-  const junitEvidenceEnabled = scenario.expected?.outcome_kind === 'tests_executed';
+  const junitEvidenceEnabled = isJunitEvidenceOutcome(scenario.expected?.outcome_kind);
   const evidenceTask = scenario.expected?.gradle?.evidence_task ?? null;
   const allowedInvocations = scenario.expected?.gradle?.allowed_invocations ?? null;
   const shared = await acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled });
