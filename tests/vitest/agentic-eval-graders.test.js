@@ -307,11 +307,23 @@ const SCENARIO_4_CORRECT_ANSWER = kmpEvalResultText(
 // tests_executed's own `errors.length === 0` requirement. The failed leg's own `execution.failed:1`
 // (not `fresh`) and `exit_code:1` mirror validateParallelEvidence's per-leg exit/failed coherence
 // invariant exactly as a real failed dispatch produces it.
+// modules[0].test_failures mirrors the REAL captured envelope byte-for-byte (see this scenario's
+// own ground-truth provenance) -- 3 real per-test entries, never omitted: a review pass found the
+// original version of this fixture dropped this field entirely, which meant
+// validateKmpEnvelopeForAttempt's tests_failed branch never had a genuine reason to check it either
+// (an untested field silently rots). See KMP_TEST_ENVELOPE_SCENARIO4_TEST_FAILURES's own reuse
+// below in the dedicated false-positive tests.
+const KMP_TEST_ENVELOPE_SCENARIO4_TEST_FAILURES = [
+  { test: 'com.google.samples.apps.nowinandroid.lint.TestMethodDetectorTest.detect format', cause: 'java.lang.StackOverflowError', type: 'java.lang.StackOverflowError' },
+  { test: 'com.google.samples.apps.nowinandroid.lint.TestMethodDetectorTest.detect prefix', cause: 'java.lang.StackOverflowError', type: 'java.lang.StackOverflowError' },
+  { test: 'com.google.samples.apps.nowinandroid.lint.TestMethodDetectorTest.detect underscores', cause: 'java.lang.StackOverflowError', type: 'java.lang.StackOverflowError' },
+];
+
 const KMP_TEST_ENVELOPE_SCENARIO4_FAIL = JSON.stringify({
   tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
   project_root: 'C:\\fake', exit_code: 1, duration_ms: 128033,
   tests: { total: 1, passed: 0, failed: 1, skipped: 0, individual_total: 3 },
-  modules: [{ name: 'lint', type: 'jvm' }], skipped: [], coverage: {},
+  modules: [{ name: 'lint', type: 'jvm', test_failures: KMP_TEST_ENVELOPE_SCENARIO4_TEST_FAILURES }], skipped: [], coverage: {},
   errors: [{ code: 'module_failed', module: 'lint', task: ':lint:test', message: '[FAIL] lint' }],
   warnings: [],
   parallel: {
@@ -667,7 +679,10 @@ describe('gradeScenarioCondition -- scenario 4 (:lint) negative cases: wrong mod
       tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 1, duration_ms: 100,
       tests: { total: 1, passed: 0, failed: 1, skipped: 0, individual_total: 2 }, // WRONG: ground truth individual_total is 3
-      modules: [{ name: 'lint', type: 'jvm' }],
+      // Deliberately kept internally coherent with its own (wrong) individual_total:2 -- exactly 2
+      // test_failures entries -- so this test isolates the COUNT-mismatch-against-ground-truth
+      // intent precisely, never incidentally also failing the separate test_failures-length check.
+      modules: [{ name: 'lint', type: 'jvm', test_failures: KMP_TEST_ENVELOPE_SCENARIO4_TEST_FAILURES.slice(0, 2) }],
       skipped: [], coverage: {},
       errors: [{ code: 'module_failed', module: 'lint', task: ':lint:test', message: '[FAIL] lint' }],
       warnings: [],
@@ -725,6 +740,87 @@ describe('gradeScenarioCondition -- scenario 4 (:lint) negative cases: wrong mod
     wrongErrorModuleEnvelope.errors = [{ code: 'module_failed', module: 'other', task: ':other:test', message: '[FAIL] other' }];
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(wrongErrorModuleEnvelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // Review-round finding: the aggregate tests.{total,passed,failed,individual_total} counters were
+  // the ONLY thing checked -- modules[0].test_failures (the real per-test detail array a genuine
+  // envelope always carries, see KMP_TEST_ENVELOPE_SCENARIO4_TEST_FAILURES's own provenance) was
+  // never inspected at all, so an envelope could claim a matching AGGREGATE count while its own
+  // detailed list told a different story (missing, too short, or -- in a future outcome_kind with
+  // real mixed results -- naming the wrong tests) and still grade success:true.
+  it('a kmp-test envelope missing modules[0].test_failures never satisfies tests_failed, even with matching aggregate counts', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    delete envelope.modules[0].test_failures;
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a kmp-test envelope whose modules[0].test_failures has only 1 entry never satisfies tests_failed when individual_total claims 3', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    envelope.modules[0].test_failures = envelope.modules[0].test_failures.slice(0, 1); // 1 real entry, but individual_total still says 3
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // Review-round finding: `setup_failed:true` (result-rollup.js's own real discriminator: "the
+  // failure happened pre-test -- compile, plugin error, classpath, runner setup, etc." -- tests
+  // never actually ran) was never checked, so a genuine SETUP failure carrying this exact real flag
+  // could still satisfy tests_failed as long as the (stale/coincidental) aggregate counts matched.
+  it('a kmp-test module_failed entry with setup_failed:true (tests never actually ran) never satisfies tests_failed', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    envelope.errors[0].setup_failed = true;
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // Review-round finding: only `errors.length === matchingModuleFailures.length` was checked
+  // (every entry must be a matching module_failed, none unrelated) -- but `matchingModuleFailures.length
+  // >= 1` tolerated MORE than one, so two duplicate module_failed entries for the same module (never
+  // a real production shape -- a module fails or doesn't, once) still satisfied tests_failed as long
+  // as the unrelated tests.failed aggregate happened to equal 1.
+  it('two duplicate module_failed entries for the same module never satisfy tests_failed, even though tests.failed still says 1', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    envelope.errors = [envelope.errors[0], { ...envelope.errors[0] }];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // Review-round finding (the sharpest one): `module_failed.task` was never cross-checked against
+  // `expected.gradle.evidence_task` at all -- only `code`/`module`. A module_failed entry naming a
+  // DIFFERENT task (e.g. a real compile failure on `:lint:compileKotlin`, which never runs
+  // `:lint:test` at all) still satisfied tests_failed as long as the module name matched, directly
+  // contradicting this scenario's own declared guarantee that a compile/setup failure elsewhere in
+  // the SAME module must never be laundered as "the target task's tests failed".
+  it('a module_failed entry naming a DIFFERENT task than expected.gradle.evidence_task never satisfies tests_failed', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    envelope.errors[0].task = ':lint:compileKotlin';
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
       SCENARIO_4_CORRECT_ANSWER,
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_4);
@@ -810,11 +906,18 @@ describe('gradeScenarioCondition -- scenario 4 (:lint) JUnit-evidence attributio
     expect(grade.success).toBe(false);
   });
 
-  it('the JUnit-evidence-attribution mechanism is genuinely ENABLED for tests_failed (a real, non-inert per-attempt evidence check runs) -- proven by the unreliable-evidence case above actually gating outcomeMatches, not silently passing through as it would if the mechanism were disabled', () => {
-    // Regression guard for matrix-runner.mjs's junitEvidenceEnabled gate: if a future change
-    // accidentally scoped it back to 'tests_executed' only, this scenario's Gradle-path evidence
-    // would never be checked at all, and the clean happy-path test above (okJunit(3,0,3)) would
-    // pass VACUOUSLY rather than because the evidence genuinely matched.
+  // CodeRabbit review-round finding: this test's ORIGINAL title/comment claimed to guard
+  // matrix-runner.mjs's own `junitEvidenceEnabled` gate ("if a future change accidentally scoped
+  // it back to 'tests_executed' only..."), but `buildConditionResult` (this file's own helper,
+  // see its header comment) builds `junitAttribution` LOCALLY and always populates
+  // `perAttemptJunit` regardless of what `junitEvidenceEnabled` resolves to in real production --
+  // this test never calls `runScenarioMatrix`/`isJunitEvidenceOutcome` at all, so it would stay
+  // GREEN even if that gate regressed. What this test DOES genuinely prove: `evaluateGradleAttempt`
+  // (graders.mjs) actually CONSUMES `resolvedEvidence` rather than ignoring it -- WRONG JUnit
+  // counts (okJunit(1,0,1) against this scenario's real 3/0/3) correctly fail outcomeMatches, not
+  // silently pass. The real matrix-runner-gate regression guard is
+  // `agentic-eval-matrix-runner.test.js`'s direct unit test of `isJunitEvidenceOutcome`.
+  it('evaluateGradleAttempt genuinely consumes resolvedEvidence for tests_failed (wrong JUnit counts fail outcomeMatches, not silently pass through)', () => {
     const cr = buildConditionResult(
       [{ command: './gradlew.bat :lint:test --console=plain', resultContent: GRADLE_SCENARIO4_FAIL_STDOUT, resultIsError: true, evidence: okJunit(1, 0, 1) }], // WRONG counts
       SCENARIO_4_CORRECT_ANSWER,

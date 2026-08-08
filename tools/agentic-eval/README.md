@@ -469,10 +469,13 @@ matrix is rejected anyway.
   `kampkit-no-applicable-tests`, both targeting KaMPKit commit
   `b3a7784fb969a8558b88c80674c8b596944cdab7` — the same commit the shipped `smoke` evidence uses;
   `nowinandroid-core-common` against a pinned NowInAndroid commit; `deterministic-unit-test-failure`
-  — the first `tests_failed` scenario — against a different pinned NowInAndroid commit) and zero
-  live scenario records — every number in `corpus/scenarios/*.json` is independently re-verified
-  via direct local CLI/Gradle execution (never through the `run` command, and never through a live
-  Claude session).
+  — the first `tests_failed` scenario — against a different pinned NowInAndroid commit). This PR
+  itself adds zero live scenario records — every number in `corpus/scenarios/*.json` is
+  independently re-verified via direct local CLI/Gradle execution (never through the `run` command,
+  and never through a live Claude session). Live `run_kind:"scenario"` records for the two KaMPKit
+  scenarios (and, separately, for `nowinandroid-core-common`) already exist under
+  `tools/runs/agentic-eval-scenario/` from earlier canary work — `deterministic-unit-test-failure`
+  has no live canary run yet.
 - **`corpus-probe`** — accepted in the schema as a future `run_kind` value; not produced by
   anything in this PR.
 
