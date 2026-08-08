@@ -673,7 +673,7 @@
   picked up automatically by the existing required `build` job -- no new CI job. No
   runtime/wet validation applicable (repo-review config only, not CLI behavior).
 
-- **`tools/agentic-eval/` corpus scenarios + graders — 3 of 6 scenarios + `graders.mjs` + `run`
+- **`tools/agentic-eval/` corpus scenarios + graders — 4 of 6 scenarios + `graders.mjs` + `run`
   subcommand implemented; first 2 scenarios + `graders.mjs` + `run` merged to develop (deferred
   from PR #372, surfaced 2026-07-18 during independent review).** PR #372 shipped the reproducible
   skill-evaluation harness FOUNDATION only: isolation (fresh temp fixtures, narrow env allowlist,
@@ -702,6 +702,34 @@
   (3× each, cold `GRADLE_USER_HOME`, no dependency prewarming). Tagged `held-out` — the first
   scenario in this corpus tagged that way (both KaMPKit scenarios are `train`).
 
+  A further follow-up PR added the 4th and first `tests_failed` scenario:
+  `deterministic-unit-test-failure` — NowInAndroid's `:lint` module (a plain `java-library`+
+  `kotlin("jvm")` module, no Android flavors/Robolectric) at commit
+  `058f0e4375ec51ff8811ba2d0bb10bc4c1b4fdb8`, `TestMethodDetectorTest`'s 3 tests all deterministically
+  fail (stale hardcoded expected lint-issue-ID literals no longer match the real, already-renamed
+  detector output — `TestMethodWithTestPrefix` vs. the real `TestMethodPrefix`, etc.), independently
+  re-verified live (3× kmp-test + 3× direct Gradle, cold `GRADLE_USER_HOME` each, JUnit XML
+  cross-checked via an independent PowerShell `[xml]` DOM parse, not this repo's own JS parser).
+  Tagged `held-out` (keeps the corpus balanced 2 `train` / 2 `held-out`). New
+  `expected.outcome_kind:"tests_failed"` closed-schema contract in `schemas.mjs`
+  (`validateProviderContract`'s `tests_executed`/`tests_failed` branches share one shape-validation
+  path, parametrized only on the two values that legitimately differ: `failed` must be a positive
+  integer — never exactly 0 — and `exit_code` must be exactly 1, never 0); symmetric grader support
+  in `graders.mjs` for both providers (kmp-test: a real envelope carries exactly one
+  `module_failed` error entry for the target module, required rather than forbidden; Gradle: the
+  target task's own genuine pass/fail status, via `classifyTaskResults` — reused directly rather than
+  `classifyTaskExecutionMode` alone, which a real `:lint:test` BUILD FAILED capture proved
+  unreliable for this specific shape: Gradle prints a bare "> Task :lint:test" announcement line
+  BEFORE its later, separate "> Task :lint:test FAILED" terminal line, and `classifyTaskExecutionMode`'s
+  single-match regex returns only the first, unsuffixed occurrence — a genuine latent gap this PR's
+  own RED test caught, closed within `graders.mjs`'s existing scope by reusing an already-exported,
+  unchanged production function, no `lib/orchestrators/` behavior changed for any existing caller).
+  `matrix-runner.mjs`'s `junitEvidenceEnabled` gate extended to cover `tests_failed` alongside
+  `tests_executed` (both need real per-attempt JUnit-XML attribution). A compile/setup/env failure
+  never satisfies `tests_failed` merely because Gradle exited nonzero — proven by dedicated RED
+  tests using a genuine compile-failure fixture (the target task never even starts; real JUnit XML
+  can never exist for it, so `junitOk` fails closed regardless of exit code).
+
   New `tools/agentic-eval/graders.mjs`: 8 named, structurally-anchored checks correlating a
   tokenized Bash `tool_use`, its `tool_result`, and an authoritative kmp-test JSON envelope or
   independently-read Gradle/JUnit evidence against the scenario's exact expected module/task/
@@ -721,9 +749,8 @@
   scenario-run record this PR's own code CAN produce still requires a real live invocation, which
   is explicitly out of scope here (a future live-validation PR, mirroring #373/#378 relative to
   #372).
-  **Still deferred**: `deterministic-unit-test-failure`, `coverage-threshold-failure`,
-  `changed-module-verification` — own PR(s), small increments preferred over one large one —
-  milestone unassigned, user's call on timing.
+  **Still deferred**: `coverage-threshold-failure`, `changed-module-verification` — own PR(s),
+  small increments preferred over one large one — milestone unassigned, user's call on timing.
 - ✅ **`KMP_EVAL_RUNS_ROOT` real-world scope — SHIPPED in #372 itself (2026-07-18, closed across
   three independent-review rounds).** The env var is a test-only escape hatch so vitest never
   writes to (or cleans up inside) the real `tools/runs/` tree — nothing stops an operator from

@@ -266,6 +266,77 @@ const KMP_TEST_ENVELOPE_SCENARIO3_PASS = JSON.stringify({
 
 const GRADLE_SCENARIO3_PASS_STDOUT = `> Task :core:common:compileTestKotlin\n> Task :core:common:test\n\nBUILD SUCCESSFUL in 3s\n5 actionable tasks: 5 executed\n`;
 
+// The 4th scenario shape (deterministic-unit-test-failure) -- the first `tests_failed` scenario.
+// Ground truth independently verified 6x (3x kmp-test, 3x direct Gradle, cold GRADLE_USER_HOME
+// each) against android/nowinandroid @ 058f0e4375ec51ff8811ba2d0bb10bc4c1b4fdb8's `:lint` module
+// (a plain java-library+kotlin-jvm module, no Android flavors/Robolectric): 3 tests in
+// TestMethodDetectorTest deterministically fail because the test's hardcoded expected lint-issue-ID
+// literals (e.g. `TestMethodWithTestPrefix`) are stale against the real, already-renamed detector
+// output (`TestMethodPrefix`) -- see that scenario file's own provenance comment.
+const SCENARIO_4 = {
+  schema: 1,
+  id: 'deterministic-unit-test-failure',
+  family: 'test-only',
+  project_alias: 'nowinandroid',
+  project_url: 'https://github.com/android/nowinandroid',
+  project_commit: '058f0e4375ec51ff8811ba2d0bb10bc4c1b4fdb8',
+  prompt: "This is a large, multi-module Android project. Somewhere in it there's a small module containing custom Android Lint check implementations, with its own unit tests. Can you find that module, run its tests, and tell me what happened? Once you know the result, end your reply with a block in exactly this format...",
+  expected_outcome: "The agent discovers and runs the custom lint-check module's unit tests and reports that all 3 tests fail.",
+  policy: {
+    allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel'],
+    allowed_gradle_tasks: [':lint:tasks', ':lint:test'],
+  },
+  expected: {
+    module: ':lint',
+    outcome_kind: 'tests_failed',
+    kmp_test: { tests: { total: 1, passed: 0, failed: 1, skipped: 0, individual_total: 3 }, exit_code: 1 },
+    gradle: { allowed_invocations: [':lint:test'], evidence_task: ':lint:test', tests: { total: 3, passed: 0, failed: 3 }, exit_code: 1 },
+  },
+  first_useful_signal_predicate: { description: 'first well-formed evidence confirming :lint 3 tests failed' },
+  tags: ['held-out'],
+};
+
+const SCENARIO_4_CORRECT_ANSWER = kmpEvalResultText(
+  '3 tests ran in the :lint module; all 3 failed.',
+  { module: ':lint', outcome_kind: 'tests_failed', total: 3, passed: 0, failed: 3 },
+);
+
+// A genuine module-task failure surfaces exactly one real `module_failed` error entry (ground-truth
+// confirmed directly against a real kmp-test capture -- parallel-orchestrator.js's own
+// error-reporting convention for a failed module task) -- REQUIRED for tests_failed, the mirror of
+// tests_executed's own `errors.length === 0` requirement. The failed leg's own `execution.failed:1`
+// (not `fresh`) and `exit_code:1` mirror validateParallelEvidence's per-leg exit/failed coherence
+// invariant exactly as a real failed dispatch produces it.
+const KMP_TEST_ENVELOPE_SCENARIO4_FAIL = JSON.stringify({
+  tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+  project_root: 'C:\\fake', exit_code: 1, duration_ms: 128033,
+  tests: { total: 1, passed: 0, failed: 1, skipped: 0, individual_total: 3 },
+  modules: [{ name: 'lint', type: 'jvm' }], skipped: [], coverage: {},
+  errors: [{ code: 'module_failed', module: 'lint', task: ':lint:test', message: '[FAIL] lint' }],
+  warnings: [],
+  parallel: {
+    test_type: 'auto',
+    legs: [{
+      test_type: 'auto', exit_code: 1,
+      execution: { fresh: 0, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 1, no_evidence: 0 },
+      cascade_detected: false, retry_fired: false,
+    }],
+    max_workers: 0, timeout_s: 600,
+  },
+  isolated: DEFAULT_ISOLATED_FIELD,
+});
+
+// Real stdout shape (condensed from an actual captured `:lint:test` ground-truth run -- see
+// deterministic-unit-test-failure.json's provenance): 3 ComparisonFailure JUnit failures, a
+// `> Task :lint:test FAILED` status line, and a genuine `BUILD FAILED` footer.
+const GRADLE_SCENARIO4_FAIL_STDOUT = `> Task :lint:compileKotlin\n> Task :lint:compileTestKotlin\n> Task :lint:testClasses UP-TO-DATE\n\n> Task :lint:test\n\ncom.google.samples.apps.nowinandroid.lint.TestMethodDetectorTest > detect format FAILED\n    org.junit.ComparisonFailure at TestMethodDetectorTest.kt:93\n\ncom.google.samples.apps.nowinandroid.lint.TestMethodDetectorTest > detect prefix FAILED\n    org.junit.ComparisonFailure at TestMethodDetectorTest.kt:49\n\ncom.google.samples.apps.nowinandroid.lint.TestMethodDetectorTest > detect underscores FAILED\n    org.junit.ComparisonFailure at TestMethodDetectorTest.kt:123\n\n3 tests completed, 3 failed\n\n> Task :lint:test FAILED\n\nFAILURE: Build failed with an exception.\n\n* What went wrong:\nExecution failed for task ':lint:test'.\n> There were failing tests. See the report at: file:///fake/lint/build/reports/tests/test/index.html\n\n* Try:\n> Run with --scan to get full insights.\n\nBUILD FAILED in 2m 14s\n8 actionable tasks: 8 executed\n`;
+
+// A genuine COMPILE failure (never reaches :lint:test at all -- no status line for it anywhere in
+// the output) -- the step-17 "must never satisfy tests_failed merely because Gradle exited nonzero"
+// case. BUILD FAILED + a real nonzero footer, but classifyTaskExecutionMode has no status line to
+// classify :lint:test from at all, so its mode is 'no_evidence', never 'failed'.
+const GRADLE_COMPILE_FAILURE_STDOUT = `> Task :lint:compileKotlin FAILED\n\nFAILURE: Build failed with an exception.\n\n* What went wrong:\nExecution failed for task ':lint:compileKotlin'.\n> Compilation error. See log for more details\n\n* Try:\n> Run with --stacktrace option to get the stack trace.\n\nBUILD FAILED in 12s\n1 actionable task: 1 executed\n`;
+
 describe('GRADING_CHECK_NAMES', () => {
   it('is exactly 8 unique names', () => {
     expect(GRADING_CHECK_NAMES.length).toBe(8);
@@ -530,6 +601,255 @@ describe('gradeScenarioCondition -- scenario 3 (:core:common) negative cases: wr
     const grade = gradeScenarioCondition(cr, SCENARIO_3);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
     expect(grade.success).toBe(false);
+  });
+});
+
+describe('gradeScenarioCondition -- scenario 4 (:lint, tests_failed) happy paths', () => {
+  it('kmp-test path: exact match on module, outcome, and counts -> full pass', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO4_FAIL }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+    expect(grade.checks.every((c) => c.passed)).toBe(true);
+  });
+
+  it('gradle path (direct evidence_task invocation): exact match -> full pass', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :lint:test --console=plain', resultContent: GRADLE_SCENARIO4_FAIL_STDOUT, resultIsError: true, evidence: okJunit(3, 0, 3) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+});
+
+describe('gradeScenarioCondition -- scenario 4 (:lint) negative cases: wrong module/count/exit, compile/setup failures never satisfy tests_failed', () => {
+  it('a well-formed envelope for the WRONG module, with coincidentally-matching counts, fails target AND outcome', () => {
+    const wrongModuleEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 1, duration_ms: 100,
+      tests: { total: 1, passed: 0, failed: 1, skipped: 0, individual_total: 3 },
+      modules: [{ name: 'some-other-module', type: 'jvm' }],
+      skipped: [], coverage: {},
+      errors: [{ code: 'module_failed', module: 'some-other-module', task: ':some-other-module:test', message: '[FAIL] some-other-module' }],
+      warnings: [],
+      parallel: {
+        test_type: 'auto',
+        legs: [{
+          test_type: 'auto', exit_code: 1,
+          execution: { fresh: 0, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 1, no_evidence: 0 },
+          cascade_detected: false, retry_fired: false,
+        }],
+        max_workers: 0, timeout_s: 600,
+      },
+      isolated: DEFAULT_ISOLATED_FIELD,
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter some-other-module --json', resultContent: wrongModuleEnvelope }],
+      kmpEvalResultText('3 tests failed.', { module: ':some-other-module', outcome_kind: 'tests_failed', total: 3, passed: 0, failed: 3 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a well-formed envelope for the RIGHT module but WRONG failed count fails outcome', () => {
+    const wrongCountEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 1, duration_ms: 100,
+      tests: { total: 1, passed: 0, failed: 1, skipped: 0, individual_total: 2 }, // WRONG: ground truth individual_total is 3
+      modules: [{ name: 'lint', type: 'jvm' }],
+      skipped: [], coverage: {},
+      errors: [{ code: 'module_failed', module: 'lint', task: ':lint:test', message: '[FAIL] lint' }],
+      warnings: [],
+      parallel: {
+        test_type: 'auto',
+        legs: [{
+          test_type: 'auto', exit_code: 1,
+          execution: { fresh: 0, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 1, no_evidence: 0 },
+          cascade_detected: false, retry_fired: false,
+        }],
+        max_workers: 0, timeout_s: 600,
+      },
+      isolated: DEFAULT_ISOLATED_FIELD,
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: wrongCountEnvelope }],
+      kmpEvalResultText('2 tests failed.', { module: ':lint', outcome_kind: 'tests_failed', total: 2, passed: 0, failed: 2 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a well-formed envelope claiming exit_code:0 (a clean pass) never satisfies tests_failed even with matching counts', () => {
+    const cleanExitEnvelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    cleanExitEnvelope.exit_code = 0;
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(cleanExitEnvelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // Step 17: a compile/setup failure must never satisfy tests_failed merely because kmp-test's own
+  // exit_code happens to be nonzero -- the envelope must carry the SAME real `module_failed` shape
+  // a genuine test failure produces, never a different/absent error code.
+  it('a kmp-test envelope with exit_code:1 but NO module_failed error entry (a harness/setup-level failure, not a real test failure) never satisfies tests_failed', () => {
+    const setupFailureEnvelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    setupFailureEnvelope.errors = []; // no module_failed entry at all -- exit_code:1 alone proves nothing
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(setupFailureEnvelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a kmp-test envelope whose module_failed error names a DIFFERENT module never satisfies tests_failed for this scenario\'s target', () => {
+    const wrongErrorModuleEnvelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    wrongErrorModuleEnvelope.errors = [{ code: 'module_failed', module: 'other', task: ':other:test', message: '[FAIL] other' }];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(wrongErrorModuleEnvelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // Step 17 -- the Gradle-provider mirror: a genuine COMPILE failure never even reaches :lint:test
+  // (no status line for it exists anywhere in the output), so mode is 'no_evidence', never 'failed'
+  // -- BUILD FAILED + a real nonzero exit_code alone must never be enough.
+  it('gradle: a genuine compile failure (BUILD FAILED, but :lint:test never ran) never satisfies tests_failed', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :lint:test --console=plain', resultContent: GRADLE_COMPILE_FAILURE_STDOUT, resultIsError: true, evidence: { status: 'no_xml' } }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('gradle: a BUILD SUCCESSFUL result (tests actually passed) never satisfies tests_failed even if the agent claims otherwise', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :lint:test --console=plain', resultContent: GRADLE_SCENARIO3_PASS_STDOUT.replace(/core:common/g, 'lint'), evidence: okJunit(3, 3, 0) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a KMP_EVAL_RESULT block naming the WRONG outcome_kind (tests_executed instead of tests_failed) fails the final-answer check even with correct evidence', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO4_FAIL }],
+      kmpEvalResultText('3/3 tests passed.', { module: ':lint', outcome_kind: 'tests_executed', total: 3, passed: 3, failed: 0 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a KMP_EVAL_RESULT block with WRONG counts (claims 1 failed when the real evidence is 3 failed) fails the final-answer check', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO4_FAIL }],
+      kmpEvalResultText('1 test failed.', { module: ':lint', outcome_kind: 'tests_failed', total: 1, passed: 0, failed: 1 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+});
+
+describe('gradeScenarioCondition -- scenario 4 (:lint) JUnit-evidence attribution applies to tests_failed exactly as tests_executed', () => {
+  it('unreliable Gradle JUnit evidence (a genuine skipped testcase this path cannot count) never satisfies tests_failed', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :lint:test --console=plain', resultContent: GRADLE_SCENARIO4_FAIL_STDOUT, resultIsError: true, evidence: { status: 'integrity_error', reason: 'skipped_testcase_unsupported' } }],
+      SCENARIO_4_CORRECT_ANSWER,
+      { unreliable: true },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.gradleJunitEvidenceUnreliable).toBe(true);
+    expect(grade.success).toBe(false);
+  });
+
+  it('missing JUnit evidence (no_xml -- the mechanism found nothing) never satisfies tests_failed', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :lint:test --console=plain', resultContent: GRADLE_SCENARIO4_FAIL_STDOUT, resultIsError: true, evidence: { status: 'no_xml' } }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('two same-turn policy-allowed producers (ambiguous JUnit evidence) is a harness-integrity defect for tests_failed too, never a plain negative result', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :lint:test --console=plain', resultContent: GRADLE_SCENARIO4_FAIL_STDOUT, resultIsError: true, evidence: { status: 'conflict' } }],
+      SCENARIO_4_CORRECT_ANSWER,
+      { ambiguousJunitEvidence: true },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.harnessEvidenceAmbiguous).toBe(true);
+    expect(grade.success).toBe(false);
+  });
+
+  it('the JUnit-evidence-attribution mechanism is genuinely ENABLED for tests_failed (a real, non-inert per-attempt evidence check runs) -- proven by the unreliable-evidence case above actually gating outcomeMatches, not silently passing through as it would if the mechanism were disabled', () => {
+    // Regression guard for matrix-runner.mjs's junitEvidenceEnabled gate: if a future change
+    // accidentally scoped it back to 'tests_executed' only, this scenario's Gradle-path evidence
+    // would never be checked at all, and the clean happy-path test above (okJunit(3,0,3)) would
+    // pass VACUOUSLY rather than because the evidence genuinely matched.
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :lint:test --console=plain', resultContent: GRADLE_SCENARIO4_FAIL_STDOUT, resultIsError: true, evidence: okJunit(1, 0, 1) }], // WRONG counts
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+});
+
+describe('gradeScenarioCondition -- scenario 4 (:lint) terminal-attempt selection: a corrected retry still wins', () => {
+  it('an earlier malformed attempt followed by a correct retry on the SAME module grades success:true off the LATER attempt', () => {
+    const cr = buildConditionResult(
+      [
+        { command: 'kmp-test parallel --module-filter lint --json', resultContent: 'not valid json at all' },
+        { command: 'kmp-test parallel --module-filter lint --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO4_FAIL },
+      ],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.success).toBe(true);
+    expect(grade.testInvocationsTotal).toBe(2);
+    expect(grade.retries).toBe(1);
+  });
+
+  it('a correct attempt followed by a LATER unrelated-module exploration does not flip success to false', () => {
+    const cr = buildConditionResult(
+      [
+        { command: 'kmp-test parallel --module-filter lint --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO4_FAIL },
+        { command: 'kmp-test parallel --module-filter core:common --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO3_PASS },
+      ],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.success).toBe(true);
   });
 });
 

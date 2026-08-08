@@ -495,7 +495,7 @@ const SCENARIO_CANONICAL_FIELDS = [
   'expected_outcome', 'policy', 'expected', 'first_useful_signal_predicate', 'tags',
 ];
 
-const OUTCOME_KIND_VALUES = ['tests_executed', 'no_applicable_tests'];
+const OUTCOME_KIND_VALUES = ['tests_executed', 'no_applicable_tests', 'tests_failed'];
 const GRADLE_MARKER_VALUES = ['NO-SOURCE'];
 // Mirrors TRIGGER_QUERY_PARTITION_VALUES's own train/held-out split for a conceptually identical
 // purpose (which corpus subset a scenario belongs to) -- a fresh review reproduced `tags` never
@@ -512,6 +512,9 @@ const SCENARIO_TAG_VALUES = ['train', 'held-out'];
 // null`) is still caught: `Object.keys({skipped: null})` reports `skipped` as present regardless of
 // its value, while the old `!= null` presence check would have silently treated it as absent.
 const EXPECTED_TOP_LEVEL_KEYS = ['module', 'outcome_kind', 'kmp_test', 'gradle'];
+// Reused for BOTH 'tests_executed' and 'tests_failed' -- the two outcome_kinds share an identical
+// KEY SET (the task/build genuinely ran to completion either way); only the VALUE requirements on
+// `tests.failed`/`exit_code` differ, enforced inside validateProviderContract itself.
 const KMP_TEST_CONTRACT_KEYS_TESTS_EXECUTED = ['tests', 'exit_code'];
 const KMP_TEST_CONTRACT_KEYS_NO_APPLICABLE = ['error_code', 'exit_code', 'caused_by_filter'];
 const GRADLE_CONTRACT_KEYS_TESTS_EXECUTED = ['allowed_invocations', 'evidence_task', 'tests', 'exit_code'];
@@ -592,8 +595,10 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
   }
   // Exact, closed key set for the provider object itself -- see this constants block's own doc
   // comment. Applied before the branch-specific checks below so an unrecognized field (e.g. a
-  // resurrected `task`) is always reported regardless of what else is wrong.
-  if (outcomeKind === 'tests_executed') {
+  // resurrected `task`) is always reported regardless of what else is wrong. `tests_failed` shares
+  // `tests_executed`'s own key set -- see KMP_TEST_CONTRACT_KEYS_TESTS_EXECUTED's own doc comment.
+  const ranOutcome = outcomeKind === 'tests_executed' || outcomeKind === 'tests_failed';
+  if (ranOutcome) {
     rejectUnrecognizedKeys(provider, contractName === 'kmp_test' ? KMP_TEST_CONTRACT_KEYS_TESTS_EXECUTED : GRADLE_CONTRACT_KEYS_TESTS_EXECUTED, field, errors);
   } else if (outcomeKind === 'no_applicable_tests') {
     rejectUnrecognizedKeys(provider, contractName === 'kmp_test' ? KMP_TEST_CONTRACT_KEYS_NO_APPLICABLE : GRADLE_CONTRACT_KEYS_NO_APPLICABLE, field, errors);
@@ -604,14 +609,31 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
   const hasCausedByFilter = 'caused_by_filter' in provider && provider.caused_by_filter != null;
   const hasMarker = 'marker' in provider && provider.marker != null;
 
-  if (outcomeKind === 'tests_executed') {
+  if (ranOutcome) {
     // Non-negative INTEGER, not just typeof 'number' -- a review pass reproduced total:-1,
     // passed:1.5, failed:-2 all passing validation under a bare typeof check. `total` specifically
     // must be POSITIVE (>=1), not merely non-negative -- see this function's own doc comment,
     // finding 2. total===passed+failed is checked only once the individual fields are confirmed
     // well-shaped (comparing potentially-non-numeric values would be meaningless).
+    //
+    // `tests_failed` (ground-truth-verified against android/nowinandroid's :lint module -- see
+    // corpus/scenarios/deterministic-unit-test-failure.json) shares `tests_executed`'s shape almost
+    // exactly -- both represent "the task genuinely ran to completion", never a compile/setup/env
+    // failure -- and differ in exactly two VALUE requirements, captured once here rather than
+    // duplicating this whole block: `failed` must be POSITIVE (>=1), never exactly 0 (a "tests
+    // failed" claim with zero failures is self-contradictory -- the mirror image of
+    // `tests_executed`'s own failed-must-be-0 requirement), and `exit_code` must be exactly 1 (a
+    // real kmp-test envelope's own `classifyExitCode` maps `testsFailed>0 -> TEST_FAIL(1)`; a real
+    // Gradle build with genuine test failures always reports BUILD FAILED, exit 1) rather than
+    // exactly 0. `tests_failed` never equates kmp-test's TASK-level total/passed/failed with
+    // Gradle/JUnit's per-testcase counts -- see the individual_total<->gradle.tests.total
+    // cross-check in validateExpected, below, the one place the two are required to agree (both
+    // describing the SAME real test execution).
+    const isFailureOutcome = outcomeKind === 'tests_failed';
     const isNonNegInt = (v) => Number.isInteger(v) && v >= 0;
     const isPositiveInt = (v) => Number.isInteger(v) && v >= 1;
+    const failedCountOk = (v) => (isFailureOutcome ? isPositiveInt(v) : v === 0);
+    const requiredExitCode = isFailureOutcome ? 1 : 0;
     let testsShapeOk;
     if (contractName === 'kmp_test') {
       // kmp-test's own real envelope always reports all five counters for a genuine `parallel`
@@ -624,21 +646,13 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
       // claiming "zero individual tests executed" -- directly self-contradictory. `skipped` must
       // be EXACTLY 0 -- the Gradle/JUnit-XML path can never corroborate a non-zero skip claim
       // (gradle's own contract forbids the field entirely, below), so a kmp_test contract asserting
-      // skipped>0 would be permanently unverifiable by construction. `failed` must ALSO be EXACTLY
-      // 0 -- a Docker/local-ci audit reproduced the same class of self-contradiction the exit_code
-      // check below already exists to prevent: `tests_executed` unconditionally REQUIRES
-      // `exit_code:0` (a real kmp-test envelope with `classifyExitCode`'s own `testsFailed>0 ->
-      // TEST_FAIL(1)` rule can never have both), but nothing previously stopped a scenario from
-      // declaring `failed:1` (or any positive count) alongside that forced clean exit_code -- an
-      // impossible real-world combination. `tests_executed` as currently modeled represents "ran
-      // and all passed" specifically; a future "ran with real failures" outcome would need its own
-      // distinctly-named outcome_kind, not a hybrid of this one.
+      // skipped>0 would be permanently unverifiable by construction, for EITHER ran outcome_kind.
       rejectUnrecognizedKeys(provider.tests, KMP_TEST_TESTS_SHAPE_KEYS, `${field}.tests`, errors);
       testsShapeOk = hasTests
-        && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && provider.tests.failed === 0
+        && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && failedCountOk(provider.tests.failed)
         && isPositiveInt(provider.tests.individual_total) && provider.tests.skipped === 0;
       if (!testsShapeOk) {
-        errors.push({ field: `${field}.tests`, message: 'required (positive integer total/individual_total; non-negative integer passed; failed and skipped must be exactly 0 -- tests_executed represents a clean, all-passing run, coherent with the exit_code:0 requirement below) when outcome_kind is tests_executed' });
+        errors.push({ field: `${field}.tests`, message: `required (positive integer total/individual_total; non-negative integer passed; failed must be ${isFailureOutcome ? 'a positive integer (at least 1)' : 'exactly 0'} and skipped must be exactly 0 -- ${isFailureOutcome ? 'tests_failed represents a genuine failure, coherent with the exit_code:1 requirement below' : 'tests_executed represents a clean, all-passing run, coherent with the exit_code:0 requirement below'}) when outcome_kind is ${outcomeKind}` });
       }
     } else {
       // Gradle/JUnit-XML: individual_total/skipped are FORBIDDEN, not merely unvalidated -- the
@@ -646,21 +660,20 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
       // comment, finding 1, and graders.mjs's disclosed limitation on skipped specifically). The
       // exact-key-set check above already rejects them (and catches a forbidden field explicitly
       // set to `null`, which the old `!= null` presence check silently missed); no separate
-      // hasIndividualTotal/hasSkipped check is needed. `failed` must be EXACTLY 0 for the identical
-      // reason as the kmp_test branch above -- coherent with the forced exit_code:0 below.
+      // hasIndividualTotal/hasSkipped check is needed.
       rejectUnrecognizedKeys(provider.tests, GRADLE_TESTS_SHAPE_KEYS, `${field}.tests`, errors);
-      testsShapeOk = hasTests && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && provider.tests.failed === 0;
+      testsShapeOk = hasTests && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && failedCountOk(provider.tests.failed);
       if (!testsShapeOk) {
-        errors.push({ field: `${field}.tests`, message: 'required (positive integer total; non-negative integer passed; failed must be exactly 0) when outcome_kind is tests_executed' });
+        errors.push({ field: `${field}.tests`, message: `required (positive integer total; non-negative integer passed; failed must be ${isFailureOutcome ? 'a positive integer (at least 1)' : 'exactly 0'}) when outcome_kind is ${outcomeKind}` });
       }
     }
     if (testsShapeOk && provider.tests.total !== provider.tests.passed + provider.tests.failed) {
       errors.push({ field: `${field}.tests`, message: `total (${provider.tests.total}) must equal passed (${provider.tests.passed}) + failed (${provider.tests.failed})` });
     }
-    if (provider.exit_code !== 0) errors.push({ field: `${field}.exit_code`, message: 'required and must be exactly 0 when outcome_kind is tests_executed' });
-    if (hasErrorCode) errors.push({ field: `${field}.error_code`, message: 'forbidden when outcome_kind is tests_executed' });
-    if (hasCausedByFilter) errors.push({ field: `${field}.caused_by_filter`, message: 'forbidden when outcome_kind is tests_executed' });
-    if (hasMarker) errors.push({ field: `${field}.marker`, message: 'forbidden when outcome_kind is tests_executed' });
+    if (provider.exit_code !== requiredExitCode) errors.push({ field: `${field}.exit_code`, message: `required and must be exactly ${requiredExitCode} when outcome_kind is ${outcomeKind}` });
+    if (hasErrorCode) errors.push({ field: `${field}.error_code`, message: `forbidden when outcome_kind is ${outcomeKind}` });
+    if (hasCausedByFilter) errors.push({ field: `${field}.caused_by_filter`, message: `forbidden when outcome_kind is ${outcomeKind}` });
+    if (hasMarker) errors.push({ field: `${field}.marker`, message: `forbidden when outcome_kind is ${outcomeKind}` });
   } else if (outcomeKind === 'no_applicable_tests') {
     if (hasTests) errors.push({ field: `${field}.tests`, message: 'forbidden when outcome_kind is no_applicable_tests' });
     if (contractName === 'kmp_test') {
@@ -755,7 +768,7 @@ function validateExpected(expected, policy, errors) {
   // constants to agree closes this at the source: with individual_total forced to equal
   // gradle.tests.total always, there is only ever one canonical number to satisfy, so an envelope
   // and a block that each independently "match their own expected constant" can no longer diverge.
-  if (expected.outcome_kind === 'tests_executed'
+  if ((expected.outcome_kind === 'tests_executed' || expected.outcome_kind === 'tests_failed')
     && expected.kmp_test != null && typeof expected.kmp_test === 'object' && expected.kmp_test.tests != null
     && typeof expected.kmp_test.tests.individual_total === 'number'
     && gradle != null && typeof gradle === 'object' && gradle.tests != null

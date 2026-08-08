@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "id": "deterministic-unit-test-failure",
+  "family": "test-only",
+  "project_alias": "nowinandroid",
+  "project_url": "https://github.com/android/nowinandroid",
+  "project_commit": "058f0e4375ec51ff8811ba2d0bb10bc4c1b4fdb8",
+  "prompt": "This is a large, multi-module Android project. Somewhere in it there's a small module containing custom Android Lint check implementations, with its own unit tests. Can you find that module, run its tests, and tell me what happened? Once you know the result, end your reply with a block in exactly this format (substitute the real module path, outcome, and counts you found; keep the two marker lines exactly as shown, with valid JSON in between):\n\nKMP_EVAL_RESULT\n{\"module\": \"<the Gradle module path you tested>\", \"outcome_kind\": \"tests_executed\", \"total\": <integer>, \"passed\": <integer>, \"failed\": <integer>}\nKMP_EVAL_RESULT_END\n\nIf some of the tests actually failed, use {\"module\": \"<the Gradle module path you tested>\", \"outcome_kind\": \"tests_failed\", \"total\": <integer>, \"passed\": <integer>, \"failed\": <integer>} instead. If the module turns out to have no applicable tests, use {\"module\": \"<the Gradle module path you tested>\", \"outcome_kind\": \"no_applicable_tests\"} (omit total/passed/failed).",
+  "expected_outcome": "The agent discovers and runs the custom lint-check module's unit tests and reports that all 3 tests fail (stale expected literals in the test no longer match the real, already-renamed lint issue IDs).",
+  "policy": {
+    "allowed_kmptest_subcommands": ["doctor", "describe", "parallel"],
+    "allowed_gradle_tasks": [":lint:tasks", ":lint:test"]
+  },
+  "expected": {
+    "module": ":lint",
+    "outcome_kind": "tests_failed",
+    "kmp_test": {
+      "tests": { "total": 1, "passed": 0, "failed": 1, "skipped": 0, "individual_total": 3 },
+      "exit_code": 1
+    },
+    "gradle": {
+      "allowed_invocations": [":lint:test"],
+      "evidence_task": ":lint:test",
+      "tests": { "total": 3, "passed": 0, "failed": 3 },
+      "exit_code": 1
+    }
+  },
+  "first_useful_signal_predicate": {
+    "description": "first well-formed evidence confirming :lint 3 tests failed"
+  },
+  "tags": ["held-out"]
+}

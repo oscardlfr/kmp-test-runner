@@ -176,8 +176,8 @@ export function resolveDecisions(evidenceDir, bashResults, terminationInfo = {})
  * module -- always excluding plan-only, regardless of anything else.
  *
  * Everything in this function only ever runs when `junitXmlAttributionEnabled` is true (round-8
- * fix, also independently flagged by CodeRabbit): a scenario whose outcome_kind isn't
- * 'tests_executed' never reads real JUnit XML at all, and a same-turn pair of ALLOWED
+ * fix, also independently flagged by CodeRabbit): a scenario whose outcome_kind is neither
+ * 'tests_executed' nor 'tests_failed' never reads real JUnit XML at all, and a same-turn pair of ALLOWED
  * `kmp-test parallel` attempts is not actually ambiguous in that case either -- each has its own
  * self-contained, directly-correlated tool_result envelope, never a shared external resource a
  * genuine race could corrupt the way concurrent Gradle JUnit-XML writes could.

@@ -21,7 +21,7 @@
 // grading. Every other check still correlates a tokenized Bash `tool_use`, its own `tool_result`,
 // and an authoritative kmp-test JSON envelope OR independently-read Gradle/JUnit evidence against
 // the scenario's exact expected module/task/outcome identifiers.
-import { classifyTaskExecutionMode } from '../../lib/orchestrators/parallel/result-rollup.js';
+import { classifyTaskExecutionMode, classifyTaskResults } from '../../lib/orchestrators/parallel/result-rollup.js';
 import { findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout } from './stream-parser.mjs';
 import { ENVELOPE_SCHEMA_VERSION } from '../../lib/envelope/exit-codes.js';
 import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
@@ -482,6 +482,28 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
       && envelope.tests?.skipped === kt.tests.skipped
       && envelope.tests?.individual_total === kt.tests.individual_total;
   }
+  if (scenario.expected.outcome_kind === 'tests_failed') {
+    // A genuine module-task failure surfaces exactly one real `module_failed` error entry per
+    // failed module (parallel-orchestrator.js's own error-reporting convention, ground-truth
+    // confirmed directly against a real kmp-test capture -- see corpus/scenarios/
+    // deterministic-unit-test-failure.json's own provenance) -- REQUIRED here, the mirror of the
+    // tests_executed branch's own `errors.length === 0` requirement above. Coherence, not just
+    // presence: EVERY error entry must be a `module_failed` entry for THIS scenario's own target
+    // module -- an unrelated second error, or a module_failed entry naming a DIFFERENT module,
+    // both mean this envelope cannot be trusted as evidence that the TARGET module's tests failed
+    // (step 17: a compile/setup/env failure -- which never produces this exact shape -- must never
+    // satisfy tests_failed merely because kmp-test's own exit_code happens to be nonzero).
+    const targetModuleName = normalizeModuleName(scenario.expected.module);
+    const matchingModuleFailures = envelope.errors.filter((e) => e && e.code === 'module_failed' && normalizeModuleName(e.module) === targetModuleName);
+    return validateParallelEvidence(envelope, invokedTestType)
+      && envelope.errors.length === matchingModuleFailures.length && matchingModuleFailures.length >= 1
+      && envelope.exit_code === kt.exit_code
+      && envelope.tests?.total === kt.tests.total
+      && envelope.tests?.passed === kt.tests.passed
+      && envelope.tests?.failed === kt.tests.failed
+      && envelope.tests?.skipped === kt.tests.skipped
+      && envelope.tests?.individual_total === kt.tests.individual_total;
+  }
   // `errors.length === 1` (exactly the matching entry, nothing else): a second, unrelated error
   // entry contradicts "cleanly determined that no tests apply". `individual_total === 0`/
   // `skipped === 0` are the converse of the tests_executed branch's own checks: a no_test_modules
@@ -553,7 +575,10 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
  */
 function computeKmpTestTargetMatch(envelope, classification, scenario) {
   const targetModule = normalizeModuleName(scenario.expected.module);
-  if (scenario.expected.outcome_kind === 'tests_executed') {
+  // tests_failed shares tests_executed's envelope-side module-attribution shape exactly -- kmp-test
+  // still resolves and lists the module it attempted (envelope.modules[]) regardless of whether the
+  // task ultimately passed or failed, ground-truth confirmed directly against a real capture.
+  if (scenario.expected.outcome_kind === 'tests_executed' || scenario.expected.outcome_kind === 'tests_failed') {
     if (envelope.modules.length !== 1) return false;
     const envelopeModule = normalizeModuleName(envelope.modules[0]?.name);
     if (envelopeModule !== targetModule) return false;
@@ -630,7 +655,7 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
   // otherwise looks like real, on-target, subcommand-matching evidence for a scenario that expects
   // `parallel` to be present at all.
   const parallelEvidenceInvalid = hasEvidence && targetMatches && envelope.subcommand === classification.subcommand
-    && scenario.expected.outcome_kind === 'tests_executed'
+    && (scenario.expected.outcome_kind === 'tests_executed' || scenario.expected.outcome_kind === 'tests_failed')
     && !validateParallelEvidence(envelope, classification.testType);
 
   // Whether this attempt was even ATTEMPTING to check the expected module, independent of
@@ -659,7 +684,7 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
   // `computeKmpTestTargetMatch` was always careful to avoid.
   const targetModule = normalizeModuleName(scenario.expected.module);
   const intendedTargetMatches = classification.moduleFilter == null || (
-    scenario.expected.outcome_kind === 'tests_executed'
+    scenario.expected.outcome_kind === 'tests_executed' || scenario.expected.outcome_kind === 'tests_failed'
       // typeof guard: matchModuleFilter calls `.replace` on its `name` argument unconditionally,
       // unlike normalizeModuleName's own safe passthrough for a non-string value.
       ? typeof targetModule === 'string' && matchModuleFilter(targetModule, classification.moduleFilter)
@@ -795,6 +820,44 @@ function evaluateGradleAttempt(bashResult, scenario, decision, resolvedEvidence)
         && resolvedEvidence.junit.passed === g.tests.passed
         && resolvedEvidence.junit.failed === g.tests.failed;
       outcomeMatches = observedExitCode === (g.exit_code ?? 0) && executedModes.has(mode) && junitOk;
+    } else if (scenario.expected.outcome_kind === 'tests_failed') {
+      // The Gradle-provider mirror of tests_executed's own branch above -- identical JUnit-evidence
+      // consumption (junitOk), identical fail-closed treatment of every non-'ok' resolvedEvidence
+      // status, `g.exit_code` schema-required to be exactly 1 (never defaulted via `?? 0`).
+      //
+      // Deliberately does NOT reuse `mode` (classifyTaskExecutionMode's own single-match `$`-anchored
+      // regex) to decide "did the task fail" -- ground-truth confirmed directly against a real
+      // `:lint:test` BUILD FAILED capture that this is unreliable for exactly this outcome: Gradle
+      // prints a BARE "> Task :lint:test" announcement line (since the task produces console output
+      // -- the JUnit failure reporting) FIRST, and only prints the terminal "> Task :lint:test
+      // FAILED" line AFTER. `classifyTaskExecutionMode`'s bare (non-global) `.exec()` returns only
+      // the FIRST match -- the suffix-less announcement -- misclassifying a genuinely failed task as
+      // 'fresh'. Real kmp-test envelopes never hit this gap because parallel-orchestrator.js's own
+      // pipeline reconciles it (a task classifyTaskResults says 'failed' is PROMOTED into the
+      // 'failed' execution bucket regardless of what classifyTaskExecutionMode alone found) --
+      // `classifyTaskResults` (an unanchored search that finds a terminal FAILED line wherever it
+      // appears, imported directly rather than re-derived as a second, independently-maintained
+      // approximation of the same rule) is that same authoritative signal, reused here directly. It
+      // ALSO correctly rejects the inverse false-positive -- a target task that itself succeeded
+      // (mentioned, no FAILED line) while an unrelated LATER task in the same leg failed -- since
+      // `taskMentioned` being true skips its own defense-in-depth failed-promotion branch.
+      //
+      // Step 17's compile/setup-failure case (the target task never even starts -- no status line
+      // for it anywhere) is NOT distinguished by `taskGenuinelyFailed` alone: classifyTaskResults'
+      // own defense-in-depth branch (legExit!==0 && !buildSucceeded && !taskMentioned) empirically
+      // ALSO labels an un-mentioned task 'failed' in this case (confirmed directly: a genuine
+      // :lint:compileKotlin-only failure still classifies :lint:test as 'failed'), by original
+      // design elsewhere in this codebase (WS-1: never silent-pass an unmentioned task on a failed
+      // leg). `junitOk` is what actually closes this case here: a task that never ran can never have
+      // produced real, matching JUnit XML, so `resolvedEvidence` reads 'no_xml' and `junitOk` is
+      // false regardless of what `taskGenuinelyFailed` says -- BUILD FAILED plus a real nonzero
+      // exit_code plus an over-inclusive 'failed' label is still never sufficient on its own.
+      const taskGenuinelyFailed = classifyTaskResults(bashResult.resultContent, '', [g.evidence_task], observedExitCode ?? 0).get(g.evidence_task) === 'failed';
+      const junitOk = resolvedEvidence?.status === 'ok'
+        && resolvedEvidence.junit.total === g.tests.total
+        && resolvedEvidence.junit.passed === g.tests.passed
+        && resolvedEvidence.junit.failed === g.tests.failed;
+      outcomeMatches = observedExitCode === g.exit_code && taskGenuinelyFailed && junitOk;
     } else {
       // no_applicable_tests never depends on the JUnit-evidence-attribution mechanism at all -- the
       // NO-SOURCE marker is parsed from THIS attempt's own resultContent; the mechanism is not even
@@ -842,6 +905,9 @@ function extractKmpEvalResultBlock(text) {
   return { found: true, parsed: tryParseJsonObject(rawMatches[0][1].trim()), ambiguous: false };
 }
 
+// Shared by BOTH 'tests_executed' and 'tests_failed' -- the agent's own final-answer block has an
+// identical shape either way (it reports the same real total/passed/failed triple it observed);
+// only the VALUES (failed:0 vs failed>=1) and the compared outcome_kind differ.
 const KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS = new Set(['module', 'outcome_kind', 'total', 'passed', 'failed']);
 const KMP_EVAL_RESULT_NO_APPLICABLE_KEYS = new Set(['module', 'outcome_kind']);
 const KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS = ['total', 'passed', 'failed'];
@@ -850,8 +916,9 @@ const KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS = ['total', 'passed', 'f
  * module/outcome/counts -- EXACT key set (no missing, no extra -- an agent hedging with additional
  * fields is rejected, not silently ignored), exact module identity (boundary-safe via
  * `normalizeModuleName`, same colon-prefix tolerance as everywhere else in this file), exact
- * `outcome_kind`, and for `tests_executed`, exact integer total/passed/failed matching the real,
- * independently-verified ground truth already carried on `scenario.expected.gradle.tests` (the
+ * `outcome_kind`, and for `tests_executed`/`tests_failed` (identical block shape either way), exact
+ * integer total/passed/failed matching the real, independently-verified ground truth already
+ * carried on `scenario.expected.gradle.tests` (the
  * canonical human-readable `{total,passed,failed}` triple -- the same real-world fact kmp_test's
  * own `individual_total` records as a single number).
  *
@@ -870,7 +937,7 @@ function kmpEvalResultBlockMatchesScenario(block, scenario) {
   if (block.outcome_kind !== scenario.expected.outcome_kind) return false;
 
   const keys = Object.keys(block);
-  if (scenario.expected.outcome_kind === 'tests_executed') {
+  if (scenario.expected.outcome_kind === 'tests_executed' || scenario.expected.outcome_kind === 'tests_failed') {
     if (keys.length !== KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS.size || keys.some((k) => !KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS.has(k))) return false;
     const expectedTests = scenario.expected.gradle.tests;
     return Number.isInteger(block.total) && Number.isInteger(block.passed) && Number.isInteger(block.failed)
