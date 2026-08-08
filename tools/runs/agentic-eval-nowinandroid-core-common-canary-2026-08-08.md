@@ -14,11 +14,13 @@ token, quality, or product-efficacy improvement**.
 (`C:\kmp-eval\toolchains\claude-code-2.1.218`) kept separate from any global install specifically so
 this canary's `claude_code_version` would match prior canaries' pin discipline.
 
-**Actual**: all 4 live sessions ran homogeneously under Claude Code **`2.1.225`** — confirmed
-programmatically from all 4 committed records (`claude_code_version` identical across all 4, no
-mixing) and cross-checked via the harness's own `aggregate --runs-dir`, which folds `claude_code_version`
-into its group key and produced exactly 2 groups of 2 (not 4 groups of 1), which would only happen if
-all 4 truly shared one value.
+**Actual**: all 4 live sessions ran homogeneously under Claude Code **`2.1.225`** — proven by directly
+reading and comparing the `claude_code_version` field on all 4 committed records (identical across
+all 4, no mixing). The harness's own `aggregate --runs-dir` is *consistent* with this (it folds
+`claude_code_version` into its group key and produced exactly 2 groups of 2, not 4 groups of 1), but
+that is a corroborating check, not the proof itself — grouping into 2-of-2 only shows no *additional*
+partitioning occurred on the fields `aggregate` happens to key on, not that every individual record
+was read and compared. The direct per-record field comparison above is the actual evidence.
 
 **Root cause, demonstrated (not assumed)**: `tools/agentic-eval/condition-launcher.mjs` spawns the
 measured session as `'claude', '-p', ...` (bare command name, no absolute path). The environment for
@@ -35,8 +37,10 @@ ordinary ambient `PATH`, and `claude` resolved through to the global install at
 `~/.local/bin/claude` (`2.1.225`) instead. Reproduced empirically post-hoc by directly importing and
 calling the harness's own `buildEvalEnv`, `resolveBash()`, and the exact `buildSharedEnv` PATH-concat
 expression against the same ambient environment, then resolving `claude` through the identical
-`bash.exe`: **`command -v claude` → `~/.local/bin/claude` (the operator's per-user npm global bin
-directory), `claude --version` → `2.1.225 (Claude Code)`** — the same result the 4 live records show. This was an operator process error
+`bash.exe`: **`command -v claude` → `~/.local/bin/claude` (the operator's ambient per-user
+installation — a native, per-user install location, not confirmed to be npm-managed; install
+mechanism not otherwise claimed), `claude --version` → `2.1.225 (Claude Code)`** — the same result
+the 4 live records show. This was an operator process error
 (the verified fix was not carried from the isolated preflight check into the actual live invocation's
 shell), not a harness defect and not evidence of an environment-availability problem with the pinned
 toolchain itself (which does resolve correctly to `2.1.218` when its `PATH` entry is actually active).
@@ -54,10 +58,13 @@ that issues the live `run` command**, not only in an isolated preflight check.
   **true**, `authMethod`: **claude.ai**, `apiProvider`: **firstParty**, `subscriptionType`: **max**.
   No email, orgId, or orgName recorded anywhere in this session or report.
 - **Session ceiling**: exactly **4** live Claude sessions authorized (2 repeats × {no-skill,
-  current-skill}), and exactly **4 spent** — none unused, none exceeded, **zero retries**, zero
-  replacement runs of the live matrix itself. One separately-authorized, narrowly-scoped **local-ci
-  preflight** corrective retry occurred (Windows lane only, after a documented environment fix) —
-  see "Gates passed" — but it consumed zero live Claude sessions.
+  current-skill}), and exactly **4 spent** — none unused, none exceeded, **zero live-session
+  retries**, zero replacement runs of the live matrix itself. (This is distinct from in-session agent
+  behavior: record `861ffed8`'s own `retries: 3` field reflects that ONE session internally retried
+  its own Gradle invocations while running — normal recorded agent behavior, not a re-run of the
+  session.) One separately-authorized, narrowly-scoped **local-ci preflight** corrective retry
+  occurred (Windows lane only, after a documented environment fix) — see "Gates passed or accepted
+  under carve-out" — but it consumed zero live Claude sessions.
 
 ## Fixed provenance
 
@@ -144,67 +151,87 @@ version.
 
 ## Sanitized raw-inspection ledger
 
-Scope: the 4 new raw transcripts only, read once by an isolated sub-task whose only output was this
-ledger — no prompt, response, free text, private path, auth material, HMAC, or full command ever
-left that task. Read-only confirmed: SHA-256 + byte length identical before and after inspection for
-all 4 files, and each file's byte length matches its own record's `stream_json_bytes` field exactly
-(67,234 / 70,366 / 77,147 / 197,572 — independently cross-checked, not merely asserted).
+**Primary source, corrected**: `tool_use_event_index`, `category` (the sidecar's own `tool_kind`
++ `operation`), `decision`, and `is authoritative terminal attempt` are read directly from each
+committed `audit/*.json` sidecar's own `tool_calls[]` array and top-level `terminal_authoritative_event`
+field — fully reproducible from this PR's 9 committed files, no raw transcript needed for these
+columns. `is authoritative terminal attempt` is `true` on exactly one row per run — the row whose
+`tool_result_event_index` equals that record's `terminal_authoritative_event.index` — and `false` on
+every other row, including earlier `allow`-decision rows that were superseded by a later attempt
+(`861ffed8` has 4 `allow` rows; only the last, event 267, is authoritative) and including
+`e3c364cf`, whose `terminal_authoritative_event` is `null` (no row is authoritative). Verified
+programmatically against all 4 records: shell-call `allow`/`deny` counts per sidecar match each
+record's own `hook_call_count`/`hook_deny_count` exactly (11/0/11, 3/2/1, 5/2/3, 28/4/24), and each
+sidecar's `tool_calls` array length matches its own `summary.tool_calls_total` exactly (12, 4, 6, 29).
 
-`category`/`filter shape` were derived by calling the harness's own `command-classify.mjs` and
-`lib/orchestrators/module-filter.js` primitives directly, not reimplemented. `matches :core:common`
-is `N/A` for `doctor`/`describe`/direct-gradle calls because the real grader
-(`evaluateGradleAttempt`) never consults `matchModuleFilter` for those — only `kmp-test parallel`
-calls go through that path. `decision` is the harness's own recorded `hook_response`, correlated to
-each Bash call and cross-checked against each record's own `countHookEvents()`-derived
-`hook_call_count`/`hook_deny_count` — **100% match on all 4 records, 0 undetermined** (see per-run
-totals below).
+**Session-only addition** (not reproducible from the 9 committed files alone): `filter shape` and
+`matches :core:common`, for the two `kmp-test (parallel)` rows only. The committed sidecar records
+that those calls were `kmp-test`/`parallel` and `allow`ed, but not the literal `--module-filter`
+argument shape — that required reading the raw `.jsonl` transcripts (gitignored, kept only in this
+canary's local worktree, never staged/committed/published), via an isolated sub-task whose only
+output was this shape classification (calling the harness's own `command-classify.mjs` and
+`lib/orchestrators/module-filter.js` primitives directly, not reimplemented) — no prompt, response,
+free text, private path, auth material, HMAC, or full command left that task. Read-only confirmed:
+SHA-256 + byte length identical before/after inspection for all 4 raw files, each matching its
+record's own `stream_json_bytes` field exactly (67,234 / 70,366 / 77,147 / 197,572).
 
-### `scenario-no-skill-e3c364cf` (no-skill, repetition 1) — 11 Bash calls, 0 allow, 11 deny
+Both `kmp-test parallel` calls used an **exact** module-filter match on `:core:common` — see
+"Explicit limitations and disclosures" for what this does and does not say about PR #409.
 
-| ordinal | category | filter shape | matches `:core:common` | decision | terminal evidence |
+### `scenario-no-skill-e3c364cf` (no-skill, repetition 1) — `terminal_authoritative_event: null` (no row is authoritative)
+
+12 tool calls total (11 shell/Bash, 1 skill-tool), 0 allow / 11 deny on the 11 shell calls.
+
+| `tool_use_event_index` | category | filter shape | matches `:core:common` | decision | is authoritative terminal attempt |
 |---|---|---|---|---|---|
-| 5, 7, 16, 26, 33, 39, 53, 60, 74, 82 | other/unrecognized | absent | N/A | deny | false |
-| 46 | gradle (projects) | absent | N/A | deny | false |
+| 5, 7, 16, 26, 33, 39, 53, 60, 74, 82 | other-bash | absent | N/A | deny | false |
+| 46 | gradle (other) | absent | N/A | deny | false |
+| 68 | non-target-skill | absent | N/A | not-applicable | false |
 
-### `scenario-current-skill-c59ea2c7` (current-skill, repetition 1) — 3 Bash calls, 2 allow, 1 deny
+### `scenario-current-skill-c59ea2c7` (current-skill, repetition 1) — `terminal_authoritative_event: 40` → row `tool_use_event_index 32`
 
-| ordinal | category | filter shape | matches `:core:common` | decision | terminal evidence |
+4 tool calls total (3 shell/Bash, 1 skill-tool), 2 allow / 1 deny on the 3 shell calls.
+
+| `tool_use_event_index` | category | filter shape | matches `:core:common` | decision | is authoritative terminal attempt |
 |---|---|---|---|---|---|
-| 5 | other/unrecognized | absent | N/A | deny | true |
-| 20 | kmp-test (describe) | absent | N/A | allow | true |
-| 32 | kmp-test (parallel) | exact | **true** | allow | true |
+| 5 | other-bash | absent | N/A | deny | false |
+| 13 | target-skill | absent | N/A | not-applicable | false |
+| 20 | kmp-test (describe) | absent | N/A | allow | false |
+| 32 | kmp-test (parallel) | exact | **true** | allow | **true** |
 
-### `scenario-current-skill-25804b8f` (current-skill, repetition 0) — 5 Bash calls, 2 allow, 3 deny
+### `scenario-current-skill-25804b8f` (current-skill, repetition 0) — `terminal_authoritative_event: 49` → row `tool_use_event_index 41`
 
-| ordinal | category | filter shape | matches `:core:common` | decision | terminal evidence |
+6 tool calls total (5 shell/Bash, 1 skill-tool), 2 allow / 3 deny on the 5 shell calls.
+
+| `tool_use_event_index` | category | filter shape | matches `:core:common` | decision | is authoritative terminal attempt |
 |---|---|---|---|---|---|
-| 6, 10, 17 | other/unrecognized | absent | N/A | deny | true |
-| 26 | kmp-test (describe) | absent | N/A | allow | true |
-| 41 | kmp-test (parallel) | exact | **true** | allow | true |
+| 6, 10, 17 | other-bash | absent | N/A | deny | false |
+| 22 | target-skill | absent | N/A | not-applicable | false |
+| 26 | kmp-test (describe) | absent | N/A | allow | false |
+| 41 | kmp-test (parallel) | exact | **true** | allow | **true** |
 
-### `scenario-no-skill-861ffed8` (no-skill, repetition 0) — 28 Bash calls, 4 allow, 24 deny
+### `scenario-no-skill-861ffed8` (no-skill, repetition 0) — `terminal_authoritative_event: 274` → row `tool_use_event_index 267`
 
-| ordinal | category | filter shape | matches `:core:common` | decision | terminal evidence |
+29 tool calls total (28 shell/Bash, 1 skill-tool), 4 allow / 24 deny on the 28 shell calls. Note:
+events 71, 101, and 160 are also `allow`+successful Gradle attempts, but **none of them are the
+authoritative one** — only the last, event 267, is.
+
+| `tool_use_event_index` | category | filter shape | matches `:core:common` | decision | is authoritative terminal attempt |
 |---|---|---|---|---|---|
-| 4, 8, 14, 22, 30, 37, 44, 51, 62 | other/unrecognized | absent | N/A | deny | true |
-| 71 | gradle (`:core:common:test`) | absent | N/A | **allow** | true |
-| 83, 92 | other/unrecognized | absent | N/A | deny | false |
-| 101 | gradle (`:core:common:test`) | absent | N/A | **allow** | false |
-| 118, 125, 132 | other/unrecognized | absent | N/A | deny | false |
-| 139 | gradle (`:core:common:test`, grep) | absent | N/A | deny | false |
-| 146, 153 | gradle (`:core:common:test`) | absent | N/A | deny | false |
-| 160 | gradle (`:core:common:test`) | absent | N/A | **allow** | false |
-| 173 | other/unrecognized | absent | N/A | deny | false |
-| 185, 192 | gradle (`:core:common:test`) | absent | N/A | deny | false |
-| 201, 216 | other/unrecognized | absent | N/A | deny | false |
-| 229 | gradle (`:core:common:test`) | absent | N/A | deny | false |
-| 254 | other/unrecognized | absent | N/A | deny | false |
-| 267 | gradle (`:core:common:test`) | absent | N/A | **allow** | false |
-
-`terminal evidence` here is presence-only (a `KMP_EVAL_RESULT` block or Gradle build-result text at or
-after that ordinal) — not a correctness claim; `861ffed8`'s `false`-labeled rows *after* ordinal 71
-reflect that the harness's terminal-evidence marker in this ledger tracks a different (earlier, later
-superseded) candidate than the one `analyze` ultimately selected as authoritative.
+| 4, 8, 14, 22, 30, 37, 44, 51, 62 | other-bash | absent | N/A | deny | false |
+| 56 | non-target-skill | absent | N/A | not-applicable | false |
+| 71 | gradle (allowed-task) | absent | N/A | allow | false |
+| 83, 92 | other-bash | absent | N/A | deny | false |
+| 101 | gradle (allowed-task) | absent | N/A | allow | false |
+| 118, 125, 132 | other-bash | absent | N/A | deny | false |
+| 139, 146, 153 | gradle (allowed-task) | absent | N/A | deny | false |
+| 160 | gradle (allowed-task) | absent | N/A | allow | false |
+| 173 | other-bash | absent | N/A | deny | false |
+| 185, 192 | gradle (allowed-task) | absent | N/A | deny | false |
+| 201, 216 | other-bash | absent | N/A | deny | false |
+| 229 | gradle (allowed-task) | absent | N/A | deny | false |
+| 254 | other-bash | absent | N/A | deny | false |
+| 267 | gradle (allowed-task) | absent | N/A | allow | **true** |
 
 ## Reconciliation checklist — all 4 cells
 
@@ -242,7 +269,7 @@ This session made zero changes to any pre-existing file in the full committed
 `tools/runs/agentic-eval-scenario/` directory; the manifest diff in reconciliation item 5 already
 establishes this directly, so no full-directory `aggregate`/`analyze` re-run was needed to prove it.
 
-## Gates passed
+## Gates passed or accepted under carve-out
 
 **Preflight**: `origin/develop` and local `HEAD` verified identical to the required base
 (`8e286f895a3d6d0972be133b0daf5c3bb23f03a0`, via `git fetch` + `git ls-remote`-backed comparison, not
@@ -276,9 +303,11 @@ narrowly-authorized corrective continuation after the first hit a genuine prefli
   session's runbook had named as an acceptable carve-out. `git diff --stat origin/develop --
   gradle-plugin/` confirmed empty. Per the carve-out rule, this was accepted and the gate treated as
   satisfied.
-- **Net**: combining both invocations, every gate capable of running on this machine ran and passed,
-  except the one independently pre-documented, unfixable-without-out-of-scope-changes machine
-  characteristic, confirmed scope-unrelated via a clean `git diff --stat`.
+- **Net**: combining both invocations, every gate capable of running on this machine either passed
+  cleanly or was explicitly **accepted under the one pre-documented, unfixable-without-out-of-scope-
+  changes machine characteristic** (the `TaskActionTest.kt:62` carve-out), confirmed scope-unrelated
+  via a clean `git diff --stat`. That carve-out is a genuine test failure (11 of 16 Gradle-plugin
+  sub-tests) accepted by an explicit pre-authorized rule — not itself a pass.
 
 **Live matrix**: `run` executed exactly once, no `--dry-run`. All 4-of-4 cells promoted — no
 rejection, no partial promotion, no timeout, no retry. The one deviation from plan was the
@@ -290,10 +319,12 @@ rejection, no partial promotion, no timeout, no retry. The one deviation from pl
   after the live matrix (4 records + 4 `audit/` sidecars) — no more, no fewer. The 4 `raw/*.jsonl`
   transcripts exist locally but never appear in `git status` output (gitignored).
 - **No generated JSON was hand-edited at any point.**
-- **Raw transcript content was read only for the single authorized narrow ledger purpose**, by an
-  isolated sub-task that returned only the sanitized table above — no prompt, response, or free-text
-  content from any raw transcript is quoted anywhere in this report or was printed to the main
-  session log.
+- **Raw transcript content was read only for one narrow purpose** — classifying the two `kmp-test
+  parallel` calls' module-filter shape — by an isolated sub-task that returned only that
+  classification; the rest of the ledger (event indices, categories, decisions, the authoritative-
+  attempt flag) comes directly from the committed `audit/*.json` sidecars, not the raw transcripts.
+  No prompt, response, or free-text content from any raw transcript is quoted anywhere in this report
+  or was printed to the main session log.
 - **Fresh nowinandroid clone confirmed clean after the live matrix**: `git status --porcelain` empty,
   HEAD still exactly `7d45eae4f8720a0c77f507712ba2437ff974b6ed`, single worktree, no leaked
   `git worktree list` entries.
@@ -317,14 +348,29 @@ rejection, no partial promotion, no timeout, no retry. The one deviation from pl
 - **Cost figures reflect a Max/OAuth-authenticated session** (`subscriptionType: max`, `apiProvider:
   firstParty`) — an internal plan-usage budget ceiling, not a per-token dollar charge; no dollar cost
   is claimed anywhere in this report.
-- **The ledger's ordinal/category/decision detail is not reproducible from this PR's 9 committed files
-  alone.** Committed `audit/*.json` sidecars preserve policy-decision-relevant fields but not literal
-  command text; the full ledger required reading the raw `.jsonl` transcripts, which are gitignored,
-  kept only in this canary's own local worktree, and never staged, committed, or published. A reader
-  with only this PR's 9 files can verify every other number in this report (all independently
-  recomputed from committed JSON or the harness's own `validate`/`aggregate`/`analyze` output in this
-  session, none hand-transcribed) but not the ledger's specific per-ordinal detail without independent
-  access to those local raw transcripts.
+- **PR #409's substring/glob/CSV module-filter branches were not exercised live in this canary.** Both
+  `current-skill` sessions' `kmp-test parallel` call used an **exact** filter match on `:core:common`
+  (see ledger) — neither a substring, a glob, nor a CSV list was ever attempted by either session.
+  This canary validates that the scenario runs correctly on code that *includes* PR #409's parity fix,
+  but it provides **no live evidence of the new substring/glob/CSV matching paths themselves**; that
+  would require a scenario or prompt that induces the agent to reach for one of those forms.
+- **"no-skill" means target-skill ablation, not the total absence of skills.** Both `no-skill` records
+  show `foreign_skill_summary.confirmed: 1` (also visible in the ledger's `non-target-skill` row for
+  each) — an ambient, non-target skill was confirmed used once in each `no-skill` session, out of the
+  `ambient_skill_profile.count: 16` skills present in the environment under *both* conditions. The
+  `current-skill` 2-of-2 vs. `no-skill` 0-of-2 split in this report should be read as "target skill
+  present vs. target skill specifically withheld, while other ambient skills remain reachable" — not
+  as "skill available vs. no skills available at all."
+- **What is and is not reproducible from this PR's 9 committed files alone.** Reproducible: every
+  number in "Per-cell metrics," "Reconciliation checklist," and "Aggregation results" (recomputed from
+  committed record/sidecar JSON or the harness's own `validate`/`aggregate`/`analyze` output in this
+  session, none hand-transcribed); the ledger's `tool_use_event_index`, `category`, `decision`, and
+  `is authoritative terminal attempt` columns (read directly from each committed `audit/*.json`
+  sidecar's `tool_calls[]` and `terminal_authoritative_event` fields). **Not** reproducible from the 9
+  files alone: the ledger's `filter shape`/`matches :core:common` columns for the two `kmp-test
+  parallel` rows (required the gitignored, local-only raw `.jsonl` transcripts — see "Evidence
+  integrity"); the local-ci log contents; and the preflight process-listing / toolchain-resolution /
+  auth-status diagnostics (session artifacts, not committed anywhere).
 
 ## Recommended next action
 
