@@ -9,6 +9,7 @@
 // junit-evidence-hook.mjs is a hook subprocess that must start up fast and must not transitively
 // load graders.mjs's much larger dependency tree just to classify one command string.
 import { tokenize } from './policy-hook.mjs';
+import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
 
 /** Classifies one Bash tool_use's raw command string. Relocated verbatim from graders.mjs (the
  * grammar itself is unchanged) so it can be shared by graders.mjs, junit-evidence.mjs, and
@@ -60,12 +61,22 @@ export function isRelevantGradleInvocation(classification, allowedInvocations) {
 }
 
 /** True only for a non-plan-only `kmp-test parallel` invocation whose `--module-filter` is either
- * absent (ran every module, including the target) or equals the target module -- mirrors the
+ * absent (ran every module, including the target) or MATCHES the target module under the real
+ * production matcher (`matchModuleFilter`, `lib/orchestrators/module-filter.js`) -- mirrors the
  * original `classifyJunitProvenance` per-command rule (graders.mjs:939-944): a `parallel` call
  * dispatches the same underlying Gradle task and can write/overwrite the same JUnit XML, so it is
- * just as much a potential producer as a raw Gradle invocation, scoped the same way. */
+ * just as much a potential producer as a raw Gradle invocation, scoped the same way. Follow-up fix:
+ * this originally compared `moduleFilter` to `targetModule` via exact string equality, so a command
+ * correctly targeting a NESTED module (`:core:common`) via a short substring filter (`common`) or
+ * an anchored glob (`core:*`) was invisible to this relevance check even though the real CLI's own
+ * dispatch would have matched it -- silently hiding a genuine same-turn JUnit-evidence conflict
+ * from `junit-evidence.mjs`'s `attributeCondition`. `targetModule` is expected to be a string
+ * (`attributeCondition` reads it from `scenario.expected?.module`, note the existing optional
+ * chaining there); unlike `normalizeModuleName`'s safe passthrough for a non-string value,
+ * `matchModuleFilter` calls `.replace` on its `name` argument unconditionally, so a missing/
+ * non-string `targetModule` is guarded explicitly rather than left to throw. */
 export function isRelevantKmpTestParallel(classification, targetModule) {
   if (classification.kind !== 'kmp-test' || classification.subcommand !== 'parallel' || classification.isPlanOnly) return false;
   if (classification.moduleFilter == null) return true;
-  return normalizeModuleName(classification.moduleFilter) === normalizeModuleName(targetModule);
+  return typeof targetModule === 'string' && matchModuleFilter(targetModule, classification.moduleFilter);
 }

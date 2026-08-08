@@ -26,6 +26,7 @@ import { findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResu
 import { ENVELOPE_SCHEMA_VERSION } from '../../lib/envelope/exit-codes.js';
 import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
 import { classifyBashCommand, normalizeModuleName } from './command-classify.mjs';
+import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
 
 /** The fixed, canonical set of check names every gradeScenarioCondition() result's `checks` array
  * must contain -- exactly these 8, no more, no fewer, enforced by schemas.mjs's validateRun() for
@@ -236,21 +237,22 @@ const PARALLEL_BLOCK_KEYS = ['test_type', 'legs', 'max_workers', 'timeout_s'];
 // never validated at all.
 const ISOLATED_FIELD_KEYS = ['enabled', 'cache_dir', 'kept', 'locked'];
 
-// Both shipped scenarios' policy blocks permit only `kmp-test parallel`/`doctor` and a bounded
-// Gradle task list -- neither allows --max-workers, --timeout, or any --isolated* flag. Confirmed
-// directly against production defaults (lib/orchestrators/parallel/dispatch.js's argument-parsing
-// defaults: maxWorkers:0, timeout:600) and buildIsolatedField's disabled-case composition (called
-// with enabled:false, cacheDir:null from parseIsolatedArgs's own unset defaults; kept:false since
-// isolatedKept short-circuits on !enabled; locked:true since `!isolatedFlags.noLock` is true when
-// noLock's own default, false, is never overridden) -- a real, policy-compliant envelope for either
-// scenario can only ever carry exactly these values. Not a general claim about every possible
-// kmp-test invocation; scoped to what THIS harness's own policy ever permits an agent to run.
+// Every shipped scenario's policy block permits only `kmp-test parallel`/`doctor` and a bounded
+// Gradle task list -- none of them allows --max-workers, --timeout, or any --isolated* flag.
+// Confirmed directly against production defaults (lib/orchestrators/parallel/dispatch.js's
+// argument-parsing defaults: maxWorkers:0, timeout:600) and buildIsolatedField's disabled-case
+// composition (called with enabled:false, cacheDir:null from parseIsolatedArgs's own unset
+// defaults; kept:false since isolatedKept short-circuits on !enabled; locked:true since
+// `!isolatedFlags.noLock` is true when noLock's own default, false, is never overridden) -- a
+// real, policy-compliant envelope for any scenario can only ever carry exactly these values. Not
+// a general claim about every possible kmp-test invocation; scoped to what THIS harness's own
+// policy ever permits an agent to run.
 const EXPECTED_MAX_WORKERS = 0;
 const EXPECTED_TIMEOUT_S = 600;
 const EXPECTED_ISOLATED_FIELD = Object.freeze({ enabled: false, cache_dir: null, kept: false, locked: true });
 
 /** Validates `envelope.isolated` against `buildIsolatedField`'s exact closed shape AND this
- * harness's own policy-coherent disabled defaults (neither scenario's policy ever permits an
+ * harness's own policy-coherent disabled defaults (no scenario's policy ever permits an
  * `--isolated*` flag, so a real, policy-compliant envelope can only ever carry the one disabled
  * shape a real orchestrator run produces when isolation was never requested). */
 function isPolicyCoherentIsolatedField(isolatedField) {
@@ -327,7 +329,7 @@ function isWellFormedParallelLeg(leg) {
  *
  * Also validates `envelope.parallel`'s own key set (`test_type`/`legs`/`max_workers`/`timeout_s`,
  * exactly -- `buildParallelParsed`'s literal construction) and the sibling top-level
- * `envelope.isolated` field, both against this harness's policy-coherent defaults (neither
+ * `envelope.isolated` field, both against this harness's policy-coherent defaults (no shipped
  * scenario's policy ever permits `--max-workers`/`--timeout`/`--isolated*`) -- a Docker/local-ci
  * audit found neither was validated at all, so a missing `max_workers` or a fabricated `isolated`
  * shape both passed as authoritative evidence.
@@ -356,7 +358,7 @@ export function validateParallelEvidence(envelope, invokedTestType) {
   if (!Number.isInteger(parallelBlock.timeout_s) || parallelBlock.timeout_s < 0) return false;
   if (parallelBlock.max_workers !== EXPECTED_MAX_WORKERS || parallelBlock.timeout_s !== EXPECTED_TIMEOUT_S) return false;
 
-  // envelope.isolated -- same audit finding, for the sibling top-level field neither scenario's
+  // envelope.isolated -- same audit finding, for the sibling top-level field no scenario's
   // policy ever permits an agent to actually enable (see isPolicyCoherentIsolatedField).
   if (!isPolicyCoherentIsolatedField(envelope.isolated)) return false;
 
@@ -518,6 +520,15 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
  *    app, you got shared back), which is incoherent regardless of whether the reported module
  *    happens to match the scenario's real target. This mirrors `validateKmpEnvelopeForAttempt`'s
  *    existing `envelope.subcommand !== invokedSubcommand` check, generalized to module identity.
+ *    That cross-check itself now goes through `matchModuleFilter` (the real production matcher,
+ *    `lib/orchestrators/module-filter.js`) rather than exact string equality -- a follow-up fix:
+ *    the original round-5 version compared the raw filter to the envelope module with `!==`, so a
+ *    correct agent targeting a NESTED module (`:core:common`, not `:shared`/`:app`) via a short
+ *    substring filter (`common`) or an anchored glob (`core:*`) -- both of which the real CLI
+ *    resolves correctly -- was graded a false FAILURE purely on string form. `matchModuleFilter`
+ *    is the exact function `lib/orchestrators/orchestrator-utils.js`'s own dispatch uses to decide
+ *    which modules a `--module-filter` argument selects; this file must judge agent commands by
+ *    the SAME rule, never a second, independently-maintained approximation of it.
  * 2. Searching a MULTI-entry `modules[]` array for a match let a target module's presence
  *    anywhere in the array stand in for proof that the AGGREGATE `tests.total/passed/failed`
  *    counters (compared separately, in `validateKmpEnvelopeForAttempt`) belong to that module
@@ -546,9 +557,18 @@ function computeKmpTestTargetMatch(envelope, classification, scenario) {
     if (envelope.modules.length !== 1) return false;
     const envelopeModule = normalizeModuleName(envelope.modules[0]?.name);
     if (envelopeModule !== targetModule) return false;
-    if (classification.moduleFilter != null && normalizeModuleName(classification.moduleFilter) !== envelopeModule) return false;
+    // typeof guard: matchModuleFilter (unlike normalizeModuleName) assumes a real string `name` and
+    // calls `.replace` on it unconditionally -- a malformed envelope (agent-controlled, adversarial
+    // input) whose sole module entry has no `name` at all, coinciding with an equally-malformed
+    // scenario fixture, would otherwise throw here instead of failing closed like every other
+    // adversarial shape this function rejects.
+    if (typeof envelopeModule !== 'string') return false;
+    if (classification.moduleFilter != null && !matchModuleFilter(envelopeModule, classification.moduleFilter)) return false;
     return true;
   }
+  // no_applicable_tests has no envelope-side module data at all (modules[] is required empty, just
+  // below) -- there is nothing to corroborate a loose substring/glob filter against, so this branch
+  // deliberately stays exact-match fail-closed, unlike the tests_executed branch above.
   if (envelope.modules.length !== 0) return false;
   return classification.moduleFilter != null && normalizeModuleName(classification.moduleFilter) === targetModule;
 }
@@ -615,14 +635,21 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
 
   // Whether this attempt was even ATTEMPTING to check the expected module, independent of
   // whether its response was well-formed -- derived from the INVOKED --module-filter (absent
-  // means "every module, including the target"), never from the response content. Distinct from
-  // `targetMatches` (which requires real, coherent, uniquely-attributable evidence) so that
-  // `terminal` selection (below, in gradeScenarioCondition) can tell "a later attempt that never
-  // even tried to check the target module" apart from "a later attempt that DID try, but its
-  // response was malformed or incoherent" -- only the former should be excluded from contention
-  // for "terminal."
+  // means "every module, including the target"), never from the response content, via the SAME
+  // `matchModuleFilter` real-CLI semantics `computeKmpTestTargetMatch` uses above (not exact-string
+  // equality -- a follow-up fix: the original version rejected a genuinely on-target short/glob
+  // filter here too, which could silently exclude a correct FIRST attempt from terminal
+  // contention and let an unrelated LATER attempt win by default). Distinct from `targetMatches`
+  // (which requires real, coherent, uniquely-attributable evidence) so that `terminal` selection
+  // (below, in gradeScenarioCondition) can tell "a later attempt that never even tried to check
+  // the target module" apart from "a later attempt that DID try, but its response was malformed or
+  // incoherent" -- only the former should be excluded from contention for "terminal."
   const targetModule = normalizeModuleName(scenario.expected.module);
-  const intendedTargetMatches = classification.moduleFilter == null || normalizeModuleName(classification.moduleFilter) === targetModule;
+  // typeof guard: same rationale as computeKmpTestTargetMatch's identical guard above --
+  // matchModuleFilter calls `.replace` on its `name` argument unconditionally, unlike
+  // normalizeModuleName's own safe passthrough for a non-string value.
+  const intendedTargetMatches = classification.moduleFilter == null
+    || (typeof targetModule === 'string' && matchModuleFilter(targetModule, classification.moduleFilter));
 
   return { provider: 'kmp_test', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence, malformed, targetMatches, intendedTargetMatches, outcomeMatches, parallelEvidenceInvalid };
 }

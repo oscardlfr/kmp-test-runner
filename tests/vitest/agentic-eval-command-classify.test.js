@@ -159,4 +159,38 @@ describe('isRelevantKmpTestParallel', () => {
     expect(isRelevantKmpTestParallel(classifyBashCommand('./gradlew.bat :shared:testAndroidHostTest --console=plain'), ':shared')).toBe(false);
     expect(isRelevantKmpTestParallel(classifyBashCommand('ls -la'), ':shared')).toBe(false);
   });
+
+  // Module-filter target-attribution parity: isRelevantKmpTestParallel's own moduleFilter/target
+  // comparison now delegates to the real production matcher (lib/orchestrators/module-filter.js's
+  // matchModuleFilter, imported directly -- not orchestrator-utils.js's fs/child_process-carrying
+  // surface), not an exact-string equality check. Pre-fix, `normalizeModuleName(moduleFilter) ===
+  // normalizeModuleName(targetModule)` rejected every one of these -- a short substring filter, an
+  // anchored glob, or a CSV list containing the target -- even though the real CLI's own
+  // `--module-filter` dispatch would have matched the nested `:core:common` module correctly.
+  it('a --module-filter that is a SUBSTRING of a nested target module\'s leaf name is relevant (matchModuleFilter semantics, not exact-string equality)', () => {
+    expect(isRelevantKmpTestParallel(classifyBashCommand('kmp-test parallel --module-filter common --json'), ':core:common')).toBe(true);
+  });
+
+  it('a --module-filter that is an anchored GLOB matching the target module is relevant', () => {
+    expect(isRelevantKmpTestParallel(classifyBashCommand('kmp-test parallel --module-filter core:* --json'), ':core:common')).toBe(true);
+  });
+
+  it('a --module-filter CSV list that CONTAINS the target module is relevant', () => {
+    expect(isRelevantKmpTestParallel(classifyBashCommand('kmp-test parallel --module-filter other,common --json'), ':core:common')).toBe(true);
+  });
+
+  it('a --module-filter that does not match the target module under real matchModuleFilter semantics is NOT relevant, even for a nested module path', () => {
+    expect(isRelevantKmpTestParallel(classifyBashCommand('kmp-test parallel --module-filter other --json'), ':core:common')).toBe(false);
+  });
+
+  // Adversarial-review finding: matchModuleFilter (unlike normalizeModuleName) calls `.replace`
+  // on its `name` argument unconditionally, so a missing/non-string targetModule would throw here
+  // instead of safely returning false as the old exact-match comparison did. junit-evidence.mjs's
+  // own `scenario.expected?.module` (optional chaining) shows this is a genuinely anticipated shape
+  // in this codebase, not a purely hypothetical one.
+  it('a missing (undefined) targetModule does not crash -- returns false, matching the old comparison\'s safe behavior', () => {
+    const c = classifyBashCommand('kmp-test parallel --module-filter common --json');
+    expect(() => isRelevantKmpTestParallel(c, undefined)).not.toThrow();
+    expect(isRelevantKmpTestParallel(c, undefined)).toBe(false);
+  });
 });

@@ -409,6 +409,36 @@ describe('attributeCondition -- same-transcript-index conflict vs. different-ind
   });
 });
 
+describe('attributeCondition -- module-filter target attribution uses real matchModuleFilter semantics (isRelevantKmpTestParallel, not exact-string equality)', () => {
+  // Pre-fix, isRelevantKmpTestParallel compared the raw --module-filter argument to the target
+  // module via exact string equality, so a kmp-test-parallel call using a short substring filter
+  // for a NESTED module (:core:common) was never counted as a "relevant" (potential JUnit-XML)
+  // producer at all -- even though the real CLI's own dispatch would have matched it. That silently
+  // hid a genuine same-turn conflict: a Gradle call and a kmp-test-parallel call for the SAME
+  // module, dispatched in the SAME assistant turn, must both be tracked as relevant so the
+  // concurrency proof can flag them as ambiguous.
+  it('a Gradle call and a kmp-test parallel call using a SHORT (substring) --module-filter, dispatched in the SAME turn for :core:common, are BOTH recognized as relevant producers and trip ambiguousJunitEvidence:true -- fails under the old exact-match isRelevantKmpTestParallel logic (the kmp-test call is invisible to the relevance scan, so no conflict is ever detected)', () => {
+    const scenario = { expected: { module: ':core:common', gradle: { allowed_invocations: [':core:common:test'] } } };
+    const gradleCmd = './gradlew.bat :core:common:test --console=plain';
+    const kmpTestCmd = 'kmp-test parallel --module-filter common --json';
+    const dir = makeEvidenceDir();
+    try {
+      writeDecision(dir, 't1', 'allow', gradleCmd);
+      writeEvidence(dir, 't1', gradleCmd, { status: 'ok', junit: { total: 1, passed: 1, failed: 0 } });
+      writeDecision(dir, 't2', 'allow', kmpTestCmd);
+      const bashResults = [
+        { index: 5, id: 't1', command: gradleCmd },
+        { index: 5, id: 't2', command: kmpTestCmd },
+      ];
+      const result = attributeCondition(dir, scenario, bashResults);
+      expect(result.ambiguousJunitEvidence).toBe(true);
+      expect(result.perAttemptJunit.get('t1')).toEqual({ status: 'conflict' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('attributeCondition -- unreliable evidence (integrity_error) surfaces independently of captureIncomplete', () => {
   it('an allowed Gradle attempt whose evidence record itself carries status:"integrity_error" sets unreliable:true, without necessarily setting captureIncomplete', () => {
     const dir = makeEvidenceDir();
