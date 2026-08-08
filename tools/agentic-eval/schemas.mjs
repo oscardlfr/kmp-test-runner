@@ -619,20 +619,29 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
     // `tests_failed` (ground-truth-verified against android/nowinandroid's :lint module -- see
     // corpus/scenarios/deterministic-unit-test-failure.json) shares `tests_executed`'s shape almost
     // exactly -- both represent "the task genuinely ran to completion", never a compile/setup/env
-    // failure -- and differ in exactly two VALUE requirements, captured once here rather than
-    // duplicating this whole block: `failed` must be POSITIVE (>=1), never exactly 0 (a "tests
-    // failed" claim with zero failures is self-contradictory -- the mirror image of
-    // `tests_executed`'s own failed-must-be-0 requirement), and `exit_code` must be exactly 1 (a
-    // real kmp-test envelope's own `classifyExitCode` maps `testsFailed>0 -> TEST_FAIL(1)`; a real
-    // Gradle build with genuine test failures always reports BUILD FAILED, exit 1) rather than
-    // exactly 0. `tests_failed` never equates kmp-test's TASK-level total/passed/failed with
-    // Gradle/JUnit's per-testcase counts -- see the individual_total<->gradle.tests.total
-    // cross-check in validateExpected, below, the one place the two are required to agree (both
-    // describing the SAME real test execution).
+    // failure. `exit_code` must be exactly 1 (a real kmp-test envelope's own `classifyExitCode`
+    // maps `testsFailed>0 -> TEST_FAIL(1)`; a real Gradle build with genuine test failures always
+    // reports BUILD FAILED, exit 1) rather than exactly 0. `tests_failed` never equates kmp-test's
+    // TASK-level total/passed/failed with Gradle/JUnit's per-testcase counts -- see the
+    // individual_total<->gradle.tests.total cross-check in validateExpected, below, the one place
+    // the two are required to agree (both describing the SAME real test execution).
+    //
+    // Round-2 review finding: this scenario shape is deliberately scoped to EXACTLY one target
+    // task, every one of whose individual test cases failed -- graders.mjs's own tests_failed
+    // branch can only ever validate that exact shape (exactly one `module_failed` entry, never
+    // more; see its own doc comment) -- never a genuinely mixed/multi-task result. An earlier
+    // version of this schema only required kmp_test.tests.failed to be POSITIVE (>=1) and
+    // gradle.tests.failed likewise, independently of one another and of `total`/`passed` -- which
+    // let a scenario declare e.g. kmp_test `{total:3,passed:1,failed:2}` alongside gradle
+    // `{total:6,passed:2,failed:4}`, a schema-valid contract the grader could never actually grade
+    // correctly (no single `test_failures` array length can satisfy both a task-level failed count
+    // and a per-testcase failed count that disagree). Tightened to the exact single-task/all-failed
+    // contract instead of broadening the grader to match the old, wider schema -- mixed
+    // results/skips remain explicitly out of scope for this PR (see this PR's own "Not in this PR"
+    // note, and graders.mjs's identical scoping comment on its own test_failures check).
     const isFailureOutcome = outcomeKind === 'tests_failed';
     const isNonNegInt = (v) => Number.isInteger(v) && v >= 0;
     const isPositiveInt = (v) => Number.isInteger(v) && v >= 1;
-    const failedCountOk = (v) => (isFailureOutcome ? isPositiveInt(v) : v === 0);
     const requiredExitCode = isFailureOutcome ? 1 : 0;
     let testsShapeOk;
     if (contractName === 'kmp_test') {
@@ -649,10 +658,12 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
       // skipped>0 would be permanently unverifiable by construction, for EITHER ran outcome_kind.
       rejectUnrecognizedKeys(provider.tests, KMP_TEST_TESTS_SHAPE_KEYS, `${field}.tests`, errors);
       testsShapeOk = hasTests
-        && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && failedCountOk(provider.tests.failed)
+        && (isFailureOutcome
+          ? provider.tests.total === 1 && provider.tests.passed === 0 && provider.tests.failed === 1
+          : isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && provider.tests.failed === 0)
         && isPositiveInt(provider.tests.individual_total) && provider.tests.skipped === 0;
       if (!testsShapeOk) {
-        errors.push({ field: `${field}.tests`, message: `required (positive integer total/individual_total; non-negative integer passed; failed must be ${isFailureOutcome ? 'a positive integer (at least 1)' : 'exactly 0'} and skipped must be exactly 0 -- ${isFailureOutcome ? 'tests_failed represents a genuine failure, coherent with the exit_code:1 requirement below' : 'tests_executed represents a clean, all-passing run, coherent with the exit_code:0 requirement below'}) when outcome_kind is ${outcomeKind}` });
+        errors.push({ field: `${field}.tests`, message: `required (${isFailureOutcome ? 'exactly total:1/passed:0/failed:1 -- tests_failed is scoped to a single target task, coherent with the exit_code:1 requirement below' : 'positive integer total; non-negative integer passed; failed must be exactly 0, coherent with the exit_code:0 requirement below'}; positive integer individual_total; skipped must be exactly 0) when outcome_kind is ${outcomeKind}` });
       }
     } else {
       // Gradle/JUnit-XML: individual_total/skipped are FORBIDDEN, not merely unvalidated -- the
@@ -662,9 +673,16 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
       // set to `null`, which the old `!= null` presence check silently missed); no separate
       // hasIndividualTotal/hasSkipped check is needed.
       rejectUnrecognizedKeys(provider.tests, GRADLE_TESTS_SHAPE_KEYS, `${field}.tests`, errors);
-      testsShapeOk = hasTests && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && failedCountOk(provider.tests.failed);
+      // tests_failed mirror: EVERY individual test case must have failed (passed:0,
+      // failed===total) -- a partial/mixed Gradle result is a different, unsupported scenario
+      // shape (round-2 finding, above).
+      testsShapeOk = hasTests
+        && isPositiveInt(provider.tests.total)
+        && (isFailureOutcome
+          ? provider.tests.passed === 0 && provider.tests.failed === provider.tests.total
+          : isNonNegInt(provider.tests.passed) && provider.tests.failed === 0);
       if (!testsShapeOk) {
-        errors.push({ field: `${field}.tests`, message: `required (positive integer total; non-negative integer passed; failed must be ${isFailureOutcome ? 'a positive integer (at least 1)' : 'exactly 0'}) when outcome_kind is ${outcomeKind}` });
+        errors.push({ field: `${field}.tests`, message: `required (positive integer total; ${isFailureOutcome ? 'passed must be exactly 0 and failed must equal total -- every individual test case must have failed' : 'non-negative integer passed; failed must be exactly 0'}) when outcome_kind is ${outcomeKind}` });
       }
     }
     if (testsShapeOk && provider.tests.total !== provider.tests.passed + provider.tests.failed) {

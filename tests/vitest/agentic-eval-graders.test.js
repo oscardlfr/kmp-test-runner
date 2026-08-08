@@ -777,6 +777,77 @@ describe('gradeScenarioCondition -- scenario 4 (:lint) negative cases: wrong mod
     expect(grade.success).toBe(false);
   });
 
+  // Round-2 review finding: test_failures was previously checked ONLY by .length -- its own
+  // elements were never inspected at all, so an envelope could carry a correctly-SIZED array of
+  // garbage (null entries, scalars, malformed objects) and still satisfy tests_failed as long as
+  // the aggregate counters and the array's .length happened to match. Each entry must now be a
+  // real {test, cause, type} object: `test`/`cause` non-empty strings (junit-xml.js's own
+  // junitTestFailuresFor always produces both -- `test` falls back to '<unknown>', `cause` falls
+  // back to the literal 'error'/'failure', but NEITHER is ever empty or absent), `type` null OR a
+  // non-empty string (junit-xml.js's own `type: type ?? null` -- legitimately null when the
+  // captured <failure>/<error> tag has no type="..." attribute). Deliberately NOT comparing
+  // specific test identities/names against the schema -- see this file's own "exactly one target
+  // task" scoping note, above.
+  it('a kmp-test envelope whose test_failures array contains null entries never satisfies tests_failed, even when the length matches', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    envelope.modules[0].test_failures = [null, null, null];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a kmp-test envelope whose test_failures array contains a scalar (non-object) entry never satisfies tests_failed', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    envelope.modules[0].test_failures[0] = 'not-an-object';
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a kmp-test envelope whose test_failures entry is missing a required field (cause) never satisfies tests_failed', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    delete envelope.modules[0].test_failures[0].cause;
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a kmp-test envelope whose test_failures entry has a wrong-typed field (type: a number, neither null nor a string) never satisfies tests_failed', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    envelope.modules[0].test_failures[0].type = 42;
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('regression guard: a test_failures entry with type:null (the real shape junit-xml.js produces when no type="..." attribute is present) still satisfies tests_failed', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    envelope.modules[0].test_failures[0].type = null;
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
   // Review-round finding: `setup_failed:true` (result-rollup.js's own real discriminator: "the
   // failure happened pre-test -- compile, plugin error, classpath, runner setup, etc." -- tests
   // never actually ran) was never checked, so a genuine SETUP failure carrying this exact real flag
@@ -784,6 +855,54 @@ describe('gradeScenarioCondition -- scenario 4 (:lint) negative cases: wrong mod
   it('a kmp-test module_failed entry with setup_failed:true (tests never actually ran) never satisfies tests_failed', () => {
     const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
     envelope.errors[0].setup_failed = true;
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // Round-2 review finding: `setup_failed !== true` only rejects the LITERAL boolean `true` --
+  // the exact same class of gap this file's own `dry_run`/`list_only` checks were already fixed
+  // for (see validateParallelEvidence's own fail-closed-allowlist comment). result-rollup.js's
+  // real errEntry object literal (`{code, module, task, message}`) never carries a `setup_failed`
+  // key at all for a genuine test failure -- the key is only ever ADDED, and only ever set to the
+  // literal boolean `true`, when `taskTestcaseCount === 0` (a real pre-test failure; see
+  // recordLegResults's own `if (failures.length > 0) {...} else if (taskTestcaseCount === 0) {
+  // errEntry.setup_failed = true }` branch). So the only real production states are "key absent"
+  // (genuine test failure) or "key present, value true" (genuine setup failure) -- ANY other
+  // shape (a string, a number, an explicit null) is impossible real evidence and must be rejected
+  // exactly like a wrong-typed `true` would be, not silently tolerated because it merely isn't
+  // `=== true`.
+  it('a kmp-test module_failed entry with setup_failed:"true" (string, not the real boolean production ever emits) never satisfies tests_failed', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    envelope.errors[0].setup_failed = 'true';
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a kmp-test module_failed entry with setup_failed:1 (number) never satisfies tests_failed', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    envelope.errors[0].setup_failed = 1;
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('a kmp-test module_failed entry with setup_failed:null (explicitly present, not genuinely absent) never satisfies tests_failed', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    envelope.errors[0].setup_failed = null;
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
       SCENARIO_4_CORRECT_ANSWER,

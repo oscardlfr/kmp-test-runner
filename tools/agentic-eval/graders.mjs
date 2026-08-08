@@ -428,6 +428,25 @@ export function validateParallelEvidence(envelope, invokedTestType) {
   return legsFailedSum === envelope.tests?.failed;
 }
 
+// Round-2 review finding: a `tests_failed` envelope's `modules[0].test_failures` array was
+// previously checked ONLY by `.length` -- its own elements were never inspected, so an
+// array of `null`/scalars/malformed objects of the right length satisfied validation. Mirrors
+// junit-xml.js's own `junitTestFailuresFor`/`extractTestcaseFailures`, the ONLY real producer of
+// this shape: `test` and `cause` are always non-empty strings (both have hard fallbacks --
+// '<unknown>' / 'error'|'failure' -- and are never empty or absent in real output), `type` is
+// `type ?? null` -- legitimately `null` when the captured XML's <failure>/<error> tag has no
+// `type="..."` attribute, otherwise a non-empty string. Deliberately does NOT compare specific
+// test identities/names against the schema -- that would require modeling per-test identity in
+// the schema itself, out of scope for this first tests_failed scenario (see this file's own
+// "exactly one target task" scoping note).
+function isWellFormedTestFailureEntry(entry) {
+  if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) return false;
+  if (typeof entry.test !== 'string' || entry.test.length === 0) return false;
+  if (typeof entry.cause !== 'string' || entry.cause.length === 0) return false;
+  if (entry.type !== null && (typeof entry.type !== 'string' || entry.type.length === 0)) return false;
+  return true;
+}
+
 function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsError, scenario, invokedTestType) {
   if (envelope.subcommand !== invokedSubcommand) return false;
   // Execution/plan-mode coherence: the envelope's OWN self-reported mode must agree with a real
@@ -505,13 +524,26 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
     //    pre-test -- compile, plugin error, classpath, runner setup, etc.; tests never actually
     //    ran", added specifically so agents can distinguish this from a genuine test failure) was
     //    never checked at all.
+    //
+    // Round-2 review finding: `setup_failed !== true` (the original fix for #3, above) only
+    // rejects the LITERAL boolean `true` -- the exact same class of gap this file's own
+    // `dry_run`/`list_only` checks were already fixed for (see validateParallelEvidence's own
+    // fail-closed-allowlist comment). Verified directly against result-rollup.js: its real
+    // errEntry object literal (`{code, module, task, message}`) never carries a `setup_failed` key
+    // at all for a genuine test failure -- the key is only ever ADDED, and only ever set to the
+    // literal boolean `true`, when `taskTestcaseCount === 0` (a real pre-test failure; see
+    // recordLegResults's `if (failures.length > 0) {...} else if (taskTestcaseCount === 0) {
+    // errEntry.setup_failed = true }` branch). So the only real production states are "key
+    // absent" (genuine test failure) or "key present, value true" (genuine setup failure) --
+    // fixed to require genuine ABSENCE, not merely inequality with `true`, so a wrong-typed value
+    // (a string, a number, an explicit null) is rejected exactly like `true` itself would be.
     const targetModuleName = normalizeModuleName(scenario.expected.module);
     const g = scenario.expected.gradle;
     const matchingModuleFailures = envelope.errors.filter((e) => e && e.code === 'module_failed' && normalizeModuleName(e.module) === targetModuleName);
     const soleModuleFailure = matchingModuleFailures.length === 1 ? matchingModuleFailures[0] : null;
     const moduleFailureOk = envelope.errors.length === 1 && soleModuleFailure != null
       && soleModuleFailure.task === g.evidence_task
-      && soleModuleFailure.setup_failed !== true;
+      && !('setup_failed' in soleModuleFailure);
     // A further review pass found the aggregate `tests.*` counters were the ONLY thing checked --
     // `modules[0].test_failures` (the real per-test detail array a genuine envelope always carries
     // alongside a module_failed entry, ground-truth confirmed) was never inspected, so an envelope
@@ -524,10 +556,16 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
     // deliberately NOT matching individual test NAMES, which would require modeling per-test
     // identity in the schema itself; out of scope for this first tests_failed scenario (see this
     // PR's own "Not in this PR" note on mixed results/skips needing additional observability).
+    //
+    // Round-2 review finding: length alone proves nothing about CONTENT -- an array of the right
+    // LENGTH but filled with `null`/scalars/malformed objects previously satisfied this check.
+    // Every entry must now also be individually well-formed -- see isWellFormedTestFailureEntry,
+    // above.
     const targetModuleEntry = Array.isArray(envelope.modules) && envelope.modules.length === 1 ? envelope.modules[0] : null;
     const testFailuresOk = targetModuleEntry != null && Array.isArray(targetModuleEntry.test_failures)
       && targetModuleEntry.test_failures.length === kt.tests.individual_total
-      && targetModuleEntry.test_failures.length === g.tests.failed;
+      && targetModuleEntry.test_failures.length === g.tests.failed
+      && targetModuleEntry.test_failures.every(isWellFormedTestFailureEntry);
     return validateParallelEvidence(envelope, invokedTestType)
       && moduleFailureOk
       && testFailuresOk

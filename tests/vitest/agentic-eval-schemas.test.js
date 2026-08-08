@@ -1134,12 +1134,28 @@ describe('validateScenario', () => {
       expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
     });
 
-    it('accepts kmp_test.tests.failed > 1 (multiple task-level failures), as long as total = passed + failed', () => {
+    // Round-2 review finding: this scenario shape is deliberately scoped to exactly ONE target
+    // task whose individual test cases ALL fail (see graders.mjs's own "exactly one target task"
+    // doc comment on its tests_failed branch) -- multi-task/mixed-result scope is explicitly OUT
+    // for this PR, not merely undocumented. The schema previously allowed
+    // kmp_test.tests.failed > 1 (any positive count) even though the grader can only ever validate
+    // the single-task shape (exactly one module_failed entry, never more) -- a scenario author
+    // could have authored a schema-valid contract the grader could never correctly grade. Tightened
+    // to total===1/passed===0/failed===1 EXACTLY, closing that gap at the source rather than
+    // broadening the grader to match the old, wider schema.
+    it('rejects kmp_test.tests.failed > 1 -- this scenario shape is exactly one target task, all its cases failed, never a multi-task claim', () => {
       const s = baseScenarioTestsFailed();
       s.expected.kmp_test.tests = { total: 2, passed: 0, failed: 2, individual_total: 6, skipped: 0 };
       s.expected.gradle.tests = { total: 6, passed: 0, failed: 6 };
       const { errors } = validateScenario(s);
-      expect(errors).toEqual([]);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.tests')).toBe(true);
+    });
+
+    it('rejects a Gradle mixed result (passed > 0) -- every individual test case must have failed, never a partial/mixed run', () => {
+      const s = baseScenarioTestsFailed();
+      s.expected.gradle.tests = { total: 3, passed: 1, failed: 2 };
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.gradle.tests')).toBe(true);
     });
 
     it('rejects tests_failed with a negative failed count', () => {
