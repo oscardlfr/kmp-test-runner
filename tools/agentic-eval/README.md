@@ -166,8 +166,15 @@ matrix is rejected anyway.
   guaranteed split across repetitions, not merely a shuffle that's unbiased only in expectation)
   against one scenario from `corpus/scenarios/` and grades each condition's transcript with
   `graders.mjs`'s 8 structured, evidence-anchored checks (never a free-text keyword scan — see
-  `graders.mjs`'s own header comment for why that design was rejected once already). `--seed` is
-  always required and never
+  `graders.mjs`'s own header comment for why that design was rejected once already). For a
+  `tests_executed` scenario, target-module identity (`authoritative_target_matches_expected`)
+  resolves the condition's own `--module-filter` argument through the exact same `matchModuleFilter`
+  function (`lib/orchestrators/module-filter.js`) the real CLI dispatch itself uses — never a second,
+  independently-maintained comparison — so an agent correctly targeting a nested module via a short
+  substring filter or an anchored glob grades identically to one using the exact module path.
+  `no_applicable_tests` deliberately keeps plain exact-string equality instead: its envelope carries
+  no module data at all (`modules[]` is required empty for that outcome), so there is nothing to
+  corroborate a loose filter against, and it stays fail-closed. `--seed` is always required and never
   auto-generated, so a `--dry-run` preview can never silently diverge from the real run it
   previews, and any run is exactly reproducible from its own recorded evidence. `--repeats`
   defaults to 4 (even, counterbalance-capable by construction); any other positive integer up to

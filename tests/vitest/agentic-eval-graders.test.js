@@ -533,6 +533,169 @@ describe('gradeScenarioCondition -- scenario 3 (:core:common) negative cases: wr
   });
 });
 
+// ---------------------------------------------------------------------------------------------
+// Module-filter target-attribution parity: computeKmpTestTargetMatch's tests_executed branch (and
+// evaluateKmpTestAttempt's intendedTargetMatches) now validate the command's own --module-filter
+// against the resolved module via the REAL production matcher (lib/orchestrators/module-filter.js's
+// matchModuleFilter, imported directly), not exact-string equality. Pre-fix, an agent correctly
+// targeting a NESTED module (this corpus's first -- :core:common, not :shared/:app) via a short
+// substring or glob filter that the real CLI resolves correctly could be graded a FAILURE, purely
+// because `normalizeModuleName(moduleFilter) !== normalizeModuleName(envelopeModule)` rejects
+// anything short of exact string equality. The envelope.modules.length===1 + module-identity gates
+// are unchanged; only the FILTER comparison changed. no_applicable_tests's own branch is
+// deliberately untouched -- envelope.modules[] is always empty there, so there is no envelope-side
+// module data to corroborate a loose filter against, and it must stay exact-match fail-closed.
+// ---------------------------------------------------------------------------------------------
+describe('gradeScenarioCondition -- module-filter target attribution uses real matchModuleFilter semantics (tests_executed only; no_applicable_tests stays exact)', () => {
+  it('a SHORT (substring) --module-filter that matchModuleFilter would accept for the target module passes -- fails under the old exact-string-equality logic', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter common --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO3_PASS }],
+      SCENARIO_3_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_3);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  it('an anchored GLOB --module-filter that matchModuleFilter would accept for the target module passes -- fails under the old exact-string-equality logic', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter core:* --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO3_PASS }],
+      SCENARIO_3_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_3);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  it('a --module-filter that does NOT match the target module under real matchModuleFilter semantics still fails, even though the envelope itself reports the right module -- the loosened check is not a rubber stamp', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter other --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO3_PASS }],
+      SCENARIO_3_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_3);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('an envelope reporting MULTIPLE modules still fails closed even with a filter matchModuleFilter would otherwise accept -- the modules.length===1 gate runs BEFORE the filter comparison and is unchanged', () => {
+    const multiModuleEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 },
+      modules: [{ name: 'core:common', type: 'jvm' }, { name: 'core:other', type: 'jvm' }],
+      skipped: [], coverage: {}, errors: [], warnings: [],
+      parallel: {
+        test_type: 'auto',
+        legs: [{
+          test_type: 'auto', exit_code: 0,
+          execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
+          cascade_detected: false, retry_fired: false,
+        }],
+        max_workers: 0, timeout_s: 600,
+      },
+      isolated: DEFAULT_ISOLATED_FIELD,
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter common --json', resultContent: multiModuleEnvelope }],
+      SCENARIO_3_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_3);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+
+  it('no_applicable_tests: a --module-filter that WOULD match the target under matchModuleFilter (glob) is still REJECTED -- this branch deliberately stays exact-match fail-closed, since modules[] is empty and there is no envelope-side module data to corroborate a loose filter against', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter a* --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS }],
+      SCENARIO_2_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+});
+
+describe('gradeScenarioCondition -- terminal-attempt selection: intendedTargetMatches also uses real matchModuleFilter semantics', () => {
+  it('a CORRECT first attempt using a short (substring) filter, followed by a later attempt at an unrelated wrong module, keeps the FIRST attempt as terminal evidence -- fails under the old exact-match intendedTargetMatches logic (both attempts would read as "never tried the target", so terminal falls back to the LAST attempt overall -- the wrong one)', () => {
+    const wrongModuleEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 0, duration_ms: 50, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 },
+      modules: [{ name: 'some-other-module', type: 'jvm' }], skipped: [], coverage: {}, errors: [], warnings: [],
+      parallel: {
+        test_type: 'auto',
+        legs: [{
+          test_type: 'auto', exit_code: 0,
+          execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
+          cascade_detected: false, retry_fired: false,
+        }],
+        max_workers: 0, timeout_s: 600,
+      },
+      isolated: DEFAULT_ISOLATED_FIELD,
+    });
+    const cr = buildConditionResult(
+      [
+        { command: 'kmp-test parallel --module-filter common --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO3_PASS },
+        { command: 'kmp-test parallel --module-filter some-other-module --json', resultContent: wrongModuleEnvelope },
+      ],
+      SCENARIO_3_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_3);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+    expect(grade.terminalAuthoritativeEventIndex).toBe(cr.bashResults[0].resultIndex);
+  });
+
+  // Reproduced regression (post-merge review finding): intendedTargetMatches must NOT use
+  // matchModuleFilter for no_applicable_tests, mirroring computeKmpTestTargetMatch's own
+  // outcome_kind split exactly. A valid FIRST attempt (exact --module-filter app) followed by a
+  // LATER attempt using a looser glob (--module-filter a*, same no_applicable_tests evidence
+  // shape) must NOT let the later attempt's filter count as "also intended" -- the glob is
+  // rejected as EVIDENCE by the sibling test above ("no_applicable_tests: a --module-filter that
+  // WOULD match... is still REJECTED"), but before this fix, intendedTargetMatches loosely
+  // accepted it anyway, which pulled the later, wrong-per-this-outcome-kind attempt into
+  // onTargetAttempts and made IT terminal -- silently overriding the genuinely correct first
+  // attempt and flipping a real success to a false failure.
+  it('no_applicable_tests: a later attempt using a looser filter must not steal terminal selection away from a genuinely correct earlier exact-filter attempt', () => {
+    const cr = buildConditionResult(
+      [
+        { command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS },
+        { command: 'kmp-test parallel --module-filter a* --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS },
+      ],
+      SCENARIO_2_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.terminalAuthoritativeEventIndex).toBe(cr.bashResults[0].resultIndex);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+});
+
+describe('gradeScenarioCondition -- adversarial-review finding: matchModuleFilter callers must not crash on a malformed target', () => {
+  // matchModuleFilter (unlike normalizeModuleName) calls `.replace` on its `name` argument
+  // unconditionally, so a scenario fixture missing `expected.module` would throw inside
+  // computeKmpTestTargetMatch/intendedTargetMatches instead of failing closed like every other
+  // malformed shape this file rejects. Confirmed unreachable via the real corpus/scenarios/*.json
+  // pipeline (schemas.mjs's validateScenario requires `expected.module` to be a string matching
+  // `^:[A-Za-z0-9_:-]+$` before a scenario ever reaches grading) -- this guards the function's own
+  // contract directly, the same way it already guards against every other adversarial envelope
+  // shape, rather than relying solely on an upstream caller.
+  it('a scenario whose expected.module is missing does not crash grading -- fails closed instead', () => {
+    const malformedScenario = { ...SCENARIO_3, expected: { ...SCENARIO_3.expected, module: undefined } };
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter common --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO3_PASS }],
+      SCENARIO_3_CORRECT_ANSWER,
+    );
+    let grade;
+    expect(() => { grade = gradeScenarioCondition(cr, malformedScenario); }).not.toThrow();
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+  });
+});
+
 describe('gradeScenarioCondition -- decision 13 fix: check 5 (target) is a REQUIRED conjunct of expectedOutcomeMatched', () => {
   // The exact bug found on review: a wrong-module attempt whose counts happen to coincidentally
   // match must NOT read as expectedOutcomeMatched:true. Construct a kmp-test envelope for a
