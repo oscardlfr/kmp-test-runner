@@ -243,12 +243,16 @@ authoritative one** — only the last, event 267, is.
    "Planned vs actual runtime provenance" above) — `claude_code_version` homogeneous `2.1.225` (not
    the originally planned `2.1.218`, disclosed and accepted per explicit user decision), every other
    field exact.
-4. **Raw transcripts never staged**: `git status --porcelain` shows exactly 8 new untracked files
-   after the live matrix (4 records + 4 `audit/` sidecars) — never the 4 `raw/*.jsonl` transcripts,
-   confirmed gitignored (`tools/runs/agentic-eval-*/raw/**`).
-5. **Historical evidence untouched**: a SHA-256 manifest of all pre-existing `tools/runs/**` files was
-   captured before the live matrix and diffed after — zero changed files, only the 12 new additions
-   (4 records + 4 sidecars + 4 gitignored raw).
+4. **Raw transcripts never staged** *(session-only — this is a point-in-time observation, not
+   reproducible by a later reader; the committed `.gitignore` rule itself is independently checkable,
+   but not that `git status` actually showed this exact set at commit time)*: `git status --porcelain`
+   showed exactly 8 new untracked files after the live matrix (4 records + 4 `audit/` sidecars) — never
+   the 4 `raw/*.jsonl` transcripts, confirmed gitignored (`tools/runs/agentic-eval-*/raw/**`).
+5. **Historical evidence untouched** *(session-only — the before/after manifest itself is not one of
+   this PR's 9 committed files, so this specific comparison cannot be independently re-run by a later
+   reader; only the current committed tree's state can be inspected)*: a SHA-256 manifest of all
+   pre-existing `tools/runs/**` files was captured before the live matrix and diffed after — zero
+   changed files, only the 12 new additions (4 records + 4 sidecars + 4 gitignored raw).
 6. **Genuine `success:false` cells kept as accepted evidence**: both `no-skill` cells are honest
    `success:false` for two distinct, documented reasons — every integrity gate passed for all 4, so
    all 4 are promoted, committed, and reported exactly like the 2 successful cells, with no smoothing
@@ -361,16 +365,23 @@ rejection, no partial promotion, no timeout, no retry. The one deviation from pl
   `current-skill` 2-of-2 vs. `no-skill` 0-of-2 split in this report should be read as "target skill
   present vs. target skill specifically withheld, while other ambient skills remain reachable" — not
   as "skill available vs. no skills available at all."
-- **What is and is not reproducible from this PR's 9 committed files alone.** Reproducible: every
-  number in "Per-cell metrics," "Reconciliation checklist," and "Aggregation results" (recomputed from
-  committed record/sidecar JSON or the harness's own `validate`/`aggregate`/`analyze` output in this
-  session, none hand-transcribed); the ledger's `tool_use_event_index`, `category`, `decision`, and
-  `is authoritative terminal attempt` columns (read directly from each committed `audit/*.json`
-  sidecar's `tool_calls[]` and `terminal_authoritative_event` fields). **Not** reproducible from the 9
-  files alone: the ledger's `filter shape`/`matches :core:common` columns for the two `kmp-test
-  parallel` rows (required the gitignored, local-only raw `.jsonl` transcripts — see "Evidence
-  integrity"); the local-ci log contents; and the preflight process-listing / toolchain-resolution /
-  auth-status diagnostics (session artifacts, not committed anywhere).
+- **Reproducibility is three distinct tiers, not one blanket claim.**
+  - **Derivable from the 9 committed files alone**, no harness execution needed: every "Per-cell
+    metrics" number; every "Fixed provenance"/"Run IDs and sidecars" field; the ledger's
+    `tool_use_event_index`, `category`, `decision`, and `is authoritative terminal attempt` columns
+    (read directly from each committed `audit/*.json` sidecar's `tool_calls[]` and
+    `terminal_authoritative_event` fields); and sidecar SHA-256 values (a generic hash over committed
+    bytes, not harness-specific logic).
+  - **Reproducible from a full PR checkout using the harness** (needs `tools/agentic-eval/cli.mjs` and
+    its code — not the 9 files as inert data on their own): Reconciliation item 1 (`validate --run`
+    exiting 0 on each record) and the "Aggregation results" section (`aggregate`/`analyze
+    --runs-dir`) — both require actually executing the harness's own logic against the committed
+    records.
+  - **Session-only, not reproducible by any later reader regardless of access**: Reconciliation items
+    4 and 5 (see their own markers above); the raw-transcript inspection itself — the SHA-256 +
+    byte-length before/after checks on the 4 raw `.jsonl` files and the `filter shape`/`matches
+    :core:common` classification derived from them (see "Evidence integrity"); the local-ci log
+    contents; and the preflight process-listing / toolchain-resolution / auth-status diagnostics.
 
 ## Recommended next action
 
