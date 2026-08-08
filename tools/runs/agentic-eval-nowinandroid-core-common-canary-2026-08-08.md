@@ -365,7 +365,7 @@ rejection, no partial promotion, no timeout, no retry. The one deviation from pl
   `current-skill` 2-of-2 vs. `no-skill` 0-of-2 split in this report should be read as "target skill
   present vs. target skill specifically withheld, while other ambient skills remain reachable" — not
   as "skill available vs. no skills available at all."
-- **Reproducibility is three distinct tiers, not one blanket claim.**
+- **Reproducibility is four distinct tiers, not one blanket claim.**
   - **Derivable from the 9 committed files alone**, no harness execution needed: every "Per-cell
     metrics" number; every "Fixed provenance"/"Run IDs and sidecars" field; the ledger's
     `tool_use_event_index`, `category`, `decision`, and `is authoritative terminal attempt` columns
@@ -377,11 +377,15 @@ rejection, no partial promotion, no timeout, no retry. The one deviation from pl
     exiting 0 on each record) and the "Aggregation results" section (`aggregate`/`analyze
     --runs-dir`) — both require actually executing the harness's own logic against the committed
     records.
-  - **Session-only, not reproducible by any later reader regardless of access**: Reconciliation items
-    4 and 5 (see their own markers above); the raw-transcript inspection itself — the SHA-256 +
-    byte-length before/after checks on the 4 raw `.jsonl` files and the `filter shape`/`matches
-    :core:common` classification derived from them (see "Evidence integrity"); the local-ci log
-    contents; and the preflight process-listing / toolchain-resolution / auth-status diagnostics.
+  - **Local-raw-dependent** (reproducible by someone who still has the local raw `.jsonl` files
+    retained and accessible — but not from the PR itself, since raw is gitignored and never committed):
+    the `filter shape`/`matches :core:common` classification for the two `kmp-test parallel` rows, and
+    those 4 files' current SHA-256 hash and byte length.
+  - **Historical session-only, cannot be reconstructed later by anyone**: that those raw files' hash
+    and byte length were identical *before and after this session's inspection* specifically — a
+    point-in-time comparison, not a property of the files' current state; Reconciliation items 4 and 5
+    (see their own markers above); the local-ci log contents; and the preflight process-listing /
+    toolchain-resolution / auth-status diagnostics.
 
 ## Recommended next action
 
