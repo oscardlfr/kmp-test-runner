@@ -635,21 +635,36 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
 
   // Whether this attempt was even ATTEMPTING to check the expected module, independent of
   // whether its response was well-formed -- derived from the INVOKED --module-filter (absent
-  // means "every module, including the target"), never from the response content, via the SAME
-  // `matchModuleFilter` real-CLI semantics `computeKmpTestTargetMatch` uses above (not exact-string
-  // equality -- a follow-up fix: the original version rejected a genuinely on-target short/glob
-  // filter here too, which could silently exclude a correct FIRST attempt from terminal
-  // contention and let an unrelated LATER attempt win by default). Distinct from `targetMatches`
-  // (which requires real, coherent, uniquely-attributable evidence) so that `terminal` selection
-  // (below, in gradeScenarioCondition) can tell "a later attempt that never even tried to check
-  // the target module" apart from "a later attempt that DID try, but its response was malformed or
-  // incoherent" -- only the former should be excluded from contention for "terminal."
+  // means "every module, including the target"), never from the response content. Distinct from
+  // `targetMatches` (which requires real, coherent, uniquely-attributable evidence) so that
+  // `terminal` selection (below, in gradeScenarioCondition) can tell "a later attempt that never
+  // even tried to check the target module" apart from "a later attempt that DID try, but its
+  // response was malformed or incoherent" -- only the former should be excluded from contention
+  // for "terminal."
+  //
+  // Mirrors `computeKmpTestTargetMatch`'s own outcome_kind split exactly, for the identical
+  // reason: for `tests_executed`, via the SAME `matchModuleFilter` real-CLI semantics (not
+  // exact-string equality -- a genuinely on-target short/glob filter must not be silently
+  // excluded from terminal contention, letting an unrelated LATER attempt win by default). For
+  // `no_applicable_tests`, the ORIGINAL exact-string comparison -- this branch has no envelope-
+  // side module data to corroborate a loose filter against (see computeKmpTestTargetMatch's own
+  // comment), so a later attempt using a shorter/glob filter must NOT be treated as "also
+  // intended" here, or it can silently steal terminal selection away from a genuinely correct
+  // earlier exact-filter attempt and flip a real success to a false failure. Confirmed as a real,
+  // reproduced regression (not merely a hypothetical) when this branch was first written
+  // outcome_kind-agnostic: a valid `--module-filter app` attempt followed by a later
+  // `--module-filter a*` attempt (same evidence shape) incorrectly became terminal and flipped
+  // `success` from true to false, purely because the later attempt's looser filter also
+  // "intended" the target under matchModuleFilter semantics -- exactly the asymmetry
+  // `computeKmpTestTargetMatch` was always careful to avoid.
   const targetModule = normalizeModuleName(scenario.expected.module);
-  // typeof guard: same rationale as computeKmpTestTargetMatch's identical guard above --
-  // matchModuleFilter calls `.replace` on its `name` argument unconditionally, unlike
-  // normalizeModuleName's own safe passthrough for a non-string value.
-  const intendedTargetMatches = classification.moduleFilter == null
-    || (typeof targetModule === 'string' && matchModuleFilter(targetModule, classification.moduleFilter));
+  const intendedTargetMatches = classification.moduleFilter == null || (
+    scenario.expected.outcome_kind === 'tests_executed'
+      // typeof guard: matchModuleFilter calls `.replace` on its `name` argument unconditionally,
+      // unlike normalizeModuleName's own safe passthrough for a non-string value.
+      ? typeof targetModule === 'string' && matchModuleFilter(targetModule, classification.moduleFilter)
+      : normalizeModuleName(classification.moduleFilter) === targetModule
+  );
 
   return { provider: 'kmp_test', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence, malformed, targetMatches, intendedTargetMatches, outcomeMatches, parallelEvidenceInvalid };
 }

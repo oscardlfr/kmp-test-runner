@@ -647,6 +647,31 @@ describe('gradeScenarioCondition -- terminal-attempt selection: intendedTargetMa
     expect(grade.success).toBe(true);
     expect(grade.terminalAuthoritativeEventIndex).toBe(cr.bashResults[0].resultIndex);
   });
+
+  // Reproduced regression (post-merge review finding): intendedTargetMatches must NOT use
+  // matchModuleFilter for no_applicable_tests, mirroring computeKmpTestTargetMatch's own
+  // outcome_kind split exactly. A valid FIRST attempt (exact --module-filter app) followed by a
+  // LATER attempt using a looser glob (--module-filter a*, same no_applicable_tests evidence
+  // shape) must NOT let the later attempt's filter count as "also intended" -- the glob is
+  // rejected as EVIDENCE by the sibling test above ("no_applicable_tests: a --module-filter that
+  // WOULD match... is still REJECTED"), but before this fix, intendedTargetMatches loosely
+  // accepted it anyway, which pulled the later, wrong-per-this-outcome-kind attempt into
+  // onTargetAttempts and made IT terminal -- silently overriding the genuinely correct first
+  // attempt and flipping a real success to a false failure.
+  it('no_applicable_tests: a later attempt using a looser filter must not steal terminal selection away from a genuinely correct earlier exact-filter attempt', () => {
+    const cr = buildConditionResult(
+      [
+        { command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS },
+        { command: 'kmp-test parallel --module-filter a* --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS },
+      ],
+      SCENARIO_2_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.terminalAuthoritativeEventIndex).toBe(cr.bashResults[0].resultIndex);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
 });
 
 describe('gradeScenarioCondition -- adversarial-review finding: matchModuleFilter callers must not crash on a malformed target', () => {
