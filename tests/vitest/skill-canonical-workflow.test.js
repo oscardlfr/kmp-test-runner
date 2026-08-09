@@ -181,6 +181,12 @@ describe('changed workflow contract parity (doc/help alignment with verified run
   const readmeDoc = readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
   const cliSrc = readFileSync(path.join(REPO_ROOT, 'lib', 'cli.js'), 'utf8')
     .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const overviewDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'workflows', 'overview.md'), 'utf8'
+  );
+  const changedOrchestratorSrc = readFileSync(
+    path.join(REPO_ROOT, 'lib', 'orchestrators', 'changed-orchestrator.js'), 'utf8'
+  ).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
   it('--max-failures is fully retired from changed\'s parser -- valid, malformed, and dangling forms all converge on unknown_flag', () => {
     for (const args of [['--max-failures', '1'], ['--max-failures', 'abc'], ['--max-failures']]) {
@@ -297,7 +303,9 @@ describe('changed workflow contract parity (doc/help alignment with verified run
   });
 
   it('README.md --module-filter row does not claim it applies to changed', () => {
-    const row = readmeDoc.split('\n').find((l) => l.includes('--module-filter <regex>'));
+    // Second review round split this into a <glob> row (parallel/android/benchmark) and a
+    // <regex> row (describe-only) -- the changed-exclusion clause now lives on the glob row.
+    const row = readmeDoc.split('\n').find((l) => l.includes('--module-filter <glob>'));
     expect(row).toBeTruthy();
     const appliesToClause = row.match(/Applies to ([^(|]+)/);
     expect(appliesToClause).toBeTruthy();
@@ -343,6 +351,65 @@ describe('changed workflow contract parity (doc/help alignment with verified run
     for (const doc of [readmeDoc, flagsRefDoc, changedDoc]) {
       expect(doc).not.toMatch(/--max-failures/);
     }
+  });
+
+  // Second review round (Codex audit of PR #415 @ 1f1bae9): --module-filter has two
+  // genuinely incompatible contracts sharing one flag name -- parallel/android/benchmark
+  // take a glob, describe takes a REAL regex (new RegExp(opts.moduleFilter) at
+  // describe-orchestrator.js:254, with an invalid_regex error code on bad patterns).
+  // README.md's single conflated row must become two, neither implying the other's syntax.
+  it('README.md splits --module-filter into a glob row (parallel/android/benchmark) and a describe-only regex row, never conflating the two', () => {
+    const globRow = readmeDoc.split('\n').find((l) => l.includes('--module-filter <glob>'));
+    expect(globRow).toBeTruthy();
+    expect(globRow).not.toMatch(/`describe`/);
+    expect(globRow).toMatch(/`parallel`/);
+    expect(globRow).toMatch(/`android`/);
+    expect(globRow).toMatch(/`benchmark`/);
+
+    const regexRow = readmeDoc.split('\n').find((l) => l.includes('--module-filter <regex>') && l.startsWith('|'));
+    expect(regexRow).toBeTruthy();
+    expect(regexRow).toMatch(/real regular expression/i);
+    expect(regexRow).toMatch(/`describe`-only/);
+  });
+
+  it('README.md\'s describe section still documents --module-filter as a real regex (preserved, not collapsed into the glob row)', () => {
+    const describeFlagsLine = readmeDoc.split('\n').find((l) => l.startsWith('Flags:') && l.includes('--module-filter'));
+    expect(describeFlagsLine).toBeTruthy();
+    expect(describeFlagsLine).toContain('--module-filter <regex>');
+  });
+
+  // The prior round left 3 residual "changed is based on git diff" claims outside the
+  // originally-touched files, deliberately deferred as out-of-scope. This round's
+  // instruction explicitly brought them in-scope (they'd otherwise get baked into a
+  // future PINNED_SKILL_SHA snapshot) -- scoped, non-global assertions per claim site,
+  // not a repo-wide substring sweep that could pass through unrelated "git diff" prose.
+  it('SKILL.md\'s changed row no longer says "From git diff" in its Notes column', () => {
+    const skillChangedRow = skillMd.split('\n').find((l) => l.includes('kmp-test changed --json --project-root .'));
+    expect(skillChangedRow).toBeTruthy();
+    expect(skillChangedRow).not.toMatch(/From git diff/);
+    expect(skillChangedRow).toContain('Git-derived');
+  });
+
+  it('overview.md no longer names "git diff strategy" among the behaviors únicos it says each workflow doc covers', () => {
+    expect(overviewDoc).not.toMatch(/git diff strategy/i);
+  });
+
+  it('changed-orchestrator.js\'s own JSDoc no longer describes its module set as "touched by `git diff`"', () => {
+    expect(changedOrchestratorSrc).not.toMatch(/touched by `git diff`/);
+  });
+
+  // CodeRabbit review comment on PR #415: info only reports the detected coverage tool
+  // (info-orchestrator.js never parses --coverage-tool at all), it doesn't accept or
+  // resolve the flag -- listing it among subcommands that "share the auto default" implies
+  // it does. Scoped to the specific "Same default across ..." clause, not the whole row,
+  // since the row legitimately mentions `info` afterward to clarify the distinction.
+  it('README.md does not list info among the subcommands sharing the auto --coverage-tool default', () => {
+    const row = readmeDoc.split('\n').find((l) => l.startsWith('| `--coverage-tool`') && l.includes('Same default across'));
+    expect(row).toBeTruthy();
+    const sharingClause = row.match(/Same default across ([^—]+)—/);
+    expect(sharingClause).toBeTruthy();
+    expect(sharingClause[1]).not.toMatch(/info/);
+    expect(row).toMatch(/`info` reports the detected tool but does not accept or resolve this flag/);
   });
 });
 
