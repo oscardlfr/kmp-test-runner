@@ -1340,9 +1340,9 @@ unparseable JSON, wrong schema value, invalid `scope_id`, non-canonical or wrong
   --min-missed-lines <N>` (the only command that can produce a fresh `coverage_threshold_exceeded`
   decision), distinct from bare "run coverage". A context-free "with coverage" alone (no explicit
   test-execution intent) stays ambiguous and must ask, per the Decision protocol's existing rule —
-  it is never silently routed to either command. `PINNED_SKILL_SHA` (`20d109e...`) still points at
-  the pre-fix snapshot — advancing the pin and running a live canary against this scenario are
-  separate, still-pending follow-up work.
+  it is never silently routed to either command. The active pinned snapshot now includes this fix
+  (`PINNED_SKILL_SHA` advanced in PR #416) — evaluating its effect via a live canary against this
+  scenario remains separate, still-pending follow-up work.
 - The real end-to-end Claude Code `tool_result.content` shape for a live `kmp-test`/`gradle`
   invocation is still unconfirmed as of this PR — `graders.mjs`'s envelope extraction is
   defensively designed for that uncertainty (locates a parseable JSON substring within possibly-
