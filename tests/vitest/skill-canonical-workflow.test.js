@@ -15,12 +15,13 @@
 // semantics (binding to an exact name alone doesn't stop --module-filter from also matching a
 // differently-named module), and no agentic-eval-harness-internal leakage. Section-scoped (not
 // whole-file substring checks) so a fix landing in the wrong section can't produce a false green.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { readFileSync, existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { discoverCoverageModules, parseArgs as parseCoverageArgs, runCoverage } from '../../lib/orchestrators/coverage-orchestrator.js';
+import { parseArgs as parseParallelArgs } from '../../lib/orchestrators/parallel-orchestrator.js';
 import { parseArgs as parseChangedArgs } from '../../lib/orchestrators/changed-orchestrator.js';
 import { matchModuleFilter } from '../../lib/orchestrators/orchestrator-utils.js';
 import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
@@ -178,6 +179,291 @@ describe('Coverage dry-run verification contract (grounds the dry-run-vs-real-ru
       parse_errored: [],
       skipped_by_user: [],
     });
+  });
+});
+
+// PR fix(skill): route test coverage gates through parallel -- closes BACKLOG's two
+// PR #412 follow-up blockers. Bare "run coverage" never runs tests (coverage-orchestrator.js
+// only reads existing XML); a request combining "run/verify tests" with "apply a coverage
+// budget" must route to `parallel`, and "with coverage" must never resolve ambiguously to the
+// coverage-only path. Row/clause-scoped (not whole-file co-occurrence): a test that only checked
+// both `parallel` and `--min-missed-lines` appear anywhere in SKILL.md would also pass if they
+// were merely mentioned in unrelated places (e.g. Decision protocol already neighbors `parallel`
+// and `--module-filter`), which wouldn't prove the routing table itself was fixed. Also locks the
+// 2x2 matrix precisely: a budget-less "with coverage" ask must dispatch PLAIN parallel, never a
+// fabricated --min-missed-lines default.
+describe('Steps table -- tests+coverage-budget routing (grounds the BACKLOG "skill routing gap" fix)', () => {
+  const steps = section('Steps');
+
+  function findRowContaining(tableText, phrase) {
+    return tableText.split('\n').find((l) => l.startsWith('|') && l.includes(phrase));
+  }
+
+  it('the "run tests with coverage" row dispatches plain parallel, no fabricated --min-missed-lines', () => {
+    const row = findRowContaining(steps, 'run tests with coverage');
+    expect(row).toBeTruthy();
+    expect(row).toContain('kmp-test parallel --json --project-root .');
+    expect(row).not.toContain('--min-missed-lines');
+  });
+
+  // Locks the exact mistake caught in review: a context-free "with coverage" (no "run tests"
+  // prefix) must stay covered by the Decision protocol's existing, untouched "if ambiguous, ask
+  // before running" rule -- not get silently routed as if it were unambiguous on its own.
+  it('bare "with coverage" never appears as its own isolated quoted trigger phrase', () => {
+    expect(steps).not.toContain('"with coverage"');
+  });
+
+  it('a separate row exists for an explicit missed-lines budget, linking parallel + --min-missed-lines in the SAME row', () => {
+    const row = findRowContaining(steps, 'missed lines');
+    expect(row).toBeTruthy();
+    expect(row).toContain('parallel');
+    expect(row).toContain('--min-missed-lines');
+    expect(row).toContain('kmp-test parallel --min-missed-lines 100 --json --project-root .');
+  });
+
+  it('the bare "run coverage" row stays separate -- no "with coverage", no parallel, no --min-missed-lines', () => {
+    const row = findRowContaining(steps, '"run coverage"');
+    expect(row).toBeTruthy();
+    expect(row).not.toContain('with coverage');
+    expect(row).toContain('kmp-test coverage --json --project-root .');
+    expect(row).not.toContain('parallel');
+    expect(row).not.toContain('--min-missed-lines');
+  });
+
+  it('coverage.md still documents applying a threshold to EXISTING coverage without new tests (the 4th matrix cell, deliberately kept out of SKILL.md\'s compact table)', () => {
+    const coverageDoc = readFileSync(path.join(SKILL_DIR, 'references', 'workflows', 'coverage.md'), 'utf8');
+    expect(coverageDoc).toMatch(/didn.t drop below X missed lines/i);
+    expect(coverageDoc).toContain('--min-missed-lines');
+  });
+});
+
+// Closes the other PR #412 follow-up blocker: coverage.md:49 correctly says a 0 threshold
+// disables the gate; :95 of the same file and coverage-threshold-exceeded.md:35 both incorrectly
+// claimed 0 requires perfect coverage. Detector proven synthetically against the verbatim
+// pre-fix sentences (and against correct phrasing that must NOT match) before being applied for
+// real, so its discriminating power doesn't depend on what the files currently say.
+describe('--min-missed-lines 0 semantics -- "disables the gate", never "perfect coverage" (grounds doc coherence in the real gate)', () => {
+  function claimsZeroRequiresPerfectCoverage(text) {
+    return /(?:`?0`?|zero)[^.\n]{0,40}(?:means|requires?)[^.\n]{0,40}(?:perfect|100%|zero.missed)[^.\n]{0,20}coverage/i.test(text);
+  }
+
+  it('[detector] catches the verbatim pre-fix coverage.md:95 sentence', () => {
+    const old95 = '`0` means "perfect coverage required" — usually too strict; set realistic thresholds.';
+    expect(claimsZeroRequiresPerfectCoverage(old95)).toBe(true);
+  });
+
+  it('[detector] catches the verbatim pre-fix coverage-threshold-exceeded.md:35 sentence', () => {
+    const old35 = 'zero missed lines means 100% coverage required. Almost never achievable on real projects.';
+    expect(claimsZeroRequiresPerfectCoverage(old35)).toBe(true);
+  });
+
+  it('[detector] does not flag the real correct flags-reference.md phrasing', () => {
+    const good = 'Fail (`coverage_threshold_exceeded`, exit 1) if aggregated missed lines exceed `N`. `0` = no gate.';
+    expect(claimsZeroRequiresPerfectCoverage(good)).toBe(false);
+  });
+
+  it('[detector] does not flag a sentence that correctly says 0 disables the gate', () => {
+    const good2 = '`0` disables the gate entirely, regardless of how many lines are missed.';
+    expect(claimsZeroRequiresPerfectCoverage(good2)).toBe(false);
+  });
+
+  const coverageDoc = readFileSync(path.join(SKILL_DIR, 'references', 'workflows', 'coverage.md'), 'utf8');
+  const thresholdDoc = readFileSync(path.join(SKILL_DIR, 'references', 'troubleshooting', 'coverage-threshold-exceeded.md'), 'utf8');
+  const unitTestsDoc = readFileSync(path.join(SKILL_DIR, 'references', 'workflows', 'unit-tests.md'), 'utf8');
+  const flagsRefDoc = readFileSync(path.join(SKILL_DIR, 'references', 'cli', 'flags-reference.md'), 'utf8');
+
+  it('coverage.md is clean of the false claim after the fix', () => {
+    expect(claimsZeroRequiresPerfectCoverage(coverageDoc)).toBe(false);
+  });
+
+  it('coverage-threshold-exceeded.md is clean of the false claim after the fix', () => {
+    expect(claimsZeroRequiresPerfectCoverage(thresholdDoc)).toBe(false);
+  });
+
+  it('unit-tests.md is clean of the false claim (non-regression)', () => {
+    expect(claimsZeroRequiresPerfectCoverage(unitTestsDoc)).toBe(false);
+  });
+
+  it('flags-reference.md is already clean of the false claim (non-regression on an unedited file)', () => {
+    expect(claimsZeroRequiresPerfectCoverage(flagsRefDoc)).toBe(false);
+  });
+
+  it('coverage.md positively states 0 disables/is no gate', () => {
+    expect(coverageDoc).toMatch(/no gate|don.t gate|disables? the gate/i);
+  });
+
+  it('flags-reference.md positively states 0 = no gate', () => {
+    expect(flagsRefDoc).toMatch(/no gate|don.t gate|disables? the gate/i);
+  });
+
+  it('coverage-threshold-exceeded.md positively states 0 disables the gate after the fix', () => {
+    expect(thresholdDoc).toMatch(/no gate|don.t gate|disables? the gate/i);
+  });
+
+  it('unit-tests.md positively states 0 = no gate after the fix', () => {
+    expect(unitTestsDoc).toMatch(/no gate|don.t gate|disables? the gate/i);
+  });
+});
+
+// A second adversarial review round caught that "coverage never spawns gradle" is ITSELF false --
+// runCoverage() -> buildProjectModel({skipProbe:false}) -> probeGradleTasksCached() -> (on a real
+// cache miss) spawnGradle('gradlew tasks --all --quiet') is a real, verified call chain
+// (coverage-orchestrator.js:618 -> lib/project-model.js:273 -> lib/project/cache.js:295-321).
+// Do NOT assert anything about the absence of a node:child_process import -- that only proves
+// THIS file has no direct spawn call, not that the transitive chain never spawns anything. The
+// real, narrower contract: coverage never dispatches report-generation (koverXmlReport /
+// jacocoTestReport) or test tasks, and structurally cannot produce task_not_found (it never calls
+// applyErrorCodeDiscriminators, the only function in the codebase that emits that code). These
+// tests detect the specific false claim via prose pattern, then ground the real, narrower
+// contract via actual runCoverage() execution -- not an import check.
+describe('Coverage report-generation-dispatch claim -- detector proven synthetically, then checked for real', () => {
+  function claimsCoverageDispatchesReportTasks(text) {
+    return /falls?\s+back\s+to\s+running|triggers?\s+`?kover|shape of the gradle invocation|forces?\s+kover\s+dispatch|`?kover(?:XmlReport|HtmlReport)`?\s+task\s+per\s+module|`?jacocoTestReport`?\s+task\s+per\s+module/i.test(text);
+  }
+
+  it('[detector] catches the verbatim pre-fix coverage.md:37 sentence', () => {
+    const old37 = 'The shape of the gradle invocation is `./gradlew :<mod>:koverXmlReport :<mod>:koverHtmlReport` (or the jacoco equivalent) per module — no test tasks.';
+    expect(claimsCoverageDispatchesReportTasks(old37)).toBe(true);
+  });
+
+  it('[detector] catches the verbatim pre-fix coverage.md:89 sentence', () => {
+    const old89 = 'the orchestrator falls back to running `koverXmlReport` / `jacocoTestReport` gradle tasks first.';
+    expect(claimsCoverageDispatchesReportTasks(old89)).toBe(true);
+  });
+
+  it('[detector] catches the verbatim pre-fix coverage.md:94 sentence', () => {
+    const old94 = "forces Kover dispatch on modules that don't apply Kover → cascade of `task_not_found` per module.";
+    expect(claimsCoverageDispatchesReportTasks(old94)).toBe(true);
+  });
+
+  it('[detector] catches the verbatim pre-fix coverage.md:76-77 sentences', () => {
+    const old76 = 'Kover modules → `koverXmlReport` task per module.';
+    expect(claimsCoverageDispatchesReportTasks(old76)).toBe(true);
+  });
+
+  it('[detector] does not flag the corrected phrasing', () => {
+    const good = 'coverage never dispatches per-module report-generation tasks; it only reads whatever XML already exists on disk. It never generates or regenerates coverage XML.';
+    expect(claimsCoverageDispatchesReportTasks(good)).toBe(false);
+  });
+
+  it('coverage.md is clean of the false gradle-dispatch claim after the fix', () => {
+    const coverageDoc = readFileSync(path.join(SKILL_DIR, 'references', 'workflows', 'coverage.md'), 'utf8');
+    expect(claimsCoverageDispatchesReportTasks(coverageDoc)).toBe(false);
+  });
+});
+
+// Grounds the "never dispatches report tasks" / "0 doesn't gate" contracts in the REAL
+// runCoverage() export via actual fixtures -- not doc prose. Mirrors the makeProject /
+// makeParseCoverageStub / dropFakeXml fixture shape already established in
+// tests/vitest/coverage-orchestrator.test.js (real settings.gradle.kts + build.gradle.kts +
+// gradlew/gradlew.bat so buildProjectModel genuinely discovers/classifies modules, not mocked).
+describe('Coverage gradle-dispatch + threshold grounding contracts (real runCoverage() fixtures)', () => {
+  let projectRoot;
+
+  afterEach(() => {
+    if (projectRoot && existsSync(projectRoot)) rmSync(projectRoot, { recursive: true, force: true });
+    projectRoot = null;
+  });
+
+  function makeCoverageFixture(modules) {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'skill-coverage-grounding-'));
+    projectRoot = dir;
+    const includes = modules.map((m) => `include(":${m.name}")`).join('\n');
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), `rootProject.name = "fixture"\n${includes}\n`);
+    writeFileSync(path.join(dir, 'gradlew'), '#!/usr/bin/env bash\nexit 0\n');
+    writeFileSync(path.join(dir, 'gradlew.bat'), '@echo off\r\nexit /b 0\r\n');
+    for (const mod of modules) {
+      const modDir = path.join(dir, ...mod.name.split(':'));
+      mkdirSync(modDir, { recursive: true });
+      const plugins =
+        mod.coverage === 'kover' ? 'plugins {\n  id("org.jetbrains.kotlinx.kover")\n  kotlin("jvm")\n}\n'
+        : mod.coverage === 'jacoco' ? 'plugins {\n  jacoco\n  kotlin("jvm")\n}\n'
+        : 'plugins {\n  kotlin("jvm")\n}\n';
+      writeFileSync(path.join(modDir, 'build.gradle.kts'), plugins);
+    }
+    return dir;
+  }
+
+  function dropFakeCoverageXml(root, moduleName, tool) {
+    const modDir = path.join(root, ...moduleName.split(':'));
+    const xmlDir = tool === 'kover'
+      ? path.join(modDir, 'build', 'reports', 'kover')
+      : path.join(modDir, 'build', 'reports', 'jacoco');
+    const xmlFile = tool === 'kover' ? path.join(xmlDir, 'report.xml') : path.join(xmlDir, 'jacocoTestReport.xml');
+    mkdirSync(xmlDir, { recursive: true });
+    writeFileSync(xmlFile, '<report></report>');
+  }
+
+  function makeParseCoverageXmlStub(rowsByModule = {}) {
+    return (xmlPath, moduleName) => ({ rows: rowsByModule[moduleName] ?? [], errored: false, reason: 'ok', message: null });
+  }
+
+  it('missing XML lands in module_buckets.no_xml -- coverage never dispatches a task to generate it', async () => {
+    const root = makeCoverageFixture([{ name: 'j-bare', coverage: 'jacoco' }]);
+    const { envelope } = await runCoverage({ projectRoot: root, args: [], parseCoverageXml: makeParseCoverageXmlStub() });
+    expect(envelope.coverage.module_buckets.no_xml).toContain('j-bare');
+  });
+
+  // This is the test that would have caught the original coverage.md:94 / :143 false claim,
+  // grounded in actual execution rather than doc-reading: forcing the wrong --coverage-tool does
+  // NOT cause task_not_found (coverage never dispatches a named gradle task at all) -- it just
+  // means the forced tool's XML-path shape isn't found on disk, landing the module in no_xml.
+  it('--coverage-tool kover forced on a JaCoCo-only module (real JaCoCo XML present): lands in no_xml, never task_not_found', async () => {
+    const root = makeCoverageFixture([{ name: 'j-real', coverage: 'jacoco' }]);
+    dropFakeCoverageXml(root, 'j-real', 'jacoco');
+    const { envelope } = await runCoverage({
+      projectRoot: root,
+      args: ['--coverage-tool', 'kover'],
+      parseCoverageXml: makeParseCoverageXmlStub(),
+    });
+    expect(envelope.coverage.module_buckets.no_xml).toContain('j-real');
+    expect(envelope.errors.find((e) => e.code === 'task_not_found')).toBeFalsy();
+  });
+
+  it('--min-missed-lines 0 against a fixture with real missed lines does not fire coverage_threshold_exceeded', async () => {
+    const root = makeCoverageFixture([{ name: 'lib-with-gaps', coverage: 'kover' }]);
+    dropFakeCoverageXml(root, 'lib-with-gaps', 'kover');
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot: root,
+      args: ['--min-missed-lines', '0'],
+      parseCoverageXml: makeParseCoverageXmlStub({
+        'lib-with-gaps': ['lib-with-gaps|pkg|Big.kt|Big|0|100|100|0|1-100'],
+      }),
+    });
+    expect(envelope.coverage.missed_lines).toBe(100);
+    expect(exitCode).toBe(0);
+    expect(envelope.errors.find((e) => e.code === 'coverage_threshold_exceeded')).toBeFalsy();
+  });
+});
+
+// Anchors the routing contract in the real parsers (not doc-reading): both subcommands the
+// routing table dispatches to must actually accept --min-missed-lines.
+describe('--min-missed-lines flag support on both real parsers (anchors the routing contract in actual parseArgs)', () => {
+  it('coverage-orchestrator.js parseArgs accepts --min-missed-lines', () => {
+    const opts = parseCoverageArgs(['--min-missed-lines', '100']);
+    expect(opts.minMissedLines).toBe(100);
+  });
+
+  it('parallel-orchestrator.js parseArgs (re-exported from parallel/dispatch.js) accepts --min-missed-lines', () => {
+    const opts = parseParallelArgs(['--min-missed-lines', '100']);
+    expect(opts.minMissedLines).toBe(100);
+  });
+});
+
+// Guards against the failure mode explicitly ruled out for this fix: a second "routing" section,
+// or a duplicated Decision protocol, sneaking in alongside the Steps-table fix.
+describe('No second routing section / no duplicated Decision protocol (guards the SKILL.md fix does not fork routing guidance)', () => {
+  it('"## Decision protocol" occurs exactly once', () => {
+    expect(skillMd.split('## Decision protocol').length - 1).toBe(1);
+  });
+
+  it('"## Steps" occurs exactly once (the ONE Steps-table home for routing rules)', () => {
+    expect(skillMd.split('## Steps').length - 1).toBe(1);
+  });
+
+  it('no second "routing" heading was introduced', () => {
+    const headings = [...skillMd.matchAll(/^## (.+)$/gm)].map((m) => m[1]);
+    expect(headings.filter((h) => /routing/i.test(h))).toEqual([]);
   });
 });
 

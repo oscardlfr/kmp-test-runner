@@ -32,7 +32,7 @@ Applies to `parallel` (when `--min-missed-lines` is passed) and `coverage`.
 ## Root causes
 
 1. **Real coverage regression**: someone added production code without matching tests. Coverage genuinely dropped. Recovery: write tests for the uncovered code paths.
-2. **`--min-missed-lines 0` over-strict gate**: zero missed lines means 100% coverage required. Almost never achievable on real projects (logging, error paths, generated code). Recovery: pick a realistic threshold based on baseline.
+2. **Low-but-positive `--min-missed-lines N` gate** (e.g. `N` in the 1-10 range): the smaller `N` is, the more likely ordinary code (logging, error paths, generated code) exceeds it. Note: `--min-missed-lines 0` is NOT a possible root cause of this error — `0` disables the gate entirely, so `coverage_threshold_exceeded` can only fire for a positive `N`. Recovery: pick a realistic threshold based on baseline (current baseline + headroom), not an arbitrarily small `N`.
 3. **Convention-plugin inheritance change** (v0.6.1+): a refactor moved coverage application from a broad convention plugin to per-module explicit applies. Modules that previously inherited coverage now don't → aggregated `missed_lines` includes only the explicit modules, which may actually be lower OR higher depending on which modules dropped out.
 4. **`--exclude-coverage` adjustment**: tightening or loosening the exclude list changes the aggregate baseline. A previously-stable gate may now fire when modules with high coverage are excluded.
 5. **JaCoCo + Kover mixed counting**: the aggregate is sum-of-modules regardless of tool. If a module's Kover XML reports differently from its JaCoCo XML, the count shifts. Usually small but can drift over time.

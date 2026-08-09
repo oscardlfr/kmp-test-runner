@@ -841,19 +841,26 @@
   earlier revision that also allowed `"jacoco"`/`"kover"` — states `policy-hook.mjs`'s own flag
   grammar, which has no `--coverage-tool` category at all, could never actually produce).
 
-  **Two known, deliberately-unfixed blockers registered here** (neither fixed in this PR —
-  `.skills/**`/`PINNED_SKILL_SHA` are out of scope):
-  1. Documentation contradiction: `.skills/kmp-test-runner/references/workflows/coverage.md:49`
-     correctly says a `0` threshold disables the gate; `:95` of the same file and
-     `.skills/kmp-test-runner/references/troubleshooting/coverage-threshold-exceeded.md:35` both
-     incorrectly claim `0` requires perfect coverage. `coverage-orchestrator.js:747`
-     (`gateThreshold > 0 && ...`) confirms the first reading is correct.
-  2. Skill routing gap (found during the candidate-selection review above): the pinned skill
-     snapshot routes "run coverage" requests to `kmp-test coverage` (pre-existing XML aggregation
-     only), never to `kmp-test parallel --min-missed-lines` (the only command that can produce a
-     fresh `coverage_threshold_exceeded` decision). Needs an explicit routing rule mapping "tests +
-     coverage/missed-lines budget" requests to `parallel --min-missed-lines` before any live canary
-     run against this scenario.
+  **Two known blockers closed** (`fix(skill): route test coverage gates through parallel`; docs +
+  SKILL.md routing only — `PINNED_SKILL_SHA` is NOT advanced, that is separate follow-up work, and
+  no live canary run happened as part of this fix):
+  1. Documentation contradiction — FIXED: `coverage.md:95` and `coverage-threshold-exceeded.md:35`
+     now agree with `coverage.md:49` and `flags-reference.md:39` that `--min-missed-lines 0`
+     always disables the gate, grounded in `coverage-orchestrator.js`'s `gateThreshold > 0` check.
+     Also fixed: `coverage.md`'s separate false claims (9 locations audited against the real
+     `runCoverage → buildProjectModel → probeGradleTasksCached` call chain) that `coverage`
+     dispatches `koverXmlReport`/`jacocoTestReport` report-generation gradle tasks or can produce
+     `task_not_found` — it does neither; it only reads existing XML (missing XML → `no_xml`
+     bucket) and, separately, may run a cached, best-effort discovery probe unrelated to reports.
+  2. Skill routing gap — FIXED: `SKILL.md`'s Steps table now distinguishes "run tests with
+     coverage" (the full, unambiguous phrase — no explicit budget → bare `kmp-test parallel
+     --json --project-root .`, which already aggregates coverage by default, no fabricated
+     threshold) from a combined tests+explicit-budget ask (→ `kmp-test parallel
+     --min-missed-lines <N> --json --project-root .`), both distinct from the unchanged bare "run
+     coverage" row. A context-free "with coverage" alone stays covered by the existing Decision
+     protocol "ask if ambiguous" rule. `PINNED_SKILL_SHA` still points at the pre-fix commit —
+     advancing it (and running a live canary against `coverage-threshold-failure`) is separate
+     follow-up work.
 
   **Still deferred**: `changed-module-verification` — own PR(s), small increments preferred over
   one large one — milestone unassigned, user's call on timing.

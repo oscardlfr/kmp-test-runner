@@ -19,7 +19,7 @@ The `kmp-test` CLI emits a JSON envelope to stdout when invoked with `--json`. T
 | `coverage` | object | `{ tool, missed_lines, modules_contributing, modules_with_kover_plugin, modules_with_jacoco_plugin, module_buckets }` — see [`coverage` shape](#coverage-shape). `missed_lines` / `modules_contributing` are always the complete, unfiltered project total. |
 | `errors` | array | `[{ message, code?, ...extra }]` — see [error-codes table](#errors-discriminated-codes). |
 | `warnings` | array | Soft signals — never affect `exit_code`. |
-| `isolated` | object | `{ enabled, cache_dir, kept, locked }` — present when `--isolated` was passed (omitted by `coverage` orchestrator since it never spawns gradle). |
+| `isolated` | object | `{ enabled, cache_dir, kept, locked }` — present when `--isolated` was passed (omitted by `coverage` orchestrator, which never dispatches tests — the only gradle process it can trigger is an unrelated, cached module-discovery probe, not a concurrent test run `--isolated` isolates). |
 
 ## Subcommand-specific blocks
 
