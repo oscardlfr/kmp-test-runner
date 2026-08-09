@@ -438,6 +438,75 @@ const KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED = coverageEnvelope();
 
 const GRADLE_SCENARIO5_PASS_STDOUT = `> Task :core:domain:compileDemoDebugUnitTestKotlin\n> Task :core:domain:testDemoDebugUnitTest\n\nBUILD SUCCESSFUL in 2m 19s\n124 actionable tasks: 124 executed\n`;
 
+// The 6th and final scenario shape (changed-module-verification) -- the first (and, per this
+// contract's own single-module scope, only) scenario requiring `kmp-test changed`, never
+// `kmp-test parallel`, as terminal proof. Same pinned commit/module as SCENARIO_3
+// (nowinandroid-core-common) -- reuses the identical, already-double-verified 1/1/0 ground truth --
+// but the agent must discover an already-pending, uncommitted single-file edit and correctly scope
+// testing to it, rather than being told which module to run outright.
+const SCENARIO_6 = {
+  schema: 1,
+  id: 'changed-module-verification',
+  family: 'test-only',
+  project_alias: 'nowinandroid',
+  project_url: 'https://github.com/android/nowinandroid',
+  project_commit: '7d45eae4f8720a0c77f507712ba2437ff974b6ed',
+  prompt: "This is a large, multi-module Android project. There's already a small, uncommitted edit sitting in the working tree somewhere. Can you figure out which module that edit affects, run exactly that module's tests, and tell me what happened? Once you know the result, end your reply with a block in exactly this format...",
+  expected_outcome: "The agent discovers the single pending edit affects NowInAndroid's :core:common module, scopes testing to exactly that module, and reports the accurate pass/fail count.",
+  policy: {
+    // 'parallel' stays allowed so a "ran parallel instead of changed" attempt is rejected by the
+    // GRADER (terminal-eligibility), never by a policy-layer denial -- see the negative tests below.
+    allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel', 'changed'],
+    allowed_gradle_tasks: [':core:common:tasks', ':core:common:test'],
+  },
+  expected: {
+    module: ':core:common',
+    outcome_kind: 'tests_executed',
+    kmp_test: { tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 }, exit_code: 0 },
+    gradle: { allowed_invocations: [':core:common:test'], evidence_task: ':core:common:test', tests: { total: 1, passed: 1, failed: 0 }, exit_code: 0 },
+    changed: { detected_modules: ['core:common'], staged_only: false, base_ref: 'HEAD' },
+  },
+  first_useful_signal_predicate: { description: 'first well-formed changed evidence confirming :core:common single-module detection and 1/1' },
+  tags: ['held-out'],
+};
+
+const SCENARIO_6_CORRECT_ANSWER = kmpEvalResultText(
+  'The pending edit is in the :core:common module; its 1 test passes.',
+  { module: ':core:common', outcome_kind: 'tests_executed', total: 1, passed: 1, failed: 0 },
+);
+
+// Real envelope shape -- verbatim from ground truth (independently re-verified live, 3x, cold
+// GRADLE_USER_HOME + JDK 17, against the pinned commit above): a real `changed` envelope has NO
+// top-level `parallel` key at all (confirmed via a direct hasOwnProperty check on the raw JSON in
+// all 3 runs) -- despite changed.md's own doc example showing one (a confirmed, pre-existing
+// doc/code drift, out of scope to fix). `changed.detected_modules` is bare/colon-less
+// ("core:common"), a deliberately different convention from `modules[].name` and `expected.module`.
+function changedEnvelope(overrides = {}) {
+  return JSON.stringify({
+    tool: 'kmp-test', schema_version: 2, subcommand: 'changed', version: '0.14.0',
+    project_root: 'C:\\fake', exit_code: 0, duration_ms: 131843,
+    tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 },
+    modules: [
+      { name: 'core:common', type: 'jvm', coverage_plugin: null, test_build_type: null, has_flavor: false, flavors: [], android_dsl: false, android_dsl_variant: null },
+    ],
+    skipped: [],
+    coverage: { tool: 'none', missed_lines: null, modules_with_kover_plugin: [], modules_with_jacoco_plugin: [] },
+    errors: [],
+    warnings: [{ code: 'coverage_aggregation_skipped', message: '--coverage-tool none: coverage aggregation skipped' }],
+    changed: { detected_modules: ['core:common'], staged_only: false, base_ref: 'HEAD' },
+    isolated: DEFAULT_ISOLATED_FIELD,
+    ...overrides,
+  });
+}
+const KMP_TEST_ENVELOPE_SCENARIO6_CHANGED_PASS = changedEnvelope();
+
+// `parallel` with the SAME target/counts as SCENARIO_3/SCENARIO_6 -- used to prove a `parallel`
+// attempt (even a fully correct, matching one) never satisfies this scenario, since only `changed`
+// is terminal-eligible here.
+const KMP_TEST_ENVELOPE_SCENARIO6_PARALLEL_SAME_COUNTS = KMP_TEST_ENVELOPE_SCENARIO3_PASS;
+
+const GRADLE_SCENARIO6_PASS_STDOUT = `> Task :core:common:test\n\nBUILD SUCCESSFUL in 2m 2s\n11 actionable tasks: 11 executed\n`;
+
 describe('GRADING_CHECK_NAMES', () => {
   it('is exactly 8 unique names', () => {
     expect(GRADING_CHECK_NAMES.length).toBe(8);
@@ -3726,6 +3795,328 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+});
+
+describe('gradeScenarioCondition -- changed-module-verification (SCENARIO_6, the 6th and final scenario)', () => {
+  it('accepts a well-formed condition -- a single changed attempt, terminal, success:true, all 8 checks pass', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: KMP_TEST_ENVELOPE_SCENARIO6_CHANGED_PASS }],
+      SCENARIO_6_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_6);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+    expect(grade.checks).toHaveLength(8);
+    expect(grade.checks.every((c) => c.passed)).toBe(true);
+    expect(grade.changedEvidenceMalformed).toBe(false);
+  });
+
+  describe('changed is the ONLY acceptable terminal proof -- parallel/Gradle never satisfy this scenario', () => {
+    it('a `parallel` attempt with the EXACT SAME matching counts as the correct changed answer still fails -- never terminal-eligible', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --json --project-root .', resultContent: KMP_TEST_ENVELOPE_SCENARIO6_PARALLEL_SAME_COUNTS }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.terminalAuthoritativeEventIndex).toBe(null);
+      expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('a Gradle-only condition (no changed attempt at all) fails -- Gradle can never be terminal for this scenario, even with a clean, well-targeted run', () => {
+      const cr = buildConditionResult(
+        [{ command: './gradlew.bat :core:common:test --console=plain', resultContent: GRADLE_SCENARIO6_PASS_STDOUT, evidence: okJunit(1, 1, 0) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.terminalAuthoritativeEventIndex).toBe(null);
+      expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('a genuinely correct changed attempt followed by a clean, corroborating Gradle attempt AFTERWARD still succeeds -- the later Gradle attempt does not steal terminal selection', () => {
+      const cr = buildConditionResult(
+        [
+          { command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: KMP_TEST_ENVELOPE_SCENARIO6_CHANGED_PASS },
+          { command: './gradlew.bat :core:common:test --console=plain', resultContent: GRADLE_SCENARIO6_PASS_STDOUT, evidence: okJunit(1, 1, 0) },
+        ],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.expectedOutcomeMatched).toBe(true);
+      expect(grade.success).toBe(true);
+      expect(grade.terminalAuthoritativeEventIndex).toBe(2); // the changed attempt's own resultIndex
+    });
+
+    it('a changed attempt coexisting with a `parallel` attempt (both policy-allowed) still succeeds via the changed attempt, ignoring parallel entirely for terminal selection', () => {
+      const cr = buildConditionResult(
+        [
+          { command: 'kmp-test parallel --json --project-root .', resultContent: KMP_TEST_ENVELOPE_SCENARIO6_PARALLEL_SAME_COUNTS },
+          { command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: KMP_TEST_ENVELOPE_SCENARIO6_CHANGED_PASS },
+        ],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.success).toBe(true);
+      expect(grade.terminalAuthoritativeEventIndex).toBe(4); // the changed attempt's own resultIndex
+    });
+
+    it('first_useful_signal respects the same terminal-eligibility restriction: a clean, correct Gradle attempt BEFORE any changed attempt does not produce a first_useful_signal by itself', () => {
+      const cr = buildConditionResult(
+        [
+          { command: './gradlew.bat :core:common:test --console=plain', resultContent: GRADLE_SCENARIO6_PASS_STDOUT, evidence: okJunit(1, 1, 0) },
+          { command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: KMP_TEST_ENVELOPE_SCENARIO6_CHANGED_PASS },
+        ],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      // event indices: init(0), gradle tool_use(1)/result(2), changed tool_use(3)/result(4)
+      expect(grade.firstUsefulSignalEventIndex).toBe(4);
+      expect(grade.success).toBe(true);
+    });
+  });
+
+  describe('expected.changed block correctness (check 6 -- well-formed but WRONG values)', () => {
+    it('rejects a changed envelope reporting an EXTRA detected module beyond the expected one', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: changedEnvelope({ changed: { detected_modules: ['core:common', 'core:domain'], staged_only: false, base_ref: 'HEAD' } }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+      expect(grade.changedEvidenceMalformed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('rejects a changed envelope reporting a DIFFERENT (wrong) single module', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: changedEnvelope({ changed: { detected_modules: ['core:domain'], staged_only: false, base_ref: 'HEAD' } }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      // computeKmpTestTargetMatch itself already fails target-matching here (envelope.modules[0]
+      // would need to also disagree for the outcome_kind branch, but the changed{} block mismatch
+      // alone must be caught by check 6, not silently pass because modules[] happens to agree).
+      expect(grade.success).toBe(false);
+    });
+
+    it('rejects a changed envelope with staged_only:true when the scenario expects false', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: changedEnvelope({ changed: { detected_modules: ['core:common'], staged_only: true, base_ref: 'HEAD' } }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('rejects a changed envelope with a base_ref other than the expected "HEAD"', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: changedEnvelope({ changed: { detected_modules: ['core:common'], staged_only: false, base_ref: 'main' } }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('rejects a changed envelope missing detected_modules entirely (empty array)', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: changedEnvelope({ changed: { detected_modules: [], staged_only: false, base_ref: 'HEAD' } }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.success).toBe(false);
+    });
+  });
+
+  describe('structurally malformed changed evidence fails as EVIDENCE INTEGRITY, never as a plain wrong answer (check 4, changedEvidenceMalformed)', () => {
+    it('a changed block with detected_modules as a non-array (string) fails check 4, not check 6, and sets changedEvidenceMalformed:true', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: changedEnvelope({ changed: { detected_modules: 'core:common', staged_only: false, base_ref: 'HEAD' } }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+      expect(grade.changedEvidenceMalformed).toBe(true);
+      expect(grade.success).toBe(false);
+    });
+
+    it('a changed block with staged_only as a non-boolean (string "false") fails as evidence integrity', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: changedEnvelope({ changed: { detected_modules: ['core:common'], staged_only: 'false', base_ref: 'HEAD' } }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+      expect(grade.changedEvidenceMalformed).toBe(true);
+      expect(grade.success).toBe(false);
+    });
+
+    it('a changed block entirely absent from an otherwise-well-formed changed-subcommand envelope fails as evidence integrity', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: changedEnvelope({ changed: undefined }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+      expect(grade.changedEvidenceMalformed).toBe(true);
+      expect(grade.success).toBe(false);
+    });
+
+    // Critical finding this scenario's own design was built around: production never emits a
+    // `changed` envelope carrying a `parallel` block too (ground truth confirmed this directly via
+    // hasOwnProperty on 3 real runs). An envelope claiming both is proof of mismatched/incoherent
+    // evidence -- e.g. a stale or wrongly-correlated tool_result -- and must fail as evidence
+    // integrity, never as if it were simply a correct-looking answer.
+    it('a well-formed, otherwise-CORRECT changed envelope that ALSO carries a `parallel` block fails as evidence integrity, not a plain pass', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: changedEnvelope({
+          parallel: {
+            test_type: 'auto',
+            legs: [{ test_type: 'auto', exit_code: 0, execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 }, cascade_detected: false, retry_fired: false }],
+            max_workers: 0, timeout_s: 600,
+          },
+        }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+      expect(grade.changedEvidenceMalformed).toBe(true);
+      expect(grade.success).toBe(false);
+    });
+
+    // Post-open-PR review finding: structural validity of changed{} must be judged independent of
+    // whether the target module happens to match. An earlier draft gated changedEvidenceInvalid on
+    // targetMatches, so a WRONG-module attempt short-circuited before the malformed-check ever ran
+    // -- changedEvidenceMalformed came back false and authoritative_evidence_well_formed came back
+    // true, silently promoting garbage evidence as an ordinary, trustworthy negative (wrong-target)
+    // result. Both cases below combine a wrong target with each of the two distinct malformation
+    // sources this check recognizes (see changedEvidenceInvalid's own doc comment).
+    it('a WRONG-target attempt whose changed{} block is ALSO malformed (detected_modules as a non-array) still fails as EVIDENCE INTEGRITY, not a plain wrong-target negative', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: changedEnvelope({
+          modules: [{ name: 'some-other-module', type: 'jvm' }], // WRONG target...
+          changed: { detected_modules: 'core:common', staged_only: false, base_ref: 'HEAD' }, // ...AND malformed
+        }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+      expect(grade.changedEvidenceMalformed).toBe(true);
+      expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('a WRONG-target attempt whose envelope ALSO carries a production-impossible parallel{} block still fails as EVIDENCE INTEGRITY, not a plain wrong-target negative', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: changedEnvelope({
+          modules: [{ name: 'some-other-module', type: 'jvm' }], // WRONG target...
+          parallel: { // ...AND an impossible parallel block alongside an otherwise well-formed changed{}
+            test_type: 'auto',
+            legs: [{ test_type: 'auto', exit_code: 0, execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 }, cascade_detected: false, retry_fired: false }],
+            max_workers: 0, timeout_s: 600,
+          },
+        }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+      expect(grade.changedEvidenceMalformed).toBe(true);
+      expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+  });
+
+  describe('--show-modules-only is fully inert -- never terminal, never retried, never a JUnit producer', () => {
+    it('a --show-modules-only attempt alone never becomes terminal and never counts toward test_invocations_total', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --show-modules-only --json', resultContent: changedEnvelope({ tests: { total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0 }, changed: { detected_modules: ['core:common'], staged_only: false, base_ref: 'HEAD' } }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.testInvocationsTotal).toBe(0);
+      expect(grade.terminalAuthoritativeEventIndex).toBe(null);
+      expect(grade.success).toBe(false);
+    });
+
+    it('a --show-modules-only attempt followed by a real, correct changed attempt still succeeds -- the preview call is invisible to retries/terminal selection', () => {
+      const cr = buildConditionResult(
+        [
+          { command: 'kmp-test changed --show-modules-only --json', resultContent: changedEnvelope({ tests: { total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0 } }) },
+          { command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: KMP_TEST_ENVELOPE_SCENARIO6_CHANGED_PASS },
+        ],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.testInvocationsTotal).toBe(1);
+      expect(grade.retries).toBe(0);
+      expect(grade.success).toBe(true);
+    });
+  });
+
+  describe('excluded attempts (policy/plan-only), mirroring the existing generic contract', () => {
+    it('excludes a --dry-run changed attempt entirely -- never becomes a candidate, never terminal', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --dry-run --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO6_CHANGED_PASS }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.testInvocationsTotal).toBe(0);
+      expect(grade.terminalAuthoritativeEventIndex).toBe(null);
+      expect(grade.success).toBe(false);
+    });
+
+    it('excludes a policy-denied changed attempt', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: KMP_TEST_ENVELOPE_SCENARIO6_CHANGED_PASS, decision: 'deny' }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.testInvocationsTotal).toBe(0);
+      expect(grade.success).toBe(false);
+    });
+  });
+
+  describe('final-answer (check 8) -- unchanged KMP_EVAL_RESULT shape for tests_executed', () => {
+    it('rejects a final answer using Gradle\'s corroborating count when it happens to differ from what the agent could honestly report', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: KMP_TEST_ENVELOPE_SCENARIO6_CHANGED_PASS }],
+        kmpEvalResultText('Tests pass.', { module: ':core:common', outcome_kind: 'tests_executed', total: 2, passed: 2, failed: 0 }),
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('accepts the exact matching final answer', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: KMP_TEST_ENVELOPE_SCENARIO6_CHANGED_PASS }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
+      expect(grade.success).toBe(true);
+    });
+  });
+
+  // Mirrors SCENARIO_5's own identical harnessEvidenceAmbiguous-is-diagnostic-only test -- the
+  // conflict-DETECTION mechanism itself (which commands can even participate) has its own
+  // dedicated coverage in agentic-eval-junit-evidence.test.js; this proves gradeScenarioCondition's
+  // OWN consumption of an already-proven conflict is unaffected by which provider produced it.
+  it('a genuine same-turn producer conflict is surfaced as harnessEvidenceAmbiguous:true without blocking a correct changed terminal attempt from succeeding', () => {
+    const cr = buildConditionResult(
+      [
+        { command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: KMP_TEST_ENVELOPE_SCENARIO6_CHANGED_PASS },
+        { command: './gradlew.bat :core:common:test --console=plain', resultContent: GRADLE_SCENARIO6_PASS_STDOUT, resultIsError: false, evidence: { status: 'conflict' } },
+      ],
+      SCENARIO_6_CORRECT_ANSWER,
+      { ambiguousJunitEvidence: true },
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_6);
+    expect(grade.harnessEvidenceAmbiguous).toBe(true);
     expect(grade.success).toBe(true);
   });
 });

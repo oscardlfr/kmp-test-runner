@@ -6,11 +6,12 @@
 // symlink/wrapper resolution). Nothing under this module ever runs a measured session with a
 // cwd inside this repo or any repo/config-ancestor tree -- every fixture is copied/checked out
 // into a fresh temp directory immediately before use.
-import { mkdtempSync, rmSync, mkdirSync, cpSync, writeFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, cpSync, writeFileSync, appendFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { resolveBash } from './resolve-bash.mjs';
+import { isWithinOrEqualCanonical } from './policy-hook.mjs';
 
 // Windows-native tool resolution of `tar`/`git archive` piping mangles backslash-heavy paths
 // passed via a plain argv array (confirmed empirically -- a destination path's digits were
@@ -207,4 +208,99 @@ export function realpath(p) {
 
 export function resolveParentDir(p) {
   return dirname(p);
+}
+
+// applyFixtureSetup -- the changed-module-verification scenario's own pre-run working-tree
+// mutation (schemas.mjs's `fixture_setup` contract). The mutation content is ALWAYS this one
+// harness-owned constant, never scenario-supplied text -- a scenario only ever names WHICH
+// tracked file to mutate and what its pre-mutation blob must be.
+export const FIXTURE_SETUP_APPEND_COMMENT = '\n// kmp-agentic-eval-fixture-marker\n';
+
+/** Parses one `git ls-files -s -- <path>` line (`<mode> <blob> <stage>\t<path>`) into
+ * `{mode, blob, path}`, or `null` if the pathspec matched zero (not tracked) or more than one
+ * (e.g. a directory) entry -- both cases collapse to the identical "not a single tracked file"
+ * outcome for this function's caller. */
+function parseLsFilesShortEntry(output) {
+  const trimmed = String(output ?? '').trim();
+  if (trimmed === '') return null;
+  const m = /^(\d+) ([0-9a-f]{40}) \d+\t(.+)$/.exec(trimmed);
+  if (!m) return null;
+  return { mode: m[1], blob: m[2], path: m[3] };
+}
+
+/** Pure postcondition check, directly unit-testable with synthetic `git status --porcelain`
+ * text: true only when the ENTIRE output is exactly one line, an UNSTAGED modification (` M `,
+ * index clean / worktree dirty -- never staged, never untracked, never any other status pair), at
+ * exactly `relativePath`. */
+export function isExactlyOneUnstagedModificationAt(porcelainOutput, relativePath) {
+  const lines = String(porcelainOutput ?? '').split(/\r?\n/).filter((l) => l.length > 0);
+  if (lines.length !== 1) return false;
+  const line = lines[0];
+  if (!line.startsWith(' M ')) return false;
+  return line.slice(3) === relativePath;
+}
+
+/**
+ * Applies (or re-applies, on a freshly-reset worktree) a scenario's `fixture_setup` mutation --
+ * called from matrix-runner.mjs's runSingleCondition, immediately after materializeFixture's own
+ * clean/reset and before spawnCondition. Because materializeFixture always yields a byte-for-byte
+ * pristine tree first, re-running this on every repetition x condition is naturally idempotent --
+ * no undo logic needed, and every cell reproduces an identical diff.
+ * @param {{fixtureDir: string, fixtureSetup: {operation: string, relative_path: string, expected_blob_oid: string}}} opts
+ */
+export function applyFixtureSetup({ fixtureDir, fixtureSetup }) {
+  // Fail closed BEFORE any git/file I/O -- never trust that the caller already validated this
+  // against schemas.mjs's own closed FIXTURE_SETUP_OPERATION_VALUES enum (a post-open-PR review
+  // found this exact gap: the enum currently closes to exactly one value, but this exported
+  // primitive itself never re-checked it, so a future second enum value -- or any caller bypassing
+  // schema validation -- would silently fall through to the append_comment mutation below no matter
+  // what `operation` actually said).
+  if (fixtureSetup.operation !== 'append_comment') {
+    throw new Error(`fixture_setup.operation not supported by this harness: ${fixtureSetup.operation}`);
+  }
+
+  const statusBefore = runGitViaBash(['status', '--porcelain'], fixtureDir);
+  if (statusBefore.trim() !== '') {
+    throw new Error(`fixture_setup precondition failed: working tree not clean before mutation:\n${statusBefore}`);
+  }
+
+  const relativePath = fixtureSetup.relative_path;
+  const lsFilesOut = runGitViaBash(['ls-files', '-s', '--', relativePath], fixtureDir);
+  const entry = parseLsFilesShortEntry(lsFilesOut);
+  // entry.path !== relativePath closes a real gap: a DIRECTORY-shaped pathspec that happens to
+  // contain exactly one file underneath it also produces exactly one ls-files line -- but for a
+  // DIFFERENT path than what was actually requested. Without this check, that file's own mode/blob
+  // would be validated (potentially passing), while the mutation below still tries to write to the
+  // ORIGINAL (directory) path, crashing with EISDIR instead of failing closed with a clear reason.
+  if (entry == null || entry.path !== relativePath) {
+    throw new Error(`fixture_setup target is not a single tracked file at the exact path: ${relativePath}`);
+  }
+  if (entry.mode !== '100644' && entry.mode !== '100755') {
+    throw new Error(`fixture_setup target is not a regular file (git mode ${entry.mode}): ${relativePath}`);
+  }
+  if (entry.blob !== fixtureSetup.expected_blob_oid) {
+    throw new Error(`fixture_setup blob mismatch at ${relativePath}: expected ${fixtureSetup.expected_blob_oid}, got ${entry.blob}`);
+  }
+
+  // Defense in depth -- never trust the already-schema-validated relative_path string alone.
+  // Reuses policy-hook.mjs's own isWithinOrEqualCanonical rather than a second, independently-
+  // maintained containment check.
+  const absPath = join(fixtureDir, ...relativePath.split('/'));
+  let absPathReal;
+  try {
+    absPathReal = realpathSync(absPath);
+  } catch {
+    throw new Error(`fixture_setup target does not exist on disk: ${relativePath}`);
+  }
+  const fixtureDirReal = realpathSync(fixtureDir);
+  if (!isWithinOrEqualCanonical(fixtureDirReal, absPathReal)) {
+    throw new Error(`fixture_setup target resolves outside the fixture root: ${relativePath}`);
+  }
+
+  appendFileSync(absPath, FIXTURE_SETUP_APPEND_COMMENT);
+
+  const statusAfter = runGitViaBash(['status', '--porcelain'], fixtureDir);
+  if (!isExactlyOneUnstagedModificationAt(statusAfter, relativePath)) {
+    throw new Error(`fixture_setup postcondition failed: expected exactly one unstaged modification at ${relativePath}, got:\n${statusAfter}`);
+  }
 }

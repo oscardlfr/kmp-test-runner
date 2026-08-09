@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 
 import { buildPathShim } from './path-shim.mjs';
-import { materializeSkillSnapshot, materializeGradleUserHome, realpath } from './materialize.mjs';
+import { materializeSkillSnapshot, materializeGradleUserHome, realpath, applyFixtureSetup } from './materialize.mjs';
 import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition } from './condition-launcher.mjs';
 import { parseStreamJsonl, findInitEvent, findResultEvent, findSkillInvocation, countHookEvents, computeByteMetrics, findBashToolUsesWithResults } from './stream-parser.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
@@ -170,11 +170,17 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
  *   acquireSharedEvalResources); the scratch directory's removal is queued on it IMMEDIATELY after
  *   creation, before spawnCondition runs, so a failure anywhere later in this call is still covered.
  */
-export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null }) {
+export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null }) {
   const materialized = materializeFixture(previousFixtureDir);
   const fixtureDir = materialized.fixtureDir;
   cleanupFixtureOnce(fixtureDir);
   resetGradleToSnapshot();
+  // Applied after every reset, before the condition ever spawns -- materializeFixture above always
+  // yields a byte-for-byte pristine tree first (a fresh worktree, or `git clean -fdx && git reset
+  // --hard`), so re-applying this on every repetition x condition is naturally idempotent: any
+  // leftover from a prior cell is already gone by this point, and the mutation reproduces
+  // identically every time (see materialize.mjs's own applyFixtureSetup doc comment).
+  if (fixtureSetup) applyFixtureSetup({ fixtureDir, fixtureSetup });
   // KMP_EVAL_TEMP_HOME is reused (same path) across every condition sharing this resource set,
   // like fixtureDir/GRADLE_USER_HOME -- wiped back to empty before EACH condition's run, so
   // whatever one condition wrote under ~/.kmp-test/ can never leak into the next.
@@ -293,6 +299,7 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
   const junitEvidenceEnabled = isJunitEvidenceOutcome(scenario.expected?.outcome_kind);
   const evidenceTask = scenario.expected?.gradle?.evidence_task ?? null;
   const allowedInvocations = scenario.expected?.gradle?.allowed_invocations ?? null;
+  const fixtureSetup = scenario.fixture_setup ?? null;
   const shared = await acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled });
   const { registerCleanup, runCleanup } = shared;
 
@@ -337,6 +344,7 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
           evidenceTask,
           allowedInvocations,
           registerCleanup,
+          fixtureSetup,
         });
         fixtureDir = conditionResult.fixtureDir;
         const junitAttribution = decisionAttributionEnabled

@@ -468,19 +468,22 @@ matrix is rejected anyway.
   symlink planted at the (schema-guaranteed-safe-looking) sidecar path whose target resolves outside
   the run record's own directory is refused, never silently followed.
 
-  `corpus/scenarios/` holds five scenarios today (`kampkit-android-host-test-discovery` and
-  `kampkit-no-applicable-tests`, both targeting KaMPKit commit
+  `corpus/scenarios/` holds all six originally-sketched scenarios now (`kampkit-android-host-test-discovery`
+  and `kampkit-no-applicable-tests`, both targeting KaMPKit commit
   `b3a7784fb969a8558b88c80674c8b596944cdab7` — the same commit the shipped `smoke` evidence uses;
   `nowinandroid-core-common` against a pinned NowInAndroid commit; `deterministic-unit-test-failure`
   — the first `tests_failed` scenario — against a different pinned NowInAndroid commit;
   `coverage-threshold-failure` — the first `coverage_threshold_exceeded` scenario — against
-  NowInAndroid's `:core:domain` module, the same commit `nowinandroid-core-common` pins). This
+  NowInAndroid's `:core:domain` module, the same commit `nowinandroid-core-common` pins;
+  `changed-module-verification` — the 6th and final scenario, requiring `kmp-test changed`
+  specifically as terminal proof — against the same commit and module `nowinandroid-core-common`
+  pins, via a pre-run `fixture_setup` mutation instead of being told the module outright). This
   PR itself adds zero live scenario records — every number in `corpus/scenarios/*.json` is
   independently re-verified via direct local CLI/Gradle execution (never through the `run` command,
   and never through a live Claude session). Live `run_kind:"scenario"` records for the two KaMPKit
   scenarios (and, separately, for `nowinandroid-core-common`) already exist under
-  `tools/runs/agentic-eval-scenario/` from earlier canary work — `deterministic-unit-test-failure`
-  and `coverage-threshold-failure` have no live canary run yet.
+  `tools/runs/agentic-eval-scenario/` from earlier canary work — `deterministic-unit-test-failure`,
+  `coverage-threshold-failure`, and `changed-module-verification` have no live canary run yet.
 - **`corpus-probe`** — accepted in the schema as a future `run_kind` value; not produced by
   anything in this PR.
 
@@ -1286,10 +1289,26 @@ unparseable JSON, wrong schema value, invalid `scope_id`, non-canonical or wrong
   invoked against a live Claude session here, so this PR commits zero scenario-run evidence.
 - Public-project scenarios only; no private project is referenced.
 - `candidate-skill` is schema-supported but not implemented.
-- 5 of the 6 originally-sketched scenarios exist in `corpus/scenarios/` today
+- All 6 originally-sketched scenarios now exist in `corpus/scenarios/`
   (`kampkit-android-host-test-discovery`, `kampkit-no-applicable-tests` against KaMPKit;
-  `nowinandroid-core-common`, `deterministic-unit-test-failure`, and `coverage-threshold-failure`
-  against NowInAndroid); `changed-module-verification` remains deferred — see BACKLOG.md.
+  `nowinandroid-core-common`, `deterministic-unit-test-failure`, `coverage-threshold-failure`, and
+  `changed-module-verification` against NowInAndroid) — the corpus is complete, 3 `train` / 3
+  `held-out`. `changed-module-verification` is the first (and, by its own contract's deliberate
+  single-module scope, only) scenario requiring `kmp-test changed` — never `kmp-test parallel`,
+  even with matching counts — as terminal proof, via a new, closed `fixture_setup` mechanism
+  (`{operation:"append_comment", relative_path, expected_blob_oid}`) that mutates one
+  pinned-blob-verified tracked file with a harness-constant, unstaged comment before each cell —
+  never scenario-supplied content. Ground truth independently re-verified live 6x (3x `kmp-test
+  changed`, 3x direct Gradle, cold `GRADLE_USER_HOME` + JDK 17 each) confirmed a real `changed`
+  envelope carries **no top-level `parallel` key at all** (verified via a direct `hasOwnProperty`
+  check on the raw JSON) and reports `changed.detected_modules` as bare, colon-less strings (e.g.
+  `"core:common"`, never `":core:common"`) — both now pinned by a dedicated production-contract
+  test (`agentic-eval-graders-production-contract.test.js`) that calls the real
+  `changed-orchestrator.js` `runChanged()` directly, not just a hand-authored fixture. Disclosed,
+  out-of-scope finding: `.skills/kmp-test-runner/references/workflows/changed.md`'s own illustrative
+  envelope example is stale on this exact point (shows a `parallel:{}` block and a colon-prefixed
+  `detected_modules` entry neither of which the real envelope carries) — `.skills/**` is untouched
+  by this change; fixing that doc drift is separate follow-up work.
   `coverage-threshold-failure` covers the `coverage_threshold_exceeded` outcome_kind with a
   deliberately minimal, closed contract: it does not add a JaCoCo/Kover-XML evidence-attribution
   mechanism analogous to `junit-evidence.mjs` — a Gradle attempt can only ever corroborate its own

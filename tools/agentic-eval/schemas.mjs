@@ -493,8 +493,12 @@ export function validateRun(run) {
 
 const SCENARIO_CANONICAL_FIELDS = [
   'schema', 'id', 'family', 'project_alias', 'project_url', 'project_commit', 'prompt',
-  'expected_outcome', 'policy', 'expected', 'first_useful_signal_predicate', 'tags',
+  'expected_outcome', 'policy', 'expected', 'first_useful_signal_predicate', 'tags', 'fixture_setup',
 ];
+// The first-ever OPTIONAL canonical field -- every other entry above is unconditionally required.
+// `fixture_setup` only applies to a scenario that mutates its own pinned checkout before the agent
+// runs (today: exactly the changed-module-verification shape) -- absent for every other scenario.
+const OPTIONAL_SCENARIO_FIELDS = ['fixture_setup'];
 
 const OUTCOME_KIND_VALUES = ['tests_executed', 'no_applicable_tests', 'tests_failed', 'coverage_threshold_exceeded'];
 const GRADLE_MARKER_VALUES = ['NO-SOURCE'];
@@ -512,7 +516,7 @@ const SCENARIO_TAG_VALUES = ['train', 'held-out'];
 // specifically so a forbidden key explicitly set to `null` (e.g. `expected.gradle.tests.skipped:
 // null`) is still caught: `Object.keys({skipped: null})` reports `skipped` as present regardless of
 // its value, while the old `!= null` presence check would have silently treated it as absent.
-const EXPECTED_TOP_LEVEL_KEYS = ['module', 'outcome_kind', 'kmp_test', 'gradle'];
+const EXPECTED_TOP_LEVEL_KEYS = ['module', 'outcome_kind', 'kmp_test', 'gradle', 'changed'];
 // Reused for BOTH 'tests_executed' and 'tests_failed' -- the two outcome_kinds share an identical
 // KEY SET (the task/build genuinely ran to completion either way); only the VALUE requirements on
 // `tests.failed`/`exit_code` differ, enforced inside validateProviderContract itself.
@@ -542,6 +546,134 @@ const KMP_TEST_COVERAGE_SHAPE_KEYS = ['tool', 'min_missed_lines', 'missed_lines'
 // --coverage-tool category of its own -- not merely a leftover value worth keeping for its own
 // sake.
 const COVERAGE_TOOL_EXPECTED_VALUES = ['auto'];
+
+// expected.changed -- the changed-module-verification contract (ground truth independently
+// re-verified live, 6x -- 3x kmp-test changed, 3x direct Gradle, cold GRADLE_USER_HOME + JDK 17
+// each -- against android/nowinandroid @ 7d45eae4f8720a0c77f507712ba2437ff974b6ed, :core:common
+// module). Confirmed via a direct hasOwnProperty check on the raw envelope in all 3 `changed` runs:
+// a real `changed` envelope's `detected_modules` entries are BARE, colon-LESS strings (e.g.
+// "core:common") -- a deliberately different string convention from `expected.module`'s own
+// colon-prefixed one (":core:common") -- see command-classify.mjs's normalizeModuleName, which
+// strips at most one leading colon, for the shared reconciliation point between the two.
+const CHANGED_CONTRACT_KEYS = ['detected_modules', 'staged_only', 'base_ref'];
+// No leading colon (unlike GRADLE_TASK_ENTRY_RE-shaped values) -- see this block's own doc comment.
+const CHANGED_MODULE_NAME_RE = /^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)*$/;
+// Every real construction site in changed-orchestrator.js hard-codes 'HEAD' unconditionally
+// (working-tree mode and --staged-only alike) -- mirrors COVERAGE_TOOL_EXPECTED_VALUES's own
+// "only what the real code can produce" precedent, not a speculative future value.
+const CHANGED_BASE_REF_EXPECTED_VALUES = ['HEAD'];
+
+// fixture_setup -- the only OPTIONAL canonical scenario field (see SCENARIO_CANONICAL_FIELDS'
+// own doc comment). Closed to exactly one operation today; the mutation content itself is always
+// a harness-owned constant (tools/agentic-eval/materialize.mjs's own applyFixtureSetup), never
+// scenario-supplied free text -- this field only ever names WHICH tracked file to mutate and what
+// its pre-mutation blob must be, never the mutation's own bytes.
+const FIXTURE_SETUP_KEYS = ['operation', 'relative_path', 'expected_blob_oid'];
+const FIXTURE_SETUP_OPERATION_VALUES = ['append_comment'];
+
+/** Closed, defense-in-depth safety check for `fixture_setup.relative_path` -- rejects absolute
+ * paths (POSIX leading `/` or a Windows drive-letter prefix), any backslash, and any `.`/`..`
+ * path segment, on top of a narrow safe charset per segment. Deliberately does NOT rely on the
+ * charset regex alone to reject traversal: `.`/`-`/`_` are all individually charset-legal, so a
+ * bare `/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/`-only check would let a literal `..` SEGMENT
+ * through (each character is legal; the segment as a whole is what must be rejected) -- mirrors
+ * policy-hook.mjs's own realpathWithinFixture, which never trusts a single regex pass either. */
+function isSafeFixtureRelativePath(p) {
+  if (typeof p !== 'string' || p.length === 0) return false;
+  if (p.includes('\\')) return false;
+  if (p.startsWith('/')) return false;
+  if (/^[A-Za-z]:/.test(p)) return false;
+  const segments = p.split('/');
+  if (segments.some((seg) => seg === '' || seg === '.' || seg === '..')) return false;
+  return segments.every((seg) => /^[A-Za-z0-9._-]+$/.test(seg));
+}
+
+/** Validates `fixture_setup`'s own closed shape -- never compares it against `expected.changed`
+ * (that cross-check is validateFixtureSetupCoupling's job, which needs the whole scenario). */
+function validateFixtureSetup(fixtureSetup, errors) {
+  if (fixtureSetup == null || typeof fixtureSetup !== 'object' || Array.isArray(fixtureSetup)) {
+    errors.push({ field: 'fixture_setup', message: 'must be an object' });
+    return;
+  }
+  rejectUnrecognizedKeys(fixtureSetup, FIXTURE_SETUP_KEYS, 'fixture_setup', errors);
+  if (!FIXTURE_SETUP_OPERATION_VALUES.includes(fixtureSetup.operation)) {
+    errors.push({ field: 'fixture_setup.operation', message: `must be one of ${FIXTURE_SETUP_OPERATION_VALUES.join('|')}` });
+  }
+  if (!isSafeFixtureRelativePath(fixtureSetup.relative_path)) {
+    errors.push({ field: 'fixture_setup.relative_path', message: 'must be a safe relative POSIX path -- no leading slash, no backslash, no drive letter, no ./.. segment' });
+  }
+  if (typeof fixtureSetup.expected_blob_oid !== 'string' || !/^[0-9a-f]{40}$/.test(fixtureSetup.expected_blob_oid)) {
+    errors.push({ field: 'fixture_setup.expected_blob_oid', message: 'must be a real 40-hex-character git blob SHA' });
+  }
+}
+
+/** Validates `expected.changed`'s own closed shape -- called unconditionally whenever the key is
+ * present (independent of fixture_setup's own presence, mirroring every other provider-contract
+ * validator in this file); the fixture_setup<->expected.changed COUPLING itself is a separate,
+ * scenario-level concern (validateFixtureSetupCoupling, below). */
+function validateChangedContract(changed, errors) {
+  if (changed == null || typeof changed !== 'object' || Array.isArray(changed)) {
+    errors.push({ field: 'expected.changed', message: 'must be an object' });
+    return;
+  }
+  rejectUnrecognizedKeys(changed, CHANGED_CONTRACT_KEYS, 'expected.changed', errors);
+  const modules = changed.detected_modules;
+  if (!Array.isArray(modules) || modules.length !== 1 || typeof modules[0] !== 'string' || !CHANGED_MODULE_NAME_RE.test(modules[0])) {
+    errors.push({ field: 'expected.changed.detected_modules', message: `must be an array with EXACTLY one entry matching ${CHANGED_MODULE_NAME_RE} -- multi-module is out of scope for this contract` });
+  }
+  if (typeof changed.staged_only !== 'boolean') {
+    errors.push({ field: 'expected.changed.staged_only', message: 'must be a boolean' });
+  }
+  if (!CHANGED_BASE_REF_EXPECTED_VALUES.includes(changed.base_ref)) {
+    errors.push({ field: 'expected.changed.base_ref', message: `must be one of ${CHANGED_BASE_REF_EXPECTED_VALUES.join('|')} -- the only value the real CLI ever produces` });
+  }
+}
+
+/** Cross-field coupling between `fixture_setup` and `expected.changed` -- lives here, not inside
+ * validateExpected, because it genuinely needs the WHOLE scenario object (fixture_setup is a
+ * sibling of `expected`, not nested inside it; the policy/family checks below need scenario.policy
+ * and scenario.family too). Both-or-neither, and when both are present, locks the contract shape
+ * to exactly what THIS scenario needs (not generically future-proofed): a real
+ * changed-module-verification cell can only ever be `family:"test-only"`,
+ * `outcome_kind:"tests_executed"`, requires the agent's own policy to actually permit the
+ * `changed` subcommand, and the setup's own mechanics (an always-UNSTAGED mutation) mean
+ * `staged_only` can only ever legitimately be `false`. */
+function validateFixtureSetupCoupling(scenario, errors) {
+  const hasFixtureSetup = 'fixture_setup' in scenario && scenario.fixture_setup != null;
+  const expected = scenario.expected;
+  const hasExpectedChanged = expected != null && typeof expected === 'object' && !Array.isArray(expected) && expected.changed != null;
+  if (hasFixtureSetup !== hasExpectedChanged) {
+    errors.push({
+      field: hasFixtureSetup ? 'expected.changed' : 'fixture_setup',
+      message: 'fixture_setup and expected.changed must both be present or both be absent',
+    });
+    return;
+  }
+  if (!hasFixtureSetup) return;
+
+  if (scenario.family !== 'test-only') {
+    errors.push({ field: 'family', message: 'must be "test-only" when fixture_setup/expected.changed are present' });
+  }
+  if (expected.outcome_kind !== 'tests_executed') {
+    errors.push({ field: 'expected.outcome_kind', message: 'must be "tests_executed" when fixture_setup/expected.changed are present' });
+  }
+  const policy = scenario.policy;
+  const allowsChanged = policy != null && typeof policy === 'object' && Array.isArray(policy.allowed_kmptest_subcommands) && policy.allowed_kmptest_subcommands.includes('changed');
+  if (!allowsChanged) {
+    errors.push({ field: 'policy.allowed_kmptest_subcommands', message: `must include 'changed' when fixture_setup/expected.changed are present` });
+  }
+
+  const changed = expected.changed;
+  if (changed != null && typeof changed === 'object' && !Array.isArray(changed)) {
+    if (changed.staged_only !== false) {
+      errors.push({ field: 'expected.changed.staged_only', message: 'must be exactly false when fixture_setup is present -- the setup always produces an unstaged change' });
+    }
+    if (Array.isArray(changed.detected_modules) && changed.detected_modules.length === 1 && typeof changed.detected_modules[0] === 'string' && typeof expected.module === 'string'
+      && normalizeModuleName(changed.detected_modules[0]) !== normalizeModuleName(expected.module)) {
+      errors.push({ field: 'expected.changed.detected_modules', message: `must name the same module as expected.module (${expected.module})` });
+    }
+  }
+}
 
 function rejectUnrecognizedKeys(obj, allowedKeys, field, errors) {
   if (obj == null || typeof obj !== 'object' || Array.isArray(obj)) return;
@@ -857,6 +989,8 @@ function validateExpected(expected, policy, errors) {
     validateProviderContract(gradle, 'gradle', expected.outcome_kind, errors);
   }
 
+  if ('changed' in expected) validateChangedContract(expected.changed, errors);
+
   // Cross-provider consistency -- a real gap found on review: kmp_test.tests.individual_total (the
   // real per-test-case count from kmp-test's own JUnit-XML walk) and gradle.tests.total (the same
   // real test run's count, independently derived by matrix-runner.mjs's own JUnit-XML capture)
@@ -914,7 +1048,9 @@ export function validateScenario(scenario) {
     return { errors, warnings };
   }
   const keys = new Set(Object.keys(scenario));
-  for (const f of SCENARIO_CANONICAL_FIELDS) if (!keys.has(f)) errors.push({ field: f, message: 'missing required field' });
+  for (const f of SCENARIO_CANONICAL_FIELDS) {
+    if (!keys.has(f) && !OPTIONAL_SCENARIO_FIELDS.includes(f)) errors.push({ field: f, message: 'missing required field' });
+  }
   for (const k of keys) if (!SCENARIO_CANONICAL_FIELDS.includes(k)) warnings.push({ field: k, message: 'unrecognized field' });
 
   if (scenario.schema !== CURRENT_SCENARIO_SCHEMA) errors.push({ field: 'schema', message: `expected ${CURRENT_SCENARIO_SCHEMA}` });
@@ -951,6 +1087,8 @@ export function validateScenario(scenario) {
   if (scenario.first_useful_signal_predicate == null || typeof scenario.first_useful_signal_predicate.description !== 'string') {
     errors.push({ field: 'first_useful_signal_predicate', message: 'must have a string "description"' });
   }
+  if ('fixture_setup' in scenario) validateFixtureSetup(scenario.fixture_setup, errors);
+  validateFixtureSetupCoupling(scenario, errors);
 
   return { errors, warnings };
 }

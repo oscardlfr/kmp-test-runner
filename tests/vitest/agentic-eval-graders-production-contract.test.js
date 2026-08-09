@@ -9,9 +9,11 @@
 // to capture a byte-for-byte real envelope, then feeds it through the grader unmodified.
 import { describe, it, expect, afterEach } from 'vitest';
 import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, utimesSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runParallel } from '../../lib/orchestrators/parallel-orchestrator.js';
+import { runChanged } from '../../lib/orchestrators/changed-orchestrator.js';
 import { gradeScenarioCondition } from '../../tools/agentic-eval/graders.mjs';
 
 let workDir;
@@ -155,6 +157,144 @@ describe('gradeScenarioCondition -- production-real envelope (genuine runParalle
     const grade = gradeScenarioCondition(conditionResult, scenario);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
     expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+});
+
+// Adversarial-review finding (changed-module-verification scenario): graders.mjs's
+// changedEvidenceInvalid hard-depends on a real `kmp-test changed` envelope never carrying a
+// top-level `parallel` key -- true today only because changed-orchestrator.js's own `parsed`
+// object (fed to buildJsonReport) explicitly lists tests/modules/skipped/coverage/errors/
+// warnings/changed/isolated and never copies `parallelEnvelope.parallel` across, even though the
+// real runParallel() call it delegates to DOES return one. Nothing previously pinned this against
+// REAL production code (only a hand-authored fixture in agentic-eval-graders.test.js, and a live
+// ground-truth capture recorded in this PR's own commit message) -- a future edit to
+// changed-orchestrator.js that started forwarding `.parallel` (arguably "more complete", and
+// exactly what changed.md's own stale doc claims already happens) would silently make every
+// correct `changed` attempt grade as evidence-integrity-malformed, with no test catching it.
+describe('runChanged() -- production-real envelope never carries a parallel key, even when the delegate call it makes DOES produce one', () => {
+  function makeSyntheticGitProject() {
+    const dir = mkdtempSync(path.join(tmpdir(), 'agentic-eval-changed-production-contract-'));
+    workDir = dir;
+    const git = (gitArgs) => {
+      const r = spawnSync('git', gitArgs, { cwd: dir, encoding: 'utf8' });
+      if (r.status !== 0) throw new Error(`git ${gitArgs.join(' ')} failed: ${r.stderr}`);
+      return r.stdout;
+    };
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "fixture"\ninclude(":shared")\n');
+    writeFileSync(path.join(dir, 'gradlew'), '#!/usr/bin/env bash\nexit 0\n');
+    writeFileSync(path.join(dir, 'gradlew.bat'), '@echo off\r\nexit /b 0\r\n');
+    const modDir = path.join(dir, 'shared');
+    mkdirSync(modDir, { recursive: true });
+    writeFileSync(path.join(modDir, 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
+    const markerPath = path.join(modDir, 'src', 'commonMain', 'kotlin', 'Marker.kt');
+    mkdirSync(path.dirname(markerPath), { recursive: true });
+    writeFileSync(markerPath, 'class Marker\n');
+    git(['init', '-q']);
+    git(['config', 'user.email', 'test@example.com']);
+    git(['config', 'user.name', 'Test']);
+    git(['config', 'core.autocrlf', 'false']);
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'initial']);
+    // The uncommitted, unstaged edit `changed` must detect via a real `git status --porcelain`.
+    writeFileSync(markerPath, 'class Marker\n// mutated\n');
+    return dir;
+  }
+
+  // Simulates a genuine runParallel() return value -- including a real-shaped `parallel` block,
+  // the exact thing being proven to get dropped -- so this test cannot pass merely because the
+  // injected stub happened to omit `.parallel` itself.
+  function fakeRunParallelWithParallelBlock() {
+    return async () => ({
+      exitCode: 0,
+      envelope: {
+        tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+        exit_code: 0, duration_ms: 42,
+        tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 },
+        modules: [{ name: 'shared', type: 'jvm' }], skipped: [], coverage: {}, errors: [], warnings: [],
+        parallel: {
+          test_type: 'auto',
+          legs: [{ test_type: 'auto', exit_code: 0, execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 }, cascade_detected: false, retry_fired: false }],
+          max_workers: 0, timeout_s: 600,
+        },
+        isolated: { enabled: false, cache_dir: null, kept: false, locked: true },
+      },
+    });
+  }
+
+  it('the real envelope runChanged() returns has NO parallel key, proven against actual production code, not a hand-authored fixture', async () => {
+    const dir = makeSyntheticGitProject();
+    // `--json` is a GLOBAL flag stripped by lib/runner.js before an orchestrator ever sees argv
+    // (confirmed directly in changed-orchestrator.js's own parseArgs doc comment: "Global flags
+    // (--json, --force, etc.) were stripped by lib/runner.js") -- calling runChanged() directly,
+    // bypassing that layer, must omit it too, exactly like the existing runParallel() production-
+    // contract test above never passes it either. `runChanged()` always builds the full envelope
+    // object regardless of --json; that flag only controls the real CLI's own stdout rendering.
+    const { envelope, exitCode } = await runChanged({
+      projectRoot: dir,
+      args: ['--no-coverage'],
+      spawn: spawnSync,
+      log: () => {},
+      runParallelInjection: fakeRunParallelWithParallelBlock(),
+    });
+
+    expect(exitCode).toBe(0);
+    expect(envelope.tool).toBe('kmp-test');
+    expect(envelope.subcommand).toBe('changed');
+    // The actual pinned fact: even though the injected delegate call returned a real `.parallel`
+    // block, runChanged()'s own envelope construction never copies it across.
+    expect(Object.prototype.hasOwnProperty.call(envelope, 'parallel')).toBe(false);
+    expect(envelope.parallel).toBeUndefined();
+    expect(envelope.changed.detected_modules).toEqual(['shared']);
+    expect(envelope.changed.base_ref).toBe('HEAD');
+    expect(envelope.changed.staged_only).toBe(false);
+
+    // Feed this REAL (not hand-authored) envelope through the grader end to end.
+    const scenario = {
+      schema: 1,
+      id: 'changed-production-contract-check',
+      family: 'test-only',
+      project_alias: 'synthetic',
+      project_url: 'https://example.com/synthetic/fixture',
+      project_commit: '0'.repeat(40),
+      prompt: 'n/a',
+      expected_outcome: 'n/a',
+      policy: {
+        allowed_kmptest_subcommands: ['changed'],
+        allowed_gradle_tasks: [':shared:test'],
+      },
+      expected: {
+        module: ':shared',
+        outcome_kind: 'tests_executed',
+        kmp_test: { tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 }, exit_code: 0 },
+        gradle: { allowed_invocations: [':shared:test'], evidence_task: ':shared:test', tests: { total: 1, passed: 1, failed: 0 }, exit_code: 0 },
+        changed: { detected_modules: ['shared'], staged_only: false, base_ref: 'HEAD' },
+      },
+      first_useful_signal_predicate: { description: 'n/a' },
+      tags: ['held-out'],
+    };
+    const finalAnswer = `1/1 tests passed.\n\nKMP_EVAL_RESULT\n${JSON.stringify({ module: ':shared', outcome_kind: 'tests_executed', total: 1, passed: 1, failed: 0 })}\nKMP_EVAL_RESULT_END\n`;
+    const command = 'kmp-test changed --json --project-root . --no-coverage';
+    const events = [
+      { type: 'system', subtype: 'init' },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', id: 't1', input: { command } }] } },
+      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: JSON.stringify(envelope), is_error: false, tool_use_id: 't1' }] } },
+      { type: 'result', subtype: 'success', result: finalAnswer },
+    ];
+    const bashResults = [{
+      index: 1, id: 't1', command, resultFound: true, resultIsError: false, resultIndex: 2, resultContent: JSON.stringify(envelope),
+    }];
+    const conditionResult = {
+      events, bashResults, result: { result: finalAnswer },
+      spawnResult: { terminated: false, terminationReason: null },
+      junitAttribution: { perAttemptJunit: new Map(), decisionByAttempt: new Map([['t1', 'allow']]), ambiguousJunitEvidence: false, captureIncomplete: false, unreliable: false },
+    };
+
+    const grade = gradeScenarioCondition(conditionResult, scenario);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.changedEvidenceMalformed).toBe(false);
     expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(true);
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);

@@ -163,6 +163,14 @@ export const FILTER_VALUE_RE = /^[A-Za-z0-9_.:#-]+$/;
 export const KMP_TEST_FILTER_FLAGS = new Set(['--module-filter', '--test-filter']);
 export const KMP_TEST_BOOLEAN_FLAGS = new Set(['--json', '--dry-run', '--no-coverage']);
 
+// --show-modules-only -- changed's own dry-run-shaped inspection flag ("List detected modules
+// without running tests"). Deliberately NOT added to KMP_TEST_BOOLEAN_FLAGS above, which
+// evaluateKmpTest consumes subcommand-agnostically: doing so would also approve nonsensical shapes
+// like `kmp-test doctor --show-modules-only` or `kmp-test parallel --show-modules-only`, which the
+// real CLI has no concept of at all. Checked only when the invoked subcommand is literally
+// 'changed' -- see evaluateKmpTest's own per-token loop below.
+export const KMP_TEST_CHANGED_ONLY_BOOLEAN_FLAGS = new Set(['--show-modules-only']);
+
 // --min-missed-lines -- needed to admit the coverage-threshold-failure scenario's ground-truth
 // command at all (it fits none of the 4 categories above: not bare, not a path, not a filter
 // value, not boolean). Exactly a non-negative decimal integer in canonical form: no leading +/-
@@ -219,6 +227,7 @@ export function evaluateKmpTest(tokens, cwd, config) {
     if (a.startsWith('--module-filter=') && isSafeFilterValue(a.slice('--module-filter='.length))) continue;
     if (a.startsWith('--test-filter=') && isSafeFilterValue(a.slice('--test-filter='.length))) continue;
     if (KMP_TEST_BOOLEAN_FLAGS.has(a)) continue;
+    if (subcommand === 'changed' && KMP_TEST_CHANGED_ONLY_BOOLEAN_FLAGS.has(a)) continue;
     return false;
   }
   return true;

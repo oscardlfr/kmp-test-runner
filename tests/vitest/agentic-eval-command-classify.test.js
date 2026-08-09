@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyBashCommand, normalizeModuleName, isRelevantGradleInvocation, isRelevantKmpTestParallel,
+  isRelevantKmpTestChanged,
 } from '../../tools/agentic-eval/command-classify.mjs';
 
 describe('classifyBashCommand', () => {
@@ -49,6 +50,22 @@ describe('classifyBashCommand', () => {
 
   it('an ordinary kmp-test parallel call (no plan-only flag) has isPlanOnly:false', () => {
     expect(classifyBashCommand('kmp-test parallel --module-filter shared --json').isPlanOnly).toBe(false);
+  });
+
+  // --show-modules-only -- changed's own dry-run-shaped inspection flag ("List detected modules
+  // without running tests"). Must be recognized here too, exactly like --dry-run/--list/--list-only,
+  // so it's excluded from terminal contention/retries/JUnit relevance downstream -- never a real
+  // execution, only a preview.
+  it('--show-modules-only on a changed command sets isPlanOnly:true', () => {
+    expect(classifyBashCommand('kmp-test changed --show-modules-only --json').isPlanOnly).toBe(true);
+  });
+
+  it('--show-modules-only combined with other flags still sets isPlanOnly:true', () => {
+    expect(classifyBashCommand('kmp-test changed --json --project-root . --show-modules-only').isPlanOnly).toBe(true);
+  });
+
+  it('an ordinary kmp-test changed call (no --show-modules-only) has isPlanOnly:false', () => {
+    expect(classifyBashCommand('kmp-test changed --json --project-root .').isPlanOnly).toBe(false);
   });
 
   it('a non-parallel kmp-test subcommand (doctor) is classified with subcommand:"doctor", moduleFilter:null', () => {
@@ -219,5 +236,40 @@ describe('isRelevantKmpTestParallel', () => {
     const c = classifyBashCommand('kmp-test parallel --module-filter common --json');
     expect(() => isRelevantKmpTestParallel(c, undefined)).not.toThrow();
     expect(isRelevantKmpTestParallel(c, undefined)).toBe(false);
+  });
+});
+
+// isRelevantKmpTestChanged -- deliberately NO module-filter parameter/logic (unlike
+// isRelevantKmpTestParallel above): `changed` has no `--module-filter` flag at all (the real CLI
+// rejects it as unknown_flag), so every non-plan-only `changed` invocation is unconditionally
+// relevant. Callers (junit-evidence.mjs) are responsible for only folding this predicate in when
+// the scenario itself expects a changed subcommand (scenario.expected.changed != null) -- this
+// predicate itself has no scenario awareness, by design, so it stays a pure, reusable classifier.
+describe('isRelevantKmpTestChanged', () => {
+  it('a bare, non-plan-only kmp-test changed call is relevant', () => {
+    expect(isRelevantKmpTestChanged(classifyBashCommand('kmp-test changed --json --project-root .'))).toBe(true);
+  });
+
+  it('a changed call with --no-coverage is still relevant (no flag disqualifies a real execution)', () => {
+    expect(isRelevantKmpTestChanged(classifyBashCommand('kmp-test changed --json --project-root . --no-coverage'))).toBe(true);
+  });
+
+  it('a --show-modules-only changed call is NOT relevant -- plan-only, never a real execution', () => {
+    expect(isRelevantKmpTestChanged(classifyBashCommand('kmp-test changed --show-modules-only --json'))).toBe(false);
+  });
+
+  it('a --dry-run changed call is NOT relevant', () => {
+    expect(isRelevantKmpTestChanged(classifyBashCommand('kmp-test changed --dry-run --json'))).toBe(false);
+  });
+
+  it('a non-"changed" kmp-test subcommand (parallel, doctor, describe) is never relevant here', () => {
+    expect(isRelevantKmpTestChanged(classifyBashCommand('kmp-test parallel --json'))).toBe(false);
+    expect(isRelevantKmpTestChanged(classifyBashCommand('kmp-test doctor --json'))).toBe(false);
+    expect(isRelevantKmpTestChanged(classifyBashCommand('kmp-test describe --json'))).toBe(false);
+  });
+
+  it('a non-kmp-test classification (Gradle or other) is never relevant here', () => {
+    expect(isRelevantKmpTestChanged(classifyBashCommand('./gradlew.bat :core:common:test --console=plain'))).toBe(false);
+    expect(isRelevantKmpTestChanged(classifyBashCommand('ls -la'))).toBe(false);
   });
 });

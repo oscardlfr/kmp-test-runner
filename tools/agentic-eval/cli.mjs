@@ -885,6 +885,14 @@ function buildRunRecord({
       ...(isScenario && gradeResult?.parallelEvidenceMalformed
         ? [{ code: 'malformed_parallel_evidence', message: 'the terminal kmp-test parallel attempt\'s own parallel.legs[] structure is internally incoherent (malformed leg shape, wrong test-type correlation, or a leg/top-level failure-count contradiction) -- the tool\'s own JSON output cannot be trusted as genuine evidence of what happened' }]
         : []),
+      // The identical HARNESS-INTEGRITY treatment as malformed_parallel_evidence above, for the
+      // changed-subcommand sibling (graders.mjs's changedEvidenceMalformed): the terminal `changed`
+      // attempt's own changed{} block is internally malformed, or the envelope also carries a
+      // production-impossible `parallel` block -- either way the tool's own JSON output cannot be
+      // trusted as genuine evidence of what happened, not a legitimate agent outcome.
+      ...(isScenario && gradeResult?.changedEvidenceMalformed
+        ? [{ code: 'malformed_changed_evidence', message: 'the terminal kmp-test changed attempt\'s own changed{} block is internally malformed, or the envelope also carries a parallel block real production never produces alongside it -- the tool\'s own JSON output cannot be trusted as genuine evidence of what happened' }]
+        : []),
       // The identical HARNESS-INTEGRITY treatment for a per-attempt JUnit-XML evidence-completeness
       // problem: junit-evidence.mjs's countEvidenceTaskJunit found a genuine skip this evidence
       // path cannot correctly count, an oversized/unreadable file, or the capture bounds were
@@ -1677,6 +1685,8 @@ function scenarioCellIntegrityOk(record, conditionResult, { sharedAmbientNames =
   const terminationOk = conditionResult.spawnResult.terminated === false || conditionResult.spawnResult.terminationReason === 'timeout';
   const junitEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'ambiguous_junit_evidence');
   const parallelEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'malformed_parallel_evidence');
+  // The identical treatment as parallelEvidenceOk above, for the changed-subcommand sibling.
+  const changedEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'malformed_changed_evidence');
   const junitSkipEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'unreliable_gradle_junit_evidence');
   // Per-attempt JUnit-evidence-attribution mechanism ("bind junit evidence to authoritative
   // attempts" fix): junit_evidence_capture_incomplete is a DISTINCT, never-merged code from
@@ -1694,7 +1704,8 @@ function scenarioCellIntegrityOk(record, conditionResult, { sharedAmbientNames =
     ['hookAccountingOk', hookAccountingOk], ['cleanTranscriptOk', cleanTranscriptOk],
     ['transcriptStructureOk', transcriptStructureOk], ['toolResultsCompleteOk', toolResultsCompleteOk],
     ['terminationOk', terminationOk], ['junitEvidenceOk', junitEvidenceOk],
-    ['parallelEvidenceOk', parallelEvidenceOk], ['junitSkipEvidenceOk', junitSkipEvidenceOk],
+    ['parallelEvidenceOk', parallelEvidenceOk], ['changedEvidenceOk', changedEvidenceOk],
+    ['junitSkipEvidenceOk', junitSkipEvidenceOk],
     ['junitCaptureCompleteOk', junitCaptureCompleteOk],
     ['ambientSkillProfileOk', ambientSkillProfileOk], ['targetSkillAmbientIdentityOk', targetSkillAmbientIdentityOk],
     ['ambientProfileMatrixOk', ambientProfileMatrixOk],

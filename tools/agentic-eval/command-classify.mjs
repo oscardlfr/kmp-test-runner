@@ -36,7 +36,10 @@ export function classifyBashCommand(command) {
       else if (tokens[i] === '--min-missed-lines') { minMissedLines = tokens[i + 1] ?? null; i++; }
       else if (tokens[i].startsWith('--min-missed-lines=')) { minMissedLines = tokens[i].slice('--min-missed-lines='.length); }
     }
-    const isPlanOnly = tokens.includes('--dry-run') || tokens.includes('--list') || tokens.includes('--list-only');
+    // --show-modules-only -- changed's own dry-run-shaped inspection flag (never a real
+    // execution, only a preview of which modules a real run would touch): excluded from terminal
+    // contention/retries/JUnit relevance downstream exactly like --dry-run/--list/--list-only.
+    const isPlanOnly = tokens.includes('--dry-run') || tokens.includes('--list') || tokens.includes('--list-only') || tokens.includes('--show-modules-only');
     return { kind: 'kmp-test', subcommand: tokens[1] ?? null, moduleFilter, testType, minMissedLines, isPlanOnly };
   }
   if (tokens[0] === './gradlew' || tokens[0] === './gradlew.bat') {
@@ -86,4 +89,16 @@ export function isRelevantKmpTestParallel(classification, targetModule) {
   if (classification.kind !== 'kmp-test' || classification.subcommand !== 'parallel' || classification.isPlanOnly) return false;
   if (classification.moduleFilter == null) return true;
   return typeof targetModule === 'string' && matchModuleFilter(targetModule, classification.moduleFilter);
+}
+
+/** True only for a non-plan-only `kmp-test changed` invocation -- deliberately NO module-filter
+ * parameter/logic, unlike isRelevantKmpTestParallel above: `changed` has no `--module-filter` flag
+ * at all (the real CLI rejects it as `unknown_flag`), so there is no "ran the wrong module" shape
+ * to reconcile here -- every non-plan-only `changed` call is unconditionally relevant. This
+ * predicate itself carries no scenario awareness (no targetModule, no outcome_kind check) by
+ * design -- callers (junit-evidence.mjs's attributeCondition) are responsible for only folding it
+ * into their own `relevant` set when the scenario itself actually expects a `changed` subcommand
+ * (`scenario.expected.changed != null`), so the other 5 scenarios' behavior stays untouched. */
+export function isRelevantKmpTestChanged(classification) {
+  return classification.kind === 'kmp-test' && classification.subcommand === 'changed' && !classification.isPlanOnly;
 }

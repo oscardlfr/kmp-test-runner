@@ -883,6 +883,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       testInvocationsTotal: 2, retries: 1,
       harnessEvidenceAmbiguous: false,
       parallelEvidenceMalformed: false,
+      changedEvidenceMalformed: false,
       gradleJunitEvidenceUnreliable: false,
       ...overrides,
     };
@@ -960,6 +961,45 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.errors.some((e) => e.code === 'malformed_parallel_evidence')).toBe(false);
+  });
+
+  // The identical propagation, mirrored exactly for changedEvidenceMalformed (graders.mjs's
+  // changed-subcommand sibling of parallelEvidenceMalformed -- a genuinely incoherent changed{}
+  // block, or a changed envelope also carrying a production-impossible parallel block, on the
+  // terminal changed attempt).
+  it('a gradeResult with changedEvidenceMalformed:true produces a malformed_changed_evidence error entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-malformed-changed',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':core:common:test'], allowedKmpTestSubcommands: ['changed'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+      gradeResult: fakeGradeResult({ changedEvidenceMalformed: true }),
+    });
+    expect(record.errors.some((e) => e.code === 'malformed_changed_evidence')).toBe(true);
+  });
+
+  it('a gradeResult with changedEvidenceMalformed:false produces NO malformed_changed_evidence entry', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-malformed-changed-clean',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [':core:common:test'], allowedKmpTestSubcommands: ['changed'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+      gradeResult: fakeGradeResult({ changedEvidenceMalformed: false }),
+    });
+    expect(record.errors.some((e) => e.code === 'malformed_changed_evidence')).toBe(false);
+  });
+
+  it('calibrate/smoke records (runKind !== scenario) never produce malformed_changed_evidence, regardless of gradeResult', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-malformed-changed-calibration',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+    });
+    expect(record.errors.some((e) => e.code === 'malformed_changed_evidence')).toBe(false);
   });
 
   // Round 11 (Docker/local-ci audit): the identical propagation gap existed for

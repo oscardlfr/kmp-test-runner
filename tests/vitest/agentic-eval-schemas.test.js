@@ -2003,6 +2003,268 @@ describe('validateScenario', () => {
       expect(validateScenario(baseScenario({ tags: ['held-out'] })).errors.some((e) => e.field === 'tags')).toBe(false);
     });
   });
+
+  // Ground truth (independently re-verified live, 6x -- 3x kmp-test changed, 3x direct Gradle, cold
+  // GRADLE_USER_HOME + JDK 17 each -- against android/nowinandroid @
+  // 7d45eae4f8720a0c77f507712ba2437ff974b6ed, :core:common module): `changed`'s own real envelope
+  // has NO top-level `parallel` key at all (confirmed via a direct `hasOwnProperty` check on the
+  // raw JSON in every one of the 3 `changed` runs) and reports `changed.detected_modules` as bare,
+  // colon-LESS strings (e.g. "core:common", never ":core:common") -- both load-bearing facts for
+  // this contract's shape below.
+  describe('expected.changed + fixture_setup (changed-module-verification contract)', () => {
+    const CHANGED_FIXTURE_RELATIVE_PATH = 'core/common/src/main/kotlin/com/google/samples/apps/nowinandroid/core/common/result/Result.kt';
+    const CHANGED_FIXTURE_BLOB = '934b6dfb2bb6ad97453094b72a67daa1aab590df';
+
+    function baseScenarioChangedVerification(overrides = {}) {
+      return baseScenario({
+        id: 'sample-changed-verification-scenario',
+        family: 'test-only',
+        policy: {
+          allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel', 'changed'],
+          allowed_gradle_tasks: [':core:common:tasks', ':core:common:test'],
+        },
+        expected: {
+          module: ':core:common',
+          outcome_kind: 'tests_executed',
+          kmp_test: { tests: { total: 1, passed: 1, failed: 0, individual_total: 1, skipped: 0 }, exit_code: 0 },
+          gradle: { allowed_invocations: [':core:common:test'], evidence_task: ':core:common:test', tests: { total: 1, passed: 1, failed: 0 }, exit_code: 0 },
+          changed: { detected_modules: ['core:common'], staged_only: false, base_ref: 'HEAD' },
+        },
+        fixture_setup: {
+          operation: 'append_comment',
+          relative_path: CHANGED_FIXTURE_RELATIVE_PATH,
+          expected_blob_oid: CHANGED_FIXTURE_BLOB,
+        },
+        tags: ['held-out'],
+        ...overrides,
+      });
+    }
+
+    it('accepts a well-formed changed-verification scenario', () => {
+      const { errors } = validateScenario(baseScenarioChangedVerification());
+      expect(errors).toEqual([]);
+    });
+
+    describe('fixture_setup is optional -- the only optional canonical field', () => {
+      it('accepts a scenario with no fixture_setup and no expected.changed at all (regression: the other 5 shipped scenarios)', () => {
+        const { errors } = validateScenario(baseScenario());
+        expect(errors.some((e) => e.field === 'fixture_setup')).toBe(false);
+      });
+
+      it('rejects fixture_setup that is not an object', () => {
+        const s = baseScenarioChangedVerification({ fixture_setup: 'append_comment' });
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup')).toBe(true);
+      });
+
+      it('rejects fixture_setup with an unrecognized extra key', () => {
+        const s = baseScenarioChangedVerification();
+        s.fixture_setup.extra = 'nope';
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup.extra')).toBe(true);
+      });
+
+      it('rejects fixture_setup.operation missing', () => {
+        const s = baseScenarioChangedVerification();
+        delete s.fixture_setup.operation;
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup.operation')).toBe(true);
+      });
+
+      it('rejects fixture_setup.operation outside the closed enum-of-1', () => {
+        const s = baseScenarioChangedVerification();
+        s.fixture_setup.operation = 'delete_file';
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup.operation')).toBe(true);
+      });
+
+      it('rejects fixture_setup.relative_path missing', () => {
+        const s = baseScenarioChangedVerification();
+        delete s.fixture_setup.relative_path;
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup.relative_path')).toBe(true);
+      });
+
+      it('rejects fixture_setup.relative_path with a leading traversal segment', () => {
+        const s = baseScenarioChangedVerification();
+        s.fixture_setup.relative_path = '../../../etc/passwd';
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup.relative_path')).toBe(true);
+      });
+
+      it('rejects fixture_setup.relative_path with a traversal segment buried mid-path', () => {
+        const s = baseScenarioChangedVerification();
+        s.fixture_setup.relative_path = 'core/common/../../../etc/passwd';
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup.relative_path')).toBe(true);
+      });
+
+      it('rejects fixture_setup.relative_path as a POSIX absolute path', () => {
+        const s = baseScenarioChangedVerification();
+        s.fixture_setup.relative_path = '/etc/passwd';
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup.relative_path')).toBe(true);
+      });
+
+      it('rejects fixture_setup.relative_path with a Windows drive-letter prefix', () => {
+        const s = baseScenarioChangedVerification();
+        s.fixture_setup.relative_path = 'C:/fake-drive/secrets.txt';
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup.relative_path')).toBe(true);
+      });
+
+      it('rejects fixture_setup.relative_path containing a backslash', () => {
+        const s = baseScenarioChangedVerification();
+        s.fixture_setup.relative_path = 'core\\common\\Result.kt';
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup.relative_path')).toBe(true);
+      });
+
+      it('rejects fixture_setup.expected_blob_oid missing', () => {
+        const s = baseScenarioChangedVerification();
+        delete s.fixture_setup.expected_blob_oid;
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup.expected_blob_oid')).toBe(true);
+      });
+
+      it('rejects fixture_setup.expected_blob_oid the wrong length', () => {
+        const s = baseScenarioChangedVerification();
+        s.fixture_setup.expected_blob_oid = 'deadbeef';
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup.expected_blob_oid')).toBe(true);
+      });
+
+      it('rejects fixture_setup.expected_blob_oid with non-hex characters', () => {
+        const s = baseScenarioChangedVerification();
+        s.fixture_setup.expected_blob_oid = 'g'.repeat(40);
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup.expected_blob_oid')).toBe(true);
+      });
+    });
+
+    describe('expected.changed shape', () => {
+      it('rejects expected.changed with an unrecognized extra key', () => {
+        const s = baseScenarioChangedVerification();
+        s.expected.changed.extra = 'nope';
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.changed.extra')).toBe(true);
+      });
+
+      it('rejects expected.changed.detected_modules missing', () => {
+        const s = baseScenarioChangedVerification();
+        delete s.expected.changed.detected_modules;
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.changed.detected_modules')).toBe(true);
+      });
+
+      it('rejects expected.changed.detected_modules as an empty array', () => {
+        const s = baseScenarioChangedVerification();
+        s.expected.changed.detected_modules = [];
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.changed.detected_modules')).toBe(true);
+      });
+
+      it('rejects expected.changed.detected_modules with more than one entry -- multi-module is out of scope for this contract', () => {
+        const s = baseScenarioChangedVerification();
+        s.expected.changed.detected_modules = ['core:common', 'core:domain'];
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.changed.detected_modules')).toBe(true);
+      });
+
+      it('rejects expected.changed.detected_modules with a colon-PREFIXED entry -- the real envelope is colon-less (ground truth, above)', () => {
+        const s = baseScenarioChangedVerification();
+        s.expected.changed.detected_modules = [':core:common'];
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.changed.detected_modules')).toBe(true);
+      });
+
+      it('rejects expected.changed.staged_only missing', () => {
+        const s = baseScenarioChangedVerification();
+        delete s.expected.changed.staged_only;
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.changed.staged_only')).toBe(true);
+      });
+
+      it('rejects expected.changed.staged_only as a non-boolean', () => {
+        const s = baseScenarioChangedVerification();
+        s.expected.changed.staged_only = 'false';
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.changed.staged_only')).toBe(true);
+      });
+
+      it('rejects expected.changed.base_ref missing', () => {
+        const s = baseScenarioChangedVerification();
+        delete s.expected.changed.base_ref;
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.changed.base_ref')).toBe(true);
+      });
+
+      it('rejects expected.changed.base_ref anything other than "HEAD" -- the real CLI never produces another value (ground truth, above)', () => {
+        const s = baseScenarioChangedVerification();
+        s.expected.changed.base_ref = 'main';
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.changed.base_ref')).toBe(true);
+      });
+    });
+
+    describe('fixture_setup <-> expected.changed coupling (validateFixtureSetupCoupling)', () => {
+      it('rejects fixture_setup present without expected.changed', () => {
+        const s = baseScenarioChangedVerification();
+        delete s.expected.changed;
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.changed')).toBe(true);
+      });
+
+      it('rejects expected.changed present without fixture_setup', () => {
+        const s = baseScenarioChangedVerification();
+        delete s.fixture_setup;
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'fixture_setup')).toBe(true);
+      });
+
+      it('rejects family other than test-only when fixture_setup is present', () => {
+        const s = baseScenarioChangedVerification({ family: 'coverage' });
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'family')).toBe(true);
+      });
+
+      it('rejects outcome_kind other than tests_executed when fixture_setup is present', () => {
+        const s = baseScenarioChangedVerification();
+        s.expected.outcome_kind = 'tests_failed';
+        s.expected.kmp_test = { tests: { total: 1, passed: 0, failed: 1, individual_total: 3, skipped: 0 }, exit_code: 1 };
+        s.expected.gradle.tests = { total: 3, passed: 0, failed: 3 };
+        s.expected.gradle.exit_code = 1;
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.outcome_kind')).toBe(true);
+      });
+
+      it("rejects policy.allowed_kmptest_subcommands NOT including 'changed' when fixture_setup is present", () => {
+        const s = baseScenarioChangedVerification();
+        s.policy.allowed_kmptest_subcommands = ['doctor', 'describe', 'parallel'];
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'policy.allowed_kmptest_subcommands')).toBe(true);
+      });
+
+      it('rejects expected.changed.staged_only:true when fixture_setup is present -- the setup only ever produces an unstaged change', () => {
+        const s = baseScenarioChangedVerification();
+        s.expected.changed.staged_only = true;
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.changed.staged_only')).toBe(true);
+      });
+
+      it('rejects expected.changed.detected_modules[0] not matching expected.module (cross-check)', () => {
+        const s = baseScenarioChangedVerification();
+        s.expected.changed.detected_modules = ['core:domain'];
+        const { errors } = validateScenario(s);
+        expect(errors.some((e) => e.field === 'expected.changed.detected_modules')).toBe(true);
+      });
+
+      it('accepts the well-formed pairing (regression guard)', () => {
+        const { errors } = validateScenario(baseScenarioChangedVerification());
+        expect(errors).toEqual([]);
+      });
+    });
+  });
 });
 
 // canonicalStructuredValue (review-round-2 fix): a bare JSON.stringify is NOT canonical w.r.t.
