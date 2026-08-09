@@ -213,9 +213,14 @@ describe('Steps table -- tests+coverage-budget routing (grounds the BACKLOG "ski
     expect(steps).not.toContain('"with coverage"');
   });
 
-  it('a separate row exists for an explicit missed-lines budget, linking parallel + --min-missed-lines in the SAME row', () => {
+  // CodeRabbit (PR #413, SKILL.md:115, Major): a bare "missed lines under 100" ask does not
+  // itself say tests must run -- it could mean "check the threshold against whatever coverage
+  // XML already exists", which belongs to `coverage --min-missed-lines` (grounded above), not
+  // `parallel`. The row must carry explicit test-execution intent, not just "missed lines".
+  it('a separate row exists for an explicit missed-lines budget, carrying explicit test-execution intent (not just "missed lines" co-occurrence) and linking parallel + --min-missed-lines in the SAME row', () => {
     const row = findRowContaining(steps, 'missed lines');
     expect(row).toBeTruthy();
+    expect(row.toLowerCase()).toMatch(/run tests|test this/);
     expect(row).toContain('parallel');
     expect(row).toContain('--min-missed-lines');
     expect(row).toContain('kmp-test parallel --min-missed-lines 100 --json --project-root .');
@@ -302,6 +307,76 @@ describe('--min-missed-lines 0 semantics -- "disables the gate", never "perfect 
 
   it('unit-tests.md positively states 0 = no gate after the fix', () => {
     expect(unitTestsDoc).toMatch(/no gate|don.t gate|disables? the gate/i);
+  });
+});
+
+// CodeRabbit (PR #413, coverage.md:100, Major -- see the real-execution grounding test in the
+// fixture describe block above): "complete, unfiltered project total" is misleading -- the
+// aggregate is scoped to whichever modules --coverage-modules/--exclude-coverage selected for
+// this run; --min-missed-lines is what never filters WITHIN that already-selected set. Detector
+// proven synthetically against the verbatim pre-fix sentences before being applied for real.
+describe('coverage.missed_lines is scoped to selected modules, never claimed as an unqualified "project total" (grounds doc coherence in the real dispatched-module filter)', () => {
+  function claimsUnqualifiedProjectTotal(text) {
+    return /\bcomplete,?\s*(?:\*\*)?unfiltered(?:\*\*)?\s*project total\b/i.test(text);
+  }
+
+  it('[detector] catches the verbatim pre-fix coverage-threshold-exceeded.md:27 sentence', () => {
+    const old27 = 'is always the **complete, unfiltered** project total — `--min-missed-lines` never removes coverage data.';
+    expect(claimsUnqualifiedProjectTotal(old27)).toBe(true);
+  });
+
+  it('[detector] catches the verbatim pre-fix envelope-schema.md:19 sentence', () => {
+    const old19 = '`missed_lines` / `modules_contributing` are always the complete, unfiltered project total.';
+    expect(claimsUnqualifiedProjectTotal(old19)).toBe(true);
+  });
+
+  it('[detector] does not flag a sentence correctly scoping the total to selected modules', () => {
+    const good = 'the aggregate across the modules selected by `--coverage-modules` / `--exclude-coverage`; `--min-missed-lines` never narrows that selected aggregate.';
+    expect(claimsUnqualifiedProjectTotal(good)).toBe(false);
+  });
+
+  const coverageDoc2 = readFileSync(path.join(SKILL_DIR, 'references', 'workflows', 'coverage.md'), 'utf8');
+  const thresholdDoc2 = readFileSync(path.join(SKILL_DIR, 'references', 'troubleshooting', 'coverage-threshold-exceeded.md'), 'utf8');
+  const envelopeSchemaDoc = readFileSync(path.join(SKILL_DIR, 'references', 'cli', 'envelope-schema.md'), 'utf8');
+
+  it('coverage.md is clean of the unqualified "project total" claim after the fix', () => {
+    expect(claimsUnqualifiedProjectTotal(coverageDoc2)).toBe(false);
+  });
+
+  it('coverage-threshold-exceeded.md is clean of the unqualified "project total" claim after the fix', () => {
+    expect(claimsUnqualifiedProjectTotal(thresholdDoc2)).toBe(false);
+  });
+
+  it('envelope-schema.md is clean of the unqualified "project total" claim after the fix (both occurrences)', () => {
+    expect(claimsUnqualifiedProjectTotal(envelopeSchemaDoc)).toBe(false);
+  });
+
+  it('coverage.md positively scopes the aggregate to selected/dispatched modules', () => {
+    expect(coverageDoc2.toLowerCase()).toMatch(/selected by.*--coverage-modules|--coverage-modules.*selected/);
+  });
+});
+
+// CodeRabbit (PR #413, thread on skill-canonical-workflow.test.js's own README-mirroring review):
+// coverage.md:31 conflated two distinct caches -- runCoverage() passes useCache:false, which
+// bypasses the WHOLE project-model cache (forces a fresh analyzeModule pass); only the NESTED
+// gradle-tasks discovery probe (inside buildProjectModel) has its own separate cache FILE, and it
+// only spawns `gradlew tasks --all --quiet` on a miss of THAT cache.
+describe('coverage.md Quickstart correctly distinguishes the two caches (grounds the useCache:false claim in the real call site)', () => {
+  it('coverage.md does not claim the project-model cache is used (that cache is explicitly bypassed)', () => {
+    const coverageDoc3 = readFileSync(path.join(SKILL_DIR, 'references', 'workflows', 'coverage.md'), 'utf8');
+    expect(coverageDoc3).not.toMatch(/uses the project model cache/i);
+  });
+
+  it('coverage.md mentions the nested tasks-probe cache is a SEPARATE cache from the project model', () => {
+    const coverageDoc3 = readFileSync(path.join(SKILL_DIR, 'references', 'workflows', 'coverage.md'), 'utf8');
+    expect(coverageDoc3.toLowerCase()).toMatch(/separate cache|own.*cache|nested.*cache/);
+  });
+
+  it('grounds useCache:false in the real call site (coverage-orchestrator.js)', () => {
+    const orchestratorSrc = readFileSync(
+      path.join(REPO_ROOT, 'lib', 'orchestrators', 'coverage-orchestrator.js'), 'utf8'
+    );
+    expect(orchestratorSrc).toMatch(/useCache:\s*false/);
   });
 });
 
@@ -398,10 +473,33 @@ describe('Coverage gradle-dispatch + threshold grounding contracts (real runCove
     return (xmlPath, moduleName) => ({ rows: rowsByModule[moduleName] ?? [], errored: false, reason: 'ok', message: null });
   }
 
-  it('missing XML lands in module_buckets.no_xml -- coverage never dispatches a task to generate it', async () => {
+  // CodeRabbit nitpick (PR #413, test.js:401-405): the outcome-only assertion below would still
+  // pass if a future regression dispatched jacocoTestReport and merely produced no XML. Strengthened
+  // to make the fixture's gradlew/gradlew.bat RECORD every invocation's arguments, then assert none
+  // of them name a report-generation or test task -- only the documented `tasks --all --quiet`
+  // discovery probe is permitted. The log file is expected to exist (a fresh mkdtempSync fixture has
+  // no `.kmp-test-runner-cache/`, so the nested tasks-probe is a guaranteed cache miss and genuinely
+  // spawns gradlew) -- proving the probe actually ran, not that this test vacuously passed because
+  // nothing was invoked at all.
+  it('missing XML lands in module_buckets.no_xml -- and the fixture gradlew proves no report-generation or test task was ever dispatched (only the documented discovery probe)', async () => {
     const root = makeCoverageFixture([{ name: 'j-bare', coverage: 'jacoco' }]);
+    const logPath = path.join(root, 'gradlew-invocations.log');
+    writeFileSync(path.join(root, 'gradlew'), '#!/usr/bin/env bash\necho "$@" >> "$(dirname "$0")/gradlew-invocations.log"\nexit 0\n');
+    writeFileSync(path.join(root, 'gradlew.bat'), '@echo off\r\necho %* >> "%~dp0gradlew-invocations.log"\r\nexit /b 0\r\n');
+
     const { envelope } = await runCoverage({ projectRoot: root, args: [], parseCoverageXml: makeParseCoverageXmlStub() });
     expect(envelope.coverage.module_buckets.no_xml).toContain('j-bare');
+
+    expect(existsSync(logPath)).toBe(true);
+    const invocations = readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean);
+    expect(invocations.length).toBeGreaterThan(0);
+    for (const line of invocations) {
+      const tokens = line.trim().split(/\s+/);
+      expect(tokens).toContain('tasks');
+      expect(tokens).toContain('--all');
+      expect(tokens).toContain('--quiet');
+      expect(tokens.some((t) => /^(test|koverXmlReport|koverHtmlReport|jacocoTestReport)$/.test(t))).toBe(false);
+    }
   });
 
   // This is the test that would have caught the original coverage.md:94 / :143 false claim,
@@ -433,6 +531,42 @@ describe('Coverage gradle-dispatch + threshold grounding contracts (real runCove
     expect(envelope.coverage.missed_lines).toBe(100);
     expect(exitCode).toBe(0);
     expect(envelope.errors.find((e) => e.code === 'coverage_threshold_exceeded')).toBeFalsy();
+  });
+
+  // CodeRabbit (PR #413, coverage.md:100, Major): coverage.missed_lines is NOT "the complete,
+  // unfiltered project total" -- discoverCoverageModules() filters to `dispatched` BEFORE any XML
+  // is read (coverage-orchestrator.js: the aggregation loop iterates `for (const m of dispatched)`
+  // only), so --coverage-modules/--exclude-coverage genuinely change what's in the aggregate.
+  // --min-missed-lines itself never filters WITHIN that already-selected set -- a materially
+  // different, narrower claim than "unfiltered project total". Grounded here via the real
+  // runCoverage(), not doc prose: excluding one of two modules must change both the total AND
+  // the threshold decision. This grounds unchanged production code (module selection already
+  // worked this way) -- pass-both-sides, not a RED-before/GREEN-after production bug fixture.
+  it('excluding one of two modules changes both the aggregate total and the threshold decision (coverage.missed_lines is scoped to the selected/dispatched modules, not "the whole project")', async () => {
+    const root = makeCoverageFixture([
+      { name: 'mod-a', coverage: 'kover' },
+      { name: 'mod-b', coverage: 'kover' },
+    ]);
+    dropFakeCoverageXml(root, 'mod-a', 'kover');
+    dropFakeCoverageXml(root, 'mod-b', 'kover');
+    const stub = makeParseCoverageXmlStub({
+      'mod-a': ['mod-a|pkg|A.kt|A|0|30|30|0|1-30'],
+      'mod-b': ['mod-b|pkg|B.kt|B|0|80|80|0|1-80'],
+    });
+
+    const both = await runCoverage({ projectRoot: root, args: ['--min-missed-lines', '100'], parseCoverageXml: stub });
+    expect(both.envelope.coverage.missed_lines).toBe(110);
+    expect(both.exitCode).toBe(1);
+    expect(both.envelope.errors.find((e) => e.code === 'coverage_threshold_exceeded')).toBeTruthy();
+
+    const excluded = await runCoverage({
+      projectRoot: root,
+      args: ['--min-missed-lines', '100', '--exclude-coverage', 'mod-b'],
+      parseCoverageXml: stub,
+    });
+    expect(excluded.envelope.coverage.missed_lines).toBe(30);
+    expect(excluded.exitCode).toBe(0);
+    expect(excluded.envelope.errors.find((e) => e.code === 'coverage_threshold_exceeded')).toBeFalsy();
   });
 });
 

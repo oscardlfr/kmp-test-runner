@@ -111,11 +111,11 @@ Pick the subcommand:
 |-------------|-----------|-------|
 | "run tests" / "test this" / "run tests with coverage" | `kmp-test parallel --json --project-root .` | `test`/`jvmTest`/`desktopTest` |
 | "run instrumented tests" / "run on device" | `kmp-test android --json --project-root .` | `connectedAndroidTest` |
-| "run coverage" | `kmp-test coverage --json --project-root .` | kover/jacoco XML |
-| "missed lines under 100" | `kmp-test parallel --min-missed-lines 100 --json --project-root .` ||
+| "run coverage" | `kmp-test coverage --json --project-root .` | kover/jacoco |
+| "run tests; missed lines under 100" | `kmp-test parallel --min-missed-lines 100 --json --project-root .` ||
 | "run benchmarks" | `kmp-test benchmark --json --project-root .` | Macro/microbenchmark |
 | "what would run?" / "dry run" | append `--dry-run` to the command above | Plans as JSON only |
-| "run only changed tests" | `kmp-test changed --json --project-root .` | From the git diff |
+| "run only changed tests" | `kmp-test changed --json --project-root .` | From git diff |
 
 > Deep-dives: [`overview.md`](references/workflows/overview.md).
 

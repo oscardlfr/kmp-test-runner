@@ -673,7 +673,7 @@
   picked up automatically by the existing required `build` job -- no new CI job. No
   runtime/wet validation applicable (repo-review config only, not CLI behavior).
 
-- **`tools/agentic-eval/` corpus scenarios + graders — 4 of 6 scenarios + `graders.mjs` + `run`
+- **`tools/agentic-eval/` corpus scenarios + graders — 5 of 6 scenarios + `graders.mjs` + `run`
   subcommand implemented; first 2 scenarios + `graders.mjs` + `run` merged to develop (deferred
   from PR #372, surfaced 2026-07-18 during independent review).** PR #372 shipped the reproducible
   skill-evaluation harness FOUNDATION only: isolation (fresh temp fixtures, narrow env allowlist,
@@ -844,9 +844,11 @@
   **Two known blockers closed** (`fix(skill): route test coverage gates through parallel`; docs +
   SKILL.md routing only — `PINNED_SKILL_SHA` is NOT advanced, that is separate follow-up work, and
   no live canary run happened as part of this fix):
-  1. Documentation contradiction — FIXED: `coverage.md:95` and `coverage-threshold-exceeded.md:35`
-     now agree with `coverage.md:49` and `flags-reference.md:39` that `--min-missed-lines 0`
-     always disables the gate, grounded in `coverage-orchestrator.js`'s `gateThreshold > 0` check.
+  1. Documentation contradiction — FIXED: `coverage.md` and `coverage-threshold-exceeded.md`'s
+     zero-threshold guidance now agree with `coverage.md`'s own flags-table row and
+     `flags-reference.md` that `--min-missed-lines 0` always disables the gate, grounded in
+     `coverage-orchestrator.js`'s `gateThreshold > 0` check (no brittle line numbers cited here —
+     they drift on every subsequent doc edit, as this very reference did).
      Also fixed: `coverage.md`'s separate false claims (9 locations audited against the real
      `runCoverage → buildProjectModel → probeGradleTasksCached` call chain) that `coverage`
      dispatches `koverXmlReport`/`jacocoTestReport` report-generation gradle tasks or can produce

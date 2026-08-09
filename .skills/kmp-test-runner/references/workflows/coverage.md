@@ -28,7 +28,7 @@ kmp-test coverage --json
 
 That command:
 
-1. Probes the project for modules with a coverage plugin (Kover or JaCoCo) — uses the project model cache, falling back to a fresh probe.
+1. Probes the project for modules with a coverage plugin (Kover or JaCoCo) — rebuilds the project model fresh each run (no whole-model cache); the nested gradle-tasks discovery probe has its own separate cache file and only spawns `gradlew tasks --all --quiet` on a cache miss.
 2. Reads existing `build/reports/kover/**.xml` / `build/reports/jacoco/**.xml` — pure file reads, no gradle. (A separate, best-effort, cached module-discovery probe — `gradlew tasks --all --quiet` — may run first on a cold cache; it never generates or regenerates coverage XML.)
 3. Walks XMLs via the bundled Node parser (`lib/parsers/coverage-xml.js`) to merge per-module + total line counts — pure Node, in-process, no Python interpreter required on the host.
 4. Renders the markdown report at `.kmp-test-runner/reports/coverage/latest.md` (or wherever `--output-file` points).
@@ -46,7 +46,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags
 | `--coverage-tool <tool>` | `auto` | `auto` / `jacoco` / `kover` / `none`. `auto` picks per-module from the project model. `none` short-circuits the whole workflow to a no-op envelope. |
 | `--coverage-modules <list>` | all modules with a plugin | Comma-separated **exact** module names (no leading `:`, no glob/substring matching) to include in aggregation. Other modules' reports are not read. |
 | `--exclude-coverage <list>` | none | Comma-separated **exact** module names (same matching rules as `--coverage-modules`) to skip from aggregation. Useful for excluding `test-fakes` or `sample` modules by their real names. |
-| `--min-missed-lines <N>` | `0` | Fail (`errors[].code: coverage_threshold_exceeded`, exit 1) if the aggregated (unfiltered) `coverage.missed_lines` exceeds `N`. `0` is "don't gate". Narrows only the markdown report's per-class "Detailed Class Coverage" section — it never removes data from `coverage.missed_lines` / `modules_contributing` / the JSON envelope, even when the gate fires. |
+| `--min-missed-lines <N>` | `0` | Fail (`errors[].code: coverage_threshold_exceeded`, exit 1) if `coverage.missed_lines` — aggregated across the modules selected by `--coverage-modules` / `--exclude-coverage` — exceeds `N`. `0` is "don't gate". The threshold itself never narrows that selected aggregate; it only narrows the markdown report's per-class "Detailed Class Coverage" section. |
 | `--output-file <name>` | `coverage-full-report.md` | Markdown report filename inside `.kmp-test-runner/reports/coverage/`. |
 | `--skip-tests` | implicit | Accepted for parity with `parallel --skip-tests` (the `coverage` subcommand sets this internally). Silently consumed. |
 | `--java-home <path>` | none | Override JDK location for this run. Skips auto-select. |
