@@ -31,7 +31,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 
 | Flag | Default | parallel | coverage | changed | Notes |
 |------|---------|:--------:|:--------:|:-------:|-------|
-| `--coverage-tool <tool>` | `auto` (parallel/coverage), `jacoco` (changed) | ✓ | ✓ | ✓ | `auto` / `jacoco` / `kover` / `none`. **Default diverges**: `changed`'s historical default is `jacoco`. |
+| `--coverage-tool <tool>` | `auto` | ✓ | ✓ | ✓ | `auto` / `jacoco` / `kover` / `none`. Same default across `parallel`, `coverage`, and `changed` — `changed` forwards nothing when unset, so `parallel`'s own `auto` resolution applies. |
 | `--no-coverage` | off | ✓ (alias) | — | ✓ (alias) | Sugar for `--coverage-tool none`. Expanded via `expandNoCoverageAlias` in `lib/parsers/argv.js`. |
 | `--coverage-modules <list>` | all with plugin | ✓ | ✓ | — | Comma-separated **exact** module names (no leading `:`, no glob/substring) to include in coverage aggregation. |
 | `--exclude-coverage <list>` | none | ✓ | ✓ | ✓ | Comma-separated **exact** module names (same matching rules as `--coverage-modules`) to skip from coverage aggregation only (tests still run). |
@@ -48,7 +48,6 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `--max-workers <N>` | `0` (auto) | ✓ | — | — | — | — | Parallel gradle workers. `0` = gradle decides. Not accepted by `changed` (`unknown_flag`). |
 | `--timeout <seconds>` | `600` (parallel), per-config (benchmark) | ✓ | — | ✓ | — | — | Per-task gradle watchdog. `0` disables. |
 | `--ignore-gradle-timeout` | off | — | — | ✓ | — | — | Disable watchdog entirely. Wins over `--timeout` and `KMP_GRADLE_TIMEOUT_MS`. |
-| `--max-failures <N>` | `0` (run all) | — | — | — | ✓ | — | Stop after `N` per-module failures (changed only). |
 | `--fresh-daemon` | off | ✓ | — | — | — | — | Stop gradle daemons before launching. Costs ~5 s cold-start; useful when daemon state is suspect. |
 | `--gradle-args "<args>"` | none | ✓ | — | ✓ | ✓ | ✓ | Escape hatch — tokens appended LAST (gradle last-wins). |
 

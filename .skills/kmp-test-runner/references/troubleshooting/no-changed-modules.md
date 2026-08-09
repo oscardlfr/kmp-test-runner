@@ -1,6 +1,6 @@
 # `no_changed_modules` — working tree clean (soft code)
 
-The `changed` subcommand ran `git diff` and found nothing to test. This is a **soft code** — does NOT promote `exit_code` via WS-5. Legitimate exit-0 outcome with structured signal.
+The `changed` subcommand ran `git status` (or `git diff --cached` under `--staged-only`) and found nothing to test. This is a **soft code** — does NOT promote `exit_code` via WS-5. Legitimate exit-0 outcome with structured signal.
 
 ## Symptom
 
@@ -24,14 +24,14 @@ Soft codes (`no_summary`, `no_changed_modules`) carry useful signal but DO NOT t
 Agents should:
 - Surface the `message` to the user verbatim ("No changes detected since `HEAD`").
 - NOT escalate to an error — the workflow ran correctly.
-- NOT auto-retry — re-running git diff against the same working tree will return the same result.
+- NOT auto-retry — re-running the same detection against the same working tree will return the same result.
 
 ## Root causes
 
 1. **Clean working tree**: the user committed (or stashed) every change before running `kmp-test changed`. Expected outcome.
 2. **`--staged-only` with nothing staged**: `git diff --cached` returns empty even when the working tree has unstaged modifications. Recovery: drop `--staged-only` or stage the changes first.
 3. **Changes only in non-module paths**: the user edited `README.md`, `.github/`, `.editorconfig`, or `gradle/libs.versions.toml`. These don't belong to any module → silently dropped during longest-prefix mapping → empty changed set.
-4. **Detached HEAD**: `git diff HEAD` works but `HEAD` points to an unusual ref. If the user checked out a tag or specific SHA mid-investigation, "changes since HEAD" may not be what they expect.
+4. **Detached HEAD or zero commits yet — NOT actually a distinct cause**: `changed` uses `git status --porcelain` (or `git diff --cached --name-only` under `--staged-only`), and neither command depends on `HEAD` pointing to a branch or even existing as a real commit — both work identically to the normal case. If you see `no_changed_modules` while on a detached `HEAD` (e.g. after checking out a tag mid-investigation), it's cause #1 (clean working tree at that point), not the detached `HEAD` itself.
 5. **Wrong branch**: the user expected to be on a feature branch with changes, but they're actually on `main` (or vice versa). `git status` clarifies.
 
 ## Recovery path

@@ -159,6 +159,164 @@ describe('changed unsupported-flag contract (grounds SKILL.md and reference-doc 
   });
 });
 
+// `changed` workflow contract parity -- aligns changed.md/flags-reference.md/README.md/
+// unit-tests.md/no-changed-modules.md with the real, verified-correct runtime, and fully retires
+// --max-failures (never implemented by parallel; was actively breaking every real invocation with
+// a downstream unknown_flag CONFIG_ERROR after git detection had already run). Every assertion
+// below is grounded either directly in the real parser (parseChangedArgs) or in specific, quoted
+// prior false claims -- never whole-file substring/co-occurrence checks.
+describe('changed workflow contract parity (doc/help alignment with verified runtime)', () => {
+  const changedDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'workflows', 'changed.md'), 'utf8'
+  );
+  const flagsRefDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'cli', 'flags-reference.md'), 'utf8'
+  );
+  const noChangedModulesDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'troubleshooting', 'no-changed-modules.md'), 'utf8'
+  );
+  const unitTestsDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'workflows', 'unit-tests.md'), 'utf8'
+  );
+  const readmeDoc = readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
+  const cliSrc = readFileSync(path.join(REPO_ROOT, 'lib', 'cli.js'), 'utf8')
+    .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  it('--max-failures is fully retired from changed\'s parser -- valid, malformed, and dangling forms all converge on unknown_flag', () => {
+    for (const args of [['--max-failures', '1'], ['--max-failures', 'abc'], ['--max-failures']]) {
+      const opts = parseChangedArgs(args);
+      expect(opts.errors).toContainEqual(
+        expect.objectContaining({ code: 'unknown_flag', flag: '--max-failures' })
+      );
+    }
+  });
+
+  it('changed.md no longer documents --max-failures anywhere', () => {
+    expect(changedDoc).not.toMatch(/--max-failures/);
+  });
+
+  it('flags-reference.md no longer has a --max-failures row', () => {
+    expect(flagsRefDoc).not.toMatch(/--max-failures/);
+  });
+
+  it('changed.md states the real default detection mechanism (git status --porcelain), not "git diff" as the default', () => {
+    const quickstart = changedDoc.split('\n').find((l) => l.startsWith('1. Runs'));
+    expect(quickstart).toBeTruthy();
+    expect(quickstart).toContain('git status --porcelain');
+    expect(quickstart).not.toMatch(/git diff --name-only HEAD.*default/);
+    expect(quickstart).not.toMatch(/plus `git status --porcelain` for untracked/);
+  });
+
+  it('changed.md coverage-tool default is auto, matching parallel -- no historical jacoco-divergence claim', () => {
+    expect(changedDoc).not.toMatch(/jacoco \(default\)/);
+    expect(changedDoc).not.toMatch(/historical reason/i);
+    const row = changedDoc.split('\n').find((l) => l.includes('`--coverage-tool <tool>`'));
+    expect(row).toBeTruthy();
+    expect(row).toMatch(/\|\s*`auto`\s*\|/);
+  });
+
+  it('flags-reference.md coverage-tool row shows the same auto default for changed, not a divergent jacoco', () => {
+    const row = flagsRefDoc.split('\n').find((l) => l.includes('--coverage-tool <tool>'));
+    expect(row).toBeTruthy();
+    // Cell 2 (0-indexed after split on '|': '', Flag, Default, ...) is the
+    // Default column -- must be a single, undivided `auto`, not a per-subcommand
+    // split ("auto (...), jacoco (changed)"). The Notes cell legitimately lists
+    // `jacoco` as one of 4 valid enum VALUES, so a whole-row substring check
+    // can't distinguish that from a false default-claim -- must isolate the cell.
+    const cells = row.split('|').map((c) => c.trim());
+    expect(cells[2]).toBe('`auto`');
+  });
+
+  it('changed.md rename handling: only the destination module survives, source is discarded -- not both', () => {
+    expect(changedDoc).not.toMatch(/both.{0,40}(enter the changed set|feed the module-mapping step)/i);
+    expect(changedDoc).toMatch(/only the destination (path|module)/i);
+  });
+
+  it('changed.md root-path handling: files matching no module are discarded outright, not mapped to a "root module"', () => {
+    expect(changedDoc).not.toMatch(/maps? to (the )?root module/i);
+    expect(changedDoc).toMatch(/no "root module" concept/i);
+  });
+
+  it('changed.md: dry-run always yields empty detected_modules regardless of other flags, not framed as a show-modules-only preview aid', () => {
+    expect(changedDoc).not.toMatch(/Useful with `--show-modules-only` to see which modules WOULD run/);
+    expect(changedDoc).toMatch(/regardless of any other flag.{0,40}--show-modules-only/i);
+  });
+
+  it('changed.md envelope shape: no phantom changed.files[]/changed.modules[] fields, only detected_modules', () => {
+    expect(changedDoc).not.toMatch(/changed\.files\[\]/);
+    expect(changedDoc).not.toMatch(/changed\.modules\[\]/);
+  });
+
+  it('changed.md: base_ref is always the literal "HEAD" in both modes, never described as becoming "the index"', () => {
+    expect(changedDoc).not.toMatch(/the index for `--staged-only`/);
+    expect(changedDoc).toMatch(/always the literal string `"HEAD"`/);
+  });
+
+  it('changed.md: no real envelope carries a top-level parallel:{} block, in the illustrative example or the prose', () => {
+    expect(changedDoc).not.toMatch(/"parallel":\s*\{/);
+    expect(changedDoc).not.toMatch(/envelope's `parallel:\{\}` block is present too/);
+    expect(changedDoc).toMatch(/no top-level `parallel:\{\}` block/);
+  });
+
+  it('changed.md: detected_modules examples are bare/colon-less, never colon-prefixed', () => {
+    expect(changedDoc).not.toMatch(/"name":\s*":/);
+    expect(changedDoc).not.toMatch(/"detected_modules":\s*\[\s*":/);
+    expect(changedDoc).not.toMatch(/:feature:auth:impl/);
+    expect(changedDoc).toContain('feature:auth:impl');
+  });
+
+  it('changed.md: detached HEAD / zero commits are not framed as a git diff HEAD failure requiring a commit', () => {
+    expect(changedDoc).not.toMatch(/`git diff HEAD` fails/);
+    expect(changedDoc).not.toMatch(/Recovery: ensure the project has at least one commit/);
+  });
+
+  it('changed.md: the file-list recovery suggestion is mode-aware, not a blanket git diff --name-only HEAD', () => {
+    expect(changedDoc).not.toMatch(/re-run `git diff --name-only HEAD` directly/);
+    expect(changedDoc).toMatch(/git status --porcelain.{0,20}for the default mode/i);
+  });
+
+  it('unit-tests.md cross-link to changed.md does not name git-diff as the mechanism', () => {
+    expect(unitTestsDoc).not.toMatch(/narrow-by-git-diff/);
+  });
+
+  it('no-changed-modules.md does not claim the subcommand "ran git diff" as its default mechanism', () => {
+    expect(noChangedModulesDoc).not.toMatch(/ran `git diff` and found nothing/);
+    expect(noChangedModulesDoc).not.toMatch(/re-running git diff against the same working tree/);
+  });
+
+  it('no-changed-modules.md no longer treats detached HEAD as a distinct root cause based on git diff HEAD', () => {
+    expect(noChangedModulesDoc).not.toMatch(/`git diff HEAD` works but `HEAD` points to an unusual ref/);
+  });
+
+  it('README.md coverage-tool tables use the same auto default for changed as parallel/coverage, not a divergent jacoco', () => {
+    const rows = readmeDoc.split('\n').filter((l) => l.includes('--coverage-tool') && l.includes('|'));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row).not.toMatch(/jacoco.{0,20}changed/i);
+    }
+  });
+
+  it('README.md --module-filter row does not claim it applies to changed', () => {
+    const row = readmeDoc.split('\n').find((l) => l.includes('--module-filter <regex>'));
+    expect(row).toBeTruthy();
+    const appliesToClause = row.match(/Applies to ([^(|]+)/);
+    expect(appliesToClause).toBeTruthy();
+    expect(appliesToClause[1]).not.toMatch(/`changed`/);
+  });
+
+  it('cli.js changed --help, README.md, and flags-reference.md all agree on auto as the coverage-tool default -- none announce --max-failures', () => {
+    const changedHelpMatch = cliSrc.match(/changed: `[\s\S]*?`,\n  android:/);
+    expect(changedHelpMatch).toBeTruthy();
+    const changedHelp = changedHelpMatch[0];
+    expect(changedHelp).not.toMatch(/--max-failures/);
+    expect(changedHelp).toMatch(/--coverage-tool <tool>\s+auto \(default\)/);
+
+    for (const doc of [readmeDoc, flagsRefDoc, changedDoc]) {
+      expect(doc).not.toMatch(/--max-failures/);
+    }
+  });
+});
+
 // Round-5 addition: ground the dry-run-vs-real-run coverage verification split in the real
 // orchestrator. Round 4's SKILL.md text said to verify --coverage-modules scope via
 // coverage.module_buckets unconditionally -- but on --dry-run, module_buckets is ALWAYS the

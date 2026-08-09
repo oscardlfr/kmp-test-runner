@@ -152,7 +152,6 @@ const NUMERIC_CASES = [
   { sub: 'parallel',  run: runParallel,  args: ['--max-workers', 'abc'], code: 'invalid_flag_value', flag: '--max-workers' },
   { sub: 'parallel',  run: runParallel,  args: ['--timeout', '-1'],      code: 'invalid_flag_value', flag: '--timeout' },
   { sub: 'parallel',  run: runParallel,  args: ['--min-missed-lines', 'NaN'], code: 'invalid_flag_value', flag: '--min-missed-lines' },
-  { sub: 'changed',   run: runChanged,   args: ['--max-failures', 'abc'], code: 'invalid_flag_value', flag: '--max-failures' },
   { sub: 'changed',   run: runChanged,   args: ['--min-missed-lines', '-5'], code: 'invalid_flag_value', flag: '--min-missed-lines' },
   { sub: 'benchmark', run: runBenchmark, args: ['--timeout', '-1'],      code: 'invalid_flag_value', flag: '--timeout' },
   { sub: 'coverage',  run: runCoverage,  args: ['--min-missed-lines', 'abc'], code: 'invalid_flag_value', flag: '--min-missed-lines' },
@@ -236,7 +235,6 @@ const DANGLING_VALUE_CASES = [
   { sub: 'benchmark', run: runBenchmark, flag: '--platform' },
   // numeric flags (validateNonNegativeInt contract flip)
   { sub: 'parallel',  run: runParallel,  flag: '--max-workers' },
-  { sub: 'changed',   run: runChanged,   flag: '--max-failures' },
   // gradle-args accumulator
   { sub: 'parallel',  run: runParallel,  flag: '--gradle-args' },
   { sub: 'android',   run: runAndroid,   flag: '--gradle-args' },

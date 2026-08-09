@@ -84,9 +84,26 @@ describe('characterization / invalid-args envelopes', () => {
       tag: '--max-workers -1 (negative)',
     },
     {
+      // --max-failures was never implemented by parallel and is now fully
+      // retired everywhere (changed's own special-case parsing removed, plus
+      // the shared cli.js numeric prevalidator and ALL_KNOWN_FLAGS entry) —
+      // every form converges on unknown_flag, not invalid_flag_value.
       sub: 'parallel',
       args: ['--max-failures', '1.5', '--json'],
-      tag: '--max-failures 1.5 (non-integer)',
+      tag: '--max-failures 1.5 (retired flag, non-integer value)',
+      code: 'unknown_flag',
+    },
+    {
+      sub: 'parallel',
+      args: ['--max-failures', '1', '--json'],
+      tag: '--max-failures 1 (retired flag, well-formed value)',
+      code: 'unknown_flag',
+    },
+    {
+      sub: 'parallel',
+      args: ['--max-failures', '--json'],
+      tag: '--max-failures (retired flag, dangling)',
+      code: 'unknown_flag',
     },
     {
       sub: 'parallel',
@@ -135,7 +152,7 @@ describe('characterization / invalid-args envelopes', () => {
     },
   ];
 
-  for (const { sub, args, tag } of INVALID_CASES) {
+  for (const { sub, args, tag, code = 'invalid_flag_value' } of INVALID_CASES) {
     it(`${sub} ${tag} → CONFIG_ERROR envelope`, () => {
       const fullArgs = ['--project-root', fixtureRoot, ...args];
       const { envelope, stdout, exitCode } = runSubcommand(sub, fullArgs, { cwd: fixtureRoot });
@@ -144,11 +161,12 @@ describe('characterization / invalid-args envelopes', () => {
         throw new Error(`No envelope for '${sub} ${tag}' (exit ${exitCode}). stdout: ${preview}`);
       }
       // Sanity invariants — locked outside the snapshot so they're robust to
-      // future normalization tweaks.
+      // future normalization tweaks. `code` defaults to invalid_flag_value;
+      // retired-flag cases (e.g. --max-failures) override it to unknown_flag.
       expect(envelope.exit_code).toBe(2);
       expect(envelope.subcommand).toBe(sub);
       expect(envelope.errors).toHaveLength(1);
-      expect(envelope.errors[0].code).toBe('invalid_flag_value');
+      expect(envelope.errors[0].code).toBe(code);
       const normalized = normalizeEnvelopeForSnapshot(envelope, fixtureRoot);
       expect(normalized).toMatchSnapshot();
     });

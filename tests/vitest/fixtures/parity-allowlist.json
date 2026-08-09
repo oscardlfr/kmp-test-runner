@@ -14,7 +14,6 @@
     "--flavor",
     "--staged-only",
     "--show-modules-only",
-    "--max-failures",
     "--skip-app",
     "--verbose",
     "--list",
@@ -31,7 +30,7 @@
   "_categories": {
     "globalMeta": ["--help", "--version", "--force"],
     "androidSubcommand": ["--device", "--device-task", "--auto-retry", "--clear-data", "--capture-on-fail", "--capture-dir", "--flavor", "--skip-app", "--verbose", "--list", "--list-only"],
-    "changedSubcommand": ["--staged-only", "--show-modules-only", "--max-failures"],
+    "changedSubcommand": ["--staged-only", "--show-modules-only"],
     "benchmarkSubcommand": ["--platform", "--timeout", "--ignore-gradle-timeout"],
     "infoSubcommand": ["--no-adb"],
     "describeSubcommand": ["--skip-probe", "--no-cache"],

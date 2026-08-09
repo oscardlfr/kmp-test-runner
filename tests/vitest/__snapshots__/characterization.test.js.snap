@@ -263,7 +263,7 @@ exports[`characterization / invalid-args envelopes > parallel --isolated-cache-d
 }
 `;
 
-exports[`characterization / invalid-args envelopes > parallel --max-failures 1.5 (non-integer) → CONFIG_ERROR envelope 1`] = `
+exports[`characterization / invalid-args envelopes > parallel --max-failures (retired flag, dangling) → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
     "missed_lines": null,
@@ -280,10 +280,89 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures 1.5
   "duration_ms": "<DURATION_MS>",
   "errors": [
     {
-      "code": "invalid_flag_value",
+      "code": "unknown_flag",
       "flag": "--max-failures",
-      "message": "--max-failures: invalid value '1.5' — expected a non-negative integer",
-      "value": "1.5",
+      "message": "--max-failures: unknown flag",
+    },
+  ],
+  "exit_code": 2,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "parallel",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`characterization / invalid-args envelopes > parallel --max-failures 1 (retired flag, well-formed value) → CONFIG_ERROR envelope 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "code": "unknown_flag",
+      "flag": "--max-failures",
+      "message": "--max-failures: unknown flag",
+    },
+  ],
+  "exit_code": 2,
+  "modules": [],
+  "project_root": "<PROJECT_ROOT>",
+  "schema_version": 2,
+  "skipped": [],
+  "subcommand": "parallel",
+  "tests": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0,
+    "total": 0,
+  },
+  "tool": "kmp-test",
+  "version": "<KMP_TEST_VERSION>",
+  "warnings": [],
+}
+`;
+
+exports[`characterization / invalid-args envelopes > parallel --max-failures 1.5 (retired flag, non-integer value) → CONFIG_ERROR envelope 1`] = `
+{
+  "coverage": {
+    "missed_lines": null,
+    "module_buckets": {
+      "no_xml": [],
+      "parse_errored": [],
+      "skipped_by_user": [],
+      "with_data": [],
+    },
+    "modules_with_jacoco_plugin": [],
+    "modules_with_kover_plugin": [],
+    "tool": "auto",
+  },
+  "duration_ms": "<DURATION_MS>",
+  "errors": [
+    {
+      "code": "unknown_flag",
+      "flag": "--max-failures",
+      "message": "--max-failures: unknown flag",
     },
   ],
   "exit_code": 2,

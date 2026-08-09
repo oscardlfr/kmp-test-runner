@@ -177,6 +177,17 @@ describe('parseArgs', () => {
     const opts = parseArgs(['positional', '-Pfoo=bar']);
     expect(opts.errors.filter(e => e.code === 'unknown_flag')).toHaveLength(0);
   });
+
+  it('emits unknown_flag for --max-failures (retired everywhere — no longer silently tolerated as "another subcommand\'s flag")', () => {
+    // Before --max-failures was removed from ALL_KNOWN_FLAGS, this branch's
+    // "valid for another subcommand" check silently swallowed it (coverage
+    // never dispatches tests, so it never mattered functionally — but the
+    // flag no longer belongs to any subcommand, so the same-shaped tolerance
+    // it used to get here is no longer correct either).
+    const opts = parseArgs(['--max-failures', '1']);
+    expect(opts.errors.some(e => e.code === 'unknown_flag' && e.flag === '--max-failures'))
+      .toBe(true);
+  });
 });
 
 describe('expandNoCoverageAlias', () => {

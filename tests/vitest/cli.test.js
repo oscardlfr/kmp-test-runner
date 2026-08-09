@@ -2631,6 +2631,22 @@ describe('main() — --exclude-modules / --include-untested passthrough', () => 
     }
   });
 
+  it('changed --help no longer advertises --max-failures and states the real auto coverage default', () => {
+    const writes = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { writes.push(String(chunk)); return true; };
+    try {
+      process.argv = ['node', 'kmp-test.js', 'changed', '--help'];
+      main();
+      const out = writes.join('');
+      expect(out).not.toMatch(/--max-failures/);
+      expect(out).toMatch(/--coverage-tool <tool>\s+auto \(default\)/);
+      expect(out).not.toMatch(/--coverage-tool <tool>\s+jacoco \(default\)/);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+
   it('--test-type help points instrumented-only modules at androidInstrumented', () => {
     // 2026-06-06 discoverability: --help must steer the Compose-UI-only "no
     // reports" case toward the instrumented path.

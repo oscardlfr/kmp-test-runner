@@ -181,4 +181,4 @@ Branch on `errors[].code`:
 - [`../cli/exit-codes.md`](../cli/exit-codes.md) — exit-code semantics + WS-5 invariant
 - [`../cli/flags-reference.md`](../cli/flags-reference.md) — full per-subcommand flag matrix
 - [`coverage.md`](coverage.md) — coverage-only re-aggregation workflow
-- [`changed.md`](changed.md) — narrow-by-git-diff variant of `parallel`
+- [`changed.md`](changed.md) — narrowed-by-local-changes variant of `parallel`
