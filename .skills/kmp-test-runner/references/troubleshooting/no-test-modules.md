@@ -51,9 +51,10 @@ Branch on `caused_by_filter` BEFORE reading `message` — the message is human-r
 
 For `caused_by_filter: true`:
 
-1. Re-run with `kmp-test describe --json --module-filter <same-pattern>` to see which modules the filter actually matches.
-2. If the resulting `modules[]` array is empty, broaden the filter (`*:core:*`, comma-separated explicit names, etc.).
-3. If `modules[]` has entries but their `test_tasks` are null for the requested `--test-type`, adjust `--test-type` to match what's actually there.
+1. Re-run with `kmp-test parallel --list-only --json --module-filter <same-pattern>` (same glob matcher `parallel` itself uses) to see the authoritative set the original command would actually dispatch.
+2. To inspect via `describe` instead: `describe`'s own `--module-filter` is a **real regular expression**, not a glob, and the two matchers don't test the same things. `parallel`'s glob matcher (`matchModuleFilter`) tests the full module name, the name with its leading `:` stripped, AND the leaf segment after the last `:`. `describe`'s regex tests only the full name and the colon-stripped name — never the leaf alone. There is no general mechanical translation between them: a glob and a regex that "look similar" can select entirely different module sets (e.g. the glob `core-*` matches `:feature:core-ui` via its leaf `core-ui`, while a `^core-...$`-style regex tested against `describe`'s two forms would not match it at all — neither `:feature:core-ui` nor `feature:core-ui` starts with `core-`). Default to running `kmp-test describe --json` with **no filter** and selecting the exact module by its `modules[].name`. Only reach for `describe`'s own `--module-filter` with a regex written fresh for what you actually want to select there — and describe it by what it actually matches, never as "the same filter" or an equivalent of the glob.
+3. If the resulting `modules[]` array is empty, broaden the filter (`*:core:*`, comma-separated explicit names, etc.).
+4. If `modules[]` has entries but their `test_tasks` are null for the requested `--test-type`, adjust `--test-type` to match what's actually there.
 
 For `caused_by_filter: false`:
 
@@ -65,14 +66,12 @@ For `caused_by_filter: false`:
 ## Recovery commands
 
 ```bash
-# Preview what the filter matches
-kmp-test describe --json --module-filter "<your-pattern>" | jq '.describe.modules[].name'
+# Authoritative preview of what parallel would actually dispatch (same glob matcher)
+kmp-test parallel --list-only --json --module-filter "<your-pattern>" | jq '.modules[].name'
 
-# Enumerate every module + its test tasks
+# Enumerate every module + its test tasks (describe, no filter -- safest way to inspect,
+# and the only reliable way to find the exact modules[].name to select by)
 kmp-test describe --json | jq '.describe.modules[] | { name, test_tasks }'
-
-# List-only mode shows the same set parallel would dispatch
-kmp-test parallel --list-only --json --module-filter "<your-pattern>"
 ```
 
 ## AGP / JDK quirks

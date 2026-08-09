@@ -115,7 +115,7 @@ Pick the subcommand:
 | "run tests; missed lines under 100" | `kmp-test parallel --min-missed-lines 100 --json --project-root .` ||
 | "run benchmarks" | `kmp-test benchmark --json --project-root .` | Macro/microbenchmark |
 | "what would run?" / "dry run" | append `--dry-run` to the command above | Plans as JSON only |
-| "run only changed tests" | `kmp-test changed --json --project-root .` | From git diff |
+| "run only changed tests" | `kmp-test changed --json --project-root .` | Git-derived |
 
 > Deep-dives: [`overview.md`](references/workflows/overview.md).
 

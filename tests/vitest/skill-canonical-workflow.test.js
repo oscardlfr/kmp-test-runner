@@ -159,6 +159,351 @@ describe('changed unsupported-flag contract (grounds SKILL.md and reference-doc 
   });
 });
 
+// `changed` workflow contract parity -- aligns changed.md/flags-reference.md/README.md/
+// unit-tests.md/no-changed-modules.md with the real, verified-correct runtime, and fully retires
+// --max-failures (never implemented by parallel; was actively breaking every real invocation with
+// a downstream unknown_flag CONFIG_ERROR after git detection had already run). Every assertion
+// below is grounded either directly in the real parser (parseChangedArgs) or in specific, quoted
+// prior false claims -- never whole-file substring/co-occurrence checks.
+describe('changed workflow contract parity (doc/help alignment with verified runtime)', () => {
+  const changedDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'workflows', 'changed.md'), 'utf8'
+  );
+  const flagsRefDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'cli', 'flags-reference.md'), 'utf8'
+  );
+  const noChangedModulesDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'troubleshooting', 'no-changed-modules.md'), 'utf8'
+  );
+  const unitTestsDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'workflows', 'unit-tests.md'), 'utf8'
+  );
+  const readmeDoc = readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
+  const cliSrc = readFileSync(path.join(REPO_ROOT, 'lib', 'cli.js'), 'utf8')
+    .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const overviewDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'workflows', 'overview.md'), 'utf8'
+  );
+  const noTestModulesDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'troubleshooting', 'no-test-modules.md'), 'utf8'
+  );
+  const flavorUnusedDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'troubleshooting', 'flavor-unused.md'), 'utf8'
+  );
+  const taskNotFoundDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'troubleshooting', 'task-not-found.md'), 'utf8'
+  );
+  const changedOrchestratorSrc = readFileSync(
+    path.join(REPO_ROOT, 'lib', 'orchestrators', 'changed-orchestrator.js'), 'utf8'
+  ).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  it('--max-failures is fully retired from changed\'s parser -- valid, malformed, and dangling forms all converge on unknown_flag', () => {
+    for (const args of [['--max-failures', '1'], ['--max-failures', 'abc'], ['--max-failures']]) {
+      const opts = parseChangedArgs(args);
+      expect(opts.errors).toContainEqual(
+        expect.objectContaining({ code: 'unknown_flag', flag: '--max-failures' })
+      );
+    }
+  });
+
+  it('changed.md no longer documents --max-failures anywhere', () => {
+    expect(changedDoc).not.toMatch(/--max-failures/);
+  });
+
+  it('flags-reference.md no longer has a --max-failures row', () => {
+    expect(flagsRefDoc).not.toMatch(/--max-failures/);
+  });
+
+  it('changed.md states the real default detection mechanism (git status --porcelain), not "git diff" as the default', () => {
+    const quickstart = changedDoc.split('\n').find((l) => l.startsWith('1. Runs'));
+    expect(quickstart).toBeTruthy();
+    expect(quickstart).toContain('git status --porcelain');
+    expect(quickstart).not.toMatch(/git diff --name-only HEAD.*default/);
+    expect(quickstart).not.toMatch(/plus `git status --porcelain` for untracked/);
+  });
+
+  it('changed.md coverage-tool default is auto, matching parallel -- no historical jacoco-divergence claim', () => {
+    expect(changedDoc).not.toMatch(/jacoco \(default\)/);
+    expect(changedDoc).not.toMatch(/historical reason/i);
+    const row = changedDoc.split('\n').find((l) => l.includes('`--coverage-tool <tool>`'));
+    expect(row).toBeTruthy();
+    expect(row).toMatch(/\|\s*`auto`\s*\|/);
+  });
+
+  it('flags-reference.md coverage-tool row shows the same auto default for changed, not a divergent jacoco', () => {
+    const row = flagsRefDoc.split('\n').find((l) => l.includes('--coverage-tool <tool>'));
+    expect(row).toBeTruthy();
+    // Cell 2 (0-indexed after split on '|': '', Flag, Default, ...) is the
+    // Default column -- must be a single, undivided `auto`, not a per-subcommand
+    // split ("auto (...), jacoco (changed)"). The Notes cell legitimately lists
+    // `jacoco` as one of 4 valid enum VALUES, so a whole-row substring check
+    // can't distinguish that from a false default-claim -- must isolate the cell.
+    const cells = row.split('|').map((c) => c.trim());
+    expect(cells[2]).toBe('`auto`');
+  });
+
+  it('changed.md rename handling: only the destination module survives, source is discarded -- not both', () => {
+    expect(changedDoc).not.toMatch(/both.{0,40}(enter the changed set|feed the module-mapping step)/i);
+    expect(changedDoc).toMatch(/only the destination (path|module)/i);
+  });
+
+  it('changed.md root-path handling: files matching no module are discarded outright, not mapped to a "root module"', () => {
+    expect(changedDoc).not.toMatch(/maps? to (the )?root module/i);
+    expect(changedDoc).toMatch(/no "root module" concept/i);
+  });
+
+  it('changed.md: dry-run always yields empty detected_modules regardless of other flags, not framed as a show-modules-only preview aid', () => {
+    expect(changedDoc).not.toMatch(/Useful with `--show-modules-only` to see which modules WOULD run/);
+    expect(changedDoc).toMatch(/regardless of any other flag.{0,40}--show-modules-only/i);
+  });
+
+  it('changed.md envelope shape: no phantom changed.files[]/changed.modules[] fields, only detected_modules', () => {
+    expect(changedDoc).not.toMatch(/changed\.files\[\]/);
+    expect(changedDoc).not.toMatch(/changed\.modules\[\]/);
+  });
+
+  it('changed.md: base_ref is always the literal "HEAD" in both modes, never described as becoming "the index"', () => {
+    expect(changedDoc).not.toMatch(/the index for `--staged-only`/);
+    expect(changedDoc).toMatch(/always the literal string `"HEAD"`/);
+  });
+
+  it('changed.md: no real envelope carries a top-level parallel:{} block, in the illustrative example or the prose', () => {
+    expect(changedDoc).not.toMatch(/"parallel":\s*\{/);
+    expect(changedDoc).not.toMatch(/envelope's `parallel:\{\}` block is present too/);
+    expect(changedDoc).toMatch(/no top-level `parallel:\{\}` block/);
+  });
+
+  it('changed.md: detected_modules examples are bare/colon-less, never colon-prefixed', () => {
+    expect(changedDoc).not.toMatch(/"name":\s*":/);
+    expect(changedDoc).not.toMatch(/"detected_modules":\s*\[\s*":/);
+    expect(changedDoc).not.toMatch(/:feature:auth:impl/);
+    expect(changedDoc).toContain('feature:auth:impl');
+  });
+
+  it('changed.md: detached HEAD / zero commits are not framed as a git diff HEAD failure requiring a commit', () => {
+    expect(changedDoc).not.toMatch(/`git diff HEAD` fails/);
+    expect(changedDoc).not.toMatch(/Recovery: ensure the project has at least one commit/);
+  });
+
+  it('changed.md: the file-list recovery suggestion is mode-aware, not a blanket git diff --name-only HEAD', () => {
+    expect(changedDoc).not.toMatch(/re-run `git diff --name-only HEAD` directly/);
+    expect(changedDoc).toMatch(/git status --porcelain.{0,20}for the default mode/i);
+  });
+
+  it('unit-tests.md cross-link to changed.md does not name git-diff as the mechanism', () => {
+    expect(unitTestsDoc).not.toMatch(/narrow-by-git-diff/);
+  });
+
+  it('no-changed-modules.md does not claim the subcommand "ran git diff" as its default mechanism', () => {
+    expect(noChangedModulesDoc).not.toMatch(/ran `git diff` and found nothing/);
+    expect(noChangedModulesDoc).not.toMatch(/re-running git diff against the same working tree/);
+  });
+
+  it('no-changed-modules.md no longer treats detached HEAD as a distinct root cause based on git diff HEAD', () => {
+    expect(noChangedModulesDoc).not.toMatch(/`git diff HEAD` works but `HEAD` points to an unusual ref/);
+  });
+
+  it('README.md coverage-tool tables use the same auto default for changed as parallel/coverage, not a divergent jacoco', () => {
+    const rows = readmeDoc.split('\n').filter((l) => l.includes('--coverage-tool') && l.includes('|'));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row).not.toMatch(/jacoco.{0,20}changed/i);
+    }
+  });
+
+  it('README.md --module-filter row does not claim it applies to changed', () => {
+    // Second review round split this into a <glob> row (parallel/android/benchmark) and a
+    // <regex> row (describe-only) -- the changed-exclusion clause now lives on the glob row.
+    const row = readmeDoc.split('\n').find((l) => l.includes('--module-filter <glob>'));
+    expect(row).toBeTruthy();
+    const appliesToClause = row.match(/Applies to ([^(|]+)/);
+    expect(appliesToClause).toBeTruthy();
+    expect(appliesToClause[1]).not.toMatch(/`changed`/);
+  });
+
+  it('changed.md and no-changed-modules.md quote the real no_changed_modules message, not an invented one', () => {
+    // Adversarial-review catch: the real message (changed-orchestrator.js:457) is
+    // "No modules with uncommitted changes detected." -- both docs previously quoted
+    // different, wrong strings ("Working tree clean...", "No changes detected since HEAD").
+    const REAL_MESSAGE = 'No modules with uncommitted changes detected.';
+    expect(changedDoc).toContain(REAL_MESSAGE);
+    expect(noChangedModulesDoc).toContain(REAL_MESSAGE);
+    expect(changedDoc).not.toMatch(/Working tree clean — no changed modules to test/);
+    expect(noChangedModulesDoc).not.toMatch(/No changes detected since `HEAD`/);
+  });
+
+  it('changed.md distinguishes a root-level build.gradle.kts (discarded) from a module\'s own (maps to that module)', () => {
+    // Adversarial-review catch: mapFileToModule matches any path under <module>/,
+    // including that module's own build.gradle.kts -- only a ROOT-level one (no
+    // enclosing module dir) is actually unmatched. The prior wording implied ALL
+    // build.gradle.kts changes are discarded.
+    expect(changedDoc).toMatch(/root-level.{0,20}build\.gradle\.kts/i);
+    expect(changedDoc).toMatch(/module's \*own\*.{0,150}maps to `core:b`/i);
+  });
+
+  it('changed.md\'s --exclude-modules example uses a glob that actually matches the colon-separated module name it claims to drop', () => {
+    // Adversarial-review catch (wet-verified): matchModuleFilter('core:network', 'core-*')
+    // is false -- a hyphen-style glob cannot match a colon-separated name. The example
+    // must use a glob shape that genuinely matches, and must say so explicitly.
+    expect(changedDoc).not.toMatch(/--exclude-modules "core-\*"/);
+    expect(changedDoc).toMatch(/--exclude-modules "core:\*"/);
+    expect(changedDoc).toMatch(/will NOT match `core:network`/);
+  });
+
+  it('cli.js changed --help, README.md, and flags-reference.md all agree on auto as the coverage-tool default -- none announce --max-failures', () => {
+    const changedHelpMatch = cliSrc.match(/changed: `[\s\S]*?`,\n  android:/);
+    expect(changedHelpMatch).toBeTruthy();
+    const changedHelp = changedHelpMatch[0];
+    expect(changedHelp).not.toMatch(/--max-failures/);
+    expect(changedHelp).toMatch(/--coverage-tool <tool>\s+auto \(default\)/);
+
+    for (const doc of [readmeDoc, flagsRefDoc, changedDoc]) {
+      expect(doc).not.toMatch(/--max-failures/);
+    }
+  });
+
+  // Second review round (Codex audit of PR #415 @ 1f1bae9): --module-filter has two
+  // genuinely incompatible contracts sharing one flag name -- parallel/android/benchmark
+  // take a glob, describe takes a REAL regex (new RegExp(opts.moduleFilter) at
+  // describe-orchestrator.js:254, with an invalid_regex error code on bad patterns).
+  // README.md's single conflated row must become two, neither implying the other's syntax.
+  it('README.md splits --module-filter into a glob row (parallel/android/benchmark) and a describe-only regex row, never conflating the two', () => {
+    const globRow = readmeDoc.split('\n').find((l) => l.includes('--module-filter <glob>'));
+    expect(globRow).toBeTruthy();
+    expect(globRow).not.toMatch(/`describe`/);
+    expect(globRow).toMatch(/`parallel`/);
+    expect(globRow).toMatch(/`android`/);
+    expect(globRow).toMatch(/`benchmark`/);
+
+    const regexRow = readmeDoc.split('\n').find((l) => l.includes('--module-filter <regex>') && l.startsWith('|'));
+    expect(regexRow).toBeTruthy();
+    expect(regexRow).toMatch(/real regular expression/i);
+    expect(regexRow).toMatch(/`describe`-only/);
+  });
+
+  it('README.md\'s describe section still documents --module-filter as a real regex (preserved, not collapsed into the glob row)', () => {
+    const describeFlagsLine = readmeDoc.split('\n').find((l) => l.startsWith('Flags:') && l.includes('--module-filter'));
+    expect(describeFlagsLine).toBeTruthy();
+    expect(describeFlagsLine).toContain('--module-filter <regex>');
+  });
+
+  // The prior round left 3 residual "changed is based on git diff" claims outside the
+  // originally-touched files, deliberately deferred as out-of-scope. This round's
+  // instruction explicitly brought them in-scope (they'd otherwise get baked into a
+  // future PINNED_SKILL_SHA snapshot) -- scoped, non-global assertions per claim site,
+  // not a repo-wide substring sweep that could pass through unrelated "git diff" prose.
+  it('SKILL.md\'s changed row no longer says "From git diff" in its Notes column', () => {
+    const skillChangedRow = skillMd.split('\n').find((l) => l.includes('kmp-test changed --json --project-root .'));
+    expect(skillChangedRow).toBeTruthy();
+    expect(skillChangedRow).not.toMatch(/From git diff/);
+    expect(skillChangedRow).toContain('Git-derived');
+  });
+
+  it('overview.md no longer names "git diff strategy" among the behaviors únicos it says each workflow doc covers', () => {
+    expect(overviewDoc).not.toMatch(/git diff strategy/i);
+  });
+
+  it('changed-orchestrator.js\'s own JSDoc no longer describes its module set as "touched by `git diff`"', () => {
+    expect(changedOrchestratorSrc).not.toMatch(/touched by `git diff`/);
+  });
+
+  // CodeRabbit review comment on PR #415: info only reports the detected coverage tool
+  // (info-orchestrator.js never parses --coverage-tool at all), it doesn't accept or
+  // resolve the flag -- listing it among subcommands that "share the auto default" implies
+  // it does. Scoped to the specific "Same default across ..." clause, not the whole row,
+  // since the row legitimately mentions `info` afterward to clarify the distinction.
+  it('README.md does not list info among the subcommands sharing the auto --coverage-tool default', () => {
+    const row = readmeDoc.split('\n').find((l) => l.startsWith('| `--coverage-tool`') && l.includes('Same default across'));
+    expect(row).toBeTruthy();
+    const sharingClause = row.match(/Same default across ([^—]+)—/);
+    expect(sharingClause).toBeTruthy();
+    expect(sharingClause[1]).not.toMatch(/info/);
+    expect(row).toMatch(/`info` reports the detected tool but does not accept or resolve this flag/);
+  });
+
+  // Third review round (Codex audit of PR #415 @ fabfe97): the flags-reference table
+  // split (glob row vs regex row) was correct, but several USAGE EXAMPLES still reused
+  // a parallel-shaped glob as if it were valid describe regex syntax -- "core-*" as an
+  // unanchored regex matches "coreFoo", ":core:network", ":feature:core-ui" (anything
+  // containing "core" followed by zero-or-more literal hyphens), nothing like the glob's
+  // anchored-prefix semantics, and the README example's own shown output (":sample-result")
+  // doesn't even contain "core". Each fix is checked in its own file/line context, not a
+  // repo-wide substring sweep that could pass through unrelated glob/regex prose.
+  it('README.md\'s describe example uses a real, anchored regex that actually matches the module shown in its own output', () => {
+    const exampleLine = readmeDoc.split('\n').find((l) => l.trim().startsWith('kmp-test describe --json --module-filter'));
+    expect(exampleLine).toBeTruthy();
+    expect(exampleLine).not.toContain('"core-*"');
+    const match = exampleLine.match(/--module-filter "([^"]+)"/);
+    expect(match).toBeTruthy();
+    const pattern = match[1];
+    // Fourth review round (Codex audit @ 9731cc2): a bare true/false pair on 2 handpicked
+    // strings doesn't prove anchoring -- an UNANCHORED /sample-result/ would ALSO pass
+    // (matches ':sample-result' via substring, doesn't match ':core-network' either way).
+    // Check the anchors explicitly, then reject both an added prefix and an added suffix --
+    // only a real ^...$ anchor does that.
+    expect(pattern.startsWith('^')).toBe(true);
+    expect(pattern.endsWith('$')).toBe(true);
+    const regex = new RegExp(pattern);
+    expect(regex.test(':sample-result')).toBe(true);
+    expect(regex.test('x:sample-result')).toBe(false);
+    expect(regex.test(':sample-result-extra')).toBe(false);
+  });
+
+  it('README.md\'s describe section is referenced as "below", matching its actual position in the file', () => {
+    const regexRow = readmeDoc.split('\n').find((l) => l.includes('--module-filter <regex>') && l.startsWith('|'));
+    expect(regexRow).toBeTruthy();
+    expect(regexRow).toMatch(/describe.{0,10}section below/);
+    expect(regexRow).not.toMatch(/describe.{0,10}section above/);
+  });
+
+  it('no-test-modules.md never recommends passing the same parallel glob pattern to describe, and explains describe takes a real regex', () => {
+    expect(noTestModulesDoc).not.toMatch(/describe --json --module-filter <same-pattern>/);
+    expect(noTestModulesDoc).not.toMatch(/describe --json --module-filter "<your-pattern>"/);
+    expect(noTestModulesDoc).toMatch(/real regular expression/i);
+    // parallel --list-only with the original glob stays the authoritative dispatch preview.
+    expect(noTestModulesDoc).toMatch(/parallel --list-only --json --module-filter <same-pattern>/);
+  });
+
+  it('flavor-unused.md no longer passes "<your-filter>" from a parallel/android command straight into describe', () => {
+    expect(flavorUnusedDoc).not.toMatch(/describe --json --module-filter "<your-filter>"/);
+    expect(flavorUnusedDoc).toMatch(/separate|explicit regex|own.{0,10}regular expression/i);
+  });
+
+  // Fourth review round (Codex audit @ 9731cc2): even the ROUND-3 "translated" example
+  // ("core-*" -> "^:core:.*$") was itself wrong -- wet-verified against the real matchers:
+  // matchModuleFilter (glob, used by parallel/android/benchmark) tests the full name, the
+  // colon-stripped name, AND the leaf segment after the last ':'; describe's regex tests only
+  // the full name and the colon-stripped name. There is no pattern pair that is safe to present
+  // as "equivalent" in general -- e.g. the same glob/regex pair the file used to show select
+  // completely different, barely-overlapping module sets. No fix should ever claim mechanical
+  // translation again; the safe default is describe with no filter + exact modules[].name pick.
+  it('no-test-modules.md drops the false "core-*" -> "^:core:.*$" equivalence and makes no other glob<->regex translation claim', () => {
+    expect(noTestModulesDoc).not.toMatch(/"core-\*".{0,40}"\^:core:\.\*\$"/);
+    expect(noTestModulesDoc).not.toMatch(/translate the glob into an equivalent/i);
+    expect(noTestModulesDoc).not.toMatch(/\bliteral-or-invalid\b/);
+    expect(noTestModulesDoc).toMatch(/no general mechanical translation/i);
+    expect(noTestModulesDoc).toMatch(/leaf segment/i);
+  });
+
+  it('no-test-modules.md\'s Recovery path numbers its caused_by_filter:true steps 1-4 without a duplicate', () => {
+    const recoveryPath = noTestModulesDoc.split('## Recovery path')[1].split('## Recovery commands')[0];
+    const section = recoveryPath.split('For `caused_by_filter: false`')[0];
+    const numbered = [...section.matchAll(/^(\d+)\. /gm)].map((m) => Number(m[1]));
+    expect(numbered).toEqual([1, 2, 3, 4]);
+  });
+
+  it('task-not-found.md no longer passes an unescaped/unanchored module name straight into describe\'s regex filter', () => {
+    expect(taskNotFoundDoc).not.toMatch(/describe --json --module-filter "<affected-module>"/);
+    expect(taskNotFoundDoc).toMatch(/no filter/i);
+    expect(taskNotFoundDoc).toMatch(/exact `name`|exact.{0,10}modules\[\]\.name/i);
+  });
+
+  it('overview.md no longer mixes languages in "behaviors únicos" -- pure English "unique behaviors"', () => {
+    expect(overviewDoc).not.toMatch(/behaviors únicos/);
+    expect(overviewDoc).toMatch(/unique behaviors/);
+  });
+});
+
 // Round-5 addition: ground the dry-run-vs-real-run coverage verification split in the real
 // orchestrator. Round 4's SKILL.md text said to verify --coverage-modules scope via
 // coverage.module_buckets unconditionally -- but on --dry-run, module_buckets is ALWAYS the

@@ -241,6 +241,31 @@ describe('runChanged --staged-only', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Rename handling (default/status mode) — parsePorcelain keeps only the
+// destination path (`old -> new`.split(' -> ')[1]), discarding the source.
+// Previously untested in either detection path.
+// ---------------------------------------------------------------------------
+describe('runChanged rename handling (status/porcelain mode)', () => {
+  it('a rename keeps only the destination path/module, discards the source', async () => {
+    const dir = makeProject(['core:a', 'core:b']);
+    mkdirSync(path.join(dir, 'core', 'a', 'src', 'jvmTest'), { recursive: true });
+    mkdirSync(path.join(dir, 'core', 'b', 'src', 'jvmTest'), { recursive: true });
+    const spawn = makeSpawnStub({
+      git: { statusOutput: 'R  core/a/src/jvmTest/Foo.kt -> core/b/src/jvmTest/Foo.kt\n' },
+    });
+
+    const { envelope } = await runChanged({
+      projectRoot: dir,
+      args: ['--show-modules-only'],
+      spawn,
+    });
+
+    expect(envelope.changed.detected_modules).toEqual(['core:b']);
+    expect(envelope.changed.detected_modules).not.toContain('core:a');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Case 5 — Zero modules → no_changed_modules + exit 0
 // ---------------------------------------------------------------------------
 describe('runChanged no_changed_modules discriminator', () => {
@@ -411,6 +436,29 @@ describe('runChanged envelope shape', () => {
     expect(envelope.changed.base_ref).toBe('HEAD');
     expect(envelope.changed.staged_only).toBe(false);
     expect(envelope.changed.detected_modules).toEqual(['mod']);
+
+    // Exact shape — exactly these 3 keys, nothing else (presence alone
+    // doesn't rule out a stray 4th field like a phantom files[]/modules[]).
+    expect(Object.keys(envelope.changed).sort()).toEqual(['base_ref', 'detected_modules', 'staged_only']);
+
+    // No top-level parallel key on any changed envelope, ever.
+    expect(envelope).not.toHaveProperty('parallel');
+  });
+
+  it('base_ref stays the literal "HEAD" under --staged-only too (never "the index")', async () => {
+    const dir = makeProject(['mod']);
+    const spawn = makeSpawnStub({
+      git: { diffOutput: 'mod/src/jvmTest/X.kt\n' },
+    });
+
+    const { envelope } = await runChanged({
+      projectRoot: dir,
+      args: ['--staged-only', '--show-modules-only'],
+      spawn,
+    });
+
+    expect(envelope.changed.staged_only).toBe(true);
+    expect(envelope.changed.base_ref).toBe('HEAD');
   });
 });
 
@@ -605,7 +653,7 @@ describe('runChanged git failures (git_error)', () => {
 });
 
 describe('runChanged --dry-run (F1)', () => {
-  it('emits dry_run:true plan, no git probe, no parallel dispatch', async () => {
+  it('emits dry_run:true plan, no git probe, no parallel dispatch, empty detected_modules', async () => {
     const dir = makeProject(['core']);
     const spawn = makeSpawnStub();
     const { envelope, exitCode } = await runChanged({
@@ -620,6 +668,25 @@ describe('runChanged --dry-run (F1)', () => {
     // git rev-parse should NOT have been called.
     const gitCalls = spawn.calls.filter(c => c.cmd === 'git');
     expect(gitCalls.length).toBe(0);
+    expect(exitCode).toBe(0);
+    expect(envelope.changed.detected_modules).toEqual([]);
+  });
+
+  it('--dry-run combined with --show-modules-only: dry-run wins, still empty and no git calls', async () => {
+    const dir = makeProject(['core']);
+    // A stub that WOULD report real changes if git were ever actually called —
+    // proves dry-run short-circuits before show-modules-only's real detection.
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['core/src/jvmTest/X.kt']) },
+    });
+    const { envelope, exitCode } = await runChanged({
+      projectRoot: dir,
+      args: ['--dry-run', '--show-modules-only'],
+      spawn,
+    });
+    expect(envelope.dry_run).toBe(true);
+    expect(envelope.changed.detected_modules).toEqual([]);
+    expect(spawn.calls.filter(c => c.cmd === 'git')).toHaveLength(0);
     expect(exitCode).toBe(0);
   });
 });
@@ -885,10 +952,90 @@ describe('runChanged git step-2 failures → git_error', () => {
 });
 
 // ---------------------------------------------------------------------------
-// --max-failures forwarding (PR-09: wire parsed flag to runParallel)
+// --max-failures retired: never implemented by parallel (it silently broke
+// every real invocation with a downstream unknown_flag CONFIG_ERROR after
+// git detection had already run) and now fully removed from changed's own
+// parser too. All three forms (valid, malformed, dangling) must converge on
+// unknown_flag, rejected before any git call or runParallel dispatch.
 // ---------------------------------------------------------------------------
-describe('runChanged --max-failures forwarding', () => {
-  it('--max-failures 3 is forwarded to runParallel as ["--max-failures", "3"]', async () => {
+describe('runChanged --max-failures (retired — always unknown_flag)', () => {
+  it('valid value ("1"): unknown_flag, zero git calls, runParallel never invoked', async () => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['app/src/jvmTest/X.kt']) },
+    });
+    let parallelInvoked = false;
+    const runParallelInjection = async () => { parallelInvoked = true; return { envelope: {}, exitCode: 0 }; };
+
+    const { envelope, exitCode } = await runChanged({
+      projectRoot: dir,
+      args: ['--max-failures', '1'],
+      spawn,
+      runParallelInjection,
+    });
+
+    expect(exitCode).toBe(2);
+    expect(envelope.errors).toContainEqual(
+      expect.objectContaining({ code: 'unknown_flag', flag: '--max-failures' }),
+    );
+    expect(spawn.calls.filter(c => c.cmd === 'git')).toHaveLength(0);
+    expect(parallelInvoked).toBe(false);
+  });
+
+  it('malformed value ("abc"): unknown_flag, zero git calls, runParallel never invoked', async () => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['app/src/jvmTest/X.kt']) },
+    });
+    let parallelInvoked = false;
+    const runParallelInjection = async () => { parallelInvoked = true; return { envelope: {}, exitCode: 0 }; };
+
+    const { envelope, exitCode } = await runChanged({
+      projectRoot: dir,
+      args: ['--max-failures', 'abc'],
+      spawn,
+      runParallelInjection,
+    });
+
+    expect(exitCode).toBe(2);
+    expect(envelope.errors).toContainEqual(
+      expect.objectContaining({ code: 'unknown_flag', flag: '--max-failures' }),
+    );
+    expect(spawn.calls.filter(c => c.cmd === 'git')).toHaveLength(0);
+    expect(parallelInvoked).toBe(false);
+  });
+
+  it('dangling (last token, no value): unknown_flag, zero git calls, runParallel never invoked', async () => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['app/src/jvmTest/X.kt']) },
+    });
+    let parallelInvoked = false;
+    const runParallelInjection = async () => { parallelInvoked = true; return { envelope: {}, exitCode: 0 }; };
+
+    const { envelope, exitCode } = await runChanged({
+      projectRoot: dir,
+      args: ['--max-failures'],
+      spawn,
+      runParallelInjection,
+    });
+
+    expect(exitCode).toBe(2);
+    expect(envelope.errors).toContainEqual(
+      expect.objectContaining({ code: 'unknown_flag', flag: '--max-failures' }),
+    );
+    expect(spawn.calls.filter(c => c.cmd === 'git')).toHaveLength(0);
+    expect(parallelInvoked).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --coverage-tool forwarding: default omits the flag entirely (parallel's own
+// `auto` default applies); an explicit override is preserved verbatim. This
+// locks in already-correct behavior that had zero prior test coverage.
+// ---------------------------------------------------------------------------
+describe('runChanged --coverage-tool forwarding', () => {
+  it('omitted: no --coverage-tool token reaches runParallel', async () => {
     const dir = makeProject(['app']);
     const spawn = makeSpawnStub({
       git: { statusOutput: porcelain(['app/src/jvmTest/X.kt']) },
@@ -896,54 +1043,73 @@ describe('runChanged --max-failures forwarding', () => {
     const parallelCalls = [];
     const runParallelInjection = async (opts) => {
       parallelCalls.push(opts);
-      return {
-        envelope: {
-          tests: { total: 0, passed: 0, failed: 0, skipped: 0 },
-          modules: [], skipped: [],
-          coverage: { tool: 'auto', missed_lines: null },
-          errors: [], warnings: [],
-        },
-        exitCode: 0,
-      };
+      return { envelope: {}, exitCode: 0 };
+    };
+
+    await runChanged({ projectRoot: dir, args: [], spawn, runParallelInjection });
+
+    expect(parallelCalls.length).toBe(1);
+    expect(parallelCalls[0].args.indexOf('--coverage-tool')).toBe(-1);
+  });
+
+  it('explicit --coverage-tool kover: forwarded verbatim', async () => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['app/src/jvmTest/X.kt']) },
+    });
+    const parallelCalls = [];
+    const runParallelInjection = async (opts) => {
+      parallelCalls.push(opts);
+      return { envelope: {}, exitCode: 0 };
     };
 
     await runChanged({
       projectRoot: dir,
-      args: ['--max-failures', '3'],
+      args: ['--coverage-tool', 'kover'],
       spawn,
       runParallelInjection,
     });
 
     expect(parallelCalls.length).toBe(1);
     const args = parallelCalls[0].args;
-    const idx = args.indexOf('--max-failures');
+    const idx = args.indexOf('--coverage-tool');
     expect(idx).toBeGreaterThan(-1);
-    expect(args[idx + 1]).toBe('3');
+    expect(args[idx + 1]).toBe('kover');
   });
+});
 
-  it('--max-failures 0 (default) is absent from parallel args', async () => {
+// ---------------------------------------------------------------------------
+// The final envelope never carries the delegate's own parallel:{legs,...} or
+// android:{} blocks — changed only copies specific fields (tests, modules,
+// skipped, coverage, errors, warnings, isolated) onto its own top level. This
+// locks in already-correct behavior (also independently pinned end-to-end,
+// against real production code, by agentic-eval-graders-production-contract.test.js).
+// ---------------------------------------------------------------------------
+describe('runChanged envelope never forwards the delegate parallel/android blocks', () => {
+  it('a .parallel and .android block on the stubbed delegate result is dropped, not merged', async () => {
     const dir = makeProject(['app']);
     const spawn = makeSpawnStub({
       git: { statusOutput: porcelain(['app/src/jvmTest/X.kt']) },
     });
-    const parallelCalls = [];
-    const runParallelInjection = async (opts) => {
-      parallelCalls.push(opts);
-      return {
-        envelope: {
-          tests: { total: 0, passed: 0, failed: 0, skipped: 0 },
-          modules: [], skipped: [],
-          coverage: { tool: 'auto', missed_lines: null },
-          errors: [], warnings: [],
-        },
-        exitCode: 0,
-      };
-    };
+    const runParallelInjection = async () => ({
+      envelope: {
+        tests: { total: 1, passed: 1, failed: 0, skipped: 0 },
+        modules: [{ name: 'app', type: 'jvm', test_failures: [] }],
+        skipped: [],
+        coverage: { tool: 'auto', missed_lines: null },
+        errors: [], warnings: [],
+        parallel: { test_type: 'androidUnit', max_workers: 0, timeout_s: 600, legs: [{ test_type: 'androidUnit' }] },
+        android: { device_serial: 'emulator-5554' },
+      },
+      exitCode: 0,
+    });
 
-    await runChanged({ projectRoot: dir, args: [], spawn, runParallelInjection });
+    const { envelope } = await runChanged({ projectRoot: dir, args: [], spawn, runParallelInjection });
 
-    expect(parallelCalls.length).toBe(1);
-    expect(parallelCalls[0].args.indexOf('--max-failures')).toBe(-1);
+    expect(envelope.parallel).toBeUndefined();
+    expect(envelope.android).toBeUndefined();
+    expect(envelope.changed.detected_modules).toEqual(['app']);
+    expect(envelope.changed.detected_modules.every(m => !m.startsWith(':'))).toBe(true);
   });
 });
 
