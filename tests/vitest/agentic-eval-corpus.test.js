@@ -153,8 +153,12 @@ describe('corpus/scenarios/', () => {
 
   // coverage-threshold-failure -- the first coverage_threshold_exceeded scenario. Ground truth
   // independently verified 6x (3x kmp-test, 3x direct Gradle + independent XML parse, cold
-  // GRADLE_USER_HOME each, fixed JDK) against android/nowinandroid @
-  // 7d45eae4f8720a0c77f507712ba2437ff974b6ed's :core:datastore module.
+  // GRADLE_USER_HOME each, fixed JDK 17) against android/nowinandroid @
+  // 7d45eae4f8720a0c77f507712ba2437ff974b6ed's :core:domain module. A review round rejected an
+  // earlier candidate, :core:datastore: its --module-filter substring-collided with a sibling
+  // test-fixtures module (:core:datastore-test), which is both operationally unreachable via the
+  // pinned skill's own ask-guard AND let a real target-attribution gap in the grader go unnoticed.
+  // :core:domain has zero substring collision with any other real module in this project.
   function loadCoverageThresholdFailureScenario() {
     const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, 'coverage-threshold-failure.json');
     if (parseError) throw new Error(`coverage-threshold-failure.json: ${parseError}`);
@@ -166,9 +170,9 @@ describe('corpus/scenarios/', () => {
     expect(errors).toEqual([]);
   });
 
-  it('targets :core:datastore, expects coverage_threshold_exceeded, family coverage, and is tagged train', () => {
+  it('targets :core:domain, expects coverage_threshold_exceeded, family coverage, and is tagged train', () => {
     const scenario = loadCoverageThresholdFailureScenario();
-    expect(scenario.expected.module).toBe(':core:datastore');
+    expect(scenario.expected.module).toBe(':core:domain');
     expect(scenario.expected.outcome_kind).toBe('coverage_threshold_exceeded');
     expect(scenario.family).toBe('coverage');
     expect(scenario.tags).toEqual(['train']);
@@ -177,19 +181,19 @@ describe('corpus/scenarios/', () => {
   it('expects the ground-truth-verified counts and coverage claim on both providers', () => {
     const scenario = loadCoverageThresholdFailureScenario();
     expect(scenario.expected.kmp_test.tests).toEqual({
-      total: 2, passed: 2, failed: 0, skipped: 0, individual_total: 28,
+      total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 4,
     });
     expect(scenario.expected.kmp_test.exit_code).toBe(1);
     expect(scenario.expected.kmp_test.coverage).toEqual({
-      tool: 'auto', min_missed_lines: 50, missed_lines: 76, with_data: [':core:datastore'],
+      tool: 'auto', min_missed_lines: 15, missed_lines: 23, with_data: [':core:domain'],
     });
-    expect(scenario.expected.gradle.tests).toEqual({ total: 14, passed: 14, failed: 0 });
+    expect(scenario.expected.gradle.tests).toEqual({ total: 2, passed: 2, failed: 0 });
     expect(scenario.expected.gradle.exit_code).toBe(0);
-    expect(scenario.expected.gradle.evidence_task).toBe(':core:datastore:testDemoDebugUnitTest');
+    expect(scenario.expected.gradle.evidence_task).toBe(':core:domain:testDemoDebugUnitTest');
   });
 
   it('does not reveal the module or the numeric flag in its prompt', () => {
     const scenario = loadCoverageThresholdFailureScenario();
-    expect(scenario.prompt).not.toMatch(/:core:datastore|--min-missed-lines|min-missed-lines/);
+    expect(scenario.prompt).not.toMatch(/:core:domain|--min-missed-lines|min-missed-lines/);
   });
 });

@@ -1239,33 +1239,36 @@ describe('validateScenario', () => {
 
   // Ground truth (independently verified 6x -- 3x kmp-test, 3x direct Gradle + independent XML
   // parse, cold GRADLE_USER_HOME each, fixed JDK 17 -- against android/nowinandroid @
-  // 7d45eae4f8720a0c77f507712ba2437ff974b6ed, :core:datastore module): tests genuinely pass on
-  // both providers (kmp_test aggregate 2 dispatched modules/28 individual testcases across both
-  // demo+prod flavors; gradle corroboration deliberately scoped to the SAME flavor/variant the
-  // coverage claim is about, :core:datastore:testDemoDebugUnitTest, 14 testcases) -- missed_lines
-  // (76) exceeds min_missed_lines (50) on both providers' independently-derived JaCoCo XML.
+  // 7d45eae4f8720a0c77f507712ba2437ff974b6ed, :core:domain module -- a review round rejected an
+  // earlier candidate, :core:datastore, whose --module-filter substring-collided with a sibling
+  // test-fixtures module; :core:domain has zero substring collision with any other real module in
+  // this project, verified against the full module list): tests genuinely pass on both providers
+  // (kmp_test's own single-module envelope, 4 individual testcases across demo+prod flavors;
+  // gradle corroboration deliberately scoped to the SAME flavor/variant the coverage claim is
+  // about, :core:domain:testDemoDebugUnitTest, 2 testcases) -- missed_lines (23) exceeds
+  // min_missed_lines (15) on both providers' independently-derived JaCoCo XML.
   function baseScenarioCoverageThresholdExceeded(overrides = {}) {
     return baseScenario({
       id: 'sample-coverage-threshold-exceeded-scenario',
       family: 'coverage',
       expected: {
-        module: ':core:datastore',
+        module: ':core:domain',
         outcome_kind: 'coverage_threshold_exceeded',
         kmp_test: {
-          tests: { total: 2, passed: 2, failed: 0, individual_total: 28, skipped: 0 },
+          tests: { total: 1, passed: 1, failed: 0, individual_total: 4, skipped: 0 },
           exit_code: 1,
-          coverage: { tool: 'auto', min_missed_lines: 50, missed_lines: 76, with_data: [':core:datastore'] },
+          coverage: { tool: 'auto', min_missed_lines: 15, missed_lines: 23, with_data: [':core:domain'] },
         },
         gradle: {
-          allowed_invocations: [':core:datastore:testDemoDebugUnitTest'],
-          evidence_task: ':core:datastore:testDemoDebugUnitTest',
-          tests: { total: 14, passed: 14, failed: 0 },
+          allowed_invocations: [':core:domain:testDemoDebugUnitTest'],
+          evidence_task: ':core:domain:testDemoDebugUnitTest',
+          tests: { total: 2, passed: 2, failed: 0 },
           exit_code: 0,
         },
       },
       policy: {
         allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel'],
-        allowed_gradle_tasks: [':core:datastore:testDemoDebugUnitTest'],
+        allowed_gradle_tasks: [':core:domain:testDemoDebugUnitTest'],
       },
       ...overrides,
     });
@@ -1307,7 +1310,7 @@ describe('validateScenario', () => {
 
     it('rejects coverage.missed_lines <= min_missed_lines -- the gate could never have fired', () => {
       const s = baseScenarioCoverageThresholdExceeded();
-      s.expected.kmp_test.coverage.missed_lines = 50;
+      s.expected.kmp_test.coverage.missed_lines = 15;
       const { errors } = validateScenario(s);
       expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.missed_lines')).toBe(true);
     });
@@ -1328,7 +1331,7 @@ describe('validateScenario', () => {
 
     it('rejects coverage.with_data with more than one entry', () => {
       const s = baseScenarioCoverageThresholdExceeded();
-      s.expected.kmp_test.coverage.with_data = [':core:datastore', ':core:datastore-test'];
+      s.expected.kmp_test.coverage.with_data = [':core:domain', ':core:model'];
       const { errors } = validateScenario(s);
       expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.with_data')).toBe(true);
     });
@@ -1343,6 +1346,25 @@ describe('validateScenario', () => {
     it('rejects coverage.tool "none" -- aggregation disabled entirely, the gate could never fire', () => {
       const s = baseScenarioCoverageThresholdExceeded();
       s.expected.kmp_test.coverage.tool = 'none';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.tool')).toBe(true);
+    });
+
+    // Review-round finding: policy-hook.mjs has NO --coverage-tool flag category at all, so a
+    // scenario could never legitimately reach a command that resolves to 'jacoco'/'kover'
+    // explicitly (only the default 'auto' is reachable under this minimal PR's own policy) --
+    // COVERAGE_TOOL_EXPECTED_VALUES narrowed to ['auto'] only; these two values describe a
+    // command the current policy grammar could never actually admit.
+    it('rejects coverage.tool "jacoco" -- unreachable under this policy (no --coverage-tool flag category exists)', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.coverage.tool = 'jacoco';
+      const { errors } = validateScenario(s);
+      expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.tool')).toBe(true);
+    });
+
+    it('rejects coverage.tool "kover" -- unreachable under this policy (no --coverage-tool flag category exists)', () => {
+      const s = baseScenarioCoverageThresholdExceeded();
+      s.expected.kmp_test.coverage.tool = 'kover';
       const { errors } = validateScenario(s);
       expect(errors.some((e) => e.field === 'expected.kmp_test.coverage.tool')).toBe(true);
     });
@@ -1391,7 +1413,7 @@ describe('validateScenario', () => {
 
     it('rejects a coverage sub-object on the gradle contract -- gradle has no coverage-threshold concept', () => {
       const s = baseScenarioCoverageThresholdExceeded();
-      s.expected.gradle.coverage = { tool: 'auto', min_missed_lines: 50, missed_lines: 76, with_data: [':core:datastore'] };
+      s.expected.gradle.coverage = { tool: 'auto', min_missed_lines: 15, missed_lines: 23, with_data: [':core:domain'] };
       const { errors } = validateScenario(s);
       expect(errors.some((e) => e.field === 'expected.gradle.coverage')).toBe(true);
     });

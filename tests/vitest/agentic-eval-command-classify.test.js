@@ -102,10 +102,10 @@ describe('classifyBashCommand', () => {
   });
 
   it('--min-missed-lines combined with --module-filter and --test-type on the same command line extracts all three independently', () => {
-    const c = classifyBashCommand('kmp-test parallel --module-filter :core:datastore --test-type androidUnit --min-missed-lines 50 --json');
-    expect(c.moduleFilter).toBe(':core:datastore');
+    const c = classifyBashCommand('kmp-test parallel --module-filter :core:domain --test-type androidUnit --min-missed-lines 15 --json');
+    expect(c.moduleFilter).toBe(':core:domain');
     expect(c.testType).toBe('androidUnit');
-    expect(c.minMissedLines).toBe('50');
+    expect(c.minMissedLines).toBe('15');
   });
 });
 

@@ -772,39 +772,61 @@
   #372).
 
   A further follow-up PR added the 5th scenario and first `coverage_threshold_exceeded` outcome:
-  `coverage-threshold-failure` — NowInAndroid's `:core:datastore` module (a flavored, JaCoCo-backed
-  Android library, `demo`/`prod` product flavors) at the same commit `nowinandroid-core-common`
-  already pins, `7d45eae4f8720a0c77f507712ba2437ff974b6ed`. `--min-missed-lines` already existed
-  and worked in `lib/orchestrators/coverage-orchestrator.js` — this PR is harness-only, adding no
-  product feature. Ground truth independently verified 6× (3× `kmp-test parallel
-  --module-filter :core:datastore --min-missed-lines 50 --json`, 3× direct Gradle
-  `:core:datastore:testDemoDebugUnitTest` + `:core:datastore:createDemoDebugCombinedCoverageReport`
-  + an independent PowerShell `[xml]` DOM parse of the JaCoCo report, cold `GRADLE_USER_HOME`/fixed
-  JDK 17 each, all 6 runs 128–143s, well under the 600s ceiling): all 6 converge on `:core:datastore`,
-  JaCoCo, 76 missed lines, `76 > 50`, and a clean 14-test pass, every time. A real, ground-truth-
-  discovered wrinkle reshaped the design mid-implementation: `--module-filter :core:datastore` is a
-  substring match, so it also dispatches a sibling test-fixtures module
-  (`:core:datastore-test`, no coverage plugin, never contributes) — `computeKmpTestTargetMatch`
-  needed its own coverage-specific branch (target merely PRESENT among `envelope.modules[]`, not
-  the sole entry) rather than reusing `tests_executed`'s `modules.length===1` exclusivity, since
-  that exclusivity exists to protect PASS/FAIL attribution ambiguity this outcome doesn't have
-  (every dispatched module must pass cleanly, never a mix) — coverage attribution itself stays
-  exact via `coverage.module_buckets.with_data`. Similarly, kmp-test dispatches tests for BOTH
-  `demo`+`prod` flavors (28 individual tests) while coverage aggregation resolves only `demo` (76
-  missed lines) — the schema's existing `kmp_test.tests.individual_total === gradle.tests.total`
-  cross-check (shared by `tests_executed`/`tests_failed`) is deliberately NOT extended to this
-  outcome; Gradle corroboration stays scoped to the single flavor/variant the coverage claim is
-  about (`:core:datastore:testDemoDebugUnitTest`, 14 tests) rather than replicating kmp-test's
-  broader multi-flavor dispatch.
+  `coverage-threshold-failure` — NowInAndroid's `:core:domain` module (a flavored, JaCoCo-backed
+  Android library, `demo`/`prod` product flavors, business-logic use-case classes with 2 JUnit test
+  methods) at the same commit `nowinandroid-core-common` already pins,
+  `7d45eae4f8720a0c77f507712ba2437ff974b6ed`. `--min-missed-lines` already existed and worked in
+  `lib/orchestrators/coverage-orchestrator.js` — this PR is harness-only, adding no product
+  feature. Ground truth independently verified 6× (3× `kmp-test parallel --module-filter
+  :core:domain --min-missed-lines 15 --json`, 3× direct Gradle `:core:domain:testDemoDebugUnitTest`
+  + `:core:domain:createDemoDebugCombinedCoverageReport` + an independent PowerShell `[xml]` DOM
+  parse of the JaCoCo report, cold `GRADLE_USER_HOME`/fixed JDK 17 each, all 6 runs 139–176s, well
+  under the 600s ceiling): all 6 converge on `:core:domain`, JaCoCo, 23 missed lines, `23 > 15`, and
+  a clean 4-individual-test pass (2 JUnit testcases × demo+prod flavors on the kmp-test side, 2
+  JUnit testcases at the single demo-flavor scope Gradle corroborates), every time. One formal
+  Gradle repetition needed a clean redo: its first attempt hit a genuine native JVM daemon crash
+  (`EXCEPTION_ACCESS_VIOLATION`, confirmed via the daemon's own crash log and the complete absence
+  of any test-results/coverage XML on disk for that attempt) — a transient infrastructure flake,
+  not a candidate issue; the crashed attempt was discarded and redone from a fresh worktree, which
+  converged cleanly with the other two.
 
-  Provider model: Gradle can corroborate its own ordinary test-task contract (schema reuses
-  `tests_executed`'s Gradle key set verbatim — no raw Gradle task ever evaluates a coverage
-  threshold) but can never become `terminal` or produce `first_useful_signal` — a new
+  **Candidate selection went through 2 rounds.** The first published revision of this PR used
+  `:core:datastore`, discovered by ground truth to leave 76 lines uncovered against a 50-line
+  budget with a real, deliberate design wrinkle: `--module-filter :core:datastore` is a substring
+  match, so it also dispatches a sibling test-fixtures module (`:core:datastore-test`, no coverage
+  plugin, never contributes) — 28 individual tests across both flavors on the kmp-test side vs. 14
+  on the Gradle-corroborating side. An adversarial review of the already-open, CI-green PR found
+  that accommodating this collision was itself the bug, not a legitimate wrinkle: (1) the pinned
+  skill snapshot cannot actually operate this scenario — it routes "coverage" requests to `kmp-test
+  coverage` (not permitted by this scenario's policy), and its own module-attribution "ask for
+  clarification" guard would trigger on the same substring collision if it used `parallel` instead;
+  (2) the approved final answer (14/14/0, sourced from `expected.gradle.tests`) was never something
+  an agent running only `kmp-test` could legitimately observe — its own envelope showed
+  `individual_total:28`, and `junit-evidence.mjs` never attaches external JUnit evidence to
+  `kmp-test` attempts, so an honest `28/28/0` answer would have failed while a disconnected
+  `14/14/0` passed; (3) `computeKmpTestTargetMatch`'s coverage branch, added to tolerate the
+  collision, validated only the target module's own presence, never that every OTHER envelope
+  module was also filter-coherent — an adversarial extra module could ride along unnoticed. The
+  fix was candidate selection, not a more lenient grader: `:core:domain` has zero substring
+  collision with any other real module in this project, so `computeKmpTestTargetMatch` now shares
+  the exact same unconditional `modules.length===1` exclusivity every other `isRanOutcome` case
+  uses, no special branch at all. `KMP_EVAL_RESULT`'s final-answer comparison was corrected at the
+  same time: `total`/`passed` now compare against `expected.kmp_test.tests.individual_total` (4/4/0
+  — the only count a `kmp-test`-only agent can actually observe end-to-end), never
+  `expected.gradle.tests` (2/2/0). A same-turn-conflict "ambiguity" regression test was also found
+  to assert the wrong causation (a Gradle-only condition made `success:false` inevitable regardless
+  of the ambiguity flag) and was rewritten to isolate the real one (a genuinely correct, terminal
+  `kmp_test` attempt coexisting with a conflicted Gradle attempt).
+
+  Provider model (unchanged in shape across both rounds, verified against the corrected candidate):
+  Gradle can corroborate its own ordinary test-task contract (schema reuses `tests_executed`'s
+  Gradle key set verbatim — no raw Gradle task ever evaluates a coverage threshold) but can never
+  become `terminal` or produce `first_useful_signal` — a new
   `isTerminalEligibleAttempt`/`terminalEligible` restriction, scoped to this outcome_kind only (the
   other 3 keep both providers eligible, no regression). An early design (Gradle's `outcomeMatches`
-  hardcoded `false`) was caught and corrected during implementation: it would have let a legitimate
-  Gradle corroboration AFTER a correct kmp-test attempt silently win terminal selection and flip a
-  correct answer to a graded failure, and would have made check 7
+  hardcoded `false`) was caught and corrected during the original implementation: it would have let
+  a legitimate Gradle corroboration AFTER a correct kmp-test attempt silently win terminal selection
+  and flip a correct answer to a graded failure, and would have made check 7
   (`no_provider_contradiction`) fire a false positive on every healthy run. `evaluateGradleAttempt`
   instead computes a REAL `outcomeMatches` (reusing `tests_executed`'s own footer+JUnit check
   byte-for-byte, since the underlying claim is identical) and `isJunitEvidenceOutcome`
@@ -815,15 +837,23 @@
   `policy-hook.mjs` gains a 5th flag category (`--min-missed-lines` fit none of the 4 existing
   ones): a canonical non-negative-integer grammar, exactly two tokens (the `=` combined form is
   deliberately not admitted), shape-only — the grader separately enforces the scenario's exact
-  expected N and N>0.
+  expected N and N>0. `schemas.mjs`'s `coverage.tool` field accepts only `"auto"` (narrowed from an
+  earlier revision that also allowed `"jacoco"`/`"kover"` — states `policy-hook.mjs`'s own flag
+  grammar, which has no `--coverage-tool` category at all, could never actually produce).
 
-  **Known, deliberately-unfixed documentation contradiction** (registered here, not fixed in this
-  PR — `.skills/**` is out of scope): `.skills/kmp-test-runner/references/workflows/coverage.md:49`
-  correctly says a `0` threshold disables the gate; `:95` of the same file and
-  `.skills/kmp-test-runner/references/troubleshooting/coverage-threshold-exceeded.md:35` both
-  incorrectly claim `0` requires perfect coverage. `coverage-orchestrator.js:747`
-  (`gateThreshold > 0 && ...`) confirms the first reading is correct. Register as a blocker to fix
-  before any live canary runs against the pinned skill snapshot.
+  **Two known, deliberately-unfixed blockers registered here** (neither fixed in this PR —
+  `.skills/**`/`PINNED_SKILL_SHA` are out of scope):
+  1. Documentation contradiction: `.skills/kmp-test-runner/references/workflows/coverage.md:49`
+     correctly says a `0` threshold disables the gate; `:95` of the same file and
+     `.skills/kmp-test-runner/references/troubleshooting/coverage-threshold-exceeded.md:35` both
+     incorrectly claim `0` requires perfect coverage. `coverage-orchestrator.js:747`
+     (`gateThreshold > 0 && ...`) confirms the first reading is correct.
+  2. Skill routing gap (found during the candidate-selection review above): the pinned skill
+     snapshot routes "run coverage" requests to `kmp-test coverage` (pre-existing XML aggregation
+     only), never to `kmp-test parallel --min-missed-lines` (the only command that can produce a
+     fresh `coverage_threshold_exceeded` decision). Needs an explicit routing rule mapping "tests +
+     coverage/missed-lines budget" requests to `parallel --min-missed-lines` before any live canary
+     run against this scenario.
 
   **Still deferred**: `changed-module-verification` — own PR(s), small increments preferred over
   one large one — milestone unassigned, user's call on timing.

@@ -720,21 +720,16 @@ function computeKmpTestTargetMatch(envelope, classification, scenario) {
   // still resolves and lists the module it attempted (envelope.modules[]) regardless of whether the
   // task ultimately passed or failed, ground-truth confirmed directly against a real capture.
   if (isRanOutcome(scenario.expected.outcome_kind)) {
-    if (scenario.expected.outcome_kind === 'coverage_threshold_exceeded') {
-      // A substring --module-filter can legitimately sweep in a sibling module alongside the real
-      // target (ground truth: NowInAndroid's :core:datastore also dispatches its own dedicated
-      // test-fixtures sibling, :core:datastore-test, which has no coverage plugin and so never
-      // contributes) -- envelope.modules[] is NOT required to be exclusively the target here,
-      // unlike tests_executed/tests_failed just below. That exclusivity exists to protect
-      // aggregate PASS/FAIL attribution (which module does a failure belong to in a mixed
-      // multi-module response?) -- this outcome requires EVERY dispatched module to have passed
-      // cleanly (never a mix, enforced in validateProviderContract), so there is no such ambiguity
-      // to protect against here. Coverage attribution itself is independently, exactly proven
-      // elsewhere via coverage.module_buckets.with_data (see validateKmpEnvelopeForAttempt).
-      const present = envelope.modules.some((m) => normalizeModuleName(m?.name) === targetModule);
-      if (!present) return false;
-      return classification.moduleFilter == null || matchModuleFilter(targetModule, classification.moduleFilter);
-    }
+    // coverage_threshold_exceeded shares this exact same single-module exclusivity requirement --
+    // an earlier revision special-cased it to tolerate envelope.modules.length > 1 (reasoning: a
+    // substring --module-filter could sweep in a harmless sibling), but that leniency was itself a
+    // real bug: it only checked the TARGET module's own presence + filter-coherence, never that
+    // every OTHER reported module was also something the invoked filter would legitimately select
+    // -- an adversarial/wrong envelope naming the target PLUS an unrelated third module the filter
+    // could never have matched would still have passed. The real fix is scenario selection, not a
+    // grader exception: the pinned candidate module's own name has zero substring collision with
+    // any other real module in the pinned project (verified against the full module list), so
+    // reusing the identical strict check below is both correct and sufficient.
     if (envelope.modules.length !== 1) return false;
     const envelopeModule = normalizeModuleName(envelope.modules[0]?.name);
     if (envelopeModule !== targetModule) return false;
@@ -1110,15 +1105,21 @@ function kmpEvalResultBlockMatchesScenario(block, scenario) {
   // shape too).
   if (scenario.expected.outcome_kind === 'coverage_threshold_exceeded') {
     if (keys.length !== KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS.size || keys.some((k) => !KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS.has(k))) return false;
-    // total/passed/failed compare against expected.gradle.tests (the single-flavor/variant
-    // corroborating-scope counts the agent would see from the actual test task it ran), never
-    // expected.kmp_test.tests (kmp_test's own multi-flavor aggregate) -- ground truth confirmed
-    // these are genuinely different-scoped numbers for this outcome_kind (see this file's
-    // validateKmpEnvelopeForAttempt branch and schemas.mjs's own cross-check doc comment).
-    const expectedTests = scenario.expected.gradle.tests;
+    // total/passed compare against expected.kmp_test.tests.individual_total -- an earlier revision
+    // compared against expected.gradle.tests instead (a real bug: kmp-test-classified attempts
+    // never receive external JUnit evidence at all -- junit-evidence.mjs's attributeCondition only
+    // ever attaches perAttemptJunit to Gradle-relevant attempts, kmp-test's own envelope is treated
+    // as self-contained -- so a scenario graded on a SINGLE kmp-test attempt could never legitimately
+    // observe the Gradle-scoped number anywhere; a genuinely honest agent reporting what its own
+    // envelope actually showed would fail, while an unobserved, disconnected number would pass).
+    // individual_total is the one number a kmp-test-only session can always legitimately derive
+    // directly from its own envelope. failed must be exactly 0 (this outcome is never a test
+    // failure) and total===passed follows from that -- a clean pass means every individual test
+    // that ran also passed.
+    const individualTotal = scenario.expected.kmp_test.tests.individual_total;
     const cov = scenario.expected.kmp_test.coverage;
     return Number.isInteger(block.total) && Number.isInteger(block.passed) && Number.isInteger(block.failed)
-      && block.total === expectedTests.total && block.passed === expectedTests.passed && block.failed === expectedTests.failed
+      && block.total === individualTotal && block.passed === individualTotal && block.failed === 0
       && Number.isInteger(block.missed_lines) && block.missed_lines === cov.missed_lines
       && Number.isInteger(block.threshold) && block.threshold === cov.min_missed_lines
       && Number.isInteger(block.modules_contributing) && block.modules_contributing === 1;

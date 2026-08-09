@@ -532,11 +532,16 @@ const GRADLE_TESTS_SHAPE_KEYS = ['total', 'passed', 'failed'];
 // `coverage` key set of its own.
 const KMP_TEST_CONTRACT_KEYS_COVERAGE_THRESHOLD_EXCEEDED = ['tests', 'exit_code', 'coverage'];
 const KMP_TEST_COVERAGE_SHAPE_KEYS = ['tool', 'min_missed_lines', 'missed_lines', 'with_data'];
-// 'none' deliberately excluded -- --coverage-tool none / --no-coverage disables aggregation
-// entirely (coverage-orchestrator.js's coverage_aggregation_skipped path), so the gate can never
-// fire under it; a scenario claiming this outcome with tool:'none' describes something the real
-// CLI can never produce.
-const COVERAGE_TOOL_EXPECTED_VALUES = ['auto', 'jacoco', 'kover'];
+// Only 'auto' -- policy-hook.mjs has NO --coverage-tool flag category at all (a review-round
+// finding: this contract previously also allowed 'jacoco'/'kover', which describe a command the
+// current policy grammar could never actually admit -- an unreachable state under this minimal
+// PR's own policy). 'none' is separately impossible on different grounds: --coverage-tool none /
+// --no-coverage disables aggregation entirely (coverage-orchestrator.js's
+// coverage_aggregation_skipped path), so the gate could never fire under it either way. Widening
+// this back to include 'jacoco'/'kover' is a real future option once policy-hook grows a
+// --coverage-tool category of its own -- not merely a leftover value worth keeping for its own
+// sake.
+const COVERAGE_TOOL_EXPECTED_VALUES = ['auto'];
 
 function rejectUnrecognizedKeys(obj, allowedKeys, field, errors) {
   if (obj == null || typeof obj !== 'object' || Array.isArray(obj)) return;
