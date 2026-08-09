@@ -16,7 +16,7 @@
 // differently-named module), and no agentic-eval-harness-internal leakage. Section-scoped (not
 // whole-file substring checks) so a fix landing in the wrong section can't produce a false green.
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { readFileSync, existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -189,9 +189,12 @@ describe('Coverage dry-run verification contract (grounds the dry-run-vs-real-ru
 // coverage-only path. Row/clause-scoped (not whole-file co-occurrence): a test that only checked
 // both `parallel` and `--min-missed-lines` appear anywhere in SKILL.md would also pass if they
 // were merely mentioned in unrelated places (e.g. Decision protocol already neighbors `parallel`
-// and `--module-filter`), which wouldn't prove the routing table itself was fixed. Also locks the
-// 2x2 matrix precisely: a budget-less "with coverage" ask must dispatch PLAIN parallel, never a
-// fabricated --min-missed-lines default.
+// and `--module-filter`), which wouldn't prove the routing table itself was fixed. Locks the
+// final 3-way contract precisely: explicit "run tests with coverage" dispatches plain parallel
+// (no fabricated --min-missed-lines default); an explicit tests+budget ask ("run tests; missed
+// lines under N") dispatches parallel --min-missed-lines; and a context-free "with coverage"
+// alone, with no stated test-execution intent, stays ambiguous and must ask -- it is never
+// silently routed to either command.
 describe('Steps table -- tests+coverage-budget routing (grounds the BACKLOG "skill routing gap" fix)', () => {
   const steps = section('Steps');
 
@@ -484,7 +487,14 @@ describe('Coverage gradle-dispatch + threshold grounding contracts (real runCove
   it('missing XML lands in module_buckets.no_xml -- and the fixture gradlew proves no report-generation or test task was ever dispatched (only the documented discovery probe)', async () => {
     const root = makeCoverageFixture([{ name: 'j-bare', coverage: 'jacoco' }]);
     const logPath = path.join(root, 'gradlew-invocations.log');
-    writeFileSync(path.join(root, 'gradlew'), '#!/usr/bin/env bash\necho "$@" >> "$(dirname "$0")/gradlew-invocations.log"\nexit 0\n');
+    const posixGradlew = path.join(root, 'gradlew');
+    writeFileSync(posixGradlew, '#!/usr/bin/env bash\necho "$@" >> "$(dirname "$0")/gradlew-invocations.log"\nexit 0\n');
+    // writeFileSync alone leaves the default (non-executable) mode on POSIX -- spawnGradle's
+    // non-Windows branch spawns this path directly (no shell), so without +x the spawn fails with
+    // EACCES, probeGradleTasksCached swallows it as `result.error` and returns null, and the log
+    // below is never created. Caught by real Linux CI (Ubuntu), not by Windows-only local runs --
+    // Windows doesn't gate execution on a POSIX mode bit, so this only reproduces on POSIX.
+    chmodSync(posixGradlew, 0o755);
     writeFileSync(path.join(root, 'gradlew.bat'), '@echo off\r\necho %* >> "%~dp0gradlew-invocations.log"\r\nexit /b 0\r\n');
 
     const { envelope } = await runCoverage({ projectRoot: root, args: [], parseCoverageXml: makeParseCoverageXmlStub() });
@@ -493,12 +503,15 @@ describe('Coverage gradle-dispatch + threshold grounding contracts (real runCove
     expect(existsSync(logPath)).toBe(true);
     const invocations = readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean);
     expect(invocations.length).toBeGreaterThan(0);
+    // Exact token-array equality, not a "forbidden names absent" check: a substring/exact-bare-name
+    // check would miss a qualified regression like `:j-bare:jacocoTestReport`, since that token
+    // never equals the bare name `jacocoTestReport`. The documented probe's args are exactly
+    // `tasks --all --quiet` (spawnGradle may additionally inject `--console=plain` when stdout
+    // isn't a TTY, e.g. under vitest -- stripped here since it's orthogonal to what this test
+    // verifies, not part of the permitted-command claim).
     for (const line of invocations) {
-      const tokens = line.trim().split(/\s+/);
-      expect(tokens).toContain('tasks');
-      expect(tokens).toContain('--all');
-      expect(tokens).toContain('--quiet');
-      expect(tokens.some((t) => /^(test|koverXmlReport|koverHtmlReport|jacocoTestReport)$/.test(t))).toBe(false);
+      const tokens = line.trim().split(/\s+/).filter((t) => !t.startsWith('--console'));
+      expect(tokens).toEqual(['tasks', '--all', '--quiet']);
     }
   });
 
