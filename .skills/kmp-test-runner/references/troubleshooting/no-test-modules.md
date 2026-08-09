@@ -51,8 +51,9 @@ Branch on `caused_by_filter` BEFORE reading `message` — the message is human-r
 
 For `caused_by_filter: true`:
 
-1. Re-run with `kmp-test describe --json --module-filter <same-pattern>` to see which modules the filter actually matches.
-2. If the resulting `modules[]` array is empty, broaden the filter (`*:core:*`, comma-separated explicit names, etc.).
+1. Re-run with `kmp-test parallel --list-only --json --module-filter <same-pattern>` (same glob matcher `parallel` itself uses) to see the authoritative set the original command would actually dispatch.
+2. To inspect via `describe` instead: `describe`'s own `--module-filter` is a **real regular expression**, not a glob — do NOT pass the same glob pattern verbatim, it means something different there (e.g. a glob's `*` is literal-or-invalid in regex, and an unanchored regex substring-matches far more broadly than a glob does). Either run `kmp-test describe --json` with no filter and select the exact module by its `modules[].name`, or deliberately translate the glob into an equivalent anchored regex (`"core-*"` → `"^:core:.*$"` or similar — write it fresh, don't reuse the string).
+3. If the resulting `modules[]` array is empty, broaden the filter (`*:core:*`, comma-separated explicit names, etc.).
 3. If `modules[]` has entries but their `test_tasks` are null for the requested `--test-type`, adjust `--test-type` to match what's actually there.
 
 For `caused_by_filter: false`:
@@ -65,14 +66,15 @@ For `caused_by_filter: false`:
 ## Recovery commands
 
 ```bash
-# Preview what the filter matches
-kmp-test describe --json --module-filter "<your-pattern>" | jq '.describe.modules[].name'
+# Authoritative preview of what parallel would actually dispatch (same glob matcher)
+kmp-test parallel --list-only --json --module-filter "<your-pattern>" | jq '.modules[].name'
 
-# Enumerate every module + its test tasks
+# Enumerate every module + its test tasks (describe, no filter -- safest way to inspect)
 kmp-test describe --json | jq '.describe.modules[] | { name, test_tasks }'
 
-# List-only mode shows the same set parallel would dispatch
-kmp-test parallel --list-only --json --module-filter "<your-pattern>"
+# Only if you specifically want describe's own filtering: write a REAL regex, not the glob
+# above verbatim -- describe compiles it via `new RegExp(...)`, different syntax entirely.
+kmp-test describe --json --module-filter "^:core:.*$" | jq '.describe.modules[].name'
 ```
 
 ## AGP / JDK quirks

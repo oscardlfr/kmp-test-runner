@@ -29,7 +29,7 @@ Applies to `parallel --test-type androidUnit` / `androidInstrumented` / `--test-
 ## Recovery path
 
 1. **Confirm flavor names**: open the app / library `build.gradle.kts`, find `productFlavors { ... }`, list the declared flavors verbatim.
-2. **Confirm module-filter compatibility**: `kmp-test describe --json --module-filter "<your-filter>"` to see which modules the orchestrator considers. If the flavor-bearing module is excluded, broaden the filter.
+2. **Confirm module-filter compatibility**: `kmp-test describe --json` (no filter) to see every module the orchestrator considers, then check whether the flavor-bearing module is excluded by your `parallel`/`android` `--module-filter` glob. Don't pass that same glob to `describe` — its own `--module-filter` is a separate, real regular expression, not a glob; if you want to narrow `describe`'s own output, write an explicit regex for it instead. If the flavor-bearing module is excluded from the original command, broaden its glob.
 3. **Verify dimension binding**: every flavor needs a `dimension =` assignment. Check `flavorDimensions += "<dim>"` is at the same level.
 4. **Try without `--flavor`**: confirm the workflow runs without the flavor scope. If it does, the AGP config is the locus.
 

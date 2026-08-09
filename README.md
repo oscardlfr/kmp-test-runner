@@ -331,7 +331,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--no-adb` | _(off)_ | Skip the ADB probe (equivalent to `KMP_TEST_SKIP_ADB=1`). On `kmp-test android`, implies `--list-only` and emits `warnings[].code: "no_adb_implies_list_only"`. Applies to `info` / `android` |
 | `--variant` / `--android-variant <auto\|debug\|release\|all>` | `auto` | Android build-variant selector — global, accepted on `parallel` / `changed` / `android` / `benchmark` (and `coverage` reads it per-module). `auto` picks Debug if its task exists, falls back to Release (handles `testBuildType = "release"` projects). `all` dispatches both variants in the same gradle invocation |
 | `--module-filter <glob>` | _(all)_ | Glob, comma-separated (e.g. `"core-*"`, `":feature:auth,:feature:profile"`). Selects which modules to dispatch. Applies to `parallel` / `android` / `benchmark` (not `changed` — its module set is git-derived; see `--show-modules-only`) |
-| `--module-filter <regex>` | _(all)_ | A **real regular expression**, not a glob — different syntax from the row above despite the shared flag name. `describe`-only; filters the modules array (see the `describe` section above for an example) |
+| `--module-filter <regex>` | _(all)_ | A **real regular expression**, not a glob — different syntax from the row above despite the shared flag name. `describe`-only; filters the modules array (see the `describe` section below for an example) |
 | `--device <serial>` | _(none)_ | (`androidInstrumented` only) Pin the ADB device serial. Validated against `adb devices`; pins `ANDROID_SERIAL` for AGP. Mismatched serial → `errors[].code: instrumented_setup_failed` (exit 3). Applies to `parallel --test-type androidInstrumented` / `android` |
 | `--device-task <name>` | _(none)_ | (`androidInstrumented` only) Force an explicit gradle task on the instrumented leg. Preempts every other resolution (project-model probe, `kmpAndroidLibrary` `androidConnectedCheck`, AGP `connected{Variant}AndroidTest`). Applies to `parallel --test-type androidInstrumented` / `android` |
 | `--auto-retry` | _(off)_ | (`androidInstrumented` only) Re-dispatch instrumented tasks that ran but failed at runtime. One retry per task; mutually exclusive with cascade-isolation. Surfaces `parallel.legs[i].retries[]`. Applies to `parallel --test-type androidInstrumented` / `android` |
@@ -691,7 +691,7 @@ Pass `--no-adb` (or set `KMP_TEST_SKIP_ADB=1`) to skip the ADB probe when it's s
 Emits the project model — modules, test tasks per platform, coverage detection, dependency graph — without running anything. Reuses the same `lib/project-model.js#buildProjectModel` source-of-truth that `parallel` / `android` / `benchmark` / `coverage` consult for module discovery + task resolution:
 
 ```sh
-kmp-test describe --json --module-filter "core-*"
+kmp-test describe --json --module-filter "^:sample-result$"
 # {"tool":"kmp-test","subcommand":"describe","exit_code":0,"describe":{
 #   "modules":[{"name":":sample-result","path":"…","type":"kmp",
 #     "platforms":["jvm","android","ios","js"],

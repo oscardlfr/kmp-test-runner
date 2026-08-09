@@ -184,6 +184,12 @@ describe('changed workflow contract parity (doc/help alignment with verified run
   const overviewDoc = readFileSync(
     path.join(SKILL_DIR, 'references', 'workflows', 'overview.md'), 'utf8'
   );
+  const noTestModulesDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'troubleshooting', 'no-test-modules.md'), 'utf8'
+  );
+  const flavorUnusedDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'troubleshooting', 'flavor-unused.md'), 'utf8'
+  );
   const changedOrchestratorSrc = readFileSync(
     path.join(REPO_ROOT, 'lib', 'orchestrators', 'changed-orchestrator.js'), 'utf8'
   ).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -410,6 +416,46 @@ describe('changed workflow contract parity (doc/help alignment with verified run
     expect(sharingClause).toBeTruthy();
     expect(sharingClause[1]).not.toMatch(/info/);
     expect(row).toMatch(/`info` reports the detected tool but does not accept or resolve this flag/);
+  });
+
+  // Third review round (Codex audit of PR #415 @ fabfe97): the flags-reference table
+  // split (glob row vs regex row) was correct, but several USAGE EXAMPLES still reused
+  // a parallel-shaped glob as if it were valid describe regex syntax -- "core-*" as an
+  // unanchored regex matches "coreFoo", ":core:network", ":feature:core-ui" (anything
+  // containing "core" followed by zero-or-more literal hyphens), nothing like the glob's
+  // anchored-prefix semantics, and the README example's own shown output (":sample-result")
+  // doesn't even contain "core". Each fix is checked in its own file/line context, not a
+  // repo-wide substring sweep that could pass through unrelated glob/regex prose.
+  it('README.md\'s describe example uses a real, anchored regex that actually matches the module shown in its own output', () => {
+    const exampleLine = readmeDoc.split('\n').find((l) => l.trim().startsWith('kmp-test describe --json --module-filter'));
+    expect(exampleLine).toBeTruthy();
+    expect(exampleLine).not.toContain('"core-*"');
+    const match = exampleLine.match(/--module-filter "([^"]+)"/);
+    expect(match).toBeTruthy();
+    const regex = new RegExp(match[1]);
+    expect(regex.test(':sample-result')).toBe(true);
+    // Anchored -- must NOT also match an unrelated name the way an unanchored "core-*" would.
+    expect(regex.test(':core-network')).toBe(false);
+  });
+
+  it('README.md\'s describe section is referenced as "below", matching its actual position in the file', () => {
+    const regexRow = readmeDoc.split('\n').find((l) => l.includes('--module-filter <regex>') && l.startsWith('|'));
+    expect(regexRow).toBeTruthy();
+    expect(regexRow).toMatch(/describe.{0,10}section below/);
+    expect(regexRow).not.toMatch(/describe.{0,10}section above/);
+  });
+
+  it('no-test-modules.md never recommends passing the same parallel glob pattern to describe, and explains describe takes a real regex', () => {
+    expect(noTestModulesDoc).not.toMatch(/describe --json --module-filter <same-pattern>/);
+    expect(noTestModulesDoc).not.toMatch(/describe --json --module-filter "<your-pattern>"/);
+    expect(noTestModulesDoc).toMatch(/real regular expression/i);
+    // parallel --list-only with the original glob stays the authoritative dispatch preview.
+    expect(noTestModulesDoc).toMatch(/parallel --list-only --json --module-filter <same-pattern>/);
+  });
+
+  it('flavor-unused.md no longer passes "<your-filter>" from a parallel/android command straight into describe', () => {
+    expect(flavorUnusedDoc).not.toMatch(/describe --json --module-filter "<your-filter>"/);
+    expect(flavorUnusedDoc).toMatch(/separate|explicit regex|own.{0,10}regular expression/i);
   });
 });
 
