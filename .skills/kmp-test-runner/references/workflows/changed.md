@@ -4,7 +4,7 @@ Detect modules touched by uncommitted git changes and run only their tests. In-p
 
 ## Goal
 
-Run `git status` against the working tree (default) or `git diff` against the staged index (`--staged-only`), map each changed file's path to its enclosing gradle module via longest-prefix matching, build an internal `--module-filter` value (not a user-facing flag — see Common flags), and dispatch the unit-tests workflow against just those modules. Surface the diff + dispatch in a single JSON envelope.
+Run `git status` against the working tree (default) or `git diff` against the staged index (`--staged-only`), map each changed file's path to its enclosing gradle module via longest-prefix matching, build an internal `--module-filter` value (not a user-facing flag — see Common flags), and dispatch the unit-tests workflow against just those modules. Surface the resolved modules + dispatch outcome in a single JSON envelope (raw file paths themselves are not surfaced — see Envelope shape excerpt).
 
 ## When to use this workflow
 
@@ -114,7 +114,7 @@ When change detection returns nothing (clean working tree, or `--staged-only` wi
 ```json
 {
   "exit_code": 0,
-  "errors": [{ "code": "no_changed_modules", "message": "Working tree clean — no changed modules to test" }],
+  "errors": [{ "code": "no_changed_modules", "message": "No modules with uncommitted changes detected." }],
   "tests": { "total": 0, "passed": 0, "failed": 0, "skipped": 0 }
 }
 ```
@@ -124,9 +124,9 @@ When change detection returns nothing (clean working tree, or `--staged-only` wi
 ## Edge cases
 
 - **Renamed file across module boundaries** (default mode, `R  core/a/Foo.kt -> core/b/Foo.kt`): only `core:b` enters the changed set — the source module (`core:a`) is discarded along with the source path.
-- **Only build-config changes** (`build.gradle.kts`, `gradle/libs.versions.toml`, `settings.gradle.kts`): match no module prefix → discarded → exit 0 with `no_changed_modules`. Pass `--include-untested` to force inclusion if you've added build-logic that needs validation — but note that only applies to files that DID map to a module with no test source set; a build-config file with no module match at all still can't be forced in, since there's no module to attach it to.
-- **`--show-modules-only` envelope**: emits `changed.detected_modules[]` populated (bare, colon-less names — the field is `detected_modules`, not `modules`) but `tests.total = 0`. Like every other `changed` envelope, there is no top-level `parallel:{}` block. Useful for agentic preview ("show me what would run before I commit to a 5-minute test pass").
-- **`--exclude-modules "core-*"` combined with a git-derived changed set**: if I changed `feature:auth` AND `core:network`, passing `--exclude-modules "core-*"` drops `core:network`, leaving only `feature:auth` dispatched.
+- **Only *root-level* build-config changes** (`gradle/libs.versions.toml`, `settings.gradle.kts`, or a root-level `build.gradle.kts` — not one living inside a module directory): match no module prefix → discarded → exit 0 with `no_changed_modules`. A module's *own* `build.gradle.kts` (e.g. `core/b/build.gradle.kts`) is a normal file under `core/b/` and maps to `core:b` like any other file in that module — it is not discarded. Pass `--include-untested` to force inclusion if a matched module has no test source set — but note that only applies to files that DID map to a module; a root-level config file with no module match at all still can't be forced in, since there's no module to attach it to.
+- **`--show-modules-only` envelope**: `changed.detected_modules[]` is populated (bare, colon-less names — the field is `detected_modules`, not `modules`) and `tests.total = 0`. The top-level `modules[]` field is *also* populated in this mode, but as the same bare-string array (`["core:b"]`), not the object shape (`{name, type, coverage_plugin, test_failures}`) a real dispatch produces — see Envelope shape excerpt. Like every other `changed` envelope, there is no top-level `parallel:{}` block. Useful for agentic preview ("show me what would run before I commit to a 5-minute test pass").
+- **`--exclude-modules "core:*"` combined with a git-derived changed set**: if I changed `feature:auth` AND `core:network`, passing `--exclude-modules "core:*"` drops `core:network`, leaving only `feature:auth` dispatched. The glob is matched against the bare, colon-separated module name — a hyphen-style glob like `"core-*"` will NOT match `core:network` (no hyphen in the name); use `core:*` or the bare substring `core`.
 - **Detached HEAD or a repository with zero commits yet**: neither actually causes a failure. `git status --porcelain` and `git diff --cached --name-only` don't require HEAD to point at a branch, or even to exist as a real commit — both work identically to the normal case. (`git diff HEAD` — a *different* command `changed` never runs — is the one that would fail on an unborn HEAD; it's not part of this contract.)
 - **`--staged-only` with nothing staged**: emits `no_changed_modules` (soft, exit 0).
 - **JDK toolchain mismatch on the dispatched modules**: same gate as `parallel` — exit 3 with `errors[].code: unsupported_class_version` (or auto-select if a catalogue match exists). Recovery: see [`unit-tests.md`](unit-tests.md) JDK section.

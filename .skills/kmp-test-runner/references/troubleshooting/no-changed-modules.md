@@ -9,7 +9,7 @@ The `changed` subcommand ran `git status` (or `git diff --cached` under `--stage
   "exit_code": 0,
   "errors": [{
     "code": "no_changed_modules",
-    "message": "Working tree clean — no changed modules to test"
+    "message": "No modules with uncommitted changes detected."
   }],
   "tests": { "total": 0, "passed": 0, "failed": 0, "skipped": 0 }
 }
@@ -22,7 +22,7 @@ Applies to the `changed` subcommand only.
 Soft codes (`no_summary`, `no_changed_modules`) carry useful signal but DO NOT trigger WS-5 promotion. The CLI exits `0` because there's nothing wrong — the user asked "what changed?", git's answer was "nothing", `kmp-test` correctly did nothing.
 
 Agents should:
-- Surface the `message` to the user verbatim ("No changes detected since `HEAD`").
+- Surface the `message` to the user verbatim ("No modules with uncommitted changes detected.").
 - NOT escalate to an error — the workflow ran correctly.
 - NOT auto-retry — re-running the same detection against the same working tree will return the same result.
 

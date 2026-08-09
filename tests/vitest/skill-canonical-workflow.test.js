@@ -304,6 +304,35 @@ describe('changed workflow contract parity (doc/help alignment with verified run
     expect(appliesToClause[1]).not.toMatch(/`changed`/);
   });
 
+  it('changed.md and no-changed-modules.md quote the real no_changed_modules message, not an invented one', () => {
+    // Adversarial-review catch: the real message (changed-orchestrator.js:457) is
+    // "No modules with uncommitted changes detected." -- both docs previously quoted
+    // different, wrong strings ("Working tree clean...", "No changes detected since HEAD").
+    const REAL_MESSAGE = 'No modules with uncommitted changes detected.';
+    expect(changedDoc).toContain(REAL_MESSAGE);
+    expect(noChangedModulesDoc).toContain(REAL_MESSAGE);
+    expect(changedDoc).not.toMatch(/Working tree clean — no changed modules to test/);
+    expect(noChangedModulesDoc).not.toMatch(/No changes detected since `HEAD`/);
+  });
+
+  it('changed.md distinguishes a root-level build.gradle.kts (discarded) from a module\'s own (maps to that module)', () => {
+    // Adversarial-review catch: mapFileToModule matches any path under <module>/,
+    // including that module's own build.gradle.kts -- only a ROOT-level one (no
+    // enclosing module dir) is actually unmatched. The prior wording implied ALL
+    // build.gradle.kts changes are discarded.
+    expect(changedDoc).toMatch(/root-level.{0,20}build\.gradle\.kts/i);
+    expect(changedDoc).toMatch(/module's \*own\*.{0,150}maps to `core:b`/i);
+  });
+
+  it('changed.md\'s --exclude-modules example uses a glob that actually matches the colon-separated module name it claims to drop', () => {
+    // Adversarial-review catch (wet-verified): matchModuleFilter('core:network', 'core-*')
+    // is false -- a hyphen-style glob cannot match a colon-separated name. The example
+    // must use a glob shape that genuinely matches, and must say so explicitly.
+    expect(changedDoc).not.toMatch(/--exclude-modules "core-\*"/);
+    expect(changedDoc).toMatch(/--exclude-modules "core:\*"/);
+    expect(changedDoc).toMatch(/will NOT match `core:network`/);
+  });
+
   it('cli.js changed --help, README.md, and flags-reference.md all agree on auto as the coverage-tool default -- none announce --max-failures', () => {
     const changedHelpMatch = cliSrc.match(/changed: `[\s\S]*?`,\n  android:/);
     expect(changedHelpMatch).toBeTruthy();
