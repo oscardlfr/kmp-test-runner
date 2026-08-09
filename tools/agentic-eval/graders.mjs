@@ -447,6 +447,39 @@ function isWellFormedTestFailureEntry(entry) {
   return true;
 }
 
+/** Pure shape/type check ONLY on `envelope.changed` -- object, exactly 3 keys, `detected_modules`
+ * a non-empty array of non-empty strings, `staged_only` a boolean, `base_ref` a non-empty string.
+ * Deliberately never compares against `scenario.expected` (that's changedBlockMatchesExpected's
+ * job, below) -- this function alone decides whether a `changed{}` block is trustworthy evidence
+ * AT ALL, independent of whether its VALUES happen to be correct, so a malformed block can fail as
+ * evidence integrity (check 4, via evaluateKmpTestAttempt's own changedEvidenceInvalid) rather than
+ * silently reading as "well-formed but wrong" (check 6). */
+function isWellFormedChangedBlock(changedBlock) {
+  if (changedBlock == null || typeof changedBlock !== 'object' || Array.isArray(changedBlock)) return false;
+  const keys = Object.keys(changedBlock);
+  if (keys.length !== 3 || !['detected_modules', 'staged_only', 'base_ref'].every((k) => keys.includes(k))) return false;
+  if (!Array.isArray(changedBlock.detected_modules) || changedBlock.detected_modules.length === 0
+    || changedBlock.detected_modules.some((m) => typeof m !== 'string' || m.length === 0)) return false;
+  if (typeof changedBlock.staged_only !== 'boolean') return false;
+  if (typeof changedBlock.base_ref !== 'string' || changedBlock.base_ref.length === 0) return false;
+  return true;
+}
+
+/** Exact-value comparison of `envelope.changed` against the scenario's own `expected.changed`
+ * contract -- ALWAYS calls isWellFormedChangedBlock first and fails closed immediately if not
+ * well-formed (never assumes the caller already checked; a naive `.every()`/`.sort()` on a
+ * malformed non-array `detected_modules` would otherwise throw, crashing grading instead of
+ * failing closed). Array comparison is order-independent (both sides sorted) -- this scenario
+ * shape is schema-locked to exactly one module, but sorting costs nothing and avoids a spurious
+ * order-dependent mismatch either way. */
+function changedBlockMatchesExpected(changedBlock, expectedChanged) {
+  if (!isWellFormedChangedBlock(changedBlock)) return false;
+  const actual = [...changedBlock.detected_modules].sort();
+  const expected = [...expectedChanged.detected_modules].sort();
+  if (actual.length !== expected.length || !actual.every((m, i) => m === expected[i])) return false;
+  return changedBlock.staged_only === expectedChanged.staged_only && changedBlock.base_ref === expectedChanged.base_ref;
+}
+
 function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsError, scenario, invokedTestType, invokedMinMissedLines) {
   if (envelope.subcommand !== invokedSubcommand) return false;
   // Execution/plan-mode coherence: the envelope's OWN self-reported mode must agree with a real
@@ -492,6 +525,26 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
     // early-exit (parallel-orchestrator.js) calls buildJsonReport before any `parallel` block is
     // ever constructed -- so `validateParallelEvidence`'s full structural/leg/test-type contract
     // is scoped to `tests_executed` only, never applied to the other branch.
+    //
+    // `changed` is a SECOND, structurally different tests_executed shape (never reuses
+    // validateParallelEvidence at all): a real `changed` envelope has NO `parallel:{}` block
+    // whatsoever (ground truth independently confirmed live, despite changed.md's own stale doc
+    // example showing one) -- validateParallelEvidence would unconditionally reject it regardless
+    // of correctness, making the scenario ungradeable by any agent. `envelope.parallel ===
+    // undefined` is required here too (defense in depth, redundant with evaluateKmpTestAttempt's
+    // own changedEvidenceInvalid computation -- the requirement must hold even if a future
+    // refactor ever decoupled the two call sites).
+    if (invokedSubcommand === 'changed') {
+      return envelope.parallel === undefined
+        && envelope.errors.length === 0
+        && envelope.exit_code === (kt.exit_code ?? 0)
+        && envelope.tests?.total === kt.tests.total
+        && envelope.tests?.passed === kt.tests.passed
+        && envelope.tests?.failed === kt.tests.failed
+        && envelope.tests?.skipped === kt.tests.skipped
+        && envelope.tests?.individual_total === kt.tests.individual_total
+        && changedBlockMatchesExpected(envelope.changed, scenario.expected.changed);
+    }
     return validateParallelEvidence(envelope, invokedTestType)
       && envelope.errors.length === 0
       && envelope.exit_code === (kt.exit_code ?? 0)
@@ -666,8 +719,20 @@ function isRanOutcome(outcomeKind) {
 // it can never prove the threshold itself. The other 3 outcome_kinds keep both providers eligible
 // (no regression -- ground truth for tests_executed/tests_failed/no_applicable_tests never
 // depended on this distinction).
-function isTerminalEligibleAttempt(attempt, outcomeKind) {
-  return outcomeKind !== 'coverage_threshold_exceeded' || attempt.provider === 'kmp_test';
+function isTerminalEligibleAttempt(attempt, scenario) {
+  const outcomeKind = scenario.expected.outcome_kind;
+  if (outcomeKind === 'coverage_threshold_exceeded' && attempt.provider !== 'kmp_test') return false;
+  // A scenario declaring expected.changed requires `kmp-test changed` specifically as the ONLY
+  // acceptable terminal proof -- `parallel` (even with matching counts) never targets the right
+  // evidence for THIS scenario shape (it never proves the agent scoped testing to the actual
+  // change), and Gradle can only ever corroborate the test outcome, never the module-scoping
+  // decision itself (a kmp-test-only concept, exactly like coverage_threshold_exceeded's own
+  // --min-missed-lines decision above). A `parallel` attempt is still fully EVALUATED elsewhere
+  // (visible to check 7's own diagnostic) -- only excluded from ever becoming terminal here.
+  if (scenario.expected.changed != null) {
+    return attempt.provider === 'kmp_test' && attempt.subcommand === 'changed';
+  }
+  return true;
 }
 
 /**
@@ -764,7 +829,17 @@ function computeKmpTestTargetMatch(envelope, classification, scenario) {
  *   scenarios (see gradeScenarioCondition's own comment on this). */
 function evaluateKmpTestAttempt(bashResult, scenario, decision) {
   const classification = classifyBashCommand(bashResult.command);
-  if (classification.kind !== 'kmp-test' || classification.subcommand !== 'parallel') return null;
+  // Scenario-scoped (round-9 fix): `changed` only ever becomes a second accepted subcommand for a
+  // scenario that actually declares `expected.changed`. For the other 5 scenarios (expectsChanged
+  // false) this reduces to the exact prior `!== 'parallel'` gate, byte-for-byte -- a `changed`
+  // command in an unrelated scenario's transcript stays excluded exactly like any other
+  // non-`parallel` subcommand, so nothing about their behavior changes. `parallel` stays
+  // universally accepted -- even for a changed-shaped scenario -- so it's still EVALUATED (visible
+  // to check 7's own diagnostic below); isTerminalEligibleAttempt is what excludes it from ever
+  // becoming terminal there.
+  const expectsChanged = scenario.expected.changed != null;
+  const acceptedSubcommands = expectsChanged ? ['parallel', 'changed'] : ['parallel'];
+  if (classification.kind !== 'kmp-test' || !acceptedSubcommands.includes(classification.subcommand)) return null;
   // A round-5 fresh adversarial review reproduced three real bugs from treating a --dry-run
   // invocation identically to a real execution: (a) it inflated testInvocationsTotal/retries when
   // followed by a real run; (b) a real, correct run followed by a LATER --dry-run call became
@@ -806,8 +881,20 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
   // otherwise looks like real, on-target, subcommand-matching evidence for a scenario that expects
   // `parallel` to be present at all.
   const parallelEvidenceInvalid = hasEvidence && targetMatches && envelope.subcommand === classification.subcommand
+    && classification.subcommand !== 'changed'
     && isRanOutcome(scenario.expected.outcome_kind)
     && !validateParallelEvidence(envelope, classification.testType);
+
+  // The `changed`-specific sibling of parallelEvidenceInvalid, above. A real `changed` envelope
+  // never carries a `parallel` block at all (ground truth independently confirmed live via a
+  // direct hasOwnProperty check on 3 real runs, despite changed.md's own stale doc example showing
+  // one) -- true when EITHER the changed{} block itself is structurally malformed OR the envelope
+  // also carries that production-impossible parallel block, both proof of mismatched/incoherent
+  // evidence (e.g. a stale or wrongly-correlated tool_result), never merely "a different, wrong
+  // answer".
+  const changedEvidenceInvalid = hasEvidence && targetMatches && envelope.subcommand === classification.subcommand
+    && classification.subcommand === 'changed' && expectsChanged
+    && (!isWellFormedChangedBlock(envelope.changed) || envelope.parallel !== undefined);
 
   // Whether this attempt was even ATTEMPTING to check the expected module, independent of
   // whether its response was well-formed -- derived from the INVOKED --module-filter (absent
@@ -842,7 +929,10 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
       : normalizeModuleName(classification.moduleFilter) === targetModule
   );
 
-  return { provider: 'kmp_test', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence, malformed, targetMatches, intendedTargetMatches, outcomeMatches, parallelEvidenceInvalid };
+  return {
+    provider: 'kmp_test', subcommand: classification.subcommand, bashIndex: bashResult.index, resultIndex: bashResult.resultIndex,
+    hasEvidence, malformed, targetMatches, intendedTargetMatches, outcomeMatches, parallelEvidenceInvalid, changedEvidenceInvalid,
+  };
 }
 
 /** Parses the terminal Gradle build-outcome from possibly-noisy tool_result content: EXACTLY ONE
@@ -1279,7 +1369,7 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   // regression. Applied BEFORE the on-target filter so a Gradle-only condition correctly has an
   // EMPTY eligible pool (never falls back to "last of all attempts", which would silently make an
   // ineligible Gradle attempt terminal by default).
-  const eligibleAttempts = allAttempts.filter((a) => isTerminalEligibleAttempt(a, scenario.expected.outcome_kind));
+  const eligibleAttempts = allAttempts.filter((a) => isTerminalEligibleAttempt(a, scenario));
   const onTargetAttempts = eligibleAttempts.filter((a) => a.intendedTargetMatches);
   const terminalPool = onTargetAttempts.length > 0 ? onTargetAttempts : eligibleAttempts;
   const terminal = terminalPool.length > 0 ? terminalPool[terminalPool.length - 1] : null;
@@ -1291,13 +1381,14 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   // `harnessEvidenceAmbiguous` already exists to avoid for JUnit-XML provenance, just for a
   // different evidence shape (see `parallelEvidenceMalformed`, below, for the harness-integrity
   // propagation this enables).
-  const evidenceWellFormed = terminal != null && terminal.hasEvidence && !terminal.malformed && !terminal.parallelEvidenceInvalid;
+  const evidenceWellFormed = terminal != null && terminal.hasEvidence && !terminal.malformed && !terminal.parallelEvidenceInvalid && !terminal.changedEvidenceInvalid;
   addCheck('authoritative_evidence_well_formed', evidenceWellFormed,
     terminal == null ? 'no attempt capable of producing target evidence was ever made'
       : terminal.malformed ? 'the terminal attempt produced content that did not parse as valid evidence'
         : !terminal.hasEvidence ? 'the terminal attempt produced no result at all'
           : terminal.parallelEvidenceInvalid ? 'the terminal attempt\'s own parallel.legs[] structure is internally incoherent -- not trustworthy evidence'
-            : 'the terminal attempt produced well-formed evidence',
+            : terminal.changedEvidenceInvalid ? 'the terminal attempt\'s own changed{} block is internally malformed -- not trustworthy evidence'
+              : 'the terminal attempt produced well-formed evidence',
     terminal ? [terminal.resultIndex] : []);
 
   // Check 5 -- required conjunct of expectedOutcomeMatched, not merely reported alongside it
@@ -1397,6 +1488,10 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     // silently corrupt testInvocationsTotal/retries/firstUsefulSignalEventIndex even when the
     // terminal attempt's own data looks fine).
     parallelEvidenceMalformed: terminal?.parallelEvidenceInvalid === true,
+    // The identical HARNESS-INTEGRITY treatment as parallelEvidenceMalformed above, for a
+    // `changed`-classified terminal attempt's own changed{} block coherence (see
+    // evaluateKmpTestAttempt's changedEvidenceInvalid doc comment).
+    changedEvidenceMalformed: terminal?.changedEvidenceInvalid === true,
     // A capture-MECHANISM failure -- distinct from ambiguity (a proven conflict) and from
     // unreliable evidence (real XML that isn't trustworthy) -- computed by junit-evidence.mjs's
     // attributeCondition by scanning every relevant attempt in the condition (any provider), not

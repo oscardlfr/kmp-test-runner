@@ -673,9 +673,9 @@
   picked up automatically by the existing required `build` job -- no new CI job. No
   runtime/wet validation applicable (repo-review config only, not CLI behavior).
 
-- **`tools/agentic-eval/` corpus scenarios + graders — 5 of 6 scenarios + `graders.mjs` + `run`
-  subcommand implemented; first 2 scenarios + `graders.mjs` + `run` merged to develop (deferred
-  from PR #372, surfaced 2026-07-18 during independent review).** PR #372 shipped the reproducible
+- **`tools/agentic-eval/` corpus scenarios + graders — corpus COMPLETE, 6 of 6 scenarios +
+  `graders.mjs` + `run` subcommand implemented; first 2 scenarios + `graders.mjs` + `run` merged to
+  develop (deferred from PR #372, surfaced 2026-07-18 during independent review).** PR #372 shipped the reproducible
   skill-evaluation harness FOUNDATION only: isolation (fresh temp fixtures, narrow env allowlist,
   the `PreToolUse` policy
   hook), schemas, the trigger-queries corpus, and one bounded `calibrate` + `smoke` run against a
@@ -864,8 +864,109 @@
      advancing it (and running a live canary against `coverage-threshold-failure`) is separate
      follow-up work.
 
-  **Still deferred**: `changed-module-verification` — own PR(s), small increments preferred over
-  one large one — milestone unassigned, user's call on timing.
+  A further follow-up PR added the 6th and final scenario, completing the corpus:
+  `changed-module-verification` — the first (and, by its own contract's deliberate single-module
+  scope, only) scenario requiring `kmp-test changed` specifically as terminal proof, never
+  `kmp-test parallel` even with matching counts. Reuses the exact same pinned commit and module
+  `nowinandroid-core-common` already uses (`7d45eae4f8720a0c77f507712ba2437ff974b6ed`,
+  `:core:common`, 1/1/0 on both providers) — but the agent must discover an already-pending,
+  uncommitted single-file edit and correctly scope testing to it, rather than being told the module
+  outright. Ground truth independently re-verified live 6x (3x `kmp-test changed --json
+  --project-root . --no-coverage`, 3x direct Gradle `:core:common:test`, cold `GRADLE_USER_HOME` +
+  JDK 17 each, disposable per-repetition worktree, all 6 runs 122–134s, well under the 600s
+  ceiling): all 6 converge on `changed.detected_modules:["core:common"]`, `staged_only:false`,
+  `base_ref:"HEAD"`, single module `:core:common`, exit 0, 1 test/1 passed/0 failed in every
+  representation (kmp-test's own counters AND independently-parsed JUnit XML via PowerShell `[xml]`
+  DOM, cross-checked against the whole worktree, not just the target module's own directory).
+
+  **Two load-bearing facts, confirmed live rather than assumed from documentation**:
+  1. A real `changed` envelope carries **no top-level `parallel` key at all**, confirmed via a
+     direct `hasOwnProperty` check on the raw JSON in all 3 `changed` runs — despite
+     `.skills/kmp-test-runner/references/workflows/changed.md`'s own illustrative envelope example
+     showing one (traced to `changed-orchestrator.js`'s own envelope-merge step, which explicitly
+     lists `tests`/`modules`/`skipped`/`coverage`/`errors`/`warnings`/`changed`/`isolated` and never
+     copies the delegate `runParallel()` call's own `.parallel` field across). This is a real,
+     disclosed doc/code drift in `.skills/**` — untouched by this PR (out of scope for this task;
+     separate follow-up) — and the reason `graders.mjs` could not simply reuse `parallel`'s own
+     `validateParallelEvidence` for a `changed`-classified attempt (it would unconditionally reject
+     every `changed` attempt, correct or not, making the scenario ungradeable by any agent). Now
+     pinned against real production code by a dedicated new test in
+     `agentic-eval-graders-production-contract.test.js` (calls the real `changed-orchestrator.js`
+     `runChanged()` directly — including injecting a delegate result that DOES carry a `.parallel`
+     block, to prove the merge step drops it regardless) — not just a hand-authored fixture, so a
+     future edit to `changed-orchestrator.js` that started forwarding `.parallel` would be caught.
+  2. `changed.detected_modules` entries are **bare, colon-less strings** (`"core:common"`, never
+     `":core:common"`) — a deliberately different string convention from `expected.module`'s own
+     colon-prefixed one, traced to `discoverIncludedModules`/`extractIncludeModuleNames`
+     (`lib/project/kotlin-dsl.js`) never re-adding the leading colon `parseSettingsIncludes` does.
+     `command-classify.mjs`'s `normalizeModuleName` (strips at most one leading colon) is the shared
+     reconciliation point the new schema cross-check
+     (`expected.changed.detected_modules[0]` vs `expected.module`) relies on.
+
+  **New, closed `fixture_setup` scenario field** (`schemas.mjs`) — the first-ever OPTIONAL canonical
+  scenario field: `{operation:"append_comment", relative_path, expected_blob_oid}`. The mutation
+  content is always a single harness-owned constant (`materialize.mjs`'s `applyFixtureSetup`),
+  never scenario-supplied text. Tightly coupled to a new `expected.changed` contract
+  (`{detected_modules, staged_only, base_ref}`) via `validateFixtureSetupCoupling`: both-or-neither,
+  and when present, locks `family:"test-only"`, `outcome_kind:"tests_executed"`, policy must include
+  `"changed"`, `staged_only` must be exactly `false` (the setup only ever produces an unstaged
+  change), and the single module must match `expected.module` once normalized.
+  `applyFixtureSetup` itself: precondition (clean tree), `git ls-files -s` tracked/mode/blob check
+  (closes a real gap an adversarial RED test found — a directory-shaped pathspec resolving to the
+  one file underneath it — via an explicit `entry.path === relativePath` echo-back check, not just
+  mode/blob), independent realpath-containment re-check (defense in depth, never trusts the
+  already-schema-validated path string alone), then a postcondition (`isExactlyOneUnstagedModificationAt`,
+  a pure, directly-unit-tested function) proving exactly one unstaged modification at exactly that
+  path. Applied on every repetition × condition, immediately after `materializeFixture`'s own
+  clean/reset and before the condition ever spawns — reproduces a byte-identical diff every time
+  (proven via 7 repeated `git clean -fdx && git reset --hard` + reapply cycles during adversarial
+  review, including against a config mirroring the REAL NowInAndroid clone's own `core.autocrlf=true`,
+  not just the throwaway `core.autocrlf=false` test repos).
+
+  **Grader changes** (`graders.mjs`), all additive/scenario-scoped via `expectsChanged =
+  scenario.expected.changed != null` — provably a no-op for the other 5 scenarios, since a
+  `changed`-classified attempt is never even constructed as a candidate for them (re-derived
+  directly from code during adversarial review, not just "tests still pass"): `evaluateKmpTestAttempt`
+  accepts `changed` as a second subcommand only when `expectsChanged` (parallel stays universally
+  accepted, so it's still evaluated — visible to check 7's diagnostic — just never terminal for this
+  scenario shape); `isTerminalEligibleAttempt` widened to take the whole `scenario` (was
+  `outcomeKind` alone) and requires `provider:'kmp_test' && subcommand:'changed'` when
+  `expected.changed` is present — Gradle can corroborate the test outcome but can never become
+  terminal or produce `first_useful_signal` for this outcome, mirroring
+  `coverage_threshold_exceeded`'s own identical restriction one outcome_kind up; new
+  `isWellFormedChangedBlock`/`changedBlockMatchesExpected` (the latter always calls the former
+  first, fails closed rather than throwing on a malformed `detected_modules`) split structurally
+  malformed `changed{}` evidence (a new `changedEvidenceMalformed`, HARNESS-INTEGRITY, check-4
+  failure — mirroring `parallelEvidenceMalformed` exactly, including matching `cli.mjs`
+  matrix-blocking wiring at all 3 of its consumer sites) from well-formed-but-wrong-VALUE evidence
+  (an ordinary check-6 wrong-answer) — including the case of an otherwise-correct `changed` envelope
+  that also carries a (production-impossible) `parallel` block, which fails as integrity, not a
+  plain pass. `--show-modules-only` (changed's own dry-run-shaped inspection flag) is fully inert:
+  policy-allowed only for the `changed` subcommand specifically (a new, narrower
+  `KMP_TEST_CHANGED_ONLY_BOOLEAN_FLAGS` category in `policy-hook.mjs`, not the generic
+  subcommand-agnostic boolean-flags set every subcommand shares), classified plan-only
+  (`command-classify.mjs`), and therefore never terminal/retried/a JUnit producer. Same-turn
+  conflict detection (`junit-evidence.mjs`) extended via a new, scenario-gated
+  `isRelevantKmpTestChanged` predicate (deliberately no module-filter logic — `changed` has none —
+  unlike its `parallel` sibling) — a correct `changed` attempt racing a same-turn raw Gradle call OR
+  a same-turn `kmp-test parallel` call (this scenario's policy allows both subcommands) both
+  correctly trip `ambiguousJunitEvidence:true` via the existing generic `.index`-grouping logic,
+  zero new conflict-detection code needed.
+
+  One adversarial-review pass (path-traversal/symlink safety, cell-to-cell equivalence,
+  terminal-selection truth table, regressions in the other 5 scenarios) found both mandated areas
+  held up under real reproduction attempts (including TOCTOU, git-pathspec-magic, and Windows
+  short-name aliasing probes) — the one fix applied was the production-contract test above, closing
+  a genuine test-coverage gap the review surfaced (nothing pinned `changed`'s no-`.parallel`
+  behavior against real code) rather than a live bug.
+
+  Tagged `held-out` — completes the corpus at exactly 3 `train` / 3 `held-out`.
+
+  Infrastructure-only PR: zero live Claude/API calls anywhere in this work, including ground truth
+  (direct local CLI/Gradle execution only, never through the `run` command or a live Claude
+  session); zero committed benchmark results. `PINNED_SKILL_SHA` is not advanced; no canary run
+  happened as part of this PR — both are separate follow-up work, same as every other scenario PR
+  in this series.
 - ✅ **`KMP_EVAL_RUNS_ROOT` real-world scope — SHIPPED in #372 itself (2026-07-18, closed across
   three independent-review rounds).** The env var is a test-only escape hatch so vitest never
   writes to (or cleans up inside) the real `tools/runs/` tree — nothing stops an operator from

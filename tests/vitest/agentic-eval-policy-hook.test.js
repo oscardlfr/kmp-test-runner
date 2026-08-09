@@ -234,6 +234,38 @@ describe('policy-hook grammar -- --min-missed-lines numeric-value flag', () => {
   });
 });
 
+// --show-modules-only -- changed's own dry-run-shaped inspection flag ("List detected modules
+// without running tests"). Deliberately admitted via a subcommand-SCOPED category
+// (KMP_TEST_CHANGED_ONLY_BOOLEAN_FLAGS), never the generic KMP_TEST_BOOLEAN_FLAGS set every
+// subcommand shares -- adding it there would also approve nonsensical shapes like
+// `kmp-test doctor --show-modules-only` or `kmp-test parallel --show-modules-only`, which the real
+// CLI has no concept of at all.
+describe('policy-hook grammar -- --show-modules-only, scoped to the changed subcommand only', () => {
+  function changedEnv() {
+    return baseEnv({ KMP_EVAL_ALLOWED_KMPTEST_SUBCOMMANDS: JSON.stringify(['doctor', 'parallel', 'describe', 'changed']) });
+  }
+
+  it.each([
+    'kmp-test changed --show-modules-only --json',
+    'kmp-test changed --json --show-modules-only',
+    'kmp-test changed --show-modules-only',
+  ])('allows: %s', (cmd) => {
+    expect(decision(payload(cmd), changedEnv())).toBe('allow');
+  });
+
+  it.each([
+    ['kmp-test doctor --show-modules-only', 'doctor has no such flag'],
+    ['kmp-test parallel --show-modules-only', 'parallel has no such flag'],
+    ['kmp-test describe --show-modules-only', 'describe has no such flag'],
+  ])('denies: %s (%s) -- the flag is scoped to changed only, never admitted globally', (cmd, _reason) => {
+    expect(decision(payload(cmd), changedEnv())).toBe('deny');
+  });
+
+  it('does not loosen any pre-existing changed-flag category alongside the new one', () => {
+    expect(decision(payload('kmp-test changed --json --project-root . --no-coverage'), changedEnv())).toBe('allow');
+  });
+});
+
 describe('policy-hook grammar -- shell/env expansion in path arguments rejected (never lexically trusted)', () => {
   it.each([
     'kmp-test parallel --json --project-root "$HOME"',

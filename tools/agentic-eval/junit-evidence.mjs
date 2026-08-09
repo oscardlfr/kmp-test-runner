@@ -13,7 +13,7 @@
 // dependency tree.
 import { join } from 'node:path';
 import { forEachJunitXml, extractTestcaseFailures } from '../../lib/parsers/junit-xml.js';
-import { classifyBashCommand, isRelevantGradleInvocation, isRelevantKmpTestParallel } from './command-classify.mjs';
+import { classifyBashCommand, isRelevantGradleInvocation, isRelevantKmpTestParallel, isRelevantKmpTestChanged } from './command-classify.mjs';
 import { sha256Hex, listSidecarIds, readSidecarRecord } from './junit-evidence-io.mjs';
 
 /** Concrete, documented aggregate bounds for a single capture (round 5 -- fixed now, not decided
@@ -259,7 +259,14 @@ export function attributeCondition(evidenceDir, scenario, bashResults, terminati
   if (junitXmlAttributionEnabled) {
     const anomalyIds = new Set(listSidecarIds(join(evidenceDir, 'anomalies')));
     const classified = bashResults.map((b) => ({ b, c: classifyBashCommand(b.command) }));
-    const relevant = classified.filter(({ c }) => isRelevantGradleInvocation(c, allowedInvocations) || isRelevantKmpTestParallel(c, targetModule));
+    // Scenario-gated, not global (round-9 fix): isRelevantKmpTestChanged is only folded into the
+    // relevant set for a scenario that actually declares expected.changed. Without this gate, a
+    // `changed` command appearing anywhere in an UNRELATED scenario's transcript would shift
+    // lastRelevantAttemptId away from the true last Gradle-relevant attempt, silently corrupting
+    // that attempt's own timeout-tolerance check below -- expectsChanged:false makes this identical,
+    // byte-for-byte, to the pre-existing two-predicate filter for every one of the other 5 scenarios.
+    const expectsChanged = scenario.expected?.changed != null;
+    const relevant = classified.filter(({ c }) => isRelevantGradleInvocation(c, allowedInvocations) || isRelevantKmpTestParallel(c, targetModule) || (expectsChanged && isRelevantKmpTestChanged(c)));
     // Identity, not index -- relevant's own array order mirrors bashResults' (Array.filter/.map both
     // preserve order), so the last entry is unambiguously the one and only last-dispatched relevant
     // attempt, even when it shares its .index with an earlier-in-array same-turn sibling.

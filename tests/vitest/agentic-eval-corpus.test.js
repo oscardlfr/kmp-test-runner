@@ -73,14 +73,25 @@ describe('trigger-queries.json', () => {
 describe('corpus/scenarios/', () => {
   const scenarioFiles = readdirSync(SCENARIOS_DIR).filter((f) => f.endsWith('.json'));
 
-  it('contains exactly the 5 expected scenario files', () => {
+  it('contains exactly the 6 expected scenario files (corpus complete)', () => {
     expect(scenarioFiles.sort()).toEqual([
+      'changed-module-verification.json',
       'coverage-threshold-failure.json',
       'deterministic-unit-test-failure.json',
       'kampkit-android-host-test-discovery.json',
       'kampkit-no-applicable-tests.json',
       'nowinandroid-core-common.json',
     ]);
+  });
+
+  it('tags are balanced exactly 3 train / 3 held-out across the completed corpus', () => {
+    const tagCounts = { train: 0, 'held-out': 0 };
+    for (const file of scenarioFiles) {
+      const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, file);
+      if (parseError) throw new Error(`${file}: ${parseError}`);
+      for (const tag of scenario.tags ?? []) tagCounts[tag] = (tagCounts[tag] ?? 0) + 1;
+    }
+    expect(tagCounts).toEqual({ train: 3, 'held-out': 3 });
   });
 
   // Reuses cli.mjs's own loadScenarioFile (never throws on malformed JSON) rather than a
@@ -195,5 +206,66 @@ describe('corpus/scenarios/', () => {
   it('does not reveal the module or the numeric flag in its prompt', () => {
     const scenario = loadCoverageThresholdFailureScenario();
     expect(scenario.prompt).not.toMatch(/:core:domain|--min-missed-lines|min-missed-lines/);
+  });
+
+  // changed-module-verification -- the 6th and final scenario, the first (and, by this contract's
+  // own single-module scope, only) requiring `kmp-test changed` as terminal proof. Ground truth
+  // independently re-verified live 6x (3x kmp-test changed, 3x direct Gradle, cold
+  // GRADLE_USER_HOME + JDK 17 each) against the SAME pinned commit coverage-threshold-failure and
+  // nowinandroid-core-common already use, 7d45eae4f8720a0c77f507712ba2437ff974b6ed, targeting the
+  // SAME :core:common module/counts as nowinandroid-core-common -- but via a pre-run fixture_setup
+  // mutation (an unstaged, harness-constant comment appended to a pinned-blob-verified tracked
+  // file) instead of being told the module outright.
+  function loadChangedModuleVerificationScenario() {
+    const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, 'changed-module-verification.json');
+    if (parseError) throw new Error(`changed-module-verification.json: ${parseError}`);
+    return scenario;
+  }
+
+  it('validateScenario reports zero errors for changed-module-verification.json', () => {
+    const { errors } = validateScenario(loadChangedModuleVerificationScenario());
+    expect(errors).toEqual([]);
+  });
+
+  it('targets :core:common, expects tests_executed, family test-only, and is tagged held-out', () => {
+    const scenario = loadChangedModuleVerificationScenario();
+    expect(scenario.expected.module).toBe(':core:common');
+    expect(scenario.expected.outcome_kind).toBe('tests_executed');
+    expect(scenario.family).toBe('test-only');
+    expect(scenario.tags).toEqual(['held-out']);
+  });
+
+  it('expects the ground-truth-verified 1/1/0 counts on both providers, matching nowinandroid-core-common exactly', () => {
+    const scenario = loadChangedModuleVerificationScenario();
+    expect(scenario.expected.kmp_test.tests).toEqual({
+      total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1,
+    });
+    expect(scenario.expected.gradle.tests).toEqual({ total: 1, passed: 1, failed: 0 });
+  });
+
+  it('expects the ground-truth-verified expected.changed block -- bare (colon-less) module name, unstaged, base_ref HEAD', () => {
+    const scenario = loadChangedModuleVerificationScenario();
+    expect(scenario.expected.changed).toEqual({
+      detected_modules: ['core:common'], staged_only: false, base_ref: 'HEAD',
+    });
+  });
+
+  it('declares a closed fixture_setup pinned to the ground-truth-verified blob', () => {
+    const scenario = loadChangedModuleVerificationScenario();
+    expect(scenario.fixture_setup).toEqual({
+      operation: 'append_comment',
+      relative_path: 'core/common/src/main/kotlin/com/google/samples/apps/nowinandroid/core/common/result/Result.kt',
+      expected_blob_oid: '934b6dfb2bb6ad97453094b72a67daa1aab590df',
+    });
+  });
+
+  it("policy allows 'changed' alongside 'parallel' -- parallel stays policy-legal so the grader's own rejection (not a policy denial) is what proves it never satisfies this scenario", () => {
+    const scenario = loadChangedModuleVerificationScenario();
+    expect(scenario.policy.allowed_kmptest_subcommands).toEqual(['doctor', 'describe', 'parallel', 'changed']);
+  });
+
+  it('does not reveal the module, the file, or the "changed" subcommand in its prompt', () => {
+    const scenario = loadChangedModuleVerificationScenario();
+    expect(scenario.prompt).not.toMatch(/:core:common|Result\.kt|kmp-test changed|\bchanged\b/i);
   });
 });

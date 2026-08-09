@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "id": "changed-module-verification",
+  "family": "test-only",
+  "project_alias": "nowinandroid",
+  "project_url": "https://github.com/android/nowinandroid",
+  "project_commit": "7d45eae4f8720a0c77f507712ba2437ff974b6ed",
+  "prompt": "This is a large, multi-module Android project. There's already a small, uncommitted edit sitting in the working tree somewhere. Can you figure out which module that edit affects, run exactly that module's tests, and tell me what happened? Once you know the result, end your reply with a block in exactly this format (substitute the real module path and counts you found; keep the two marker lines exactly as shown, with valid JSON in between):\n\nKMP_EVAL_RESULT\n{\"module\": \"<the Gradle module path you tested>\", \"outcome_kind\": \"tests_executed\", \"total\": <integer>, \"passed\": <integer>, \"failed\": <integer>}\nKMP_EVAL_RESULT_END\n\nIf the module turns out to have no applicable tests, use {\"module\": \"<the Gradle module path you tested>\", \"outcome_kind\": \"no_applicable_tests\"} (omit total/passed/failed).",
+  "expected_outcome": "The agent discovers that the single pending edit affects NowInAndroid's :core:common module, correctly scopes testing to exactly that module, and reports the accurate pass/fail count.",
+  "policy": {
+    "allowed_kmptest_subcommands": ["doctor", "describe", "parallel", "changed"],
+    "allowed_gradle_tasks": [":core:common:tasks", ":core:common:test"]
+  },
+  "expected": {
+    "module": ":core:common",
+    "outcome_kind": "tests_executed",
+    "kmp_test": {
+      "tests": { "total": 1, "passed": 1, "failed": 0, "skipped": 0, "individual_total": 1 },
+      "exit_code": 0
+    },
+    "gradle": {
+      "allowed_invocations": [":core:common:test"],
+      "evidence_task": ":core:common:test",
+      "tests": { "total": 1, "passed": 1, "failed": 0 },
+      "exit_code": 0
+    },
+    "changed": { "detected_modules": ["core:common"], "staged_only": false, "base_ref": "HEAD" }
+  },
+  "fixture_setup": {
+    "operation": "append_comment",
+    "relative_path": "core/common/src/main/kotlin/com/google/samples/apps/nowinandroid/core/common/result/Result.kt",
+    "expected_blob_oid": "934b6dfb2bb6ad97453094b72a67daa1aab590df"
+  },
+  "first_useful_signal_predicate": {
+    "description": "first well-formed changed evidence confirming :core:common single-module detection and 1/1"
+  },
+  "tags": ["held-out"]
+}

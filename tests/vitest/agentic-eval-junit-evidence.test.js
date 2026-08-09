@@ -409,6 +409,122 @@ describe('attributeCondition -- same-transcript-index conflict vs. different-ind
   });
 });
 
+// Ground truth (independently re-verified live, 6x -- 3x kmp-test changed, 3x direct Gradle, cold
+// GRADLE_USER_HOME + JDK 17 each -- against android/nowinandroid @
+// 7d45eae4f8720a0c77f507712ba2437ff974b6ed, :core:common module): a real `changed` envelope has NO
+// top-level `parallel` key and is self-contained, exactly like `parallel`'s own envelope -- nothing
+// further to read here once it's classified as relevant.
+const CHANGED_SCENARIO = {
+  expected: {
+    module: ':core:common',
+    gradle: { allowed_invocations: [':core:common:test'] },
+    changed: { detected_modules: ['core:common'], staged_only: false, base_ref: 'HEAD' },
+  },
+};
+const CHANGED_CMD = 'kmp-test changed --json --project-root . --no-coverage';
+const GRADLE_CMD_CORE_COMMON = './gradlew.bat :core:common:test --console=plain';
+const KMP_TEST_PARALLEL_CMD_CORE_COMMON = 'kmp-test parallel --json --project-root .';
+
+describe('attributeCondition -- changed subcommand relevance is scenario-gated (isRelevantKmpTestChanged)', () => {
+  it('a bare changed attempt alone is relevant but self-contained -- no JUnit XML re-read, not ambiguous', () => {
+    const dir = makeEvidenceDir();
+    try {
+      writeDecision(dir, 't1', 'allow', CHANGED_CMD);
+      const bashResults = [{ index: 1, id: 't1', command: CHANGED_CMD }];
+      const result = attributeCondition(dir, CHANGED_SCENARIO, bashResults);
+      expect(result.ambiguousJunitEvidence).toBe(false);
+      expect(result.perAttemptJunit.has('t1')).toBe(false);
+      expect(result.decisionByAttempt.get('t1')).toBe('allow');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a correct changed attempt + a same-turn raw ./gradlew call trip ambiguousJunitEvidence:true', () => {
+    const dir = makeEvidenceDir();
+    try {
+      writeDecision(dir, 't1', 'allow', CHANGED_CMD);
+      writeDecision(dir, 't2', 'allow', GRADLE_CMD_CORE_COMMON);
+      writeEvidence(dir, 't2', GRADLE_CMD_CORE_COMMON, { status: 'ok', junit: { total: 1, passed: 1, failed: 0 } });
+      const bashResults = [
+        { index: 5, id: 't1', command: CHANGED_CMD },
+        { index: 5, id: 't2', command: GRADLE_CMD_CORE_COMMON },
+      ];
+      const result = attributeCondition(dir, CHANGED_SCENARIO, bashResults);
+      expect(result.ambiguousJunitEvidence).toBe(true);
+      expect(result.perAttemptJunit.get('t2')).toEqual({ status: 'conflict' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The scenario's own policy allows BOTH `parallel` and `changed` (parallel stays allowed so the
+  // grader can reject a "ran parallel instead of changed" attempt on its own terms, never via a
+  // policy-layer denial) -- so this same-turn combination is genuinely reachable, not merely
+  // hypothetical. Expected to already work via the existing generic .index-grouping logic with
+  // zero new production code; this test exists purely to prevent a future regression.
+  it('a correct changed attempt + a same-turn kmp-test parallel call (both policy-allowed for this scenario) ALSO trip ambiguousJunitEvidence:true', () => {
+    const dir = makeEvidenceDir();
+    try {
+      writeDecision(dir, 't1', 'allow', CHANGED_CMD);
+      writeDecision(dir, 't2', 'allow', KMP_TEST_PARALLEL_CMD_CORE_COMMON);
+      const bashResults = [
+        { index: 5, id: 't1', command: CHANGED_CMD },
+        { index: 5, id: 't2', command: KMP_TEST_PARALLEL_CMD_CORE_COMMON },
+      ];
+      const result = attributeCondition(dir, CHANGED_SCENARIO, bashResults);
+      expect(result.ambiguousJunitEvidence).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a correct changed attempt followed by a SEPARATE-TURN Gradle call is NOT a conflict', () => {
+    const dir = makeEvidenceDir();
+    try {
+      writeDecision(dir, 't1', 'allow', CHANGED_CMD);
+      writeDecision(dir, 't2', 'allow', GRADLE_CMD_CORE_COMMON);
+      writeEvidence(dir, 't2', GRADLE_CMD_CORE_COMMON, { status: 'ok', junit: { total: 1, passed: 1, failed: 0 } });
+      const bashResults = [
+        { index: 1, id: 't1', command: CHANGED_CMD },
+        { index: 2, id: 't2', command: GRADLE_CMD_CORE_COMMON },
+      ];
+      const result = attributeCondition(dir, CHANGED_SCENARIO, bashResults);
+      expect(result.ambiguousJunitEvidence).toBe(false);
+      expect(result.perAttemptJunit.get('t2')).toEqual({ command: GRADLE_CMD_CORE_COMMON, status: 'ok', junit: { total: 1, passed: 1, failed: 0 } });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Regression guard -- the actual point of scenario-gating isRelevantKmpTestChanged: a scenario
+  // that does NOT declare expected.changed (the other 5 shipped scenarios) must treat a `changed`
+  // command as entirely INVISIBLE to this relevance mechanism -- never relevant, never affecting
+  // lastRelevantAttemptId, never conflicting with anything. Without this gate, a `changed` attempt
+  // appearing anywhere in an unrelated scenario's transcript would shift lastRelevantAttemptId away
+  // from the true last Gradle-relevant attempt, silently breaking that attempt's own
+  // timeout-tolerance check -- exactly the regression this test exists to catch.
+  it('a changed command is INVISIBLE to relevance for a scenario that does NOT declare expected.changed', () => {
+    const dir = makeEvidenceDir();
+    try {
+      writeDecision(dir, 't1', 'allow', CHANGED_CMD);
+      writeDecision(dir, 't2', 'allow', GRADLE_CMD);
+      writeEvidence(dir, 't2', GRADLE_CMD, { status: 'ok', junit: { total: 24, passed: 24, failed: 0 } });
+      const bashResults = [
+        { index: 5, id: 't1', command: CHANGED_CMD },
+        { index: 5, id: 't2', command: GRADLE_CMD },
+      ];
+      // SCENARIO (defined above) has no expected.changed at all.
+      const result = attributeCondition(dir, SCENARIO, bashResults);
+      expect(result.ambiguousJunitEvidence).toBe(false);
+      expect(result.perAttemptJunit.get('t2')).toEqual({ command: GRADLE_CMD, status: 'ok', junit: { total: 24, passed: 24, failed: 0 } });
+      expect(result.perAttemptJunit.has('t1')).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('attributeCondition -- module-filter target attribution uses real matchModuleFilter semantics (isRelevantKmpTestParallel, not exact-string equality)', () => {
   // Pre-fix, isRelevantKmpTestParallel compared the raw --module-filter argument to the target
   // module via exact string equality, so a kmp-test-parallel call using a short substring filter
