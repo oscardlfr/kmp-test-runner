@@ -940,3 +940,75 @@ describe('accepted-run-audit sidecar -- real end-to-end promotion (accepted-run-
     expect(listAuditFiles()).toEqual([]);
   }, 15000);
 });
+
+// Post-open-PR review finding: agentic-eval-materialize-fixture-setup.test.js already covers
+// applyFixtureSetup/materializeScenarioProject directly, but nothing exercised matrix-runner.mjs's
+// OWN threading of scenario.fixture_setup through runSingleCondition -- i.e. the REAL wiring that
+// makes a `fixture_setup`-bearing scenario actually mutate the fixture before a real cell/session
+// launches. This closes that gap through the same real-subprocess-against-fake-claude boundary
+// every other integration test in this file already uses, reusing the shared
+// sourceRepoDir/scenariosDir/runCli/fakeClaudeEnv scaffolding from this file's own beforeEach --
+// no new production abstraction, no new test-harness machinery.
+describe('fixture_setup real matrix/CLI wiring (post-open-PR review finding)', () => {
+  it('is applied before each cell launches, resets between cells, and reapplies exactly once per cell -- never accumulates across repetitions/conditions', async () => {
+    const scenarioId = 'fixture-setup-wiring-check';
+    // marker.txt is the same tracked file this suite's shared beforeEach already commits into
+    // sourceRepoDir -- its real blob OID is read back from git itself, never hand-computed/guessed.
+    const blobOid = gitViaBash(['rev-parse', 'HEAD:marker.txt'], sourceRepoDir).trim();
+    writeFileSync(path.join(scenariosDir, `${scenarioId}.json`), JSON.stringify({
+      schema: 1,
+      id: scenarioId,
+      family: 'test-only',
+      project_alias: 'fake-run-integration-project',
+      project_url: PROJECT_URL,
+      project_commit: pinnedCommit,
+      prompt: "Find the module affected by the pending edit, run exactly that module's tests, and tell me what happened.",
+      expected_outcome: 'The agent scopes testing to exactly the :fakemod2 module via kmp-test changed and reports 1/1/0.',
+      policy: {
+        allowed_kmptest_subcommands: ['doctor', 'describe', 'parallel', 'changed'],
+        allowed_gradle_tasks: [':fakemod2:test'],
+      },
+      expected: {
+        module: ':fakemod2',
+        outcome_kind: 'tests_executed',
+        kmp_test: { tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 }, exit_code: 0 },
+        gradle: { allowed_invocations: [':fakemod2:test'], evidence_task: ':fakemod2:test', tests: { total: 1, passed: 1, failed: 0 }, exit_code: 0 },
+        changed: { detected_modules: ['fakemod2'], staged_only: false, base_ref: 'HEAD' },
+      },
+      fixture_setup: { operation: 'append_comment', relative_path: 'marker.txt', expected_blob_oid: blobOid },
+      first_useful_signal_predicate: { description: 'first well-formed changed evidence confirming :fakemod2 single-module detection and 1/1' },
+      tags: ['train'],
+    }, null, 2));
+
+    // Pure test-fixture instrumentation (see the claude fixture's own header comment) -- never
+    // read by production code. One line per cell, appended by the fixture BEFORE it emits any
+    // simulated transcript activity, in the order cells actually run. Rides the ALREADY-isolated,
+    // ALREADY-allowlisted isolatedTmp directory (this file's own beforeEach points TEMP/TMP/TMPDIR
+    // at it) rather than a custom env var, which buildEvalEnv's narrow allowlist would silently
+    // drop before it ever reached the fake-claude subprocess.
+    const probeLogPath = path.join(isolatedTmp, 'fixture-setup-probe.log');
+    const result = await runCli(
+      ['run', '--scenario', scenarioId, '--source-repo-dir', sourceRepoDir, '--model', 'fake-model-x', '--seed', '3', '--repeats', '2'],
+      fakeClaudeEnv('run-fixture-setup-wiring'),
+      60000,
+    );
+    expect(result.status).toBe(0);
+    expect(result.parsed).not.toBeNull();
+    const { records } = result.parsed;
+    expect(records.length).toBe(4);
+    for (const record of records) {
+      expect(record.success.value).toBe(true);
+      expect(record.expected_outcome_matched.value).toBe(true);
+    }
+
+    // Every one of the 4 cells must see EXACTLY one marker occurrence: "0" would mean
+    // fixture_setup never ran (or ran too late) before this cell's own launch; "2"+ would mean a
+    // PRIOR cell's mutation leaked into this cell instead of starting from a freshly-reset
+    // checkout. Reading exactly "1" on all 4, in a fresh materializeScenarioProject worktree
+    // every time, is exactly what proves requirements (a) applied-before-launch, (b) later
+    // cells start from a restored checkout, and (c) reapplied exactly once, never accumulating.
+    const probeLines = readFileSync(probeLogPath, 'utf8').trim().split('\n').filter(Boolean);
+    expect(probeLines.length).toBe(4);
+    expect(probeLines.every((line) => line === '1')).toBe(true);
+  }, 60000);
+});

@@ -891,8 +891,16 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
   // one) -- true when EITHER the changed{} block itself is structurally malformed OR the envelope
   // also carries that production-impossible parallel block, both proof of mismatched/incoherent
   // evidence (e.g. a stale or wrongly-correlated tool_result), never merely "a different, wrong
-  // answer".
-  const changedEvidenceInvalid = hasEvidence && targetMatches && envelope.subcommand === classification.subcommand
+  // answer". Deliberately excludes `targetMatches` from this gate -- a post-open-PR review found a
+  // real bug here: with `targetMatches` in the conjunct, a WRONG-module attempt whose changed{}
+  // block was ALSO structurally malformed read as `changedEvidenceInvalid:false` (short-circuited
+  // before the malformed-check ever ran), so `authoritative_evidence_well_formed` came back `true`
+  // -- promoting untrustworthy, garbage evidence as if it were an ordinary, trustworthy negative
+  // (wrong-target) result and silently defeating this integrity gate. Structural well-formedness of
+  // the evidence must be judged independently of whether the target happens to match. This does not
+  // change the WRONG-module + WELL-FORMED case: that combination still correctly falls through to
+  // fail only via check 5 (authoritative_target_matches_expected), exactly as before.
+  const changedEvidenceInvalid = hasEvidence && envelope.subcommand === classification.subcommand
     && classification.subcommand === 'changed' && expectsChanged
     && (!isWellFormedChangedBlock(envelope.changed) || envelope.parallel !== undefined);
 
@@ -1387,7 +1395,7 @@ export function gradeScenarioCondition(conditionResult, scenario) {
       : terminal.malformed ? 'the terminal attempt produced content that did not parse as valid evidence'
         : !terminal.hasEvidence ? 'the terminal attempt produced no result at all'
           : terminal.parallelEvidenceInvalid ? 'the terminal attempt\'s own parallel.legs[] structure is internally incoherent -- not trustworthy evidence'
-            : terminal.changedEvidenceInvalid ? 'the terminal attempt\'s own changed{} block is internally malformed -- not trustworthy evidence'
+            : terminal.changedEvidenceInvalid ? 'the terminal attempt\'s own changed{} block is internally malformed, or it incoherently carries a parallel{} block alongside it (real changed output never produces both) -- not trustworthy evidence'
               : 'the terminal attempt produced well-formed evidence',
     terminal ? [terminal.resultIndex] : []);
 

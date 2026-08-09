@@ -3987,6 +3987,47 @@ describe('gradeScenarioCondition -- changed-module-verification (SCENARIO_6, the
       expect(grade.changedEvidenceMalformed).toBe(true);
       expect(grade.success).toBe(false);
     });
+
+    // Post-open-PR review finding: structural validity of changed{} must be judged independent of
+    // whether the target module happens to match. An earlier draft gated changedEvidenceInvalid on
+    // targetMatches, so a WRONG-module attempt short-circuited before the malformed-check ever ran
+    // -- changedEvidenceMalformed came back false and authoritative_evidence_well_formed came back
+    // true, silently promoting garbage evidence as an ordinary, trustworthy negative (wrong-target)
+    // result. Both cases below combine a wrong target with each of the two distinct malformation
+    // sources this check recognizes (see changedEvidenceInvalid's own doc comment).
+    it('a WRONG-target attempt whose changed{} block is ALSO malformed (detected_modules as a non-array) still fails as EVIDENCE INTEGRITY, not a plain wrong-target negative', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: changedEnvelope({
+          modules: [{ name: 'some-other-module', type: 'jvm' }], // WRONG target...
+          changed: { detected_modules: 'core:common', staged_only: false, base_ref: 'HEAD' }, // ...AND malformed
+        }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+      expect(grade.changedEvidenceMalformed).toBe(true);
+      expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('a WRONG-target attempt whose envelope ALSO carries a production-impossible parallel{} block still fails as EVIDENCE INTEGRITY, not a plain wrong-target negative', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: changedEnvelope({
+          modules: [{ name: 'some-other-module', type: 'jvm' }], // WRONG target...
+          parallel: { // ...AND an impossible parallel block alongside an otherwise well-formed changed{}
+            test_type: 'auto',
+            legs: [{ test_type: 'auto', exit_code: 0, execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 }, cascade_detected: false, retry_fired: false }],
+            max_workers: 0, timeout_s: 600,
+          },
+        }) }],
+        SCENARIO_6_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_6);
+      expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+      expect(grade.changedEvidenceMalformed).toBe(true);
+      expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
   });
 
   describe('--show-modules-only is fully inert -- never terminal, never retried, never a JUnit producer', () => {

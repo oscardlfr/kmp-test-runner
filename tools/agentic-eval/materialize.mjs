@@ -249,6 +249,16 @@ export function isExactlyOneUnstagedModificationAt(porcelainOutput, relativePath
  * @param {{fixtureDir: string, fixtureSetup: {operation: string, relative_path: string, expected_blob_oid: string}}} opts
  */
 export function applyFixtureSetup({ fixtureDir, fixtureSetup }) {
+  // Fail closed BEFORE any git/file I/O -- never trust that the caller already validated this
+  // against schemas.mjs's own closed FIXTURE_SETUP_OPERATION_VALUES enum (a post-open-PR review
+  // found this exact gap: the enum currently closes to exactly one value, but this exported
+  // primitive itself never re-checked it, so a future second enum value -- or any caller bypassing
+  // schema validation -- would silently fall through to the append_comment mutation below no matter
+  // what `operation` actually said).
+  if (fixtureSetup.operation !== 'append_comment') {
+    throw new Error(`fixture_setup.operation not supported by this harness: ${fixtureSetup.operation}`);
+  }
+
   const statusBefore = runGitViaBash(['status', '--porcelain'], fixtureDir);
   if (statusBefore.trim() !== '') {
     throw new Error(`fixture_setup precondition failed: working tree not clean before mutation:\n${statusBefore}`);

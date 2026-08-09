@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-run-fixture-setup-wiring/claude -- deterministic stand-in for the real
+# `claude` CLI, used by tests/vitest/agentic-eval-run-command.test.js's own "fixture_setup real
+# matrix/CLI wiring" describe block to prove materialize.mjs's applyFixtureSetup is actually wired
+# through matrix-runner.mjs's runSingleCondition end to end (applied before this process starts,
+# reset+reapplied exactly once per cell, never accumulating across repetitions/conditions) -- not
+# just at the direct-unit level (agentic-eval-materialize-fixture-setup.test.js already covers
+# that call in isolation). Never invoked outside these tests -- production runs always use the
+# real, authenticated `claude` CLI. Mirrors fake-claude-run-scenario-success/claude's own
+# --plugin-dir-sniffing convention and decision-sidecar write; only the Bash command/envelope and
+# the probe block below differ.
+#
+# BEFORE emitting any simulated transcript activity, probes the REAL state of the fixture_setup
+# mutation target (marker.txt, relative to this process's own cwd -- which IS the materialized
+# fixture directory, per matrix-runner.mjs's spawnCondition({cwd: fixtureDir})) and appends the
+# observed marker-occurrence count to a probe log, one line per invocation/cell, in the order
+# cells actually run. This is pure test-fixture instrumentation, not production wiring -- but a
+# CUSTOM env var would never reach this process at all: matrix-runner.mjs's buildSharedEnv routes
+# the measured session through env-builder.mjs's buildEvalEnv, a narrow, explicit ALLOWLIST that
+# silently drops anything not on it (confirmed the hard way -- see this repo's own
+# feedback_narrow_env_allowlist_for_e2e_fixtures memory). TEMP/TMP/TMPDIR, by contrast, ARE on
+# that allowlist and are exactly what the test's own fakeClaudeEnv() already redirects to an
+# exclusive, per-test isolatedTmp directory -- so the probe log rides there instead, a location
+# both this fixture and the test can derive without any new signaling channel.
+PROBE_DIR="${TMPDIR:-${TMP:-$TEMP}}"
+if [ -n "$PROBE_DIR" ]; then
+  PROBE_LOG="$PROBE_DIR/fixture-setup-probe.log"
+  if [ -f marker.txt ]; then
+    MARKER_COUNT=$(grep -c "kmp-agentic-eval-fixture-marker" marker.txt)
+  else
+    MARKER_COUNT="missing"
+  fi
+  echo "$MARKER_COUNT" >> "$PROBE_LOG"
+fi
+
+write_sidecar() {
+  local kind="$1" toolUseId="$2" recordJson="$3"
+  node -e '
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const [kind, toolUseId, recordJson] = process.argv.slice(1);
+const idHash = crypto.createHash("sha256").update(toolUseId).digest("hex");
+const dir = path.join(process.env.KMP_EVAL_JUNIT_EVIDENCE_DIR, kind);
+fs.mkdirSync(dir, { recursive: true });
+fs.writeFileSync(path.join(dir, idHash + ".json"), recordJson);
+' -- "$kind" "$toolUseId" "$recordJson"
+}
+
+HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  PREV_ARG="$arg"
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
+  SKILLS='["kmp-test-runner"]'
+else
+  PLUGINS='[]'
+  SKILLS='[]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-0001\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"dontAsk\",\"plugins\":$PLUGINS,\"skills\":$SKILLS,\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+else
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
+fi
+
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test changed --json --project-root . --no-coverage","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+write_sidecar decisions toolu_fakebash1 '{"decision":"allow","command":"kmp-test changed --json --project-root . --no-coverage"}'
+
+# Well-formed `changed` envelope matching this test's own fixture-setup-wiring-check scenario
+# (expected.kmp_test / expected.changed) -- deliberately NO `parallel` key, matching real
+# production's own `changed`-subcommand shape (see graders.mjs's changedEvidenceInvalid doc
+# comment).
+KMP_ENVELOPE='{"tool":"kmp-test","schema_version":2,"subcommand":"changed","version":"0.14.0","project_root":"/fake","exit_code":0,"duration_ms":21,"tests":{"total":1,"passed":1,"failed":0,"skipped":0,"individual_total":1},"modules":[{"name":"fakemod2","type":"jvm","coverage_plugin":null,"test_build_type":null,"has_flavor":false,"flavors":[],"android_dsl":false,"android_dsl_variant":null}],"skipped":[],"coverage":{"tool":"none","missed_lines":null,"modules_with_kover_plugin":[],"modules_with_jacoco_plugin":[]},"errors":[],"warnings":[],"changed":{"detected_modules":["fakemod2"],"staged_only":false,"base_ref":"HEAD"},"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true}}'
+node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{type:'tool_result',content:process.argv[1],tool_use_id:'toolu_fakebash1'}]}}))" "$KMP_ENVELOPE"
+
+FINAL_ANSWER='The pending edit affects the :fakemod2 module; its 1 test passes.
+
+KMP_EVAL_RESULT
+{"module": ":fakemod2", "outcome_kind": "tests_executed", "total": 1, "passed": 1, "failed": 0}
+KMP_EVAL_RESULT_END'
+node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
+exit 0

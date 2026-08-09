@@ -154,6 +154,24 @@ describe('applyFixtureSetup -- target validation (defense in depth, independent 
       fixtureSetup: { operation: 'append_comment', relative_path: 'linked.kt', expected_blob_oid: symlinkBlob },
     })).toThrow(/not a regular file/i);
   });
+
+  // Post-open-PR review finding: this exported primitive never re-checked `operation` against
+  // schemas.mjs's own closed enum -- it unconditionally appended the harness comment regardless of
+  // what `operation` said, so a caller bypassing schema validation (or a future second enum value)
+  // would silently mutate the file no matter what. Must fail closed BEFORE any git/file I/O, not
+  // merely refuse to be useful afterward -- hence asserting both the throw AND that the file/tree
+  // are left completely untouched.
+  it('throws on an unsupported fixtureSetup.operation, BEFORE any git/file mutation -- fails closed, never silently applies the mutation anyway', () => {
+    const { sourceRepoDir, pinnedCommit, blobOid } = makeSourceRepo();
+    const fixtureDir = makeWorktree(sourceRepoDir, pinnedCommit);
+    expect(() => applyFixtureSetup({
+      fixtureDir,
+      fixtureSetup: { operation: 'unsupported', relative_path: RELATIVE_PATH, expected_blob_oid: blobOid },
+    })).toThrow(/operation/i);
+    const content = readFileSync(path.join(fixtureDir, ...RELATIVE_PATH.split('/')), 'utf8');
+    expect(content).toBe(FILE_CONTENT);
+    expect(gitViaBash(['status', '--porcelain'], fixtureDir).trim()).toBe('');
+  });
 });
 
 describe('applyFixtureSetup -- correct application', () => {
