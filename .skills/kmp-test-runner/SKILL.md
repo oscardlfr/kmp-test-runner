@@ -97,38 +97,39 @@ changes `kmp-test`'s envelope.
 
 ## Tool selection — `kmp-test` vs `android` CLI overlap
 
-Default to `kmp-test`: versioned JSON, cross-platform, side-effect-free on `--dry-run`. `android
-info`/`describe` overlap (plain text; Windows bug in `describe`) — SDK/emulator/UI only.
+Default to `kmp-test`: versioned JSON, cross-platform, `--dry-run`-safe. `android
+info`/`describe` overlap (plain text; Windows `describe` bug) — SDK/emulator/UI.
 Mapping: [`envelope-schema.md`](references/cli/envelope-schema.md#cross-tool-comparison-android-cli-analogues).
 
 ## Steps
 
 ### 1. Run the relevant test type
 
-Pick the subcommand for what the user asked:
+Pick the subcommand:
 
 | User intent | Subcommand | Notes |
 |-------------|-----------|-------|
-| "run tests" / "test this" | `kmp-test parallel --json --project-root .` | `test`/`jvmTest`/`desktopTest` per module |
-| "run instrumented tests" / "run on device" | `kmp-test android --json --project-root .` | `connectedAndroidTest`, needs device |
-| "run coverage" / "with coverage" | `kmp-test coverage --json --project-root .` | kover/jacoco XML |
+| "run tests" / "test this" / "run tests with coverage" | `kmp-test parallel --json --project-root .` | `test`/`jvmTest`/`desktopTest` |
+| "run instrumented tests" / "run on device" | `kmp-test android --json --project-root .` | `connectedAndroidTest` |
+| "run coverage" | `kmp-test coverage --json --project-root .` | kover/jacoco |
+| "run tests; missed lines under 100" | `kmp-test parallel --min-missed-lines 100 --json --project-root .` ||
 | "run benchmarks" | `kmp-test benchmark --json --project-root .` | Macro/microbenchmark |
-| "what would run?" / "dry run" | append `--dry-run` to the matching command above | No spawn — plan as JSON |
-| "run only changed tests" | `kmp-test changed --json --project-root .` | Touched in the git tree |
+| "what would run?" / "dry run" | append `--dry-run` to the command above | Plans as JSON only |
+| "run only changed tests" | `kmp-test changed --json --project-root .` | From git diff |
 
-> Per-subcommand deep-dives: [`workflows/overview.md`](references/workflows/overview.md).
+> Deep-dives: [`overview.md`](references/workflows/overview.md).
 
 ### 2. Parse the JSON envelope
 
-Full shape: [`references/cli/envelope-schema.md`](references/cli/envelope-schema.md); exit codes:
-[`references/cli/exit-codes.md`](references/cli/exit-codes.md). `errors[{message,code?,...extra}]`
-carries discriminated codes (`no_test_modules`+`caused_by_filter`).
+Shape: [`envelope-schema.md`](references/cli/envelope-schema.md); exit codes:
+[`exit-codes.md`](references/cli/exit-codes.md). `errors[{message,code?,...extra}]`
+carries codes (`no_test_modules`+`caused_by_filter`).
 
 ### 3. Report failures with module attribution
 
-Per `errors[]` entry, surface `code`, discriminators, and `message`; include `module` only when present.
-For test failures, drill into `modules[].test_failures[{test,cause,type}]` — `test` is
-`ClassName.methodName`, `cause` the message, `type` optional.
+Per `errors[]` entry, surface `code`, discriminators, `message`; include `module` only when present.
+For test failures, check `modules[].test_failures[{test,cause,type}]` — `test` is
+`ClassName.methodName`, `cause` message, `type` optional.
 
 ## Convenience scripts
 

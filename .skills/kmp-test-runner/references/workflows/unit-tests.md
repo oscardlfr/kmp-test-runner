@@ -12,6 +12,7 @@ The agent should dispatch `kmp-test parallel` when the user asks any of:
 
 - "Run the tests" / "run unit tests" / "test this" / "run all tests"
 - "Make sure the tests still pass" / "verify nothing broke"
+- "Run the tests" + a missed-lines budget ("...make sure coverage doesn't drop below X") — narrow with `--min-missed-lines <N>`; without an explicit budget, plain `parallel` already aggregates coverage by default (no flag needed)
 - "Run the JVM / desktop / iOS / macOS tests" — narrow with `--test-type`
 - "Run only `<module>`'s tests" — narrow with `--module-filter`
 
@@ -51,7 +52,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP (the canonical source). Full p
 | `--max-workers <N>` | `0` (auto) | Number of parallel gradle workers. `0` lets gradle decide. |
 | `--coverage-tool <tool>` | `auto` | `auto` / `jacoco` / `kover` / `none`. `auto` picks per-module from the project model. |
 | `--no-coverage` | off | Alias for `--coverage-tool none`. Drops coverage aggregation entirely. |
-| `--min-missed-lines <N>` | `0` | Fail (`errors[].code: coverage_threshold_exceeded`, exit 1) if aggregated missed lines exceed `N`. |
+| `--min-missed-lines <N>` | `0` | Fail (`errors[].code: coverage_threshold_exceeded`, exit 1) if aggregated missed lines exceed `N`. `0` = no gate (default). |
 | `--exclude-modules <list>` | none | Comma-separated globs to skip entirely (not even probed). |
 | `--exclude-coverage <list>` | none | Comma-separated modules to skip from coverage aggregation only — tests still run. |
 | `--include-untested` | off | Re-include modules auto-skipped because their filesystem path has no `src/*Test*` directory. |

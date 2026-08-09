@@ -16,10 +16,10 @@ The `kmp-test` CLI emits a JSON envelope to stdout when invoked with `--json`. T
 | `tests` | object | `{ total, passed, failed, skipped, individual_total? }` — see [`tests` shape](#tests-shape). |
 | `modules` | array | Per-module results — see [`modules[]` shape](#modules-shape). |
 | `skipped` | array | `[{ module, reason }]` — modules the dispatcher legitimately skipped. |
-| `coverage` | object | `{ tool, missed_lines, modules_contributing, modules_with_kover_plugin, modules_with_jacoco_plugin, module_buckets }` — see [`coverage` shape](#coverage-shape). `missed_lines` / `modules_contributing` are always the complete, unfiltered project total. |
+| `coverage` | object | `{ tool, missed_lines, modules_contributing, modules_with_kover_plugin, modules_with_jacoco_plugin, module_buckets }` — see [`coverage` shape](#coverage-shape). `missed_lines` / `modules_contributing` are the aggregate across the modules `--coverage-modules` / `--exclude-coverage` selected for this run, never further narrowed by `--min-missed-lines`. |
 | `errors` | array | `[{ message, code?, ...extra }]` — see [error-codes table](#errors-discriminated-codes). |
 | `warnings` | array | Soft signals — never affect `exit_code`. |
-| `isolated` | object | `{ enabled, cache_dir, kept, locked }` — present when `--isolated` was passed (omitted by `coverage` orchestrator since it never spawns gradle). |
+| `isolated` | object | `{ enabled, cache_dir, kept, locked }` — present when `--isolated` was passed (omitted by `coverage` orchestrator, which never dispatches tests — the only gradle process it can trigger is an unrelated, cached module-discovery probe, not a concurrent test run `--isolated` isolates). |
 
 ## Subcommand-specific blocks
 
@@ -190,7 +190,7 @@ This lets agents safely read **either** `errors.length > 0` **or** `exit_code !=
 ```
 
 - `tool` — `"auto"` / `"kover"` / `"jacoco"` / `"none"`.
-- `missed_lines` — aggregated count or `null` when coverage couldn't be aggregated. Always the **complete, unfiltered** project total — `--min-missed-lines` never narrows this field (it only decides the `coverage_threshold_exceeded` gate and the markdown report's per-class detail section).
+- `missed_lines` — aggregated count, across the modules `--coverage-modules` / `--exclude-coverage` selected for this run, or `null` when coverage couldn't be aggregated. `--min-missed-lines` never narrows this field within that selected set (it only decides the `coverage_threshold_exceeded` gate and the markdown report's per-class detail section).
 - `modules_contributing` — count of modules with real aggregated data. Same unfiltered guarantee as `missed_lines`: a `--min-missed-lines` value that no single class individually crosses does **not** zero this out, and does **not** trigger a false `no_coverage_data` warning.
 - `modules_with_kover_plugin` / `modules_with_jacoco_plugin` — per-module surface so agents see which coverage flavor each module declares.
 - `module_buckets` — per-module accounting on a successful `coverage` / `parallel` run. Each module with a detected coverage plugin lands in exactly one bucket: `with_data` (XML parsed + rows added to aggregation), `no_xml` (XML missing on disk — the most common silent-drop case in CI), `parse_errored` (the coverage-XML parser reported a failure — malformed, unreadable, or oversized XML; see the `coverage_parse_failed` / `coverage_xml_oversized` warning codes for the discriminated reason), or `skipped_by_user` (filtered out by `--exclude-coverage` / `--coverage-modules`). The sum of the four buckets should equal `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length`; when it doesn't, a `coverage_aggregation_drift` entry is pushed to `warnings[]` with `{detected, accounted, unaccounted}` counts. Buckets are empty on `--dry-run` and `--coverage-tool none` for shape parity.

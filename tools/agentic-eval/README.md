@@ -1304,21 +1304,26 @@ unparseable JSON, wrong schema value, invalid `scope_id`, non-canonical or wrong
   below) and let a real target-attribution gap in `computeKmpTestTargetMatch` go unnoticed. The
   final `:core:domain` candidate has zero substring collision with any other real module in this
   project.
-- **Registered blocker, not fixed here — pre-existing `.skills/**` documentation contradiction**:
-  `.skills/kmp-test-runner/references/workflows/coverage.md:49` correctly states a `0` threshold
-  disables the coverage gate; `:95` of the same file and
-  `.skills/kmp-test-runner/references/troubleshooting/coverage-threshold-exceeded.md:35` both
-  incorrectly claim `0` requires perfect coverage. `lib/orchestrators/coverage-orchestrator.js:747`
-  (`gateThreshold > 0 && ...`) confirms the first reading is correct — the code is unambiguous.
-  `.skills/**` is out of scope for any change in this PR.
-- **Registered blocker, not fixed here — skill routing gap for this scenario's own outcome**: the
-  pinned skill snapshot (`.skills/kmp-test-runner/SKILL.md`, commit `20d109e`) routes "run
-  coverage" requests to `kmp-test coverage` (aggregation of pre-existing XML only, not permitted by
-  this scenario's policy), never to `kmp-test parallel --min-missed-lines` (the only command that
-  can actually produce a fresh `coverage_threshold_exceeded` decision). Before any live canary run
-  against this scenario, the skill needs an explicit rule mapping "run tests and check they stay
-  within a coverage/missed-lines budget" to `parallel --min-missed-lines`. `.skills/**` and
-  `PINNED_SKILL_SHA` are out of scope for any change in this PR.
+- **Blocker fixed (`fix(skill): route test coverage gates through parallel`)** — pre-existing
+  `.skills/**` documentation contradiction: `coverage.md` and `coverage-threshold-exceeded.md`'s
+  zero-threshold guidance now agree with `coverage.md`'s own flags-table row that a `0` threshold
+  disables the coverage gate, grounded in `coverage-orchestrator.js`'s `gateThreshold > 0` check
+  (no brittle line numbers cited here — they drift on every subsequent doc edit, as this very
+  reference did). Also fixed: `coverage.md`'s separate false
+  claims (9 locations) that `coverage` dispatches `koverXmlReport`/`jacocoTestReport` report-
+  generation gradle tasks or can produce `task_not_found` — it does neither; it only reads existing
+  XML (missing XML → `no_xml`) and, separately, may run a cached, best-effort discovery probe
+  unrelated to reports. `PINNED_SKILL_SHA` is unchanged by this fix — a live canary run against this
+  scenario is separate follow-up work, still pending.
+- **Blocker fixed (`fix(skill): route test coverage gates through parallel`)** — skill routing
+  gap: the live `.skills/kmp-test-runner/SKILL.md` Steps table now routes an explicit
+  tests+missed-lines-budget ask ("run tests; missed lines under 100") to `kmp-test parallel
+  --min-missed-lines <N>` (the only command that can produce a fresh `coverage_threshold_exceeded`
+  decision), distinct from bare "run coverage". A context-free "with coverage" alone (no explicit
+  test-execution intent) stays ambiguous and must ask, per the Decision protocol's existing rule —
+  it is never silently routed to either command. `PINNED_SKILL_SHA` (`20d109e...`) still points at
+  the pre-fix snapshot — advancing the pin and running a live canary against this scenario are
+  separate, still-pending follow-up work.
 - The real end-to-end Claude Code `tool_result.content` shape for a live `kmp-test`/`gradle`
   invocation is still unconfirmed as of this PR — `graders.mjs`'s envelope extraction is
   defensively designed for that uncertainty (locates a parseable JSON substring within possibly-
