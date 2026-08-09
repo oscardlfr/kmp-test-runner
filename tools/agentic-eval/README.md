@@ -1332,17 +1332,16 @@ unparseable JSON, wrong schema value, invalid `scope_id`, non-canonical or wrong
   claims (9 locations) that `coverage` dispatches `koverXmlReport`/`jacocoTestReport` report-
   generation gradle tasks or can produce `task_not_found` — it does neither; it only reads existing
   XML (missing XML → `no_xml`) and, separately, may run a cached, best-effort discovery probe
-  unrelated to reports. `PINNED_SKILL_SHA` is unchanged by this fix — a live canary run against this
-  scenario is separate follow-up work, still pending.
+  unrelated to reports. `PINNED_SKILL_SHA` was unchanged by that fix; snapshot advancement and
+  efficacy evaluation are handled by separate PRs.
 - **Blocker fixed (`fix(skill): route test coverage gates through parallel`)** — skill routing
   gap: the live `.skills/kmp-test-runner/SKILL.md` Steps table now routes an explicit
   tests+missed-lines-budget ask ("run tests; missed lines under 100") to `kmp-test parallel
   --min-missed-lines <N>` (the only command that can produce a fresh `coverage_threshold_exceeded`
   decision), distinct from bare "run coverage". A context-free "with coverage" alone (no explicit
   test-execution intent) stays ambiguous and must ask, per the Decision protocol's existing rule —
-  it is never silently routed to either command. The active pinned snapshot now includes this fix
-  (`PINNED_SKILL_SHA` advanced in PR #416) — evaluating its effect via a live canary against this
-  scenario remains separate, still-pending follow-up work.
+  it is never silently routed to either command. The evaluator snapshot pinned by PR #416 includes
+  this routing fix; this provenance statement makes no live-efficacy claim.
 - The real end-to-end Claude Code `tool_result.content` shape for a live `kmp-test`/`gradle`
   invocation is still unconfirmed as of this PR — `graders.mjs`'s envelope extraction is
   defensively designed for that uncertainty (locates a parseable JSON substring within possibly-
