@@ -12,7 +12,7 @@ Pick the workflow that matches the user's intent. Each linked file (when populat
 
 Branch on environment for the **instrumented** workflow only — see [`SKILL.md`](../../SKILL.md#environment-detection) "Environment detection" section. The other workflows do not branch on Android CLI presence.
 
-Each shipped workflow doc covers: when to dispatch, full common flags (subset of [`../cli/flags-reference.md`](../cli/flags-reference.md)), behaviors únicos (cascade-retry, auto-detect chain, SKIP_* env vars, Git change-detection strategy, etc.), edge cases, an envelope-shape excerpt, and links to the relevant troubleshooting deep-dives.
+Each shipped workflow doc covers: when to dispatch, full common flags (subset of [`../cli/flags-reference.md`](../cli/flags-reference.md)), unique behaviors (cascade-retry, auto-detect chain, SKIP_* env vars, Git change-detection strategy, etc.), edge cases, an envelope-shape excerpt, and links to the relevant troubleshooting deep-dives.
 
 ## See also
 

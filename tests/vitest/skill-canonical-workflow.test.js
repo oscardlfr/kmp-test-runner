@@ -190,6 +190,9 @@ describe('changed workflow contract parity (doc/help alignment with verified run
   const flavorUnusedDoc = readFileSync(
     path.join(SKILL_DIR, 'references', 'troubleshooting', 'flavor-unused.md'), 'utf8'
   );
+  const taskNotFoundDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'troubleshooting', 'task-not-found.md'), 'utf8'
+  );
   const changedOrchestratorSrc = readFileSync(
     path.join(REPO_ROOT, 'lib', 'orchestrators', 'changed-orchestrator.js'), 'utf8'
   ).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -432,10 +435,18 @@ describe('changed workflow contract parity (doc/help alignment with verified run
     expect(exampleLine).not.toContain('"core-*"');
     const match = exampleLine.match(/--module-filter "([^"]+)"/);
     expect(match).toBeTruthy();
-    const regex = new RegExp(match[1]);
+    const pattern = match[1];
+    // Fourth review round (Codex audit @ 9731cc2): a bare true/false pair on 2 handpicked
+    // strings doesn't prove anchoring -- an UNANCHORED /sample-result/ would ALSO pass
+    // (matches ':sample-result' via substring, doesn't match ':core-network' either way).
+    // Check the anchors explicitly, then reject both an added prefix and an added suffix --
+    // only a real ^...$ anchor does that.
+    expect(pattern.startsWith('^')).toBe(true);
+    expect(pattern.endsWith('$')).toBe(true);
+    const regex = new RegExp(pattern);
     expect(regex.test(':sample-result')).toBe(true);
-    // Anchored -- must NOT also match an unrelated name the way an unanchored "core-*" would.
-    expect(regex.test(':core-network')).toBe(false);
+    expect(regex.test('x:sample-result')).toBe(false);
+    expect(regex.test(':sample-result-extra')).toBe(false);
   });
 
   it('README.md\'s describe section is referenced as "below", matching its actual position in the file', () => {
@@ -456,6 +467,40 @@ describe('changed workflow contract parity (doc/help alignment with verified run
   it('flavor-unused.md no longer passes "<your-filter>" from a parallel/android command straight into describe', () => {
     expect(flavorUnusedDoc).not.toMatch(/describe --json --module-filter "<your-filter>"/);
     expect(flavorUnusedDoc).toMatch(/separate|explicit regex|own.{0,10}regular expression/i);
+  });
+
+  // Fourth review round (Codex audit @ 9731cc2): even the ROUND-3 "translated" example
+  // ("core-*" -> "^:core:.*$") was itself wrong -- wet-verified against the real matchers:
+  // matchModuleFilter (glob, used by parallel/android/benchmark) tests the full name, the
+  // colon-stripped name, AND the leaf segment after the last ':'; describe's regex tests only
+  // the full name and the colon-stripped name. There is no pattern pair that is safe to present
+  // as "equivalent" in general -- e.g. the same glob/regex pair the file used to show select
+  // completely different, barely-overlapping module sets. No fix should ever claim mechanical
+  // translation again; the safe default is describe with no filter + exact modules[].name pick.
+  it('no-test-modules.md drops the false "core-*" -> "^:core:.*$" equivalence and makes no other glob<->regex translation claim', () => {
+    expect(noTestModulesDoc).not.toMatch(/"core-\*".{0,40}"\^:core:\.\*\$"/);
+    expect(noTestModulesDoc).not.toMatch(/translate the glob into an equivalent/i);
+    expect(noTestModulesDoc).not.toMatch(/\bliteral-or-invalid\b/);
+    expect(noTestModulesDoc).toMatch(/no general mechanical translation/i);
+    expect(noTestModulesDoc).toMatch(/leaf segment/i);
+  });
+
+  it('no-test-modules.md\'s Recovery path numbers its caused_by_filter:true steps 1-4 without a duplicate', () => {
+    const recoveryPath = noTestModulesDoc.split('## Recovery path')[1].split('## Recovery commands')[0];
+    const section = recoveryPath.split('For `caused_by_filter: false`')[0];
+    const numbered = [...section.matchAll(/^(\d+)\. /gm)].map((m) => Number(m[1]));
+    expect(numbered).toEqual([1, 2, 3, 4]);
+  });
+
+  it('task-not-found.md no longer passes an unescaped/unanchored module name straight into describe\'s regex filter', () => {
+    expect(taskNotFoundDoc).not.toMatch(/describe --json --module-filter "<affected-module>"/);
+    expect(taskNotFoundDoc).toMatch(/no filter/i);
+    expect(taskNotFoundDoc).toMatch(/exact `name`|exact.{0,10}modules\[\]\.name/i);
+  });
+
+  it('overview.md no longer mixes languages in "behaviors únicos" -- pure English "unique behaviors"', () => {
+    expect(overviewDoc).not.toMatch(/behaviors únicos/);
+    expect(overviewDoc).toMatch(/unique behaviors/);
   });
 });
 

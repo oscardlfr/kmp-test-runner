@@ -27,7 +27,7 @@ Applies to every subcommand. Most common with `parallel --test-type androidInstr
 ## Recovery path
 
 1. **Identify the missing task**: read the `message` field — it names the specific task gradle couldn't locate.
-2. **Check the project model**: `kmp-test describe --json --module-filter "<affected-module>"` and inspect `modules[].test_tasks`. If the `device` / `unit` / `web` field is null for the type that errored, the orchestrator picked a default that doesn't apply.
+2. **Check the project model**: `kmp-test describe --json` (no filter) and find the affected module in `modules[]` by its exact `name`, then inspect its `test_tasks`. (Don't pass the module name as `--module-filter` — describe's filter is an unanchored regular expression, so a bare name like `:foo` would also match `:fooApp`.) If the `device` / `unit` / `web` field is null for the type that errored, the orchestrator picked a default that doesn't apply.
 3. **For KMP `androidLibrary { }` modules**: pass `--device-task androidConnectedCheck` to force the KMP-native task name. Works on `parallel --test-type androidInstrumented` and `android`.
 4. **For coverage-tool mismatches**: switch to `--coverage-tool auto`.
 5. **For stale cache**: `kmp-test describe --no-cache --json` to force a fresh probe.
