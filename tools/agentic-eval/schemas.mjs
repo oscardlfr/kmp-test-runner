@@ -887,11 +887,12 @@ function validateExpected(expected, policy, errors) {
   // attribution claim (expected.kmp_test.coverage.with_data[0]) must name the SAME module the
   // scenario is actually about (expected.module), not a different one. Deliberately does NOT
   // extend the individual_total<->gradle.tests.total check above to this outcome_kind -- ground
-  // truth confirmed the two providers corroborate genuinely different-scoped claims here (a
-  // substring --module-filter can sweep in a sibling module alongside the real target, inflating
-  // kmp_test's own multi-module aggregate, while the Gradle corroboration stays deliberately
-  // scoped to the single flavor/variant the coverage claim itself is about) -- see this outcome's
-  // own graders.mjs doc comment for the full ground-truth-derived rationale.
+  // truth confirmed the two providers corroborate genuinely different-scoped claims here even
+  // though both target the SAME single module (no substring/sibling collision involved): kmp-test
+  // dispatches the target module's tests across BOTH demo+prod flavors (individual_total:4 -- 2
+  // testcases x 2 flavors), while the Gradle corroboration stays deliberately scoped to the single
+  // demo-flavor task the coverage claim itself is about (gradle.tests.total:2) -- see this
+  // outcome's own graders.mjs doc comment for the full ground-truth-derived rationale.
   if (expected.outcome_kind === 'coverage_threshold_exceeded'
     && expected.kmp_test != null && typeof expected.kmp_test === 'object'
     && expected.kmp_test.coverage != null && typeof expected.kmp_test.coverage === 'object'

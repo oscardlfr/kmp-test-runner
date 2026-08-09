@@ -1441,9 +1441,9 @@ describe('validateScenario', () => {
     });
 
     // Deliberately DIFFERENT from tests_executed/tests_failed: kmp_test.tests.individual_total
-    // (the real multi-flavor aggregate, 28 -- ground-truth confirmed to span BOTH demo+prod
+    // (the real multi-flavor aggregate, 4 -- ground-truth confirmed to span BOTH demo+prod
     // flavors) is NOT required to equal gradle.tests.total (deliberately scoped to the single
-    // flavor/variant the coverage claim itself is about, 14) for this outcome_kind -- the two
+    // demo-flavor task the coverage claim itself is about, 2) for this outcome_kind -- the two
     // providers corroborate genuinely different-scoped claims by design here, unlike
     // tests_executed/tests_failed where they describe the identical real execution.
     it('does NOT apply the individual_total===gradle.tests.total cross-check to this outcome_kind', () => {
