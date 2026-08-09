@@ -12,6 +12,7 @@
 // value:null paired with reason:null.
 import { GRADLE_TASK_ENTRY_RE, KMPTEST_SUBCOMMAND_ENTRY_RE } from './policy-hook.mjs';
 import { GRADING_CHECK_NAMES } from './graders.mjs';
+import { normalizeModuleName } from './command-classify.mjs';
 import { ACCEPTED_AUDIT_SIDECAR_SCHEMA } from './accepted-run-audit.mjs';
 import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 
@@ -495,7 +496,7 @@ const SCENARIO_CANONICAL_FIELDS = [
   'expected_outcome', 'policy', 'expected', 'first_useful_signal_predicate', 'tags',
 ];
 
-const OUTCOME_KIND_VALUES = ['tests_executed', 'no_applicable_tests', 'tests_failed'];
+const OUTCOME_KIND_VALUES = ['tests_executed', 'no_applicable_tests', 'tests_failed', 'coverage_threshold_exceeded'];
 const GRADLE_MARKER_VALUES = ['NO-SOURCE'];
 // Mirrors TRIGGER_QUERY_PARTITION_VALUES's own train/held-out split for a conceptually identical
 // purpose (which corpus subset a scenario belongs to) -- a fresh review reproduced `tags` never
@@ -521,6 +522,26 @@ const GRADLE_CONTRACT_KEYS_TESTS_EXECUTED = ['allowed_invocations', 'evidence_ta
 const GRADLE_CONTRACT_KEYS_NO_APPLICABLE = ['allowed_invocations', 'evidence_task', 'exit_code', 'marker'];
 const KMP_TEST_TESTS_SHAPE_KEYS = ['total', 'passed', 'failed', 'individual_total', 'skipped'];
 const GRADLE_TESTS_SHAPE_KEYS = ['total', 'passed', 'failed'];
+
+// coverage_threshold_exceeded -- `tests`/`exit_code` are required exactly like tests_executed
+// (this outcome is NEVER a test failure; tests.failed must be exactly 0), plus a `coverage`
+// sub-object naming the real threshold/missed-line claim. Gradle has no coverage-threshold
+// concept at all (--min-missed-lines is a kmp-test-only flag, no raw Gradle task ever evaluates
+// it) -- its contract deliberately REUSES GRADLE_CONTRACT_KEYS_TESTS_EXECUTED verbatim (a clean,
+// ordinary test-task pass, nothing coverage-specific) rather than declaring a parallel, unused
+// `coverage` key set of its own.
+const KMP_TEST_CONTRACT_KEYS_COVERAGE_THRESHOLD_EXCEEDED = ['tests', 'exit_code', 'coverage'];
+const KMP_TEST_COVERAGE_SHAPE_KEYS = ['tool', 'min_missed_lines', 'missed_lines', 'with_data'];
+// Only 'auto' -- policy-hook.mjs has NO --coverage-tool flag category at all (a review-round
+// finding: this contract previously also allowed 'jacoco'/'kover', which describe a command the
+// current policy grammar could never actually admit -- an unreachable state under this minimal
+// PR's own policy). 'none' is separately impossible on different grounds: --coverage-tool none /
+// --no-coverage disables aggregation entirely (coverage-orchestrator.js's
+// coverage_aggregation_skipped path), so the gate could never fire under it either way. Widening
+// this back to include 'jacoco'/'kover' is a real future option once policy-hook grows a
+// --coverage-tool category of its own -- not merely a leftover value worth keeping for its own
+// sake.
+const COVERAGE_TOOL_EXPECTED_VALUES = ['auto'];
 
 function rejectUnrecognizedKeys(obj, allowedKeys, field, errors) {
   if (obj == null || typeof obj !== 'object' || Array.isArray(obj)) return;
@@ -602,12 +623,20 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
     rejectUnrecognizedKeys(provider, contractName === 'kmp_test' ? KMP_TEST_CONTRACT_KEYS_TESTS_EXECUTED : GRADLE_CONTRACT_KEYS_TESTS_EXECUTED, field, errors);
   } else if (outcomeKind === 'no_applicable_tests') {
     rejectUnrecognizedKeys(provider, contractName === 'kmp_test' ? KMP_TEST_CONTRACT_KEYS_NO_APPLICABLE : GRADLE_CONTRACT_KEYS_NO_APPLICABLE, field, errors);
+  } else if (outcomeKind === 'coverage_threshold_exceeded') {
+    // Gradle reuses tests_executed's own key set verbatim (see KMP_TEST_CONTRACT_KEYS_COVERAGE_THRESHOLD_EXCEEDED's doc comment) -- no coverage sub-object on this provider.
+    rejectUnrecognizedKeys(provider, contractName === 'kmp_test' ? KMP_TEST_CONTRACT_KEYS_COVERAGE_THRESHOLD_EXCEEDED : GRADLE_CONTRACT_KEYS_TESTS_EXECUTED, field, errors);
   }
 
   const hasTests = 'tests' in provider && provider.tests != null;
   const hasErrorCode = 'error_code' in provider && provider.error_code != null;
   const hasCausedByFilter = 'caused_by_filter' in provider && provider.caused_by_filter != null;
   const hasMarker = 'marker' in provider && provider.marker != null;
+  // Hoisted out of the `if (ranOutcome)` block below -- shared with the coverage_threshold_exceeded
+  // branch, which also needs the exact-integer domain checks but has its own `exit_code`/`tests`
+  // requirements (asymmetric between providers for the SAME outcome_kind, unlike the ranOutcome pair).
+  const isNonNegInt = (v) => Number.isInteger(v) && v >= 0;
+  const isPositiveInt = (v) => Number.isInteger(v) && v >= 1;
 
   if (ranOutcome) {
     // Non-negative INTEGER, not just typeof 'number' -- a review pass reproduced total:-1,
@@ -640,8 +669,6 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
     // results/skips remain explicitly out of scope for this PR (see this PR's own "Not in this PR"
     // note, and graders.mjs's identical scoping comment on its own test_failures check).
     const isFailureOutcome = outcomeKind === 'tests_failed';
-    const isNonNegInt = (v) => Number.isInteger(v) && v >= 0;
-    const isPositiveInt = (v) => Number.isInteger(v) && v >= 1;
     const requiredExitCode = isFailureOutcome ? 1 : 0;
     let testsShapeOk;
     if (contractName === 'kmp_test') {
@@ -724,6 +751,64 @@ function validateProviderContract(provider, contractName, outcomeKind, errors) {
       if (provider.exit_code !== 0) errors.push({ field: `${field}.exit_code`, message: 'must be exactly 0 when outcome_kind is no_applicable_tests -- a genuine NO-SOURCE result is always a successful gradle build' });
       if (!GRADLE_MARKER_VALUES.includes(provider.marker)) errors.push({ field: `${field}.marker`, message: `required, must be one of ${GRADLE_MARKER_VALUES.join('|')}, when outcome_kind is no_applicable_tests` });
     }
+  } else if (outcomeKind === 'coverage_threshold_exceeded') {
+    // tests.* -- BOTH providers require a genuine CLEAN PASS: this outcome's exit_code:1 is NEVER
+    // a test failure (unlike tests_failed, there is no isFailureOutcome-style branch here) --
+    // failed must be exactly 0 on both providers, unconditionally.
+    let testsShapeOk;
+    if (contractName === 'kmp_test') {
+      rejectUnrecognizedKeys(provider.tests, KMP_TEST_TESTS_SHAPE_KEYS, `${field}.tests`, errors);
+      testsShapeOk = hasTests && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed)
+        && provider.tests.failed === 0 && isPositiveInt(provider.tests.individual_total) && provider.tests.skipped === 0;
+    } else {
+      rejectUnrecognizedKeys(provider.tests, GRADLE_TESTS_SHAPE_KEYS, `${field}.tests`, errors);
+      testsShapeOk = hasTests && isPositiveInt(provider.tests.total) && isNonNegInt(provider.tests.passed) && provider.tests.failed === 0;
+    }
+    if (!testsShapeOk) {
+      errors.push({ field: `${field}.tests`, message: `required clean-pass shape (failed must be exactly 0${contractName === 'kmp_test' ? '; positive integer individual_total; skipped must be exactly 0' : ''}) when outcome_kind is ${outcomeKind} -- this outcome is never a test failure` });
+    }
+    if (testsShapeOk && provider.tests.total !== provider.tests.passed + provider.tests.failed) {
+      errors.push({ field: `${field}.tests`, message: `total (${provider.tests.total}) must equal passed (${provider.tests.passed}) + failed (${provider.tests.failed})` });
+    }
+
+    // exit_code -- the one place the two providers genuinely diverge for this SAME outcome_kind:
+    // kmp_test:1 (EXIT.TEST_FAIL, the coverage gate firing), gradle:0 (a raw test task has no
+    // threshold concept at all -- a clean pass always exits 0).
+    const requiredExitCode = contractName === 'kmp_test' ? 1 : 0;
+    if (provider.exit_code !== requiredExitCode) {
+      errors.push({ field: `${field}.exit_code`, message: `required and must be exactly ${requiredExitCode} when outcome_kind is ${outcomeKind} (${contractName === 'kmp_test' ? 'the coverage gate, EXIT.TEST_FAIL -- never a test failure' : 'gradle has no coverage-threshold concept; a clean pass always exits 0'})` });
+    }
+
+    if (hasErrorCode) errors.push({ field: `${field}.error_code`, message: `forbidden when outcome_kind is ${outcomeKind}` });
+    if (hasCausedByFilter) errors.push({ field: `${field}.caused_by_filter`, message: `forbidden when outcome_kind is ${outcomeKind}` });
+    if (hasMarker) errors.push({ field: `${field}.marker`, message: `forbidden when outcome_kind is ${outcomeKind}` });
+
+    // coverage sub-object -- kmp_test ONLY (gradle's key set, rejected above via
+    // GRADLE_CONTRACT_KEYS_TESTS_EXECUTED, has no `coverage` key at all -- an attempted coverage
+    // sub-object there is already caught as unrecognized by the dispatch above).
+    if (contractName === 'kmp_test') {
+      const cov = provider.coverage;
+      if (cov == null || typeof cov !== 'object' || Array.isArray(cov)) {
+        errors.push({ field: `${field}.coverage`, message: 'required (object) when outcome_kind is coverage_threshold_exceeded' });
+      } else {
+        rejectUnrecognizedKeys(cov, KMP_TEST_COVERAGE_SHAPE_KEYS, `${field}.coverage`, errors);
+        if (!COVERAGE_TOOL_EXPECTED_VALUES.includes(cov.tool)) {
+          errors.push({ field: `${field}.coverage.tool`, message: `must be one of ${COVERAGE_TOOL_EXPECTED_VALUES.join('|')} -- 'none' disables aggregation entirely, so the gate can never fire` });
+        }
+        if (!isPositiveInt(cov.min_missed_lines)) {
+          errors.push({ field: `${field}.coverage.min_missed_lines`, message: 'must be a positive integer -- 0 permanently disables the gate in the real CLI' });
+        }
+        if (!isPositiveInt(cov.missed_lines)) {
+          errors.push({ field: `${field}.coverage.missed_lines`, message: 'must be a positive integer -- the ground-truth missed-line count' });
+        }
+        if (isPositiveInt(cov.min_missed_lines) && isPositiveInt(cov.missed_lines) && cov.missed_lines <= cov.min_missed_lines) {
+          errors.push({ field: `${field}.coverage.missed_lines`, message: `must be strictly greater than min_missed_lines (${cov.min_missed_lines}) -- the gate could never have fired otherwise` });
+        }
+        if (!Array.isArray(cov.with_data) || cov.with_data.length !== 1 || typeof cov.with_data[0] !== 'string' || !/^:[A-Za-z0-9_:-]+$/.test(cov.with_data[0])) {
+          errors.push({ field: `${field}.coverage.with_data`, message: 'must be an array with exactly one colon-prefixed module-path string' });
+        }
+      }
+    }
   }
 }
 
@@ -795,6 +880,28 @@ function validateExpected(expected, policy, errors) {
     errors.push({
       field: 'expected.kmp_test.tests.individual_total',
       message: `must equal expected.gradle.tests.total (${gradle.tests.total}) -- both describe the same real test execution's count and must not diverge`,
+    });
+  }
+
+  // coverage_threshold_exceeded's own cross-check: the scenario's single-module coverage-
+  // attribution claim (expected.kmp_test.coverage.with_data[0]) must name the SAME module the
+  // scenario is actually about (expected.module), not a different one. Deliberately does NOT
+  // extend the individual_total<->gradle.tests.total check above to this outcome_kind -- ground
+  // truth confirmed the two providers corroborate genuinely different-scoped claims here even
+  // though both target the SAME single module (no substring/sibling collision involved): kmp-test
+  // dispatches the target module's tests across BOTH demo+prod flavors (individual_total:4 -- 2
+  // testcases x 2 flavors), while the Gradle corroboration stays deliberately scoped to the single
+  // demo-flavor task the coverage claim itself is about (gradle.tests.total:2) -- see this
+  // outcome's own graders.mjs doc comment for the full ground-truth-derived rationale.
+  if (expected.outcome_kind === 'coverage_threshold_exceeded'
+    && expected.kmp_test != null && typeof expected.kmp_test === 'object'
+    && expected.kmp_test.coverage != null && typeof expected.kmp_test.coverage === 'object'
+    && Array.isArray(expected.kmp_test.coverage.with_data) && expected.kmp_test.coverage.with_data.length === 1
+    && typeof expected.kmp_test.coverage.with_data[0] === 'string' && typeof expected.module === 'string'
+    && normalizeModuleName(expected.kmp_test.coverage.with_data[0]) !== normalizeModuleName(expected.module)) {
+    errors.push({
+      field: 'expected.kmp_test.coverage.with_data',
+      message: `must name the same module as expected.module (${expected.module}) -- the single-module coverage-attribution claim cannot point at a different module than the scenario itself`,
     });
   }
 }

@@ -24,6 +24,10 @@ describe('isJunitEvidenceOutcome', () => {
     expect(isJunitEvidenceOutcome('no_applicable_tests')).toBe(false);
   });
 
+  it('returns true for coverage_threshold_exceeded -- parallel genuinely runs tests, so a Gradle corroborating attempt needs real JUnit XML to attribute for its own outcomeMatches to be genuine', () => {
+    expect(isJunitEvidenceOutcome('coverage_threshold_exceeded')).toBe(true);
+  });
+
   it('returns false for an unrecognized/future outcome_kind -- fails closed, never opts a new outcome in by default', () => {
     expect(isJunitEvidenceOutcome('some-future-outcome-kind')).toBe(false);
   });

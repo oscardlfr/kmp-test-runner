@@ -163,11 +163,27 @@ export const FILTER_VALUE_RE = /^[A-Za-z0-9_.:#-]+$/;
 export const KMP_TEST_FILTER_FLAGS = new Set(['--module-filter', '--test-filter']);
 export const KMP_TEST_BOOLEAN_FLAGS = new Set(['--json', '--dry-run', '--no-coverage']);
 
+// --min-missed-lines -- needed to admit the coverage-threshold-failure scenario's ground-truth
+// command at all (it fits none of the 4 categories above: not bare, not a path, not a filter
+// value, not boolean). Exactly a non-negative decimal integer in canonical form: no leading +/-
+// sign (Number() would accept "+5"), no leading zero (a distinct textual representation of the
+// same value), no decimal point/fraction, no exponent notation -- deliberately NARROWER than the
+// real CLI's own validateNonNegativeInt (orchestrator-utils.js), which accepts "1e3"/"0x10"/"3.0"
+// via a bare Number() coercion: this hook validates SHAPE only (any well-formed non-negative
+// integer passes, including 0, even though no real scenario should ever expect that value) --
+// the GRADER separately enforces the scenario's exact expected N and requires N>0.
+export const NUMERIC_VALUE_RE = /^(0|[1-9]\d*)$/;
+export const KMP_TEST_NUMERIC_VALUE_FLAGS = new Set(['--min-missed-lines']);
+
 export function isSafeFilterValue(val) {
   // '#' is legitimate mid-value (FQN#method), but a LEADING '#' risks shell-comment
   // reinterpretation if this value is ever re-serialized through a real shell context.
   if (val.startsWith('#')) return false;
   return FILTER_VALUE_RE.test(val);
+}
+
+export function isSafeNumericValue(val) {
+  return NUMERIC_VALUE_RE.test(val);
 }
 
 export function evaluateKmpTest(tokens, cwd, config) {
@@ -188,6 +204,15 @@ export function evaluateKmpTest(tokens, cwd, config) {
     if (KMP_TEST_FILTER_FLAGS.has(a)) {
       const val = args[i + 1];
       if (val === undefined || !isSafeFilterValue(val)) return false;
+      i++;
+      continue;
+    }
+    if (KMP_TEST_NUMERIC_VALUE_FLAGS.has(a)) {
+      // Exactly two separate tokens -- the "=" combined form is deliberately NOT admitted here,
+      // unlike the filter flags above (the contract for this flag specifically requires two
+      // tokens, no combined payload).
+      const val = args[i + 1];
+      if (val === undefined || !isSafeNumericValue(val)) return false;
       i++;
       continue;
     }

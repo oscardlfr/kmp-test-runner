@@ -14,7 +14,7 @@ import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
 /** Classifies one Bash tool_use's raw command string. Relocated verbatim from graders.mjs (the
  * grammar itself is unchanged) so it can be shared by graders.mjs, junit-evidence.mjs, and
  * junit-evidence-hook.mjs without a second, potentially divergent parser. Returns
- * `{kind:'kmp-test', subcommand, moduleFilter, testType, isPlanOnly}` |
+ * `{kind:'kmp-test', subcommand, moduleFilter, testType, minMissedLines, isPlanOnly}` |
  * `{kind:'gradle', taskTokens, isPlanOnly}` | `{kind:'other'}`. */
 export function classifyBashCommand(command) {
   if (typeof command !== 'string') return { kind: 'other' };
@@ -23,14 +23,21 @@ export function classifyBashCommand(command) {
   if (tokens[0] === 'kmp-test') {
     let moduleFilter = null;
     let testType = null;
+    let minMissedLines = null;
     for (let i = 1; i < tokens.length; i++) {
       if (tokens[i] === '--module-filter') { moduleFilter = tokens[i + 1] ?? null; i++; }
       else if (tokens[i].startsWith('--module-filter=')) { moduleFilter = tokens[i].slice('--module-filter='.length); }
       else if (tokens[i] === '--test-type') { testType = tokens[i + 1] ?? null; i++; }
       else if (tokens[i].startsWith('--test-type=')) { testType = tokens[i].slice('--test-type='.length); }
+      // --min-missed-lines -- raw string token, never parsed to a number here (same convention as
+      // moduleFilter/testType above): interpretation/validation is the caller's job. graders.mjs's
+      // exact-string comparison against the scenario's own String(min_missed_lines) implicitly
+      // rejects non-canonical forms (e.g. "050"/"5e1") without a second regex here.
+      else if (tokens[i] === '--min-missed-lines') { minMissedLines = tokens[i + 1] ?? null; i++; }
+      else if (tokens[i].startsWith('--min-missed-lines=')) { minMissedLines = tokens[i].slice('--min-missed-lines='.length); }
     }
     const isPlanOnly = tokens.includes('--dry-run') || tokens.includes('--list') || tokens.includes('--list-only');
-    return { kind: 'kmp-test', subcommand: tokens[1] ?? null, moduleFilter, testType, isPlanOnly };
+    return { kind: 'kmp-test', subcommand: tokens[1] ?? null, moduleFilter, testType, minMissedLines, isPlanOnly };
   }
   if (tokens[0] === './gradlew' || tokens[0] === './gradlew.bat') {
     const taskTokens = tokens.slice(1).filter((t) => !t.startsWith('-'));
