@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-failfast-pair/claude -- deterministic stand-in for the real `claude`
+# CLI, proving runConditionPair's fail-fast (preserve rejected matrix forensics, cli.mjs) stops
+# calibrate/smoke after exactly ONE live session -- current-skill (B), which this repo's own
+# runConditionPair always spawns FIRST -- fails its own local cellTranscriptIntegrityOk check, and
+# no-skill (A) is NEVER spawned at all. Byte-for-byte fake-claude-success/claude (calibrate/smoke's
+# own shared baseline: two allowed Bash calls, kmp-test doctor/describe) EXCEPT for the same
+# invocation-counter + injected-Read mechanism fake-claude-run-failfast-first-cell/claude uses (see
+# that fixture's own header comment for the full PROBE_DIR/counter rationale) -- here proving the
+# PAIR path specifically, not the scenario-matrix path, since runConditionPair
+# (cli.mjs) and runScenarioMatrix (matrix-runner.mjs) are two independently-wired call sites of the
+# same canonical cellTranscriptIntegrityOk check and each needs its own end-to-end proof.
+#
+# On the FIRST invocation (current-skill/B, per runConditionPair's fixed order): the init event
+# additionally declares "Read", and an extra unexpected Read tool_use+tool_result pair (identical
+# shape to fake-claude-unexpected-tool/claude's own injected Read block) is appended after the
+# second Bash tool_result, before the final result event -- tripping toolProfileOk/
+# noUnexpectedToolsOk exactly like the real 2026-08 canary incident. The SECOND invocation (no-skill/
+# A, which must never actually happen if fail-fast works) is byte-for-byte the clean
+# fake-claude-success shape.
+PROBE_DIR="${TMPDIR:-${TMP:-$TEMP}}"
+PROBE_LOG="$PROBE_DIR/failfast-pair-invocations.log"
+if [ -f "$PROBE_LOG" ]; then
+  INVOCATION=$(( $(wc -l < "$PROBE_LOG") + 1 ))
+else
+  INVOCATION=1
+fi
+echo "$INVOCATION" >> "$PROBE_LOG"
+
+HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  PREV_ARG="$arg"
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
+  SKILLS='["kmp-test-runner"]'
+else
+  PLUGINS='[]'
+  SKILLS='[]'
+fi
+
+if [ "$INVOCATION" = "1" ]; then
+  TOOLS_JSON='["Bash","Skill","Read"]'
+else
+  TOOLS_JSON='["Bash","Skill"]'
+fi
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-0001\",\"tools\":$TOOLS_JSON,\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"dontAsk\",\"plugins\":$PLUGINS,\"skills\":$SKILLS,\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+else
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
+fi
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test doctor --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake doctor output]","tool_use_id":"toolu_fakebash1"}]}}'
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash2","name":"Bash","input":{"command":"kmp-test describe --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-2","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-2","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake describe output]","tool_use_id":"toolu_fakebash2"}]}}'
+
+if [ "$INVOCATION" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeread1","name":"Read","input":{"file_path":"/fake/unexpected.txt"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake read output]","tool_use_id":"toolu_fakeread1"}]}}'
+fi
+
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"fake result text","permission_denials":[],"usage":{"input_tokens":2,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}'
+exit 0

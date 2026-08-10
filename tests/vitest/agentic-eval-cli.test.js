@@ -1733,7 +1733,10 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
   const rejectingGate = () => ({
     ok: false,
     reason: 'synthetic-gate-rejection:true',
-    cellResults: [{ runId: 'scenario-current-skill-syn0001', failedChecks: ['syntheticCheck'] }, { runId: 'scenario-no-skill-syn0002', failedChecks: [] }],
+    cellResults: [
+      { runId: 'scenario-current-skill-syn0001', failedChecks: ['syntheticCheck'], unexpectedToolUsesCount: 0, unexpectedTools: [] },
+      { runId: 'scenario-no-skill-syn0002', failedChecks: [], unexpectedToolUsesCount: 0, unexpectedTools: [] },
+    ],
     ambientProfileMatrixOk: true,
   });
 
@@ -1745,7 +1748,7 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
     const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-gate-precedence-'));
     try {
       const records = twoCellMatrix();
-      const conditionResults = [{ events: [] }, { events: [] }];
+      const conditionResults = [{ events: [], spawnResult: { rawStdout: '' } }, { events: [], spawnResult: { rawStdout: '' } }];
       const result = await finalizeAndWriteMatrixRecords({
         runKind: 'scenario', records, conditionResults, hardGateFn: rejectingGate,
         repeats: 1, runsRootOverride: dir, buildSidecarsFn: alwaysFailingSidecarBuilder,
@@ -1761,7 +1764,7 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
     const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-gate-precedence-diag-'));
     try {
       const records = twoCellMatrix();
-      const conditionResults = [{ events: [] }, { events: [] }];
+      const conditionResults = [{ events: [], spawnResult: { rawStdout: '' } }, { events: [], spawnResult: { rawStdout: '' } }];
       const result = await finalizeAndWriteMatrixRecords({
         runKind: 'scenario', records, conditionResults, hardGateFn: rejectingGate,
         repeats: 1, runsRootOverride: dir, buildSidecarsFn: alwaysFailingSidecarBuilder,
@@ -1779,7 +1782,7 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
     const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-gate-precedence-accept-fail-'));
     try {
       const records = twoCellMatrix();
-      const conditionResults = [{ events: [] }, { events: [] }];
+      const conditionResults = [{ events: [], spawnResult: { rawStdout: '' } }, { events: [], spawnResult: { rawStdout: '' } }];
       const acceptingGate = () => ({ ok: true, reason: null, cellResults: [], ambientProfileMatrixOk: true });
       const result = await finalizeAndWriteMatrixRecords({
         runKind: 'scenario', records, conditionResults, hardGateFn: acceptingGate,

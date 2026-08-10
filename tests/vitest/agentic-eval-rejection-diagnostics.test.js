@@ -7,20 +7,53 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  REJECTION_DIAGNOSTICS_SCHEMA,
+  LATEST_REJECTION_DIAGNOSTICS_SCHEMA,
+  SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS,
   buildRejectionDiagnostics,
   validateRejectionRow,
+  validateRejectionLocalRow,
+  assertUnexpectedToolCoherence,
   writeRejectedRunDiagnostics,
+  writeRejectionRawTranscripts,
+  deriveTranscriptFilename,
 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const CLI_PATH = path.join(REPO_ROOT, 'tools', 'agentic-eval', 'cli.mjs');
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
+
+// Test-local wrapper -- this fix (preserve rejected matrix forensics) added 5 new REQUIRED
+// buildRejectionDiagnostics params (rejectionId, unexpectedToolUsesCountByRunId,
+// unexpectedToolsByRunId, captureOrdinalByRunId, rawTranscriptsPersisted). Every EXISTING test
+// below predates those fields and is testing something else entirely (provenance disagreement,
+// ambient-profile coherence, foreign-skill-summary summing, ...) -- routing them through this
+// wrapper supplies coherent, valid defaults (zero unexpected tools everywhere) so those tests keep
+// exercising the REAL function under realistic, schema-valid inputs, without each one having to
+// separately restate the same 5 boilerplate fields. Tests that specifically exercise the NEW
+// fields' own contract call buildRejectionDiagnostics directly instead (see the dedicated describe
+// blocks added by this fix, below).
+function zeroToolDefaultsFor(records) {
+  const ids = records.map((r) => r.run_id);
+  return {
+    unexpectedToolUsesCountByRunId: Object.fromEntries(ids.map((id) => [id, 0])),
+    unexpectedToolsByRunId: Object.fromEntries(ids.map((id) => [id, []])),
+    captureOrdinalByRunId: Object.fromEntries(ids.map((id, i) => [id, i])),
+  };
+}
+function buildDiag(opts) {
+  return buildRejectionDiagnostics({
+    rejectionId: randomUUID(),
+    rawTranscriptsPersisted: true,
+    ...zeroToolDefaultsFor(opts.records),
+    ...opts,
+  });
+}
 
 // Defaults represent a genuine run_kind:'calibration' record -- project_alias is the FIXED
 // 'calibration-project' literal (buildRunRecord's own default parameter value, never null; see
@@ -76,26 +109,28 @@ function scenarioRecord(overrides = {}) {
   });
 }
 
-// REJECTION_DIAGNOSTICS_SCHEMA 1 -> 2 (correction 6): the row's own shape changed (gained
-// per-cell ambient_skill_profile + top-level ambient_profile_matrix_ok) -- versioned exactly like
-// every other schema in this harness whenever its own shape changes. No historical committed
-// rejection-diagnostics files exist (the whole directory is local-only/gitignored by design), so
-// this is a plain bump, never a dual-version dispatch.
-it('REJECTION_DIAGNOSTICS_SCHEMA is 2 -- the row gained fields and must be versioned', () => {
-  expect(REJECTION_DIAGNOSTICS_SCHEMA).toBe(2);
+// Schema 2 -> 3 (preserve rejected matrix forensics): the row gained per-cell
+// unexpected_tool_uses_count + top-level matrix_complete/planned_cell_count/executed_cell_count/
+// raw_transcripts_persisted. Unlike every PRIOR bump in this module, this one is a genuine
+// version DISPATCH (SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3]), not a plain constant bump
+// -- two real diagnostic files from a live 2026-08 canary rejection are schema:2 and are declared
+// incident evidence that must keep validating. The builder only ever emits the latest schema.
+it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 3, and the validator still supports 2', () => {
+  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(3);
+  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([2, 3]);
 });
 
 describe('buildRejectionDiagnostics -- pure construction', () => {
   it('builds a committed record with the closed field set, and a local companion with extra foreign_skill_names', () => {
     const recordA = record();
     const recordB = record({ run_id: 'calibration-current-skill-bbbb2222', condition: 'current-skill', skill_source_sha: 'a'.repeat(40) });
-    const { committed, local } = buildRejectionDiagnostics({
+    const { committed, local } = buildDiag({
       runKind: 'calibration',
       records: [recordA, recordB],
       failedChecksByRunId: { [recordA.run_id]: ['skillSelectionOk'], [recordB.run_id]: [] },
       foreignSkillNamesByRunId: { [recordA.run_id]: ['some-other-skill'], [recordB.run_id]: [] },
     });
-    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA);
+    expect(committed.schema).toBe(LATEST_REJECTION_DIAGNOSTICS_SCHEMA);
     expect(committed.run_kind).toBe('calibration');
     expect(committed.run_ids).toEqual([recordA.run_id, recordB.run_id]);
     expect(committed.cells.length).toBe(2);
@@ -109,7 +144,7 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
 
   it('deduplicates and sorts foreign_skill_names in the local tier', () => {
     const r = record();
-    const { local } = buildRejectionDiagnostics({
+    const { local } = buildDiag({
       runKind: 'calibration',
       records: [r],
       failedChecksByRunId: { [r.run_id]: [] },
@@ -121,7 +156,7 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
   it('sums foreign_skill_summary across every cell into the top-level total', () => {
     const a = record({ foreign_skill_summary: { rejected: 2, confirmed: 0, incomplete: 1 } });
     const b = record({ run_id: 'calibration-current-skill-cccc3333', condition: 'current-skill', foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 } });
-    const { committed } = buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } });
+    const { committed } = buildDiag({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } });
     expect(committed.foreign_skill_summary).toEqual({ rejected: 2, confirmed: 1, incomplete: 1 });
   });
 
@@ -133,7 +168,7 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
     const profileB = { count: 0, scope_id: '11111111-1111-4111-8111-111111111111', fingerprint_hmac: 'b'.repeat(64) };
     const a = record({ ambient_skill_profile: profileA });
     const b = record({ run_id: 'calibration-current-skill-llll4444', condition: 'current-skill', ambient_skill_profile: profileB });
-    const { committed } = buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } });
+    const { committed } = buildDiag({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } });
     expect(committed.cells[0].ambient_skill_profile).toEqual(profileA);
     expect(committed.cells[1].ambient_skill_profile).toEqual(profileB);
   });
@@ -142,13 +177,13 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
   // never compute a matrix consensus) -- scenario's own call site passes the real computed value.
   it('ambient_profile_matrix_ok defaults to null when the caller omits it', () => {
     const a = record();
-    const { committed } = buildRejectionDiagnostics({ runKind: 'calibration', records: [a], failedChecksByRunId: { [a.run_id]: [] } });
+    const { committed } = buildDiag({ runKind: 'calibration', records: [a], failedChecksByRunId: { [a.run_id]: [] } });
     expect(committed.ambient_profile_matrix_ok).toBeNull();
   });
 
   it('ambient_profile_matrix_ok carries the real value the caller passes (scenario\'s own use)', () => {
     const a = scenarioRecord({ run_id: 'scenario-no-skill-mmmm5555' });
-    const { committed } = buildRejectionDiagnostics({ runKind: 'scenario', records: [a], failedChecksByRunId: { [a.run_id]: ['ambientProfileMatrixOk'] }, ambientProfileMatrixOk: false });
+    const { committed } = buildDiag({ runKind: 'scenario', records: [a], failedChecksByRunId: { [a.run_id]: ['ambientProfileMatrixOk'] }, ambientProfileMatrixOk: false });
     expect(committed.ambient_profile_matrix_ok).toBe(false);
   });
 
@@ -164,7 +199,7 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
     const profileWithRunAndReview = { count: 2, scope_id: '22222222-2222-4222-8222-222222222222', fingerprint_hmac: 'b'.repeat(64) };
     const cellClean = scenarioRecord({ run_id: 'scenario-no-skill-nnnn6666', ambient_skill_profile: profileWithRun });
     const cellDrifted = scenarioRecord({ run_id: 'scenario-no-skill-oooo7777', ambient_skill_profile: profileWithRunAndReview });
-    const { committed } = buildRejectionDiagnostics({
+    const { committed } = buildDiag({
       runKind: 'scenario',
       records: [cellClean, cellDrifted],
       failedChecksByRunId: { [cellClean.run_id]: ['ambientProfileMatrixOk'], [cellDrifted.run_id]: ['ambientProfileMatrixOk'] },
@@ -185,7 +220,7 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
   it('includes every cell, not only ones with failed_checks -- scenario batches need the whole matrix as context', () => {
     const clean = scenarioRecord({ run_id: 'scenario-no-skill-dddd4444' });
     const failing = scenarioRecord({ run_id: 'scenario-current-skill-eeee5555', condition: 'current-skill', skill_source_sha: 'b'.repeat(40) });
-    const { committed } = buildRejectionDiagnostics({
+    const { committed } = buildDiag({
       runKind: 'scenario',
       records: [clean, failing],
       failedChecksByRunId: { [clean.run_id]: [], [failing.run_id]: ['toolResultsCompleteOk'] },
@@ -197,13 +232,13 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
   it('throws (never silently picks one) when contributing records disagree on repo_commit', () => {
     const a = record({ repo_commit: 'c'.repeat(40) });
     const b = record({ run_id: 'calibration-current-skill-ffff6666', repo_commit: 'd'.repeat(40) });
-    expect(() => buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } })).toThrow(/disagree on repo_commit/);
+    expect(() => buildDiag({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } })).toThrow(/disagree on repo_commit/);
   });
 
   it('throws (never silently picks one) when contributing records disagree on model_requested', () => {
     const a = record({ model_requested: 'model-x' });
     const b = record({ run_id: 'calibration-current-skill-ffff7777', model_requested: 'model-y' });
-    expect(() => buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } })).toThrow(/disagree on model_requested/);
+    expect(() => buildDiag({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } })).toThrow(/disagree on model_requested/);
   });
 
   // Round-6 audit finding ("diagnostic provenance"): the disagreement check generalized from a
@@ -213,13 +248,13 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
   it('throws (never silently picks one) when contributing records disagree on scenario_id', () => {
     const a = scenarioRecord({ scenario_id: 'kampkit-android-host-test-discovery' });
     const b = scenarioRecord({ run_id: 'scenario-current-skill-gggg8888', condition: 'current-skill', skill_source_sha: 'b'.repeat(40), scenario_id: 'kampkit-no-applicable-tests' });
-    expect(() => buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } })).toThrow(/disagree on scenario_id/);
+    expect(() => buildDiag({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } })).toThrow(/disagree on scenario_id/);
   });
 
   it('throws when contributing records disagree on seed (a scenario-only field, still checked)', () => {
     const a = scenarioRecord({ seed: 1 });
     const b = scenarioRecord({ run_id: 'scenario-current-skill-hhhh9999', condition: 'current-skill', skill_source_sha: 'b'.repeat(40), seed: 2 });
-    expect(() => buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } })).toThrow(/disagree on seed/);
+    expect(() => buildDiag({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } })).toThrow(/disagree on seed/);
   });
 
   // Round-7 audit finding ("atribución por celda todavía fail-open"): runKind must match every
@@ -228,7 +263,7 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
   it('throws when runKind does not match a record\'s own run_kind', () => {
     const a = record(); // run_kind: 'calibration'
     const b = record({ run_id: 'calibration-current-skill-jjjj2222', condition: 'current-skill' });
-    expect(() => buildRejectionDiagnostics({ runKind: 'smoke', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } }))
+    expect(() => buildDiag({ runKind: 'smoke', records: [a, b], failedChecksByRunId: { [a.run_id]: [], [b.run_id]: [] } }))
       .toThrow(/runKind \('smoke'\) does not match record .+'s own run_kind \('calibration'\)/);
   });
 
@@ -238,13 +273,13 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
   it('throws when failedChecksByRunId is missing a key for one of the records', () => {
     const a = record();
     const b = record({ run_id: 'calibration-current-skill-kkkk3333', condition: 'current-skill' });
-    expect(() => buildRejectionDiagnostics({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: ['skillSelectionOk'] } }))
+    expect(() => buildDiag({ runKind: 'calibration', records: [a, b], failedChecksByRunId: { [a.run_id]: ['skillSelectionOk'] } }))
       .toThrow(/failedChecksByRunId's keys must exactly match records\[\]\.run_id \(missing: \["calibration-current-skill-kkkk3333"\]/);
   });
 
   it('throws when failedChecksByRunId has a stale/extra key not present in records', () => {
     const a = record();
-    expect(() => buildRejectionDiagnostics({ runKind: 'calibration', records: [a], failedChecksByRunId: { [a.run_id]: ['skillSelectionOk'], 'stale-run-id-from-a-different-batch': ['x'] } }))
+    expect(() => buildDiag({ runKind: 'calibration', records: [a], failedChecksByRunId: { [a.run_id]: ['skillSelectionOk'], 'stale-run-id-from-a-different-batch': ['x'] } }))
       .toThrow(/extra\/stale: \["stale-run-id-from-a-different-batch"\]/);
   });
 
@@ -270,7 +305,7 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
     // real boolean here (cli.mjs's finalizeAndWriteMatrixRecords always passes gate.ambientProfileMatrixOk,
     // never leaves the default) -- true, and coherent with neither cell's failed_checks below
     // flagging 'ambientProfileMatrixOk', matching validateAmbientProfileMatrixOk's own coherence rule.
-    const { committed, local } = buildRejectionDiagnostics({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: ['toolResultsCompleteOk'], [b.run_id]: [] }, ambientProfileMatrixOk: true });
+    const { committed, local } = buildDiag({ runKind: 'scenario', records: [a, b], failedChecksByRunId: { [a.run_id]: ['toolResultsCompleteOk'], [b.run_id]: [] }, ambientProfileMatrixOk: true });
     expect(committed.scenario_id).toBe('kampkit-android-host-test-discovery');
     expect(committed.project_alias).toBe('kampkit');
     expect(committed.project_commit).toBe('d'.repeat(40));
@@ -297,10 +332,13 @@ describe('validateRejectionRow -- schema validation', () => {
   const AMBIENT_PROFILE_FIXTURE = { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) };
 
   function validRow(overrides = {}) {
-    const cellA = { run_id: 'r1', condition: 'no-skill', repetition_index: null, order_index: null, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE };
-    const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE };
+    // unexpected_tool_uses_count: 0 on both -- coherent with the biconditional this fix adds
+    // (validateRejectionRow requires count>0 IFF failed_checks includes 'noUnexpectedToolsOk';
+    // neither cell's failed_checks includes it, so 0 is the only valid value for either).
+    const cellA = { run_id: 'r1', condition: 'no-skill', repetition_index: null, order_index: null, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE, unexpected_tool_uses_count: 0 };
+    const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE, unexpected_tool_uses_count: 0 };
     return {
-      schema: REJECTION_DIAGNOSTICS_SCHEMA,
+      schema: LATEST_REJECTION_DIAGNOSTICS_SCHEMA,
       rejection_id: '11111111-1111-1111-1111-111111111111',
       timestamp: '2026-07-21T00:00:00.000Z',
       run_kind: 'calibration',
@@ -321,6 +359,12 @@ describe('validateRejectionRow -- schema validation', () => {
       // ambient_profile_matrix_ok (review-round-2 fix): null for calibration/smoke (no matrix
       // consensus concept -- see cli.mjs's scenarioHardGate), a real boolean for scenario.
       ambient_profile_matrix_ok: null,
+      // matrix_complete/planned_cell_count/executed_cell_count/raw_transcripts_persisted
+      // (preserve rejected matrix forensics fix): a normal, complete 2-cell batch by default.
+      matrix_complete: true,
+      planned_cell_count: 2,
+      executed_cell_count: 2,
+      raw_transcripts_persisted: true,
       ...overrides,
     };
   }
@@ -810,7 +854,7 @@ describe('writeRejectedRunDiagnostics -- validate -> redact -> revalidate orderi
   it('a redaction rule that mangles rejection_id out of its required UUID shape is caught by revalidation, never promoted', () => {
     const r = record();
     const r2 = record({ run_id: 'calibration-current-skill-bbbb2222', condition: 'current-skill', skill_source_sha: 'a'.repeat(40) });
-    const { committed, local } = buildRejectionDiagnostics({
+    const { committed, local } = buildDiag({
       runKind: 'calibration',
       records: [r, r2],
       // At least one real failed check -- an empty failedChecksByRunId would produce
@@ -850,7 +894,7 @@ describe('writeRejectedRunDiagnostics -- return shape (round-6 audit finding: "l
   it('returns {outDir, rejectionId, relativePath}, with relativePath pointing at the actual written file, relative to RUNS_ROOT', () => {
     const r = record();
     const r2 = record({ run_id: 'calibration-current-skill-jjjj1111', condition: 'current-skill', skill_source_sha: 'a'.repeat(40) });
-    const { committed, local } = buildRejectionDiagnostics({
+    const { committed, local } = buildDiag({
       runKind: 'calibration',
       records: [r, r2],
       failedChecksByRunId: { [r.run_id]: ['skillSelectionOk'], [r2.run_id]: [] },
@@ -1003,4 +1047,665 @@ describe('writeRejectedRunDiagnostics -- wired into cli.mjs end-to-end (real sub
   // file instead, matching this repo's established node:fs/privacy.mjs-mock-isolation convention
   // (see agentic-eval-write-evidence-gitcheck-fail-closed.test.js's own header comment). See
   // agentic-eval-rejection-diagnostics-write-failure.test.js.
+});
+
+// ---------------------------------------------------------------------------
+// preserve rejected matrix forensics: everything below is NEW coverage this fix adds -- the
+// pre-existing suite above predates it and exercises a different concern (provenance, ambient-
+// profile coherence, foreign-skill summing). Scoped exclusively to: schema-3-only field
+// validation (including the noUnexpectedToolsOk<->count biconditional that makes the 2026-08
+// incident's own exact shape structurally impossible to reproduce), the local tier's own
+// validator, the cross-tier coherence invariant (including the raw_transcripts_persisted equality
+// the final approval made a second mandatory invariant), transcript filename derivation, and
+// Transaction 1 (writeRejectionRawTranscripts) itself.
+// ---------------------------------------------------------------------------
+
+describe('validateRejectionRow -- schema-3-only fields (preserve rejected matrix forensics)', () => {
+  const AMBIENT_PROFILE_FIXTURE = { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) };
+
+  function validRow(overrides = {}) {
+    const cellA = { run_id: 'r1', condition: 'no-skill', repetition_index: null, order_index: null, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE, unexpected_tool_uses_count: 0 };
+    const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE, unexpected_tool_uses_count: 0 };
+    return {
+      schema: LATEST_REJECTION_DIAGNOSTICS_SCHEMA,
+      rejection_id: '11111111-1111-1111-1111-111111111111',
+      timestamp: '2026-07-21T00:00:00.000Z',
+      run_kind: 'calibration',
+      run_ids: ['r1', 'r2'],
+      model_requested: 'fake-model-x',
+      repo_commit: 'c'.repeat(40),
+      scenario_id: 'calibration-explicit-invocation',
+      project_alias: 'calibration-project',
+      project_commit: null,
+      seed: null,
+      policy_sha256: 'a'.repeat(64),
+      platform: 'linux',
+      privacy_status: 'public',
+      cells: [cellA, cellB],
+      foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 },
+      ambient_profile_matrix_ok: null,
+      matrix_complete: true,
+      planned_cell_count: 2,
+      executed_cell_count: 2,
+      raw_transcripts_persisted: true,
+      ...overrides,
+    };
+  }
+
+  it('accepts a well-formed schema-3 row cleanly', () => {
+    const { errors } = validateRejectionRow(validRow());
+    expect(errors).toEqual([]);
+  });
+
+  it('rejects a non-boolean matrix_complete', () => {
+    const { errors } = validateRejectionRow(validRow({ matrix_complete: 'true' }));
+    expect(errors.some((e) => e.field === 'matrix_complete')).toBe(true);
+  });
+
+  it('rejects planned_cell_count/executed_cell_count below 1', () => {
+    const { errors } = validateRejectionRow(validRow({ planned_cell_count: 0, executed_cell_count: 0 }));
+    expect(errors.some((e) => e.field === 'planned_cell_count')).toBe(true);
+    expect(errors.some((e) => e.field === 'executed_cell_count')).toBe(true);
+  });
+
+  it('rejects executed_cell_count exceeding planned_cell_count', () => {
+    const { errors } = validateRejectionRow(validRow({ planned_cell_count: 2, executed_cell_count: 3 }));
+    expect(errors.some((e) => e.field === 'executed_cell_count' && e.message.includes('<= planned_cell_count'))).toBe(true);
+  });
+
+  it('rejects matrix_complete:true when executed_cell_count !== planned_cell_count', () => {
+    const row = validRow({ planned_cell_count: 4, executed_cell_count: 1, cells: [validRow().cells[0]], run_ids: ['r1'] });
+    row.cells[0] = { ...row.cells[0], failed_checks: ['noUnexpectedToolsOk'], unexpected_tool_uses_count: 1 };
+    const { errors } = validateRejectionRow(row);
+    expect(errors.some((e) => e.field === 'matrix_complete')).toBe(true);
+  });
+
+  it('rejects matrix_complete:false when executed_cell_count === planned_cell_count', () => {
+    const { errors } = validateRejectionRow(validRow({ matrix_complete: false }));
+    expect(errors.some((e) => e.field === 'matrix_complete')).toBe(true);
+  });
+
+  it('rejects executed_cell_count disagreeing with the real cells.length', () => {
+    const { errors } = validateRejectionRow(validRow({ executed_cell_count: 3 }));
+    expect(errors.some((e) => e.field === 'executed_cell_count' && e.message.includes('cells.length'))).toBe(true);
+  });
+
+  it('rejects a non-boolean raw_transcripts_persisted', () => {
+    const { errors } = validateRejectionRow(validRow({ raw_transcripts_persisted: 'yes' }));
+    expect(errors.some((e) => e.field === 'raw_transcripts_persisted')).toBe(true);
+  });
+
+  it('rejects a negative unexpected_tool_uses_count on a cell', () => {
+    const row = validRow();
+    row.cells[0] = { ...row.cells[0], unexpected_tool_uses_count: -1 };
+    const { errors } = validateRejectionRow(row);
+    expect(errors.some((e) => e.field === 'cells[0].unexpected_tool_uses_count')).toBe(true);
+  });
+
+  describe('the noUnexpectedToolsOk <-> unexpected_tool_uses_count biconditional (the single most important invariant this fix adds)', () => {
+    it('accepts count:0 with no noUnexpectedToolsOk flag (the coherent clean pairing)', () => {
+      const { errors } = validateRejectionRow(validRow());
+      expect(errors.filter((e) => e.field === 'cells[0].unexpected_tool_uses_count')).toEqual([]);
+    });
+
+    it('accepts count>0 WITH the flag present (the coherent failure pairing -- exactly the shape the 2026-08 incident was missing)', () => {
+      const row = validRow();
+      row.cells[0] = { ...row.cells[0], failed_checks: ['noUnexpectedToolsOk'], unexpected_tool_uses_count: 1 };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.filter((e) => e.field === 'cells[0].unexpected_tool_uses_count')).toEqual([]);
+    });
+
+    it('rejects count:0 when failed_checks DOES contain noUnexpectedToolsOk -- structurally impossible to reproduce the 2026-08 incident\'s own shape (a rejection blamed on this check with zero recorded detail)', () => {
+      const row = validRow();
+      row.cells[0] = { ...row.cells[0], failed_checks: ['noUnexpectedToolsOk'], unexpected_tool_uses_count: 0 };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].unexpected_tool_uses_count' && e.message.includes('is 0 but failed_checks contains'))).toBe(true);
+    });
+
+    it('rejects count>0 when failed_checks does NOT contain noUnexpectedToolsOk -- a cell can never show unexpected-tool detail without also showing the check it necessarily failed', () => {
+      const row = validRow();
+      row.cells[0] = { ...row.cells[0], failed_checks: [], unexpected_tool_uses_count: 2 };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].unexpected_tool_uses_count' && e.message.includes('does NOT contain'))).toBe(true);
+    });
+  });
+
+  describe('ambient_profile_matrix_ok must be null on an incomplete (fail-fast-stopped) scenario matrix', () => {
+    function incompleteScenarioRow(overrides = {}) {
+      const cell = { run_id: 'r1', condition: 'current-skill', repetition_index: 0, order_index: 0, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: ['noUnexpectedToolsOk'], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE, unexpected_tool_uses_count: 1 };
+      return validRow({
+        run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery',
+        project_alias: 'kampkit', project_commit: 'd'.repeat(40), seed: 5,
+        run_ids: ['r1'], cells: [cell],
+        foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+        matrix_complete: false, planned_cell_count: 4, executed_cell_count: 1,
+        ambient_profile_matrix_ok: null,
+        ...overrides,
+      });
+    }
+
+    it('accepts ambient_profile_matrix_ok:null on a genuinely incomplete scenario matrix', () => {
+      const { errors } = validateRejectionRow(incompleteScenarioRow());
+      expect(errors.filter((e) => e.field === 'ambient_profile_matrix_ok')).toEqual([]);
+    });
+
+    it('rejects a real boolean ambient_profile_matrix_ok on an incomplete scenario matrix, even though scenario rows normally require one', () => {
+      const { errors } = validateRejectionRow(incompleteScenarioRow({ ambient_profile_matrix_ok: true }));
+      expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok' && e.message.includes('matrix_complete is false'))).toBe(true);
+    });
+
+    it('still requires a real boolean once matrix_complete is true again (the ordinary scenario rule, unaffected by this fix)', () => {
+      const completeRow = incompleteScenarioRow({ matrix_complete: true, planned_cell_count: 1, executed_cell_count: 1, ambient_profile_matrix_ok: null });
+      const { errors } = validateRejectionRow(completeRow);
+      expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok')).toBe(true);
+    });
+  });
+
+  it('a schema:2 row is validated against its ORIGINAL shape -- none of the schema-3-only fields are required, and none are even ALLOWED', () => {
+    const v2Cell = { run_id: 'r1', condition: 'no-skill', repetition_index: null, order_index: null, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE };
+    const v2Cell2 = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE };
+    const v2Row = {
+      schema: 2, rejection_id: '11111111-1111-1111-1111-111111111111', timestamp: '2026-07-21T00:00:00.000Z',
+      run_kind: 'calibration', run_ids: ['r1', 'r2'], model_requested: 'fake-model-x', repo_commit: 'c'.repeat(40),
+      scenario_id: 'calibration-explicit-invocation', project_alias: 'calibration-project', project_commit: null, seed: null,
+      policy_sha256: 'a'.repeat(64), platform: 'linux', privacy_status: 'public', cells: [v2Cell, v2Cell2],
+      foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 }, ambient_profile_matrix_ok: null,
+    };
+    expect(validateRejectionRow(v2Row).errors).toEqual([]);
+
+    // Adding a schema-3-only field to a schema:2 row is a closed-key-set violation, not silently
+    // tolerated -- v2's own field list never included these.
+    const v2RowWithV3Field = { ...v2Row, matrix_complete: true };
+    expect(validateRejectionRow(v2RowWithV3Field).errors.some((e) => e.field === 'matrix_complete' && e.message === 'unrecognized field')).toBe(true);
+  });
+});
+
+describe('schema v2 backward compatibility -- the validator DISPATCHES (2 and 3), the builder only ever emits 3 (B.6)', () => {
+  // Constructed from the DOCUMENTED v2 shape (CELL_CANONICAL_FIELDS_V2/REJECTION_DIAGNOSTICS_
+  // CANONICAL_FIELDS_V2's own frozen field lists in rejection-diagnostics.mjs) -- never copied
+  // from the two real, preserved 2026-08 incident diagnostic files themselves (those remain
+  // untouched, off-limits, read-only reference evidence outside this repo, per this session's own
+  // constraints). This fixture's job is only to prove the DISPATCH mechanism genuinely recognizes
+  // a v2-shaped row, not to reproduce that incident's own content.
+  function syntheticV2Fixture() {
+    const ambientProfile = { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) };
+    return {
+      schema: 2,
+      rejection_id: '22222222-2222-2222-2222-222222222222',
+      timestamp: '2026-08-10T12:00:00.000Z',
+      run_kind: 'scenario',
+      run_ids: ['run-a', 'run-b', 'run-c', 'run-d'],
+      model_requested: 'claude-sonnet-5',
+      repo_commit: 'e'.repeat(40),
+      scenario_id: 'changed-module-verification',
+      project_alias: 'some-project',
+      project_commit: 'f'.repeat(40),
+      seed: 42,
+      policy_sha256: 'b'.repeat(64),
+      platform: 'windows',
+      privacy_status: 'public',
+      // 4-cell matrix, the LAST cell (order_index 3) is the one that failed noUnexpectedToolsOk --
+      // matching the real incident's own reported shape (see this fix's plan document's own
+      // "Contexto" section) -- but schema:2 never recorded a per-cell COUNT, only this named-check
+      // boolean, which is exactly the gap this whole fix closes for schema:3 rows going forward.
+      // ambient_profile_matrix_ok:true (every cell shares the identical ambient profile below) --
+      // the real incident's own rejection was attributed to noUnexpectedToolsOk alone, never an
+      // ambient-profile disagreement.
+      cells: ['run-a', 'run-b', 'run-c', 'run-d'].map((runId, i) => ({
+        run_id: runId, condition: i % 2 === 0 ? 'no-skill' : 'current-skill',
+        repetition_index: Math.floor(i / 2), order_index: i,
+        skill_source_sha: i % 2 === 0 ? null : 'a'.repeat(40),
+        model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake',
+        failed_checks: i === 3 ? ['noUnexpectedToolsOk'] : [],
+        foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+        ambient_skill_profile: ambientProfile,
+      })),
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_profile_matrix_ok: true,
+    };
+  }
+
+  it('a genuine schema:2 row (4-cell scenario matrix, last cell failed noUnexpectedToolsOk) validates cleanly against the CURRENT validator, with none of the new schema-3 fields required', () => {
+    const { errors } = validateRejectionRow(syntheticV2Fixture());
+    expect(errors).toEqual([]);
+  });
+
+  it('the SAME fixture is rejected outright if schema-3-only fields are added to it -- v2 and v3 field sets are disjoint at the top level, never merged', () => {
+    const v2WithV3Fields = { ...syntheticV2Fixture(), matrix_complete: true, planned_cell_count: 4, executed_cell_count: 4, raw_transcripts_persisted: true };
+    const { errors } = validateRejectionRow(v2WithV3Fields);
+    expect(errors.some((e) => e.field === 'matrix_complete' && e.message === 'unrecognized field')).toBe(true);
+  });
+});
+
+describe('validateRejectionLocalRow -- local tier\'s own narrow validator (unexpected_tools + transcript_filename)', () => {
+  const VALID_FILENAME = `0-${'a'.repeat(64)}.jsonl`;
+
+  function validLocalRow(overrides = {}) {
+    return { cells: [{ unexpected_tools: [], transcript_filename: VALID_FILENAME, ...overrides }] };
+  }
+
+  it('accepts an empty unexpected_tools array with a well-formed transcript_filename', () => {
+    expect(validateRejectionLocalRow(validLocalRow()).errors).toEqual([]);
+  });
+
+  it('accepts a well-formed {name, event_index} entry', () => {
+    const row = validLocalRow({ unexpected_tools: [{ name: 'Read', event_index: 7 }] });
+    expect(validateRejectionLocalRow(row).errors).toEqual([]);
+  });
+
+  it('rejects unexpected_tools that is not an array', () => {
+    const row = validLocalRow({ unexpected_tools: 'nope' });
+    expect(validateRejectionLocalRow(row).errors.some((e) => e.field === 'cells[0].unexpected_tools')).toBe(true);
+  });
+
+  it('rejects an entry carrying id/receiptNs alongside name/event_index -- never anything beyond the closed {name, event_index} shape', () => {
+    const row = validLocalRow({ unexpected_tools: [{ name: 'Read', event_index: 0, id: 'toolu_x', receiptNs: '123' }] });
+    const { errors } = validateRejectionLocalRow(row);
+    expect(errors.some((e) => e.field === 'cells[0].unexpected_tools[0].id')).toBe(true);
+    expect(errors.some((e) => e.field === 'cells[0].unexpected_tools[0].receiptNs')).toBe(true);
+  });
+
+  it('rejects an entry missing event_index', () => {
+    const row = validLocalRow({ unexpected_tools: [{ name: 'Read' }] });
+    expect(validateRejectionLocalRow(row).errors.some((e) => e.field === 'cells[0].unexpected_tools[0].event_index')).toBe(true);
+  });
+
+  it('rejects an entry with an empty-string name', () => {
+    const row = validLocalRow({ unexpected_tools: [{ name: '', event_index: 0 }] });
+    expect(validateRejectionLocalRow(row).errors.some((e) => e.field === 'cells[0].unexpected_tools[0].name')).toBe(true);
+  });
+
+  it('rejects a negative event_index', () => {
+    const row = validLocalRow({ unexpected_tools: [{ name: 'Read', event_index: -1 }] });
+    expect(validateRejectionLocalRow(row).errors.some((e) => e.field === 'cells[0].unexpected_tools[0].event_index')).toBe(true);
+  });
+
+  it('accepts ANY non-empty tool name -- unexpected tool names are untrusted, arbitrary runtime input, never a closed vocabulary', () => {
+    const row = validLocalRow({ unexpected_tools: [{ name: 'SomeToolNoOneHasEverSeenBefore', event_index: 3 }] });
+    expect(validateRejectionLocalRow(row).errors).toEqual([]);
+  });
+
+  it('rejects a transcript_filename that does not match <captureOrdinal>-<64 hex>.jsonl', () => {
+    const row = validLocalRow({ transcript_filename: 'not-a-real-filename.jsonl' });
+    expect(validateRejectionLocalRow(row).errors.some((e) => e.field === 'cells[0].transcript_filename')).toBe(true);
+  });
+
+  it('rejects a transcript_filename using the raw run_id instead of a derived ordinal-hash name', () => {
+    const row = validLocalRow({ transcript_filename: 'calibration-current-skill-jjjj1111.jsonl' });
+    expect(validateRejectionLocalRow(row).errors.some((e) => e.field === 'cells[0].transcript_filename')).toBe(true);
+  });
+});
+
+describe('assertUnexpectedToolCoherence -- cross-tier construction-time invariants', () => {
+  function committedCell(overrides = {}) {
+    return { run_id: 'r1', unexpected_tool_uses_count: 0, ...overrides };
+  }
+  function localCell(overrides = {}) {
+    return { run_id: 'r1', unexpected_tools: [], ...overrides };
+  }
+
+  it('accepts a genuinely coherent pair (counts match lengths, run_ids align, raw_transcripts_persisted agrees)', () => {
+    const committed = { cells: [committedCell()], raw_transcripts_persisted: true };
+    const local = { cells: [localCell()], raw_transcripts_persisted: true };
+    expect(() => assertUnexpectedToolCoherence(committed, local)).not.toThrow();
+  });
+
+  it('throws when committed.cells and local.cells have different lengths', () => {
+    const committed = { cells: [committedCell(), committedCell({ run_id: 'r2' })], raw_transcripts_persisted: true };
+    const local = { cells: [localCell()], raw_transcripts_persisted: true };
+    expect(() => assertUnexpectedToolCoherence(committed, local)).toThrow(/parallel arrays of equal length/);
+  });
+
+  it('throws when run_id disagrees at the same index', () => {
+    const committed = { cells: [committedCell({ run_id: 'r1' })], raw_transcripts_persisted: true };
+    const local = { cells: [localCell({ run_id: 'r-different' })], raw_transcripts_persisted: true };
+    expect(() => assertUnexpectedToolCoherence(committed, local)).toThrow(/run_id disagrees across tiers/);
+  });
+
+  it('throws when local.unexpected_tools.length disagrees with committed.unexpected_tool_uses_count (the count can never be an independent second source of truth)', () => {
+    const committed = { cells: [committedCell({ unexpected_tool_uses_count: 2 })], raw_transcripts_persisted: true };
+    const local = { cells: [localCell({ unexpected_tools: [{ name: 'Read', event_index: 0 }] })], raw_transcripts_persisted: true };
+    expect(() => assertUnexpectedToolCoherence(committed, local)).toThrow(/unexpected-tool tiers disagree/);
+  });
+
+  // The final approval's SECOND mandatory invariant, added on top of the plan's own review rounds:
+  // both tiers must stamp the IDENTICAL Transaction-1 outcome. Tested in BOTH directions -- a
+  // one-directional check would miss a bug that only flips one side.
+  describe('raw_transcripts_persisted must agree across tiers (final-approval mandatory invariant)', () => {
+    it('throws when committed says true but local says false', () => {
+      const committed = { cells: [committedCell()], raw_transcripts_persisted: true };
+      const local = { cells: [localCell()], raw_transcripts_persisted: false };
+      expect(() => assertUnexpectedToolCoherence(committed, local)).toThrow(/raw_transcripts_persisted.*disagrees/);
+    });
+
+    it('throws when committed says false but local says true', () => {
+      const committed = { cells: [committedCell()], raw_transcripts_persisted: false };
+      const local = { cells: [localCell()], raw_transcripts_persisted: true };
+      expect(() => assertUnexpectedToolCoherence(committed, local)).toThrow(/raw_transcripts_persisted.*disagrees/);
+    });
+
+    it('accepts both tiers agreeing on false (a genuine Transaction-1 failure, consistently recorded)', () => {
+      const committed = { cells: [committedCell()], raw_transcripts_persisted: false };
+      const local = { cells: [localCell()], raw_transcripts_persisted: false };
+      expect(() => assertUnexpectedToolCoherence(committed, local)).not.toThrow();
+    });
+  });
+});
+
+describe('buildRejectionDiagnostics -- schema-3 fields (preserve rejected matrix forensics)', () => {
+  it('populates unexpected_tool_uses_count on the committed tier from unexpectedToolUsesCountByRunId, never reparsed', () => {
+    const r = record();
+    const { committed } = buildDiag({
+      runKind: 'calibration', records: [r],
+      failedChecksByRunId: { [r.run_id]: ['noUnexpectedToolsOk'] },
+      unexpectedToolUsesCountByRunId: { [r.run_id]: 2 },
+      unexpectedToolsByRunId: { [r.run_id]: [{ name: 'Read', event_index: 4 }, { name: 'Read', event_index: 9 }] },
+      captureOrdinalByRunId: { [r.run_id]: 0 },
+    });
+    expect(committed.cells[0].unexpected_tool_uses_count).toBe(2);
+    // Privacy: the committed tier never carries the tool NAME, only the count.
+    expect(JSON.stringify(committed)).not.toContain('Read');
+  });
+
+  it('populates unexpected_tools + transcript_filename on the LOCAL tier only -- never on committed', () => {
+    const r = record();
+    const { committed, local } = buildDiag({
+      runKind: 'calibration', records: [r],
+      failedChecksByRunId: { [r.run_id]: ['noUnexpectedToolsOk'] },
+      unexpectedToolUsesCountByRunId: { [r.run_id]: 1 },
+      unexpectedToolsByRunId: { [r.run_id]: [{ name: 'Read', event_index: 4 }] },
+      captureOrdinalByRunId: { [r.run_id]: 0 },
+    });
+    expect('unexpected_tools' in committed.cells[0]).toBe(false);
+    expect(local.cells[0].unexpected_tools).toEqual([{ name: 'Read', event_index: 4 }]);
+    expect(local.cells[0].transcript_filename).toBe(deriveTranscriptFilename(0, r.run_id));
+  });
+
+  it('does NOT deduplicate or sort unexpected_tools -- transcript order and repeat occurrences are themselves the forensic signal', () => {
+    const r = record();
+    const { local } = buildDiag({
+      runKind: 'calibration', records: [r],
+      failedChecksByRunId: { [r.run_id]: ['noUnexpectedToolsOk'] },
+      unexpectedToolUsesCountByRunId: { [r.run_id]: 3 },
+      unexpectedToolsByRunId: { [r.run_id]: [{ name: 'Read', event_index: 9 }, { name: 'Read', event_index: 4 }, { name: 'Read', event_index: 4 }] },
+      captureOrdinalByRunId: { [r.run_id]: 0 },
+    });
+    expect(local.cells[0].unexpected_tools).toEqual([{ name: 'Read', event_index: 9 }, { name: 'Read', event_index: 4 }, { name: 'Read', event_index: 4 }]);
+  });
+
+  it('throws when unexpectedToolUsesCountByRunId is missing a required key (exact-set, never a silent zero-default)', () => {
+    const r = record();
+    const r2 = record({ run_id: 'other-run', condition: 'current-skill', skill_source_sha: 'a'.repeat(40) });
+    expect(() => buildRejectionDiagnostics({
+      runKind: 'calibration', rejectionId: randomUUID(), records: [r, r2], rawTranscriptsPersisted: true,
+      failedChecksByRunId: { [r.run_id]: [], [r2.run_id]: [] },
+      unexpectedToolUsesCountByRunId: { [r.run_id]: 0 },
+      unexpectedToolsByRunId: { [r.run_id]: [], [r2.run_id]: [] },
+      captureOrdinalByRunId: { [r.run_id]: 0, [r2.run_id]: 1 },
+    })).toThrow(/unexpectedToolUsesCountByRunId/);
+  });
+
+  it('throws when rawTranscriptsPersisted is not a boolean', () => {
+    const r = record();
+    expect(() => buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: [] }, rawTranscriptsPersisted: 'true' })).toThrow(/rawTranscriptsPersisted/);
+  });
+
+  it('throws when captureOrdinalByRunId values are not unique', () => {
+    const r = record();
+    const r2 = record({ run_id: 'other-run', condition: 'current-skill', skill_source_sha: 'a'.repeat(40) });
+    expect(() => buildRejectionDiagnostics({
+      runKind: 'calibration', rejectionId: randomUUID(), records: [r, r2], rawTranscriptsPersisted: true,
+      failedChecksByRunId: { [r.run_id]: [], [r2.run_id]: [] },
+      unexpectedToolUsesCountByRunId: { [r.run_id]: 0, [r2.run_id]: 0 },
+      unexpectedToolsByRunId: { [r.run_id]: [], [r2.run_id]: [] },
+      captureOrdinalByRunId: { [r.run_id]: 0, [r2.run_id]: 0 },
+    })).toThrow(/must be unique/);
+  });
+
+  it('derives matrix_complete:true and planned===executed===records.length by default (a normal, complete batch)', () => {
+    const r = record();
+    const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: [] } });
+    expect(committed.matrix_complete).toBe(true);
+    expect(committed.planned_cell_count).toBe(1);
+    expect(committed.executed_cell_count).toBe(1);
+  });
+
+  it('derives matrix_complete:false when plannedCellCount exceeds executedCellCount (a fail-fast-stopped matrix)', () => {
+    const r = scenarioRecord();
+    const { committed } = buildDiag({
+      runKind: 'scenario', records: [r], failedChecksByRunId: { [r.run_id]: ['noUnexpectedToolsOk'] },
+      unexpectedToolUsesCountByRunId: { [r.run_id]: 1 }, unexpectedToolsByRunId: { [r.run_id]: [{ name: 'Read', event_index: 0 }] },
+      plannedCellCount: 4, executedCellCount: 1, ambientProfileMatrixOk: null,
+    });
+    expect(committed.matrix_complete).toBe(false);
+    expect(committed.planned_cell_count).toBe(4);
+    expect(committed.executed_cell_count).toBe(1);
+  });
+
+  it('throws when an explicit matrixComplete contradicts the derived planned/executed equality', () => {
+    const r = scenarioRecord();
+    expect(() => buildDiag({
+      runKind: 'scenario', records: [r], failedChecksByRunId: { [r.run_id]: [] },
+      plannedCellCount: 4, executedCellCount: 1, matrixComplete: true,
+    })).toThrow(/matrixComplete/);
+  });
+
+  it('throws when ambientProfileMatrixOk is a real boolean while the matrix is incomplete -- never a faked/simulated consensus over cells that never ran', () => {
+    const r = scenarioRecord();
+    expect(() => buildDiag({
+      runKind: 'scenario', records: [r], failedChecksByRunId: { [r.run_id]: ['noUnexpectedToolsOk'] },
+      unexpectedToolUsesCountByRunId: { [r.run_id]: 1 }, unexpectedToolsByRunId: { [r.run_id]: [{ name: 'Read', event_index: 0 }] },
+      plannedCellCount: 4, executedCellCount: 1, ambientProfileMatrixOk: true,
+    })).toThrow(/ambientProfileMatrixOk must be null/);
+  });
+
+  it('accepts ambientProfileMatrixOk:null on an incomplete matrix (the required, safe value)', () => {
+    const r = scenarioRecord();
+    const { committed } = buildDiag({
+      runKind: 'scenario', records: [r], failedChecksByRunId: { [r.run_id]: ['noUnexpectedToolsOk'] },
+      unexpectedToolUsesCountByRunId: { [r.run_id]: 1 }, unexpectedToolsByRunId: { [r.run_id]: [{ name: 'Read', event_index: 0 }] },
+      plannedCellCount: 4, executedCellCount: 1, ambientProfileMatrixOk: null,
+    });
+    expect(committed.ambient_profile_matrix_ok).toBeNull();
+  });
+
+  it('throws (via assertUnexpectedToolCoherence) when unexpectedToolsByRunId\'s length disagrees with unexpectedToolUsesCountByRunId for the same run -- the two inputs must already agree, this is not derived from one of them', () => {
+    const r = record();
+    expect(() => buildDiag({
+      runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: ['noUnexpectedToolsOk'] },
+      unexpectedToolUsesCountByRunId: { [r.run_id]: 2 }, unexpectedToolsByRunId: { [r.run_id]: [{ name: 'Read', event_index: 0 }] },
+    })).toThrow(/unexpected-tool tiers disagree/);
+  });
+});
+
+describe('deriveTranscriptFilename -- the single canonical filename derivation (never raw run_id, never order_index)', () => {
+  it('produces <captureOrdinal>-<64 lowercase hex>.jsonl for a normal run_id', () => {
+    const filename = deriveTranscriptFilename(0, 'calibration-current-skill-jjjj1111');
+    expect(filename).toMatch(/^0-[0-9a-f]{64}\.jsonl$/);
+  });
+
+  it('is deterministic -- the same (captureOrdinal, runId) pair always derives the identical filename', () => {
+    const a = deriveTranscriptFilename(3, 'some-run-id');
+    const b = deriveTranscriptFilename(3, 'some-run-id');
+    expect(a).toBe(b);
+  });
+
+  it('the SAME run_id at a DIFFERENT captureOrdinal produces a different filename (ordinal is part of the identity, not just decoration)', () => {
+    const a = deriveTranscriptFilename(0, 'some-run-id');
+    const b = deriveTranscriptFilename(1, 'some-run-id');
+    expect(a).not.toBe(b);
+  });
+
+  it('never echoes the raw run_id anywhere in the filename, even for a run_id shaped like a Windows-reserved device name', () => {
+    for (const reserved of ['CON', 'NUL', 'COM1', 'LPT1', 'AUX', 'PRN']) {
+      const filename = deriveTranscriptFilename(0, reserved);
+      expect(filename).toMatch(/^0-[0-9a-f]{64}\.jsonl$/);
+      expect(filename.toUpperCase()).not.toContain(reserved);
+    }
+  });
+
+  it('never produces a path-traversal-shaped filename, even for a run_id containing "../" or an absolute path', () => {
+    for (const hostile of ['../../../etc/passwd', '..\\..\\windows\\system32', '/etc/passwd', 'C:\\Windows\\System32']) {
+      const filename = deriveTranscriptFilename(0, hostile);
+      expect(filename).toMatch(/^0-[0-9a-f]{64}\.jsonl$/);
+      expect(filename).not.toContain('/');
+      expect(filename).not.toContain('\\');
+      expect(filename).not.toContain('..');
+    }
+  });
+
+  it('never produces a filename ending in a dot or space, even for a run_id ending in one', () => {
+    for (const trailing of ['some-run-id.', 'some-run-id ', 'some-run-id...']) {
+      const filename = deriveTranscriptFilename(0, trailing);
+      const withoutExtension = filename.replace(/\.jsonl$/, '');
+      expect(withoutExtension.endsWith('.')).toBe(false);
+      expect(withoutExtension.endsWith(' ')).toBe(false);
+    }
+  });
+
+  it('throws on a negative captureOrdinal', () => {
+    expect(() => deriveTranscriptFilename(-1, 'r1')).toThrow(/non-negative integer/);
+  });
+
+  it('throws on a non-integer captureOrdinal', () => {
+    expect(() => deriveTranscriptFilename(1.5, 'r1')).toThrow(/non-negative integer/);
+  });
+
+  it('throws on a non-string runId', () => {
+    expect(() => deriveTranscriptFilename(0, null)).toThrow(/non-empty string/);
+  });
+
+  it('throws on an empty-string runId', () => {
+    expect(() => deriveTranscriptFilename(0, '')).toThrow(/non-empty string/);
+  });
+
+  it('NEVER derives from the schema\'s own order_index field -- calibrate/smoke records always have order_index:null, yet still need a real, distinct filename per side', () => {
+    // order_index is irrelevant to this function's signature entirely (it takes captureOrdinal,
+    // never a record) -- this documents that a null-order_index run_kind still works exactly like
+    // any other, since captureOrdinal is always caller-assigned from EXECUTION position.
+    const filenameA = deriveTranscriptFilename(0, 'calibration-no-skill-aaaa1111');
+    const filenameB = deriveTranscriptFilename(1, 'calibration-current-skill-jjjj1111');
+    expect(filenameA).toMatch(/^0-[0-9a-f]{64}\.jsonl$/);
+    expect(filenameB).toMatch(/^1-[0-9a-f]{64}\.jsonl$/);
+  });
+});
+
+describe('writeRejectionRawTranscripts -- Transaction 1 (raw transcripts, minimal failure surface)', () => {
+  function isolatedRunsRoot(fn) {
+    const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aerdw-raw-transcripts-'));
+    try {
+      return fn(runsRoot);
+    } finally {
+      rmSync(runsRoot, { recursive: true, force: true });
+    }
+  }
+
+  it('writes exactly N files, one per run_id, named via deriveTranscriptFilename', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      const transcriptsByRunId = { r1: '{"line":1}\n', r2: '{"line":2}\n' };
+      const captureOrdinalByRunId = { r1: 0, r2: 1 };
+      const result = writeRejectionRawTranscripts(rejectionId, transcriptsByRunId, captureOrdinalByRunId, { runsRootOverride: runsRoot });
+      expect(result.transcriptCount).toBe(2);
+      expect(result.transcriptsRelativeDir).toBe(path.join('agentic-eval-rejected', 'raw', 'transcripts', rejectionId));
+      const dir = path.join(runsRoot, 'agentic-eval-rejected', 'raw', 'transcripts', rejectionId);
+      const files = readdirSync(dir);
+      expect(files.sort()).toEqual([deriveTranscriptFilename(0, 'r1'), deriveTranscriptFilename(1, 'r2')].sort());
+      expect(readFileSync(path.join(dir, deriveTranscriptFilename(0, 'r1')), 'utf8')).toBe('{"line":1}\n');
+      expect(readFileSync(path.join(dir, deriveTranscriptFilename(1, 'r2')), 'utf8')).toBe('{"line":2}\n');
+    });
+  });
+
+  it('accepts an empty-string transcript -- legitimate and forensically meaningful (the session produced no stdout)', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      const result = writeRejectionRawTranscripts(rejectionId, { r1: '' }, { r1: 0 }, { runsRootOverride: runsRoot });
+      expect(result.transcriptCount).toBe(1);
+      const dir = path.join(runsRoot, 'agentic-eval-rejected', 'raw', 'transcripts', rejectionId);
+      expect(readFileSync(path.join(dir, deriveTranscriptFilename(0, 'r1')), 'utf8')).toBe('');
+    });
+  });
+
+  it('never redacts transcript content -- writes it byte-for-byte raw, same contract as any other raw/ tier', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      const rawContent = '{"secret_looking_but_never_redacted":"C:\\\\Users\\\\someuser\\\\file"}\n';
+      writeRejectionRawTranscripts(rejectionId, { r1: rawContent }, { r1: 0 }, { runsRootOverride: runsRoot });
+      const dir = path.join(runsRoot, 'agentic-eval-rejected', 'raw', 'transcripts', rejectionId);
+      expect(readFileSync(path.join(dir, deriveTranscriptFilename(0, 'r1')), 'utf8')).toBe(rawContent);
+    });
+  });
+
+  describe('fails BEFORE any filesystem operation on an untrustworthy rejectionId (G13 -- the "raw outside gitignore" risk realized via a non-UUID rejectionId)', () => {
+    it('throws on a rejectionId containing a path-traversal sequence, and creates no directory at all', () => {
+      isolatedRunsRoot((runsRoot) => {
+        expect(() => writeRejectionRawTranscripts('../../etc/passwd', { r1: 'x' }, { r1: 0 }, { runsRootOverride: runsRoot })).toThrow(/full UUID string/);
+        expect(existsSync(path.join(runsRoot, 'agentic-eval-rejected'))).toBe(false);
+      });
+    });
+
+    it('throws on a truncated (non-UUID-shaped) rejectionId', () => {
+      isolatedRunsRoot((runsRoot) => {
+        expect(() => writeRejectionRawTranscripts('abcd1234', { r1: 'x' }, { r1: 0 }, { runsRootOverride: runsRoot })).toThrow(/full UUID string/);
+        expect(existsSync(path.join(runsRoot, 'agentic-eval-rejected'))).toBe(false);
+      });
+    });
+
+    it('throws on an absolute-path-shaped rejectionId', () => {
+      isolatedRunsRoot((runsRoot) => {
+        expect(() => writeRejectionRawTranscripts('C:\\Windows\\System32', { r1: 'x' }, { r1: 0 }, { runsRootOverride: runsRoot })).toThrow(/full UUID string/);
+        expect(existsSync(path.join(runsRoot, 'agentic-eval-rejected'))).toBe(false);
+      });
+    });
+  });
+
+  it('throws when captureOrdinalByRunId is missing a key present in transcriptsByRunId (exact-set, never a silent 0-default)', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      expect(() => writeRejectionRawTranscripts(rejectionId, { r1: 'x', r2: 'y' }, { r1: 0 }, { runsRootOverride: runsRoot })).toThrow(/keys must exactly match/);
+    });
+  });
+
+  it('throws when captureOrdinalByRunId has a stale/extra key not present in transcriptsByRunId', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      expect(() => writeRejectionRawTranscripts(rejectionId, { r1: 'x' }, { r1: 0, r2: 1 }, { runsRootOverride: runsRoot })).toThrow(/keys must exactly match/);
+    });
+  });
+
+  it('throws when two run_ids share the same captureOrdinal (uniqueness, not just non-negative-integer shape)', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      expect(() => writeRejectionRawTranscripts(rejectionId, { r1: 'x', r2: 'y' }, { r1: 0, r2: 0 }, { runsRootOverride: runsRoot })).toThrow(/must be unique/);
+    });
+  });
+
+  it('throws when a captureOrdinal is negative', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      expect(() => writeRejectionRawTranscripts(rejectionId, { r1: 'x' }, { r1: -1 }, { runsRootOverride: runsRoot })).toThrow(/non-negative integer/);
+    });
+  });
+
+  it('throws when a transcript value is not a string (never silently coerced)', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      expect(() => writeRejectionRawTranscripts(rejectionId, { r1: null }, { r1: 0 }, { runsRootOverride: runsRoot })).toThrow(/must be a string/);
+    });
+  });
+
+  it('a pre-existing file at the target path aborts the whole transaction -- nothing else is written', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      writeRejectionRawTranscripts(rejectionId, { r1: 'first-write' }, { r1: 0 }, { runsRootOverride: runsRoot });
+      // Re-using the SAME rejectionId + ordinal is a genuine collision: promoteTargetsAtomically's
+      // own existsSync pre-check refuses before writing anything for this second call.
+      expect(() => writeRejectionRawTranscripts(rejectionId, { r1: 'second-write', r2: 'other-content' }, { r1: 0, r2: 1 }, { runsRootOverride: runsRoot })).toThrow(/already exists/);
+      const dir = path.join(runsRoot, 'agentic-eval-rejected', 'raw', 'transcripts', rejectionId);
+      // The original file is untouched by the failed second call, and the OTHER (non-colliding)
+      // target from that second call was never written either -- all-or-nothing, not partial.
+      expect(readFileSync(path.join(dir, deriveTranscriptFilename(0, 'r1')), 'utf8')).toBe('first-write');
+      expect(existsSync(path.join(dir, deriveTranscriptFilename(1, 'r2')))).toBe(false);
+    });
+  });
 });

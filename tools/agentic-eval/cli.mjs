@@ -43,8 +43,9 @@ import { LATEST_RUN_SCHEMA, SUPPORTED_RUN_SCHEMAS, validateRun, validateScenario
 import { buildEvalEnv } from './env-builder.mjs';
 import { materializeCalibrationProject, materializeScenarioProject, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { buildBaseArgv } from './condition-launcher.mjs';
-import { isSkillAvailable, findForeignSkillUses, classifyForeignSkillUses, findBashToolUses, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, findTranscriptStructuralIssues, findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout, extractTokenUsage, deriveFirstUsefulSignalMs, derivePostSignalMs, findAllToolUsesWithResults, computeAmbientSkillProfile, canonicalAmbientSkillNamesKey, fingerprintAmbientSkillNames } from './stream-parser.mjs';
+import { isSkillAvailable, findForeignSkillUses, classifyForeignSkillUses, findBashToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, findTranscriptStructuralIssues, extractTokenUsage, deriveFirstUsefulSignalMs, derivePostSignalMs, findAllToolUsesWithResults, computeAmbientSkillProfile, canonicalAmbientSkillNamesKey, fingerprintAmbientSkillNames } from './stream-parser.mjs';
 import { acquireSharedEvalResources, runSingleCondition, runScenarioMatrix, reportCleanupFailures } from './matrix-runner.mjs';
+import { cellTranscriptIntegrityOk, summarizeUnexpectedToolUses, evaluateNamedChecks, isPluginBoundToSnapshot, EXPECTED_TOOL_NAMES } from './cell-integrity.mjs';
 import { gradeScenarioCondition } from './graders.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
 import { aggregateRuns } from './aggregate.mjs';
@@ -52,7 +53,7 @@ import { assertCleanOrThrow, assertCleanOrThrowObject, loadPrivateRules } from '
 import { tokenize } from './policy-hook.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 import { RUNS_ROOT, resolveEvidenceOutDir, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
-import { buildRejectionDiagnostics, writeRejectedRunDiagnostics } from './rejection-diagnostics.mjs';
+import { buildRejectionDiagnostics, writeRejectionRawTranscripts, writeRejectedRunDiagnostics } from './rejection-diagnostics.mjs';
 import { acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from './accepted-run-audit.mjs';
 import { loadMeasurementScopeFile, createMeasurementScopeFileExclusive } from './measurement-scope.mjs';
 // validateRunRecordFile now lives in run-record-loader.mjs (extracted so analysis.mjs can import
@@ -132,54 +133,11 @@ function isRunsRootDefault(runsRoot, repoRoot) {
 }
 const RUNS_ROOT_IS_DEFAULT = isRunsRootDefault(RUNS_ROOT, REPO_ROOT);
 
-// Regression coverage for a real evidence-contamination bypass an independent review pass
-// demonstrated directly against calibrationHardGate: hasExpectedPluginProfile only checks the
-// LOADED plugin's name and count -- never its `path` -- so a same-named "kmp-test-runner" plugin
-// loaded from a completely unrelated directory satisfied it outright. The run record still
-// publishes skill_source_sha as the harness's PINNED_SKILL_SHA regardless (buildRunRecord has no
-// way to know the loaded plugin came from somewhere else), so evidence could be attributed to a
-// SHA whose actual, verified snapshot was never the thing exercised. This is the provenance
-// guarantee skill_source_sha implicitly claims -- closing it requires binding the reported path
-// to the SAME materialized snapshot directory this specific run actually built.
-//
-// Compared via FILESYSTEM IDENTITY (device + inode from statSync), never a string comparison of
-// resolved paths -- a review-round-5 finding demonstrated a bare case-folded comparison
-// (resolvedReported.toLowerCase() === resolvedExpected.toLowerCase(), the previous approach here)
-// is unsound on Windows: NTFS volumes support PER-DIRECTORY case sensitivity (fsutil.exe file
-// setCaseSensitiveInfo, shipped for WSL interop since Windows 10 1803), under which two
-// DIFFERENTLY-cased paths can be two GENUINELY DISTINCT directories -- a case-folded string
-// compare would wrongly treat them as the same snapshot. isRunsRootDefault's OWN case-fold is
-// safe specifically because a false positive there only engages STRICTER scrutiny (erring toward
-// "true" is the safe direction for that check) -- that justification does not transfer here: a
-// false positive in THIS check would APPROVE the WRONG plugin outright, exactly the provenance
-// guarantee this function exists to protect. dev+ino is the OS's own unambiguous identity for a
-// filesystem entry, invariant to case, trailing separators, or symlink/junction indirection --
-// statSync follows symlinks on both inputs the same way realpath would have, so no separate
-// realpath step is needed first. {bigint:true} avoids precision loss on Windows, where NTFS file
-// IDs can exceed Number.MAX_SAFE_INTEGER. An unresolvable path fails CLOSED: "can't positively
-// confirm this is the expected snapshot" must mean "reject", never "assume it's fine". Deliberately
-// returns ONLY a boolean -- the actual path (which could itself be privacy-sensitive, e.g.
-// containing the real OS username) is never included in the return value or surfaced in any
-// caller's error/log output.
-function isPluginBoundToSnapshot(initEvent, expectedSnapshotDir) {
-  if (initEvent == null || !Array.isArray(initEvent.plugins) || initEvent.plugins.length !== 1) return false;
-  const reportedPath = initEvent.plugins[0]?.path;
-  if (typeof reportedPath !== 'string' || reportedPath.length === 0) return false;
-  if (typeof expectedSnapshotDir !== 'string' || expectedSnapshotDir.length === 0) return false;
-  let reportedStat;
-  let expectedStat;
-  try {
-    reportedStat = statSync(reportedPath, { bigint: true });
-  } catch {
-    return false; // reported path doesn't exist / unresolvable -- fail closed, never assume a match
-  }
-  try {
-    expectedStat = statSync(expectedSnapshotDir, { bigint: true });
-  } catch {
-    return false; // the harness's OWN expected snapshot vanished -- also fail closed
-  }
-  return reportedStat.dev === expectedStat.dev && reportedStat.ino === expectedStat.ino;
-}
+// isPluginBoundToSnapshot moved to cell-integrity.mjs (imported above) -- it is now also used by
+// the fail-fast hook (matrix-runner.mjs's runScenarioMatrix, this file's own runConditionPair),
+// which cannot import it from here without creating the exact import cycle matrix-runner.mjs's own
+// header comment explains it must avoid. Re-exported below (see the bottom export {} block) so no
+// existing external import path (`import { isPluginBoundToSnapshot } from './cli.mjs'`) breaks.
 
 const HELP = `tools/agentic-eval/cli.mjs -- reproducible skill evaluation harness
 
@@ -490,12 +448,8 @@ const SMOKE_EXPECTED_COMMANDS = [
   ['kmp-test', 'describe', '--json'],
 ];
 
-// The ONLY tools either condition's own --tools argv value ever grants (buildBaseArgv --
-// condition-launcher.mjs); used by both hard gates to prove the init event's OWN declared
-// profile actually matches this, and that no tool_use anywhere in the transcript names
-// anything outside this set. A gate that never checks this can't distinguish a genuinely narrow
-// session from one that regressed to a wider tool/MCP/permission profile.
-const EXPECTED_TOOL_NAMES = new Set(['Bash', 'Skill']);
+// EXPECTED_TOOL_NAMES moved to cell-integrity.mjs (imported above) -- same rationale as
+// isPluginBoundToSnapshot: the fail-fast hook needs it and cannot import it from this file.
 
 // The ONLY plugin/skill identity findSkillInvocation/findForeignSkillUses/isSkillAvailable/
 // hasExpectedPluginProfile ever target -- two single shared constants (never collapsed into one)
@@ -592,9 +546,30 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     };
 
     const runB = await runOneCondition('current-skill');
+    // Fail-fast (preserve rejected matrix forensics): the identical canonical check the final hard
+    // gates use, evaluated on B alone BEFORE A is ever spawned. calibrationHardGate/smokeHardGate
+    // always reject the WHOLE pair together -- a failing B can never be rescued by A -- so spawning
+    // A anyway would spend a second live session on a pair that is already going to be rejected.
+    const integrityB = cellTranscriptIntegrityOk(runB, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    if (!integrityB.ok) {
+      return {
+        runA: null, runB, snapshotDir: shared.snapshotDir, daemonPolicy: shared.daemonPolicy,
+        allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
+        plannedCellCount: 2, executedCellCount: 1, matrixComplete: false,
+        failFastStop: {
+          side: 'B', condition: 'current-skill', failedChecks: integrityB.failedChecks,
+          reason: integrityB.reason, unexpectedToolUsesCount: integrityB.unexpectedToolUsesCount,
+          unexpectedTools: integrityB.unexpectedTools,
+        },
+      };
+    }
     const runA = await runOneCondition('no-skill');
 
-    return { runA, runB, snapshotDir: shared.snapshotDir, daemonPolicy: shared.daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup };
+    return {
+      runA, runB, snapshotDir: shared.snapshotDir, daemonPolicy: shared.daemonPolicy,
+      allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
+      plannedCellCount: 2, executedCellCount: 2, matrixComplete: true, failFastStop: null,
+    };
   } catch (err) {
     reportCleanupFailures(await runCleanup(), 'during condition-execution rollback');
     throw err;
@@ -1027,7 +1002,119 @@ function findBlockingHarnessToolingDirty(record, runsRootIsDefault) {
   return record.errors.find((e) => e.code === 'dirty_harness_tooling');
 }
 
-async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, hardGateFn, privatePatternsFile, runsRootOverride = RUNS_ROOT }) {
+/**
+ * Shared rejection-forensics writer for BOTH finalizeAndWriteRecords (pair path) and
+ * finalizeAndWriteMatrixRecords (matrix path) -- TWO INDEPENDENT transactions (see
+ * rejection-diagnostics.mjs's own header comment for the full rationale): raw transcripts first
+ * (Transaction 1, minimal failure surface), the structured diagnostic second (Transaction 2, the
+ * full validate/redact/revalidate pipeline). Each outcome is captured into its OWN error field --
+ * neither transaction's failure ever masks the caller's own hard-gate/fail-fast rejection reason,
+ * and neither's failure ever prevents the OTHER transaction from being attempted. Both tiers of
+ * the structured diagnostic stamp the SAME `rawTranscriptsPersisted` boolean, known before
+ * Transaction 2 is even attempted.
+ */
+async function writeRejectionForensics({
+  runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
+  foreignSkillNamesByRunId, transcriptsByRunId, captureOrdinalByRunId, ambientProfileMatrixOk = null,
+  plannedCellCount = null, executedCellCount = null, privatePatternsFile, runsRootOverride,
+}) {
+  const rejectionId = randomUUID();
+  let rawTranscriptsWriteError = null;
+  let rawTranscriptsPersisted;
+  let diagnosticsTranscriptsDir = null;
+  let diagnosticsTranscriptCount = 0;
+  try {
+    const raw = writeRejectionRawTranscripts(rejectionId, transcriptsByRunId, captureOrdinalByRunId, { runsRootOverride });
+    diagnosticsTranscriptsDir = raw.transcriptsRelativeDir;
+    diagnosticsTranscriptCount = raw.transcriptCount;
+    rawTranscriptsPersisted = true;
+  } catch (err) {
+    rawTranscriptsWriteError = err.message;
+    rawTranscriptsPersisted = false;
+  }
+
+  let diagnosticsWriteError = null;
+  let writtenRejectionId = null;
+  let diagnosticsRelativePath = null;
+  try {
+    const diagnostics = buildRejectionDiagnostics({
+      runKind, rejectionId, records, failedChecksByRunId, unexpectedToolUsesCountByRunId,
+      unexpectedToolsByRunId, captureOrdinalByRunId, rawTranscriptsPersisted, foreignSkillNamesByRunId,
+      ambientProfileMatrixOk, plannedCellCount, executedCellCount,
+    });
+    ({ rejectionId: writtenRejectionId, relativePath: diagnosticsRelativePath } = writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride }));
+  } catch (err) {
+    diagnosticsWriteError = err.message;
+  }
+
+  return {
+    rawTranscriptsWriteError, diagnosticsWriteError, rejectionId: writtenRejectionId,
+    diagnosticsRelativePath, diagnosticsTranscriptsDir, diagnosticsTranscriptCount,
+  };
+}
+
+/**
+ * Shared stderr reporting for a finalize function's rejection result -- reports BOTH transactions'
+ * outcomes independently (see writeRejectionForensics/rejection-diagnostics.mjs's own header
+ * comment for why raw-transcript persistence and structured-diagnostic persistence are two
+ * separate transactions): a raw-transcript-write failure is reported separately from a
+ * diagnostics-write failure, and either one failing never hides the other's success. A no-op for
+ * an early-return failure that never reached writeRejectionForensics at all (schema validation,
+ * dirty tree, stale policy hash) -- every field this reads is simply absent on that shape of
+ * result, exactly like today's pre-existing diagnosticsWriteError/rejectionId fields already are.
+ */
+function printRejectionForensicsStderr(result) {
+  if (result.rawTranscriptsWriteError) {
+    console.error(`(raw transcripts were NOT preserved: ${result.rawTranscriptsWriteError})`);
+  } else if (result.diagnosticsTranscriptCount > 0) {
+    console.error(`(${result.diagnosticsTranscriptCount} raw transcript(s) preserved locally under ${result.diagnosticsTranscriptsDir})`);
+  }
+  if (result.diagnosticsWriteError) {
+    console.error(`(rejected-run diagnostics were NOT written: ${result.diagnosticsWriteError})`);
+  } else if (result.rejectionId) {
+    console.error(`(rejected-run diagnostics written: ${result.diagnosticsRelativePath}, rejection_id ${result.rejectionId})`);
+  }
+}
+
+async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, hardGateFn, privatePatternsFile, runsRootOverride = RUNS_ROOT, matrixComplete = true, plannedCellCount = 2, executedCellCount = 2, failFastStop = null }) {
+  // Fail-fast (preserve rejected matrix forensics): only B ran -- runConditionPair's own fail-fast
+  // check on B already found a local integrity failure and never spawned A at all. hardGateFn is
+  // NEVER invoked here: there is no A side to give it, and calibrationHardGate/smokeHardGate both
+  // require both sides. Go straight to rejection forensics using failFastStop's own already-
+  // computed verdict for B -- never re-derived, never masked.
+  if (!matrixComplete) {
+    const { errors } = validateRun(recordB);
+    if (errors.length > 0) {
+      return { ok: false, reason: `Run record B failed schema validation: ${JSON.stringify(errors)}` };
+    }
+    const dirtyMeasured = recordB.errors.find((e) => e.code === 'dirty_measured_code');
+    if (dirtyMeasured) {
+      return { ok: false, reason: `Run record B was captured with an unclean measured-code tree -- refusing to write evidence that would misrepresent repo_commit: ${dirtyMeasured.message}` };
+    }
+    const runsRootIsDefaultB = isRunsRootDefault(runsRootOverride, REPO_ROOT);
+    const dirtyHarnessB = findBlockingHarnessToolingDirty(recordB, runsRootIsDefaultB);
+    if (dirtyHarnessB) {
+      return { ok: false, reason: `Run record B was captured with an unclean harness-tooling tree while writing to the default, committable evidence location -- refusing to write evidence that would misrepresent repo_commit: ${dirtyHarnessB.message}` };
+    }
+    const { computePolicySha256: computePolicySha256B } = await import('./policy-config.mjs');
+    const freshHashB = computePolicySha256B({ fresh: true });
+    if (recordB.policy_sha256 !== freshHashB) {
+      return { ok: false, reason: `Run record B policy_sha256 (${recordB.policy_sha256}) does not match the current policy-hook.mjs (${freshHashB}) -- evidence is stale relative to the code that produced it` };
+    }
+    const forensics = await writeRejectionForensics({
+      runKind, records: [recordB],
+      failedChecksByRunId: { [recordB.run_id]: failFastStop.failedChecks },
+      unexpectedToolUsesCountByRunId: { [recordB.run_id]: failFastStop.unexpectedToolUsesCount },
+      unexpectedToolsByRunId: { [recordB.run_id]: failFastStop.unexpectedTools },
+      foreignSkillNamesByRunId: { [recordB.run_id]: classifyForeignSkillUses(runB.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null) },
+      transcriptsByRunId: { [recordB.run_id]: runB.spawnResult.rawStdout },
+      captureOrdinalByRunId: { [recordB.run_id]: 0 },
+      plannedCellCount, executedCellCount,
+      privatePatternsFile, runsRootOverride,
+    });
+    return { ok: false, reason: failFastStop.reason, ...forensics };
+  }
+
   for (const [label, record] of [['A', recordA], ['B', recordB]]) {
     const { errors } = validateRun(record);
     if (errors.length > 0) {
@@ -1104,21 +1191,24 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
     // stay null unless the write actually succeeded -- round-6 audit finding ("localización del
     // diagnóstico"): a caller must be able to tell a human WHERE a successfully-written diagnostic
     // landed, not just that no error was thrown.
-    let diagnosticsWriteError = null;
-    let rejectionId = null;
-    let diagnosticsRelativePath = null;
-    try {
-      const failedChecksByRunId = { [recordA.run_id]: gate.failedChecksA ?? [], [recordB.run_id]: gate.failedChecksB ?? [] };
-      const foreignSkillNamesByRunId = {
+    const forensics = await writeRejectionForensics({
+      runKind, records: [recordA, recordB],
+      failedChecksByRunId: { [recordA.run_id]: gate.failedChecksA ?? [], [recordB.run_id]: gate.failedChecksB ?? [] },
+      unexpectedToolUsesCountByRunId: { [recordA.run_id]: gate.unexpectedToolUsesCountA, [recordB.run_id]: gate.unexpectedToolUsesCountB },
+      unexpectedToolsByRunId: { [recordA.run_id]: gate.unexpectedToolsA, [recordB.run_id]: gate.unexpectedToolsB },
+      foreignSkillNamesByRunId: {
         [recordA.run_id]: classifyForeignSkillUses(runA.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null),
         [recordB.run_id]: classifyForeignSkillUses(runB.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null),
-      };
-      const diagnostics = buildRejectionDiagnostics({ runKind, records: [recordA, recordB], failedChecksByRunId, foreignSkillNamesByRunId });
-      ({ rejectionId, relativePath: diagnosticsRelativePath } = writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride }));
-    } catch (err) {
-      diagnosticsWriteError = err.message;
-    }
-    return { ok: false, reason: gate.reason, diagnosticsWriteError, rejectionId, diagnosticsRelativePath };
+      },
+      transcriptsByRunId: { [recordA.run_id]: runA.spawnResult.rawStdout, [recordB.run_id]: runB.spawnResult.rawStdout },
+      // Ordinal reflects TRUE execution order, per writeRejectionRawTranscripts' own contract --
+      // runConditionPair always spawns B (current-skill) before A (no-skill), so B is 0 and A is 1
+      // here, never the reverse (which the parameter list's own A-then-B order could otherwise
+      // tempt a future edit into reintroducing).
+      captureOrdinalByRunId: { [recordB.run_id]: 0, [recordA.run_id]: 1 },
+      privatePatternsFile, runsRootOverride,
+    });
+    return { ok: false, reason: gate.reason, ...forensics };
   }
   // The evidence directory path itself can carry the real OS username (this repo may be checked
   // out under e.g. C:\Users\<name>\...). Verified BEFORE anything is written: an earlier version
@@ -1251,7 +1341,68 @@ function scenarioMatrixIsBenchmarkEligible(records, gate) {
  * genuine hard-gate rejection. `buildSidecarsFn`, when supplied, is invoked ONLY once gate.ok is
  * confirmed true -- accepted-audit work belongs strictly on the gate-passing promotion path.
  */
-async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResults, hardGateFn, privatePatternsFile, runsRootOverride = RUNS_ROOT, repeats, buildSidecarsFn = null }) {
+async function finalizeAndWriteMatrixRecords({
+  runKind, records, conditionResults, hardGateFn, privatePatternsFile, runsRootOverride = RUNS_ROOT,
+  repeats, buildSidecarsFn = null, matrixComplete = true, plannedCellCount = repeats * 2,
+  executedCellCount = records.length, localIntegrityByRunId = null, failFastStop = null,
+}) {
+  // Fail-fast (preserve rejected matrix forensics): the matrix stopped early -- `records` only
+  // covers the cells that actually executed. NEVER call findMatrixCompletenessGap here (an
+  // incomplete matrix is BY DESIGN in this branch, not a defect) and NEVER call `hardGateFn`
+  // (scenarioHardGate computes ambient_profile_matrix_ok as if it represents consensus over the
+  // WHOLE planned matrix -- evaluated over only a prefix, that would be a claim about a consensus
+  // that was never actually checked). This function cannot read the `matrix` object
+  // runScenarioMatrix returned (only cmdRun, which calls this function, has it), so the caller
+  // passes `localIntegrityByRunId` explicitly: one cellTranscriptIntegrityOk-shaped result per
+  // EXECUTED cell, from the exact same evaluation the fail-fast loop already ran -- validated here
+  // by exact-set-equality against records[].run_id, never assumed complete.
+  if (!matrixComplete) {
+    const recordRunIds = new Set(records.map((r) => r.run_id));
+    const localIntegrityKeys = new Set(Object.keys(localIntegrityByRunId ?? {}));
+    const missingLocalIntegrity = [...recordRunIds].filter((id) => !localIntegrityKeys.has(id));
+    const extraLocalIntegrity = [...localIntegrityKeys].filter((id) => !recordRunIds.has(id));
+    if (localIntegrityByRunId == null || missingLocalIntegrity.length > 0 || extraLocalIntegrity.length > 0) {
+      throw new Error(`finalizeAndWriteMatrixRecords: localIntegrityByRunId's keys must exactly match records[].run_id when matrixComplete is false (missing: ${JSON.stringify(missingLocalIntegrity)}, extra/stale: ${JSON.stringify(extraLocalIntegrity)})`);
+    }
+    for (const [i, record] of records.entries()) {
+      const dirty = record.errors.find((e) => e.code === 'dirty_measured_code');
+      if (dirty) {
+        return { ok: false, reason: `Run record [${i}] was captured with an unclean measured-code tree -- refusing to write evidence that would misrepresent repo_commit: ${dirty.message}` };
+      }
+    }
+    const runsRootIsDefaultFF = isRunsRootDefault(runsRootOverride, REPO_ROOT);
+    for (const [i, record] of records.entries()) {
+      const dirty = findBlockingHarnessToolingDirty(record, runsRootIsDefaultFF);
+      if (dirty) {
+        return { ok: false, reason: `Run record [${i}] was captured with an unclean harness-tooling tree while writing to the default, committable evidence location -- refusing to write evidence that would misrepresent repo_commit: ${dirty.message}` };
+      }
+    }
+    const { computePolicySha256: computePolicySha256FF } = await import('./policy-config.mjs');
+    const freshHashFF = computePolicySha256FF({ fresh: true });
+    for (const [i, record] of records.entries()) {
+      if (record.policy_sha256 !== freshHashFF) {
+        return { ok: false, reason: `Run record [${i}] policy_sha256 (${record.policy_sha256}) does not match the current policy-hook.mjs (${freshHashFF}) -- evidence is stale relative to the code that produced it` };
+      }
+    }
+
+    const failedChecksByRunId = Object.fromEntries(records.map((r) => [r.run_id, localIntegrityByRunId[r.run_id].failedChecks]));
+    const unexpectedToolUsesCountByRunId = Object.fromEntries(records.map((r) => [r.run_id, localIntegrityByRunId[r.run_id].unexpectedToolUsesCount]));
+    const unexpectedToolsByRunId = Object.fromEntries(records.map((r) => [r.run_id, localIntegrityByRunId[r.run_id].unexpectedTools]));
+    const foreignSkillNamesByRunId = Object.fromEntries(
+      records.map((r, i) => [r.run_id, classifyForeignSkillUses(conditionResults[i].events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null)]),
+    );
+    const transcriptsByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].spawnResult.rawStdout]));
+    const captureOrdinalByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, i]));
+
+    const forensics = await writeRejectionForensics({
+      runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
+      foreignSkillNamesByRunId, transcriptsByRunId, captureOrdinalByRunId,
+      ambientProfileMatrixOk: null, plannedCellCount, executedCellCount,
+      privatePatternsFile, runsRootOverride,
+    });
+    return { ok: false, reason: failFastStop?.reason ?? `scenario matrix stopped early after a local per-cell integrity failure (${executedCellCount}/${plannedCellCount} cells executed)`, ...forensics };
+  }
+
   const completenessGap = findMatrixCompletenessGap(records, repeats);
   if (completenessGap) {
     return { ok: false, reason: `Matrix is incomplete, refusing to consider it for promotion: ${completenessGap}` };
@@ -1280,33 +1431,35 @@ async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResult
   // Gate decision -- BEFORE schema validation and BEFORE any accepted-audit-sidecar work (see this
   // function's own doc comment for why). A rejection returns here, unconditionally: nothing below
   // this point (schema validation, sidecar build/cross-validation) can ever suppress gate.reason
-  // or prevent writeRejectedRunDiagnostics from running.
+  // or prevent rejection forensics from running.
   const gate = hardGateFn(records, conditionResults);
   if (!gate.ok) {
     // Privacy-safe rejected-run diagnostics (closes BACKLOG.md's "leave no auditable trace" gap)
-    // -- gate.cellResults (scenarioHardGate's own new field) already correlates every cell to its
-    // own failedChecks, so this is pure reshaping, never a second gate re-run. A diagnostics-write
-    // failure must never mask the ORIGINAL rejection reason or crash the caller.
-    // rejectionId/diagnosticsRelativePath stay null unless the write actually succeeded -- see the
-    // pair-based finalizeAndWriteRecords' identical rationale.
-    let diagnosticsWriteError = null;
-    let rejectionId = null;
-    let diagnosticsRelativePath = null;
-    try {
-      const failedChecksByRunId = Object.fromEntries((gate.cellResults ?? []).map((c) => [c.runId, c.failedChecks]));
-      const foreignSkillNamesByRunId = Object.fromEntries(
-        records.map((r, i) => [r.run_id, classifyForeignSkillUses(conditionResults[i].events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null)]),
-      );
-      // ambientProfileMatrixOk (correction 6): scenarioHardGate's own matrix-wide consensus result
-      // (gate.ambientProfileMatrixOk, exposed on its return value) -- threaded straight through, so
-      // a rejection diagnostic for a scenario batch always records whether the ambient-profile
-      // consensus itself held, distinct from any individual cell's own failed_checks.
-      const diagnostics = buildRejectionDiagnostics({ runKind, records, failedChecksByRunId, foreignSkillNamesByRunId, ambientProfileMatrixOk: gate.ambientProfileMatrixOk });
-      ({ rejectionId, relativePath: diagnosticsRelativePath } = writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride }));
-    } catch (err) {
-      diagnosticsWriteError = err.message;
-    }
-    return { ok: false, reason: gate.reason, diagnosticsWriteError, rejectionId, diagnosticsRelativePath };
+    // -- gate.cellResults (scenarioHardGate's own field) already correlates every cell to its own
+    // failedChecks/unexpectedToolUsesCount/unexpectedTools, so this is pure reshaping, never a
+    // second gate re-run or a transcript reparse. A forensics-write failure must never mask the
+    // ORIGINAL rejection reason or crash the caller. rejectionId/diagnosticsRelativePath stay null
+    // unless the write actually succeeded -- see the pair-based finalizeAndWriteRecords' identical
+    // rationale.
+    const failedChecksByRunId = Object.fromEntries((gate.cellResults ?? []).map((c) => [c.runId, c.failedChecks]));
+    const unexpectedToolUsesCountByRunId = Object.fromEntries((gate.cellResults ?? []).map((c) => [c.runId, c.unexpectedToolUsesCount]));
+    const unexpectedToolsByRunId = Object.fromEntries((gate.cellResults ?? []).map((c) => [c.runId, c.unexpectedTools]));
+    const foreignSkillNamesByRunId = Object.fromEntries(
+      records.map((r, i) => [r.run_id, classifyForeignSkillUses(conditionResults[i].events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null)]),
+    );
+    const transcriptsByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].spawnResult.rawStdout]));
+    const captureOrdinalByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, i]));
+    // ambientProfileMatrixOk (correction 6): scenarioHardGate's own matrix-wide consensus result
+    // (gate.ambientProfileMatrixOk, exposed on its return value) -- threaded straight through, so
+    // a rejection diagnostic for a COMPLETE scenario batch always records whether the ambient-
+    // profile consensus itself held, distinct from any individual cell's own failed_checks.
+    const forensics = await writeRejectionForensics({
+      runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
+      foreignSkillNamesByRunId, transcriptsByRunId, captureOrdinalByRunId,
+      ambientProfileMatrixOk: gate.ambientProfileMatrixOk,
+      privatePatternsFile, runsRootOverride,
+    });
+    return { ok: false, reason: gate.reason, ...forensics };
   }
 
   const eligible = scenarioMatrixIsBenchmarkEligible(records, gate);
@@ -1397,23 +1550,9 @@ async function finalizeAndWriteMatrixRecords({ runKind, records, conditionResult
   return { ok: true, reason: null, outDir, redactedOutDir, redactedRecords };
 }
 
-/**
- * Derives {ok, reason, failedChecks} from ONE shared ordered list of named [name, boolean] checks
- * -- the single source of truth for all four hard-gate functions below. Exists specifically to
- * close a two-sources-of-truth risk: manually building a `failedChecks` array alongside a
- * hand-written `reason` template string (as an earlier draft of this change did) can drift out of
- * sync exactly the way this file's own history already shows named checks and their free-text
- * reason strings drifting apart across several independent review rounds. `reason` preserves the
- * exact `name:value` substring shape every existing test already matches against.
- */
-function evaluateNamedChecks(checks) {
-  const failedChecks = checks.filter(([, passed]) => !passed).map(([name]) => name);
-  return {
-    ok: failedChecks.length === 0,
-    reason: failedChecks.length === 0 ? null : checks.map(([name, passed]) => `${name}:${passed}`).join(' '),
-    failedChecks,
-  };
-}
+// evaluateNamedChecks moved to cell-integrity.mjs (imported above) -- same rationale as
+// isPluginBoundToSnapshot/EXPECTED_TOOL_NAMES: cellTranscriptIntegrityOk (the fail-fast hook's own
+// canonical check function) needs it too, and cell-integrity.mjs cannot import FROM cli.mjs.
 
 // Always the full `name:value` list for every check, regardless of pass/fail -- used by
 // calibrationHardGate/smokeHardGate's two-sided (A/B) reason string, which must show BOTH sides'
@@ -1503,9 +1642,14 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   const toolProfileOkB = hasExpectedToolProfile(runBResult.init, EXPECTED_TOOL_NAMES);
   // No tool_use ANYWHERE in the transcript may name anything outside Bash/Skill -- a
   // transcript could otherwise use some other tool (e.g. Read) alongside the expected calls and
-  // still pass every other check.
-  const noUnexpectedToolsOkA = findUnexpectedToolUses(runAResult.events, EXPECTED_TOOL_NAMES).length === 0;
-  const noUnexpectedToolsOkB = findUnexpectedToolUses(runBResult.events, EXPECTED_TOOL_NAMES).length === 0;
+  // still pass every other check. summarizeUnexpectedToolUses (cell-integrity.mjs) is the single
+  // implementation of this projection in the whole repo -- calibrationHardGate/smokeHardGate/
+  // scenarioCellIntegrityOk all call it rather than each hand-rolling their own {name, event_index}
+  // mapping over findUnexpectedToolUses' raw output.
+  const unexpectedToolsA = summarizeUnexpectedToolUses(runAResult.events, EXPECTED_TOOL_NAMES);
+  const unexpectedToolsB = summarizeUnexpectedToolUses(runBResult.events, EXPECTED_TOOL_NAMES);
+  const noUnexpectedToolsOkA = unexpectedToolsA.ok;
+  const noUnexpectedToolsOkB = unexpectedToolsB.ok;
   const processOkA = a.terminated === false && a.exit_code === 0;
   const processOkB = b.terminated === false && b.exit_code === 0;
   // subtype==='success' (not just is_error===false) -- a session cut off by e.g. the budget cap
@@ -1575,6 +1719,10 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
     reason: ok ? null : `calibration hard gate failed -- A:{${joinChecks(checksA)}} B:{${joinChecks(checksB)}} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
     failedChecksA: evalA.failedChecks,
     failedChecksB: evalB.failedChecks,
+    unexpectedToolUsesCountA: unexpectedToolsA.count,
+    unexpectedToolUsesCountB: unexpectedToolsB.count,
+    unexpectedToolsA: unexpectedToolsA.tools,
+    unexpectedToolsB: unexpectedToolsB.tools,
   };
 }
 
@@ -1632,7 +1780,15 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
  */
 function scenarioCellIntegrityOk(record, conditionResult, { sharedAmbientNames = new Set(), ambientProfileMatrixOk = true } = {}) {
   const expectSkillAvailable = record.condition === 'current-skill';
-  const availabilityOk = record.skill_available.value === expectSkillAvailable;
+  // Deliberately NOT delegated to the shared evaluation below (shared.checksByName.availabilityOk/
+  // noSkillSafetyOk) -- kept reading directly off the already-built `record` because several
+  // existing tests mutate record.skill_available.value/record.skill_invoked.value to prove these
+  // two checks fail; delegating would silently stop honoring that mutation (CLAUDE.md: never
+  // weaken an existing test). Provably equivalent to the shared evaluation's own computation in
+  // production: buildRunRecord copies both fields verbatim (nullableMetric(isSkillAvailable(...)),
+  // nullableMetric(invocation?.confirmed ?? false)) from the exact same primitives
+  // cell-integrity.mjs's cellTranscriptIntegrityOk uses -- see that function's own doc comment.
+  //
   // Post-#385 review finding: a no-skill condition's plugin is never loaded (availabilityOk/
   // pluginProfileOk already prove this), but a CONFIRMED invocation could still slip through some
   // OTHER route (an environmental same-named skill, a Claude Code inconsistency) -- now that
@@ -1642,47 +1798,29 @@ function scenarioCellIntegrityOk(record, conditionResult, { sharedAmbientNames =
   // calibrationHardGate's own noSkillSafetyOk exactly. current-skill is deliberately exempt --
   // whether the skill triggers naturally on a scenario prompt is part of what's being MEASURED,
   // not a harness precondition (unchanged from this function's original design).
+  const availabilityOk = record.skill_available.value === expectSkillAvailable;
   const noSkillSafetyOk = expectSkillAvailable || record.skill_invoked.value === false;
-  const pluginProfileOk = hasExpectedPluginProfile(conditionResult.init, TARGET_PLUGIN_NAME, expectSkillAvailable);
-  const pluginSnapshotBindingOk = !expectSkillAvailable || isPluginBoundToSnapshot(conditionResult.init, conditionResult.snapshotDir);
-  const foreignSkillUses = classifyForeignSkillUses(conditionResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME);
+
+  // The canonical per-cell evaluation (cell-integrity.mjs) -- the SAME function the fail-fast hook
+  // (matrix-runner.mjs's runScenarioMatrix loop) already ran on this exact conditionResult earlier
+  // in this cell's lifecycle. Supplies 13 of the remaining 20 checks below via `checksByName`,
+  // plus `foreignSkillUses` (reused for skillSelectionOk, never re-scanned) and the
+  // unexpectedToolUsesCount/unexpectedTools structural detail this rejection-diagnostics fix needs
+  // propagated, without reparsing anything.
+  const shared = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+
   // Ambient-skill-profile fix: a real live run's no-skill cells were wrongly rejected for
   // confirming Claude Code's own bundled "run" skill -- present in init.skills[] regardless of
   // --plugin-dir (see isSkillAvailable's doc comment, stream-parser.mjs), not genuine third-party
   // contamination. A CONFIRMED foreign call is now tolerated ONLY when its exact skillArg was
   // advertised in `sharedAmbientNames` -- the matrix-wide consensus ambient profile scenarioHardGate
   // computes across every cell (never a hardcoded "run" special-case; a malformed/missing skillArg,
-  // or one absent from that set, still fails closed exactly as before). `ambientSkillProfileOk` is
-  // THIS cell's own init.skills[] parse validity (computeAmbientSkillProfile, self-derived -- a
-  // single cell can always judge its own transcript alone); `ambientProfileMatrixOk` is the SAME
-  // shared boolean threaded into every cell in the matrix by scenarioHardGate, so a cross-cell
-  // mismatch (or any cell's own malformed profile) blocks the WHOLE batch via the existing
-  // per-cell aggregation, with zero changes needed to that aggregation logic itself. Both default
-  // to the "everything's fine" value when this function is called in isolation (every existing
-  // 2-arg test call site) -- a single cell outside a real matrix context cannot meaningfully judge
-  // cross-cell agreement either way.
-  // Review-round-2 fix (correction 1): condition-aware -- a no-skill cell whose skills[]
-  // anomalously advertises the target's own bare/namespaced identity (even if never actually
-  // invoked) is real evidence contamination that neither pluginProfileOk (checks plugins[], not
-  // skills[]) nor noSkillSafetyOk (checks actual invocation, not mere advertisement) can catch.
-  // ambientSkillProfileOk covers pure structural validity; targetSkillAmbientIdentityOk covers the
-  // target-presence-appropriateness/no-duplicate-representation concern -- kept as two distinct
-  // named checks for independent diagnosability, mirroring this function's existing granularity.
-  const ambientProfile = computeAmbientSkillProfile(conditionResult.init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: expectSkillAvailable });
-  const ambientSkillProfileOk = ambientProfile.structurallyWellFormed;
-  const targetSkillAmbientIdentityOk = ambientProfile.targetIdentityOk;
-  const confirmedForeignSkillUses = foreignSkillUses.filter((u) => u.confirmed === true);
+  // or one absent from that set, still fails closed exactly as before). This is exactly why
+  // skillSelectionOk is EXCLUDED from cell-integrity.mjs's own canonical evaluation (it needs
+  // `sharedAmbientNames`, a matrix-wide value that doesn't exist mid-matrix during fail-fast) and
+  // must still be computed here, where the real value is available.
+  const confirmedForeignSkillUses = shared.foreignSkillUses.filter((u) => u.confirmed === true);
   const skillSelectionOk = confirmedForeignSkillUses.every((u) => u.skillArg != null && sharedAmbientNames.has(u.skillArg));
-  const foreignSkillToolResultsCompleteOk = !foreignSkillUses.some((u) => u.resultIsError === null);
-  const initOk = conditionResult.init != null;
-  const toolProfileOk = hasExpectedToolProfile(conditionResult.init, EXPECTED_TOOL_NAMES);
-  const noUnexpectedToolsOk = findUnexpectedToolUses(conditionResult.events, EXPECTED_TOOL_NAMES).length === 0;
-  const hookAccountingOk = conditionResult.hookStats.everyCallHooked === true;
-  const cleanTranscriptOk = conditionResult.malformedLines.length === 0;
-  const timeoutCtx = { terminated: conditionResult.spawnResult.terminated, terminationReason: conditionResult.spawnResult.terminationReason };
-  const transcriptStructureOk = findTranscriptStructuralIssuesToleratingTimeout(conditionResult.events, timeoutCtx).length === 0;
-  const toolResultsCompleteOk = findIncompleteToolResultsToleratingTimeout(conditionResult.events, timeoutCtx).length === 0;
-  const terminationOk = conditionResult.spawnResult.terminated === false || conditionResult.spawnResult.terminationReason === 'timeout';
   const junitEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'ambiguous_junit_evidence');
   const parallelEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'malformed_parallel_evidence');
   // The identical treatment as parallelEvidenceOk above, for the changed-subcommand sibling.
@@ -1693,24 +1831,31 @@ function scenarioCellIntegrityOk(record, conditionResult, { sharedAmbientNames =
   // ambiguous_junit_evidence -- a capture-mechanism failure (a missing/incoherent decision record
   // for any relevant attempt, or a missing Gradle evidence record) is a different problem from a
   // proven same-turn concurrency conflict, and each gets its own independently-toggleable check.
+  // These 5 checks (junitEvidenceOk/parallelEvidenceOk/changedEvidenceOk/junitSkipEvidenceOk/
+  // junitCaptureCompleteOk), like availabilityOk/noSkillSafetyOk above, are also EXCLUDED from
+  // cell-integrity.mjs's canonical evaluation -- they read `record.errors`, populated only once
+  // grading/buildRunRecord runs (after the fail-fast loop, not during it).
   const junitCaptureCompleteOk = !(record.errors ?? []).some((e) => e.code === 'junit_evidence_capture_incomplete');
 
   const evaluation = evaluateNamedChecks([
     ['availabilityOk', availabilityOk], ['noSkillSafetyOk', noSkillSafetyOk],
-    ['pluginProfileOk', pluginProfileOk],
-    ['pluginSnapshotBindingOk', pluginSnapshotBindingOk], ['skillSelectionOk', skillSelectionOk],
-    ['foreignSkillToolResultsCompleteOk', foreignSkillToolResultsCompleteOk], ['initOk', initOk],
-    ['toolProfileOk', toolProfileOk], ['noUnexpectedToolsOk', noUnexpectedToolsOk],
-    ['hookAccountingOk', hookAccountingOk], ['cleanTranscriptOk', cleanTranscriptOk],
-    ['transcriptStructureOk', transcriptStructureOk], ['toolResultsCompleteOk', toolResultsCompleteOk],
-    ['terminationOk', terminationOk], ['junitEvidenceOk', junitEvidenceOk],
+    ['pluginProfileOk', shared.checksByName.pluginProfileOk],
+    ['pluginSnapshotBindingOk', shared.checksByName.pluginSnapshotBindingOk], ['skillSelectionOk', skillSelectionOk],
+    ['foreignSkillToolResultsCompleteOk', shared.checksByName.foreignSkillToolResultsCompleteOk], ['initOk', shared.checksByName.initOk],
+    ['toolProfileOk', shared.checksByName.toolProfileOk], ['noUnexpectedToolsOk', shared.checksByName.noUnexpectedToolsOk],
+    ['hookAccountingOk', shared.checksByName.hookAccountingOk], ['cleanTranscriptOk', shared.checksByName.cleanTranscriptOk],
+    ['transcriptStructureOk', shared.checksByName.transcriptStructureOk], ['toolResultsCompleteOk', shared.checksByName.toolResultsCompleteOk],
+    ['terminationOk', shared.checksByName.terminationOk], ['junitEvidenceOk', junitEvidenceOk],
     ['parallelEvidenceOk', parallelEvidenceOk], ['changedEvidenceOk', changedEvidenceOk],
     ['junitSkipEvidenceOk', junitSkipEvidenceOk],
     ['junitCaptureCompleteOk', junitCaptureCompleteOk],
-    ['ambientSkillProfileOk', ambientSkillProfileOk], ['targetSkillAmbientIdentityOk', targetSkillAmbientIdentityOk],
+    ['ambientSkillProfileOk', shared.checksByName.ambientSkillProfileOk], ['targetSkillAmbientIdentityOk', shared.checksByName.targetSkillAmbientIdentityOk],
     ['ambientProfileMatrixOk', ambientProfileMatrixOk],
   ]);
-  return { ok: evaluation.ok, reason: evaluation.reason, failedChecks: evaluation.failedChecks };
+  return {
+    ok: evaluation.ok, reason: evaluation.reason, failedChecks: evaluation.failedChecks,
+    unexpectedToolUsesCount: shared.unexpectedToolUsesCount, unexpectedTools: shared.unexpectedTools,
+  };
 }
 
 /**
@@ -1777,6 +1922,8 @@ function scenarioHardGate(records, conditionResults) {
       repetitionIndex: records[i].repetition_index,
       ok: cell.ok,
       failedChecks: cell.failedChecks,
+      unexpectedToolUsesCount: cell.unexpectedToolUsesCount,
+      unexpectedTools: cell.unexpectedTools,
     });
     if (!cell.ok) {
       failures.push(`cell[${i}] (repetition ${records[i].repetition_index}, condition ${records[i].condition}): ${cell.reason}`);
@@ -1826,7 +1973,7 @@ async function cmdCalibrate(args) {
     return 1;
   }
   try {
-    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = conditionPair;
+    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop } = conditionPair;
     const policySha256 = computePolicySha256();
     // One HMAC key + opaque scope id for this ENTIRE calibrate invocation (correction 2) --
     // shared by both A and B so they remain comparable to each other, never persisted. Ephemeral
@@ -1834,19 +1981,31 @@ async function cmdCalibrate(args) {
     // above, before any spawn -- see resolveMeasurementScopeOrFail's own doc comment).
     const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
     const common = { runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey };
-    const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
-    const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
 
     // Calibration's job is narrowly to prove invocation MECHANICS under an explicit-invocation
     // prompt -- see calibrationHardGate's own doc comment for why this is a named function.
-    const result = await finalizeAndWriteRecords({
-      runKind: 'calibration', recordA, recordB, runA, runB, privatePatternsFile,
-      hardGateFn: calibrationHardGate,
-    });
+    let result;
+    if (!pairComplete) {
+      // Fail-fast (preserve rejected matrix forensics): B already failed its own local integrity
+      // check -- A was never spawned, so buildRunRecord({conditionResult: runA, ...}) would throw
+      // on runA===null. Build only B's record and go straight to finalizeAndWriteRecords' own
+      // fail-fast branch.
+      const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
+      result = await finalizeAndWriteRecords({
+        runKind: 'calibration', recordA: null, recordB, runA: null, runB, privatePatternsFile,
+        hardGateFn: calibrationHardGate, matrixComplete: false, plannedCellCount, executedCellCount, failFastStop,
+      });
+    } else {
+      const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
+      const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
+      result = await finalizeAndWriteRecords({
+        runKind: 'calibration', recordA, recordB, runA, runB, privatePatternsFile,
+        hardGateFn: calibrationHardGate,
+      });
+    }
     if (!result.ok) {
       console.error(`CALIBRATION FAILED: ${result.reason}`);
-      if (result.diagnosticsWriteError) console.error(`(rejected-run diagnostics were NOT written: ${result.diagnosticsWriteError})`);
-      else if (result.rejectionId) console.error(`(rejected-run diagnostics written: ${result.diagnosticsRelativePath}, rejection_id ${result.rejectionId})`);
+      printRejectionForensicsStderr(result);
       return 1;
     }
     console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.redactedOutDir }, null, 2));
@@ -1909,8 +2068,12 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   // may name anything outside Bash/Skill.
   const toolProfileOkA = hasExpectedToolProfile(runAResult.init, EXPECTED_TOOL_NAMES);
   const toolProfileOkB = hasExpectedToolProfile(runBResult.init, EXPECTED_TOOL_NAMES);
-  const noUnexpectedToolsOkA = findUnexpectedToolUses(runAResult.events, EXPECTED_TOOL_NAMES).length === 0;
-  const noUnexpectedToolsOkB = findUnexpectedToolUses(runBResult.events, EXPECTED_TOOL_NAMES).length === 0;
+  // summarizeUnexpectedToolUses (cell-integrity.mjs) -- see calibrationHardGate's identical check
+  // and doc comment; the single implementation of this projection in the whole repo.
+  const unexpectedToolsA = summarizeUnexpectedToolUses(runAResult.events, EXPECTED_TOOL_NAMES);
+  const unexpectedToolsB = summarizeUnexpectedToolUses(runBResult.events, EXPECTED_TOOL_NAMES);
+  const noUnexpectedToolsOkA = unexpectedToolsA.ok;
+  const noUnexpectedToolsOkB = unexpectedToolsB.ok;
   const processOkA = a.terminated === false && a.exit_code === 0;
   const processOkB = b.terminated === false && b.exit_code === 0;
   // subtype==='success' (not just is_error===false) -- see calibrationHardGate's identical
@@ -1978,6 +2141,10 @@ function smokeHardGate(a, b, runAResult, runBResult) {
     reason: ok ? null : `smoke hard gate failed -- A:{${joinChecks(checksA)}} B:{${joinChecks(checksB)}} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype} tools:${JSON.stringify(runAResult.init?.tools)}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype} tools:${JSON.stringify(runBResult.init?.tools)})`,
     failedChecksA: evalA.failedChecks,
     failedChecksB: evalB.failedChecks,
+    unexpectedToolUsesCountA: unexpectedToolsA.count,
+    unexpectedToolUsesCountB: unexpectedToolsB.count,
+    unexpectedToolsA: unexpectedToolsA.tools,
+    unexpectedToolsB: unexpectedToolsB.tools,
   };
 }
 
@@ -2037,7 +2204,7 @@ async function cmdSmoke(args) {
     return 1;
   }
   try {
-    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands } = conditionPair;
+    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop } = conditionPair;
     const policySha256 = computePolicySha256();
     // One HMAC key + opaque scope id for this ENTIRE smoke invocation (correction 2) -- shared by
     // both A and B so they remain comparable to each other, never persisted. Ephemeral (freshly
@@ -2045,8 +2212,6 @@ async function cmdSmoke(args) {
     // before any spawn -- see resolveMeasurementScopeOrFail's own doc comment).
     const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
     const common = { runKind: 'smoke', scenarioId, skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, projectUrl, family: 'test-only', modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey };
-    const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
-    const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
 
     // Smoke's gate requires EQUIVALENT REAL WORK in both arms -- not just skill availability.
     // Every sub-check is reported by name in the failure reason (not just an aggregate boolean)
@@ -2054,14 +2219,26 @@ async function cmdSmoke(args) {
     // isolates the ONE failure mode it claims to. skill_invoked is deliberately NOT required
     // here (whether the skill triggers naturally on this prompt is exactly the open question a
     // future corpus-probe run would investigate, not something smoke should presuppose).
-    const result = await finalizeAndWriteRecords({
-      runKind: 'smoke', recordA, recordB, runA, runB, privatePatternsFile,
-      hardGateFn: smokeHardGate,
-    });
+    let result;
+    if (!pairComplete) {
+      // Fail-fast (preserve rejected matrix forensics): see cmdCalibrate's identical rationale --
+      // B already failed locally, A was never spawned.
+      const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
+      result = await finalizeAndWriteRecords({
+        runKind: 'smoke', recordA: null, recordB, runA: null, runB, privatePatternsFile,
+        hardGateFn: smokeHardGate, matrixComplete: false, plannedCellCount, executedCellCount, failFastStop,
+      });
+    } else {
+      const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
+      const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
+      result = await finalizeAndWriteRecords({
+        runKind: 'smoke', recordA, recordB, runA, runB, privatePatternsFile,
+        hardGateFn: smokeHardGate,
+      });
+    }
     if (!result.ok) {
       console.error(`SMOKE FAILED: ${result.reason}`);
-      if (result.diagnosticsWriteError) console.error(`(rejected-run diagnostics were NOT written: ${result.diagnosticsWriteError})`);
-      else if (result.rejectionId) console.error(`(rejected-run diagnostics written: ${result.diagnosticsRelativePath}, rejection_id ${result.rejectionId})`);
+      printRejectionForensicsStderr(result);
       return 1;
     }
     console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.redactedOutDir }, null, 2));
@@ -2343,6 +2520,13 @@ async function cmdRun(args) {
     // gate has even run -- both wastes work on a matrix that may be rejected anyway, and (per a
     // review finding) risks a sidecar problem masking the real rejection reason.
     const terminalAuthoritativeEventIndices = [];
+    // localIntegrityByRunId: parallel to records -- finalizeAndWriteMatrixRecords cannot read
+    // `matrix` directly (only this function has it), so on a fail-fast (matrix.matrixComplete ===
+    // false) rejection it needs this map instead, keyed by the same run_id every other by-run-id
+    // map in this pipeline uses. Built for every cell regardless of matrixComplete (cheap, and
+    // simpler than conditionally skipping it) -- only actually consumed when the matrix is
+    // incomplete.
+    const localIntegrityByRunId = {};
     for (const cell of matrix.cellResults) {
       const gradeResult = gradeScenarioCondition(cell.conditionResult, scenario);
       const record = buildRunRecord({
@@ -2358,6 +2542,10 @@ async function cmdRun(args) {
       records.push(record);
       conditionResults.push(cell.conditionResult);
       terminalAuthoritativeEventIndices.push(gradeResult.terminalAuthoritativeEventIndex);
+      localIntegrityByRunId[record.run_id] = cell.localIntegrity;
+    }
+    if (!matrix.matrixComplete) {
+      console.error(`RUN: fail-fast stopped the matrix early at order_index ${matrix.failFastStop.orderIndex} (repetition ${matrix.failFastStop.repetitionIndex}, condition ${matrix.failFastStop.condition}) -- ${matrix.executedCellCount}/${matrix.plannedCellCount} cells executed, remaining cells never spawned`);
     }
 
     // Invoked by finalizeAndWriteMatrixRecords ONLY once the hard gate has confirmed acceptance --
@@ -2388,11 +2576,12 @@ async function cmdRun(args) {
     const result = await finalizeAndWriteMatrixRecords({
       runKind: 'scenario', records, conditionResults, hardGateFn: scenarioHardGate,
       privatePatternsFile, repeats, buildSidecarsFn: buildSidecars,
+      matrixComplete: matrix.matrixComplete, plannedCellCount: matrix.plannedCellCount,
+      executedCellCount: matrix.executedCellCount, localIntegrityByRunId, failFastStop: matrix.failFastStop,
     });
     if (!result.ok) {
       console.error(`RUN FAILED: ${result.reason}`);
-      if (result.diagnosticsWriteError) console.error(`(rejected-run diagnostics were NOT written: ${result.diagnosticsWriteError})`);
-      else if (result.rejectionId) console.error(`(rejected-run diagnostics written: ${result.diagnosticsRelativePath}, rejection_id ${result.rejectionId})`);
+      printRejectionForensicsStderr(result);
       return 1;
     }
     console.log(JSON.stringify({ records: result.redactedRecords, evidenceDir: result.redactedOutDir }, null, 2));

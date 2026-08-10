@@ -1,0 +1,249 @@
+// tests/vitest/agentic-eval-cell-integrity.test.js
+// Direct unit tests for tools/agentic-eval/cell-integrity.mjs -- the canonical per-cell
+// harness-integrity evaluation this fix (preserve rejected matrix forensics) extracted so both the
+// fail-fast hook (matrix-runner.mjs's runScenarioMatrix loop, cli.mjs's runConditionPair) and the
+// final whole-matrix gate (cli.mjs's scenarioCellIntegrityOk/scenarioHardGate) share exactly one
+// implementation. Complements (never duplicates) agentic-eval-hard-gates.test.js's own coverage of
+// calibrationHardGate/smokeHardGate/scenarioCellIntegrityOk/scenarioHardGate (which exercise this
+// module INDIRECTLY, through cli.mjs's own delegation) and agentic-eval-run-command.test.js's real-
+// subprocess fail-fast tests (which exercise it end-to-end, including its wiring into
+// runScenarioMatrix) -- this file is the one place that calls
+// cellTranscriptIntegrityOk/summarizeUnexpectedToolUses/evaluateNamedChecks/isPluginBoundToSnapshot
+// directly, with precise synthetic inputs, mirroring agentic-eval-hard-gates.test.js's own
+// established fixture-construction convention.
+import { describe, it, expect, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  EXPECTED_TOOL_NAMES, isPluginBoundToSnapshot, evaluateNamedChecks,
+  summarizeUnexpectedToolUses, cellTranscriptIntegrityOk,
+} from '../../tools/agentic-eval/cell-integrity.mjs';
+
+const TARGET_PLUGIN_NAME = 'kmp-test-runner';
+const TARGET_SKILL_NAME = 'kmp-test-runner';
+
+function bashToolUseEvent(id, command) {
+  return { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', id, input: { command } }] } };
+}
+function toolResultEvent(id, isError = false) {
+  return { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: isError ? 'error' : 'ok', is_error: isError, tool_use_id: id }] } };
+}
+function skillToolUseEvent(id, skillArg) {
+  return { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id, input: { skill: skillArg } }] } };
+}
+function readToolUseEvent(id) {
+  return { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', id, input: { file_path: '/fake/unexpected.txt' } }] } };
+}
+function initEventStub() {
+  return { type: 'system', subtype: 'init' };
+}
+function resultEventStub() {
+  return { type: 'result', subtype: 'success' };
+}
+
+// isPluginBoundToSnapshot compares by filesystem IDENTITY (dev+ino) -- both sides must exist as a
+// real path on disk, so a hardcoded placeholder string can never satisfy it. Mirrors
+// agentic-eval-hard-gates.test.js's own identical FAKE_SNAPSHOT_DIR/WRONG_SNAPSHOT_DIR convention.
+const FAKE_SNAPSHOT_DIR = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-cell-integrity-snapshot-'));
+const WRONG_SNAPSHOT_DIR = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-cell-integrity-wrong-snapshot-'));
+afterAll(() => {
+  rmSync(FAKE_SNAPSHOT_DIR, { recursive: true, force: true });
+  rmSync(WRONG_SNAPSHOT_DIR, { recursive: true, force: true });
+});
+
+const KMP_TEST_RUNNER_PLUGIN = [{ name: 'kmp-test-runner', path: FAKE_SNAPSHOT_DIR, source: 'fake' }];
+
+function cleanConditionResult(condition, overrides = {}) {
+  const isCurrentSkill = condition === 'current-skill';
+  return {
+    condition,
+    init: {
+      plugins: isCurrentSkill ? KMP_TEST_RUNNER_PLUGIN : [],
+      skills: isCurrentSkill ? ['kmp-test-runner:kmp-test-runner'] : [],
+      tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk',
+    },
+    snapshotDir: isCurrentSkill ? FAKE_SNAPSHOT_DIR : null,
+    hookStats: { everyCallHooked: true, hookAllowCount: 1, hookDenyCount: 0 },
+    events: [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json'), toolResultEvent('t1'), resultEventStub()],
+    malformedLines: [],
+    spawnResult: { terminated: false, terminationReason: null },
+    invocation: null,
+    ...overrides,
+  };
+}
+
+describe('evaluateNamedChecks', () => {
+  it('ok:true, reason:null, failedChecks:[] when every check passes', () => {
+    const result = evaluateNamedChecks([['a', true], ['b', true]]);
+    expect(result).toEqual({ ok: true, reason: null, failedChecks: [] });
+  });
+
+  it('reports every failed check by name, in original order, in both reason and failedChecks', () => {
+    const result = evaluateNamedChecks([['a', true], ['b', false], ['c', false]]);
+    expect(result.ok).toBe(false);
+    expect(result.failedChecks).toEqual(['b', 'c']);
+    expect(result.reason).toBe('a:true b:false c:false');
+  });
+});
+
+describe('isPluginBoundToSnapshot', () => {
+  it('true when the reported path and the expected snapshot dir are the SAME real directory', () => {
+    const init = { plugins: [{ name: 'kmp-test-runner', path: FAKE_SNAPSHOT_DIR }] };
+    expect(isPluginBoundToSnapshot(init, FAKE_SNAPSHOT_DIR)).toBe(true);
+  });
+
+  it('false when the reported path is a DIFFERENT real directory than the expected snapshot', () => {
+    const init = { plugins: [{ name: 'kmp-test-runner', path: WRONG_SNAPSHOT_DIR }] };
+    expect(isPluginBoundToSnapshot(init, FAKE_SNAPSHOT_DIR)).toBe(false);
+  });
+
+  it('false (fail closed) when the reported path does not exist on disk', () => {
+    const init = { plugins: [{ name: 'kmp-test-runner', path: '/definitely/does/not/exist' }] };
+    expect(isPluginBoundToSnapshot(init, FAKE_SNAPSHOT_DIR)).toBe(false);
+  });
+
+  it('false when init has no plugins at all', () => {
+    expect(isPluginBoundToSnapshot({ plugins: [] }, FAKE_SNAPSHOT_DIR)).toBe(false);
+  });
+
+  it('false when init has more than one plugin', () => {
+    const init = { plugins: [{ name: 'kmp-test-runner', path: FAKE_SNAPSHOT_DIR }, { name: 'other', path: FAKE_SNAPSHOT_DIR }] };
+    expect(isPluginBoundToSnapshot(init, FAKE_SNAPSHOT_DIR)).toBe(false);
+  });
+
+  it('false when initEvent is null', () => {
+    expect(isPluginBoundToSnapshot(null, FAKE_SNAPSHOT_DIR)).toBe(false);
+  });
+});
+
+describe('summarizeUnexpectedToolUses', () => {
+  it('ok:true, count:0, tools:[] when no unexpected tool is used', () => {
+    const events = [initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor'), toolResultEvent('t1'), resultEventStub()];
+    expect(summarizeUnexpectedToolUses(events, EXPECTED_TOOL_NAMES)).toEqual({ ok: true, count: 0, tools: [] });
+  });
+
+  it('maps findUnexpectedToolUses\' raw {index, name} output to {name, event_index}, discarding id/receiptNs entirely', () => {
+    const events = [initEventStub(), readToolUseEvent('toolu_read1'), toolResultEvent('toolu_read1')];
+    const result = summarizeUnexpectedToolUses(events, EXPECTED_TOOL_NAMES);
+    expect(result.ok).toBe(false);
+    expect(result.count).toBe(1);
+    expect(result.tools).toEqual([{ name: 'Read', event_index: 1 }]);
+    expect(Object.keys(result.tools[0]).sort()).toEqual(['event_index', 'name']);
+  });
+
+  it('counts EVERY unexpected use, preserving order and duplicates -- never deduplicated', () => {
+    const events = [
+      initEventStub(),
+      readToolUseEvent('r1'), toolResultEvent('r1'),
+      readToolUseEvent('r2'), toolResultEvent('r2'),
+    ];
+    const result = summarizeUnexpectedToolUses(events, EXPECTED_TOOL_NAMES);
+    expect(result.count).toBe(2);
+    expect(result.tools.map((t) => t.event_index)).toEqual([1, 3]);
+  });
+});
+
+describe('cellTranscriptIntegrityOk', () => {
+  it('ok:true for a clean current-skill cell', () => {
+    const result = cellTranscriptIntegrityOk(cleanConditionResult('current-skill'), { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.ok).toBe(true);
+    expect(result.reason).toBeNull();
+    expect(result.failedChecks).toEqual([]);
+    expect(result.unexpectedToolUsesCount).toBe(0);
+    expect(result.unexpectedTools).toEqual([]);
+  });
+
+  it('ok:true for a clean no-skill cell', () => {
+    const result = cellTranscriptIntegrityOk(cleanConditionResult('no-skill'), { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.ok).toBe(true);
+  });
+
+  it('exposes all 15 canonical checks by name via checksByName, every one true for a clean cell', () => {
+    const result = cellTranscriptIntegrityOk(cleanConditionResult('current-skill'), { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(Object.keys(result.checksByName).sort()).toEqual([
+      'ambientSkillProfileOk', 'availabilityOk', 'cleanTranscriptOk', 'foreignSkillToolResultsCompleteOk',
+      'hookAccountingOk', 'initOk', 'noSkillSafetyOk', 'noUnexpectedToolsOk', 'pluginProfileOk',
+      'pluginSnapshotBindingOk', 'targetSkillAmbientIdentityOk', 'terminationOk', 'toolProfileOk',
+      'toolResultsCompleteOk', 'transcriptStructureOk',
+    ].sort());
+    expect(Object.values(result.checksByName).every((v) => v === true)).toBe(true);
+  });
+
+  it('ok:false with noUnexpectedToolsOk + toolProfileOk failing when an unexpected Read tool is invoked, and unexpectedTools/unexpectedToolUsesCount reflect it precisely', () => {
+    const conditionResult = cleanConditionResult('current-skill', {
+      init: { plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner:kmp-test-runner'], tools: ['Bash', 'Skill', 'Read'], mcp_servers: [], permissionMode: 'dontAsk' },
+      events: [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json'), toolResultEvent('t1'), readToolUseEvent('t2'), toolResultEvent('t2'), resultEventStub()],
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.ok).toBe(false);
+    expect(result.failedChecks).toEqual(expect.arrayContaining(['toolProfileOk', 'noUnexpectedToolsOk']));
+    expect(result.unexpectedToolUsesCount).toBe(1);
+    expect(result.unexpectedTools).toEqual([{ name: 'Read', event_index: 3 }]);
+  });
+
+  it('ok:false when the transcript has a malformed line (cleanTranscriptOk)', () => {
+    const conditionResult = cleanConditionResult('current-skill', { malformedLines: ['not valid json'] });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.ok).toBe(false);
+    expect(result.failedChecks).toContain('cleanTranscriptOk');
+  });
+
+  it('ok:false when a no-skill cell CONFIRMS the target skill (noSkillSafetyOk) -- real evidence contamination', () => {
+    const conditionResult = cleanConditionResult('no-skill', {
+      events: [initEventStub(), skillToolUseEvent('s1', 'kmp-test-runner'), toolResultEvent('s1'), resultEventStub()],
+      invocation: { confirmed: true },
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.ok).toBe(false);
+    expect(result.failedChecks).toContain('noSkillSafetyOk');
+  });
+
+  // G9 (preserve rejected matrix forensics review): skillSelectionOk needs matrix-wide
+  // sharedAmbientNames that don't exist during fail-fast -- deliberately excluded from this
+  // function's 15 checks (see its own doc comment). A CONFIRMED but ambient (ubiquitous, bundled)
+  // Skill invocation -- e.g. "run", present regardless of --plugin-dir, the exact real regression
+  // this proves -- must NEVER cause this function alone to reject a cell; only the final
+  // scenarioHardGate (with real cross-cell consensus) decides whether it's tolerated. Reproduces
+  // fake-claude-run-shared-bundled-skill-confirmed's own shape directly, rather than only through
+  // the full real-subprocess test (agentic-eval-run-command.test.js's identically-motivated
+  // describe block) that already covers it end-to-end -- a regression here would silently turn
+  // that accepted-matrix test into a fail-fast rejection instead, which is a different, less
+  // specific failure signature than a direct unit assertion on this function alone.
+  it('ok:true for a cell that confirms an ambient, non-target Skill ("run") -- skillSelectionOk is matrix-wide, never evaluated here', () => {
+    const conditionResult = cleanConditionResult('no-skill', {
+      events: [initEventStub(), skillToolUseEvent('s1', 'run'), toolResultEvent('s1'), resultEventStub()],
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.ok).toBe(true);
+    // foreignSkillUses is still exposed (scenarioCellIntegrityOk's own skillSelectionOk reads it
+    // via shared.foreignSkillUses) -- this function computes it, just never gates on it itself.
+    expect(result.foreignSkillUses.length).toBe(1);
+    expect(result.foreignSkillUses[0].confirmed).toBe(true);
+  });
+
+  it('ok:false when init is missing entirely (initOk)', () => {
+    const conditionResult = cleanConditionResult('current-skill', { init: null });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.ok).toBe(false);
+    expect(result.failedChecks).toContain('initOk');
+  });
+
+  it('ok:false when the process was terminated with a genuine error (not a timeout)', () => {
+    const conditionResult = cleanConditionResult('current-skill', { spawnResult: { terminated: true, terminationReason: 'error' } });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.ok).toBe(false);
+    expect(result.failedChecks).toContain('terminationOk');
+  });
+
+  it('a legitimate timeout (terminationOk/toolResultsCompleteOk/transcriptStructureOk all tolerate it, unlike a genuine error)', () => {
+    const conditionResult = cleanConditionResult('current-skill', {
+      spawnResult: { terminated: true, terminationReason: 'timeout' },
+      events: [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json')],
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.failedChecks).not.toContain('terminationOk');
+    expect(result.failedChecks).not.toContain('toolResultsCompleteOk');
+    expect(result.failedChecks).not.toContain('transcriptStructureOk');
+  });
+});

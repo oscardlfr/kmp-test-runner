@@ -1451,6 +1451,13 @@ describe('scenarioCellIntegrityOk', () => {
   function passConditionResult(condition, overrides = {}) {
     const isCurrentSkill = condition === 'current-skill';
     return {
+      // Real runSingleCondition() (matrix-runner.mjs) return objects always carry `condition` as
+      // their own first field -- cell-integrity.mjs's cellTranscriptIntegrityOk (unlike the
+      // pre-fix scenarioCellIntegrityOk, which derived expectSkillAvailable from the SEPARATE
+      // `record.condition` instead) must be able to determine expectSkillAvailable from
+      // conditionResult ALONE, since it also runs during fail-fast, before any record exists.
+      // Omitted here previously only because nothing read it before this fix.
+      condition,
       init: {
         model: 'claude-sonnet-5-fake-resolved',
         plugins: isCurrentSkill ? KMP_TEST_RUNNER_PLUGIN : [],
@@ -1946,6 +1953,10 @@ describe('scenarioHardGate', () => {
     };
     const isCurrentSkill = condition === 'current-skill';
     const conditionResult = {
+      // See passConditionResult's identical fix/comment above -- real runSingleCondition() return
+      // objects always carry `condition`, and cellTranscriptIntegrityOk (cell-integrity.mjs) now
+      // derives expectSkillAvailable from THIS field (it has no `record` to fall back to).
+      condition,
       init: {
         plugins: isCurrentSkill ? KMP_TEST_RUNNER_PLUGIN : [],
         skills: isCurrentSkill ? ['kmp-test-runner:kmp-test-runner'] : [],

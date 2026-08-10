@@ -1012,3 +1012,158 @@ describe('fixture_setup real matrix/CLI wiring (post-open-PR review finding)', (
     expect(probeLines.every((line) => line === '1')).toBe(true);
   }, 60000);
 });
+
+// preserve rejected matrix forensics: fail-fast (Objective C) + rejection forensics (Objectives
+// A+B), proven end-to-end through a real `cli.mjs run` subprocess against fake-claude fixtures with
+// their own invocation COUNTER (fake-claude-run-failfast-first-cell/-last-cell, see each fixture's
+// own header comment) -- unlike the pre-existing fake-claude-malformed/-unexpected-tool fixtures
+// (static, no counter), a counting fixture can prove the runner actually STOPPED spawning further
+// live sessions, not merely that the one session that ran looks rejected. That distinction is
+// exactly what the real 2026-08 canary incident's own postmortem asked for: fail-fast is only a
+// real defense if it demonstrably prevents further sessions, not just correctly explains the one
+// that already ran.
+function rejectedDir() {
+  return path.join(runsRoot, 'agentic-eval-rejected');
+}
+
+function readCommittedRejectionDiagnostic(rejectionId) {
+  return JSON.parse(readFileSync(path.join(rejectedDir(), `${rejectionId}.json`), 'utf8'));
+}
+
+function readLocalRejectionDiagnostic(rejectionId) {
+  return JSON.parse(readFileSync(path.join(rejectedDir(), 'raw', `${rejectionId}.json`), 'utf8'));
+}
+
+function extractRejectionId(stderr) {
+  const m = stderr.match(/rejection_id ([0-9a-f-]{36})/i);
+  return m ? m[1] : null;
+}
+
+describe('fail-fast (preserve rejected matrix forensics) -- scenario matrix stops spawning further live sessions', () => {
+  it('a cell failing at order_index 0 of a --repeats 2 (4-cell) matrix causes EXACTLY ONE live session -- the other 3 are never spawned -- and writes a partial diagnostic declaring matrix_complete:false/planned:4/executed:1/ambient_profile_matrix_ok:null', async () => {
+    const probeLogPath = path.join(isolatedTmp, 'failfast-first-cell-invocations.log');
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '2']), fakeClaudeEnv('run-failfast-first-cell'), 30000);
+    expect(result.status).toBe(1);
+
+    // The discriminating assertion this fixture exists for: a broken fail-fast (e.g. a `break`
+    // that only escapes the inner of two nested loops) would still show a rejection, but the probe
+    // log would carry MORE than one line -- this is what a static, non-counting fixture cannot
+    // prove.
+    expect(existsSync(probeLogPath)).toBe(true);
+    const invocationLines = readFileSync(probeLogPath, 'utf8').trim().split('\n').filter(Boolean);
+    expect(invocationLines.length).toBe(1);
+
+    expect(result.stderr).toMatch(/RUN FAILED/);
+    expect(result.stderr).toContain('fail-fast stopped the matrix early at order_index 0');
+    expect(result.stderr).toContain('1/4 cells executed, remaining cells never spawned');
+    // The exact failure shape the 2026-08 incident itself was -- isolated to the two checks this
+    // fixture's injected Read tool_use actually trips, matching fake-claude-unexpected-tool's own
+    // already-proven isolation (toolProfileOk from the init event's tools[] declaring Read,
+    // noUnexpectedToolsOk from the transcript actually invoking it).
+    expect(result.stderr).toContain('toolProfileOk:false');
+    expect(result.stderr).toContain('noUnexpectedToolsOk:false');
+    expect(result.stderr).toContain('availabilityOk:true');
+    expect(listEvidenceFiles('scenario')).toEqual([]);
+    expect(result.stderr).toContain('rejected-run diagnostics written');
+    expect(result.stderr).toContain('1 raw transcript(s) preserved locally');
+
+    const rejectionId = extractRejectionId(result.stderr);
+    expect(rejectionId).not.toBeNull();
+
+    const committed = readCommittedRejectionDiagnostic(rejectionId);
+    expect(committed.schema).toBe(3);
+    expect(committed.run_kind).toBe('scenario');
+    expect(committed.matrix_complete).toBe(false);
+    expect(committed.planned_cell_count).toBe(4);
+    expect(committed.executed_cell_count).toBe(1);
+    // Never a faked/simulated consensus over cells that never ran -- scenarioHardGate itself was
+    // never even invoked for this rejection (see finalizeAndWriteMatrixRecords's own
+    // matrixComplete:false branch).
+    expect(committed.ambient_profile_matrix_ok).toBeNull();
+    expect(committed.raw_transcripts_persisted).toBe(true);
+    expect(committed.cells.length).toBe(1);
+    expect(committed.cells[0].order_index).toBe(0);
+    expect(committed.cells[0].unexpected_tool_uses_count).toBe(1);
+    expect(committed.cells[0].failed_checks).toContain('noUnexpectedToolsOk');
+    // Privacy: the committed tier never carries the unexpected tool's own NAME -- only its count.
+    expect(JSON.stringify(committed)).not.toContain('"Read"');
+
+    const local = readLocalRejectionDiagnostic(rejectionId);
+    expect(local.cells[0].unexpected_tools.length).toBe(1);
+    expect(local.cells[0].unexpected_tools[0].name).toBe('Read');
+    expect(Number.isInteger(local.cells[0].unexpected_tools[0].event_index)).toBe(true);
+    expect(Object.keys(local.cells[0].unexpected_tools[0]).sort()).toEqual(['event_index', 'name']);
+    expect(local.raw_transcripts_persisted).toBe(true);
+    expect(local.cells[0].transcript_filename).toMatch(/^0-[0-9a-f]{64}\.jsonl$/);
+
+    const transcriptPath = path.join(rejectedDir(), 'raw', 'transcripts', rejectionId, local.cells[0].transcript_filename);
+    expect(existsSync(transcriptPath)).toBe(true);
+    expect(readFileSync(transcriptPath, 'utf8')).toContain('"name":"Read"');
+  }, 30000);
+
+  // "No false savings" (correction 7): the real 2026-08 canary incident's own failing cell was the
+  // LAST of 4 planned cells -- fail-fast would NOT have saved any live session in that specific
+  // shape, since every cell had already been spawned by the time the last one failed. This fixture
+  // reproduces exactly that shape at the smallest scale (--repeats 1, 2 planned cells, the SECOND
+  // one fails): the loop's own break fires only once there is nothing left to run anyway, so
+  // executedCellCount === plannedCellCount, matrixComplete is `true`, and the ORDINARY
+  // scenarioHardGate runs for real (never the fail-fast-only partial branch) -- ambient_profile_
+  // matrix_ok must be a genuine boolean here, not null, and the diagnostic must never claim savings
+  // that didn't happen.
+  it('a cell failing at the LAST order_index of a --repeats 1 (2-cell) matrix still runs BOTH sessions -- matrix_complete:true, no savings claimed, and the ordinary scenarioHardGate (not the fail-fast branch) produced the rejection', async () => {
+    const probeLogPath = path.join(isolatedTmp, 'failfast-last-cell-invocations.log');
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('run-failfast-last-cell'), 30000);
+    expect(result.status).toBe(1);
+
+    expect(existsSync(probeLogPath)).toBe(true);
+    const invocationLines = readFileSync(probeLogPath, 'utf8').trim().split('\n').filter(Boolean);
+    expect(invocationLines.length).toBe(2);
+
+    expect(result.stderr).toMatch(/RUN FAILED/);
+    // The fail-fast-specific early stderr line is printed ONLY when matrixComplete is false --
+    // never here, since the matrix legitimately ran to its own planned end.
+    expect(result.stderr).not.toContain('fail-fast stopped the matrix early');
+    expect(result.stderr).toContain('noUnexpectedToolsOk:false');
+    expect(listEvidenceFiles('scenario')).toEqual([]);
+    expect(result.stderr).toContain('rejected-run diagnostics written');
+    // BOTH executed cells' transcripts are preserved -- not just the failing one -- since Transaction
+    // 1 persists every EXECUTED cell of the batch, and here that batch is the whole (complete) matrix.
+    expect(result.stderr).toContain('2 raw transcript(s) preserved locally');
+
+    const rejectionId = extractRejectionId(result.stderr);
+    expect(rejectionId).not.toBeNull();
+
+    const committed = readCommittedRejectionDiagnostic(rejectionId);
+    expect(committed.matrix_complete).toBe(true);
+    expect(committed.planned_cell_count).toBe(2);
+    expect(committed.executed_cell_count).toBe(2);
+    // The real, computed consensus -- the gate genuinely ran, because the matrix genuinely
+    // completed (see this test's own header comment).
+    expect(typeof committed.ambient_profile_matrix_ok).toBe('boolean');
+    expect(committed.raw_transcripts_persisted).toBe(true);
+    expect(committed.cells.length).toBe(2);
+    const failingCell = committed.cells.find((c) => c.unexpected_tool_uses_count > 0);
+    expect(failingCell).toBeDefined();
+    expect(failingCell.order_index).toBe(1);
+    expect(failingCell.failed_checks).toContain('noUnexpectedToolsOk');
+    const cleanCell = committed.cells.find((c) => c.run_id !== failingCell.run_id);
+    expect(cleanCell.unexpected_tool_uses_count).toBe(0);
+
+    const local = readLocalRejectionDiagnostic(rejectionId);
+    const localFailingCell = local.cells.find((c) => c.run_id === failingCell.run_id);
+    expect(localFailingCell.unexpected_tools.length).toBe(1);
+    expect(localFailingCell.unexpected_tools[0].name).toBe('Read');
+    expect(Number.isInteger(localFailingCell.unexpected_tools[0].event_index)).toBe(true);
+  }, 30000);
+
+  // G4 (accepted-path byte/shape contract preserved): the accept path was never touched by this
+  // fix -- only the two rejection branches inside finalizeAndWriteMatrixRecords gained forensics.
+  // Mirrors agentic-eval-rejection-diagnostics.test.js's own identical calibrate-only assertion
+  // ("a real calibrate SUCCESS writes nothing under agentic-eval-rejected/ at all") for the `run`
+  // command specifically -- no equivalent existed for the scenario-matrix path before this fix.
+  it('a real, ACCEPTED scenario matrix run creates no agentic-eval-rejected/ directory at all', async () => {
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('run-scenario-success'), 30000);
+    expect(result.status).toBe(0);
+    expect(existsSync(rejectedDir())).toBe(false);
+  }, 30000);
+});
