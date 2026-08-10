@@ -72,14 +72,14 @@ describe('materializeSkillSnapshot', () => {
   // above (mechanism-only) and from the live-HEAD test above (tracks develop's tip forever, never
   // references this constant). calibrate/smoke both materialize current-skill via
   // runConditionPair's one call site using exactly PINNED_SKILL_SHA. This is a tripwire, not a
-  // general staleness detector: it deliberately hardcodes 20d109e and will need its own edit on
+  // general staleness detector: it deliberately hardcodes 9814ada and will need its own edit on
   // every future legitimate pin advance -- the next test verifies the semantics that should
   // survive such an advance. Split into two independent it() blocks on purpose: expect().toBe()
   // throws synchronously, so a single block with the equality check first would hide whether the
   // content assertions below actually discriminate -- two blocks means a run against a stale pin
   // shows both failing for real, not just the first one.
-  it('PINNED_SKILL_SHA is locked to the PR #403 target-binding fix', () => {
-    expect(PINNED_SKILL_SHA).toBe('20d109e21a9f0b4147b08148f89701c9e6f58e43');
+  it('PINNED_SKILL_SHA is locked to the PR #415 changed-workflow-contract fix', () => {
+    expect(PINNED_SKILL_SHA).toBe('9814ada0c45e6a3d2a0399291ec96cb8d1ef86bb');
   });
 
   it('the pinned current-skill snapshot reflects the PR #403 target-binding fix', async () => {
@@ -226,6 +226,129 @@ describe('materializeSkillSnapshot', () => {
     expect(normalizedSkillMd).toContain('Diagnose only on failure');
     expect(normalizedSkillMd).toContain('kmp-test doctor --json --project-root .');
     expect(normalizedSkillMd).toMatch(/`exit_code:\s*3`\s+or\s+an\s+explicit\s+request/);
+  });
+
+  // #413 (route test coverage gates through parallel): the Steps table now distinguishes three
+  // separate coverage-related asks that a pre-#413 snapshot collapsed into one ambiguous
+  // "run coverage" / "with coverage" row. Row-scoped (not whole-document co-occurrence) checks,
+  // matching this file's own established discipline -- `kmp-test parallel` and `--min-missed-lines`
+  // both already appear elsewhere in SKILL.md (Decision protocol), so a bare toContain() on the
+  // full document would pass even against the old, un-split table.
+  it('the pinned snapshot routes coverage-related asks through the PR #413 3-way split', async () => {
+    const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runValidator });
+    cleanupDirs.push(snapshotDir);
+    expect(validation.ok).toBe(true);
+    const skillMd = readFileSync(path.join(snapshotDir, '.skills', 'kmp-test-runner', 'SKILL.md'), 'utf8')
+      .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const stepsStart = skillMd.indexOf('\n## Steps');
+    const stepsEnd = skillMd.indexOf('\n## Convenience scripts', stepsStart);
+    expect(stepsStart).toBeGreaterThan(-1);
+    expect(stepsEnd).toBeGreaterThan(stepsStart);
+    const stepsSection = skillMd.slice(stepsStart, stepsEnd);
+    const findRow = (phrase) => stepsSection.split('\n').find((l) => l.startsWith('|') && l.includes(phrase));
+
+    // "run tests with coverage" (no explicit budget) -> bare parallel, no fabricated threshold.
+    const withCoverageRow = findRow('run tests with coverage');
+    expect(withCoverageRow).toBeTruthy();
+    expect(withCoverageRow).toContain('kmp-test parallel --json --project-root .');
+    expect(withCoverageRow).not.toContain('--min-missed-lines');
+
+    // "run tests; missed lines under 100" (explicit test intent + explicit budget) -> parallel
+    // --min-missed-lines, never bare coverage.
+    const budgetRow = findRow('missed lines under 100');
+    expect(budgetRow).toBeTruthy();
+    expect(budgetRow).toContain('kmp-test parallel --min-missed-lines 100 --json --project-root .');
+
+    // Bare "run coverage" (no test-execution intent) stays its own, narrower row -- existing-XML
+    // aggregation only, distinct from both rows above.
+    const bareCoverageRow = findRow('"run coverage"');
+    expect(bareCoverageRow).toBeTruthy();
+    expect(bareCoverageRow).toContain('kmp-test coverage --json --project-root .');
+    expect(bareCoverageRow).not.toContain('with coverage');
+    expect(bareCoverageRow).not.toContain('--min-missed-lines');
+
+    // The old row that grouped "run coverage" / "with coverage" together under bare `coverage`
+    // is gone -- a context-free "with coverage" alone is no longer pre-routed by this table.
+    expect(stepsSection).not.toMatch(/"run coverage"\s*\/\s*"with coverage"/);
+
+    // #415: the changed row's own Notes column says "Git-derived", not the old git-diff framing.
+    const changedRow = findRow('run only changed tests');
+    expect(changedRow).toBeTruthy();
+    expect(changedRow).toContain('kmp-test changed --json --project-root .');
+    expect(changedRow).toContain('Git-derived');
+  });
+
+  // #415 (align workflow contract with runtime): changed.md previously described a default-mode
+  // git mechanism as `git diff`, claimed the envelope carries a top-level `parallel:{}` block,
+  // still advertised the since-retired `--max-failures`, and described colon-prefixed module
+  // names no real envelope carries. Every assertion below is scoped to the specific line/clause
+  // making the claim, not a whole-file substring search -- `git status --porcelain` and
+  // `git diff --cached --name-only` both already appeared in the PRE-#415 text too (composed
+  // differently), so only the exact wording discriminates old from new.
+  it('the pinned snapshot\'s changed.md documents the real PR #415 detection/envelope contract', async () => {
+    const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runValidator });
+    cleanupDirs.push(snapshotDir);
+    expect(validation.ok).toBe(true);
+    const changedDoc = readFileSync(
+      path.join(snapshotDir, '.skills', 'kmp-test-runner', 'references', 'workflows', 'changed.md'), 'utf8'
+    ).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    // Default detection is `git status --porcelain`, standalone -- not `git diff --name-only
+    // HEAD` plus a `git status --porcelain` fallback for untracked files (the pre-#415 shape).
+    const quickstartStep1 = changedDoc.split('\n').find((l) => l.startsWith('1. Runs'));
+    expect(quickstartStep1).toBeTruthy();
+    expect(quickstartStep1).toMatch(/^1\.\s+Runs\s+`git status --porcelain`\s+\(default\)/);
+    expect(quickstartStep1).not.toMatch(/git diff --name-only HEAD/);
+    // --staged-only uses `git diff --cached --name-only`, mutually exclusive with the default.
+    expect(quickstartStep1).toMatch(/`git diff --cached --name-only`\s+\(`--staged-only`\)\s*—\s*mutually exclusive/);
+
+    // The envelope never carries a top-level `parallel:{}` block -- the pre-#415 doc claimed the
+    // opposite (a `parallel:{}` block "present because changed delegates in-process").
+    expect(changedDoc).toMatch(/no top-level `parallel:\{\}` block on any `changed` envelope, ever/);
+
+    // --max-failures is fully retired -- not documented anywhere in this workflow doc.
+    expect(changedDoc).not.toMatch(/--max-failures/);
+
+    // Detected modules are bare/colon-less, and base_ref is always the literal "HEAD" in both
+    // modes -- the pre-#415 doc claimed base_ref became "the index" under --staged-only.
+    const changedBlockClause = changedDoc.split('\n').find((l) => l.includes('carries exactly 3 fields'));
+    expect(changedBlockClause).toBeTruthy();
+    expect(changedBlockClause).toContain('bare/colon-less');
+    expect(changedBlockClause).toContain('always the literal string `"HEAD"`');
+  });
+
+  // #413 + #415 coverage semantics: --min-missed-lines 0 disables the gate entirely (coverage.md
+  // previously claimed the opposite, "perfect coverage required"); changed's --coverage-tool
+  // default is `auto`, matching parallel (not a historical jacoco divergence); and --max-failures'
+  // retirement reaches the shared flags matrix, not just changed.md's own doc (checked
+  // independently of the changed.md-scoped check above, on a different file).
+  it('the pinned snapshot documents min-missed-lines-0 disabling the gate and a uniform auto coverage-tool default', async () => {
+    const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runValidator });
+    cleanupDirs.push(snapshotDir);
+    expect(validation.ok).toBe(true);
+    const skillsDir = path.join(snapshotDir, '.skills', 'kmp-test-runner');
+    const coverageDoc = readFileSync(path.join(skillsDir, 'references', 'workflows', 'coverage.md'), 'utf8')
+      .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const changedDoc = readFileSync(path.join(skillsDir, 'references', 'workflows', 'changed.md'), 'utf8')
+      .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const flagsRefDoc = readFileSync(path.join(skillsDir, 'references', 'cli', 'flags-reference.md'), 'utf8')
+      .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    // coverage.md's own `--min-missed-lines 0` edge case, scoped to that specific bullet.
+    const zeroThresholdEdgeCase = coverageDoc.split('\n').find((l) => l.includes('with any missed lines'));
+    expect(zeroThresholdEdgeCase).toBeTruthy();
+    expect(zeroThresholdEdgeCase).toMatch(/exit 0.*disables the gate entirely/);
+    expect(zeroThresholdEdgeCase).not.toMatch(/perfect coverage required/);
+
+    // changed.md's own --coverage-tool row shares parallel's `auto` default -- no jacoco
+    // divergence claim.
+    const changedCoverageToolRow = changedDoc.split('\n').find((l) => l.includes('`--coverage-tool <tool>`'));
+    expect(changedCoverageToolRow).toBeTruthy();
+    expect(changedCoverageToolRow).toMatch(/\|\s*`auto`\s*\|/);
+    expect(changedCoverageToolRow).not.toContain('jacoco');
+
+    // --max-failures's row is fully gone from the shared flags matrix, not just changed.md.
+    expect(flagsRefDoc).not.toMatch(/--max-failures/);
   });
 
   it('cleans up its temp directory when validation fails partway through (not just on an invalid SHA)', async () => {
