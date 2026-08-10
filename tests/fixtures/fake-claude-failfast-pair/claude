@@ -18,7 +18,14 @@
 # noUnexpectedToolsOk exactly like the real 2026-08 canary incident. The SECOND invocation (no-skill/
 # A, which must never actually happen if fail-fast works) is byte-for-byte the clean
 # fake-claude-success shape.
+#
+# CodeRabbit review finding (PR #417): fail closed if TMPDIR/TMP/TEMP are ALL unset/empty -- see
+# fake-claude-run-failfast-first-cell/claude's own identical comment for the full rationale.
 PROBE_DIR="${TMPDIR:-${TMP:-$TEMP}}"
+if [ -z "$PROBE_DIR" ]; then
+  echo "fake-claude-failfast-pair: TMPDIR/TMP/TEMP are all unset -- refusing to write the invocation probe log to an unresolved location" >&2
+  exit 1
+fi
 PROBE_LOG="$PROBE_DIR/failfast-pair-invocations.log"
 if [ -f "$PROBE_LOG" ]; then
   INVOCATION=$(( $(wc -l < "$PROBE_LOG") + 1 ))

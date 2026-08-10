@@ -1361,8 +1361,16 @@ async function finalizeAndWriteMatrixRecords({
     const localIntegrityKeys = new Set(Object.keys(localIntegrityByRunId ?? {}));
     const missingLocalIntegrity = [...recordRunIds].filter((id) => !localIntegrityKeys.has(id));
     const extraLocalIntegrity = [...localIntegrityKeys].filter((id) => !recordRunIds.has(id));
+    // CodeRabbit review finding (PR #417): this used to throw -- cmdRun calls this function inside
+    // a try/finally with no catch, so the throw escaped all the way to main()'s own top-level
+    // handler, exiting 2 with a raw stack trace instead of this function's own established
+    // "{ok:false, reason}" / RUN FAILED / exit 1 contract every other guard here already honors
+    // (see the three sibling checks immediately below, and finalizeAndWriteRecords' identical
+    // pattern). This is a programmer-error-class guard (a caller/wiring bug, not a hard-gate
+    // rejection), but it must still fail through the SAME clean contract as everything else in
+    // this function, not a different, uncaught one.
     if (localIntegrityByRunId == null || missingLocalIntegrity.length > 0 || extraLocalIntegrity.length > 0) {
-      throw new Error(`finalizeAndWriteMatrixRecords: localIntegrityByRunId's keys must exactly match records[].run_id when matrixComplete is false (missing: ${JSON.stringify(missingLocalIntegrity)}, extra/stale: ${JSON.stringify(extraLocalIntegrity)})`);
+      return { ok: false, reason: `finalizeAndWriteMatrixRecords: localIntegrityByRunId's keys must exactly match records[].run_id when matrixComplete is false (missing: ${JSON.stringify(missingLocalIntegrity)}, extra/stale: ${JSON.stringify(extraLocalIntegrity)})` };
     }
     for (const [i, record] of records.entries()) {
       const dirty = record.errors.find((e) => e.code === 'dirty_measured_code');

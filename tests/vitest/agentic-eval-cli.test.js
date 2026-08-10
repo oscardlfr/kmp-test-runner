@@ -1797,6 +1797,76 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
   });
 });
 
+// CodeRabbit review finding (PR #417): this guard used to `throw` on a localIntegrityByRunId
+// mismatch -- cmdRun calls finalizeAndWriteMatrixRecords inside a try/finally with no catch, so
+// the throw escaped uncaught all the way to main(), exiting 2 with a raw stack trace instead of
+// this function's own established {ok:false, reason} / RUN FAILED / exit 1 contract. Reproduced
+// directly against the pre-fix code (a bare `await` of this call, with the exception surfacing as
+// an uncaught rejection rather than a resolved `{ok:false}`) before converting it to a clean
+// return, matching every OTHER guard in this same function.
+describe('finalizeAndWriteMatrixRecords -- a localIntegrityByRunId mismatch on an incomplete matrix returns {ok:false}, never throws', () => {
+  function minimalScenarioRecord(overrides = {}) {
+    return {
+      run_id: overrides.run_id ?? 'scenario-current-skill-syn0001',
+      run_kind: 'scenario', schema: LATEST_RUN_SCHEMA, condition: 'current-skill',
+      repetition_index: 0, order_index: 0, policy_sha256: computePolicySha256(),
+      accepted_audit: null, errors: [],
+      grading_checks: { value: null, reason: 'not graded in this synthetic fixture' },
+      success: { value: null, reason: null }, expected_outcome_matched: { value: null, reason: null },
+      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+      ambient_skill_profile: { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) },
+      model_requested: 'fake-model', repo_commit: 'c'.repeat(40), scenario_id: 'test-local-integrity-guard',
+      platform: 'linux', privacy_status: 'public', project_alias: 'test-local-integrity-guard-project',
+      project_commit: 'd'.repeat(40), seed: 1,
+      skill_source_sha: overrides.condition === 'no-skill' ? null : 'a'.repeat(40),
+      model_resolved: 'claude-sonnet-5-fake', claude_code_version: '1.2.3-fake',
+      ...overrides,
+    };
+  }
+  const neverCalledHardGate = () => { throw new Error('hardGateFn must never be invoked on an incomplete matrix'); };
+
+  it('returns {ok:false, reason} (never throws) when localIntegrityByRunId is missing a required key', async () => {
+    const record = minimalScenarioRecord();
+    const result = await finalizeAndWriteMatrixRecords({
+      runKind: 'scenario', records: [record], conditionResults: [{ events: [], spawnResult: { rawStdout: '' } }],
+      hardGateFn: neverCalledHardGate, repeats: 1, matrixComplete: false,
+      plannedCellCount: 4, executedCellCount: 1,
+      localIntegrityByRunId: {}, // deliberately missing record.run_id's own key
+      failFastStop: { reason: 'SIMULATED_LOCAL_FAILURE' },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("localIntegrityByRunId's keys must exactly match records[].run_id");
+    expect(result.reason).toContain(record.run_id);
+  });
+
+  it('returns {ok:false, reason} (never throws) when localIntegrityByRunId carries an extra/stale key', async () => {
+    const record = minimalScenarioRecord();
+    const result = await finalizeAndWriteMatrixRecords({
+      runKind: 'scenario', records: [record], conditionResults: [{ events: [], spawnResult: { rawStdout: '' } }],
+      hardGateFn: neverCalledHardGate, repeats: 1, matrixComplete: false,
+      plannedCellCount: 4, executedCellCount: 1,
+      localIntegrityByRunId: { [record.run_id]: { failedChecks: [], unexpectedToolUsesCount: 0, unexpectedTools: [] }, 'stale-run-id-from-another-batch': {} },
+      failFastStop: { reason: 'SIMULATED_LOCAL_FAILURE' },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("localIntegrityByRunId's keys must exactly match records[].run_id");
+    expect(result.reason).toContain('stale-run-id-from-another-batch');
+  });
+
+  it('returns {ok:false, reason} (never throws) when localIntegrityByRunId is null entirely', async () => {
+    const record = minimalScenarioRecord();
+    const result = await finalizeAndWriteMatrixRecords({
+      runKind: 'scenario', records: [record], conditionResults: [{ events: [], spawnResult: { rawStdout: '' } }],
+      hardGateFn: neverCalledHardGate, repeats: 1, matrixComplete: false,
+      plannedCellCount: 4, executedCellCount: 1,
+      localIntegrityByRunId: null,
+      failFastStop: { reason: 'SIMULATED_LOCAL_FAILURE' },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("localIntegrityByRunId's keys must exactly match records[].run_id");
+  });
+});
+
 // Review finding 2 (aggregate side): cmdAggregate previously fed every *.json file straight into
 // aggregateRuns(), which only ever runs schemas.mjs's validateRun() -- a purely OBJECT-SHAPE check
 // of accepted_audit (schema/relative_path regex/sha256 hex format), never a verification that the

@@ -21,6 +21,7 @@ import {
   writeRejectedRunDiagnostics,
   writeRejectionRawTranscripts,
   deriveTranscriptFilename,
+  validateCaptureOrdinalSet,
 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1278,13 +1279,14 @@ describe('schema v2 backward compatibility -- the validator DISPATCHES (2 and 3)
 });
 
 describe('validateRejectionLocalRow -- local tier\'s own narrow validator (unexpected_tools + transcript_filename)', () => {
-  const VALID_FILENAME = `0-${'a'.repeat(64)}.jsonl`;
+  const VALID_RUN_ID = 'r1';
+  const VALID_FILENAME = deriveTranscriptFilename(0, VALID_RUN_ID);
 
   function validLocalRow(overrides = {}) {
-    return { cells: [{ unexpected_tools: [], transcript_filename: VALID_FILENAME, ...overrides }] };
+    return { cells: [{ run_id: VALID_RUN_ID, unexpected_tools: [], transcript_filename: VALID_FILENAME, ...overrides }] };
   }
 
-  it('accepts an empty unexpected_tools array with a well-formed transcript_filename', () => {
+  it('accepts an empty unexpected_tools array with a well-formed, correctly-corresponding transcript_filename', () => {
     expect(validateRejectionLocalRow(validLocalRow()).errors).toEqual([]);
   });
 
@@ -1333,6 +1335,119 @@ describe('validateRejectionLocalRow -- local tier\'s own narrow validator (unexp
   it('rejects a transcript_filename using the raw run_id instead of a derived ordinal-hash name', () => {
     const row = validLocalRow({ transcript_filename: 'calibration-current-skill-jjjj1111.jsonl' });
     expect(validateRejectionLocalRow(row).errors.some((e) => e.field === 'cells[0].transcript_filename')).toBe(true);
+  });
+
+  // Post-open-PR review finding ("la cadena de custodia del transcript aún puede quedar
+  // incoherente"): the pre-fix validator only checked SHAPE, never that the 64-hex-char portion
+  // actually corresponded to sha256(run_id) for that specific cell. Reproduced directly against
+  // the pre-fix code: a filename `0-<64 zero-chars>.jsonl` attached to run_id:"a" passed this
+  // validator unmodified, even though deriveTranscriptFilename(0, "a") never produces that hash.
+  describe('chain of custody: transcript_filename must genuinely correspond to its own cell\'s run_id (not just look shape-valid)', () => {
+    it('rejects a well-formed-SHAPED filename whose hash does not correspond to this cell\'s run_id -- the exact reproduced gap', () => {
+      const row = validLocalRow({ run_id: 'a', transcript_filename: `0-${'0'.repeat(64)}.jsonl` });
+      const { errors } = validateRejectionLocalRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].transcript_filename' && e.message.includes('does not correspond'))).toBe(true);
+    });
+
+    it('accepts the SAME ordinal+hash shape when it genuinely is deriveTranscriptFilename(0, "a")', () => {
+      const row = validLocalRow({ run_id: 'a', transcript_filename: deriveTranscriptFilename(0, 'a') });
+      expect(validateRejectionLocalRow(row).errors).toEqual([]);
+    });
+
+    // A filename can be internally self-consistent (its hash genuinely IS sha256(run_id) for the
+    // ordinal it claims) while still claiming an ordinal that's invalid for the BATCH it's part
+    // of -- for a single-cell diagnostic (N=1), the only valid ordinal is 0, so claiming ordinal 1
+    // is a CROSS-CELL range violation (validateCaptureOrdinalSet, field:'cells'), not a per-cell
+    // hash-correspondence one (this per-cell check has no way to know what N is on its own).
+    it('rejects a single-cell diagnostic whose one cell claims ordinal 1 -- self-consistent hash, but out of the {0} range for N=1', () => {
+      const row = validLocalRow({ run_id: VALID_RUN_ID, transcript_filename: deriveTranscriptFilename(1, VALID_RUN_ID) });
+      const { errors } = validateRejectionLocalRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].transcript_filename')).toBe(false);
+      expect(errors.some((e) => e.field === 'cells' && e.message.includes('exact set {0..0}'))).toBe(true);
+    });
+
+    it('rejects when run_id is missing entirely -- correspondence cannot be verified against nothing', () => {
+      const row = { cells: [{ unexpected_tools: [], transcript_filename: VALID_FILENAME }] };
+      const { errors } = validateRejectionLocalRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].transcript_filename' && e.message.includes('cannot verify correspondence'))).toBe(true);
+    });
+  });
+
+  // Reuses validateCaptureOrdinalSet (the same canonical check buildRejectionDiagnostics/
+  // writeRejectionRawTranscripts enforce at construction time) to ALSO confirm, at rest, that the
+  // ordinals across every cell of one diagnostic form the exact contiguous {0..N-1} range.
+  describe('cross-cell ordinal-set completeness, checked at rest via the same canonical validator', () => {
+    function twoCellRow(ordinalA, ordinalB) {
+      return {
+        cells: [
+          { run_id: 'a', unexpected_tools: [], transcript_filename: deriveTranscriptFilename(ordinalA, 'a') },
+          { run_id: 'b', unexpected_tools: [], transcript_filename: deriveTranscriptFilename(ordinalB, 'b') },
+        ],
+      };
+    }
+
+    it('accepts two cells whose ordinals form the exact set {0,1}', () => {
+      expect(validateRejectionLocalRow(twoCellRow(0, 1)).errors).toEqual([]);
+    });
+
+    // The exact P2 reproduction: {a:0, b:2} for 2 cells -- a real gap, not just "unique values".
+    it('rejects two cells whose ordinals are {0,2} -- unique but NOT the contiguous {0,1} range', () => {
+      const { errors } = validateRejectionLocalRow(twoCellRow(0, 2));
+      expect(errors.some((e) => e.field === 'cells' && e.message.includes('exact set {0..1}'))).toBe(true);
+    });
+
+    it('does not cascade the cross-cell check on top of an already-reported per-cell correspondence failure', () => {
+      const row = twoCellRow(0, 1);
+      row.cells[1] = { ...row.cells[1], transcript_filename: `1-${'0'.repeat(64)}.jsonl` }; // wrong hash for "b"
+      const { errors } = validateRejectionLocalRow(row);
+      expect(errors.some((e) => e.field === 'cells[1].transcript_filename')).toBe(true);
+      expect(errors.some((e) => e.field === 'cells' && e.message.includes('exact set'))).toBe(false);
+    });
+  });
+});
+
+describe('validateCaptureOrdinalSet -- the single canonical captureOrdinalByRunId validator (post-open-PR review finding)', () => {
+  it('accepts an exact-set, contiguous {0,1} map for 2 run_ids', () => {
+    expect(() => validateCaptureOrdinalSet({ a: 0, b: 1 }, ['a', 'b'], 'test')).not.toThrow();
+  });
+
+  it('accepts a single run_id at ordinal 0', () => {
+    expect(() => validateCaptureOrdinalSet({ a: 0 }, ['a'], 'test')).not.toThrow();
+  });
+
+  // The exact P2 reproduction: {a:0, b:2} for 2 run_ids previously passed both
+  // buildRejectionDiagnostics' and writeRejectionRawTranscripts' own (weaker) checks.
+  it('throws on {a:0, b:2} for 2 run_ids -- a gap, even though both values are non-negative integers and unique', () => {
+    expect(() => validateCaptureOrdinalSet({ a: 0, b: 2 }, ['a', 'b'], 'test')).toThrow(/exact set \{0\.\.1\}/);
+  });
+
+  it('throws on a plain duplicate ({a:0, b:0}) -- still caught by the same exact-set check, not a separate one', () => {
+    expect(() => validateCaptureOrdinalSet({ a: 0, b: 0 }, ['a', 'b'], 'test')).toThrow(/exact set \{0\.\.1\}/);
+  });
+
+  it('throws when a value is negative', () => {
+    expect(() => validateCaptureOrdinalSet({ a: -1, b: 1 }, ['a', 'b'], 'test')).toThrow(/non-negative integer/);
+  });
+
+  it('throws when a value is not an integer', () => {
+    expect(() => validateCaptureOrdinalSet({ a: 0.5, b: 1 }, ['a', 'b'], 'test')).toThrow(/non-negative integer/);
+  });
+
+  it('throws when a key is missing', () => {
+    expect(() => validateCaptureOrdinalSet({ a: 0 }, ['a', 'b'], 'test')).toThrow(/keys must exactly match/);
+  });
+
+  it('throws when there is a stale/extra key', () => {
+    expect(() => validateCaptureOrdinalSet({ a: 0, b: 1, c: 2 }, ['a', 'b'], 'test')).toThrow(/keys must exactly match/);
+  });
+
+  it('throws when the map itself is null', () => {
+    expect(() => validateCaptureOrdinalSet(null, ['a'], 'test')).toThrow(/required and must be an object/);
+  });
+
+  it('uses the caller-supplied errorPrefix verbatim, so each of the two real call sites keeps its own established wording', () => {
+    expect(() => validateCaptureOrdinalSet({}, ['a'], 'buildRejectionDiagnostics')).toThrow(/^buildRejectionDiagnostics:/);
+    expect(() => validateCaptureOrdinalSet({}, ['a'], 'refusing to write raw transcripts')).toThrow(/^refusing to write raw transcripts:/);
   });
 });
 
@@ -1450,7 +1565,7 @@ describe('buildRejectionDiagnostics -- schema-3 fields (preserve rejected matrix
     expect(() => buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: [] }, rawTranscriptsPersisted: 'true' })).toThrow(/rawTranscriptsPersisted/);
   });
 
-  it('throws when captureOrdinalByRunId values are not unique', () => {
+  it('throws when captureOrdinalByRunId values are not unique (via validateCaptureOrdinalSet -- a duplicate can never form the exact {0..N-1} set)', () => {
     const r = record();
     const r2 = record({ run_id: 'other-run', condition: 'current-skill', skill_source_sha: 'a'.repeat(40) });
     expect(() => buildRejectionDiagnostics({
@@ -1459,7 +1574,21 @@ describe('buildRejectionDiagnostics -- schema-3 fields (preserve rejected matrix
       unexpectedToolUsesCountByRunId: { [r.run_id]: 0, [r2.run_id]: 0 },
       unexpectedToolsByRunId: { [r.run_id]: [], [r2.run_id]: [] },
       captureOrdinalByRunId: { [r.run_id]: 0, [r2.run_id]: 0 },
-    })).toThrow(/must be unique/);
+    })).toThrow(/exact set \{0\.\.1\}/);
+  });
+
+  // The exact P2 reproduction at this call site: {a:0, b:2} for 2 records -- both non-negative
+  // integers, both pairwise-unique, so the pre-fix (weaker) check accepted it.
+  it('throws on a GAP -- {a:0, b:2} for 2 records -- never silently accepts a non-dense ordinal range', () => {
+    const r = record();
+    const r2 = record({ run_id: 'other-run', condition: 'current-skill', skill_source_sha: 'a'.repeat(40) });
+    expect(() => buildRejectionDiagnostics({
+      runKind: 'calibration', rejectionId: randomUUID(), records: [r, r2], rawTranscriptsPersisted: true,
+      failedChecksByRunId: { [r.run_id]: [], [r2.run_id]: [] },
+      unexpectedToolUsesCountByRunId: { [r.run_id]: 0, [r2.run_id]: 0 },
+      unexpectedToolsByRunId: { [r.run_id]: [], [r2.run_id]: [] },
+      captureOrdinalByRunId: { [r.run_id]: 0, [r2.run_id]: 2 },
+    })).toThrow(/exact set \{0\.\.1\}/);
   });
 
   it('derives matrix_complete:true and planned===executed===records.length by default (a normal, complete batch)', () => {
@@ -1673,10 +1802,23 @@ describe('writeRejectionRawTranscripts -- Transaction 1 (raw transcripts, minima
     });
   });
 
-  it('throws when two run_ids share the same captureOrdinal (uniqueness, not just non-negative-integer shape)', () => {
+  it('throws when two run_ids share the same captureOrdinal (via validateCaptureOrdinalSet -- a duplicate can never form the exact {0..N-1} set)', () => {
     isolatedRunsRoot((runsRoot) => {
       const rejectionId = randomUUID();
-      expect(() => writeRejectionRawTranscripts(rejectionId, { r1: 'x', r2: 'y' }, { r1: 0, r2: 0 }, { runsRootOverride: runsRoot })).toThrow(/must be unique/);
+      expect(() => writeRejectionRawTranscripts(rejectionId, { r1: 'x', r2: 'y' }, { r1: 0, r2: 0 }, { runsRootOverride: runsRoot })).toThrow(/exact set \{0\.\.1\}/);
+    });
+  });
+
+  // The exact P2 reproduction: {a:0, b:2} for 2 run_ids -- BOTH values are non-negative integers
+  // AND pairwise-unique, so the pre-fix (weaker) check accepted this and genuinely wrote
+  // "2-<hash>.jsonl" alongside "0-<hash>.jsonl" -- reproduced directly against the pre-fix code
+  // before writing this test. A real gap (never claimed ordinal 1) must now be refused.
+  it('throws on a GAP -- {a:0, b:2} for 2 run_ids -- never silently writes ordinal 2 as if the range were still dense', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      expect(() => writeRejectionRawTranscripts(rejectionId, { a: 'content-a', b: 'content-b' }, { a: 0, b: 2 }, { runsRootOverride: runsRoot })).toThrow(/exact set \{0\.\.1\}/);
+      // Nothing was written at all -- the ordinal-set check fires before any promoteTargetsAtomically call.
+      expect(existsSync(path.join(runsRoot, 'agentic-eval-rejected'))).toBe(false);
     });
   });
 

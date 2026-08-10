@@ -15,7 +15,14 @@
 # scenarioHardGate runs for real (never the fail-fast-only diagnostic branch), and
 # ambient_profile_matrix_ok is a genuine boolean, not null. This fixture's own test must never claim
 # a savings count that doesn't exist for this specific shape.
+#
+# CodeRabbit review finding (PR #417): fail closed if TMPDIR/TMP/TEMP are ALL unset/empty -- see
+# fake-claude-run-failfast-first-cell/claude's own identical comment for the full rationale.
 PROBE_DIR="${TMPDIR:-${TMP:-$TEMP}}"
+if [ -z "$PROBE_DIR" ]; then
+  echo "fake-claude-run-failfast-last-cell: TMPDIR/TMP/TEMP are all unset -- refusing to write the invocation probe log to an unresolved location" >&2
+  exit 1
+fi
 PROBE_LOG="$PROBE_DIR/failfast-last-cell-invocations.log"
 if [ -f "$PROBE_LOG" ]; then
   INVOCATION=$(( $(wc -l < "$PROBE_LOG") + 1 ))

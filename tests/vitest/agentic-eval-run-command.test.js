@@ -1042,6 +1042,11 @@ function extractRejectionId(stderr) {
 describe('fail-fast (preserve rejected matrix forensics) -- scenario matrix stops spawning further live sessions', () => {
   it('a cell failing at order_index 0 of a --repeats 2 (4-cell) matrix causes EXACTLY ONE live session -- the other 3 are never spawned -- and writes a partial diagnostic declaring matrix_complete:false/planned:4/executed:1/ambient_profile_matrix_ok:null', async () => {
     const probeLogPath = path.join(isolatedTmp, 'failfast-first-cell-invocations.log');
+    // CodeRabbit review finding (PR #417): make the isolation precondition this test's own
+    // invocation-count assertion depends on EXPLICIT, not merely implicit -- isolatedTmp is a
+    // fresh mkdtempSync() directory from this file's own beforeEach (never shared across tests,
+    // never reused), so the probe log genuinely cannot pre-exist here.
+    expect(existsSync(probeLogPath)).toBe(false);
     const result = await runCli(runArgs(['--seed', '5', '--repeats', '2']), fakeClaudeEnv('run-failfast-first-cell'), 30000);
     expect(result.status).toBe(1);
 
@@ -1112,6 +1117,8 @@ describe('fail-fast (preserve rejected matrix forensics) -- scenario matrix stop
   // that didn't happen.
   it('a cell failing at the LAST order_index of a --repeats 1 (2-cell) matrix still runs BOTH sessions -- matrix_complete:true, no savings claimed, and the ordinary scenarioHardGate (not the fail-fast branch) produced the rejection', async () => {
     const probeLogPath = path.join(isolatedTmp, 'failfast-last-cell-invocations.log');
+    // CodeRabbit review finding (PR #417): see the sibling first-cell test's identical comment.
+    expect(existsSync(probeLogPath)).toBe(false);
     const result = await runCli(runArgs(['--seed', '5', '--repeats', '1']), fakeClaudeEnv('run-failfast-last-cell'), 30000);
     expect(result.status).toBe(1);
 

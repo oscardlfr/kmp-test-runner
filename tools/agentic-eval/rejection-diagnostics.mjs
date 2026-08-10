@@ -173,6 +173,49 @@ export function deriveTranscriptFilename(captureOrdinal, runId) {
 }
 
 /**
+ * Post-open-PR review finding: the single canonical `captureOrdinalByRunId` validator, shared by
+ * buildRejectionDiagnostics and writeRejectionRawTranscripts. Each previously duplicated an
+ * independent, WEAKER check (non-negative integers + pairwise-unique values only) that silently
+ * tolerated a GAP: `{a:0, b:2}` for 2 run_ids passed both, and writeRejectionRawTranscripts
+ * genuinely wrote a file named `2-<hash>.jsonl` alongside `0-<hash>.jsonl` -- reproduced directly
+ * against `develop`'s pre-fix code before this function existed. Requires, in this order:
+ *   1. captureOrdinalByRunId's keys exactly match `expectedRunIds` (no missing, no stale/extra) --
+ *      unchanged in wording/behavior from each caller's own pre-existing key check.
+ *   2. every value is a non-negative integer -- unchanged in wording/behavior.
+ *   3. the VALUE SET is exactly `{0, 1, ..., N-1}` for `N = expectedRunIds.length` -- contiguous
+ *      and gap-free, not merely pairwise-unique, so a duplicate (which by the pigeonhole principle
+ *      forces some other index to be missing from the range) is caught by the SAME check as an
+ *      out-of-range value, rather than two independently-maintained ones that could drift apart.
+ * `errorPrefix` lets each caller keep its own already-established message lead-in
+ * (`buildRejectionDiagnostics` vs. `refusing to write raw transcripts`) unchanged.
+ * @param {Record<string, number>} captureOrdinalByRunId
+ * @param {string[]} expectedRunIds
+ * @param {string} errorPrefix
+ */
+export function validateCaptureOrdinalSet(captureOrdinalByRunId, expectedRunIds, errorPrefix) {
+  if (captureOrdinalByRunId == null || typeof captureOrdinalByRunId !== 'object' || Array.isArray(captureOrdinalByRunId)) {
+    throw new Error(`${errorPrefix}: captureOrdinalByRunId is required and must be an object keyed by run_id`);
+  }
+  const expectedSet = new Set(expectedRunIds);
+  const keys = new Set(Object.keys(captureOrdinalByRunId));
+  const missing = [...expectedSet].filter((id) => !keys.has(id));
+  const extra = [...keys].filter((id) => !expectedSet.has(id));
+  if (missing.length > 0 || extra.length > 0) {
+    throw new Error(`${errorPrefix}: captureOrdinalByRunId's keys must exactly match the expected run_ids (missing: ${JSON.stringify(missing)}, extra/stale: ${JSON.stringify(extra)})`);
+  }
+  const ordinals = expectedRunIds.map((id) => captureOrdinalByRunId[id]);
+  if (ordinals.some((o) => !(Number.isInteger(o) && o >= 0))) {
+    throw new Error(`${errorPrefix}: captureOrdinalByRunId values must all be non-negative integers (got ${JSON.stringify(ordinals)})`);
+  }
+  const n = expectedRunIds.length;
+  const actualSet = new Set(ordinals);
+  const isExactRange = actualSet.size === n && Array.from({ length: n }, (_, i) => i).every((i) => actualSet.has(i));
+  if (!isExactRange) {
+    throw new Error(`${errorPrefix}: captureOrdinalByRunId values must form the exact set {0..${n - 1}} with no gaps or duplicates (got ${JSON.stringify(ordinals)})`);
+  }
+}
+
+/**
  * Round-7 audit finding ("la procedencia por tipo de run no está realmente cerrada"): the
  * pre-fix check accepted "null OR a non-empty string" for project_alias/project_commit and "null
  * OR an integer" for seed UNCONDITIONALLY -- a scenario row with every project_* field AND seed
@@ -301,9 +344,27 @@ function validateUnexpectedTools(list, fieldPrefix) {
  * The local tier's OWN (deliberately narrow) validator. The local tier is intentionally a
  * SUPERSET of the committed closed schema and is therefore never run through validateRejectionRow
  * -- but its local-only structured fields still deserve a real shape check rather than none.
- * Scoped to `unexpected_tools` (closed per-entry shape) and `transcript_filename` (must look like
- * what deriveTranscriptFilename actually produces) -- `foreign_skill_names`'s own pre-existing
- * shape is left exactly as it was, unchanged.
+ * Scoped to `unexpected_tools` (closed per-entry shape) and `transcript_filename` (must look like,
+ * AND actually correspond to, what deriveTranscriptFilename produces for that cell's own run_id).
+ * `foreign_skill_names`'s own pre-existing shape is left exactly as it was, unchanged.
+ *
+ * Post-open-PR review finding ("la cadena de custodia del transcript aún puede quedar
+ * incoherente"): the pre-fix version only checked transcript_filename's SHAPE (the regex), never
+ * that the 64-hex-char portion was genuinely sha256(run_id) for THAT cell -- reproduced directly:
+ * a filename `0-<64 zero-chars>.jsonl` attached to run_id:"a" passed this check unmodified, even
+ * though `deriveTranscriptFilename(0, "a")` never produces that hash. A diagnostic could silently
+ * claim a transcript belonged to a cell it didn't. Closed by reconstructing the EXPECTED filename
+ * via the same canonical deriveTranscriptFilename this module uses everywhere else (never a
+ * second, independently-maintained hash check), and by reusing validateCaptureOrdinalSet to also
+ * confirm the ordinals across all of a diagnostic's cells form the exact contiguous {0..N-1} range
+ * -- the SAME definition of "valid ordinal set" buildRejectionDiagnostics/
+ * writeRejectionRawTranscripts enforce at construction time, checked again here at rest, since
+ * writeRejectedRunDiagnostics accepts a hand-built {committed, local} pair from any source.
+ * Deliberately does NOT check cells[].run_id for cross-cell duplicates itself (that is
+ * validateRejectionRow's own, pre-existing job for the committed tier, which the two tiers already
+ * share via assertUnexpectedToolCoherence's run_id-per-index alignment) -- a duplicate run_id
+ * still fails closed here too (it collapses the ordinal set below the cells count), just via the
+ * ordinal-range error rather than a dedicated duplicate-run_id message.
  * @returns {{errors: Array<{field: string, message: string}>, warnings: Array}}
  */
 export function validateRejectionLocalRow(local) {
@@ -316,15 +377,46 @@ export function validateRejectionLocalRow(local) {
     errors.push({ field: 'cells', message: 'must be an array' });
     return { errors, warnings };
   }
-  const filenameRe = /^\d+-[0-9a-f]{64}\.jsonl$/;
+  const filenameRe = /^(\d+)-([0-9a-f]{64})\.jsonl$/;
+  const capturedOrdinalByRunId = {};
+  const runIdsWithVerifiedFilename = [];
   for (const [i, cell] of local.cells.entries()) {
     if (cell == null || typeof cell !== 'object' || Array.isArray(cell)) {
       errors.push({ field: `cells[${i}]`, message: 'must be an object' });
       continue;
     }
     errors.push(...validateUnexpectedTools(cell.unexpected_tools, `cells[${i}].unexpected_tools`));
-    if (typeof cell.transcript_filename !== 'string' || !filenameRe.test(cell.transcript_filename)) {
+    const filenameMatch = typeof cell.transcript_filename === 'string' ? cell.transcript_filename.match(filenameRe) : null;
+    if (!filenameMatch) {
       errors.push({ field: `cells[${i}].transcript_filename`, message: 'must match the pattern <captureOrdinal>-<64 hex chars>.jsonl' });
+      continue;
+    }
+    if (typeof cell.run_id !== 'string' || cell.run_id.length === 0) {
+      errors.push({ field: `cells[${i}].transcript_filename`, message: 'cannot verify correspondence with run_id -- cells[i].run_id is missing or not a non-empty string' });
+      continue;
+    }
+    const claimedOrdinal = Number(filenameMatch[1]);
+    let expectedFilename;
+    try {
+      expectedFilename = deriveTranscriptFilename(claimedOrdinal, cell.run_id);
+    } catch (err) {
+      errors.push({ field: `cells[${i}].transcript_filename`, message: `cannot verify correspondence with run_id: ${err.message}` });
+      continue;
+    }
+    if (cell.transcript_filename !== expectedFilename) {
+      errors.push({ field: `cells[${i}].transcript_filename`, message: `does not correspond to this cell's own run_id -- expected ${expectedFilename} (the SAME derivation deriveTranscriptFilename uses everywhere else), got ${cell.transcript_filename}` });
+      continue;
+    }
+    capturedOrdinalByRunId[cell.run_id] = claimedOrdinal;
+    runIdsWithVerifiedFilename.push(cell.run_id);
+  }
+  // Only meaningful once every cell's own filename is individually verified correct -- avoids
+  // cascading a second, redundant error on top of whatever the per-cell loop already reported.
+  if (local.cells.length > 0 && runIdsWithVerifiedFilename.length === local.cells.length) {
+    try {
+      validateCaptureOrdinalSet(capturedOrdinalByRunId, runIdsWithVerifiedFilename, 'validateRejectionLocalRow');
+    } catch (err) {
+      errors.push({ field: 'cells', message: err.message });
     }
   }
   return { errors, warnings };
@@ -713,8 +805,9 @@ export function validateRejectionRow(row) {
  *   Required, exact-set. Never deduplicated/sorted (unlike foreign_skill_names) -- transcript
  *   ORDER and DUPLICATE occurrences are themselves the forensic signal.
  * @param {Record<string, number>} captureOrdinalByRunId - run_id -> a non-negative integer
- *   execution-position ordinal (0..N-1, unique) used to derive that cell's transcript_filename via
- *   deriveTranscriptFilename. Required, exact-set.
+ *   execution-position ordinal used to derive that cell's transcript_filename via
+ *   deriveTranscriptFilename. Required, exact-set of run_ids, and the value set must form the
+ *   exact contiguous range {0..N-1} (validateCaptureOrdinalSet), never merely unique.
  * @param {boolean} rawTranscriptsPersisted - Transaction 1's own already-known outcome (see
  *   writeRejectionRawTranscripts) -- stamped verbatim into both tiers, never reinterpreted here.
  * @param {Record<string, string[]>} [foreignSkillNamesByRunId] - each record's own run_id -> the
@@ -765,18 +858,13 @@ export function buildRejectionDiagnostics({
   requireExactRunIdKeys(failedChecksByRunId, 'failedChecksByRunId');
   requireExactRunIdKeys(unexpectedToolUsesCountByRunId, 'unexpectedToolUsesCountByRunId');
   requireExactRunIdKeys(unexpectedToolsByRunId, 'unexpectedToolsByRunId');
-  requireExactRunIdKeys(captureOrdinalByRunId, 'captureOrdinalByRunId');
+  // Post-open-PR review finding: this used to be a bespoke, weaker check (requireExactRunIdKeys
+  // for the key-set, then non-negative-integer + pairwise-unique for the values) that silently
+  // tolerated a gap -- see validateCaptureOrdinalSet's own doc comment for the reproduced case.
+  validateCaptureOrdinalSet(captureOrdinalByRunId, records.map((r) => r.run_id), 'buildRejectionDiagnostics');
 
   if (typeof rawTranscriptsPersisted !== 'boolean') {
     throw new Error(`buildRejectionDiagnostics: rawTranscriptsPersisted is required and must be a boolean, got ${JSON.stringify(rawTranscriptsPersisted)}`);
-  }
-
-  const ordinals = records.map((r) => captureOrdinalByRunId[r.run_id]);
-  if (ordinals.some((o) => !(Number.isInteger(o) && o >= 0))) {
-    throw new Error(`buildRejectionDiagnostics: captureOrdinalByRunId values must all be non-negative integers (got ${JSON.stringify(ordinals)})`);
-  }
-  if (new Set(ordinals).size !== ordinals.length) {
-    throw new Error(`buildRejectionDiagnostics: captureOrdinalByRunId values must be unique (got ${JSON.stringify(ordinals)})`);
   }
 
   // Round-5 audit finding: never silently collapse to the first record's value without checking
@@ -886,8 +974,9 @@ export function buildRejectionDiagnostics({
  * @param {Record<string, string>} transcriptsByRunId - run_id -> that cell's raw rawStdout capture
  *   (an empty string is legitimate and forensically meaningful: the session produced no stdout).
  * @param {Record<string, number>} captureOrdinalByRunId - run_id -> a non-negative integer capture
- *   position (0..N-1, unique, assigned by the caller from actual execution order) -- MUST have
- *   exactly the same key set as transcriptsByRunId. Never the schema's own `order_index` field.
+ *   position, assigned by the caller from actual execution order -- MUST have exactly the same key
+ *   set as transcriptsByRunId, and its values MUST form the exact contiguous set {0..N-1} (enforced
+ *   by validateCaptureOrdinalSet), never merely unique. Never the schema's own `order_index` field.
  * @param {{runsRootOverride?: string}} [opts]
  * @returns {{transcriptsDir: string, transcriptsRelativeDir: string, transcriptCount: number}}
  */
@@ -901,21 +990,11 @@ export function writeRejectionRawTranscripts(rejectionId, transcriptsByRunId, ca
   if (captureOrdinalByRunId == null || typeof captureOrdinalByRunId !== 'object' || Array.isArray(captureOrdinalByRunId)) {
     throw new Error('refusing to write raw transcripts: captureOrdinalByRunId is required and must be an object keyed by run_id');
   }
-  const transcriptKeys = new Set(Object.keys(transcriptsByRunId));
-  const ordinalKeys = new Set(Object.keys(captureOrdinalByRunId));
-  const missingOrdinals = [...transcriptKeys].filter((id) => !ordinalKeys.has(id));
-  const extraOrdinals = [...ordinalKeys].filter((id) => !transcriptKeys.has(id));
-  if (missingOrdinals.length > 0 || extraOrdinals.length > 0) {
-    throw new Error(`refusing to write raw transcripts: captureOrdinalByRunId's keys must exactly match transcriptsByRunId's (missing: ${JSON.stringify(missingOrdinals)}, extra/stale: ${JSON.stringify(extraOrdinals)})`);
-  }
-  const runIds = [...transcriptKeys];
-  const ordinalValues = runIds.map((id) => captureOrdinalByRunId[id]);
-  if (ordinalValues.some((o) => !(Number.isInteger(o) && o >= 0))) {
-    throw new Error(`refusing to write raw transcripts: captureOrdinalByRunId values must all be non-negative integers (got ${JSON.stringify(ordinalValues)})`);
-  }
-  if (new Set(ordinalValues).size !== ordinalValues.length) {
-    throw new Error(`refusing to write raw transcripts: captureOrdinalByRunId values must be unique (got ${JSON.stringify(ordinalValues)})`);
-  }
+  const runIds = [...new Set(Object.keys(transcriptsByRunId))];
+  // Post-open-PR review finding: this used to be a bespoke, weaker check (its own key-set
+  // comparison, then non-negative-integer + pairwise-unique for the values) that silently
+  // tolerated a gap -- see validateCaptureOrdinalSet's own doc comment for the reproduced case.
+  validateCaptureOrdinalSet(captureOrdinalByRunId, runIds, 'refusing to write raw transcripts');
   for (const id of runIds) {
     if (typeof transcriptsByRunId[id] !== 'string') {
       throw new Error(`refusing to write raw transcripts: transcriptsByRunId['${id}'] must be a string (the cell's raw stream-json stdout; '' is legitimate), got ${typeof transcriptsByRunId[id]}`);

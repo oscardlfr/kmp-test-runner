@@ -25,7 +25,18 @@
 #      exactly like the real 2026-08 canary incident that motivated this whole fix. Every later
 #      invocation (which must never actually happen if fail-fast works) is byte-for-byte the clean
 #      fake-claude-run-scenario-success shape.
+#
+# CodeRabbit review finding (PR #417): fail closed if TMPDIR/TMP/TEMP are ALL unset/empty, rather
+# than silently deriving PROBE_LOG as "/failfast-first-cell-invocations.log" (a write attempt at
+# filesystem root). This never fires in the real harness (env-builder.mjs's buildEvalEnv always
+# sets one of these -- see the allowlist rationale above) or in this repo's own tests (every
+# consumer redirects TEMP/TMP/TMPDIR to its own fresh, per-test isolated directory in beforeEach) --
+# it is defense-in-depth for this fixture script alone, not a fix to a reachable defect.
 PROBE_DIR="${TMPDIR:-${TMP:-$TEMP}}"
+if [ -z "$PROBE_DIR" ]; then
+  echo "fake-claude-run-failfast-first-cell: TMPDIR/TMP/TEMP are all unset -- refusing to write the invocation probe log to an unresolved location" >&2
+  exit 1
+fi
 PROBE_LOG="$PROBE_DIR/failfast-first-cell-invocations.log"
 if [ -f "$PROBE_LOG" ]; then
   INVOCATION=$(( $(wc -l < "$PROBE_LOG") + 1 ))

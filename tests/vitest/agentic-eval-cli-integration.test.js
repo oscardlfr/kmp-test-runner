@@ -209,6 +209,12 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // show a rejection here, but the probe log would carry a second line.
   it('failfast-pair scenario (invocation-counted fixture): fail-fast stops after current-skill (B) fails locally -- EXACTLY ONE live session, no-skill (A) never spawned', () => {
     const probeLogPath = path.join(isolatedTmp, 'failfast-pair-invocations.log');
+    // CodeRabbit review finding (PR #417): make the isolation precondition this test's own
+    // invocation-count assertion depends on EXPLICIT, not merely implicit -- isolatedTmp is a
+    // fresh mkdtempSync() directory from this file's own beforeEach (never shared across tests,
+    // never reused), so the probe log genuinely cannot pre-exist here; asserting it demonstrates
+    // that guarantee rather than assuming it silently.
+    expect(existsSync(probeLogPath)).toBe(false);
     const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('failfast-pair'));
     expect(result.status).toBe(1);
     expect(existsSync(probeLogPath)).toBe(true);
@@ -619,6 +625,12 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   // command instead of calibrate's, since each is an independently-testable call site.
   it('failfast-pair scenario (invocation-counted fixture): fail-fast stops after current-skill (B) fails locally -- EXACTLY ONE live session, no-skill (A) never spawned', () => {
     const probeLogPath = path.join(isolatedTmp, 'failfast-pair-invocations.log');
+    // CodeRabbit review finding (PR #417): make the isolation precondition this test's own
+    // invocation-count assertion depends on EXPLICIT, not merely implicit -- isolatedTmp is a
+    // fresh mkdtempSync() directory from this file's own beforeEach (never shared across tests,
+    // never reused), so the probe log genuinely cannot pre-exist here; asserting it demonstrates
+    // that guarantee rather than assuming it silently.
+    expect(existsSync(probeLogPath)).toBe(false);
     const result = runCli(smokeArgs(), fakeClaudeEnv('failfast-pair'));
     expect(result.status).toBe(1);
     expect(existsSync(probeLogPath)).toBe(true);
