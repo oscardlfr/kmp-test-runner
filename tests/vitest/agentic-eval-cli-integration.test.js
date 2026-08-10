@@ -181,19 +181,52 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // smokeHardGate had cleanTranscriptOk -- a malformed/truncated JSONL line could hide exactly a
   // Skill tool_use or its own result, artificially producing a "clean" attempted:false shape the
   // relaxed no-skill contract now legitimately tolerates. Reuses the same fake-claude-malformed
-  // fixture smoke's own cleanTranscriptOk test uses; it never calls Skill at all, so for
-  // calibrate this ALSO trips currentInvocationOk (B never confirms an invocation either) -- not
-  // pure single-cause isolation, disclosed honestly rather than fabricating a calibrate-specific
-  // fixture just to force a cleaner split.
-  it('malformed-transcript scenario: fails the hard gate (cleanTranscriptOk, alongside currentInvocationOk since this fixture never calls Skill) and writes NO evidence', () => {
+  // fixture smoke's own cleanTranscriptOk test uses.
+  //
+  // Fail-fast (preserve rejected matrix forensics) changes this fixture's own observable
+  // behavior exactly like smoke's identical fixture above: current-skill (B) runs FIRST and
+  // fails its own local cleanTranscriptOk check immediately -- no-skill (A) is NEVER spawned, so
+  // calibrationHardGate's two-sided reason (with checks like skillSelectionOk/currentInvocationOk,
+  // which cellTranscriptIntegrityOk's canonical 15 do not cover -- skillSelectionOk specifically
+  // because it needs matrix-wide sharedAmbientNames that don't exist yet) never gets built at all.
+  it('malformed-transcript scenario: fail-fast stops after current-skill fails its own cleanTranscriptOk check, never spawns no-skill, and writes NO evidence', () => {
     const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('malformed'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('CALIBRATION FAILED');
     expect(result.stderr).toContain('cleanTranscriptOk:false');
     expect(result.stderr).toContain('availabilityOk:true');
-    expect(result.stderr).toContain('skillSelectionOk:true');
     expect(result.stderr).toContain('pluginProfileOk:true');
     expect(listEvidenceFiles('calibration').length).toBe(0);
+    expect(result.stderr).toContain('rejected-run diagnostics written');
+    expect(result.stderr).toContain('1 raw transcript(s) preserved locally');
+  }, 20000);
+
+  // preserve rejected matrix forensics: unlike the malformed-transcript/unexpected-tool fixtures
+  // above (static, no invocation counter -- they prove the ONE session that ran looks rejected, but
+  // not that a SECOND session never happened), fake-claude-failfast-pair/claude counts its own
+  // invocations (see its own header comment) so this test can assert on the actual count: a broken
+  // fail-fast (e.g. runConditionPair spawning A regardless of B's own local verdict) would still
+  // show a rejection here, but the probe log would carry a second line.
+  it('failfast-pair scenario (invocation-counted fixture): fail-fast stops after current-skill (B) fails locally -- EXACTLY ONE live session, no-skill (A) never spawned', () => {
+    const probeLogPath = path.join(isolatedTmp, 'failfast-pair-invocations.log');
+    // CodeRabbit review finding (PR #417): make the isolation precondition this test's own
+    // invocation-count assertion depends on EXPLICIT, not merely implicit -- isolatedTmp is a
+    // fresh mkdtempSync() directory from this file's own beforeEach (never shared across tests,
+    // never reused), so the probe log genuinely cannot pre-exist here; asserting it demonstrates
+    // that guarantee rather than assuming it silently.
+    expect(existsSync(probeLogPath)).toBe(false);
+    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('failfast-pair'));
+    expect(result.status).toBe(1);
+    expect(existsSync(probeLogPath)).toBe(true);
+    const invocationLines = readFileSync(probeLogPath, 'utf8').trim().split('\n').filter(Boolean);
+    expect(invocationLines.length).toBe(1);
+    expect(result.stderr).toContain('CALIBRATION FAILED');
+    expect(result.stderr).toContain('toolProfileOk:false');
+    expect(result.stderr).toContain('noUnexpectedToolsOk:false');
+    expect(result.stderr).toContain('availabilityOk:true');
+    expect(listEvidenceFiles('calibration').length).toBe(0);
+    expect(result.stderr).toContain('rejected-run diagnostics written');
+    expect(result.stderr).toContain('1 raw transcript(s) preserved locally');
   }, 20000);
 
   // Regression coverage for a real evidence-contamination bypass an independent review pass
@@ -219,6 +252,31 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     expect(result.stderr).toContain('noSkillSafetyOk:true');
     expect(result.stderr).toContain('currentInvocationOk:true');
     expect(listEvidenceFiles('calibration').length).toBe(0);
+  }, 20000);
+
+  // preserve rejected matrix forensics: this fixture is the one already-established case where
+  // BOTH sides genuinely run to completion before the gate rejects (skillSelectionOk is only
+  // evaluated by the ordinary two-sided gate, never by fail-fast's own canonical 15 checks -- see
+  // cell-integrity.mjs's own doc comment) -- exactly the shape needed to verify captureOrdinal
+  // reflects TRUE execution order, not parameter-list order. runConditionPair always spawns B
+  // (current-skill) before A (no-skill); a caller that instead assigned ordinals by the
+  // (recordA, recordB) parameter order alone would silently swap them.
+  it('captureOrdinal in the persisted transcript filenames reflects TRUE execution order (B=current-skill first=0, A=no-skill second=1), never parameter-list order', () => {
+    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('foreign-skill'));
+    expect(result.status).toBe(1);
+    const rejectionIdMatch = result.stderr.match(/rejection_id ([0-9a-f-]{36})/i);
+    expect(rejectionIdMatch).not.toBeNull();
+    const rejectionId = rejectionIdMatch[1];
+    const local = JSON.parse(readFileSync(path.join(runsRoot, 'agentic-eval-rejected', 'raw', `${rejectionId}.json`), 'utf8'));
+    expect(local.cells.length).toBe(2);
+    const cellB = local.cells.find((c) => c.condition === 'current-skill');
+    const cellA = local.cells.find((c) => c.condition === 'no-skill');
+    expect(cellB.transcript_filename).toMatch(/^0-[0-9a-f]{64}\.jsonl$/);
+    expect(cellA.transcript_filename).toMatch(/^1-[0-9a-f]{64}\.jsonl$/);
+    // Both transcripts genuinely exist under the ordinal this test just asserted on.
+    const transcriptsDir = path.join(runsRoot, 'agentic-eval-rejected', 'raw', 'transcripts', rejectionId);
+    expect(existsSync(path.join(transcriptsDir, cellB.transcript_filename))).toBe(true);
+    expect(existsSync(path.join(transcriptsDir, cellA.transcript_filename))).toBe(true);
   }, 20000);
 
   it('leaves no leftover temp directories after a passing run (cleanup ran)', () => {
@@ -489,23 +547,29 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   // never inspected the init event's own tools field or scanned for tool_use events beyond the
   // two expected Bash calls -- "the two expected commands succeeded" was treated as sufficient
   // proof of a narrow session, when it wasn't.
-  it('unexpected-tool scenario: fails the hard gate (Read enabled and invoked) and writes NO evidence', () => {
+  // Fail-fast (preserve rejected matrix forensics) changes this fixture's own observable
+  // behavior exactly like the malformed-transcript fixture above: current-skill (B) runs FIRST
+  // and fails its own local toolProfileOk/noUnexpectedToolsOk checks (both part of
+  // cellTranscriptIntegrityOk's canonical 15) immediately -- no-skill (A) is NEVER spawned, so
+  // smokeHardGate's two-sided reason (with smoke-only checks like processOk/resultOk/realWorkOk/
+  // exactCommandsOk, which cellTranscriptIntegrityOk does not cover) never gets built. This
+  // fixture is the exact reproduction shape of the 2026-08 canary incident this whole fix exists
+  // for -- fail-fast now stops it after exactly one session, which is the point.
+  it('unexpected-tool scenario: fail-fast stops after current-skill fails its own toolProfileOk/noUnexpectedToolsOk checks, never spawns no-skill, and writes NO evidence', () => {
     const result = runCli(smokeArgs(), fakeClaudeEnv('unexpected-tool'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('SMOKE FAILED');
     expect(result.stderr).toContain('toolProfileOk:false');
     expect(result.stderr).toContain('noUnexpectedToolsOk:false');
-    // Everything else about this transcript is genuinely clean -- isolating the two new checks
-    // as the ones actually catching this, not an artifact of something else also being broken.
+    // Everything else about this transcript is genuinely clean -- isolating the two checks as the
+    // ones actually catching this, not an artifact of something else also being broken.
     expect(result.stderr).toContain('availabilityOk:true');
     expect(result.stderr).toContain('initOk:true');
-    expect(result.stderr).toContain('processOk:true');
-    expect(result.stderr).toContain('resultOk:true');
     expect(result.stderr).toContain('hookAccountingOk:true');
-    expect(result.stderr).toContain('realWorkOk:true');
-    expect(result.stderr).toContain('exactCommandsOk:true');
     expect(result.stderr).toContain('cleanTranscriptOk:true');
     expect(listEvidenceFiles('smoke').length).toBe(0);
+    expect(result.stderr).toContain('rejected-run diagnostics written');
+    expect(result.stderr).toContain('1 raw transcript(s) preserved locally');
   }, 30000);
 
   // This fixture's only Bash call is an unrelated, denied `ls` -- honestly, that ONE fact trips
@@ -533,22 +597,52 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
 
   // This fixture is otherwise byte-for-byte the success shape (both expected commands run,
   // correctly hooked with an "allow" decision, non-error results, correct --plugin-dir-driven
-  // skill_available) -- the ONLY difference is one injected line of invalid JSON. Asserting the
-  // granular reason string proves cleanTranscriptOk is the SOLE failing named sub-check, not an
-  // artifact of an otherwise-empty transcript also failing realWorkOk/exactCommandsOk for an
-  // unrelated reason (the bug this fixture previously had, found by an independent review pass).
-  it('malformed-transcript scenario: fails the clean-transcript hard gate and writes NO evidence', () => {
+  // skill_available) -- the ONLY difference is one injected line of invalid JSON.
+  //
+  // Fail-fast (preserve rejected matrix forensics) changes this fixture's own observable
+  // behavior: current-skill (B) runs FIRST (see runConditionPair's confirmed order) and fails its
+  // own local cleanTranscriptOk check immediately -- no-skill (A) is NEVER spawned, so
+  // smokeHardGate's two-sided reason format (which used to report BOTH sides' full 16-check
+  // breakdown, including smoke-only checks like processOk/resultOk/realWorkOk/exactCommandsOk
+  // that cellTranscriptIntegrityOk's own canonical 15 do not cover) never gets built at all --
+  // this test previously asserted that full two-sided shape appeared, which stopped being true
+  // the moment fail-fast could short-circuit before smokeHardGate ever runs. What's still true,
+  // and is exactly what this fixture exists to prove: cleanTranscriptOk is correctly identified
+  // as the failing check, from a transcript that is otherwise completely clean.
+  it('malformed-transcript scenario: fail-fast stops after current-skill fails its own cleanTranscriptOk check, never spawns no-skill, and writes NO evidence', () => {
     const result = runCli(smokeArgs(), fakeClaudeEnv('malformed'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('SMOKE FAILED');
     expect(result.stderr).toContain('cleanTranscriptOk:false');
-    expect(result.stderr).toContain('availabilityOk:true');
-    expect(result.stderr).toContain('processOk:true');
-    expect(result.stderr).toContain('resultOk:true');
-    expect(result.stderr).toContain('hookAccountingOk:true');
-    expect(result.stderr).toContain('realWorkOk:true');
-    expect(result.stderr).toContain('exactCommandsOk:true');
     expect(listEvidenceFiles('smoke').length).toBe(0);
+    expect(result.stderr).toContain('rejected-run diagnostics written');
+    expect(result.stderr).toContain('1 raw transcript(s) preserved locally');
+  }, 30000);
+
+  // preserve rejected matrix forensics: same invocation-counted proof as calibrate's identical
+  // test above (see that test's own header comment) -- fake-claude-failfast-pair/claude is shared
+  // by both commands, exercising the SAME runConditionPair fail-fast wired through smoke's own
+  // command instead of calibrate's, since each is an independently-testable call site.
+  it('failfast-pair scenario (invocation-counted fixture): fail-fast stops after current-skill (B) fails locally -- EXACTLY ONE live session, no-skill (A) never spawned', () => {
+    const probeLogPath = path.join(isolatedTmp, 'failfast-pair-invocations.log');
+    // CodeRabbit review finding (PR #417): make the isolation precondition this test's own
+    // invocation-count assertion depends on EXPLICIT, not merely implicit -- isolatedTmp is a
+    // fresh mkdtempSync() directory from this file's own beforeEach (never shared across tests,
+    // never reused), so the probe log genuinely cannot pre-exist here; asserting it demonstrates
+    // that guarantee rather than assuming it silently.
+    expect(existsSync(probeLogPath)).toBe(false);
+    const result = runCli(smokeArgs(), fakeClaudeEnv('failfast-pair'));
+    expect(result.status).toBe(1);
+    expect(existsSync(probeLogPath)).toBe(true);
+    const invocationLines = readFileSync(probeLogPath, 'utf8').trim().split('\n').filter(Boolean);
+    expect(invocationLines.length).toBe(1);
+    expect(result.stderr).toContain('SMOKE FAILED');
+    expect(result.stderr).toContain('toolProfileOk:false');
+    expect(result.stderr).toContain('noUnexpectedToolsOk:false');
+    expect(result.stderr).toContain('availabilityOk:true');
+    expect(listEvidenceFiles('smoke').length).toBe(0);
+    expect(result.stderr).toContain('rejected-run diagnostics written');
+    expect(result.stderr).toContain('1 raw transcript(s) preserved locally');
   }, 30000);
 
   it('leaves no registered git worktree behind after a passing run (removeScenarioWorktree ran)', () => {

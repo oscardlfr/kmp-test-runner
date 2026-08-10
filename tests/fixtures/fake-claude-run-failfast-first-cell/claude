@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-run-failfast-first-cell/claude -- deterministic stand-in for the real
+# `claude` CLI, proving runScenarioMatrix's fail-fast (preserve rejected matrix forensics) stops the
+# WHOLE matrix -- both levels of the flattened cellPlan loop, see matrix-runner.mjs's own doc
+# comment -- after exactly the FIRST executed cell fails its own local cellTranscriptIntegrityOk
+# check, never spawning any of the remaining planned cells. Byte-for-byte
+# fake-claude-run-scenario-success/claude (see that fixture's own header comment for the shared
+# --plugin-dir-sniffing/sidecar rationale) EXCEPT for two things, both gated on an invocation
+# counter:
+#
+#   1. An invocation counter -- pure test-fixture instrumentation, never read by production code
+#      (see fake-claude-run-fixture-setup-wiring/claude's own identical PROBE_DIR rationale, and
+#      this repo's feedback_narrow_env_allowlist_for_e2e_fixtures memory for why TEMP/TMP/TMPDIR is
+#      the only viable cross-invocation signaling channel: buildEvalEnv's narrow allowlist drops
+#      any custom env var before it ever reaches this spawned process). One line is appended to the
+#      probe log on every invocation, so a test reading the log's line count afterward gets an exact
+#      count of how many live sessions actually ran -- not just "did the first one fail", but "did
+#      fail-fast actually stop the runner", which a static (non-counting) fixture cannot prove: a
+#      fixture that always fails the same way would look identical whether fail-fast stopped after
+#      1 invocation or a broken loop ran all 4 and each happened to fail identically.
+#   2. On the FIRST invocation only: the init event additionally declares "Read" among its tools,
+#      and an extra, unexpected Read tool_use+tool_result pair (identical shape to
+#      fake-claude-unexpected-tool/claude's own injected Read block) is appended after the expected
+#      Bash tool_result, before the final result event -- tripping toolProfileOk/noUnexpectedToolsOk
+#      exactly like the real 2026-08 canary incident that motivated this whole fix. Every later
+#      invocation (which must never actually happen if fail-fast works) is byte-for-byte the clean
+#      fake-claude-run-scenario-success shape.
+#
+# CodeRabbit review finding (PR #417): fail closed if TMPDIR/TMP/TEMP are ALL unset/empty, rather
+# than silently deriving PROBE_LOG as "/failfast-first-cell-invocations.log" (a write attempt at
+# filesystem root). This never fires in the real harness (env-builder.mjs's buildEvalEnv always
+# sets one of these -- see the allowlist rationale above) or in this repo's own tests (every
+# consumer redirects TEMP/TMP/TMPDIR to its own fresh, per-test isolated directory in beforeEach) --
+# it is defense-in-depth for this fixture script alone, not a fix to a reachable defect.
+PROBE_DIR="${TMPDIR:-${TMP:-$TEMP}}"
+if [ -z "$PROBE_DIR" ]; then
+  echo "fake-claude-run-failfast-first-cell: TMPDIR/TMP/TEMP are all unset -- refusing to write the invocation probe log to an unresolved location" >&2
+  exit 1
+fi
+PROBE_LOG="$PROBE_DIR/failfast-first-cell-invocations.log"
+if [ -f "$PROBE_LOG" ]; then
+  INVOCATION=$(( $(wc -l < "$PROBE_LOG") + 1 ))
+else
+  INVOCATION=1
+fi
+echo "$INVOCATION" >> "$PROBE_LOG"
+
+write_sidecar() {
+  local kind="$1" toolUseId="$2" recordJson="$3"
+  node -e '
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const [kind, toolUseId, recordJson] = process.argv.slice(1);
+const idHash = crypto.createHash("sha256").update(toolUseId).digest("hex");
+const dir = path.join(process.env.KMP_EVAL_JUNIT_EVIDENCE_DIR, kind);
+fs.mkdirSync(dir, { recursive: true });
+fs.writeFileSync(path.join(dir, idHash + ".json"), recordJson);
+' -- "$kind" "$toolUseId" "$recordJson"
+}
+
+HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  PREV_ARG="$arg"
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
+  SKILLS='["kmp-test-runner"]'
+else
+  PLUGINS='[]'
+  SKILLS='[]'
+fi
+
+if [ "$INVOCATION" = "1" ]; then
+  TOOLS_JSON='["Bash","Skill","Read"]'
+else
+  TOOLS_JSON='["Bash","Skill"]'
+fi
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-0001\",\"tools\":$TOOLS_JSON,\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"dontAsk\",\"plugins\":$PLUGINS,\"skills\":$SKILLS,\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+else
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
+fi
+
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test parallel --module-filter :fakemod --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+write_sidecar decisions toolu_fakebash1 '{"decision":"allow","command":"kmp-test parallel --module-filter :fakemod --json"}'
+
+KMP_ENVELOPE='{"tool":"kmp-test","schema_version":2,"subcommand":"parallel","version":"0.14.0","project_root":"/fake","exit_code":2,"duration_ms":21,"tests":{"total":0,"passed":0,"failed":0,"skipped":0,"individual_total":0},"modules":[],"skipped":[{"module":"fakemod","reason":"no test source set"}],"coverage":{"tool":"auto","missed_lines":null,"modules_with_kover_plugin":[],"modules_with_jacoco_plugin":[]},"errors":[{"code":"no_test_modules","message":"No modules found matching filter: :fakemod","test_type":"","caused_by_filter":true}],"warnings":[],"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true}}'
+node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{type:'tool_result',content:process.argv[1],tool_use_id:'toolu_fakebash1'}]}}))" "$KMP_ENVELOPE"
+
+if [ "$INVOCATION" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeread1","name":"Read","input":{"file_path":"/fake/unexpected.txt"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake read output]","tool_use_id":"toolu_fakeread1"}]}}'
+fi
+
+FINAL_ANSWER='The :fakemod module has no applicable unit tests -- kmp-test reported no test modules matching that filter.
+
+KMP_EVAL_RESULT
+{"module": ":fakemod", "outcome_kind": "no_applicable_tests"}
+KMP_EVAL_RESULT_END'
+node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
+exit 0

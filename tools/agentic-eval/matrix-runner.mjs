@@ -28,6 +28,7 @@ import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsF
 import { parseStreamJsonl, findInitEvent, findResultEvent, findSkillInvocation, countHookEvents, computeByteMetrics, findBashToolUsesWithResults } from './stream-parser.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
 import { attributeCondition } from './junit-evidence.mjs';
+import { cellTranscriptIntegrityOk } from './cell-integrity.mjs';
 
 /** Prints a single, clearly-labeled WARNING line if `failures` (from a cleanup accumulator's
  * runCleanup()) is non-empty -- never silent, but never escalated into a hard failure either: a
@@ -265,8 +266,20 @@ export async function runSingleCondition({ condition, materializeFixture, previo
  * @param {string} opts.targetSkillName
  * @param {number} opts.timeoutMs
  * @returns {Promise<{cellResults: Array<{repetitionIndex: number, orderIndex: number, seed: number,
- *   conditionResult: object}>, snapshotDir: string, daemonPolicy: string, allowedGradleTasks: string[],
- *   allowedKmpTestSubcommands: string[], cleanup: () => Promise<string[]>}>}
+ *   conditionResult: object, localIntegrity: object}>, snapshotDir: string, daemonPolicy: string,
+ *   allowedGradleTasks: string[], allowedKmpTestSubcommands: string[], cleanup: () => Promise<string[]>,
+ *   plannedCellCount: number, executedCellCount: number, matrixComplete: boolean,
+ *   failFastStop: {orderIndex: number, repetitionIndex: number, condition: string, reason: string}|null}>}
+ *
+ * Fail-fast (preserve rejected matrix forensics): after each cell, `cellTranscriptIntegrityOk`
+ * (cell-integrity.mjs) evaluates the same canonical, matrix-consensus-free checks the final
+ * whole-matrix gate uses -- if a cell fails locally, the loop stops immediately, before spawning
+ * any further live Claude session. `cellResults` always carries an entry for EVERY cell that
+ * actually executed (not only the one that failed), each with its own `localIntegrity` verdict --
+ * this is the authoritative per-cell data a caller building a partial rejection diagnostic reads,
+ * never re-derived. The cell loop is a SINGLE flat iteration (never two nested `for` loops) so a
+ * `break` on failure unambiguously abandons every remaining cell in the whole matrix, not just the
+ * remainder of one repetition slot.
  */
 // Whether a scenario's own `outcome_kind` represents a genuine test EXECUTION whose real JUnit XML
 // is worth per-attempt attribution -- `tests_executed` and `tests_failed` both do (the target task
@@ -320,54 +333,78 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
       }
     };
 
-    const cellResults = [];
-    let orderIndex = 0;
+    // Flattened once, up front, into a single ordered list -- never two nested loops during
+    // execution. A `break` partway through a doubly-nested `for (slot) { for (condition) { ... } }`
+    // would only abandon the INNER loop, leaving the outer loop free to keep starting further
+    // repetitions -- exactly the bug fail-fast exists to avoid. `orderIndex` is assigned here by
+    // flat position (0..2*repeats-1), identical to what the un-flattened loop always produced,
+    // since planned order and execution order coincide for every cell that actually runs.
+    const cellPlan = [];
     for (const slot of repetitionSlots) {
       const repetitionIndex = slot.repetition;
       const [firstCondition, secondCondition] = conditionOrders[repetitionIndex];
-      for (const condition of [firstCondition, secondCondition]) {
-        const conditionResult = await runSingleCondition({
-          condition,
-          materializeFixture,
-          previousFixtureDir: fixtureDir,
-          cleanupFixtureOnce,
-          resetGradleToSnapshot: shared.resetGradleToSnapshot,
-          kmpEvalTempHome: shared.kmpEvalTempHome,
-          sharedEnv: shared.sharedEnv,
-          baseArgv,
-          snapshotDir: shared.snapshotDir,
-          targetPluginName,
-          targetSkillName,
-          timeoutMs,
-          decisionAttributionEnabled,
-          junitEvidenceEnabled,
-          evidenceTask,
-          allowedInvocations,
-          registerCleanup,
-          fixtureSetup,
-        });
-        fixtureDir = conditionResult.fixtureDir;
-        const junitAttribution = decisionAttributionEnabled
-          ? attributeCondition(conditionResult.evidenceDir, scenario, conditionResult.bashResults, {
-              terminated: conditionResult.spawnResult.terminated,
-              terminationReason: conditionResult.spawnResult.terminationReason,
-            }, junitEvidenceEnabled)
-          : null;
-        // The scratch directory has now been fully consumed by attributeCondition -- eagerly
-        // remove it right away (a safe no-op if already gone) rather than leaving it until the
-        // whole matrix's deferred cleanup runs at the very end; the registerCleanup call inside
-        // runSingleCondition already covers the "failed before reaching this point" case.
-        if (conditionResult.evidenceDir) {
-          rmSync(conditionResult.evidenceDir, { recursive: true, force: true });
-        }
-        cellResults.push({ repetitionIndex, orderIndex, seed, conditionResult: { ...conditionResult, junitAttribution } });
-        orderIndex++;
+      cellPlan.push({ repetitionIndex, condition: firstCondition });
+      cellPlan.push({ repetitionIndex, condition: secondCondition });
+    }
+    cellPlan.forEach((cell, i) => { cell.orderIndex = i; });
+    const plannedCellCount = cellPlan.length;
+
+    const cellResults = [];
+    let failFastStop = null;
+    for (const { repetitionIndex, condition, orderIndex } of cellPlan) {
+      const conditionResult = await runSingleCondition({
+        condition,
+        materializeFixture,
+        previousFixtureDir: fixtureDir,
+        cleanupFixtureOnce,
+        resetGradleToSnapshot: shared.resetGradleToSnapshot,
+        kmpEvalTempHome: shared.kmpEvalTempHome,
+        sharedEnv: shared.sharedEnv,
+        baseArgv,
+        snapshotDir: shared.snapshotDir,
+        targetPluginName,
+        targetSkillName,
+        timeoutMs,
+        decisionAttributionEnabled,
+        junitEvidenceEnabled,
+        evidenceTask,
+        allowedInvocations,
+        registerCleanup,
+        fixtureSetup,
+      });
+      fixtureDir = conditionResult.fixtureDir;
+      const junitAttribution = decisionAttributionEnabled
+        ? attributeCondition(conditionResult.evidenceDir, scenario, conditionResult.bashResults, {
+            terminated: conditionResult.spawnResult.terminated,
+            terminationReason: conditionResult.spawnResult.terminationReason,
+          }, junitEvidenceEnabled)
+        : null;
+      // The scratch directory has now been fully consumed by attributeCondition -- eagerly
+      // remove it right away (a safe no-op if already gone) rather than leaving it until the
+      // whole matrix's deferred cleanup runs at the very end; the registerCleanup call inside
+      // runSingleCondition already covers the "failed before reaching this point" case.
+      if (conditionResult.evidenceDir) {
+        rmSync(conditionResult.evidenceDir, { recursive: true, force: true });
+      }
+      const fullConditionResult = { ...conditionResult, junitAttribution };
+      // Fail-fast integrity check -- evaluated for EVERY executed cell (not only ones that fail),
+      // so a caller building a partial rejection diagnostic has a real verdict for every cell that
+      // ran, never just the one that stopped the matrix.
+      const localIntegrity = cellTranscriptIntegrityOk(fullConditionResult, { targetPluginName, targetSkillName });
+      cellResults.push({ repetitionIndex, orderIndex, seed, conditionResult: fullConditionResult, localIntegrity });
+      if (!localIntegrity.ok) {
+        failFastStop = { orderIndex, repetitionIndex, condition, reason: localIntegrity.reason };
+        break;
       }
     }
+
+    const executedCellCount = cellResults.length;
+    const matrixComplete = executedCellCount === plannedCellCount;
 
     return {
       cellResults, snapshotDir: shared.snapshotDir, daemonPolicy: shared.daemonPolicy,
       allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
+      plannedCellCount, executedCellCount, matrixComplete, failFastStop,
     };
   } catch (err) {
     reportCleanupFailures(await runCleanup(), 'during scenario-matrix execution rollback');

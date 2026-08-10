@@ -194,7 +194,12 @@ matrix is rejected anyway.
   the scenario's pinned commit resolves inside it — before any git worktree is ever created from
   it. `scenarioHardGate()` (harness-integrity only, deliberately never the scenario OUTCOME —
   a wrong answer, a policy denial, or a legitimate timeout are all valid negative results) blocking
-  on ANY one cell fails the **whole matrix's** promotion; there is no partial write. Each cell
+  on ANY one cell fails the **whole matrix's** promotion; there is no partial write. Before that
+  final gate is even reached, each cell is ALSO checked locally, immediately after it runs
+  (`cellTranscriptIntegrityOk()`) — a local failure stops the matrix from spawning any further live
+  session, rather than running every planned cell only to reject the whole batch at the end; see
+  "Rejected-run diagnostics" below for exactly what changes (`matrix_complete`,
+  `ambient_profile_matrix_ok`) when this happens. Each cell
   otherwise records its own real, non-null `success`/`expected_outcome_matched` (via
   `gradeScenarioCondition`), `grading_checks` (the full per-check detail), `test_invocations_total`/
   `retries` (derived from the same attempt list grading itself built), and `cache_state:'cold'`
@@ -630,12 +635,21 @@ isolation.
 
 A hard-gate rejection (any run_kind) previously wrote **zero** evidence anywhere — nothing beyond
 the terse stderr `reason` line, gone the moment the terminal/log is. `rejection-diagnostics.mjs`
-closes that gap with a small, privacy-safe, two-tier record written at the exact point
+closes that gap with a small, privacy-safe, three-tier record written at the exact point
 `finalizeAndWriteRecords()`/`finalizeAndWriteMatrixRecords()` would otherwise just return
 `{ok:false}` — kept in its own module (schema + construction + writing together), not `cli.mjs`,
 both to avoid growing an already-large file further and because it needs the atomic-write
 primitives `evidence-io.mjs` exports (see below) while `cli.mjs` needs to call *into* it — a
 circular import either module living inside `cli.mjs` would create.
+
+The third tier (raw transcripts, below) is a deliberate, narrowly-scoped **partial reversal** of
+this module's own original "never the full raw transcript" decision — a real 2026-08 canary
+rejected `noUnexpectedToolsOk` and the transcript that would have shown *which* tool, at *which*
+index, only ever existed in memory (`spawnCondition()`'s own `rawStdout`) and was lost with the
+process the moment rejection returned. The two structured tiers already told you a check named
+`noUnexpectedToolsOk` failed; nothing told you why. Persisting the raw transcript on rejection
+closes that specific gap without reopening the original privacy rationale for the two structured
+tiers, which stay exactly as narrow as before.
 
 - **Location**: `tools/runs/agentic-eval-rejected/` — deliberately not shaped like the real
   evidence directories (`agentic-eval-<run_kind>/`, keyed by the closed `RUN_KIND_VALUES` set,
@@ -644,28 +658,78 @@ circular import either module living inside `cli.mjs` would create.
   `rejection_id`, not an 8-hex-char slice like `run_id`), not a shared append-only log — closer in
   nature to the real per-record evidence files than to `measurement-registry.jsonl`'s long-lived
   queryable-table use case, and closes a real partial-write concern a shared log would reopen.
-- **Two tiers, same `rejection_id`**: `<rejection_id>.json` (committed) carries only categorized
-  `foreign_skill_summary` counts, `failed_checks` names, and identity/provenance fields — never a
-  raw skill name or any transcript content. `raw/<rejection_id>.json` (local-only) adds real,
-  deduplicated `foreign_skill_names` per cell for operator debugging — still never the full raw
-  transcript (that stays exactly where it always did, gitignored under each run_kind's own
-  `agentic-eval-<kind>/raw/`, and is never produced at all on a hard-gate rejection in the first
-  place — see "No committable evidence before every gate passes" above). `raw/` here is covered by
-  the *existing* `.gitignore:` `tools/runs/agentic-eval-*/raw/**` rule — the `*` wildcard already
-  matches `rejected` the same way it matches `scenario`/`smoke`/`calibration`, so no new
-  `.gitignore` entry was needed.
-- **Shape** (`REJECTION_DIAGNOSTICS_SCHEMA` **2** — was 1; the row gained per-cell
-  `ambient_skill_profile` and top-level `ambient_profile_matrix_ok`, versioned exactly like every
-  other schema in this harness whenever its own shape changes; no historical committed rejection
-  files exist to preserve compatibility with, since this whole directory is local-only/gitignored
-  by design): `{schema, rejection_id, timestamp, run_kind, run_ids, model_requested, repo_commit,
-  scenario_id, project_alias, project_commit, seed, policy_sha256, platform, privacy_status, cells,
-  foreign_skill_summary, ambient_profile_matrix_ok}`. `ambient_profile_matrix_ok` is `null` for
-  calibration/smoke (no matrix/consensus concept applies to a plain A/B pair) and the real boolean
-  `scenarioHardGate()` computed for a scenario batch — a batch-wide fact, distinct from any one
-  cell's own data. The provenance fields mirror `buildRunRecord()`'s own field names
-  exactly (read directly off the already-built records, never re-derived), each tied to the
-  record's own `run_kind` rather than accepted in any shape unconditionally
+- **Three tiers, same `rejection_id`, written as TWO INDEPENDENT atomic transactions**:
+  1. **Committed** (`<rejection_id>.json`, genuinely **tracked in git** — not gitignored, unlike
+     the two tiers below) carries only categorized `foreign_skill_summary` counts, `failed_checks`
+     names, per-cell `unexpected_tool_uses_count`, and identity/provenance fields — never a raw
+     skill/tool name or any transcript content.
+  2. **Local structured detail** (`raw/<rejection_id>.json`, gitignored) is tier 1 plus
+     `project_url` and, per cell, real `foreign_skill_names` and `unexpected_tools:
+     [{name, event_index}]` plus a `transcript_filename` pointing at tier 3 — still no raw
+     transcript *content*: a tool name here is treated as untrusted, arbitrary runtime input (not a
+     closed vocabulary — it's whatever string the model happened to pass to a tool outside the
+     allowlist), safe in this tier only because it goes through the same redaction pass as every
+     other string field here and lives only in this gitignored tier.
+  3. **Local raw transcripts** (`raw/transcripts/<rejection_id>/<captureOrdinal>-<sha256(run_id)>
+     .jsonl`, gitignored, one file per EXECUTED cell) — byte-for-byte the same `rawStdout` capture
+     the accepted path would have written, **never redacted** (same contract as any other `raw/`
+     tier in this harness — safety comes from the gitignore-safety check below, not from
+     sanitizing content). The filename is deliberately never the raw `run_id` (a charset-denylist
+     regex over an untrusted string still admits Windows-reserved names like `CON`/`NUL`/`COM1`
+     and segments ending in a dot) and never the schema's own `order_index` field (`null` for
+     calibrate/smoke, so it can't serve this purpose for two of the three run kinds this covers) —
+     `captureOrdinal` is a plain, caller-assigned, non-negative integer (0..N-1 among the cells
+     EXECUTED in *this* rejection) and `sha256hex(run_id)` is always exactly 64 lowercase hex
+     characters, so the resulting name can never collide with a reserved name, never contains a
+     path separator, and never ends in a dot or space — `deriveTranscriptFilename()` is the single
+     implementation of this derivation, shared by the writer and the local tier's own field.
+
+  Persistence is two independent transactions, run in this order, **neither one's outcome ever
+  blocking the other from being attempted**: `writeRejectionRawTranscripts()` (tier 3) first —
+  minimal failure surface (a UUID-shaped `rejectionId` check, an exact-set/ordinal check, the same
+  gitignore-safety proof every other `raw/` tier uses; no schema validation, no redaction, since raw
+  content has neither) — then `writeRejectedRunDiagnostics()` (tiers 1+2, the full
+  validate → redact → revalidate pipeline this module has always used for its structured tiers).
+  Coupling these into one transaction would let a failure in the (more complex, more validated)
+  structured-diagnostic layer cost the (simpler, more forensically important) raw evidence —
+  precisely the "secondary layer blocks primary evidence" failure class the 2026-08 incident itself
+  was, one level removed. Both tiers 1 and 2 stamp the *same* `raw_transcripts_persisted` boolean
+  (tier 3's own outcome, known before tiers 1/2 are even built) so a reader never has to guess
+  whether a `transcript_filename` points at a file that actually exists.
+
+  All of `raw/<rejection_id>.json` and `raw/transcripts/**` are covered by the *existing*
+  `.gitignore:` `tools/runs/agentic-eval-*/raw/**` rule (the `**` wildcard matches at arbitrary
+  depth, confirmed empirically with `git check-ignore -v`) — no new `.gitignore` entry was needed
+  for either. Only tier 1 (the top-level `<rejection_id>.json`) is genuinely tracked; the whole
+  directory is **not** uniformly gitignored, unlike an earlier version of this note claimed.
+- **Shape — schema is a genuine DISPATCH (`SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3]`), not
+  a plain constant bump**: two real diagnostic files from the 2026-08 canary rejection itself are
+  `schema:2` and are preserved, hashed, declared incident evidence outside this repo — a plain bump
+  would make `validateRejectionRow()` call that very evidence "invalid." `validateRejectionRow()`
+  still validates a `schema:2` row against its original, frozen shape (no
+  `unexpected_tool_uses_count`/`matrix_complete`/etc. — and a v2 row may not even carry those keys,
+  closed-key-set); `buildRejectionDiagnostics()` only ever *constructs* schema 3 going forward. A
+  `schema:3` row is `{schema, rejection_id, timestamp, run_kind, run_ids, model_requested,
+  repo_commit, scenario_id, project_alias, project_commit, seed, policy_sha256, platform,
+  privacy_status, cells, foreign_skill_summary, ambient_profile_matrix_ok, matrix_complete,
+  planned_cell_count, executed_cell_count, raw_transcripts_persisted}` — the last four fields are
+  new in schema 3 (see "Fail-fast" below for what `matrix_complete:false` means and how it changes
+  `ambient_profile_matrix_ok`). Per-cell, schema 3 adds `unexpected_tool_uses_count` (the shared
+  `cell-integrity.mjs` evaluation's own count — never reparsed by this module) alongside the
+  pre-existing `run_id`/`condition`/`repetition_index`/`order_index`/`skill_source_sha`/
+  `model_resolved`/`claude_code_version`/`failed_checks`/`foreign_skill_summary`/
+  `ambient_skill_profile`. The single most important invariant `validateRejectionRow()` enforces on
+  a `schema:3` row is a strict **biconditional**: `failed_checks.includes('noUnexpectedToolsOk')`
+  if and only if `unexpected_tool_uses_count > 0` — this makes the 2026-08 incident's own exact
+  shape (a rejection attributed to `noUnexpectedToolsOk` with zero recorded detail anywhere)
+  structurally impossible to write again. `ambient_profile_matrix_ok` is `null` for
+  calibration/smoke (no matrix/consensus concept applies to a plain A/B pair) or for a `schema:3`
+  scenario row whose `matrix_complete` is `false` (a matrix fail-fast stopped early never actually
+  evaluated a real cross-cell consensus — claiming one would be false, not merely imprecise); it's
+  the real boolean `scenarioHardGate()` computed for any COMPLETE scenario batch — a batch-wide
+  fact, distinct from any one cell's own data. The provenance fields mirror `buildRunRecord()`'s own
+  field names exactly (read directly off the already-built records, never re-derived), each tied to
+  the record's own `run_kind` rather than accepted in any shape unconditionally
   (`validateRejectionRow()` enforces this per run_kind, not just "null or a string"):
   - `calibration`: `project_alias` is the fixed literal `'calibration-project'`
     (`buildRunRecord()`'s own default, never null), `project_commit`/`seed` `null` (no external
@@ -676,50 +740,85 @@ circular import either module living inside `cli.mjs` would create.
     actual `--seed` used for that matrix).
 
   `project_url` is deliberately **not** in this list — see "Privacy" below. `cells` covers
-  **every** cell in the rejected batch, not only the failing ones (a scenario matrix's "one bad
-  cell blocks the whole batch" design makes every cell relevant context) — each cell carries its
+  **every EXECUTED cell** in the rejected batch (not only the failing ones — a scenario matrix's
+  "one bad cell blocks the whole batch" design makes every executed cell relevant context — and,
+  for a fail-fast-stopped matrix, not the cells that were never spawned at all: see "Fail-fast"
+  below) — each cell carries its
   own `run_id`/`condition`/`repetition_index`/`order_index` (both `null` for calibrate/smoke, both
   real non-negative integers for scenario — enforced *together*, tied to the record's own
   `run_kind`)/`skill_source_sha` (`null` for no-skill, the real SHA for current-skill)/
   `model_resolved`/`claude_code_version` (each `null` only when no init event was ever captured)/
   `failed_checks`/`foreign_skill_summary`/`ambient_skill_profile` (read directly off that cell's own
   already-built run record, `{count, scope_id, fingerprint_hmac}` — never the raw skill names,
-  exactly like `foreign_skill_summary`'s existing precedent). The top-level `foreign_skill_summary` is always the
+  exactly like `foreign_skill_summary`'s existing precedent)/`unexpected_tool_uses_count`. The
+  top-level `foreign_skill_summary` is always the
   field-by-field sum across `cells[]` — `validateRejectionRow()` enforces this, never letting it
   drift into an independent second source of truth — `run_ids` must always exactly equal the set of
-  `cells[].run_id`, and **at least one** cell must carry a non-empty `failed_checks`: a diagnostic
+  `cells[].run_id`, `executed_cell_count` must equal `cells.length`, and **at least one** cell must
+  carry a non-empty `failed_checks`: a diagnostic
   whose cells are *all* `failed_checks:[]` records no cause anywhere and is itself rejected as
-  malformed (a "rejection" with nothing to explain it isn't a real rejection).
+  malformed (a "rejection" with nothing to explain it isn't a real rejection — this also covers a
+  fail-fast partial matrix, which can never legitimately exist without at least one cell's own
+  local-integrity check having failed).
   `buildRejectionDiagnostics()` itself fails closed the same way: `runKind` must match every
-  contributing record's own `run_kind`, and `failedChecksByRunId`'s keys must exactly match
-  `records[].run_id` (no missing key silently reading as "nothing failed here", no stale/extra key
-  from a different batch).
+  contributing record's own `run_kind`, and `failedChecksByRunId`/`unexpectedToolUsesCountByRunId`/
+  `unexpectedToolsByRunId`/`captureOrdinalByRunId`'s keys must each exactly match
+  `records[].run_id` (no missing key silently reading as "nothing failed/nothing unexpected here",
+  no stale/extra key from a different batch) — and `assertUnexpectedToolCoherence()` additionally
+  enforces, as a construction-time invariant (the local tier is never schema-validated against the
+  closed committed shape, so this relationship has no other place to live), that
+  `local.cells[i].unexpected_tools.length === committed.cells[i].unexpected_tool_uses_count` for
+  every cell AND that `local.raw_transcripts_persisted === committed.raw_transcripts_persisted` —
+  both tiers must stamp the identical tier-3 outcome, checked explicitly rather than merely trusted.
 - **Privacy — `project_url`**: present in the **local-only** tier (top-level, batch-wide,
   alongside `project_alias`/`project_commit` in spirit) but deliberately **absent** from the
   committed tier — unlike `project_alias`/`project_commit`, which identify a project/revision
   without being a directly clickable/shareable link, a committed `project_url` would put a real
   external repository address into the same committed tier every other field here is
   safe-by-construction for.
-- **Write ordering**: validate the original object → redact (`assertCleanOrThrowObject`) → validate
-  the *redacted* object again → promote — the identical ordering `finalizeAndWriteRecords()` itself
-  uses for real evidence (see above), so a redaction rule that would corrupt a required field's
+- **Write ordering (tiers 1+2 only — see above for tier 3's own, separate transaction)**: validate
+  the original object → validate the local tier's own shape (`validateRejectionLocalRow()`) →
+  `assertUnexpectedToolCoherence()` → redact (`assertCleanOrThrowObject`) → validate the *redacted*
+  object again → redact the local tier → re-validate the redacted local tier's shape → promote —
+  the same validate-before-and-after-redaction discipline `finalizeAndWriteRecords()` itself uses
+  for real evidence (see above), so a redaction rule that would corrupt a required field's
   shape is caught before promotion, not after.
-- **Atomicity**: reuses `evidence-io.mjs`'s `promoteTargetsAtomically()` — the exact same
-  exception-safe, collision-safe mechanism every other evidence write in this harness already uses
-  (write-to-`.tmp-<random>`-then-`linkSync`, rolling back only what the current call itself
-  created). This is **not** crash-safe against a hard kill between two sequential `linkSync` calls
-  — a pre-existing, already-accepted property of the mechanism, not a new weakness; see
-  `evidence-io.mjs`'s own doc comment for the precise contract.
-- **Scope**: fires only on the actual hard-gate-failure branch, for all three run kinds
-  (`calibrate`/`smoke`/`run`) — not the other early-return reasons in either finalize function
-  (schema-invalid, `dirty_measured_code`, `dirty_harness_tooling`, stale `policy_sha256`,
-  privacy-check-throw, or — matrix path only — an incomplete matrix). A diagnostics-write failure
-  is caught and surfaced as a separate `diagnosticsWriteError` field/stderr note — it never masks
-  the original rejection reason or exit code. On a **successful** write, `cmdCalibrate`/`cmdSmoke`/
-  `cmdRun` print the diagnostic's own `rejection_id` and a path *relative to* `RUNS_ROOT` (e.g.
-  `agentic-eval-rejected/<uuid>.json`, never an absolute filesystem path — safe to print without a
-  further privacy pass) — a caller previously had no way to locate a successfully-written
-  diagnostic short of listing the directory by hand.
+- **Atomicity**: both transactions reuse `evidence-io.mjs`'s `promoteTargetsAtomically()` — the
+  exact same exception-safe, collision-safe mechanism every other evidence write in this harness
+  already uses (write-to-`.tmp-<random>`-then-`linkSync`, rolling back only what the current call
+  itself created) — tier 3 promotes N transcript targets in one call, tiers 1+2 promote their own 2
+  targets in a separate call. This is **not** crash-safe against a hard kill between two sequential
+  `linkSync` calls within one of those two calls — a pre-existing, already-accepted property of the
+  mechanism, not a new weakness; see `evidence-io.mjs`'s own doc comment for the precise contract.
+- **Fail-fast (per-cell, before a matrix ever completes)**: after every executed cell (both the
+  scenario-matrix loop and the calibrate/smoke pair), `cellTranscriptIntegrityOk()`
+  (`cell-integrity.mjs`) evaluates the same 15 harness-integrity checks the final gate uses — no
+  matrix-wide consensus, no already-built run record, no grading result, since none of those exist
+  yet for a still-running matrix. On a local failure, the loop stops immediately, before spawning
+  any further live Claude session, and the rejection diagnostic declares `matrix_complete:false`,
+  `planned_cell_count` (how many cells the matrix would have run), and `executed_cell_count` (how
+  many actually did) — `scenarioHardGate()` (and its own `ambient_profile_matrix_ok` computation)
+  is **never invoked at all** on an incomplete matrix; computing or simulating a cross-cell
+  consensus over cells that never ran would be a false claim, not merely an imprecise one, so
+  `ambient_profile_matrix_ok` is always `null` here. When the cell that fails locally happens to be
+  the matrix's own *last* planned cell, `executed_cell_count` naturally equals `planned_cell_count`
+  by the time the loop's own break fires, `matrix_complete` is `true`, and the diagnostic goes
+  through the ordinary complete-matrix path instead (a real `scenarioHardGate()` run, a real
+  `ambient_profile_matrix_ok` boolean) — fail-fast's savings are prospective (it stops a *future*
+  incident whose failing cell isn't the last one), not a claim that every rejection saves sessions.
+- **Scope**: fires on the hard-gate-failure branch (for all three run kinds) AND on the fail-fast
+  partial-matrix branch described above — not the other early-return reasons in either finalize
+  function (schema-invalid, `dirty_measured_code`, `dirty_harness_tooling`, stale `policy_sha256`,
+  privacy-check-throw). A failure in either of the two independent transactions is caught and
+  surfaced as its own field (`rawTranscriptsWriteError`, `diagnosticsWriteError`) — neither one ever
+  masks the original rejection reason or exit code, and neither one's failure prevents the other
+  transaction from being attempted. On success, `cmdCalibrate`/`cmdSmoke`/`cmdRun` print each
+  transaction's own outcome independently: how many raw transcripts were preserved and under which
+  relative directory (or the error, if that transaction failed), and the structured diagnostic's own
+  `rejection_id` and a path *relative to* `RUNS_ROOT` (e.g. `agentic-eval-rejected/<uuid>.json`,
+  never an absolute filesystem path — safe to print without a further privacy pass) — a caller
+  previously had no way to locate a successfully-written diagnostic short of listing the directory
+  by hand, and no way to tell "raw preserved but diagnostic failed" apart from its own inverse.
 
 ## Isolation
 
