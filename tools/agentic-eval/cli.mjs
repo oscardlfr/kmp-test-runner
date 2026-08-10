@@ -56,6 +56,8 @@ import { RUNS_ROOT, resolveEvidenceOutDir, isRawDirSafeFromAccidentalCommit, pro
 import { buildRejectionDiagnostics, writeRejectionRawTranscripts, writeRejectedRunDiagnostics } from './rejection-diagnostics.mjs';
 import { acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from './accepted-run-audit.mjs';
 import { loadMeasurementScopeFile, createMeasurementScopeFileExclusive } from './measurement-scope.mjs';
+import { createInvocationJournal, tagIncidentPhase } from './durable-journal.mjs';
+import { finalizeIncident } from './incident-diagnostics.mjs';
 // validateRunRecordFile now lives in run-record-loader.mjs (extracted so analysis.mjs can import
 // the identical trusted-input gate without a circular cli.mjs<->analysis.mjs dependency, and so it
 // can return the already-parsed sidecar object instead of a second caller re-reading the same file
@@ -502,7 +504,75 @@ function generateAmbientProfileScope() {
  *   implement "reuse the same path, wiped and re-populated" (Materialization Principle).
  * @param {Function} [cleanupFixture] - (fixtureDir) => void|Promise<void>, called once at the end.
  */
-async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpTestSubcommands, materializeFixture, cleanupFixture, timeoutMs }) {
+
+/**
+ * Overwrites a spawned condition's in-memory rawStdout with its journal-persisted copy, keyed
+ * STRICTLY by conditionResult.cellOrdinal -- never array position, never an assumed A/B
+ * convention (the journal's own ordinal assignment, 0=B/current-skill then 1=A/no-skill for a
+ * pair, does not match this codebase's historical recordA/recordB parameter ordering; conflating
+ * the two would silently swap two live sessions' transcripts). Fail-closed: a cell that genuinely
+ * spawned but has no journal-persisted raw is a wiring bug, not something to silently paper over
+ * with the (possibly stale, in this exact failure mode) in-memory value.
+ */
+function adoptJournalRaw(conditionResult, journal) {
+  if (!journal || !conditionResult || !conditionResult.didSpawn) return;
+  const raw = journal.readRawFor(conditionResult.cellOrdinal);
+  if (raw == null) {
+    throw new Error(`journal read-back: no raw persisted for cellOrdinal ${conditionResult.cellOrdinal}, but this cell spawned -- refusing to promote unverified content`);
+  }
+  conditionResult.spawnResult.rawStdout = raw;
+}
+
+/**
+ * §6's exact-correspondence check: a hard-gate rejection's own two-transaction forensics
+ * (writeRejectionForensics) must have PROVABLY persisted the exact same set of cells the journal
+ * itself captured -- same cardinality, same identities -- before the journal (now redundant) is
+ * discarded. `rawTranscriptsPersisted:true` alone only proves the write attempt didn't throw, not
+ * that every cell landed with the identity the diagnostic claims.
+ */
+function journalRawExactlyMatchesRejectionManifest(journal, result) {
+  if (!journal || result.rawTranscriptsPersisted !== true || result.diagnosticsWriteError) return false;
+  const journalOrdinals = new Set(journal.summarize().cellOrdinals.raw_persisted);
+  const manifestOrdinals = new Set((result.rawTranscriptsManifest ?? []).map((m) => m.capture_ordinal));
+  if (journalOrdinals.size !== manifestOrdinals.size) return false;
+  for (const o of journalOrdinals) if (!manifestOrdinals.has(o)) return false;
+  return true;
+}
+
+/**
+ * The shared "what does the command do once finalizeAndWrite* has settled" tail: on full
+ * acceptance, or a hard-gate rejection whose own forensics fully, verifiably persisted, the
+ * journal is now redundant -- adopt/discard it. In every other outcome, do nothing: the journal's
+ * continued presence on disk IS the preservation. A discard failure itself is a
+ * reportCleanupFailures-style warning only, never surfaced as a command failure -- by the time
+ * this runs, the real evidence is already safely elsewhere.
+ */
+function discardJournalIfRedundant(journal, result) {
+  if (!journal) return;
+  const shouldDiscard = result.ok === true || journalRawExactlyMatchesRejectionManifest(journal, result);
+  if (shouldDiscard) journal.promoteAndDiscard();
+}
+
+/** err.agenticEvalPhase, defaulting to 'finalizing_matrix' -- by construction, anything reaching
+ * one of the top-level command catches without a more specific tag is past the per-cell-tagged
+ * phases (materializing_cell/persisting_cell_journal/parsing_or_attributing_cell all tag
+ * themselves at the point of the throw, deep inside matrix-runner.mjs/runConditionPair). */
+function incidentPhaseOf(err) {
+  return err?.agenticEvalPhase ?? 'finalizing_matrix';
+}
+
+/** Folds materializeScenarioProject's own err.rollbackError (a `git worktree add` failure whose
+ * OWN rollback also failed) into the reported reason -- without this, that second, real cleanup
+ * failure reached no diagnostic surface at all, contradicting this harness's own repeated "never
+ * silently swallowed" contract. Both messages still pass through the same redaction pipeline as
+ * every other reasonText (finalizeIncident's own job), so folding them here rather than in
+ * materialize.mjs itself (which has no redaction concerns of its own) keeps that concern in one
+ * place. */
+function reasonTextFor(err) {
+  return err?.rollbackError ? `${err.message} (rollback also failed: ${err.rollbackError.message})` : err?.message;
+}
+
+async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpTestSubcommands, materializeFixture, cleanupFixture, timeoutMs, journal = null }) {
   // Thin wrapper over matrix-runner.mjs's acquireSharedEvalResources/runSingleCondition (extracted
   // so a scenario-matrix run, which repeats this same acquire-then-run shape N times instead of
   // once, can reuse the identical machinery without duplicating it). The external contract here is
@@ -533,24 +603,41 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
         registerCleanup(() => cleanupFixture(dir));
       }
     };
-    const runOneCondition = async (condition) => {
+    // cellOrdinal: 0=B (current-skill, spawned first), 1=A (no-skill, spawned second) --
+    // matches the ACTUAL spawn order, not the historical A-before-B parameter/record ordering
+    // this codebase's promotion functions use elsewhere. Never conflate the two -- see
+    // buildRunRecord/finalizeAndWrite*'s own doc comments on why the journal read-back always
+    // keys off conditionResult.cellOrdinal, never array position or an assumed A/B convention.
+    const runOneCondition = async (condition, cellOrdinal) => {
       const conditionResult = await runSingleCondition({
         condition, materializeFixture, previousFixtureDir: fixtureDir, cleanupFixtureOnce,
         resetGradleToSnapshot: shared.resetGradleToSnapshot, kmpEvalTempHome: shared.kmpEvalTempHome,
         sharedEnv: shared.sharedEnv, baseArgv, snapshotDir: shared.snapshotDir,
         targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, timeoutMs,
-        junitEvidenceEnabled: false,
+        junitEvidenceEnabled: false, journal, cellOrdinal,
       });
       fixtureDir = conditionResult.fixtureDir;
       return conditionResult;
     };
 
-    const runB = await runOneCondition('current-skill');
+    const runB = await runOneCondition('current-skill', 0);
     // Fail-fast (preserve rejected matrix forensics): the identical canonical check the final hard
     // gates use, evaluated on B alone BEFORE A is ever spawned. calibrationHardGate/smokeHardGate
     // always reject the WHOLE pair together -- a failing B can never be rescued by A -- so spawning
     // A anyway would spend a second live session on a pair that is already going to be rejected.
-    const integrityB = cellTranscriptIntegrityOk(runB, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    let integrityB;
+    try {
+      integrityB = cellTranscriptIntegrityOk(runB, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    } catch (err) {
+      throw tagIncidentPhase(err, 'parsing_or_attributing_cell', 0, runB.spawnResult?.rawStdout);
+    }
+    if (journal && runB.didSpawn) {
+      try {
+        journal.recordEvaluated(0);
+      } catch (err) {
+        throw tagIncidentPhase(err, 'persisting_cell_journal', 0, runB.spawnResult?.rawStdout);
+      }
+    }
     if (!integrityB.ok) {
       return {
         runA: null, runB, snapshotDir: shared.snapshotDir, daemonPolicy: shared.daemonPolicy,
@@ -563,7 +650,25 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
         },
       };
     }
-    const runA = await runOneCondition('no-skill');
+    const runA = await runOneCondition('no-skill', 1);
+    // A has no equivalent early fail-fast check at this layer (nothing left to skip once A has
+    // already run) -- its real integrity is evaluated downstream, as part of
+    // calibrationHardGate/smokeHardGate inside finalizeAndWriteRecords. It's STILL evaluated here,
+    // though (result unused for control flow -- never a second fail-fast), so `evaluated` means
+    // the same thing -- "this cell's own local integrity has been evaluated" -- for every cell in
+    // every command, not merely "control returned" for A specifically.
+    try {
+      cellTranscriptIntegrityOk(runA, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    } catch (err) {
+      throw tagIncidentPhase(err, 'parsing_or_attributing_cell', 1, runA.spawnResult?.rawStdout);
+    }
+    if (journal && runA.didSpawn) {
+      try {
+        journal.recordEvaluated(1);
+      } catch (err) {
+        throw tagIncidentPhase(err, 'persisting_cell_journal', 1, runA.spawnResult?.rawStdout);
+      }
+    }
 
     return {
       runA, runB, snapshotDir: shared.snapshotDir, daemonPolicy: shared.daemonPolicy,
@@ -1023,10 +1128,12 @@ async function writeRejectionForensics({
   let rawTranscriptsPersisted;
   let diagnosticsTranscriptsDir = null;
   let diagnosticsTranscriptCount = 0;
+  let rawTranscriptsManifest = null;
   try {
     const raw = writeRejectionRawTranscripts(rejectionId, transcriptsByRunId, captureOrdinalByRunId, { runsRootOverride });
     diagnosticsTranscriptsDir = raw.transcriptsRelativeDir;
     diagnosticsTranscriptCount = raw.transcriptCount;
+    rawTranscriptsManifest = raw.rawTranscriptsManifest;
     rawTranscriptsPersisted = true;
   } catch (err) {
     rawTranscriptsWriteError = err.message;
@@ -1050,6 +1157,7 @@ async function writeRejectionForensics({
   return {
     rawTranscriptsWriteError, diagnosticsWriteError, rejectionId: writtenRejectionId,
     diagnosticsRelativePath, diagnosticsTranscriptsDir, diagnosticsTranscriptCount,
+    rawTranscriptsManifest,
   };
 }
 
@@ -1966,6 +2074,28 @@ async function cmdCalibrate(args) {
   // root cause of any specific CI failure (never reproduced locally despite real attempts across
   // both platforms, isolated and full-suite, plain and CPU-constrained), but it is a genuine,
   // structurally-real gap independent of that -- closing it is correct regardless.
+  // Created before the first spawn, per invocation -- a write-ahead safety net independent of
+  // whatever happens next. Preserved by default (never deleted) unless the command later proves
+  // its own promotion (or a fully-persisted rejection) made it redundant.
+  //
+  // This call itself is guarded: isRawDirSafeFromAccidentalCommit fails closed against the REAL
+  // default RUNS_ROOT (unlike every test here, which uses an isolated tmpdir outside any git repo
+  // and never exercises this path) -- an unguarded throw here would escape uncaught past this
+  // command's own contract, reproducing exactly the bug class this PR exists to close, one level
+  // up. journal:null is valid input to finalizeIncident (treated as all-zero counts).
+  let journal = null;
+  try {
+    journal = createInvocationJournal({ runKind: 'calibration', plannedCellCount: 2 });
+  } catch (err) {
+    const { message } = finalizeIncident({
+      runKind: 'calibration', journal: null, phase: 'acquiring_shared_resources',
+      reasonText: reasonTextFor(err),
+      provenance: { model_requested: model, scenario_id: 'calibration-explicit-invocation' },
+      privatePatternsFile,
+    });
+    console.error(message);
+    return 1;
+  }
   let conditionPair;
   try {
     conditionPair = await runConditionPair({
@@ -1975,9 +2105,17 @@ async function cmdCalibrate(args) {
       allowedKmpTestSubcommands: ['doctor', 'parallel'],
       materializeFixture: (existingDir) => materializeCalibrationProject({ templateDir, existingDir }),
       cleanupFixture: (fixtureDir) => rmSync(fixtureDir, { recursive: true, force: true }),
+      journal,
     });
   } catch (err) {
-    console.error(`CALIBRATION FAILED: session acquisition/spawn threw before any condition completed: ${err.stack || err.message}`);
+    const { message } = finalizeIncident({
+      runKind: 'calibration', journal, phase: incidentPhaseOf(err),
+      reasonText: reasonTextFor(err), cellOrdinal: err.agenticEvalCellOrdinal ?? null,
+      rawStdout: err.agenticEvalRawStdout ?? null,
+      provenance: { model_requested: model, scenario_id: 'calibration-explicit-invocation' },
+      privatePatternsFile,
+    });
+    console.error(message);
     return 1;
   }
   try {
@@ -1989,6 +2127,12 @@ async function cmdCalibrate(args) {
     // above, before any spawn -- see resolveMeasurementScopeOrFail's own doc comment).
     const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
     const common = { runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey };
+
+    // Read-back adoption (judgment call, §4/§5): each cell's promoted raw bytes are sourced from
+    // the journal's own already-durable copy, keyed by cellOrdinal -- never the in-memory value,
+    // never array position.
+    adoptJournalRaw(runB, journal);
+    if (pairComplete) adoptJournalRaw(runA, journal);
 
     // Calibration's job is narrowly to prove invocation MECHANICS under an explicit-invocation
     // prompt -- see calibrationHardGate's own doc comment for why this is a named function.
@@ -2012,12 +2156,35 @@ async function cmdCalibrate(args) {
       });
     }
     if (!result.ok) {
-      console.error(`CALIBRATION FAILED: ${result.reason}`);
-      printRejectionForensicsStderr(result);
+      if (result.rejectionId == null) {
+        // Not the well-handled gate-rejection path (schema/privacy/evidence-write refusal
+        // instead) -- route through the same shared finalizer as an exception would get.
+        const { message } = finalizeIncident({
+          runKind: 'calibration', journal, phase: 'finalizing_matrix', reasonText: result.reason,
+          provenance: { model_requested: model, scenario_id: 'calibration-explicit-invocation' },
+          privatePatternsFile,
+        });
+        console.error(message);
+      } else {
+        console.error(`CALIBRATION FAILED: ${result.reason}`);
+        printRejectionForensicsStderr(result);
+      }
+      discardJournalIfRedundant(journal, result);
       return 1;
     }
+    discardJournalIfRedundant(journal, result);
     console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.redactedOutDir }, null, 2));
     return 0;
+  } catch (err) {
+    const { message } = finalizeIncident({
+      runKind: 'calibration', journal, phase: incidentPhaseOf(err),
+      reasonText: reasonTextFor(err), cellOrdinal: err.agenticEvalCellOrdinal ?? null,
+      rawStdout: err.agenticEvalRawStdout ?? null,
+      provenance: { model_requested: model, scenario_id: 'calibration-explicit-invocation' },
+      privatePatternsFile,
+    });
+    console.error(message);
+    return 1;
   } finally {
     reportCleanupFailures(await conditionPair.cleanup());
   }
@@ -2187,7 +2354,21 @@ async function cmdSmoke(args) {
   const { computePolicySha256 } = await import('./policy-config.mjs');
   // Round-7 audit finding: see cmdCalibrate's identical rationale -- resource acquisition must
   // never be allowed to throw uncaught past this command's own "FAILED: <reason>" / exit 1
-  // contract.
+  // contract. Same guard as cmdCalibrate on the journal creation call itself -- see its identical
+  // rationale comment.
+  let journal = null;
+  try {
+    journal = createInvocationJournal({ runKind: 'smoke', plannedCellCount: 2 });
+  } catch (err) {
+    const { message } = finalizeIncident({
+      runKind: 'smoke', journal: null, phase: 'acquiring_shared_resources',
+      reasonText: reasonTextFor(err),
+      provenance: { model_requested: model, scenario_id: scenarioId, project_alias: projectAlias, project_commit: pinnedCommit },
+      privatePatternsFile,
+    });
+    console.error(message);
+    return 1;
+  }
   let conditionPair;
   try {
     conditionPair = await runConditionPair({
@@ -2206,9 +2387,17 @@ async function cmdSmoke(args) {
       materializeFixture: (existingWorktreeDir) => materializeScenarioProject({ sourceRepoDir, pinnedCommit, existingWorktreeDir }),
       cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
       timeoutMs: 180000,
+      journal,
     });
   } catch (err) {
-    console.error(`SMOKE FAILED: session acquisition/spawn threw before any condition completed: ${err.stack || err.message}`);
+    const { message } = finalizeIncident({
+      runKind: 'smoke', journal, phase: incidentPhaseOf(err),
+      reasonText: reasonTextFor(err), cellOrdinal: err.agenticEvalCellOrdinal ?? null,
+      rawStdout: err.agenticEvalRawStdout ?? null,
+      provenance: { model_requested: model, scenario_id: scenarioId, project_alias: projectAlias, project_commit: pinnedCommit },
+      privatePatternsFile,
+    });
+    console.error(message);
     return 1;
   }
   try {
@@ -2220,6 +2409,9 @@ async function cmdSmoke(args) {
     // before any spawn -- see resolveMeasurementScopeOrFail's own doc comment).
     const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
     const common = { runKind: 'smoke', scenarioId, skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, projectUrl, family: 'test-only', modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey };
+
+    adoptJournalRaw(runB, journal);
+    if (pairComplete) adoptJournalRaw(runA, journal);
 
     // Smoke's gate requires EQUIVALENT REAL WORK in both arms -- not just skill availability.
     // Every sub-check is reported by name in the failure reason (not just an aggregate boolean)
@@ -2245,12 +2437,33 @@ async function cmdSmoke(args) {
       });
     }
     if (!result.ok) {
-      console.error(`SMOKE FAILED: ${result.reason}`);
-      printRejectionForensicsStderr(result);
+      if (result.rejectionId == null) {
+        const { message } = finalizeIncident({
+          runKind: 'smoke', journal, phase: 'finalizing_matrix', reasonText: result.reason,
+          provenance: { model_requested: model, scenario_id: scenarioId, project_alias: projectAlias, project_commit: pinnedCommit },
+          privatePatternsFile,
+        });
+        console.error(message);
+      } else {
+        console.error(`SMOKE FAILED: ${result.reason}`);
+        printRejectionForensicsStderr(result);
+      }
+      discardJournalIfRedundant(journal, result);
       return 1;
     }
+    discardJournalIfRedundant(journal, result);
     console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.redactedOutDir }, null, 2));
     return 0;
+  } catch (err) {
+    const { message } = finalizeIncident({
+      runKind: 'smoke', journal, phase: incidentPhaseOf(err),
+      reasonText: reasonTextFor(err), cellOrdinal: err.agenticEvalCellOrdinal ?? null,
+      rawStdout: err.agenticEvalRawStdout ?? null,
+      provenance: { model_requested: model, scenario_id: scenarioId, project_alias: projectAlias, project_commit: pinnedCommit },
+      privatePatternsFile,
+    });
+    console.error(message);
+    return 1;
   } finally {
     reportCleanupFailures(await conditionPair.cleanup());
   }
@@ -2490,6 +2703,22 @@ async function cmdRun(args) {
   }
 
   const { computePolicySha256 } = await import('./policy-config.mjs');
+  // Created before the first spawn, per invocation -- plan.length (repeats*2, already computed
+  // above for the --dry-run preview) is the exact plannedCellCount, known before any spawn. Same
+  // guard as cmdCalibrate on the journal creation call itself -- see its identical rationale.
+  let journal = null;
+  try {
+    journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: plan.length });
+  } catch (err) {
+    const { message } = finalizeIncident({
+      runKind: 'scenario', journal: null, phase: 'acquiring_shared_resources',
+      reasonText: reasonTextFor(err),
+      provenance: { scenario_id: scenario.id, project_alias: scenario.project_alias, project_commit: scenario.project_commit, seed, model_requested: model },
+      privatePatternsFile,
+    });
+    console.error(message);
+    return 1;
+  }
   // Round-7 audit finding: see cmdCalibrate's identical rationale -- resource acquisition must
   // never be allowed to throw uncaught past this command's own "RUN FAILED: <reason>" / exit 1
   // contract.
@@ -2505,9 +2734,17 @@ async function cmdRun(args) {
       targetPluginName: TARGET_PLUGIN_NAME,
       targetSkillName: TARGET_SKILL_NAME,
       timeoutMs: 600000,
+      journal,
     });
   } catch (err) {
-    console.error(`RUN FAILED: matrix resource acquisition/spawn threw before any cell completed: ${err.stack || err.message}`);
+    const { message } = finalizeIncident({
+      runKind: 'scenario', journal, phase: incidentPhaseOf(err),
+      reasonText: reasonTextFor(err), cellOrdinal: err.agenticEvalCellOrdinal ?? null,
+      rawStdout: err.agenticEvalRawStdout ?? null,
+      provenance: { scenario_id: scenario.id, project_alias: scenario.project_alias, project_commit: scenario.project_commit, seed, model_requested: model },
+      privatePatternsFile,
+    });
+    console.error(message);
     return 1;
   }
   try {
@@ -2536,6 +2773,9 @@ async function cmdRun(args) {
     // incomplete.
     const localIntegrityByRunId = {};
     for (const cell of matrix.cellResults) {
+      // Read-back adoption (judgment call, §4/§5): sourced from the journal's own already-durable
+      // copy, keyed by cellOrdinal -- never array position.
+      adoptJournalRaw(cell.conditionResult, journal);
       const gradeResult = gradeScenarioCondition(cell.conditionResult, scenario);
       const record = buildRunRecord({
         conditionResult: cell.conditionResult, condition: cell.conditionResult.condition,
@@ -2588,12 +2828,37 @@ async function cmdRun(args) {
       executedCellCount: matrix.executedCellCount, localIntegrityByRunId, failFastStop: matrix.failFastStop,
     });
     if (!result.ok) {
-      console.error(`RUN FAILED: ${result.reason}`);
-      printRejectionForensicsStderr(result);
+      if (result.rejectionId == null) {
+        // Not the well-handled gate-rejection path -- route through the same shared finalizer an
+        // exception would get (sidecar/schema/privacy/promotion-collision failures, all of which
+        // return {ok:false} rather than throw -- verified directly against
+        // finalizeAndWriteMatrixRecords' own body).
+        const { message } = finalizeIncident({
+          runKind: 'scenario', journal, phase: 'finalizing_matrix', reasonText: result.reason,
+          provenance: { scenario_id: scenario.id, project_alias: scenario.project_alias, project_commit: scenario.project_commit, seed, model_requested: model },
+          privatePatternsFile,
+        });
+        console.error(message);
+      } else {
+        console.error(`RUN FAILED: ${result.reason}`);
+        printRejectionForensicsStderr(result);
+      }
+      discardJournalIfRedundant(journal, result);
       return 1;
     }
+    discardJournalIfRedundant(journal, result);
     console.log(JSON.stringify({ records: result.redactedRecords, evidenceDir: result.redactedOutDir }, null, 2));
     return 0;
+  } catch (err) {
+    const { message } = finalizeIncident({
+      runKind: 'scenario', journal, phase: incidentPhaseOf(err),
+      reasonText: reasonTextFor(err), cellOrdinal: err.agenticEvalCellOrdinal ?? null,
+      rawStdout: err.agenticEvalRawStdout ?? null,
+      provenance: { scenario_id: scenario.id, project_alias: scenario.project_alias, project_commit: scenario.project_commit, seed, model_requested: model },
+      privatePatternsFile,
+    });
+    console.error(message);
+    return 1;
   } finally {
     reportCleanupFailures(await matrix.cleanup());
   }

@@ -40,6 +40,12 @@ tools/runs/measurement-registry.csv
 # only sanitized, schema-valid, findLeaks()-clean run records (produced
 # separately, outside this glob) are ever tracked.
 tools/runs/agentic-eval-*/raw/**
+# fix(agentic-eval): per-invocation durability journal -- captures each cell's raw transcript
+# immediately after its live session completes, before any parsing/gating/promotion, so a crash
+# while preparing the NEXT cell can't silently discard an already-completed session. Local-only,
+# same rationale as the raw/** rule above; the whole directory is ignored (not just a raw/
+# subdirectory) since nothing under it is ever committed.
+tools/runs/agentic-eval-journal/**
 .gradle/
 build/
 .idea/

@@ -29,6 +29,7 @@ import { parseStreamJsonl, findInitEvent, findResultEvent, findSkillInvocation, 
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
 import { attributeCondition } from './junit-evidence.mjs';
 import { cellTranscriptIntegrityOk } from './cell-integrity.mjs';
+import { tagIncidentPhase } from './durable-journal.mjs';
 
 /** Prints a single, clearly-labeled WARNING line if `failures` (from a cleanup accumulator's
  * runCleanup()) is non-empty -- never silent, but never escalated into a hard failure either: a
@@ -171,22 +172,27 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
  *   acquireSharedEvalResources); the scratch directory's removal is queued on it IMMEDIATELY after
  *   creation, before spawnCondition runs, so a failure anywhere later in this call is still covered.
  */
-export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null }) {
-  const materialized = materializeFixture(previousFixtureDir);
-  const fixtureDir = materialized.fixtureDir;
-  cleanupFixtureOnce(fixtureDir);
-  resetGradleToSnapshot();
-  // Applied after every reset, before the condition ever spawns -- materializeFixture above always
-  // yields a byte-for-byte pristine tree first (a fresh worktree, or `git clean -fdx && git reset
-  // --hard`), so re-applying this on every repetition x condition is naturally idempotent: any
-  // leftover from a prior cell is already gone by this point, and the mutation reproduces
-  // identically every time (see materialize.mjs's own applyFixtureSetup doc comment).
-  if (fixtureSetup) applyFixtureSetup({ fixtureDir, fixtureSetup });
-  // KMP_EVAL_TEMP_HOME is reused (same path) across every condition sharing this resource set,
-  // like fixtureDir/GRADLE_USER_HOME -- wiped back to empty before EACH condition's run, so
-  // whatever one condition wrote under ~/.kmp-test/ can never leak into the next.
-  rmSync(kmpEvalTempHome, { recursive: true, force: true });
-  mkdirSync(kmpEvalTempHome, { recursive: true });
+export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null }) {
+  let fixtureDir;
+  try {
+    const materialized = materializeFixture(previousFixtureDir);
+    fixtureDir = materialized.fixtureDir;
+    cleanupFixtureOnce(fixtureDir);
+    resetGradleToSnapshot();
+    // Applied after every reset, before the condition ever spawns -- materializeFixture above
+    // always yields a byte-for-byte pristine tree first (a fresh worktree, or `git clean -fdx &&
+    // git reset --hard`), so re-applying this on every repetition x condition is naturally
+    // idempotent: any leftover from a prior cell is already gone by this point, and the mutation
+    // reproduces identically every time (see materialize.mjs's own applyFixtureSetup doc comment).
+    if (fixtureSetup) applyFixtureSetup({ fixtureDir, fixtureSetup });
+    // KMP_EVAL_TEMP_HOME is reused (same path) across every condition sharing this resource set,
+    // like fixtureDir/GRADLE_USER_HOME -- wiped back to empty before EACH condition's run, so
+    // whatever one condition wrote under ~/.kmp-test/ can never leak into the next.
+    rmSync(kmpEvalTempHome, { recursive: true, force: true });
+    mkdirSync(kmpEvalTempHome, { recursive: true });
+  } catch (err) {
+    throw tagIncidentPhase(err, 'materializing_cell', cellOrdinal ?? undefined);
+  }
   let conditionEnv = { ...sharedEnv, KMP_EVAL_EXPECTED_FIXTURE_ROOT: realpath(fixtureDir) };
   // Per-condition JUnit-evidence scratch directory -- a fresh mkdtempSync per condition (never
   // reused/wiped like fixtureDir/GRADLE_USER_HOME, since there is no expensive resource here worth
@@ -209,15 +215,58 @@ export async function runSingleCondition({ condition, materializeFixture, previo
   }
   const argv = buildConditionArgv(baseArgv, condition, condition === 'current-skill' ? snapshotDir : null);
   const startedAt = new Date();
-  const spawnResult = await spawnCondition(argv, { env: conditionEnv, cwd: fixtureDir, timeoutMs });
+  // onSpawned performs ZERO I/O and can never throw -- Node's EventEmitter dispatch does not
+  // protect a listener from its own exception, so a callback that did fallible I/O here could
+  // crash the whole process while this live session is still running. It only captures whether the
+  // OS-level process actually started and when -- the real journal write happens below, as ordinary
+  // `await`ed code inside a real try/catch, safe to fail without taking the process down with it.
+  let didSpawn = false;
+  let spawnStartedAt = null;
+  const spawnResult = await spawnCondition(argv, {
+    env: conditionEnv, cwd: fixtureDir, timeoutMs,
+    onSpawned: () => { didSpawn = true; spawnStartedAt = Date.now(); },
+  });
   const endedAt = new Date();
-  const { events, malformedLines } = parseStreamJsonl(spawnResult.rawStdout, { taggedLines: spawnResult.taggedLines });
-  const init = findInitEvent(events);
-  const result = findResultEvent(events);
-  const invocation = findSkillInvocation(events, targetPluginName, targetSkillName);
-  const hookStats = countHookEvents(events);
-  const byteMetrics = computeByteMetrics(spawnResult.rawStdout, events);
-  const bashResults = findBashToolUsesWithResults(events);
+
+  // The next operation after spawnCondition resolves, before any parsing touches anything --
+  // persists spawn_started/spawn_failed through raw_persisted as one journal operation. A failure
+  // here is tagged so finalizeIncident's own emergency raw fallback has a real chance to preserve
+  // this cell's rawStdout even though the journal's own bookkeeping is what broke.
+  if (journal) {
+    try {
+      journal.persistSpawnOutcome(cellOrdinal, { didSpawn, spawnStartedAt, rawStdout: spawnResult.rawStdout });
+    } catch (err) {
+      throw tagIncidentPhase(err, 'persisting_cell_journal', cellOrdinal, spawnResult.rawStdout);
+    }
+  }
+
+  let events;
+  let malformedLines;
+  let init;
+  let result;
+  let invocation;
+  let hookStats;
+  let byteMetrics;
+  let bashResults;
+  try {
+    ({ events, malformedLines } = parseStreamJsonl(spawnResult.rawStdout, { taggedLines: spawnResult.taggedLines }));
+    init = findInitEvent(events);
+    result = findResultEvent(events);
+    invocation = findSkillInvocation(events, targetPluginName, targetSkillName);
+    hookStats = countHookEvents(events);
+    byteMetrics = computeByteMetrics(spawnResult.rawStdout, events);
+    bashResults = findBashToolUsesWithResults(events);
+  } catch (err) {
+    throw tagIncidentPhase(err, 'parsing_or_attributing_cell', cellOrdinal ?? undefined, spawnResult.rawStdout);
+  }
+
+  if (journal && didSpawn) {
+    try {
+      journal.recordParsed(cellOrdinal);
+    } catch (err) {
+      throw tagIncidentPhase(err, 'persisting_cell_journal', cellOrdinal, spawnResult.rawStdout);
+    }
+  }
 
   return {
     condition, argv, env: conditionEnv, fixtureDir, events, malformedLines, init, result,
@@ -228,6 +277,14 @@ export async function runSingleCondition({ condition, materializeFixture, previo
     // every other gate check already reads its inputs off the per-condition result.
     snapshotDir: condition === 'current-skill' ? snapshotDir : null,
     evidenceDir,
+    // Stamped so promotion-time raw read-back (cli.mjs) always keys off THIS, never off array
+    // position or an assumed A/B convention -- the journal's own ordinal assignment does not match
+    // this codebase's historical recordA/recordB parameter ordering.
+    cellOrdinal,
+    // Callers must check this before calling journal.recordEvaluated(cellOrdinal): spawn_failed is
+    // a terminal journal state with no legal next transition -- the journal's own state machine
+    // would throw (correctly) if a caller blindly tried to record `evaluated` on top of it.
+    didSpawn,
   };
 }
 
@@ -298,7 +355,7 @@ export function isJunitEvidenceOutcome(outcomeKind) {
   return outcomeKind === 'tests_executed' || outcomeKind === 'tests_failed' || outcomeKind === 'coverage_threshold_exceeded';
 }
 
-export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs }) {
+export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs, journal = null }) {
   // Decision attribution (allow/deny per Bash attempt) is needed for EVERY scenario regardless of
   // outcome_kind (round-7 fix): a no_applicable_tests condition's denied kmp-test-parallel
   // attempts were previously phantom-counted as real executions (test_invocations_total/retries),
@@ -371,26 +428,41 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
         allowedInvocations,
         registerCleanup,
         fixtureSetup,
+        journal,
+        cellOrdinal: orderIndex,
       });
       fixtureDir = conditionResult.fixtureDir;
-      const junitAttribution = decisionAttributionEnabled
-        ? attributeCondition(conditionResult.evidenceDir, scenario, conditionResult.bashResults, {
-            terminated: conditionResult.spawnResult.terminated,
-            terminationReason: conditionResult.spawnResult.terminationReason,
-          }, junitEvidenceEnabled)
-        : null;
-      // The scratch directory has now been fully consumed by attributeCondition -- eagerly
-      // remove it right away (a safe no-op if already gone) rather than leaving it until the
-      // whole matrix's deferred cleanup runs at the very end; the registerCleanup call inside
-      // runSingleCondition already covers the "failed before reaching this point" case.
-      if (conditionResult.evidenceDir) {
-        rmSync(conditionResult.evidenceDir, { recursive: true, force: true });
+      let fullConditionResult;
+      let localIntegrity;
+      try {
+        const junitAttribution = decisionAttributionEnabled
+          ? attributeCondition(conditionResult.evidenceDir, scenario, conditionResult.bashResults, {
+              terminated: conditionResult.spawnResult.terminated,
+              terminationReason: conditionResult.spawnResult.terminationReason,
+            }, junitEvidenceEnabled)
+          : null;
+        // The scratch directory has now been fully consumed by attributeCondition -- eagerly
+        // remove it right away (a safe no-op if already gone) rather than leaving it until the
+        // whole matrix's deferred cleanup runs at the very end; the registerCleanup call inside
+        // runSingleCondition already covers the "failed before reaching this point" case.
+        if (conditionResult.evidenceDir) {
+          rmSync(conditionResult.evidenceDir, { recursive: true, force: true });
+        }
+        fullConditionResult = { ...conditionResult, junitAttribution };
+        // Fail-fast integrity check -- evaluated for EVERY executed cell (not only ones that fail),
+        // so a caller building a partial rejection diagnostic has a real verdict for every cell
+        // that ran, never just the one that stopped the matrix.
+        localIntegrity = cellTranscriptIntegrityOk(fullConditionResult, { targetPluginName, targetSkillName });
+      } catch (err) {
+        throw tagIncidentPhase(err, 'parsing_or_attributing_cell', orderIndex, conditionResult.spawnResult?.rawStdout);
       }
-      const fullConditionResult = { ...conditionResult, junitAttribution };
-      // Fail-fast integrity check -- evaluated for EVERY executed cell (not only ones that fail),
-      // so a caller building a partial rejection diagnostic has a real verdict for every cell that
-      // ran, never just the one that stopped the matrix.
-      const localIntegrity = cellTranscriptIntegrityOk(fullConditionResult, { targetPluginName, targetSkillName });
+      if (journal && conditionResult.didSpawn) {
+        try {
+          journal.recordEvaluated(orderIndex);
+        } catch (err) {
+          throw tagIncidentPhase(err, 'persisting_cell_journal', orderIndex, conditionResult.spawnResult?.rawStdout);
+        }
+      }
       cellResults.push({ repetitionIndex, orderIndex, seed, conditionResult: fullConditionResult, localIntegrity });
       if (!localIntegrity.ok) {
         failFastStop = { orderIndex, repetitionIndex, condition, reason: localIntegrity.reason };

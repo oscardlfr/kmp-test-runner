@@ -96,6 +96,23 @@
 
 ### 📋 QUEUED follow-ups (next sessions)
 
+- 🔧 **Materializer Windows long-path handling + between-cell crash-safety journal** — opened for
+  review 2026-08-11 (`feature/agentic-materializer-journal-crash-safety` → `develop`, not yet
+  merged). Surfaced by a real 2026-08-10 canary incident (see
+  `C:\kmp-eval\agentic-full-corpus-final-canary-v2\HANDOFF-full-corpus-canary-v2-matrix2-session-loss.md`,
+  external to this repo): a live session completed successfully, then vanished with zero trace when
+  the *next* cell's `git clean -fdx` (reusing the same worktree) hit Windows `MAX_PATH` (`core.longpaths`
+  unset) — `cli.mjs`'s own catch printed an unconditional, factually-wrong "threw before any cell
+  completed" message. Two fixes, one PR: (1) `materialize.mjs` centralizes every git call through a
+  builder injecting `-c core.longpaths=true` (scoped per-subprocess, never persisted, no
+  `GIT_CONFIG_*` leak), plus a new bounded-retry `removeDirRobust()` and a two-postcondition
+  `removeScenarioWorktree()` (directory gone AND deregistered from `git worktree list`); (2) a new
+  per-invocation crash-safety journal (`durable-journal.mjs`) persists each cell's raw transcript
+  immediately after its live session completes — before any parsing — so a between-cell exception
+  can no longer discard a completed session, plus a shared incident finalizer
+  (`incident-diagnostics.mjs`) replacing the old lie with real counters and a sanitized structural
+  diagnostic. See `tools/agentic-eval/README.md`'s "Materializer long paths, and the crash-safety
+  journal" section for the full design.
 - ✅ **Rejected `agentic-eval` hard-gate runs leave no auditable trace** — SHIPPED 2026-07-22
   (PR #382, squash `829f6f6`, `feature/agentic-foreign-skill-diagnostics` → `develop`). Surfaced
   2026-07-19 during the calibration
