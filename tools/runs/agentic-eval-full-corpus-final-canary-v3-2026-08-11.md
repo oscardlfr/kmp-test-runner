@@ -54,9 +54,13 @@ and no unrelated work was interleaved while a matrix ran.
   any live matrix.
 - **Two distinct retry layers -- do not conflate them.** The claim above is live-session-level only
   (no matrix/session was ever re-run or replaced). Separately, each committed record carries its own
-  `retries` field: the number of times the agent retried one of its own tool calls (e.g. a Gradle
-  invocation) *within* that one already-counted, already-successful session -- normal recorded agent
-  behavior, not a re-run of the session. Summed across all 24 committed records,
+  `retries` field, defined by the grader (`tools/agentic-eval/graders.mjs`) as
+  `max(0, testInvocationsTotal - 1)`: `testInvocationsTotal` counts every EXECUTED (never
+  `--dry-run`) attempt capable of producing target evidence -- a `kmp-test parallel` invocation or a
+  policy-allowed Gradle task -- across BOTH providers/tool-kinds; `retries` is that count minus one,
+  floored at zero. This is a count of additional evidence-capable attempts within one already-counted
+  session, not "a tool call that failed and was reissued," and can span more than one distinct
+  command. Summed across all 24 committed records,
   `sum(retries.value) = 5`, concentrated in exactly 3 of the 24 records (the other 21 all have
   `retries.value: 0`):
 
@@ -108,7 +112,10 @@ env PATH="<curated toolchain/git/system PATH>" \
 `no-skill` is a **target-skill ablation under the same policy** -- the same allowlisted Gradle
 tasks, `kmp-test` subcommands, and environment/daemon policy apply to both conditions; only the
 `kmp-test-runner` skill's availability differs. All comparisons below are **within this v3 canary
-only** (same base, same pin, same toolchain, same day). `success` requires every grading check
+only** (same base, same toolchain, same day, and the same frozen protocol/target-skill snapshot --
+that snapshot is only ever materialized in `current-skill`; `no-skill` records carry
+`skill_source_sha: null` by design, so "pin" is not a shared property of both conditions). `success`
+requires every grading check
 (structural integrity, policy-allowed command use, well-formed authoritative evidence,
 target/outcome match, no provider contradiction, and answer-evidence consistency) to pass; a
 `false` value is a specific, itemized measured outcome, not an undifferentiated failure -- see each
@@ -132,13 +139,15 @@ Per-scenario breakdown (2 cells per condition per scenario):
 
 With `n=2` per cell, **this report makes no causal, statistical-significance, reliability, or
 generalization claim** about skill effectiveness -- these are 24 individual measured outcomes
-sourced directly from the 24 committed records, not a benchmark result. Two record-level details
-worth noting without over-interpreting them: `nowinandroid-core-common`'s one `no-skill` cell with
-`success:false` nonetheless reached `expected_outcome_matched:true` (its `final_answer_consistent_with_evidence`
-check failed independently -- see that record's own `grading_checks`), and
-`kampkit-no-applicable-tests`'s one `no-skill` cell similarly reached a correct terminal outcome
-whose final-answer block didn't exactly match. Both are itemized per-check outcomes recorded
-verbatim in the committed records, not a harness defect and not smoothed over here.
+sourced directly from the 24 committed records, not a benchmark result. The two `no-skill` cells
+with `expected_outcome_matched:true` are `deterministic-unit-test-failure`/`ec3bf85e` (repetition 0
+-- fully matched: `success:true`) and `nowinandroid-core-common`/`72fb2288` (repetition 1 -- reached
+the correct terminal outcome but `success:false`, because its `final_answer_consistent_with_evidence`
+check failed independently; see that record's own `grading_checks`). Both `kampkit-no-applicable-tests`
+`no-skill` cells have `expected_outcome_matched:false` -- neither reached a correct terminal outcome.
+These are itemized per-check outcomes recorded verbatim in the committed records; `success:false`
+alone does not, by itself, attribute cause among skill/model/policy/scenario/grader -- that requires
+separate analysis (see "Threads and limitations").
 
 ## Historical comparison (directional only)
 
@@ -224,9 +233,14 @@ Every expected value from the runbook's Stage C section was reproduced exactly.
 - The main checkout's 4 protected WIP entries (`BACKLOG.md`, `docs/audits/full-repo-audit-improvement-plan-v3.2.md`,
   `AGENTS.md`, `tools/runs/multi-project-token-cost-2026-07-16/`) and pre-existing stash
   (`471eaeefbef2bd74cae44cc33351340937dae341`) are unchanged.
-- All 17 preserved v1/v2 artifacts (2 v1 rejected-diagnostic files, the v2 handoff, 4 v2 accepted
-  records, 4 v2 sidecars, 4 v2 gitignored raw transcripts) re-hashed byte-identical to the Stage A
-  before-manifest.
+- 16 preserved v1/v2 artifacts (the v1 handoff, 2 v1 rejected-diagnostic files, the v2 handoff, 4 v2
+  accepted records, 4 v2 sidecars, 4 v2 gitignored raw transcripts) re-hashed byte-identical to the
+  Stage A before-manifest. A 17th file exists in the v1 worktree that Stage A's before-manifest did
+  not capture: a gitignored `testResults.xml` at the v1 worktree root (206-test NUnit/Pester-format
+  output, dated 2026-08-10 -- predates this v3 session, so not created by it). Its current existence
+  and hash (`622125a8...`, 89570 bytes) are confirmed now, but **no Stage A baseline exists for it,
+  so no before/after comparison can be made** -- disclosed here rather than silently folded into the
+  "17."
 - The orphan crash-forensics temp directory recorded by the v2 handoff still exists at its original
   path; not traversed or touched.
 - `git worktree list` shows exactly one new entry (this v3 worktree) with all 15 pre-existing
@@ -242,8 +256,15 @@ this session.
 
 - `n=2` per cell is a directional signal only; no statistical claim is made anywhere in this report.
 - `success:false` cells are itemized, per-check measured outcomes (see each record's own
-  `grading_checks`), not a single undifferentiated "failure" bucket, and not evidence of a harness
-  or skill defect.
+  `grading_checks`), not a single undifferentiated "failure" bucket. This report does **not** claim
+  they are free of a harness or skill defect -- attributing cause among skill/model/policy/scenario/
+  grader requires separate analysis per cell, not a blanket claim either way. One concrete,
+  unattributed observation worth flagging for that follow-up analysis: both `changed-module-verification`
+  `current-skill` cells' committed audit sidecars show `tool_kind: "kmp-test"` with
+  `operation: "parallel"` on every `kmp-test` invocation -- neither cell's tool-call list shows an
+  `operation: "changed"` invocation, despite `changed` being in that scenario's own
+  `policy_allowed_kmptest_subcommands`. Recorded here as a fact from the committed sidecars, not
+  diagnosed further in this report.
 - This report never quotes or depends on any raw transcript (`.jsonl`) content; every number above
   traces to a committed schema-v5 record, its accepted-audit sidecar, or deterministic
   `aggregate`/`analyze` output.
