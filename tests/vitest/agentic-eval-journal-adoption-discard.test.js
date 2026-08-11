@@ -16,8 +16,14 @@
 // by an adversarial review -- journalRawExactlyMatchesRejectionManifest previously compared ONLY
 // capture_ordinal SETS, never run_id/filename, so a manifest with a fabricated run_id and/or
 // filename but a coincidentally-correct ordinal set still returned true and triggered a discard.
-// The function now takes a third `recordRunIds` argument (the caller's own real, authoritative
-// run_id list) and cross-validates full (run_id, ordinal, filename) identity, not just cardinality.
+//
+// Round 3: even THAT fix was independently confirmed insufficient by a further audit pass --
+// checking "run_id is real" and "ordinal is real" as two INDEPENDENT set-membership tests still
+// allows a SWAP (run-a claiming journal ordinal 1, run-b claiming ordinal 0, each with its own
+// internally-self-consistent filename) to pass, since every individual check holds even though the
+// PAIRING is wrong. The function's third argument is now `runIdToCellOrdinal`, an authoritative
+// MAP (never a plain array) -- each manifest entry's (run_id, capture_ordinal) PAIR must match this
+// binding exactly, not just each half independently.
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import os from 'node:os';
@@ -88,19 +94,19 @@ describe('adoptJournalRaw -- keyed strictly by cellOrdinal, never array position
   });
 });
 
-describe('journalRawExactlyMatchesRejectionManifest + discardJournalIfRedundant -- §6 exact-correspondence (full identity, not just ordinal cardinality)', () => {
+describe('journalRawExactlyMatchesRejectionManifest + discardJournalIfRedundant -- §6 exact-correspondence (full identity binding, not independent set membership)', () => {
   it('discards on full acceptance (result.ok:true), regardless of manifest', () => {
     const { journal, runsRootOverride } = makeJournal();
     try {
       journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: 1, rawStdout: 'x' });
-      discardJournalIfRedundant(journal, { ok: true }, ['run-a']);
+      discardJournalIfRedundant(journal, { ok: true }, { 'run-a': 0 });
       expect(existsSync(journal.journalDir)).toBe(false);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }
   });
 
-  it('discards a rejection whose manifest EXACTLY matches the journal\'s own raw_persisted set AND the real record run_ids, with correctly-derived filenames', () => {
+  it('discards a rejection whose manifest EXACTLY matches the journal\'s own raw_persisted set AND the authoritative run_id->cellOrdinal binding, with correctly-derived filenames', () => {
     const { journal, runsRootOverride } = makeJournal();
     try {
       journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: 1, rawStdout: 'x' });
@@ -112,8 +118,63 @@ describe('journalRawExactlyMatchesRejectionManifest + discardJournalIfRedundant 
           { run_id: 'run-b', capture_ordinal: 1, filename: deriveTranscriptFilename(1, 'run-b') },
         ],
       };
-      expect(journalRawExactlyMatchesRejectionManifest(journal, result, ['run-a', 'run-b'])).toBe(true);
-      discardJournalIfRedundant(journal, result, ['run-a', 'run-b']);
+      const binding = { 'run-a': 0, 'run-b': 1 };
+      expect(journalRawExactlyMatchesRejectionManifest(journal, result, binding)).toBe(true);
+      discardJournalIfRedundant(journal, result, binding);
+      expect(existsSync(journal.journalDir)).toBe(false);
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  // Post-Codex-audit fix (PR #418, round 3): direct reproduction of the audit's own specific
+  // finding. Both run-a and run-b are real, expected run_ids; both ordinals 0 and 1 are real,
+  // journal-captured ordinals; each entry's filename IS internally self-consistent with its OWN
+  // declared (ordinal, run_id) pair. The round-2 fix (independent run_id-set and ordinal-set
+  // membership checks) would pass this. Only checking the exact (run_id, ordinal) PAIR against the
+  // authoritative binding catches it.
+  it('does NOT discard when two run_ids\' ordinals are SWAPPED -- run-a claims ordinal 1, run-b claims ordinal 0, each with an internally-consistent filename, but neither matches the TRUE binding', () => {
+    const { journal, runsRootOverride } = makeJournal();
+    try {
+      // The TRUE binding: run-a really produced cellOrdinal 0's session, run-b really produced
+      // cellOrdinal 1's.
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: 1, rawStdout: 'x' });
+      journal.persistSpawnOutcome(1, { didSpawn: true, spawnStartedAt: 2, rawStdout: 'y' });
+      const trueBinding = { 'run-a': 0, 'run-b': 1 };
+      // The manifest claims the OPPOSITE pairing.
+      const swappedResult = {
+        ok: false, rawTranscriptsPersisted: true, diagnosticsWriteError: null,
+        rawTranscriptsManifest: [
+          { run_id: 'run-a', capture_ordinal: 1, filename: deriveTranscriptFilename(1, 'run-a') },
+          { run_id: 'run-b', capture_ordinal: 0, filename: deriveTranscriptFilename(0, 'run-b') },
+        ],
+      };
+      expect(journalRawExactlyMatchesRejectionManifest(journal, swappedResult, trueBinding)).toBe(false);
+      discardJournalIfRedundant(journal, swappedResult, trueBinding);
+      expect(existsSync(journal.journalDir)).toBe(true);
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('discards correctly regardless of manifest ARRAY ORDER -- reordered entries with the same TRUE pairing still match', () => {
+    const { journal, runsRootOverride } = makeJournal();
+    try {
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: 1, rawStdout: 'x' });
+      journal.persistSpawnOutcome(1, { didSpawn: true, spawnStartedAt: 2, rawStdout: 'y' });
+      // Same two CORRECTLY-paired entries as the exact-match case above, but listed in the
+      // OPPOSITE array order -- proves the comparison is identity-based (a map lookup), never
+      // positional.
+      const result = {
+        ok: false, rawTranscriptsPersisted: true, diagnosticsWriteError: null,
+        rawTranscriptsManifest: [
+          { run_id: 'run-b', capture_ordinal: 1, filename: deriveTranscriptFilename(1, 'run-b') },
+          { run_id: 'run-a', capture_ordinal: 0, filename: deriveTranscriptFilename(0, 'run-a') },
+        ],
+      };
+      const binding = { 'run-a': 0, 'run-b': 1 };
+      expect(journalRawExactlyMatchesRejectionManifest(journal, result, binding)).toBe(true);
+      discardJournalIfRedundant(journal, result, binding);
       expect(existsSync(journal.journalDir)).toBe(false);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
@@ -132,8 +193,9 @@ describe('journalRawExactlyMatchesRejectionManifest + discardJournalIfRedundant 
         // alone must NOT be trusted as proof every cell landed.
         rawTranscriptsManifest: [{ run_id: 'run-a', capture_ordinal: 0, filename: deriveTranscriptFilename(0, 'run-a') }],
       };
-      expect(journalRawExactlyMatchesRejectionManifest(journal, result, ['run-a', 'run-b'])).toBe(false);
-      discardJournalIfRedundant(journal, result, ['run-a', 'run-b']);
+      const binding = { 'run-a': 0, 'run-b': 1 };
+      expect(journalRawExactlyMatchesRejectionManifest(journal, result, binding)).toBe(false);
+      discardJournalIfRedundant(journal, result, binding);
       expect(existsSync(journal.journalDir)).toBe(true);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
@@ -145,10 +207,6 @@ describe('journalRawExactlyMatchesRejectionManifest + discardJournalIfRedundant 
     try {
       journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: 1, rawStdout: 'x' });
       journal.persistSpawnOutcome(1, { didSpawn: true, spawnStartedAt: 2, rawStdout: 'y' });
-      // Direct reproduction of the audit's own finding: ordinals {0,1} are exactly right, but
-      // 'FABRICATED-RUN-ID' is not one of the real record run_ids for this invocation. The
-      // filename IS internally self-consistent with its own (ordinal, run_id) pair -- proving this
-      // is caught by the run_id cross-check, not merely the filename-consistency check.
       const result = {
         ok: false, rawTranscriptsPersisted: true, diagnosticsWriteError: null,
         rawTranscriptsManifest: [
@@ -156,8 +214,9 @@ describe('journalRawExactlyMatchesRejectionManifest + discardJournalIfRedundant 
           { run_id: 'run-b', capture_ordinal: 1, filename: deriveTranscriptFilename(1, 'run-b') },
         ],
       };
-      expect(journalRawExactlyMatchesRejectionManifest(journal, result, ['run-a', 'run-b'])).toBe(false);
-      discardJournalIfRedundant(journal, result, ['run-a', 'run-b']);
+      const binding = { 'run-a': 0, 'run-b': 1 };
+      expect(journalRawExactlyMatchesRejectionManifest(journal, result, binding)).toBe(false);
+      discardJournalIfRedundant(journal, result, binding);
       expect(existsSync(journal.journalDir)).toBe(true);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
@@ -169,8 +228,6 @@ describe('journalRawExactlyMatchesRejectionManifest + discardJournalIfRedundant 
     try {
       journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: 1, rawStdout: 'x' });
       journal.persistSpawnOutcome(1, { didSpawn: true, spawnStartedAt: 2, rawStdout: 'y' });
-      // run_id and capture_ordinal are both genuine and correctly matched -- only the filename is
-      // wrong (doesn't match what deriveTranscriptFilename(0, 'run-a') actually produces).
       const result = {
         ok: false, rawTranscriptsPersisted: true, diagnosticsWriteError: null,
         rawTranscriptsManifest: [
@@ -178,32 +235,10 @@ describe('journalRawExactlyMatchesRejectionManifest + discardJournalIfRedundant 
           { run_id: 'run-b', capture_ordinal: 1, filename: deriveTranscriptFilename(1, 'run-b') },
         ],
       };
-      expect(journalRawExactlyMatchesRejectionManifest(journal, result, ['run-a', 'run-b'])).toBe(false);
-      discardJournalIfRedundant(journal, result, ['run-a', 'run-b']);
+      const binding = { 'run-a': 0, 'run-b': 1 };
+      expect(journalRawExactlyMatchesRejectionManifest(journal, result, binding)).toBe(false);
+      discardJournalIfRedundant(journal, result, binding);
       expect(existsSync(journal.journalDir)).toBe(true);
-    } finally {
-      rmSync(runsRootOverride, { recursive: true, force: true });
-    }
-  });
-
-  it('discards correctly regardless of manifest ARRAY ORDER -- reordered entries with the same real identities still match', () => {
-    const { journal, runsRootOverride } = makeJournal();
-    try {
-      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: 1, rawStdout: 'x' });
-      journal.persistSpawnOutcome(1, { didSpawn: true, spawnStartedAt: 2, rawStdout: 'y' });
-      // Same two entries as the "discards a rejection whose manifest EXACTLY matches" case above,
-      // but listed in the OPPOSITE array order -- proves the comparison is set-based (by identity),
-      // never positional.
-      const result = {
-        ok: false, rawTranscriptsPersisted: true, diagnosticsWriteError: null,
-        rawTranscriptsManifest: [
-          { run_id: 'run-b', capture_ordinal: 1, filename: deriveTranscriptFilename(1, 'run-b') },
-          { run_id: 'run-a', capture_ordinal: 0, filename: deriveTranscriptFilename(0, 'run-a') },
-        ],
-      };
-      expect(journalRawExactlyMatchesRejectionManifest(journal, result, ['run-a', 'run-b'])).toBe(true);
-      discardJournalIfRedundant(journal, result, ['run-a', 'run-b']);
-      expect(existsSync(journal.journalDir)).toBe(false);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }
@@ -221,8 +256,9 @@ describe('journalRawExactlyMatchesRejectionManifest + discardJournalIfRedundant 
           { run_id: 'run-a', capture_ordinal: 1, filename: deriveTranscriptFilename(1, 'run-a') },
         ],
       };
-      expect(journalRawExactlyMatchesRejectionManifest(journal, result, ['run-a', 'run-b'])).toBe(false);
-      discardJournalIfRedundant(journal, result, ['run-a', 'run-b']);
+      const binding = { 'run-a': 0, 'run-b': 1 };
+      expect(journalRawExactlyMatchesRejectionManifest(journal, result, binding)).toBe(false);
+      discardJournalIfRedundant(journal, result, binding);
       expect(existsSync(journal.journalDir)).toBe(true);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
@@ -237,8 +273,8 @@ describe('journalRawExactlyMatchesRejectionManifest + discardJournalIfRedundant 
         ok: false, rawTranscriptsPersisted: true, diagnosticsWriteError: 'privacy check refused',
         rawTranscriptsManifest: [{ run_id: 'run-a', capture_ordinal: 0, filename: deriveTranscriptFilename(0, 'run-a') }],
       };
-      expect(journalRawExactlyMatchesRejectionManifest(journal, result, ['run-a'])).toBe(false);
-      discardJournalIfRedundant(journal, result, ['run-a']);
+      expect(journalRawExactlyMatchesRejectionManifest(journal, result, { 'run-a': 0 })).toBe(false);
+      discardJournalIfRedundant(journal, result, { 'run-a': 0 });
       expect(existsSync(journal.journalDir)).toBe(true);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
@@ -250,8 +286,8 @@ describe('journalRawExactlyMatchesRejectionManifest + discardJournalIfRedundant 
     try {
       journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: 1, rawStdout: 'x' });
       const result = { ok: false, reason: 'schema validation failed', rejectionId: null };
-      expect(journalRawExactlyMatchesRejectionManifest(journal, result, ['run-a'])).toBe(false);
-      discardJournalIfRedundant(journal, result, ['run-a']);
+      expect(journalRawExactlyMatchesRejectionManifest(journal, result, { 'run-a': 0 })).toBe(false);
+      discardJournalIfRedundant(journal, result, { 'run-a': 0 });
       expect(existsSync(journal.journalDir)).toBe(true);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
@@ -259,6 +295,6 @@ describe('journalRawExactlyMatchesRejectionManifest + discardJournalIfRedundant 
   });
 
   it('is a no-op when journal is null', () => {
-    expect(() => discardJournalIfRedundant(null, { ok: true }, ['run-a'])).not.toThrow();
+    expect(() => discardJournalIfRedundant(null, { ok: true }, { 'run-a': 0 })).not.toThrow();
   });
 });

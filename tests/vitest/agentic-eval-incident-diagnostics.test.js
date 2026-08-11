@@ -3,7 +3,7 @@
 // finalizer for both thrown exceptions (acquisition/materialization/journal-persist/parse/
 // finalization) and non-gate {ok:false} results. Every test uses a mkdtempSync-rooted
 // runsRootOverride, never the real tools/runs/.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -463,6 +463,197 @@ describe('finalizeIncident -- a Windows UNC path never reaches stderr or the com
       expect(result.message).not.toContain('\\\\server\\share');
       const committed = JSON.parse(readFileSync(join(runsRootOverride, result.committedRelativePath), 'utf8'));
       expect(JSON.stringify(committed)).not.toContain('\\\\server\\share');
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+});
+
+// Post-Codex-audit fix (PR #418, round 3): safeSummarize only guarded against journal.summarize()
+// THROWING -- a non-throwing but malformed/incoherent return (null, {}, a null counts field, a
+// missing cellOrdinals field, or an internally-inconsistent nested-set state) reached
+// buildMessage()/the emergencyRaw alreadyJournaled check completely unvalidated and crashed there.
+// Each case here is an independent RED-before-fix reproduction: journal.summarize() resolves
+// normally (never throws) with a malformed value, and finalizeIncident must still never throw.
+describe('finalizeIncident -- journal.summarize()\'s own return value is validated, not merely caught-if-throwing (Codex-audit fix, PR #418, round 3)', () => {
+  it('never propagates when journal.summarize() resolves to null (not a throw)', async () => {
+    const { finalizeIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      let result;
+      expect(() => {
+        result = finalizeIncident({
+          runKind: 'scenario', journal: { summarize: () => null }, phase: 'materializing_cell',
+          reasonText: 'x', provenance: {}, runsRootOverride,
+        });
+      }).not.toThrow();
+      expect(result.message).toContain('0/0 cells evaluated');
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('never propagates when journal.summarize() resolves to {} (empty object, no throw)', async () => {
+    const { finalizeIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      let result;
+      expect(() => {
+        result = finalizeIncident({
+          runKind: 'scenario', journal: { summarize: () => ({}) }, phase: 'materializing_cell',
+          reasonText: 'x', provenance: {}, runsRootOverride,
+        });
+      }).not.toThrow();
+      expect(result.message).toContain('0/0 cells evaluated');
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('never propagates when counts is null', async () => {
+    const { finalizeIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const journal = { summarize: () => ({ plannedCellCount: 4, counts: null, cellOrdinals: { planned: [0, 1, 2, 3], spawn_started: [], spawn_completed: [], raw_persisted: [], parsed: [], evaluated: [], spawn_failed: [] } }) };
+      let result;
+      expect(() => {
+        result = finalizeIncident({ runKind: 'scenario', journal, phase: 'materializing_cell', reasonText: 'x', provenance: {}, runsRootOverride });
+      }).not.toThrow();
+      expect(result.message).toContain('0/0 cells evaluated');
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('never propagates when cellOrdinals is missing entirely (used by the emergency-raw alreadyJournaled check)', async () => {
+    const { finalizeIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const journal = { summarize: () => ({ plannedCellCount: 4, counts: { planned: 4, spawn_started: 1, spawn_completed: 1, raw_persisted: 1, parsed: 1, evaluated: 1, spawn_failed: 0 } }) }; // no cellOrdinals key at all
+      let result;
+      expect(() => {
+        result = finalizeIncident({
+          runKind: 'scenario', journal, phase: 'persisting_cell_journal', reasonText: 'x',
+          cellOrdinal: 0, rawStdout: 'raw content', provenance: {}, runsRootOverride,
+        });
+      }).not.toThrow();
+      // Degrades to the all-zero fallback -- never trusts the malformed summary's counts either.
+      expect(result.message).toContain('0/0 cells evaluated');
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('never propagates on an internally incoherent state (a cellOrdinal marked evaluated but never spawn_started)', async () => {
+    const { finalizeIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      // evaluated:[0] but spawn_started:[] -- violates the documented nested-set invariant
+      // (evaluated subset-of parsed subset-of raw_persisted subset-of spawn_completed subset-of
+      // spawn_started), a state the real journal's own state machine could never legally produce,
+      // but an injected/corrupted journal object could.
+      const journal = fakeJournal({
+        counts: { planned: 4, spawn_started: 0, spawn_completed: 0, raw_persisted: 0, parsed: 0, evaluated: 1, spawn_failed: 0 },
+        cellOrdinals: { planned: [0, 1, 2, 3], spawn_started: [], spawn_completed: [], raw_persisted: [], parsed: [], evaluated: [0], spawn_failed: [] },
+      });
+      let result;
+      expect(() => {
+        result = finalizeIncident({ runKind: 'scenario', journal, phase: 'materializing_cell', reasonText: 'x', provenance: {}, runsRootOverride });
+      }).not.toThrow();
+      // The incoherent summary is rejected wholesale -- falls back to the complete zero summary,
+      // never a partially-trusted mix.
+      expect(result.message).toContain('0/0 cells evaluated');
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a genuinely valid, coherent summary unchanged -- the validator does not reject legitimate input', async () => {
+    const { finalizeIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const result = finalizeIncident({
+        runKind: 'scenario', journal: fakeJournal(), phase: 'materializing_cell',
+        reasonText: 'x', provenance: {}, runsRootOverride,
+      });
+      // fakeJournalSummary's own default shape: 1 evaluated out of 4 planned.
+      expect(result.message).toContain('1/4 cells evaluated');
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+});
+
+// Post-Codex-audit fix (PR #418, round 3): buildMessage() used to unconditionally claim a
+// diagnostic exists to consult; every one of this repo's 12 cli.mjs call sites only ever
+// destructured {message}, silently discarding diagnosticWritten/diagnosticWriteError. The new
+// reportIncident() helper is the ONE place that correctly, conditionally reports the diagnostic's
+// real fate -- these tests drive it directly with a console.error spy.
+describe('reportIncident -- never claims a diagnostic exists unless it was actually written (Codex-audit fix, PR #418, round 3)', () => {
+  it('reports the safe relative path when diagnosticWritten is true', async () => {
+    const { reportIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      reportIncident({ message: 'SCENARIO FAILED (materializing_cell): 1/4 cells evaluated.', committedRelativePath: 'agentic-eval-incident/abc-123.json', diagnosticWritten: true, diagnosticWriteError: null });
+      const calls = spy.mock.calls.map((c) => c[0]).join('\n');
+      expect(calls).toContain('SCENARIO FAILED');
+      expect(calls).toContain('agentic-eval-incident/abc-123.json');
+      expect(calls).not.toMatch(/NOT written/i);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('never claims a diagnostic exists when diagnosticWritten is false -- reports the sanitized error instead', async () => {
+    const { reportIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      reportIncident({ message: 'SCENARIO FAILED (materializing_cell): 1/4 cells evaluated.', committedRelativePath: 'agentic-eval-incident/abc-123.json', diagnosticWritten: false, diagnosticWriteError: 'materialization_or_reset_failed' });
+      const calls = spy.mock.calls.map((c) => c[0]).join('\n');
+      expect(calls).toContain('SCENARIO FAILED');
+      expect(calls).toMatch(/NOT written/i);
+      expect(calls).toContain('materialization_or_reset_failed');
+      // Never claims the (unwritten) artifact's own path as if it were real and consultable.
+      expect(calls).not.toMatch(/^Incident diagnostic written:/m);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+// Post-Codex-audit fix (PR #418, round 3): minimalFallbackDiagnostic() previously hardcoded
+// emergency_raw_persisted:false unconditionally -- if the emergency raw write genuinely succeeded
+// but some OTHER diagnostic field triggered the fallback, the committed artifact would falsely
+// deny a real, already-verified preservation.
+describe('finalizeIncident -- the fallback never denies a real emergency-raw preservation (Codex-audit fix, PR #418, round 3)', () => {
+  it('preserves emergency_raw_persisted:true through the fallback when the raw genuinely landed but an unrelated field (a bogus run_kind) triggers it', async () => {
+    const { finalizeIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const sentinelRaw = '{"sentinel":"really-did-persist-despite-fallback"}\n';
+      // cellOrdinal 2 -- fakeJournalSummary's own default raw_persisted set is [0], so ordinal 2
+      // is NOT already-journaled and the emergency-raw block genuinely executes (matches the
+      // established pattern from the "when the primary journal write failed..." test above).
+      const result = finalizeIncident({
+        // A bogus run_kind forces isValidIncidentDiagnostic to reject the primary candidate and
+        // fall back to minimalFallbackDiagnostic() -- but the emergency raw write below still
+        // genuinely succeeds on its own, independent transaction, BEFORE that fallback decision
+        // is even made.
+        runKind: 'totally-bogus-run-kind', journal: fakeJournal(), phase: 'persisting_cell_journal',
+        reasonText: 'journal write failed', cellOrdinal: 2, rawStdout: sentinelRaw,
+        provenance: {}, runsRootOverride,
+      });
+      const expectedRawPath = join(runsRootOverride, 'agentic-eval-incident', 'raw', 'transcripts', result.incidentId, '2.jsonl');
+      expect(existsSync(expectedRawPath)).toBe(true);
+      expect(readFileSync(expectedRawPath, 'utf8')).toBe(sentinelRaw);
+
+      const committed = JSON.parse(readFileSync(join(runsRootOverride, result.committedRelativePath), 'utf8'));
+      // The bogus run_kind itself was correctly rejected (fell back to a valid one)...
+      expect(['calibration', 'smoke', 'scenario']).toContain(committed.run_kind);
+      // ...but the REAL, already-verified emergency-raw fact survived the fallback intact --
+      // never falsely reset to false just because a DIFFERENT field needed to fall back.
+      expect(committed.emergency_raw_persisted).toBe(true);
+      expect(committed.emergency_raw_write_error).toBeNull();
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }

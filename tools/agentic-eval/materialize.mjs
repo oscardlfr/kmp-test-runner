@@ -8,7 +8,7 @@
 // into a fresh temp directory immediately before use.
 import { mkdtempSync, rmSync, mkdirSync, cpSync, writeFileSync, appendFileSync, realpathSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { resolveBash } from './resolve-bash.mjs';
 import { isWithinOrEqualCanonical } from './policy-hook.mjs';
@@ -186,6 +186,43 @@ function isWorktreeStillRegistered(sourceRepoDir, worktreeDirReal) {
 }
 
 /**
+ * Resolves the canonical (symlink-free) form of `p`, even when `p` itself no longer exists on
+ * disk. `realpathSync` fundamentally cannot resolve a missing path -- but a MISSING leaf doesn't
+ * mean nothing above it can be resolved: this walks up to the nearest EXISTING ancestor,
+ * `realpathSync`s that, and rejoins the missing suffix on top of the now-canonical prefix.
+ *
+ * Post-Codex-audit fix (PR #418, round 3): the pre-fix version simply fell back to the raw,
+ * UNRESOLVED `p` whenever `realpathSync(p)` threw (the common case -- the directory this function
+ * exists to check on has usually just been deleted). Under a symlinked ancestor -- e.g. macOS's
+ * `/var` -> `/private/var` (`os.tmpdir()` returns the `/var/...` form; git records the resolved
+ * `/private/var/...` form at `worktree add` time) -- that raw, unresolved path can NEVER textually
+ * match what `git worktree list --porcelain` reports, so `isWorktreeStillRegistered`'s comparison
+ * always misses a genuinely-still-registered stale entry, and `removeScenarioWorktree` silently
+ * reports its postconditions as met when one of them (the git-registration one) actually isn't.
+ * Reproduced directly on POSIX via a real symlinked ancestor (see
+ * agentic-eval-materialize-worktree-rollback.test.js's own discriminating test).
+ */
+export function resolveCanonicalEvenIfMissing(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    // fall through to the walk-up below
+  }
+  let dir = dirname(p);
+  let suffix = basename(p);
+  for (;;) {
+    try {
+      return join(realpathSync(dir), suffix);
+    } catch {
+      const parent = dirname(dir);
+      if (parent === dir) return p; // hit the filesystem root without finding an existing ancestor -- give up, use the raw path
+      suffix = join(basename(dir), suffix);
+      dir = parent;
+    }
+  }
+}
+
+/**
  * Removes a disposable git worktree created by materializeScenarioProject. Two INDEPENDENTLY
  * verified postconditions -- the directory is actually gone (via removeDirRobust, always
  * attempted regardless of whether `git worktree remove` itself succeeded), AND the worktree no
@@ -193,9 +230,9 @@ function isWorktreeStillRegistered(sourceRepoDir, worktreeDirReal) {
  * directory being gone does not by itself prove git's own .git/worktrees/ metadata was cleared
  * (a "leftover worktree" -- confirmed via `git worktree list` after a run that skipped this), and
  * `git worktree remove` reporting success does not by itself prove the directory content is
- * actually gone. The canonical (real) path is captured BEFORE any deletion is attempted --
- * `realpathSync` cannot resolve a path that no longer exists, so calling it after removal would
- * throw instead of yielding a value to compare against `git worktree list`'s own output.
+ * actually gone. The canonical (real) path is captured BEFORE any deletion is attempted, via
+ * resolveCanonicalEvenIfMissing() (see its own doc comment for why a plain realpathSync-or-raw-
+ * fallback isn't enough).
  *
  * The two known-benign `git worktree remove` outcomes ("is not a working tree" / "not a valid
  * path" -- the worktree was already deregistered or never existed) are tolerated; any OTHER git
@@ -206,12 +243,7 @@ function isWorktreeStillRegistered(sourceRepoDir, worktreeDirReal) {
  * informative error -- never silently swallowed.
  */
 export function removeScenarioWorktree({ sourceRepoDir, worktreeDir }) {
-  let worktreeDirReal;
-  try {
-    worktreeDirReal = realpathSync(worktreeDir);
-  } catch {
-    worktreeDirReal = worktreeDir; // already gone -- directory postcondition is trivially satisfied
-  }
+  const worktreeDirReal = resolveCanonicalEvenIfMissing(worktreeDir);
 
   let gitRemoveError = null;
   try {

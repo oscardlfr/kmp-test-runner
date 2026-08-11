@@ -18,12 +18,26 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync as realSpawnSync } from 'node:child_process';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
+
+// Post-Codex-audit fix (PR #418, round 3): a plain `import { spawnSync as realSpawnSync } from
+// 'node:child_process'` is a misleading binding in a file that also `vi.mock()`s that exact
+// module -- vi.mock() is hoisted above every import in the file, so that "real" import actually
+// resolves to the MOCKED module too (harmlessly, in this specific file, since the mock's own
+// interception condition never matches gitViaBash's own init/config/add/commit/rev-parse/unlock
+// calls -- but the name asserted a guarantee the import mechanism doesn't provide). genuineSpawnSync
+// is instead populated directly from the mock factory's own `importOriginal()` result below --
+// this IS the actual, unmocked implementation, never routed through the interception logic at all,
+// regardless of what that logic's own condition happens to match. Deliberately `var`, not `let`:
+// vitest's own hoisting of the vi.mock() factory below can run before a `let` declaration's own
+// line would otherwise be reached, throwing a temporal-dead-zone ReferenceError -- `var`'s
+// hoisted-and-immediately-`undefined` semantics (confirmed directly; a `let` here reproduces the
+// TDZ error) are exactly what's needed for a binding a hoisted factory assigns into.
+var genuineSpawnSync;
 
 function gitViaBash(argv, cwd) {
   const cmd = argv.map((a) => `'${String(a).replace(/'/g, "'\\''")}'`).join(' ');
-  const r = realSpawnSync(resolveBash(), ['-c', `git ${cmd}`], { cwd, encoding: 'utf8' });
+  const r = genuineSpawnSync(resolveBash(), ['-c', `git ${cmd}`], { cwd, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`git ${argv.join(' ')} failed (exit ${r.status}): ${r.stderr}`);
   return r.stdout;
 }
@@ -44,6 +58,7 @@ let lockedDestPosix = null;
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal();
+  genuineSpawnSync = actual.spawnSync;
   return {
     ...actual,
     spawnSync: (...args) => {

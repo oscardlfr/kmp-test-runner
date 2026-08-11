@@ -4,11 +4,13 @@
 // hardening. Kept separate from agentic-eval-materialize.test.js because these specifically drive
 // the git-worktree lifecycle end to end rather than mocking pieces of it.
 import { describe, it, expect } from 'vitest';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
+
+const isWindows = process.platform === 'win32';
 
 function gitViaBash(argv, cwd) {
   const cmd = argv.map((a) => `'${String(a).replace(/'/g, "'\\''")}'`).join(' ');
@@ -182,6 +184,54 @@ describe('materialize.mjs git operations run with core.longpaths scoped per-comm
         expect(after[i].stdout, `${scope} stdout`).toBe(baseline[i].stdout);
       });
     } finally {
+      rmSync(sourceRepoDir, { recursive: true, force: true });
+    }
+  }, 30000);
+});
+
+// Post-Codex-audit fix (PR #418, round 3): removeScenarioWorktree's own realpathSync(worktreeDir)
+// fell back to the RAW, unresolved path whenever the directory no longer existed -- under a
+// symlinked ancestor (macOS's own /var -> /private/var is the canonical real-world example: a real
+// git worktree created under the /var/... form gets its CANONICAL /private/var/... form recorded
+// by git itself, so the two never textually match once the raw form is used for comparison), a
+// still-registered stale entry could look absent, and removeScenarioWorktree would silently report
+// its postconditions as met when the git-registration one genuinely wasn't. Gated to POSIX (Windows
+// doesn't have this exact directory-symlink convention, and Git for Windows' own worktree/realpath
+// interaction is already covered by every OTHER test in this file); reproduces the exact shape with
+// a real symlink, not macOS-specific -- this is a general symlinked-temp-root property, verifiable
+// on Linux too.
+describe.skipIf(isWindows)('removeScenarioWorktree -- resolves the canonical path even when the worktree directory is already gone, under a symlinked ancestor', () => {
+  it('detects a still-registered entry reached only through a symlinked parent directory (deleted externally, never resolved to its canonical form before this fix)', async () => {
+    const { removeScenarioWorktree } = await import('../../tools/agentic-eval/materialize.mjs');
+    const sourceRepoDir = makeSourceRepo();
+    const container = mkdtempSync(join(tmpdir(), 'aemwr-symlink-container-'));
+    try {
+      const pinnedCommit = gitViaBash(['rev-parse', 'HEAD'], sourceRepoDir).trim();
+      const realDir = join(container, 'real');
+      const linkDir = join(container, 'link');
+      mkdirSync(realDir, { recursive: true });
+      symlinkSync(realDir, linkDir, 'dir');
+
+      const worktreeDirViaSymlink = join(linkDir, 'wt');
+      gitViaBash(['worktree', 'add', '--detach', worktreeDirViaSymlink, pinnedCommit], sourceRepoDir);
+      expect(existsSync(worktreeDirViaSymlink)).toBe(true);
+
+      // Someone/something deleted the worktree directory directly, bypassing git entirely --
+      // exactly the same simulated condition this file's own "already deleted out from under git"
+      // test above uses, just reached through the symlinked path this time.
+      rmSync(worktreeDirViaSymlink, { recursive: true, force: true });
+
+      // Must not throw silently claiming success -- the registration genuinely remains (this is
+      // the exact scenario the pre-fix raw-path fallback could miss).
+      expect(() => removeScenarioWorktree({ sourceRepoDir, worktreeDir: worktreeDirViaSymlink })).not.toThrow();
+
+      // The real postcondition: git's own registration is actually cleared, verified independently
+      // of removeScenarioWorktree's own internal comparison.
+      const list = gitViaBash(['worktree', 'list', '--porcelain'], sourceRepoDir);
+      const lines = list.trim().split('\n').filter((l) => l.startsWith('worktree '));
+      expect(lines.length).toBe(1); // only the main worktree
+    } finally {
+      rmSync(container, { recursive: true, force: true });
       rmSync(sourceRepoDir, { recursive: true, force: true });
     }
   }, 30000);
