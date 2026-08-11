@@ -84,14 +84,18 @@ describe('corpus/scenarios/', () => {
     ]);
   });
 
-  it('tags are balanced exactly 3 train / 3 held-out across the completed corpus', () => {
+  // changed-module-verification moved train<-held-out: the fix that closed its 0/2 canary-v3 gap
+  // (tools/agentic-eval/corpus/scenarios/changed-module-verification.json, SKILL.md Decision
+  // protocol Step 1) was directly informed by this scenario's own failure, so it can no longer be
+  // honestly held-out. 3/3 was the corpus's original, now-historical balance -- see BACKLOG.md.
+  it('tags partition exactly 4 train / 2 held-out across the completed corpus', () => {
     const tagCounts = { train: 0, 'held-out': 0 };
     for (const file of scenarioFiles) {
       const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, file);
       if (parseError) throw new Error(`${file}: ${parseError}`);
       for (const tag of scenario.tags ?? []) tagCounts[tag] = (tagCounts[tag] ?? 0) + 1;
     }
-    expect(tagCounts).toEqual({ train: 3, 'held-out': 3 });
+    expect(tagCounts).toEqual({ train: 4, 'held-out': 2 });
   });
 
   // Reuses cli.mjs's own loadScenarioFile (never throws on malformed JSON) rather than a
@@ -227,12 +231,12 @@ describe('corpus/scenarios/', () => {
     expect(errors).toEqual([]);
   });
 
-  it('targets :core:common, expects tests_executed, family test-only, and is tagged held-out', () => {
+  it('targets :core:common, expects tests_executed, family test-only, and is tagged train', () => {
     const scenario = loadChangedModuleVerificationScenario();
     expect(scenario.expected.module).toBe(':core:common');
     expect(scenario.expected.outcome_kind).toBe('tests_executed');
     expect(scenario.family).toBe('test-only');
-    expect(scenario.tags).toEqual(['held-out']);
+    expect(scenario.tags).toEqual(['train']);
   });
 
   it('expects the ground-truth-verified 1/1/0 counts on both providers, matching nowinandroid-core-common exactly', () => {

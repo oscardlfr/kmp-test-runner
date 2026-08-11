@@ -10,9 +10,12 @@ Walk every module's `build/reports/kover/**.xml` / `build/reports/jacoco/**.xml`
 
 The agent should dispatch `kmp-test coverage` when the user asks any of:
 
-- "Generate the coverage report" / "what's the coverage?" / "show coverage"
+- "Generate the coverage report" / "what's the coverage?" / "show coverage" (existing XML/reports
+  only — if tests haven't run yet, run `parallel` first)
 - "Aggregate coverage from the existing reports" / "I already ran tests, just merge the reports"
-- "Check that coverage didn't drop below X missed lines" — combine with `--min-missed-lines`
+- "Check that missed lines do not exceed X" (only when reports already exist — no
+  fresh test run) — combine with `--min-missed-lines`; if tests must run first, that's
+  `parallel --min-missed-lines <N>` instead (see "Do not dispatch" below)
 - "Coverage-only run" — equivalent to `kmp-test parallel --skip-tests`
 
 Do **not** dispatch `coverage` for:

@@ -34,5 +34,5 @@
   "first_useful_signal_predicate": {
     "description": "first well-formed changed evidence confirming :core:common single-module detection and 1/1"
   },
-  "tags": ["held-out"]
+  "tags": ["train"]
 }
