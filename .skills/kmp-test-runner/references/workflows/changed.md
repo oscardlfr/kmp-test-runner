@@ -15,6 +15,8 @@ The agent should dispatch `kmp-test changed` when the user asks any of:
 - "Quick test pass on my changes" / "fast CI re-run"
 - "What modules would my changes affect?" — combine with `--show-modules-only`
 - "Run only on staged files" — `--staged-only`
+- "There's a pending change somewhere and I haven't said which module — find it and test just that"
+- "Whatever I already edited locally, test only that; you'll need to work out where it is"
 
 Do **not** dispatch `changed` for:
 

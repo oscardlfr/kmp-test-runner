@@ -1486,8 +1486,10 @@ unparseable JSON, wrong schema value, invalid `scope_id`, non-canonical or wrong
 - All 6 originally-sketched scenarios now exist in `corpus/scenarios/`
   (`kampkit-android-host-test-discovery`, `kampkit-no-applicable-tests` against KaMPKit;
   `nowinandroid-core-common`, `deterministic-unit-test-failure`, `coverage-threshold-failure`, and
-  `changed-module-verification` against NowInAndroid) — the corpus is complete, 3 `train` / 3
-  `held-out`. `changed-module-verification` is the first (and, by its own contract's deliberate
+  `changed-module-verification` against NowInAndroid) — the corpus is complete, 4 `train` / 2
+  `held-out` (originally 3/3; `changed-module-verification` moved train<-held-out after its own
+  0/2 canary-v3 result directly informed a skill-doc fix — see BACKLOG.md).
+  `changed-module-verification` is the first (and, by its own contract's deliberate
   single-module scope, only) scenario requiring `kmp-test changed` — never `kmp-test parallel`,
   even with matching counts — as terminal proof, via a new, closed `fixture_setup` mechanism
   (`{operation:"append_comment", relative_path, expected_blob_oid}`) that mutates one

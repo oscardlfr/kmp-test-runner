@@ -542,6 +542,7 @@ describe('Coverage dry-run verification contract (grounds the dry-run-vs-real-ru
 // silently routed to either command.
 describe('Steps table -- tests+coverage-budget routing (grounds the BACKLOG "skill routing gap" fix)', () => {
   const steps = section('Steps');
+  const coverageDoc = readFileSync(path.join(SKILL_DIR, 'references', 'workflows', 'coverage.md'), 'utf8');
 
   function findRowContaining(tableText, phrase) {
     return tableText.split('\n').find((l) => l.startsWith('|') && l.includes(phrase));
@@ -584,9 +585,34 @@ describe('Steps table -- tests+coverage-budget routing (grounds the BACKLOG "ski
   });
 
   it('coverage.md still documents applying a threshold to EXISTING coverage without new tests (the 4th matrix cell, deliberately kept out of SKILL.md\'s compact table)', () => {
-    const coverageDoc = readFileSync(path.join(SKILL_DIR, 'references', 'workflows', 'coverage.md'), 'utf8');
     expect(coverageDoc).toMatch(/didn.t drop below X missed lines/i);
     expect(coverageDoc).toContain('--min-missed-lines');
+  });
+
+  // Closes the coverage-threshold-failure 1/2 gap (tools/runs/agentic-eval-full-corpus-final-
+  // canary-v3-2026-08-11.md), investigated via a scoped, sanitized raw-transcript inspection
+  // (chain-of-custody preserved -- see BACKLOG.md). Observed execution mechanism, not a claim
+  // about the model's internal reasoning: BOTH the failed and control current-skill runs tried
+  // `kmp-test coverage` first, denied because `coverage` is not in this scenario's
+  // allowed_kmptest_subcommands (only doctor/describe/parallel) -- that allowlist check is the
+  // direct technical cause of the denial; "no test run has happened yet" is the scenario design's
+  // rationale for that allowlist, not the mechanism the policy hook evaluates. After the denial,
+  // the failed run fell back to a flag-less `parallel` (never checked the threshold at all:
+  // terminal envelope exit_code:0, errors:[], coverage.min_missed_lines:null) while the control
+  // run self-corrected to `parallel --min-missed-lines 15`. Confirmed documentation gap, plausible
+  // contributor (not demonstrated causality): coverage.md's own trigger bullet above is a genuine,
+  // intentional 4th matrix cell (existing-reports-only gating) but didn't exclude the case where
+  // tests must run fresh first -- exactly this scenario's shape ("confirm unit tests pass, AND
+  // check coverage") -- consistent with, not proof of, why both runs reached for `coverage`
+  // first. Scoped to that same bullet's own line so this can't just match a disambiguation
+  // appearing anywhere else in the file.
+  it('the existing-coverage-only trigger explicitly excludes the fresh-test-run case, pointing at parallel instead', () => {
+    const lines = coverageDoc.split('\n');
+    const triggerLineIdx = lines.findIndex((l) => /didn.t drop below X missed lines/i.test(l));
+    expect(triggerLineIdx).toBeGreaterThan(-1);
+    const triggerClause = lines.slice(triggerLineIdx, triggerLineIdx + 3).join(' ');
+    expect(triggerClause).toMatch(/already exist|no fresh test run|existing report/i);
+    expect(triggerClause).toMatch(/parallel --min-missed-lines/i);
   });
 });
 
@@ -1019,6 +1045,26 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(step1.toLowerCase()).toMatch(/does not decide/);
     expect(step1.toLowerCase()).toMatch(/ambiguous/);
     expect(step1.toLowerCase()).toMatch(/\bask\b/);
+  });
+
+  // Closes the changed-module-verification 0/2 gap (tools/runs/agentic-eval-full-corpus-final-
+  // canary-v3-2026-08-11.md): both current-skill cells' committed audit sidecars show every
+  // kmp-test call as operation "parallel"/"describe"/null -- never "changed" -- despite `changed`
+  // being policy-legal both times. The scenario's prompt never says "changed"/"edited"/"my
+  // changes"; it's phrased as an unnamed target implied only by an existing local/uncommitted
+  // edit, a case step 1 previously had no rule for. Scoped to step 1's own span (same anchors as
+  // the test above) so this can't just match the word "changed" appearing anywhere else in the
+  // section, and so it structurally proves the rule is resolved as a WORKFLOW choice in step 1,
+  // before scope is ever classified in step 2.
+  it('step: resolves an unnamed, edit-implied target to the changed workflow, before scope is classified', () => {
+    const start = protocol.indexOf('Resolve the workflow first');
+    const end = protocol.indexOf('**Classify scope**');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const step1 = protocol.slice(start, end);
+    expect(step1).toMatch(/unnamed target/i);
+    expect(step1).toMatch(/uncommitted|local[\s-]change/i);
+    expect(step1).toMatch(/workflow is `changed`/i);
   });
 
   // Schema-v5 canary forensic fact #1/#2 (tools/runs/agentic-eval-evidence-driven-scope-canary-

@@ -12,7 +12,9 @@ The agent should dispatch `kmp-test coverage` when the user asks any of:
 
 - "Generate the coverage report" / "what's the coverage?" / "show coverage"
 - "Aggregate coverage from the existing reports" / "I already ran tests, just merge the reports"
-- "Check that coverage didn't drop below X missed lines" — combine with `--min-missed-lines`
+- "Check that coverage didn't drop below X missed lines" (only when reports already exist — no
+  fresh test run) — combine with `--min-missed-lines`; if tests must run first, that's
+  `parallel --min-missed-lines <N>` instead (see "Do not dispatch" below)
 - "Coverage-only run" — equivalent to `kmp-test parallel --skip-tests`
 
 Do **not** dispatch `coverage` for:

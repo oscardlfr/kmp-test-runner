@@ -96,6 +96,88 @@
 
 ### 📋 QUEUED follow-ups (next sessions)
 
+- 🔧 **v3 canary skill-remediation: `changed-module-verification` routing gap closed** — opened
+  2026-08-11 (`feature/agentic-v3-skill-remediation` → `develop`, not yet merged). Follow-up to
+  the full-corpus canary v3 (`tools/runs/agentic-eval-full-corpus-final-canary-v3-2026-08-11.md`,
+  PR #419), which scored `current-skill` 0/2 on `changed-module-verification` and 1/2 on
+  `coverage-threshold-failure`. For `changed-module-verification`: both cells' committed audit
+  sidecars show every `kmp-test` call as `operation:"parallel"`/`"describe"`/denied `"other"` —
+  never `"changed"` — despite `changed` being policy-legal both times; the scenario's prompt is
+  deliberately indirect ("there's an uncommitted edit somewhere, find its module and test it")
+  and never says "changed"/"edited"/"my changes". Confirmed documentation gap: `SKILL.md`'s
+  Decision protocol Step 1 ("resolve the workflow first") deferred entirely to the Steps table's
+  literal-phrase-only `changed` trigger row, with no rule for a target implied only by an
+  existing local/uncommitted change. Fixed by adding one clause to Step 1 (not a new Step-2 scope
+  category — `changed` is a workflow choice, resolved before scope is ever classified), plus 2
+  new trigger-phrase bullets in `references/workflows/changed.md`. New discriminating test
+  (`tests/vitest/skill-canonical-workflow.test.js`) scoped to Step 1's own span, RED against the
+  unmodified content, GREEN after. `PINNED_SKILL_SHA` NOT advanced; no live canary run as part of
+  this PR — both are separate, later, authorized work, matching every prior scenario-doc fix in
+  this series. Token budget held flat, measured on the canonical LF representation (the git-blob
+  shape SKILL.md ships as via `git archive`/`git show`, not this Windows checkout's CRLF
+  working-tree copy): real `countTokensCl100k` measurement 2,729 → 2,729 tokens (10,605 → 10,603
+  bytes), offset by trimming 3 confirmed-unlocked Steps-table Notes cells and one Guidelines
+  bullet's explanatory clause, none touching the footer. (This machine's CRLF working-tree
+  checkout: 10,794 → 10,793 bytes / 2,743 → 2,743 tokens — same zero/negative delta; included only
+  as a parity cross-check, not the canonical figure.) Reclassified
+  `changed-module-verification`'s own tag `held-out` → `train` (honest, since the fix is directly
+  informed by this scenario's own failure — it can no longer be held-out); corpus partition moves
+  3 train/3 held-out → 4 train/2 held-out (`nowinandroid-core-common` stays `held-out`,
+  unchanged). `tests/vitest/agentic-eval-corpus.test.js` and `tools/agentic-eval/README.md`
+  updated to match. For `coverage-threshold-failure` (1/2): sidecar-level evidence alone showed
+  only a `result_status` asymmetry between the two runs, explicitly not treated as an exit-code
+  equivalence (that inference was checked against `graders.mjs:505-511`'s own documented
+  uncertainty and found invalid). Root cause resolved via a scoped, sanitized raw-transcript
+  inspection of exactly the 2 `coverage-threshold-failure` raw files (the 2
+  `changed-module-verification` raw files were hashed only, never read — Finding 1 needed no raw
+  content). Extraction used only the harness's own existing parsers (`parseStreamJsonl`,
+  `findBashToolUsesWithResults`, `classifyBashCommand`, `tokenize`, `extractKmpTestEnvelope`,
+  `validateRunRecordFile`) against the exact event indices already known from the committed
+  sidecars — never a hand-rolled scan. Chain of custody: SHA-256 + byte length manifested for all
+  12 artifacts (4 records + 4 sidecars + 4 raw) before and after, zero drift confirmed; sidecar
+  hashes independently matched each record's own `accepted_audit.sha256`; `validate --run`
+  returned zero errors/warnings for all 4 records. Result: **Branch A** (flag never attempted in
+  any form). What follows is an observed execution mechanism plus a confirmed documentation gap,
+  not a demonstrated claim about the model's internal reasoning: BOTH the failed and control runs
+  first tried `kmp-test coverage`, denied because `coverage` is not in this scenario's
+  `allowed_kmptest_subcommands` (only doctor/describe/parallel) — that allowlist membership check
+  is the direct, technical cause of the denial; "no test run has happened yet" is the scenario
+  *design's* rationale for excluding `coverage` from the allowlist, not the mechanism the policy
+  hook itself evaluates. After the denial, the failed run fell back to a flag-less `parallel`
+  (terminal envelope `exit_code:0`, `errors:[]`, `coverage.min_missed_lines:null`; coverage was
+  collected as a `parallel` side effect but no threshold was ever checked), while the control run
+  self-corrected to `parallel --min-missed-lines 15`. Confirmed documentation gap, plausible
+  contributor (not demonstrated causality): `coverage.md`'s own "Check that coverage didn't drop
+  below X missed lines" trigger (a genuine, intentional 4th matrix cell — existing-reports-only
+  gating, confirmed by an existing locked test) didn't exclude the case where tests must run
+  fresh first, which is exactly this scenario's shape ("confirm unit tests pass, AND check
+  coverage") — consistent with, not proof of, why both runs reached for `coverage` first. Fixed
+  by adding an explicit disambiguating clause to that same trigger bullet, pointing at `parallel
+  --min-missed-lines <N>` for the fresh-execution case — the locked phrase itself preserved
+  verbatim. New discriminating test scoped to that bullet's own line(s), RED-verified against the
+  unmodified content (temporarily reverted via `git stash`, confirmed failing, restored), GREEN
+  after. Leads B (policy `=`-form denial) and C/D (grader-side, environment) were not reached —
+  the raw evidence resolved cleanly to Branch A before those became relevant. No harness/policy
+  file was touched. **Local-ci: accepted under split carve-out evidence, no pass** — the Windows
+  lane's fail-fast design halts at the first failing check, so no single invocation can show both
+  accepted carve-outs together. This session's evidence: both Linux lanes (Node 24/JDK 17, Node
+  18 compatibility) passed cleanly on the final local-ci invocation; the Windows lane completed
+  npm ci/line-ending/fixture/audit/Pester checks and halted exactly at the documented
+  `TaskActionTest.kt:62` carve-out (11/16, zero diff confirmed); the `windows-metachar.test.js`
+  carve-out (4/4, zero diff confirmed) was independently verified via a direct full-suite vitest
+  run on this same machine earlier in the session, not from within that same local-ci invocation.
+  **Deliberately out of scope for this PR** (adversarial review caught, none acted on — expanding
+  past what the raw evidence specifically demonstrated, or reopening the token budget already at
+  exact canonical-LF parity, would both violate this PR's own narrow-scope discipline): (a)
+  `coverage.md`'s "Generate the coverage report" / "what's the coverage?" trigger bullet (line 13)
+  has the same fresh-run-vs-existing-reports ambiguity as the fixed bullet, but no raw evidence
+  from these two cells implicated it — only the "didn't drop below X missed lines" bullet was
+  shown to be what both runs actually matched; (b) both this PR's fixes are narrow, evidence-shaped
+  clauses rather than a general "unnamed/implicit target" principle in Step 1 — a future scenario
+  phrased differently could still miss; (c)/(d) the token-budget trims (3 empty Steps-table Notes
+  cells, the `gradle clean` rationale clause) removed explanatory text without leaving a
+  documented reason why those specific cells were safe to cut (they were verified test-unlocked at
+  the time, per this same entry above, but that verification isn't recorded in the file itself).
 - 🔧 **Materializer Windows long-path handling + between-cell crash-safety journal** — opened for
   review 2026-08-11 (`feature/agentic-materializer-journal-crash-safety` → `develop`, not yet
   merged). Surfaced by a real 2026-08-10 canary incident (see

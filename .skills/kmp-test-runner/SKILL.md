@@ -24,8 +24,9 @@ metadata:
 Resolve scope before acting.
 
 1. **Resolve the workflow first** — from what the user asked (see the table under Steps).
-   `describe` discovers modules and tasks; it does not decide the workflow. If ambiguous, ask
-   before running.
+   `describe` discovers modules and tasks; it does not decide the workflow. Unnamed target, only
+   an uncommitted change: the workflow is `changed`, not `parallel`. If ambiguous, ask before
+   running.
 2. **Classify scope** — broad, exact module, test-capability target, or likely-no-tests target.
    Naming or platform wording never settles task capability: an Android-named module with
    `test_tasks.unit: null` loses to a differently-named KMP module whose own field is
@@ -111,10 +112,10 @@ Pick the subcommand:
 |-------------|-----------|-------|
 | "run tests" / "test this" / "run tests with coverage" | `kmp-test parallel --json --project-root .` | `test`/`jvmTest`/`desktopTest` |
 | "run instrumented tests" / "run on device" | `kmp-test android --json --project-root .` | `connectedAndroidTest` |
-| "run coverage" | `kmp-test coverage --json --project-root .` | kover/jacoco |
+| "run coverage" | `kmp-test coverage --json --project-root .` ||
 | "run tests; missed lines under 100" | `kmp-test parallel --min-missed-lines 100 --json --project-root .` ||
-| "run benchmarks" | `kmp-test benchmark --json --project-root .` | Macro/microbenchmark |
-| "what would run?" / "dry run" | append `--dry-run` to the command above | Plans as JSON only |
+| "run benchmarks" | `kmp-test benchmark --json --project-root .` ||
+| "what would run?" / "dry run" | append `--dry-run` to the command above ||
 | "run only changed tests" | `kmp-test changed --json --project-root .` | Git-derived |
 
 > Deep-dives: [`overview.md`](references/workflows/overview.md).
@@ -156,7 +157,7 @@ Confirm the envelope matches `exit_code`:
 
 ## Guidelines
 
-- **Never run `gradle clean`** — dispatch is already incremental.
+- **Never run `gradle clean`.**
 - **`--module-filter` / `--coverage-modules`** narrow scope — see Decision protocol.
 - **`--test-filter`** narrows to one test — `FullyQualifiedClassName#methodName`.
 - **Avoid `--no-coverage`** unless coverage doesn't apply.
