@@ -74,11 +74,16 @@ describe('finalizeIncident -- the emergency raw fallback and the main diagnostic
       expect(result.diagnosticWritten).toBe(false);
       expect(typeof result.diagnosticWriteError).toBe('string');
       expect(result.diagnosticWriteError.length).toBeGreaterThan(0);
-      // The real, absolute runsRootOverride path embedded in the raw underlying message is
-      // redacted -- the surrounding error-class text ("EEXIST: refusing to overwrite ...") is
-      // fine to keep, only the sensitive path itself must never leak.
+      // The real, absolute runsRootOverride path embedded in the raw underlying message must
+      // never leak. HOW it's kept safe legitimately differs by platform (confirmed directly, a
+      // real hosted Linux CI run): on Windows the path is PII-shaped (redactAndVerify's
+      // user-home pattern) and gets redacted in place, leaving the surrounding "EEXIST: ..." text
+      // intact; on POSIX, redactAndVerify's pattern is Windows-only and doesn't fire, so
+      // ABSOLUTE_PATH_RE's own structural check (which DOES catch a POSIX path) instead falls all
+      // the way back to the closed phase-code, replacing the whole message. Both are safe; this
+      // test asserts only the REQUIRED invariant (never the real path), not which of the two
+      // platform-dependent safe shapes it takes.
       expect(result.diagnosticWriteError).not.toContain(runsRootOverride);
-      expect(result.diagnosticWriteError).toContain('EEXIST');
       expect(existsSync(join(runsRootOverride, result.committedRelativePath))).toBe(false);
 
       // The ORIGINAL incident's own message is still fully usable.
