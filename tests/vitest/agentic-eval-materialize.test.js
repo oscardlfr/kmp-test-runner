@@ -72,14 +72,14 @@ describe('materializeSkillSnapshot', () => {
   // above (mechanism-only) and from the live-HEAD test above (tracks develop's tip forever, never
   // references this constant). calibrate/smoke both materialize current-skill via
   // runConditionPair's one call site using exactly PINNED_SKILL_SHA. This is a tripwire, not a
-  // general staleness detector: it deliberately hardcodes 9814ada and will need its own edit on
+  // general staleness detector: it deliberately hardcodes 8492d98 and will need its own edit on
   // every future legitimate pin advance -- the next test verifies the semantics that should
   // survive such an advance. Split into two independent it() blocks on purpose: expect().toBe()
   // throws synchronously, so a single block with the equality check first would hide whether the
   // content assertions below actually discriminate -- two blocks means a run against a stale pin
   // shows both failing for real, not just the first one.
-  it('PINNED_SKILL_SHA is locked to the PR #415 changed-workflow-contract fix', () => {
-    expect(PINNED_SKILL_SHA).toBe('9814ada0c45e6a3d2a0399291ec96cb8d1ef86bb');
+  it('PINNED_SKILL_SHA is locked to the PR #420 v3 skill-remediation snapshot', () => {
+    expect(PINNED_SKILL_SHA).toBe('8492d98d40b9f2208bac88cf8ac357aeb4c095ca');
   });
 
   it('the pinned current-skill snapshot reflects the PR #403 target-binding fix', async () => {
@@ -349,6 +349,56 @@ describe('materializeSkillSnapshot', () => {
 
     // --max-failures's row is fully gone from the shared flags matrix, not just changed.md.
     expect(flagsRefDoc).not.toMatch(/--max-failures/);
+  });
+
+  // PR #420 closed the v3 changed-module-verification 0/2 routing gap. This test reads the
+  // materialized pin rather than the live worktree and requires the complete workflow decision,
+  // including the negative half that prevents a silent fallback to parallel.
+  it('the pinned snapshot includes the PR #420 edit-implied changed routing contract', async () => {
+    const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runValidator });
+    cleanupDirs.push(snapshotDir);
+    expect(validation.ok).toBe(true);
+    const skillsDir = path.join(snapshotDir, '.skills', 'kmp-test-runner');
+    const skillMd = readFileSync(path.join(skillsDir, 'SKILL.md'), 'utf8')
+      .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const changedDoc = readFileSync(path.join(skillsDir, 'references', 'workflows', 'changed.md'), 'utf8')
+      .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const protocolStart = skillMd.indexOf('## Decision protocol');
+    const scopeStart = skillMd.indexOf('**Classify scope**', protocolStart);
+    expect(protocolStart).toBeGreaterThan(-1);
+    expect(scopeStart).toBeGreaterThan(protocolStart);
+    const workflowStep = skillMd.slice(protocolStart, scopeStart);
+
+    expect(workflowStep).toMatch(
+      /unnamed target,\s+only\s+an\s+uncommitted\s+change:\s+the\s+workflow\s+is\s+`changed`,\s+not\s+`parallel`/i
+    );
+    expect(changedDoc).toMatch(/pending change somewhere[\s\S]{0,120}find it and test just that/i);
+    expect(changedDoc).toMatch(/already edited locally[\s\S]{0,120}work out where it is/i);
+  });
+
+  // PR #420 also disambiguated coverage aggregation from a fresh tests-plus-coverage run and
+  // corrected --min-missed-lines to its real upper-bound semantics.
+  it('the pinned snapshot includes the PR #420 coverage routing and upper-bound wording', async () => {
+    const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runValidator });
+    cleanupDirs.push(snapshotDir);
+    expect(validation.ok).toBe(true);
+    const coverageDoc = readFileSync(
+      path.join(snapshotDir, '.skills', 'kmp-test-runner', 'references', 'workflows', 'coverage.md'),
+      'utf8'
+    ).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const lines = coverageDoc.split('\n');
+
+    const reportTriggerIndex = lines.findIndex((line) => line.includes('"what\'s the coverage?"'));
+    expect(reportTriggerIndex).toBeGreaterThan(-1);
+    const reportTrigger = lines.slice(reportTriggerIndex, reportTriggerIndex + 2).join(' ');
+    expect(reportTrigger).toMatch(/existing XML|existing report/i);
+    expect(reportTrigger).toMatch(/tests haven.t run yet[\s\S]*parallel/i);
+
+    const thresholdTriggerIndex = lines.findIndex((line) => /missed lines do not exceed X/i.test(line));
+    expect(thresholdTriggerIndex).toBeGreaterThan(-1);
+    const thresholdTrigger = lines.slice(thresholdTriggerIndex, thresholdTriggerIndex + 3).join(' ');
+    expect(thresholdTrigger).toMatch(/existing reports?|no\s+fresh\s+test\s+run/i);
+    expect(thresholdTrigger).toContain('parallel --min-missed-lines <N>');
   });
 
   it('cleans up its temp directory when validation fails partway through (not just on an invalid SHA)', async () => {
