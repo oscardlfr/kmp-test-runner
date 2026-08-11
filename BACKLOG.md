@@ -156,12 +156,32 @@
   does the fix below demonstrate it will improve live success — that requires a new, separately-
   authorized canary against a newly-pinned skill SHA (see "Local-ci" / Limitations below). Fixed
   by adding an explicit disambiguating clause to that same trigger bullet, pointing at `parallel
-  --min-missed-lines <N>` for the fresh-execution case — the locked phrase itself preserved
-  verbatim. New discriminating test scoped to that bullet's own line(s), RED-verified against the
-  unmodified content (temporarily reverted via `git stash`, confirmed failing, restored), GREEN
-  after. Leads B (policy `=`-form denial) and C/D (grader-side, environment) were not reached —
-  the raw evidence resolved cleanly to Branch A before those became relevant. No harness/policy
-  file was touched. **Local-ci: accepted under split carve-out evidence, no pass** — the Windows
+  --min-missed-lines <N>` for the fresh-execution case. New discriminating test scoped to
+  that bullet's own line(s), RED-verified against the unmodified content (temporarily reverted via
+  `git stash`, confirmed failing, restored), GREEN after. Leads B (policy `=`-form denial) and C/D
+  (grader-side, environment) were not reached — the raw evidence resolved cleanly to Branch A
+  before those became relevant. No harness/policy file was touched.
+
+  **Two follow-up precision rounds, same PR, both CodeRabbit-adjacent:** (1) the raw inspection
+  demonstrates the commands each run actually executed and their observed results (documented
+  above) — it does NOT show which documentation bullet, if any, the model's internal reasoning
+  matched against. An earlier draft of this entry overstated that ("...was shown to be what both
+  runs actually matched"); corrected to keep the same demonstrated/confirmed/not-demonstrated
+  separation used throughout this entry. (2) `coverage.md`'s own "Check that coverage didn't drop
+  below X missed lines" bullet was itself semantically inverted — `--min-missed-lines <N>` fails
+  when `coverage.missed_lines` EXCEEDS `N` (coverage.md:49's own flag table), so "didn't drop
+  below X" described the opposite condition. CodeRabbit caught this on PR #420; corrected to
+  "missed lines do not exceed X", updating the two locked test assertions to match (RED-verified
+  against the unmodified content, GREEN after) rather than preserving the now-known-wrong phrase.
+  The sibling "Generate the coverage report" / "what's the coverage?" trigger — previously logged
+  below as a deliberately deferred, out-of-scope ambiguity — was closed in the same pass (an
+  explicit "existing XML/reports only, else use `parallel`" clause, plus a bullet-scoped
+  discriminating test), since fixing it required no raw re-inspection and no SKILL.md/budget
+  change. The `changed`-routing test was also tightened to require the complete clause ("workflow
+  is `changed`, not `parallel`") rather than only the positive half, per a separate CodeRabbit
+  nitpick — SKILL.md's own content was already correct; only the test was under-specified.
+
+  **Local-ci: accepted under split carve-out evidence, no pass** — the Windows
   lane's fail-fast design halts at the first failing check, so no single invocation can show both
   accepted carve-outs together. This session's evidence: both Linux lanes (Node 24/JDK 17, Node
   18 compatibility) passed cleanly on the final local-ci invocation; the Windows lane completed
@@ -171,16 +191,15 @@
   run on this same machine earlier in the session, not from within that same local-ci invocation.
   **Deliberately out of scope for this PR** (adversarial review caught, none acted on — expanding
   past what the raw evidence specifically demonstrated, or reopening the token budget already at
-  exact canonical-LF parity, would both violate this PR's own narrow-scope discipline): (a)
-  `coverage.md`'s "Generate the coverage report" / "what's the coverage?" trigger bullet (line 13)
-  has the same fresh-run-vs-existing-reports ambiguity as the fixed bullet, but no raw evidence
-  from these two cells implicated it — only the "didn't drop below X missed lines" bullet was
-  shown to be what both runs actually matched; (b) both this PR's fixes are narrow, evidence-shaped
-  clauses rather than a general "unnamed/implicit target" principle in Step 1 — a future scenario
-  phrased differently could still miss; (c)/(d) the token-budget trims (3 empty Steps-table Notes
-  cells, the `gradle clean` rationale clause) removed explanatory text without leaving a
-  documented reason why those specific cells were safe to cut (they were verified test-unlocked at
-  the time, per this same entry above, but that verification isn't recorded in the file itself).
+  exact canonical-LF parity, would both violate this PR's own narrow-scope discipline): (a) both
+  this PR's fixes are narrow, evidence-shaped clauses rather than a general "unnamed/implicit
+  target" principle in Step 1 — a future scenario phrased differently could still miss; (b)/(c)
+  the token-budget trims (3 empty Steps-table Notes cells, the `gradle clean` rationale clause)
+  removed explanatory text without leaving a documented reason why those specific cells were safe
+  to cut (they were verified test-unlocked at the time, per this same entry above, but that
+  verification isn't recorded in the file itself). (The `coverage.md` first-trigger-bullet
+  ambiguity originally logged here as item (a) was closed in a later round of this same PR — see
+  the "Two follow-up precision rounds" note above — so it's no longer deferred.)
 - 🔧 **Materializer Windows long-path handling + between-cell crash-safety journal** — opened for
   review 2026-08-11 (`feature/agentic-materializer-journal-crash-safety` → `develop`, not yet
   merged). Surfaced by a real 2026-08-10 canary incident (see

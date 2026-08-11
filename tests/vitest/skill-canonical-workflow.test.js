@@ -584,8 +584,11 @@ describe('Steps table -- tests+coverage-budget routing (grounds the BACKLOG "ski
     expect(row).not.toContain('--min-missed-lines');
   });
 
-  it('coverage.md still documents applying a threshold to EXISTING coverage without new tests (the 4th matrix cell, deliberately kept out of SKILL.md\'s compact table)', () => {
-    expect(coverageDoc).toMatch(/didn.t drop below X missed lines/i);
+  // Upper-bound wording, not "didn't drop below X" -- --min-missed-lines <N> fails when
+  // coverage.missed_lines EXCEEDS N (coverage.md:49's own flag documentation), so "didn't drop
+  // below X missed lines" described the opposite condition. Caught by CodeRabbit on PR #420.
+  it('coverage.md still documents applying an upper-bound threshold to EXISTING coverage without new tests (the 4th matrix cell, deliberately kept out of SKILL.md\'s compact table)', () => {
+    expect(coverageDoc).toMatch(/missed lines do not exceed X/i);
     expect(coverageDoc).toContain('--min-missed-lines');
   });
 
@@ -608,11 +611,25 @@ describe('Steps table -- tests+coverage-budget routing (grounds the BACKLOG "ski
   // appearing anywhere else in the file.
   it('the existing-coverage-only trigger explicitly excludes the fresh-test-run case, pointing at parallel instead', () => {
     const lines = coverageDoc.split('\n');
-    const triggerLineIdx = lines.findIndex((l) => /didn.t drop below X missed lines/i.test(l));
+    const triggerLineIdx = lines.findIndex((l) => /missed lines do not exceed X/i.test(l));
     expect(triggerLineIdx).toBeGreaterThan(-1);
     const triggerClause = lines.slice(triggerLineIdx, triggerLineIdx + 3).join(' ');
     expect(triggerClause).toMatch(/already exist|no fresh test run|existing report/i);
     expect(triggerClause).toMatch(/parallel --min-missed-lines/i);
+  });
+
+  // The sibling "Generate the coverage report" / "what's the coverage?" trigger has the same
+  // fresh-run-vs-existing-reports ambiguity as the threshold bullet above -- closed in the same
+  // PR round rather than left deferred. Scoped to that bullet's own line only, so this can't just
+  // match the disambiguation appearing anywhere else in the file (e.g. the threshold bullet's own
+  // clause, already covered by the test above).
+  it('the "generate the coverage report" trigger also explicitly excludes the fresh-test-run case, pointing at parallel instead', () => {
+    const lines = coverageDoc.split('\n');
+    const triggerLineIdx = lines.findIndex((l) => l.includes('"what\'s the coverage?"'));
+    expect(triggerLineIdx).toBeGreaterThan(-1);
+    const triggerClause = lines.slice(triggerLineIdx, triggerLineIdx + 2).join(' ');
+    expect(triggerClause).toMatch(/existing XML|existing report/i);
+    expect(triggerClause).toMatch(/\bparallel\b/i);
   });
 });
 
@@ -1064,7 +1081,10 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     const step1 = protocol.slice(start, end);
     expect(step1).toMatch(/unnamed target/i);
     expect(step1).toMatch(/uncommitted|local[\s-]change/i);
-    expect(step1).toMatch(/workflow is `changed`/i);
+    // Matches the complete clause, not just the positive half -- a future edit that kept
+    // "workflow is `changed`" while silently restoring a `parallel` fallback would otherwise
+    // still pass (CodeRabbit nitpick, PR #420).
+    expect(step1).toMatch(/workflow is `changed`, not `parallel`/i);
   });
 
   // Schema-v5 canary forensic fact #1/#2 (tools/runs/agentic-eval-evidence-driven-scope-canary-
