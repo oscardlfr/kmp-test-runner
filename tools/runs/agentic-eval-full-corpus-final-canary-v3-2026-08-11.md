@@ -7,12 +7,18 @@ Claude Code sessions) run from the merged PR #418 harness (`75dfd96`, "preserve 
 across worktree crashes"). This is an **evidence-only PR**: no harness, skill, pin, policy, grader,
 corpus, or schema file is modified by this session. **This is a directional `n=2` canary, not a
 statistically meaningful benchmark**, and **not evidence of general speed, cost, token, quality, or
-product-efficacy improvement**. All six matrices were accepted; no retries, replacements, or
-continuations occurred.
+product-efficacy improvement**. All six matrices were accepted; no live-session retries,
+replacements, or continuations occurred. This is distinct from in-session agent-level tool-call
+retries, which did occur on 3 of the 24 records -- see "Session accounting" below for the precise,
+unqualified count.
 
 ## Session accounting
 
-**24/24 authorized live sessions consumed, 6/6 matrices accepted, 0 retries, 0 replacements.**
+**24/24 authorized live sessions consumed, 6/6 matrices accepted, 0 live-session retries, 0
+replacements.** This claim is scoped to the live-session/matrix-invocation layer only: no matrix
+was ever re-run, retried, or replaced, and no session was substituted for another. It does **not**
+claim zero retries at every layer -- see the next section for the separate, non-zero, in-session
+agent-level retry count.
 
 | # | Scenario | Clone | Records | Sidecars | Result |
 |---|---|---|---|---|---|
@@ -45,9 +51,20 @@ and no unrelated work was interleaved while a matrix ran.
 - **Session ceiling**: exactly **24** live Claude sessions authorized
   (`AUTORIZO HASTA 24 SESIONES LIVE NUEVAS DEL CANARY FULL-CORPUS V3, SIN REINTENTOS`), and exactly
   **24 spent** -- none unused, none exceeded, zero live-session retries, zero replacement runs of
-  any live matrix. (In-session agent-level retries of a session's own Gradle invocations, e.g. one
-  cell's `retries: 1`, reflect normal recorded agent behavior inside a single session, not a re-run
-  of the session itself.)
+  any live matrix.
+- **Two distinct retry layers -- do not conflate them.** The claim above is live-session-level only
+  (no matrix/session was ever re-run or replaced). Separately, each committed record carries its own
+  `retries` field: the number of times the agent retried one of its own tool calls (e.g. a Gradle
+  invocation) *within* that one already-counted, already-successful session -- normal recorded agent
+  behavior, not a re-run of the session. Summed across all 24 committed records,
+  `sum(retries.value) = 5`, concentrated in exactly 3 of the 24 records (the other 21 all have
+  `retries.value: 0`):
+
+  | `run_id` | Scenario | Condition | Repetition | `retries.value` |
+  |---|---|---|---|---|
+  | `scenario-current-skill-649500a9` | `changed-module-verification` | current-skill | 1 | 1 |
+  | `scenario-no-skill-72fb2288` | `nowinandroid-core-common` | no-skill | 1 | 3 |
+  | `scenario-current-skill-680a6078` | `kampkit-android-host-test-discovery` | current-skill | 1 | 1 |
 
 ## Fixed provenance
 
