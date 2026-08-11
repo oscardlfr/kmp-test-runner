@@ -1,0 +1,110 @@
+{
+  "schema": 1,
+  "run_id": "scenario-no-skill-d1b0e277",
+  "run_schema": 5,
+  "run_kind": "scenario",
+  "condition": "no-skill",
+  "scenario_id": "kampkit-android-host-test-discovery",
+  "first_useful_signal_event": null,
+  "terminal_authoritative_event": null,
+  "tool_calls": [
+    {
+      "ordinal": 0,
+      "tool_use_event_index": 6,
+      "tool_result_event_index": 9,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 1,
+      "tool_use_event_index": 13,
+      "tool_result_event_index": 16,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 2,
+      "tool_use_event_index": 20,
+      "tool_result_event_index": 23,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 3,
+      "tool_use_event_index": 27,
+      "tool_result_event_index": 30,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 4,
+      "tool_use_event_index": 35,
+      "tool_result_event_index": 38,
+      "tool_kind": "gradle",
+      "operation": "other",
+      "plan_only": true,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 5,
+      "tool_use_event_index": 42,
+      "tool_result_event_index": 43,
+      "tool_kind": "non-target-skill",
+      "operation": null,
+      "plan_only": null,
+      "policy_decision": "not-applicable",
+      "result_status": "success",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 6,
+      "tool_use_event_index": 48,
+      "tool_result_event_index": 51,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 7,
+      "tool_use_event_index": 59,
+      "tool_result_event_index": 62,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    }
+  ],
+  "summary": {
+    "tool_calls_total": 8,
+    "shell_commands_total": 7,
+    "post_signal_ms": null,
+    "post_signal_tool_calls": null,
+    "policy_denials_total": 7,
+    "policy_denials_before_first_signal": null,
+    "policy_denials_after_first_signal": null,
+    "policy_decisions_missing": 0
+  }
+}

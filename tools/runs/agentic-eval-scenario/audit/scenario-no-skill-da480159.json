@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "run_id": "scenario-no-skill-da480159",
+  "run_schema": 5,
+  "run_kind": "scenario",
+  "condition": "no-skill",
+  "scenario_id": "kampkit-no-applicable-tests",
+  "first_useful_signal_event": null,
+  "terminal_authoritative_event": null,
+  "tool_calls": [
+    {
+      "ordinal": 0,
+      "tool_use_event_index": 4,
+      "tool_result_event_index": 7,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 1,
+      "tool_use_event_index": 11,
+      "tool_result_event_index": 14,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 2,
+      "tool_use_event_index": 16,
+      "tool_result_event_index": 19,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 3,
+      "tool_use_event_index": 23,
+      "tool_result_event_index": 26,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 4,
+      "tool_use_event_index": 31,
+      "tool_result_event_index": 34,
+      "tool_kind": "gradle",
+      "operation": "other",
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 5,
+      "tool_use_event_index": 38,
+      "tool_result_event_index": 41,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    }
+  ],
+  "summary": {
+    "tool_calls_total": 6,
+    "shell_commands_total": 6,
+    "post_signal_ms": null,
+    "post_signal_tool_calls": null,
+    "policy_denials_total": 6,
+    "policy_denials_before_first_signal": null,
+    "policy_denials_after_first_signal": null,
+    "policy_decisions_missing": 0
+  }
+}
