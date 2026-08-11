@@ -1745,6 +1745,22 @@ describe('writeRejectionRawTranscripts -- Transaction 1 (raw transcripts, minima
     });
   });
 
+  it('additionally returns rawTranscriptsManifest -- exactly the {run_id, capture_ordinal, filename} entries actually written, for the journal exact-correspondence discard check (decision 3/N)', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      const transcriptsByRunId = { r1: '{"line":1}\n', r2: '{"line":2}\n' };
+      const captureOrdinalByRunId = { r1: 0, r2: 1 };
+      const result = writeRejectionRawTranscripts(rejectionId, transcriptsByRunId, captureOrdinalByRunId, { runsRootOverride: runsRoot });
+      expect(result.rawTranscriptsManifest).toEqual(
+        expect.arrayContaining([
+          { run_id: 'r1', capture_ordinal: 0, filename: deriveTranscriptFilename(0, 'r1') },
+          { run_id: 'r2', capture_ordinal: 1, filename: deriveTranscriptFilename(1, 'r2') },
+        ]),
+      );
+      expect(result.rawTranscriptsManifest.length).toBe(2);
+    });
+  });
+
   it('accepts an empty-string transcript -- legitimate and forensically meaningful (the session produced no stdout)', () => {
     isolatedRunsRoot((runsRoot) => {
       const rejectionId = randomUUID();

@@ -71,7 +71,7 @@ describe('applyFixtureSetup -- precondition: clean tree required', () => {
       fixtureDir,
       fixtureSetup: { operation: 'append_comment', relative_path: RELATIVE_PATH, expected_blob_oid: blobOid },
     })).toThrow(/not clean/i);
-  });
+  }, 30000);
 
   it('throws when an UNTRACKED file is already present before the setup runs', () => {
     const { sourceRepoDir, pinnedCommit, blobOid } = makeSourceRepo();

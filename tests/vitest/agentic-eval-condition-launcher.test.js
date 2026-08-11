@@ -267,6 +267,31 @@ describe('spawnCondition -- real subprocess (local shell only, no Claude, no net
   });
 });
 
+describe('spawnCondition -- onSpawned lifecycle callback', () => {
+  it('fires exactly once, synchronously observable after await, on a real successful spawn', async () => {
+    const spawns = [];
+    const argv = ['printf', 'line1\n'];
+    await spawnCondition(argv, { env: process.env, cwd: process.cwd(), timeoutMs: 10000, onSpawned: () => spawns.push(Date.now()) });
+    expect(spawns.length).toBe(1);
+  });
+
+  it('never fires when the process fails to spawn at all (child.on(\'error\') path, e.g. a missing cwd)', async () => {
+    const spawns = [];
+    const missingDir = mkdtempSync(join(tmpdir(), 'aecl-onspawned-missing-'));
+    rmSync(missingDir, { recursive: true, force: true });
+    const result = await spawnCondition(['anything'], { env: process.env, cwd: missingDir, timeoutMs: 5000, onSpawned: () => spawns.push(Date.now()) });
+    expect(result.terminated).toBe(true);
+    expect(result.terminationReason).toBe('error');
+    expect(spawns.length).toBe(0);
+  });
+
+  it('is optional -- omitting it entirely does not change spawnCondition\'s own behavior', async () => {
+    const argv = ['printf', 'line1\n'];
+    const result = await spawnCondition(argv, { env: process.env, cwd: process.cwd(), timeoutMs: 10000 });
+    expect(result.exitCode).toBe(0);
+  });
+});
+
 describe('buildPolicySettingsFile', () => {
   it('generates a settings file wiring policy-hook.mjs as the PreToolUse Bash hook', () => {
     const settingsPath = buildPolicySettingsFile();

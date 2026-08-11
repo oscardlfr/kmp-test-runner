@@ -820,6 +820,101 @@ tiers, which stay exactly as narrow as before.
   previously had no way to locate a successfully-written diagnostic short of listing the directory
   by hand, and no way to tell "raw preserved but diagnostic failed" apart from its own inverse.
 
+## Materializer long paths, and the crash-safety journal
+
+A 2026-08-10 canary incident found two related gaps, distinct from the rejected-run diagnostics
+above: (1) `materialize.mjs`'s git operations had no long-path handling, so a *reused* scenario
+worktree accumulating deep Gradle/Hilt/Kotlin build output across cells could fail Windows
+`MAX_PATH` with `Filename too long` — confirmed both in `git clean -fdx` (the reuse-branch reset)
+and in `removeScenarioWorktree`'s own teardown; and (2) an exception thrown **between cells** —
+while materializing/resetting the *next* cell, or anywhere in a cell's own post-spawn processing —
+discarded an already-completed, already-spawned live session with zero trace on disk, in any tier.
+The rejected-run diagnostics above only ever fire for a *detected* hard-gate rejection on a
+*fully-executed* matrix; neither an inter-cell exception nor a non-gate `{ok:false}` (sidecar/
+schema/privacy/promotion-collision — all of which return `{ok:false, reason}` rather than throw)
+was covered by any forensics mechanism before this.
+
+**Long paths**: every git invocation in `materialize.mjs` is centralized through one command
+builder that injects `-c core.longpaths=true` — scoped to that one subprocess call via git's own
+`-c` flag, never touching `process.env` or any config file at system/global/local scope, so
+`core.longpaths` never persists and no `GIT_CONFIG_*` variable ever reaches the measured
+environment. `removeScenarioWorktree()` additionally verifies **two independent postconditions**
+before considering a teardown complete — the directory is actually gone (via a new bounded-retry
+`removeDirRobust()`, modeled on `lib/project/artifact-sweep.js`'s `renameWithRetrySync`, always
+attempted regardless of whether `git worktree remove` itself succeeded) AND the worktree no longer
+appears in `git worktree list --porcelain` — because either alone can be misleading. A `git
+worktree add` rollback failure is now attached to the original error (`err.rollbackError`) instead
+of silently discarded, closing the specific mechanism that left an orphaned scenario-worktree temp
+directory behind during the incident.
+
+**The journal**: a per-invocation write-ahead safety net, `durable-journal.mjs`'s
+`createInvocationJournal()` is created by the command (`cmdRun`/`cmdCalibrate`/`cmdSmoke`) *before*
+the first spawn, under `tools/runs/agentic-eval-journal/<invocation-id>/` (gitignored in full —
+`.gitignore`'s `tools/runs/agentic-eval-journal/**`). Storage is immutable, single-purpose files —
+never an append-only log, since `promoteTargetsAtomically` is a write-once/refuse-to-overwrite
+primitive, not an append primitive: each transition is its own file under `events/`, each cell's
+raw payload its own file under `raw/<cellOrdinal>.jsonl`. The transition state machine is closed
+and enforced (an illegal transition throws immediately, so a wiring bug fails loudly during
+development):
+
+```text
+planned -> spawn_started -> spawn_completed -> raw_persisted -> parsed -> evaluated
+planned -> spawn_failed                                                    (terminal)
+```
+
+`spawn_started`/`spawn_failed` are determined from `condition-launcher.mjs`'s `spawnCondition`
+gaining one optional `onSpawned` callback wired to the real `child.on('spawn')` event — which
+performs **zero I/O and can never throw** (Node's EventEmitter dispatch does not protect a
+listener from its own exception; a callback doing fallible I/O there could crash the whole harness
+process while a live session is still running). It only sets a local `didSpawn` flag and
+timestamp; the real journal write happens afterward, as ordinary `await`ed code inside a real
+`try/catch`, immediately after `spawnCondition()` resolves and *before* any parsing — "the next
+operation," verbatim. `spawn_failed` is a genuine terminal state (a spawn that never actually
+started, e.g. `ENOENT`) — never conflated with `spawn_started` continuing normally, which would be
+a lie about a process that never ran. `cellOrdinal` is stamped onto every `conditionResult` and is
+what promotion-time raw read-back always keys off — never array position, never an assumed A/B
+convention (the journal's 0=B/current-skill-then-1=A/no-skill ordinal assignment does not match
+this codebase's historical `recordA`/`recordB` parameter ordering elsewhere; conflating the two
+would silently swap two live sessions' transcripts).
+
+**Incident finalization**: every risky operation tags its own thrown error with a closed phase
+(`durable-journal.mjs`'s `AGENTIC_EVAL_INCIDENT_PHASES`: `acquiring_shared_resources`,
+`materializing_cell`, `persisting_cell_journal`, `parsing_or_attributing_cell`,
+`finalizing_matrix`) via `tagIncidentPhase()`, never clobbering a more precise inner tag. A single
+shared finalizer, `incident-diagnostics.mjs`'s `finalizeIncident()`, is called from every command's
+acquisition/execution catch, a **new** catch around grading/record-building/finalization (this
+section used to be a bare `try {...} finally {...}` with no `catch` at all — an exception there,
+ordinary application logic, would have escaped uncaught to `main()`'s own top-level handler,
+reproducing the exact class of silent forensic loss this whole mechanism exists to close, one call
+frame later), and the existing `if (!result.ok)` branch whenever `result.rejectionId == null` (a
+non-gate failure, not the well-handled hard-gate rejection path above, which is untouched).
+`finalizeIncident()` never trusts a caught exception's `.message` or `finalizeAndWrite*`'s own
+`result.reason` as already safe — both are redacted through the same pipeline every other
+committed artifact in this harness uses, falling back to one of a small closed set of reason codes
+(never the raw text) if redaction can't guarantee cleanliness. It writes a committed diagnostic to
+`tools/runs/agentic-eval-incident/<incident_id>.json` (real counts, phase, redacted reason,
+already-safe provenance) and a gitignored local tier at `agentic-eval-incident/raw/<incident_id>
+.json` (already covered by the existing `agentic-eval-*/raw/**` glob). When a raw payload might
+not yet be durably in the journal (`phase === 'persisting_cell_journal'`), it also attempts an
+**emergency raw fallback** — its own independent, best-effort local transaction, writing to
+`agentic-eval-incident/raw/transcripts/<incident_id>/<cellOrdinal>.jsonl` — and reports the outcome
+honestly (`emergency_raw_persisted: true|false`, `emergency_raw_write_error`), never assuming
+success: if the same underlying failure that broke the primary journal write also breaks this
+fallback, that is reported truthfully rather than silently claimed as preserved. Replaces the
+previous unconditional `"...threw before any cell completed: ${err.stack || err.message}"` lines —
+both the false claim (never checked how many cells actually ran) and the raw stack trace (which
+can and does carry absolute paths) printed straight to stderr.
+
+**Discard policy**: the journal is deleted (`promoteAndDiscard()`) only once the command has
+proven the real evidence it was a safety net for is durably elsewhere — full acceptance, or a
+hard-gate rejection whose own two-transaction forensics (above) provably persisted the *exact*
+same cell set the journal itself captured (`writeRejectionRawTranscripts()` additionally returns a
+`rawTranscriptsManifest` of exactly what it wrote, purely additive, so this comparison never needs
+to re-read anything off disk). In every other outcome the journal is simply never deleted — its
+continued presence on disk *is* the preservation. A discard failure itself is a
+`reportCleanupFailures`-style warning only, never a command failure, since by the time it runs the
+real evidence is already safe.
+
 ## Isolation
 
 - **Environment**: `env-builder.mjs`'s `buildEvalEnv()` is allowlist-only, starting from the

@@ -1022,6 +1022,15 @@ export function writeRejectionRawTranscripts(rejectionId, transcriptsByRunId, ca
     transcriptsDir,
     transcriptsRelativeDir: join('agentic-eval-rejected', 'raw', 'transcripts', rejectionId),
     transcriptCount: runIds.length,
+    // Purely additive (decision 3/N -- the journal's exact-correspondence discard check):
+    // enumerates exactly what was actually written, reusing data this function already computed
+    // per run_id above -- never a second pass, never a re-read off disk. A caller can compare this
+    // against a journal's own raw_persisted cellOrdinal set without trusting a bare boolean flag.
+    rawTranscriptsManifest: runIds.map((id) => ({
+      run_id: id,
+      capture_ordinal: captureOrdinalByRunId[id],
+      filename: deriveTranscriptFilename(captureOrdinalByRunId[id], id),
+    })),
   };
 }
 

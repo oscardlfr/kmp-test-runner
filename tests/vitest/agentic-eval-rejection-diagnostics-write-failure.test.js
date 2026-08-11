@@ -77,10 +77,13 @@ describe('finalizeAndWriteRecords -- a rejection-diagnostics write failure never
     // exactly the same test-isolation convention every other test in this suite already uses.
     const runsRootOverride = mkdtempSync(path.join(os.tmpdir(), 'aerdw-runs-root-'));
     try {
+      // cellOrdinal stamped on each -- finalizeAndWriteRecords' own captureOrdinalByRunId now
+      // derives from runA.cellOrdinal/runB.cellOrdinal, never hardcoded 0/1 (Codex-audit fix, PR
+      // #418, round 4).
       const result = await finalizeAndWriteRecords({
         runKind: 'calibration', recordA, recordB,
-        runA: { spawnResult: { rawStdout: '' }, events: [] },
-        runB: { spawnResult: { rawStdout: '' }, events: [] },
+        runA: { spawnResult: { rawStdout: '' }, events: [], cellOrdinal: 1 },
+        runB: { spawnResult: { rawStdout: '' }, events: [], cellOrdinal: 0 },
         hardGateFn: alwaysFailGate,
         runsRootOverride,
       });
@@ -134,9 +137,14 @@ describe('finalizeAndWriteRecords -- a rejection-diagnostics write failure never
 
     const runsRootOverride = mkdtempSync(path.join(os.tmpdir(), 'aerdw-matrix-runs-root-'));
     try {
-      const conditionResult = { ...fakeConditionResult(), spawnResult: { rawStdout: '', terminated: false, terminationReason: null } };
+      // Distinct objects, each stamped with its own real cellOrdinal (matching recordA/recordB's
+      // own orderIndex 0/1) -- captureOrdinalByRunId now derives from conditionResult.cellOrdinal,
+      // never array position, so two conditionResults sharing one cellOrdinal (or lacking it
+      // entirely) would fail validateCaptureOrdinalSet's own uniqueness/shape check.
+      const conditionResultA = { ...fakeConditionResult(), spawnResult: { rawStdout: '', terminated: false, terminationReason: null }, cellOrdinal: 0 };
+      const conditionResultB = { ...fakeConditionResult(), spawnResult: { rawStdout: '', terminated: false, terminationReason: null }, cellOrdinal: 1 };
       const result = await finalizeAndWriteMatrixRecords({
-        runKind: 'scenario', records: [recordA, recordB], conditionResults: [conditionResult, conditionResult],
+        runKind: 'scenario', records: [recordA, recordB], conditionResults: [conditionResultA, conditionResultB],
         hardGateFn: alwaysFailMatrixGate, runsRootOverride, repeats: 1,
       });
 
@@ -145,6 +153,58 @@ describe('finalizeAndWriteRecords -- a rejection-diagnostics write failure never
       expect(result.diagnosticsWriteError).toContain('simulated: privacy check refused');
       expect(result.rawTranscriptsWriteError).toBeFalsy();
       expect(result.diagnosticsTranscriptCount).toBe(2);
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+});
+
+// Post-Codex-audit fix (PR #418, round 4): finalizeAndWriteRecords' own captureOrdinalByRunId
+// construction still hardcoded {B:0, A:1} even after journalRawExactlyMatchesRejectionManifest's
+// CONSUMER-side check was fixed (round 3) to derive its own comparison binding from
+// runB.cellOrdinal/runA.cellOrdinal -- a wrong ordinal written HERE, by the PRODUCER, would already
+// be baked into the rejection manifest before that later check ever runs. This test proves the fix
+// by using runA/runB objects with cellOrdinal values SWAPPED relative to the historical B=0/A=1
+// convention, and asserting the resulting rawTranscriptsManifest reflects exactly THAT swapped
+// binding -- never the convention.
+describe('finalizeAndWriteRecords -- captureOrdinalByRunId is derived from the real run objects\' own cellOrdinal, never a hardcoded 0/1 convention', () => {
+  it('with runA.cellOrdinal:0 and runB.cellOrdinal:1 (the OPPOSITE of the historical B=0/A=1 convention), rawTranscriptsManifest reflects exactly that swapped binding', async () => {
+    const { finalizeAndWriteRecords, buildRunRecord } = await import('../../tools/agentic-eval/cli.mjs');
+    const { deriveTranscriptFilename } = await import('../../tools/agentic-eval/rejection-diagnostics.mjs');
+
+    const common = { runKind: 'calibration', scenarioId: 'test-swapped-ordinal-binding', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(), modelRequested: 'fake-model-x', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
+    const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
+    const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'a'.repeat(40), ...common });
+
+    const alwaysFailGate = () => ({
+      ok: false, reason: 'SIMULATED_SWAPPED_ORDINAL_GATE_FAILURE', failedChecksA: ['simulatedCheck'], failedChecksB: [],
+      unexpectedToolUsesCountA: 0, unexpectedToolUsesCountB: 0, unexpectedToolsA: [], unexpectedToolsB: [],
+    });
+
+    const runsRootOverride = mkdtempSync(path.join(os.tmpdir(), 'aerdw-swapped-runs-root-'));
+    try {
+      const result = await finalizeAndWriteRecords({
+        runKind: 'calibration', recordA, recordB,
+        // Deliberately swapped relative to the codebase's own historical B=0/A=1 convention.
+        runA: { spawnResult: { rawStdout: '' }, events: [], cellOrdinal: 0 },
+        runB: { spawnResult: { rawStdout: '' }, events: [], cellOrdinal: 1 },
+        hardGateFn: alwaysFailGate,
+        runsRootOverride,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('SIMULATED_SWAPPED_ORDINAL_GATE_FAILURE');
+      expect(result.rawTranscriptsWriteError).toBeFalsy();
+      expect(Array.isArray(result.rawTranscriptsManifest)).toBe(true);
+      expect(result.rawTranscriptsManifest.length).toBe(2);
+
+      const byRunId = Object.fromEntries(result.rawTranscriptsManifest.map((m) => [m.run_id, m]));
+      // The manifest reflects the REAL run objects' own cellOrdinal -- A got 0, B got 1 -- the
+      // exact opposite of the hardcoded convention a pre-fix producer would have written.
+      expect(byRunId[recordA.run_id].capture_ordinal).toBe(0);
+      expect(byRunId[recordB.run_id].capture_ordinal).toBe(1);
+      expect(byRunId[recordA.run_id].filename).toBe(deriveTranscriptFilename(0, recordA.run_id));
+      expect(byRunId[recordB.run_id].filename).toBe(deriveTranscriptFilename(1, recordB.run_id));
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }

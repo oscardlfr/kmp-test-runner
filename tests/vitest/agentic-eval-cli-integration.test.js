@@ -292,15 +292,57 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // already honors. TEMP/TMP/TMPDIR pointed at a non-existent directory forces
   // acquireSharedEvalResources' own real mkdtempSync call to throw, deterministically, without
   // needing to reproduce the original (never-confirmed) CI-only trigger.
-  it('a resource-acquisition failure (mkdtempSync throwing on a broken TEMP dir) fails cleanly with exit 1, never an uncaught exit 2', () => {
+  //
+  // Materializer-journal PR: the message itself changed -- the old unconditional "session
+  // acquisition/spawn threw before any condition completed" claim is replaced with real, honest
+  // counters (this is the "failure before the first spawn: zero counters" case). Never a stack
+  // trace or an absolute path in stderr either -- see incident-diagnostics.mjs's finalizeIncident.
+  it('a resource-acquisition failure (mkdtempSync throwing on a broken TEMP dir) fails cleanly with exit 1, real zero counters, never an uncaught exit 2', () => {
     const brokenTemp = path.join(isolatedTmp, 'this-directory-does-not-exist');
     const env = { ...fakeClaudeEnv('success'), TEMP: brokenTemp, TMP: brokenTemp, TMPDIR: brokenTemp };
     const result = runCli(['calibrate', '--model', 'fake-model-x'], env);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('CALIBRATION FAILED');
-    expect(result.stderr).toContain('session acquisition/spawn threw');
+    expect(result.stderr).toMatch(/0\/2 cells evaluated/);
+    expect(result.stderr).toMatch(/0 spawned/);
     // Never the raw, unhandled "agentic-eval: <stack>" shape main()'s own top-level catch writes.
     expect(result.stderr).not.toMatch(/^agentic-eval:/m);
+    // Never a stack trace or an absolute path -- the exact bug this PR fixes.
+    expect(result.stderr).not.toMatch(/\bat \S+ \(/); // no "at functionName (" stack-frame shape
+    expect(result.stderr).not.toContain(runsRoot);
+    expect(result.stderr).not.toContain(isolatedTmp);
+  }, 20000);
+
+  // Adversarial-review finding: createInvocationJournal() is called before cmdCalibrate's own
+  // try/catch -- its own realistic failure mode (isRawDirSafeFromAccidentalCommit failing closed)
+  // was completely untested, because every OTHER test here points KMP_EVAL_RUNS_ROOT at an
+  // isolated tmpdir OUTSIDE any git repo, which takes the harmless "confirmedNotInAnyRepo"
+  // shortcut. A real deployment's default RUNS_ROOT (inside this repo) exercises the git
+  // check-ignore path instead -- reproduced here by pointing KMP_EVAL_RUNS_ROOT at a location
+  // INSIDE a real git repo that does NOT have the new agentic-eval-journal/** gitignore rule.
+  it('a journal-creation failure (runs root inside a git repo lacking the journal gitignore rule) fails cleanly with exit 1, never an uncaught exit 2', () => {
+    const bareRepoDir = mkdtempSync(path.join(isolatedTmp, 'aeci-bare-repo-'));
+    const gitViaBashLocal = (argv, cwd) => {
+      const shQuote = (arg) => `'${String(arg).replace(/'/g, "'\\''")}'`;
+      const r = spawnSync(resolveBash(), ['-c', `git ${argv.map(shQuote).join(' ')}`], { cwd, encoding: 'utf8' });
+      if (r.status !== 0) throw new Error(`git ${argv.join(' ')} failed: ${r.stderr}`);
+      return r.stdout;
+    };
+    gitViaBashLocal(['init', '-q'], bareRepoDir);
+    gitViaBashLocal(['config', 'user.email', 'test@example.com'], bareRepoDir);
+    gitViaBashLocal(['config', 'user.name', 'Test'], bareRepoDir);
+    // No .gitignore at all in this fresh repo -- the journal directory is genuinely untracked and
+    // uncovered, exactly the condition isRawDirSafeFromAccidentalCommit must fail closed against.
+    const unsafeRunsRoot = path.join(bareRepoDir, 'runs-root');
+    const env = { ...fakeClaudeEnv('success'), KMP_EVAL_RUNS_ROOT: unsafeRunsRoot };
+    const result = runCli(['calibrate', '--model', 'fake-model-x'], env);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CALIBRATION FAILED');
+    // Never the raw, unhandled "agentic-eval: <stack>" shape main()'s own top-level catch writes --
+    // this is the exact bug: without the fix, this assertion is what fails (exit 2, stack trace).
+    expect(result.stderr).not.toMatch(/^agentic-eval:/m);
+    expect(result.stderr).not.toMatch(/\bat \S+ \(/);
+    expect(result.stderr).not.toContain(bareRepoDir);
   }, 20000);
 
   // Uses 'unexpected-tool', not 'no-tool-use' -- the latter is now a legitimate PASS scenario

@@ -67,10 +67,13 @@ describe('finalizeAndWriteRecords -- a raw-transcript write failure (Transaction
 
     const runsRootOverride = mkdtempSync(path.join(os.tmpdir(), 'aerdrw-runs-root-'));
     try {
+      // cellOrdinal stamped on each -- buildRejectionDiagnostics (Transaction 2, NOT mocked in
+      // this file) also validates captureOrdinalByRunId, which now derives from
+      // runA.cellOrdinal/runB.cellOrdinal (Codex-audit fix, PR #418, round 4).
       const result = await finalizeAndWriteRecords({
         runKind: 'calibration', recordA, recordB,
-        runA: { spawnResult: { rawStdout: '' }, events: [] },
-        runB: { spawnResult: { rawStdout: '' }, events: [] },
+        runA: { spawnResult: { rawStdout: '' }, events: [], cellOrdinal: 1 },
+        runB: { spawnResult: { rawStdout: '' }, events: [], cellOrdinal: 0 },
         hardGateFn: alwaysFailGate,
         runsRootOverride,
       });

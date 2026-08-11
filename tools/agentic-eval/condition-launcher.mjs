@@ -147,11 +147,18 @@ function killTree(pid, signal) {
  * duration" for every event and defeating the whole point of per-event timing.
  * @returns {Promise<object>}
  */
-export function spawnCondition(argv, { env, cwd, timeoutMs = 300000 }) {
+export function spawnCondition(argv, { env, cwd, timeoutMs = 300000, onSpawned }) {
   const cmd = argv.map(shQuote).join(' ');
   const t0 = process.hrtime.bigint();
   return new Promise((resolve) => {
     const child = spawn(resolveBash(), ['-c', cmd], { env, cwd, detached: process.platform !== 'win32' });
+    // Fires only once the OS-level process has actually started -- never on a spawn-level failure
+    // (child.on('error') below, which resolves without this ever firing). This module knows
+    // nothing about journals/storage: callers (runSingleCondition) are expected to pass a callback
+    // that is itself side-effect-light (sets a local flag, does no I/O) -- Node's EventEmitter
+    // dispatch does not protect a listener from its own thrown exception, so a callback that DID
+    // do fallible I/O here could crash the whole process while this live session is still running.
+    if (onSpawned) child.on('spawn', () => onSpawned());
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     let rawStdout = '';

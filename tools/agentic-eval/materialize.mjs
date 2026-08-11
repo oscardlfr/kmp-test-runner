@@ -6,9 +6,9 @@
 // symlink/wrapper resolution). Nothing under this module ever runs a measured session with a
 // cwd inside this repo or any repo/config-ancestor tree -- every fixture is copied/checked out
 // into a fresh temp directory immediately before use.
-import { mkdtempSync, rmSync, mkdirSync, cpSync, writeFileSync, appendFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, cpSync, writeFileSync, appendFileSync, realpathSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { resolveBash } from './resolve-bash.mjs';
 import { isWithinOrEqualCanonical } from './policy-hook.mjs';
@@ -23,13 +23,32 @@ function toPosixPath(winPath) {
 }
 const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
 
+// Backslash-to-forward-slash + lowercase ONLY -- distinct from toPosixPath (which additionally
+// rewrites `C:/...` to bash's `/c/...` mount-point form, for passing paths INTO a git/bash command
+// line). `git worktree list --porcelain` reports paths in `C:/Users/...` form (drive letter kept,
+// forward slashes) -- comparing against that output needs THIS normalization, not toPosixPath's.
+function normalizeForComparison(p) {
+  return String(p).replace(/\\/g, '/').toLowerCase();
+}
+
+// Every git invocation in this module is centralized through this one builder so
+// `-c core.longpaths=true` -- scoped to the single git subprocess call via git's own `-c` flag,
+// never touching process.env or any config file at system/global/local scope -- is never missed at
+// a call site. Confirmed empirically (2026-08-10 canary incident): Git for Windows with
+// core.longpaths unset fails deep, reused-worktree operations (git clean, git worktree remove) with
+// "Filename too long" well under Windows' own MAX_PATH, once a live session's Gradle/Hilt/Kotlin
+// build output has accumulated past ~260 characters of relative path depth.
+function buildLongpathsGitCommand(argv) {
+  return `git -c core.longpaths=true ${argv.map(shQuote).join(' ')}`;
+}
+
 // A CI checkout (or any shallow clone of this repo) only has the tip commit's tree locally --
 // `git archive <ancestor-sha>` fails with "not a tree object" even for a perfectly valid,
 // reachable SHA. GitHub allows fetching an arbitrary reachable commit by SHA directly, so
 // self-heal by backfilling just that one commit before archiving, rather than requiring every
 // caller (CI included) to carry a full, unshallowed clone just for this.
 function isCommitAvailable(repoRoot, sha) {
-  const r = spawnSync(resolveBash(), ['-c', `git cat-file -e ${shQuote(sha)}^{commit}`], { cwd: repoRoot, encoding: 'utf8' });
+  const r = spawnSync(resolveBash(), ['-c', buildLongpathsGitCommand(['cat-file', '-e', `${sha}^{commit}`])], { cwd: repoRoot, encoding: 'utf8' });
   return r.status === 0;
 }
 
@@ -48,12 +67,48 @@ function bestEffortRemove(path) {
   } catch { /* best-effort: the original acquisition error is what matters, not this */ }
 }
 
+/**
+ * Bounded-retry `rmSync` with a VERIFIED postcondition -- modeled directly on
+ * `lib/project/artifact-sweep.js`'s `renameWithRetrySync` (the one existing retry idiom in this
+ * codebase): retry on the Windows-transient error codes, backing off via `Atomics.wait` (the only
+ * non-spinning synchronous wait Node offers), bounded by `delays.length`. Deliberately NOT used by
+ * `bestEffortRemove` (acquisition-rollback only, which must keep swallowing its own failure
+ * unconditionally so one failed cleanup step never masks the ORIGINAL error or blocks a sibling
+ * step queued after it -- see `agentic-eval-materialize-best-effort-cleanup.test.js`'s own
+ * regression coverage for that distinct property). This is for the opposite case: callers that
+ * need to know, for certain, that a directory is actually gone -- never silently reports success
+ * when it can't confirm removal.
+ * @param {string} path
+ * @param {{delays?: number[], rmFn?: Function, existsFn?: Function}} [opts] - injectable for tests
+ */
+export function removeDirRobust(path, { delays = [50, 100, 200, 400], rmFn = rmSync, existsFn = existsSync } = {}) {
+  let lastErr = null;
+  for (let i = 0; i <= delays.length; i++) {
+    try {
+      rmFn(path, { recursive: true, force: true });
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      const retriable = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES');
+      if (!retriable || i === delays.length) break;
+      try {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delays[i]);
+      } catch { /* SAB unavailable -> retry immediately */ }
+    }
+  }
+  if (lastErr) throw lastErr;
+  if (existsFn(path)) {
+    throw new Error(`removeDirRobust: ${path} still exists after removal attempt(s) -- postcondition failed`);
+  }
+}
+
 function ensureCommitAvailable(repoRoot, sha) {
   if (isCommitAvailable(repoRoot, sha)) return;
   // Not hex-shaped -- definitely not a real commit; let `git archive` report it directly rather
   // than spending a network round-trip on input that can never resolve.
   if (!PLAUSIBLE_SHA_RE.test(sha)) return;
-  const r = spawnSync(resolveBash(), ['-c', `git fetch --depth 1 origin ${shQuote(sha)}`], { cwd: repoRoot, encoding: 'utf8' });
+  const r = spawnSync(resolveBash(), ['-c', buildLongpathsGitCommand(['fetch', '--depth', '1', 'origin', sha])], { cwd: repoRoot, encoding: 'utf8' });
   if (r.status !== 0) {
     throw new Error(`commit ${sha} not present locally (shallow clone?) and could not be fetched from origin (exit ${r.status}): ${r.stderr}`);
   }
@@ -73,7 +128,8 @@ export async function materializeSkillSnapshot({ repoRoot, sha, validateFn }) {
   // caller's cleanup() handle doesn't exist yet if THIS call is what throws).
   try {
     ensureCommitAvailable(repoRoot, sha);
-    const cmd = `git archive ${shQuote(sha)} -- .claude-plugin .skills | tar -x -C ${shQuote(toPosixPath(dest))}`;
+    const archiveCmd = buildLongpathsGitCommand(['archive', sha, '--', '.claude-plugin', '.skills']);
+    const cmd = `${archiveCmd} | tar -x -C ${shQuote(toPosixPath(dest))}`;
     const r = spawnSync(resolveBash(), ['-c', cmd], { cwd: repoRoot, encoding: 'utf8' });
     if (r.status !== 0) {
       throw new Error(`git archive | tar extraction failed (exit ${r.status}): ${r.stderr}`);
@@ -112,25 +168,112 @@ export function materializeCalibrationProject({ templateDir, existingDir }) {
 }
 
 function runGitViaBash(argv, cwd) {
-  const cmd = argv.map(shQuote).join(' ');
-  const r = spawnSync(resolveBash(), ['-c', `git ${cmd}`], { cwd, encoding: 'utf8' });
+  const r = spawnSync(resolveBash(), ['-c', buildLongpathsGitCommand(argv)], { cwd, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`git ${argv.join(' ')} failed (exit ${r.status}): ${r.stderr}`);
   return r.stdout;
 }
 
+/** True when `worktreeDirReal` still appears as a `worktree <path>` line in
+ * `git worktree list --porcelain` -- the second of removeScenarioWorktree's two postconditions.
+ * Path separators/casing normalized on both sides (git reports `C:/Users/...` form). */
+function isWorktreeStillRegistered(sourceRepoDir, worktreeDirReal) {
+  const list = runGitViaBash(['worktree', 'list', '--porcelain'], sourceRepoDir);
+  const target = normalizeForComparison(worktreeDirReal);
+  return list
+    .split('\n')
+    .filter((line) => line.startsWith('worktree '))
+    .some((line) => normalizeForComparison(line.slice('worktree '.length).trim()) === target);
+}
+
 /**
- * Removes a disposable git worktree created by materializeScenarioProject -- `git worktree
- * remove` (not a plain rmSync) so the source repo's .git/worktrees/ metadata is cleaned up too;
- * a directory deleted out from under git without this leaves the worktree registered forever
- * ("leftover worktree" -- confirmed via `git worktree list` after a run that skipped this).
- * Best-effort: a worktree that's already gone (or was never registered) is not an error here.
+ * Resolves the canonical (symlink-free) form of `p`, even when `p` itself no longer exists on
+ * disk. `realpathSync` fundamentally cannot resolve a missing path -- but a MISSING leaf doesn't
+ * mean nothing above it can be resolved: this walks up to the nearest EXISTING ancestor,
+ * `realpathSync`s that, and rejoins the missing suffix on top of the now-canonical prefix.
+ *
+ * Post-Codex-audit fix (PR #418, round 3): the pre-fix version simply fell back to the raw,
+ * UNRESOLVED `p` whenever `realpathSync(p)` threw (the common case -- the directory this function
+ * exists to check on has usually just been deleted). Under a symlinked ancestor -- e.g. macOS's
+ * `/var` -> `/private/var` (`os.tmpdir()` returns the `/var/...` form; git records the resolved
+ * `/private/var/...` form at `worktree add` time) -- that raw, unresolved path can NEVER textually
+ * match what `git worktree list --porcelain` reports, so `isWorktreeStillRegistered`'s comparison
+ * always misses a genuinely-still-registered stale entry, and `removeScenarioWorktree` silently
+ * reports its postconditions as met when one of them (the git-registration one) actually isn't.
+ * Reproduced directly on POSIX via a real symlinked ancestor (see
+ * agentic-eval-materialize-worktree-rollback.test.js's own discriminating test).
+ */
+export function resolveCanonicalEvenIfMissing(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    // fall through to the walk-up below
+  }
+  let dir = dirname(p);
+  let suffix = basename(p);
+  for (;;) {
+    try {
+      return join(realpathSync(dir), suffix);
+    } catch {
+      const parent = dirname(dir);
+      if (parent === dir) return p; // hit the filesystem root without finding an existing ancestor -- give up, use the raw path
+      suffix = join(basename(dir), suffix);
+      dir = parent;
+    }
+  }
+}
+
+/**
+ * Removes a disposable git worktree created by materializeScenarioProject. Two INDEPENDENTLY
+ * verified postconditions -- the directory is actually gone (via removeDirRobust, always
+ * attempted regardless of whether `git worktree remove` itself succeeded), AND the worktree no
+ * longer appears in `git worktree list` -- because either one alone can be misleading: a
+ * directory being gone does not by itself prove git's own .git/worktrees/ metadata was cleared
+ * (a "leftover worktree" -- confirmed via `git worktree list` after a run that skipped this), and
+ * `git worktree remove` reporting success does not by itself prove the directory content is
+ * actually gone. The canonical (real) path is captured BEFORE any deletion is attempted, via
+ * resolveCanonicalEvenIfMissing() (see its own doc comment for why a plain realpathSync-or-raw-
+ * fallback isn't enough).
+ *
+ * The two known-benign `git worktree remove` outcomes ("is not a working tree" / "not a valid
+ * path" -- the worktree was already deregistered or never existed) are tolerated; any OTHER git
+ * failure no longer short-circuits the directory-removal attempt the way it used to (today's bug:
+ * `git worktree remove` throwing skipped the trailing `rmSync` entirely, a real, confirmed
+ * mechanism behind an orphaned scenario-worktree directory during the 2026-08-10 canary incident).
+ * If either postcondition still fails after both removal attempts, this throws a single combined,
+ * informative error -- never silently swallowed.
  */
 export function removeScenarioWorktree({ sourceRepoDir, worktreeDir }) {
-  const r = spawnSync(resolveBash(), ['-c', `git worktree remove --force ${shQuote(toPosixPath(worktreeDir))}`], { cwd: sourceRepoDir, encoding: 'utf8' });
-  if (r.status !== 0 && !/is not a working tree|not a valid path/i.test(r.stderr ?? '')) {
-    throw new Error(`git worktree remove failed (exit ${r.status}): ${r.stderr}`);
+  const worktreeDirReal = resolveCanonicalEvenIfMissing(worktreeDir);
+
+  let gitRemoveError = null;
+  try {
+    runGitViaBash(['worktree', 'remove', '--force', toPosixPath(worktreeDir)], sourceRepoDir);
+  } catch (err) {
+    if (!/is not a working tree|not a valid path/i.test(err.message)) {
+      gitRemoveError = err;
+    }
   }
-  rmSync(worktreeDir, { recursive: true, force: true });
+
+  let dirRemoveError = null;
+  try {
+    removeDirRobust(worktreeDir);
+  } catch (err) {
+    dirRemoveError = err;
+  }
+
+  const stillRegistered = isWorktreeStillRegistered(sourceRepoDir, worktreeDirReal);
+  // gitRemoveError is part of this check even though the two POSTCONDITIONS alone might already
+  // look satisfied (e.g. a concurrent `git worktree prune` cleared the registration despite this
+  // call's own `git worktree remove` genuinely failing) -- a real git-level anomaly is diagnostic
+  // signal worth surfacing regardless of the end state, never silently discarded just because
+  // things happened to work out.
+  if (!dirRemoveError && !stillRegistered && !gitRemoveError) return; // fully verified, no anomaly
+
+  const parts = [];
+  if (dirRemoveError) parts.push(`directory removal failed: ${dirRemoveError.message}`);
+  if (stillRegistered) parts.push(`still registered in 'git worktree list' after removal attempt`);
+  if (gitRemoveError) parts.push(`git worktree remove itself also failed: ${gitRemoveError.message}`);
+  throw new Error(`removeScenarioWorktree: postconditions not met for ${worktreeDirReal} -- ${parts.join('; ')}`);
 }
 
 /**
@@ -148,12 +291,20 @@ export function materializeScenarioProject({ sourceRepoDir, pinnedCommit, existi
   const dest = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-scenario-'));
   rmSync(dest, { recursive: true, force: true }); // git worktree add requires the target not exist
   // `git worktree add` can leave partial state registered (or a partially-populated directory)
-  // if it fails partway through -- best-effort clean up via the same removeScenarioWorktree()
-  // path a successful worktree's own teardown uses, before rethrowing the original error.
+  // if it fails partway through -- clean up via the same removeScenarioWorktree() path a
+  // successful worktree's own teardown uses, before rethrowing the ORIGINAL error. The rollback's
+  // own failure (if any) is attached (never discarded) so it's visible to whatever eventually
+  // logs/reports `err` -- previously a bare `catch {}` here discarded it unconditionally, making a
+  // failed rollback of real partial state indistinguishable from "nothing needed cleaning up" (a
+  // confirmed, real cause of an orphaned scenario-worktree temp directory).
   try {
     runGitViaBash(['worktree', 'add', '--detach', toPosixPath(dest), pinnedCommit], sourceRepoDir);
   } catch (err) {
-    try { removeScenarioWorktree({ sourceRepoDir, worktreeDir: dest }); } catch { /* best-effort */ }
+    try {
+      removeScenarioWorktree({ sourceRepoDir, worktreeDir: dest });
+    } catch (rollbackErr) {
+      err.rollbackError = rollbackErr;
+    }
     throw err;
   }
   return { fixtureDir: dest };
