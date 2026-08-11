@@ -1748,7 +1748,9 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
     const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-gate-precedence-'));
     try {
       const records = twoCellMatrix();
-      const conditionResults = [{ events: [], spawnResult: { rawStdout: '' } }, { events: [], spawnResult: { rawStdout: '' } }];
+      // cellOrdinal stamped on each -- captureOrdinalByRunId (cli.mjs) now derives from
+      // conditionResult.cellOrdinal, never array position (Codex-audit fix, PR #418).
+      const conditionResults = [{ events: [], spawnResult: { rawStdout: '' }, cellOrdinal: 0 }, { events: [], spawnResult: { rawStdout: '' }, cellOrdinal: 1 }];
       const result = await finalizeAndWriteMatrixRecords({
         runKind: 'scenario', records, conditionResults, hardGateFn: rejectingGate,
         repeats: 1, runsRootOverride: dir, buildSidecarsFn: alwaysFailingSidecarBuilder,
@@ -1764,7 +1766,9 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
     const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-gate-precedence-diag-'));
     try {
       const records = twoCellMatrix();
-      const conditionResults = [{ events: [], spawnResult: { rawStdout: '' } }, { events: [], spawnResult: { rawStdout: '' } }];
+      // cellOrdinal stamped on each -- captureOrdinalByRunId (cli.mjs) now derives from
+      // conditionResult.cellOrdinal, never array position (Codex-audit fix, PR #418).
+      const conditionResults = [{ events: [], spawnResult: { rawStdout: '' }, cellOrdinal: 0 }, { events: [], spawnResult: { rawStdout: '' }, cellOrdinal: 1 }];
       const result = await finalizeAndWriteMatrixRecords({
         runKind: 'scenario', records, conditionResults, hardGateFn: rejectingGate,
         repeats: 1, runsRootOverride: dir, buildSidecarsFn: alwaysFailingSidecarBuilder,
@@ -1782,7 +1786,9 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
     const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-gate-precedence-accept-fail-'));
     try {
       const records = twoCellMatrix();
-      const conditionResults = [{ events: [], spawnResult: { rawStdout: '' } }, { events: [], spawnResult: { rawStdout: '' } }];
+      // cellOrdinal stamped on each -- captureOrdinalByRunId (cli.mjs) now derives from
+      // conditionResult.cellOrdinal, never array position (Codex-audit fix, PR #418).
+      const conditionResults = [{ events: [], spawnResult: { rawStdout: '' }, cellOrdinal: 0 }, { events: [], spawnResult: { rawStdout: '' }, cellOrdinal: 1 }];
       const acceptingGate = () => ({ ok: true, reason: null, cellResults: [], ambientProfileMatrixOk: true });
       const result = await finalizeAndWriteMatrixRecords({
         runKind: 'scenario', records, conditionResults, hardGateFn: acceptingGate,

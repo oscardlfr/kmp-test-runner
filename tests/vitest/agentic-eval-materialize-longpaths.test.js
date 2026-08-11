@@ -85,11 +85,24 @@ describe.skipIf(!isWindows)('materialize.mjs -- Windows long-path handling for t
     expect(existsSync(fixtureDir)).toBe(false);
   }, 30000);
 
-  it('never persists core.longpaths at local config scope, compared against the captured baseline (never assumes unset)', () => {
+  // Post-CodeRabbit-audit fix (PR #418): this test previously ran no materialize.mjs git
+  // operation of its own -- it only re-read the config, relying on the TWO EARLIER tests in this
+  // same describe block having already exercised materializeScenarioProject/removeScenarioWorktree.
+  // Filtered to run in isolation (e.g. `vitest run -t "never persists core.longpaths"`), the
+  // baseline-vs-after comparison would trivially pass without ever exercising the fix. It now runs
+  // its own materialize+remove cycle, matching the self-contained pattern the fourth test in this
+  // file already uses.
+  it('never persists core.longpaths at local config scope, compared against the captured baseline (never assumes unset)', async () => {
+    const { materializeScenarioProject, removeScenarioWorktree } = await import('../../tools/agentic-eval/materialize.mjs');
+    const pinnedCommit = gitViaBash(['rev-parse', 'HEAD'], sourceRepoDir).trim();
+    const { fixtureDir } = materializeScenarioProject({ sourceRepoDir, pinnedCommit });
+    materializeScenarioProject({ sourceRepoDir, pinnedCommit, existingWorktreeDir: fixtureDir });
+    removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir });
+
     const afterLocal = spawnSync(resolveBash(), ['-c', 'git config --local --get core.longpaths'], { cwd: sourceRepoDir, encoding: 'utf8' });
     expect(afterLocal.status).toBe(baselineLocalLongpaths.status);
     expect(afterLocal.stdout).toBe(baselineLocalLongpaths.stdout);
-  });
+  }, 30000);
 
   it('the git-config-scoped fix never leaks GIT_CONFIG_* into a representative built env object', async () => {
     const { materializeScenarioProject, removeScenarioWorktree } = await import('../../tools/agentic-eval/materialize.mjs');

@@ -60,13 +60,20 @@ describe('removeScenarioWorktree -- two verified postconditions', () => {
     }
   }, 30000);
 
-  it('when the directory was already deleted out from under git (deregistration never ran), still deregisters it via prune -- both postconditions still end up satisfied', async () => {
+  it('when the directory was already deleted out from under git, git worktree remove --force itself still clears the registration -- both postconditions still end up satisfied', async () => {
     const { materializeScenarioProject, removeScenarioWorktree } = await import('../../tools/agentic-eval/materialize.mjs');
     const sourceRepoDir = makeSourceRepo();
     try {
       const pinnedCommit = gitViaBash(['rev-parse', 'HEAD'], sourceRepoDir).trim();
       const { fixtureDir } = materializeScenarioProject({ sourceRepoDir, pinnedCommit });
       // Simulate: someone/something deleted the directory directly, bypassing git entirely.
+      // Post-Codex-audit correction (PR #418): this test's title previously claimed the
+      // registration clears "via prune" -- verified directly, materialize.mjs never calls `git
+      // worktree prune` anywhere, and a real reproduction on this machine's Git for Windows shows
+      // `git worktree remove --force` alone (called by removeScenarioWorktree below) already
+      // clears the registration for an already-missing directory, exit 0, no separate prune step
+      // needed. No `git worktree prune` call was added -- only the test's own title/comment
+      // corrected to match what actually happens.
       rmSync(fixtureDir, { recursive: true, force: true });
 
       expect(() => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir })).not.toThrow();
@@ -79,16 +86,18 @@ describe('removeScenarioWorktree -- two verified postconditions', () => {
 });
 
 describe('materializeScenarioProject -- worktree-add rollback failure is surfaced, never silently swallowed', () => {
-  it('attaches a rollback failure to the original error instead of discarding it', async () => {
+  it('the common case: an invalid pinnedCommit fails before any worktree is registered, so the rollback has nothing real to clean up and trivially succeeds (thrown.rollbackError stays undefined) -- see agentic-eval-materialize-rollback-failure-injected.test.js for the genuine rollback-FAILURE reproduction', async () => {
     const { materializeScenarioProject } = await import('../../tools/agentic-eval/materialize.mjs');
     const sourceRepoDir = makeSourceRepo();
     try {
       // An invalid pinnedCommit makes `git worktree add` fail immediately, before any worktree
       // directory/registration exists -- so the rollback's own removeScenarioWorktree call has
-      // nothing real to clean up and should succeed trivially in the normal case. This test proves
-      // the *plumbing* (that a rollback failure, if one occurred, would be attached) by directly
-      // exercising the real failure path and confirming the original error is not masked, and that
-      // the error shape has room for a rollbackError when one occurs.
+      // nothing real to clean up and succeeds trivially. Post-Codex-audit correction (PR #418):
+      // an earlier version of this test's own title claimed to prove "a rollback failure is
+      // attached" -- it never did; this case cannot force a genuine rollback failure at all (see
+      // the file header). It still has real, standalone value as the common-case regression test:
+      // proves the original error surfaces cleanly and thrown.rollbackError is correctly absent
+      // (not falsely populated) when there was truly nothing to roll back.
       let thrown = null;
       try {
         materializeScenarioProject({ sourceRepoDir, pinnedCommit: 'not-a-real-commit-ish' });
@@ -97,6 +106,9 @@ describe('materializeScenarioProject -- worktree-add rollback failure is surface
       }
       expect(thrown).not.toBeNull();
       expect(thrown.message).toMatch(/worktree add.*failed/i);
+      // Nothing needed cleaning up, so the rollback's own try/catch never entered its catch --
+      // rollbackError is correctly absent, never falsely populated.
+      expect(thrown.rollbackError).toBeUndefined();
       // No worktree was left registered after a clean add-failure.
       const list = gitViaBash(['worktree', 'list', '--porcelain'], sourceRepoDir);
       const lines = list.trim().split('\n').filter((l) => l.startsWith('worktree '));
@@ -147,17 +159,28 @@ describe('materialize.mjs git operations run with core.longpaths scoped per-comm
     const { materializeScenarioProject, removeScenarioWorktree } = await import('../../tools/agentic-eval/materialize.mjs');
     const sourceRepoDir = makeSourceRepo();
     try {
-      const baselineLocal = spawnSync(resolveBash(), ['-c', 'git config --local --get core.longpaths'], { cwd: sourceRepoDir, encoding: 'utf8' });
+      // Post-Codex-audit fix (PR #418, independently also flagged by CodeRabbit): this test's own
+      // title already claimed "system/global/local", but the body previously captured/compared
+      // ONLY --local -- a persistent --global or --system mutation (this code never intentionally
+      // makes one, but a regression could) would have passed silently. All three scopes are now
+      // actually captured and compared, matching the title's own claim.
+      const scopes = ['--system', '--global', '--local'];
+      const captureAll = () => scopes.map((scope) => spawnSync(resolveBash(), ['-c', `git config ${scope} --get core.longpaths`], { cwd: sourceRepoDir, encoding: 'utf8' }));
+      const baseline = captureAll();
       const pinnedCommit = gitViaBash(['rev-parse', 'HEAD'], sourceRepoDir).trim();
       const { fixtureDir } = materializeScenarioProject({ sourceRepoDir, pinnedCommit });
       materializeScenarioProject({ sourceRepoDir, pinnedCommit, existingWorktreeDir: fixtureDir });
       removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir });
 
-      const afterLocal = spawnSync(resolveBash(), ['-c', 'git config --local --get core.longpaths'], { cwd: sourceRepoDir, encoding: 'utf8' });
-      // Whatever the baseline was (commonly "unset" on a fresh repo -> non-zero exit, empty stdout),
-      // it must be byte-identical after -- never assume unset, compare against the captured baseline.
-      expect(afterLocal.status).toBe(baselineLocal.status);
-      expect(afterLocal.stdout).toBe(baselineLocal.stdout);
+      const after = captureAll();
+      // Whatever each scope's baseline was (commonly "unset" -> non-zero exit, empty stdout for
+      // --local/--system on a fresh test repo; --global may legitimately already be set on this
+      // machine), it must be byte-identical after -- never assume unset, compare against the
+      // captured baseline for every scope independently.
+      scopes.forEach((scope, i) => {
+        expect(after[i].status, `${scope} exit status`).toBe(baseline[i].status);
+        expect(after[i].stdout, `${scope} stdout`).toBe(baseline[i].stdout);
+      });
     } finally {
       rmSync(sourceRepoDir, { recursive: true, force: true });
     }

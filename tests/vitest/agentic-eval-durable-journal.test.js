@@ -158,7 +158,7 @@ describe('journal transition state machine -- rejects illegal transitions (wirin
 });
 
 describe('journal coherence invariants (summarize)', () => {
-  it('reports a nested nested-set nested picture consistent with a partially-progressed matrix', async () => {
+  it('reports nested per-transition ordinal sets consistent with a partially-progressed matrix', async () => {
     const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
     const runsRootOverride = freshRunsRoot();
     try {
@@ -194,24 +194,75 @@ describe('journal.readRawFor', () => {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }
   });
+
+  // Post-Codex-audit fix (PR #418, independently also flagged by CodeRabbit): readRawFor never
+  // called assertOrdinal() -- a crafted, path-shaped cellOrdinal interpolated straight into join()
+  // and could escape raw/ entirely. Confirmed by direct reproduction before this fix: a sentinel
+  // file planted at events/leak.jsonl was read back by readRawFor('../events/leak') as though it
+  // were cell 0's own raw transcript.
+  describe('rejects a malformed cellOrdinal instead of resolving outside raw/ (Codex/CodeRabbit-audit fix, PR #418)', () => {
+    it('throws on a negative cellOrdinal', async () => {
+      const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
+      const runsRootOverride = freshRunsRoot();
+      try {
+        const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
+        expect(() => journal.readRawFor(-1)).toThrow(/cellOrdinal|out of bounds/i);
+      } finally {
+        rmSync(runsRootOverride, { recursive: true, force: true });
+      }
+    });
+
+    it('throws on an out-of-range cellOrdinal (>= plannedCellCount)', async () => {
+      const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
+      const runsRootOverride = freshRunsRoot();
+      try {
+        const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
+        expect(() => journal.readRawFor(1)).toThrow(/cellOrdinal|out of bounds/i);
+      } finally {
+        rmSync(runsRootOverride, { recursive: true, force: true });
+      }
+    });
+
+    it('throws on a path-traversal-shaped cellOrdinal, never reading a sentinel file planted outside raw/', async () => {
+      const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
+      const { writeFileSync } = await import('node:fs');
+      const runsRootOverride = freshRunsRoot();
+      try {
+        const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
+        // A real sentinel planted exactly where the pre-fix bug's own reproduction found it --
+        // events/leak.jsonl, a sibling directory of raw/ under the same journalDir.
+        const eventsDir = join(journal.journalDir, 'events');
+        writeFileSync(join(eventsDir, 'leak.jsonl'), 'SENTINEL_SHOULD_NEVER_BE_READ_BACK');
+        expect(() => journal.readRawFor('../events/leak')).toThrow(/cellOrdinal|out of bounds/i);
+      } finally {
+        rmSync(runsRootOverride, { recursive: true, force: true });
+      }
+    });
+  });
 });
 
 describe('journal.promoteAndDiscard', () => {
-  it('deletes the whole journal directory', async () => {
+  it('deletes the whole journal directory and returns {ok:true}', async () => {
     const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
     const runsRootOverride = freshRunsRoot();
     try {
       const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
       const dir = journal.journalDir;
       expect(existsSync(dir)).toBe(true);
-      journal.promoteAndDiscard();
+      expect(journal.promoteAndDiscard()).toEqual({ ok: true });
       expect(existsSync(dir)).toBe(false);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }
   });
 
-  it('a failure during discard is reported as a warning-shaped result, never thrown -- a late cleanup failure must not look like a lost-evidence failure', async () => {
+  // Post-Codex-audit fix (PR #418): the pre-fix implementation caught and fully discarded its own
+  // failure -- no return value at all, contradicting this module's own claim (echoed in the PR
+  // body) that a discard failure surfaces as a warning. See
+  // agentic-eval-durable-journal-promote-discard-failure.test.js for a REAL injected
+  // removeDirRobust failure (via vi.mock, isolated in its own file); this test only proves the
+  // "directory already gone" case is harmless and never throws.
+  it('a failure during discard is reported as a warning-shaped {ok:false, warning} result, never thrown -- a late cleanup failure must not look like a lost-evidence failure', async () => {
     const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
     const runsRootOverride = freshRunsRoot();
     try {
@@ -219,9 +270,47 @@ describe('journal.promoteAndDiscard', () => {
       // Remove the directory out from under the journal first, so the real removal step underneath
       // promoteAndDiscard() has nothing to act on in the normal way -- still must not throw.
       rmSync(journal.journalDir, { recursive: true, force: true });
-      expect(() => journal.promoteAndDiscard()).not.toThrow();
+      let result;
+      expect(() => { result = journal.promoteAndDiscard(); }).not.toThrow();
+      // removeDirRobust's own postcondition (existsFn(path) === false) is satisfied trivially
+      // here (already gone), so this specific case resolves {ok:true} -- the REAL failure case is
+      // covered by the isolated vi.mock file referenced above.
+      expect(result).toEqual({ ok: true });
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }
+  });
+});
+
+// Post-Codex-audit fix (PR #418, independently also flagged by CodeRabbit): a 4-digit seq width
+// places seq 10000 ('10000-...') lexically BEFORE seq 9999 ('9999-...') in a directory listing,
+// breaking the documented sortable event order. buildEventFilename is exported as a pure function
+// specifically so this boundary is verifiable without driving a real journal through thousands of
+// real event writes.
+describe('buildEventFilename -- stays lexically sortable well past any realistically achievable event count', () => {
+  it('seq 9999 sorts before seq 10000 (the exact boundary a 4-digit width would get wrong)', async () => {
+    const { buildEventFilename } = await import('../../tools/agentic-eval/durable-journal.mjs');
+    const a = buildEventFilename(9999, 0, 'planned');
+    const b = buildEventFilename(10000, 0, 'planned');
+    expect(a < b).toBe(true);
+    // Confirms it's genuinely a lexical (string) comparison being exercised, not an accidental
+    // numeric one.
+    expect(typeof a).toBe('string');
+    expect(a.length).toBe(b.length);
+  });
+
+  it('stays sortable across every power-of-ten boundary up to a generously large seq', async () => {
+    const { buildEventFilename } = await import('../../tools/agentic-eval/durable-journal.mjs');
+    const boundaries = [9, 99, 999, 9999, 99999];
+    for (const n of boundaries) {
+      const lower = buildEventFilename(n, 0, 'planned');
+      const upper = buildEventFilename(n + 1, 0, 'planned');
+      expect(lower < upper, `seq ${n} vs ${n + 1}`).toBe(true);
+    }
+  });
+
+  it('produces the documented <seq>-<cellOrdinal>-<transitionName>.json shape', async () => {
+    const { buildEventFilename } = await import('../../tools/agentic-eval/durable-journal.mjs');
+    expect(buildEventFilename(0, 3, 'spawn_started')).toBe('000000000000-3-spawn_started.json');
   });
 });

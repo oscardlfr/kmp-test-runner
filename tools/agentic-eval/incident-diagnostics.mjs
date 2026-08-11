@@ -13,10 +13,21 @@
 // Replaces cli.mjs's old, unconditional "... threw before any cell completed: ${err.stack ||
 // err.message}" lines -- both the false claim (it never checked how many cells actually ran) and
 // the raw stack trace (which can and does carry absolute paths) printed straight to stderr.
+//
+// Post-Codex-audit hardening (PR #418): finalizeIncident's own doc comment always claimed "never
+// throws", but the pre-audit implementation left THREE gaps unguarded -- journal.summarize()
+// (line ~40 below), the redaction call inside safeReasonText, and the final diagnostic write --
+// each capable of propagating an exception straight out of the ONE function whose entire purpose
+// is to be the last line of defense against exactly that. Every step that can fail is now wrapped
+// with its own fallback; finalizeIncident is total by construction, not by convention. A closed
+// schema validator (isValidIncidentDiagnostic) also runs before AND after redaction, so a bogus
+// run_kind/phase/counter -- whether from a caller bug or a corrupted journal summary -- can never
+// reach disk; a guaranteed-valid minimal diagnostic is written instead.
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { RUNS_ROOT, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
 import { redactAndVerify, assertCleanOrThrowObject } from './privacy.mjs';
+import { AGENTIC_EVAL_INCIDENT_PHASES } from './durable-journal.mjs';
 
 // One pre-approved, closed fallback code per phase -- used ONLY when the real reason text can't be
 // verified clean by the redaction pipeline. Never the raw text in that case, committed or local.
@@ -32,6 +43,24 @@ function closedFallbackFor(phase) {
   return CLOSED_FALLBACK_REASON_CODES[phase] ?? 'incident_reason_unavailable';
 }
 
+const ZERO_COUNTS = Object.freeze({ planned: 0, spawn_started: 0, spawn_completed: 0, raw_persisted: 0, parsed: 0, evaluated: 0, spawn_failed: 0 });
+
+/** journal.summarize() is ordinary synchronous code operating on the journal's own in-memory
+ * state and should never throw in practice -- but `journal` is an injectable dependency (its own
+ * JSDoc contract is just `{summarize: () => object}|null`), and this function's whole purpose is
+ * to be the last line of defense. A throwing summarize() (whether from a real bug or a test
+ * double) degrades to the same all-zero summary already used when journal itself is null, never
+ * propagates. */
+function safeSummarize(journal) {
+  const FALLBACK = { plannedCellCount: 0, counts: ZERO_COUNTS, cellOrdinals: {} };
+  if (!journal) return FALLBACK;
+  try {
+    return journal.summarize();
+  } catch {
+    return FALLBACK;
+  }
+}
+
 // Node's own fs/child_process error messages routinely embed a real absolute path (e.g.
 // `ENOENT: no such file or directory, mkdtemp '/tmp/aeci-isolated-tmp-XXXXXX/...'` on POSIX,
 // `EBUSY: resource busy or locked, rmdir 'C:\Users\...'` on Windows) -- confirmed directly (a real
@@ -44,20 +73,28 @@ function closedFallbackFor(phase) {
 // thrown error messages (e.g. durable-journal.mjs's createInvocationJournal, which interpolates
 // `${journalDir}` directly into "... is not confirmed covered by .gitignore ...") embed an
 // unquoted absolute path -- confirmed directly (a real local-ci Linux-lane run). So this instead
-// requires the STRUCTURAL shape of a real path -- a leading `/` followed by at least two
+// requires the STRUCTURAL shape of a real path: a leading `/` followed by at least two
 // `word-chars-then-/`-separated segments (`/a/b`, not bare `/a`) -- which a JSON-shaped
-// gate-rejection reason like `{"field":"a/b"}` cannot produce (no LEADING slash there), or a
-// Windows drive-letter shape anywhere. Deliberately over-inclusive in one respect (a URL like
-// `https://github.com/x/y` also matches this shape) -- over-redacting to a closed fallback code is
-// the safe failure direction here, never under-redacting.
-const ABSOLUTE_PATH_RE = /[A-Za-z]:[\\/]|\/(?:[\w.-]+\/)+[\w.-]+/;
+// gate-rejection reason like `{"field":"a/b"}` cannot produce (no LEADING slash there); a Windows
+// drive-letter shape anywhere; OR a Windows UNC path (`\\server\share\...`) -- confirmed missing
+// from an earlier version of this regex by an independent adversarial review (both the drive-letter
+// branch, which requires a `:`, and the POSIX branch, which requires a leading `/`, structurally
+// cannot match a UNC path's leading `\\`). Deliberately over-inclusive in one respect (a URL like
+// `https://github.com/x/y` also matches the POSIX-path shape) -- over-redacting to a closed
+// fallback code is the safe failure direction here, never under-redacting.
+const ABSOLUTE_PATH_RE = /[A-Za-z]:[\\/]|\\\\[\w.-]+\\[\w.-]+|\/(?:[\w.-]+\/)+[\w.-]+/;
 
 function safeReasonText(reasonText, phase, { privatePatternsFile, redactReasonFn = redactAndVerify }) {
   const text = typeof reasonText === 'string' ? reasonText : String(reasonText ?? '');
-  const { ok, redacted } = redactReasonFn(text, { privatePatternsFile });
-  if (!ok) return closedFallbackFor(phase);
-  if (ABSOLUTE_PATH_RE.test(redacted)) return closedFallbackFor(phase);
-  return redacted;
+  try {
+    const { ok, redacted } = redactReasonFn(text, { privatePatternsFile });
+    if (!ok) return closedFallbackFor(phase);
+    if (ABSOLUTE_PATH_RE.test(redacted)) return closedFallbackFor(phase);
+    return redacted;
+  } catch {
+    // redactReasonFn threw outright (not just returned ok:false) -- still never the raw text.
+    return closedFallbackFor(phase);
+  }
 }
 
 function buildMessage(runKind, phase, summary, safeReason) {
@@ -67,15 +104,76 @@ function buildMessage(runKind, phase, summary, safeReason) {
     + `See the local journal/incident diagnostic for detail.`;
 }
 
+// Closed schema for the committed/local incident diagnostic artifact itself -- independent of, and
+// in addition to, the privacy/redaction pipeline (assertCleanOrThrowObject only ever checks for
+// PII-shaped content, never structural correctness). A bogus run_kind, an unknown phase, a
+// non-integer or negative counter, or an unexpected provenance key must never reach disk, whether
+// the cause is a caller bug or a corrupted journal summary.
+const VALID_RUN_KINDS = new Set(['calibration', 'smoke', 'scenario']);
+const DIAGNOSTIC_ALLOWED_KEYS = new Set([
+  'schema', 'incident_id', 'run_kind', 'phase', 'reason', 'counts', 'planned_cell_count',
+  'emergency_raw_persisted', 'emergency_raw_write_error', 'provenance', 'created_at',
+]);
+const COUNTS_ALLOWED_KEYS = new Set(['planned', 'spawn_started', 'spawn_completed', 'raw_persisted', 'parsed', 'evaluated', 'spawn_failed']);
+// Union of every provenance shape actually passed at any of this repo's 12 finalizeIncident call
+// sites (cmdCalibrate: model_requested+scenario_id; cmdSmoke: +project_alias+project_commit;
+// cmdRun: scenario_id+project_alias+project_commit+seed+model_requested) -- re-verified directly
+// against cli.mjs, not assumed.
+const PROVENANCE_ALLOWED_KEYS = new Set(['scenario_id', 'project_alias', 'project_commit', 'seed', 'model_requested']);
+
+function isValidProvenance(p) {
+  if (p == null || typeof p !== 'object' || Array.isArray(p)) return false;
+  for (const [key, value] of Object.entries(p)) {
+    if (!PROVENANCE_ALLOWED_KEYS.has(key)) return false;
+    if (key === 'seed') {
+      if (typeof value !== 'number') return false;
+    } else if (typeof value !== 'string') {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Validates the FULL closed shape of an incident diagnostic -- called both BEFORE redaction (on
+ * the just-assembled candidate) and AGAIN after redaction/fallback (on what's actually about to be
+ * written), so neither an assembly bug nor a redaction-fallback bug can ever produce an invalid
+ * artifact on disk. */
+function isValidIncidentDiagnostic(d) {
+  if (d == null || typeof d !== 'object' || Array.isArray(d)) return false;
+  const keys = Object.keys(d);
+  if (keys.length !== DIAGNOSTIC_ALLOWED_KEYS.size || keys.some((k) => !DIAGNOSTIC_ALLOWED_KEYS.has(k))) return false;
+  if (d.schema !== 1) return false;
+  if (typeof d.incident_id !== 'string' || d.incident_id.length === 0) return false;
+  if (!VALID_RUN_KINDS.has(d.run_kind)) return false;
+  if (!AGENTIC_EVAL_INCIDENT_PHASES.includes(d.phase)) return false;
+  if (typeof d.reason !== 'string' || d.reason.length === 0) return false;
+  if (d.counts == null || typeof d.counts !== 'object' || Array.isArray(d.counts)) return false;
+  const countKeys = Object.keys(d.counts);
+  if (countKeys.length !== COUNTS_ALLOWED_KEYS.size || countKeys.some((k) => !COUNTS_ALLOWED_KEYS.has(k))) return false;
+  for (const k of COUNTS_ALLOWED_KEYS) {
+    if (!Number.isInteger(d.counts[k]) || d.counts[k] < 0) return false;
+  }
+  if (!Number.isInteger(d.planned_cell_count) || d.planned_cell_count < 0) return false;
+  if (typeof d.emergency_raw_persisted !== 'boolean') return false;
+  if (d.emergency_raw_write_error !== null && typeof d.emergency_raw_write_error !== 'string') return false;
+  if (!isValidProvenance(d.provenance)) return false;
+  if (typeof d.created_at !== 'string' || Number.isNaN(Date.parse(d.created_at))) return false;
+  return true;
+}
+
 /**
  * The shared incident finalizer. Never throws -- an incident-reporting failure must never mask the
- * original incident by crashing the caller a second time.
+ * original incident by crashing the caller a second time. This is enforced structurally: every
+ * step capable of failing (journal.summarize(), redaction, the closed-schema validation, the final
+ * diagnostic write) is independently guarded with its own fallback, so a failure in any one of
+ * them degrades gracefully rather than escaping uncaught.
  * @param {object} opts
  * @param {string} opts.runKind
  * @param {{summarize: () => object}|null} [opts.journal] - null when the journal itself never got
  *   created (its own creation call can throw -- isRawDirSafeFromAccidentalCommit fails closed
  *   against a real, non-isolated RUNS_ROOT -- and that catch has no journal to reference). Treated
- *   as an all-zero-counts summary, never dereferenced -- this function must never throw itself.
+ *   as an all-zero-counts summary if null OR if its own summarize() throws -- never dereferenced
+ *   unsafely, this function must never throw itself regardless of what journal does.
  * @param {string} opts.phase - one of durable-journal.mjs's AGENTIC_EVAL_INCIDENT_PHASES
  * @param {string} opts.reasonText - a caught error's message/stack, or finalizeAndWrite*'s
  *   result.reason -- NEVER assumed already safe (see safeReasonText).
@@ -87,15 +185,15 @@ function buildMessage(runKind, phase, summary, safeReason) {
  * @param {string} [opts.privatePatternsFile]
  * @param {string} [opts.runsRootOverride]
  * @param {Function} [opts.redactReasonFn] - injectable, defaults to privacy.mjs's redactAndVerify.
- * @returns {{message: string, incidentId: string, committedRelativePath: string}}
+ * @returns {{message: string, incidentId: string, committedRelativePath: string,
+ *   diagnosticWritten: boolean, diagnosticWriteError: string|null}}
  */
 export function finalizeIncident({
   runKind, journal = null, phase, reasonText, cellOrdinal = null, rawStdout = null, provenance = {},
   privatePatternsFile, runsRootOverride = RUNS_ROOT, redactReasonFn,
 }) {
   const incidentId = randomUUID();
-  const ZERO_COUNTS = { planned: 0, spawn_started: 0, spawn_completed: 0, raw_persisted: 0, parsed: 0, evaluated: 0, spawn_failed: 0 };
-  const summary = journal ? journal.summarize() : { plannedCellCount: 0, counts: ZERO_COUNTS, cellOrdinals: {} };
+  const summary = safeSummarize(journal);
   const safeReason = safeReasonText(reasonText, phase, { privatePatternsFile, redactReasonFn });
   const message = buildMessage(runKind, phase, summary, safeReason);
 
@@ -143,32 +241,63 @@ export function finalizeIncident({
     created_at: new Date().toISOString(),
   };
 
-  // Final validate->redact->revalidate pass, same as every other committed artifact in this
-  // harness. Should be unreachable in practice (every free-text field was already redact-or-
-  // closed-coded before assembly) -- if it somehow still fails, fall back to a minimal,
-  // hardcoded-safe diagnostic rather than let a privacy-check failure here mask the ORIGINAL
-  // incident by throwing out of finalizeIncident entirely.
+  // A guaranteed-valid, fully hardcoded stand-in -- built fresh each time it's needed (created_at
+  // must reflect "now", not the first call), never itself dependent on anything that could be
+  // malformed (runKind/phase are individually sanitized against their own closed sets; every other
+  // field is a hardcoded-safe literal).
+  const minimalFallbackDiagnostic = () => ({
+    schema: 1,
+    incident_id: incidentId,
+    run_kind: VALID_RUN_KINDS.has(runKind) ? runKind : 'scenario',
+    phase: AGENTIC_EVAL_INCIDENT_PHASES.includes(phase) ? phase : 'finalizing_matrix',
+    reason: closedFallbackFor(phase),
+    counts: ZERO_COUNTS,
+    planned_cell_count: 0,
+    emergency_raw_persisted: false,
+    emergency_raw_write_error: null,
+    provenance: {},
+    created_at: new Date().toISOString(),
+  });
+
+  // Validate -> redact -> revalidate, same discipline as every other committed artifact in this
+  // harness, now closed on BOTH sides of redaction: a diagnostic that isn't already structurally
+  // valid is never even offered to the redaction pipeline (skip straight to the guaranteed-valid
+  // fallback); redaction itself throwing falls back the same way; and the REDACTED text is parsed
+  // back and re-validated, in case redaction somehow altered the shape.
+  let candidate = isValidIncidentDiagnostic(diagnostic) ? diagnostic : minimalFallbackDiagnostic();
   let redactedText;
   try {
-    ({ redactedText } = assertCleanOrThrowObject(diagnostic, { privatePatternsFile }));
+    ({ redactedText } = assertCleanOrThrowObject(candidate, { privatePatternsFile }));
+    if (!isValidIncidentDiagnostic(JSON.parse(redactedText))) {
+      redactedText = JSON.stringify(minimalFallbackDiagnostic(), null, 2);
+    }
   } catch {
-    redactedText = JSON.stringify({
-      ...diagnostic,
-      reason: closedFallbackFor(phase),
-      emergency_raw_write_error: emergencyRawWriteError ? closedFallbackFor(phase) : null,
-      provenance: {},
-    }, null, 2);
+    redactedText = JSON.stringify(minimalFallbackDiagnostic(), null, 2);
   }
 
   const committedDir = join(runsRootOverride, 'agentic-eval-incident');
   const committedPath = join(committedDir, `${incidentId}.json`);
   const localDir = join(committedDir, 'raw');
   const localPath = join(localDir, `${incidentId}.json`);
-  promoteTargetsAtomically([[committedPath, redactedText], [localPath, redactedText]], [committedDir, localDir]);
+  let diagnosticWritten = false;
+  let diagnosticWriteError = null;
+  try {
+    promoteTargetsAtomically([[committedPath, redactedText], [localPath, redactedText]], [committedDir, localDir]);
+    diagnosticWritten = true;
+  } catch (err) {
+    // The diagnostic artifact itself is best-effort -- by this point `message` (real counters,
+    // already-safe reason) is already computed and about to be returned regardless. A failure to
+    // write the artifact is a real, reportable fact, never something that should mask or replace
+    // the original incident this function exists to report.
+    diagnosticWritten = false;
+    diagnosticWriteError = safeReasonText(err.message, phase, { privatePatternsFile, redactReasonFn });
+  }
 
   return {
     message,
     incidentId,
     committedRelativePath: join('agentic-eval-incident', `${incidentId}.json`),
+    diagnosticWritten,
+    diagnosticWriteError,
   };
 }

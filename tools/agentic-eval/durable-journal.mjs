@@ -65,6 +65,21 @@ export function tagIncidentPhase(err, phase, cellOrdinal, rawStdout) {
 
 const TRANSITIONS = Object.freeze(['planned', 'spawn_started', 'spawn_completed', 'raw_persisted', 'parsed', 'evaluated', 'spawn_failed']);
 
+// 12 digits generously exceeds any real invocation's event count -- a full MAX_REPEATS=20 matrix
+// produces at most ~240 events (up to 40 cells x 6 transitions each) -- so a lexical directory
+// listing stays correctly seq-ordered no matter how large a single invocation's journal grows.
+// Post-Codex-audit fix (PR #418, independently also flagged by CodeRabbit): the previous 4-digit
+// width would place seq 10000 ('10000-...') lexically BEFORE seq 9999 ('9999-...'), breaking the
+// documented sortable event order past 9999 events. Extracted as its own pure, exported function
+// so the boundary (seq 9999 vs 10000) is directly unit-testable without driving a real journal
+// through thousands of real event writes.
+const EVENT_SEQ_WIDTH = 12;
+
+/** Pure event-filename builder, shared by writeEvent() below. */
+export function buildEventFilename(seq, cellOrdinal, transitionName) {
+  return `${String(seq).padStart(EVENT_SEQ_WIDTH, '0')}-${cellOrdinal}-${transitionName}.json`;
+}
+
 // The legal NEXT transition(s) given a cell's current state (its last recorded transition, or
 // `null` before anything has been recorded for it). `evaluated` and `spawn_failed` are terminal --
 // both map to an empty allowed-next list.
@@ -110,7 +125,7 @@ export function createInvocationJournal({ runKind, plannedCellCount, runsRootOve
   function writeEvent(cellOrdinal, transitionName, meta) {
     const thisSeq = seq;
     seq += 1;
-    const filename = `${String(thisSeq).padStart(4, '0')}-${cellOrdinal}-${transitionName}.json`;
+    const filename = buildEventFilename(thisSeq, cellOrdinal, transitionName);
     const content = JSON.stringify({ seq: thisSeq, ts: Date.now(), runKind, cellOrdinal, transition: transitionName, meta });
     promoteTargetsAtomically([[join(eventsDir, filename), content]], eventsDir);
   }
@@ -181,23 +196,39 @@ export function createInvocationJournal({ runKind, plannedCellCount, runsRootOve
 
     /** Reads a cell's own already-persisted raw back, or `null` if it never reached
      * `raw_persisted`. Used for promotion-time read-back adoption (never derived from array
-     * position -- see cli.mjs's own doc comment on why). */
+     * position -- see cli.mjs's own doc comment on why). assertOrdinal() here (post-Codex-audit
+     * fix, PR #418) is not merely defensive: without it, a non-integer/out-of-range cellOrdinal
+     * (e.g. a path-shaped string like '../events/leak') interpolates straight into the join()
+     * below and can escape raw/ entirely, reading an arbitrary file elsewhere under journalDir --
+     * confirmed by direct reproduction (a crafted cellOrdinal read back a sibling events/*.json
+     * file as though it were a raw transcript). persistSpawnOutcome/recordParsed/recordEvaluated
+     * already reject the same shapes via this exact check; readRawFor was the one journal method
+     * that didn't. */
     readRawFor(cellOrdinal) {
+      assertOrdinal(cellOrdinal);
       const rawPath = join(rawDir, `${cellOrdinal}.jsonl`);
       if (!existsSync(rawPath)) return null;
       return readFileSync(rawPath, 'utf8');
     },
 
     /** Deletes the whole journal directory -- called by the command ONLY after the real evidence
-     * this journal was a safety net for is durably promoted elsewhere (see cli.mjs). A failure here
-     * is swallowed: by the time this runs, the real evidence is already safe, so a lingering-lock
-     * cleanup failure is disk hygiene, never a lost-evidence condition -- callers that want to
-     * surface it do so the same `reportCleanupFailures`-style way every other best-effort cleanup
-     * step in this harness already does. */
+     * this journal was a safety net for is durably promoted elsewhere (see cli.mjs). By the time
+     * this runs, the real evidence is already safe, so a lingering-lock cleanup failure is disk
+     * hygiene, never a lost-evidence condition -- but (post-Codex-audit fix, PR #418) it must
+     * still be an honestly reported fact, not a silently swallowed one: an earlier version of this
+     * method caught and discarded its own failure entirely, contradicting this module's own PR
+     * body claim that a discard failure surfaces as a `reportCleanupFailures`-style warning --
+     * there was no return value at all for a caller to report. Never throws. Returns {ok:true} on
+     * success, or {ok:false, warning:'journal_discard_failed'} on failure -- a fixed, pre-approved
+     * closed code, deliberately never the underlying error's own message (which can carry the
+     * real, absolute journalDir path). */
     promoteAndDiscard() {
       try {
         removeDirRobust(journalDir);
-      } catch { /* best-effort -- see doc comment above */ }
+        return { ok: true };
+      } catch {
+        return { ok: false, warning: 'journal_discard_failed' };
+      }
     },
   };
 }

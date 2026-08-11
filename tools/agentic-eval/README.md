@@ -857,7 +857,7 @@ raw payload its own file under `raw/<cellOrdinal>.jsonl`. The transition state m
 and enforced (an illegal transition throws immediately, so a wiring bug fails loudly during
 development):
 
-```
+```text
 planned -> spawn_started -> spawn_completed -> raw_persisted -> parsed -> evaluated
 planned -> spawn_failed                                                    (terminal)
 ```

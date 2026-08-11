@@ -53,7 +53,7 @@ import { assertCleanOrThrow, assertCleanOrThrowObject, loadPrivateRules } from '
 import { tokenize } from './policy-hook.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 import { RUNS_ROOT, resolveEvidenceOutDir, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
-import { buildRejectionDiagnostics, writeRejectionRawTranscripts, writeRejectedRunDiagnostics } from './rejection-diagnostics.mjs';
+import { buildRejectionDiagnostics, writeRejectionRawTranscripts, writeRejectedRunDiagnostics, deriveTranscriptFilename } from './rejection-diagnostics.mjs';
 import { acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from './accepted-run-audit.mjs';
 import { loadMeasurementScopeFile, createMeasurementScopeFileExclusive } from './measurement-scope.mjs';
 import { createInvocationJournal, tagIncidentPhase } from './durable-journal.mjs';
@@ -526,31 +526,68 @@ function adoptJournalRaw(conditionResult, journal) {
 /**
  * §6's exact-correspondence check: a hard-gate rejection's own two-transaction forensics
  * (writeRejectionForensics) must have PROVABLY persisted the exact same set of cells the journal
- * itself captured -- same cardinality, same identities -- before the journal (now redundant) is
+ * itself captured -- same cardinality, same IDENTITIES -- before the journal (now redundant) is
  * discarded. `rawTranscriptsPersisted:true` alone only proves the write attempt didn't throw, not
  * that every cell landed with the identity the diagnostic claims.
+ *
+ * Post-Codex-audit fix (PR #418): the original version of this check compared ONLY the set of
+ * `capture_ordinal` values, never `run_id`/`filename` -- confirmed by direct reproduction, a
+ * manifest with fabricated run_id/filename but a correct ordinal set {0,1} passed this check and
+ * triggered a discard. `recordRunIds` (the caller's own real, authoritative run_id list for this
+ * invocation -- e.g. `records.map(r => r.run_id)`) is now REQUIRED: every manifest entry's run_id
+ * must be one of these real run_ids (never a fabricated/unknown one), every entry's filename must
+ * be exactly what deriveTranscriptFilename(ordinal, run_id) recomputes for its OWN declared
+ * (ordinal, run_id) pair (never an internally-inconsistent fabricated filename), and there must be
+ * no duplicate run_id or ordinal within the manifest -- on top of the pre-existing ordinal-set
+ * match against the journal's own raw_persisted set.
  */
-function journalRawExactlyMatchesRejectionManifest(journal, result) {
+function journalRawExactlyMatchesRejectionManifest(journal, result, recordRunIds) {
   if (!journal || result.rawTranscriptsPersisted !== true || result.diagnosticsWriteError) return false;
+  const manifest = result.rawTranscriptsManifest;
+  if (!Array.isArray(manifest) || manifest.length === 0) return false;
   const journalOrdinals = new Set(journal.summarize().cellOrdinals.raw_persisted);
-  const manifestOrdinals = new Set((result.rawTranscriptsManifest ?? []).map((m) => m.capture_ordinal));
-  if (journalOrdinals.size !== manifestOrdinals.size) return false;
-  for (const o of journalOrdinals) if (!manifestOrdinals.has(o)) return false;
-  return true;
+  const expectedRunIds = new Set(recordRunIds ?? []);
+  if (manifest.length !== journalOrdinals.size || manifest.length !== expectedRunIds.size) return false;
+
+  const seenOrdinals = new Set();
+  const seenRunIds = new Set();
+  for (const entry of manifest) {
+    if (entry == null || typeof entry.run_id !== 'string' || !Number.isInteger(entry.capture_ordinal)) return false;
+    if (!expectedRunIds.has(entry.run_id)) return false; // fabricated/unknown run_id
+    if (!journalOrdinals.has(entry.capture_ordinal)) return false; // ordinal the journal never captured
+    if (seenOrdinals.has(entry.capture_ordinal) || seenRunIds.has(entry.run_id)) return false; // duplicate
+    let expectedFilename;
+    try {
+      expectedFilename = deriveTranscriptFilename(entry.capture_ordinal, entry.run_id);
+    } catch {
+      return false;
+    }
+    if (entry.filename !== expectedFilename) return false; // fabricated/inconsistent filename
+    seenOrdinals.add(entry.capture_ordinal);
+    seenRunIds.add(entry.run_id);
+  }
+  return seenOrdinals.size === journalOrdinals.size && seenRunIds.size === expectedRunIds.size;
 }
 
 /**
  * The shared "what does the command do once finalizeAndWrite* has settled" tail: on full
  * acceptance, or a hard-gate rejection whose own forensics fully, verifiably persisted, the
  * journal is now redundant -- adopt/discard it. In every other outcome, do nothing: the journal's
- * continued presence on disk IS the preservation. A discard failure itself is a
- * reportCleanupFailures-style warning only, never surfaced as a command failure -- by the time
- * this runs, the real evidence is already safely elsewhere.
+ * continued presence on disk IS the preservation. `recordRunIds` is the caller's own real run_id
+ * list for this invocation, threaded through to the exact-correspondence identity check above --
+ * required whenever a rejection might legitimately qualify for discard (harmless/unused on the
+ * acceptance path, where result.ok===true short-circuits before it's ever read). A discard failure
+ * itself is a reportCleanupFailures-style warning only, never surfaced as a command failure -- by
+ * the time this runs, the real evidence is already safely elsewhere.
  */
-function discardJournalIfRedundant(journal, result) {
+function discardJournalIfRedundant(journal, result, recordRunIds) {
   if (!journal) return;
-  const shouldDiscard = result.ok === true || journalRawExactlyMatchesRejectionManifest(journal, result);
-  if (shouldDiscard) journal.promoteAndDiscard();
+  const shouldDiscard = result.ok === true || journalRawExactlyMatchesRejectionManifest(journal, result, recordRunIds);
+  if (!shouldDiscard) return;
+  const discardResult = journal.promoteAndDiscard();
+  if (!discardResult.ok) {
+    console.error(`WARNING: journal cleanup failed (${discardResult.warning}) -- the now-redundant journal directory may be left behind; this does not affect the already-promoted evidence.`);
+  }
 }
 
 /** err.agenticEvalPhase, defaulting to 'finalizing_matrix' -- by construction, anything reaching
@@ -1508,7 +1545,15 @@ async function finalizeAndWriteMatrixRecords({
       records.map((r, i) => [r.run_id, classifyForeignSkillUses(conditionResults[i].events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null)]),
     );
     const transcriptsByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].spawnResult.rawStdout]));
-    const captureOrdinalByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, i]));
+    // Derived from conditionResults[i].cellOrdinal -- the journal's own authoritative per-cell
+    // ordinal (always stamped by runSingleCondition, present regardless of whether a journal is
+    // actually threaded through) -- never array index `i`. Post-Codex-audit fix (PR #418): under
+    // today's construction records/conditionResults happen to be pushed in strict orderIndex
+    // sequence, so `i` and cellOrdinal always coincide in practice -- but the discard decision at
+    // journalRawExactlyMatchesRejectionManifest now depends directly on this manifest being
+    // trustworthy, and deriving it from the authoritative source removes an unverified implicit
+    // invariant rather than relying on array-construction order never changing.
+    const captureOrdinalByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].cellOrdinal]));
 
     const forensics = await writeRejectionForensics({
       runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
@@ -1564,7 +1609,15 @@ async function finalizeAndWriteMatrixRecords({
       records.map((r, i) => [r.run_id, classifyForeignSkillUses(conditionResults[i].events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null)]),
     );
     const transcriptsByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].spawnResult.rawStdout]));
-    const captureOrdinalByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, i]));
+    // Derived from conditionResults[i].cellOrdinal -- the journal's own authoritative per-cell
+    // ordinal (always stamped by runSingleCondition, present regardless of whether a journal is
+    // actually threaded through) -- never array index `i`. Post-Codex-audit fix (PR #418): under
+    // today's construction records/conditionResults happen to be pushed in strict orderIndex
+    // sequence, so `i` and cellOrdinal always coincide in practice -- but the discard decision at
+    // journalRawExactlyMatchesRejectionManifest now depends directly on this manifest being
+    // trustworthy, and deriving it from the authoritative source removes an unverified implicit
+    // invariant rather than relying on array-construction order never changing.
+    const captureOrdinalByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].cellOrdinal]));
     // ambientProfileMatrixOk (correction 6): scenarioHardGate's own matrix-wide consensus result
     // (gate.ambientProfileMatrixOk, exposed on its return value) -- threaded straight through, so
     // a rejection diagnostic for a COMPLETE scenario batch always records whether the ambient-
@@ -2137,12 +2190,14 @@ async function cmdCalibrate(args) {
     // Calibration's job is narrowly to prove invocation MECHANICS under an explicit-invocation
     // prompt -- see calibrationHardGate's own doc comment for why this is a named function.
     let result;
+    let recordRunIds;
     if (!pairComplete) {
       // Fail-fast (preserve rejected matrix forensics): B already failed its own local integrity
       // check -- A was never spawned, so buildRunRecord({conditionResult: runA, ...}) would throw
       // on runA===null. Build only B's record and go straight to finalizeAndWriteRecords' own
       // fail-fast branch.
       const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
+      recordRunIds = [recordB.run_id];
       result = await finalizeAndWriteRecords({
         runKind: 'calibration', recordA: null, recordB, runA: null, runB, privatePatternsFile,
         hardGateFn: calibrationHardGate, matrixComplete: false, plannedCellCount, executedCellCount, failFastStop,
@@ -2150,6 +2205,7 @@ async function cmdCalibrate(args) {
     } else {
       const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
       const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
+      recordRunIds = [recordB.run_id, recordA.run_id];
       result = await finalizeAndWriteRecords({
         runKind: 'calibration', recordA, recordB, runA, runB, privatePatternsFile,
         hardGateFn: calibrationHardGate,
@@ -2169,10 +2225,10 @@ async function cmdCalibrate(args) {
         console.error(`CALIBRATION FAILED: ${result.reason}`);
         printRejectionForensicsStderr(result);
       }
-      discardJournalIfRedundant(journal, result);
+      discardJournalIfRedundant(journal, result, recordRunIds);
       return 1;
     }
-    discardJournalIfRedundant(journal, result);
+    discardJournalIfRedundant(journal, result, recordRunIds);
     console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.redactedOutDir }, null, 2));
     return 0;
   } catch (err) {
@@ -2420,10 +2476,12 @@ async function cmdSmoke(args) {
     // here (whether the skill triggers naturally on this prompt is exactly the open question a
     // future corpus-probe run would investigate, not something smoke should presuppose).
     let result;
+    let recordRunIds;
     if (!pairComplete) {
       // Fail-fast (preserve rejected matrix forensics): see cmdCalibrate's identical rationale --
       // B already failed locally, A was never spawned.
       const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
+      recordRunIds = [recordB.run_id];
       result = await finalizeAndWriteRecords({
         runKind: 'smoke', recordA: null, recordB, runA: null, runB, privatePatternsFile,
         hardGateFn: smokeHardGate, matrixComplete: false, plannedCellCount, executedCellCount, failFastStop,
@@ -2431,6 +2489,7 @@ async function cmdSmoke(args) {
     } else {
       const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
       const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
+      recordRunIds = [recordB.run_id, recordA.run_id];
       result = await finalizeAndWriteRecords({
         runKind: 'smoke', recordA, recordB, runA, runB, privatePatternsFile,
         hardGateFn: smokeHardGate,
@@ -2448,10 +2507,10 @@ async function cmdSmoke(args) {
         console.error(`SMOKE FAILED: ${result.reason}`);
         printRejectionForensicsStderr(result);
       }
-      discardJournalIfRedundant(journal, result);
+      discardJournalIfRedundant(journal, result, recordRunIds);
       return 1;
     }
-    discardJournalIfRedundant(journal, result);
+    discardJournalIfRedundant(journal, result, recordRunIds);
     console.log(JSON.stringify({ recordA: result.redactedRecordA, recordB: result.redactedRecordB, evidenceDir: result.redactedOutDir }, null, 2));
     return 0;
   } catch (err) {
@@ -2843,10 +2902,10 @@ async function cmdRun(args) {
         console.error(`RUN FAILED: ${result.reason}`);
         printRejectionForensicsStderr(result);
       }
-      discardJournalIfRedundant(journal, result);
+      discardJournalIfRedundant(journal, result, records.map((r) => r.run_id));
       return 1;
     }
-    discardJournalIfRedundant(journal, result);
+    discardJournalIfRedundant(journal, result, records.map((r) => r.run_id));
     console.log(JSON.stringify({ records: result.redactedRecords, evidenceDir: result.redactedOutDir }, null, 2));
     return 0;
   } catch (err) {

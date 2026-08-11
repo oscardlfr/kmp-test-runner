@@ -134,9 +134,14 @@ describe('finalizeAndWriteRecords -- a rejection-diagnostics write failure never
 
     const runsRootOverride = mkdtempSync(path.join(os.tmpdir(), 'aerdw-matrix-runs-root-'));
     try {
-      const conditionResult = { ...fakeConditionResult(), spawnResult: { rawStdout: '', terminated: false, terminationReason: null } };
+      // Distinct objects, each stamped with its own real cellOrdinal (matching recordA/recordB's
+      // own orderIndex 0/1) -- captureOrdinalByRunId now derives from conditionResult.cellOrdinal,
+      // never array position, so two conditionResults sharing one cellOrdinal (or lacking it
+      // entirely) would fail validateCaptureOrdinalSet's own uniqueness/shape check.
+      const conditionResultA = { ...fakeConditionResult(), spawnResult: { rawStdout: '', terminated: false, terminationReason: null }, cellOrdinal: 0 };
+      const conditionResultB = { ...fakeConditionResult(), spawnResult: { rawStdout: '', terminated: false, terminationReason: null }, cellOrdinal: 1 };
       const result = await finalizeAndWriteMatrixRecords({
-        runKind: 'scenario', records: [recordA, recordB], conditionResults: [conditionResult, conditionResult],
+        runKind: 'scenario', records: [recordA, recordB], conditionResults: [conditionResultA, conditionResultB],
         hardGateFn: alwaysFailMatrixGate, runsRootOverride, repeats: 1,
       });
 
