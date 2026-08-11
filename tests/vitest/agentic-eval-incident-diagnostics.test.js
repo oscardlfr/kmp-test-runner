@@ -604,7 +604,7 @@ describe('reportIncident -- never claims a diagnostic exists unless it was actua
     }
   });
 
-  it('never claims a diagnostic exists when diagnosticWritten is false -- reports the sanitized error instead', async () => {
+  it('never claims a diagnostic exists when diagnosticWritten is false -- reports the sanitized error instead, and never asserts the absence of OTHER artifacts it has no visibility into', async () => {
     const { reportIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -615,6 +615,15 @@ describe('reportIncident -- never claims a diagnostic exists unless it was actua
       expect(calls).toContain('materialization_or_reset_failed');
       // Never claims the (unwritten) artifact's own path as if it were real and consultable.
       expect(calls).not.toMatch(/^Incident diagnostic written:/m);
+      // Post-Codex-audit fix (PR #418, round 4): reportIncident only ever receives `result`, which
+      // carries no journal/emergency-raw state -- it cannot honestly assert either exists OR is
+      // absent. The round-3 fix's own failure message overcorrected into exactly this false
+      // negative claim; confirmed false by direct reproduction whenever the journal/emergency raw
+      // are still genuinely on disk (see agentic-eval-incident-diagnostics-write-failure.test.js's
+      // own "reportIncident never denies a real, still-on-disk emergency raw" test for the full
+      // real-artifact reproduction).
+      expect(calls).not.toMatch(/no on-disk artifact exists/i);
+      expect(calls).not.toMatch(/only record/i);
     } finally {
       spy.mockRestore();
     }

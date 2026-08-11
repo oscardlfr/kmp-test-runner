@@ -1256,7 +1256,13 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
       unexpectedToolsByRunId: { [recordB.run_id]: failFastStop.unexpectedTools },
       foreignSkillNamesByRunId: { [recordB.run_id]: classifyForeignSkillUses(runB.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null) },
       transcriptsByRunId: { [recordB.run_id]: runB.spawnResult.rawStdout },
-      captureOrdinalByRunId: { [recordB.run_id]: 0 },
+      // Derived from runB.cellOrdinal -- the journal's own authoritative per-cell ordinal (stamped
+      // by runSingleCondition itself), never a hardcoded 0 (post-Codex-audit fix, PR #418, round
+      // 4: this producer still fabricated the ordinal even after round 3 fixed the CONSUMER-side
+      // exact-correspondence check to derive its own comparison binding the same way -- a wrong
+      // ordinal written HERE would already be baked into the rejection manifest before that later
+      // check ever runs).
+      captureOrdinalByRunId: { [recordB.run_id]: runB.cellOrdinal },
       plannedCellCount, executedCellCount,
       privatePatternsFile, runsRootOverride,
     });
@@ -1349,11 +1355,16 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
         [recordB.run_id]: classifyForeignSkillUses(runB.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null),
       },
       transcriptsByRunId: { [recordA.run_id]: runA.spawnResult.rawStdout, [recordB.run_id]: runB.spawnResult.rawStdout },
-      // Ordinal reflects TRUE execution order, per writeRejectionRawTranscripts' own contract --
-      // runConditionPair always spawns B (current-skill) before A (no-skill), so B is 0 and A is 1
-      // here, never the reverse (which the parameter list's own A-then-B order could otherwise
-      // tempt a future edit into reintroducing).
-      captureOrdinalByRunId: { [recordB.run_id]: 0, [recordA.run_id]: 1 },
+      // Derived from runB.cellOrdinal/runA.cellOrdinal -- the journal's own authoritative per-cell
+      // ordinals (each stamped by runSingleCondition itself), never hardcoded 0/1 constants
+      // (post-Codex-audit fix, PR #418, round 4: this producer still fabricated both ordinals even
+      // after round 3 fixed the CONSUMER-side exact-correspondence check to derive its own
+      // comparison binding the same way -- a wrong pairing written HERE would already be baked
+      // into the rejection manifest before that later check ever runs). In today's fixed spawn
+      // order (runConditionPair always spawns B/current-skill before A/no-skill) this still
+      // resolves to {B:0, A:1} -- but reads it from the real per-cell source of truth now, not a
+      // parameter-list-order-tempting literal.
+      captureOrdinalByRunId: { [recordB.run_id]: runB.cellOrdinal, [recordA.run_id]: runA.cellOrdinal },
       privatePatternsFile, runsRootOverride,
     });
     return { ok: false, reason: gate.reason, ...forensics };

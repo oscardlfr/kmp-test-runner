@@ -380,6 +380,16 @@ export function finalizeIncident({
  * `diagnosticWritten` is actually true; on failure, prints the already-sanitized/closed
  * `diagnosticWriteError` instead -- never a raw path. The safe relative path
  * (`committedRelativePath`) is the only path ever printed, and only when it's real.
+ *
+ * Post-Codex-audit fix (PR #418, round 4): the round-3 fix's own failure message overcorrected
+ * into a DIFFERENT false claim -- "no on-disk artifact exists for this incident; the
+ * counters/reason above are the only record" is itself false whenever ONLY the structured
+ * diagnostic write fails while the durable journal and/or the emergency raw transcript are still
+ * genuinely on disk (confirmed by direct reproduction: this function has no visibility into either
+ * of those -- it only ever receives `result`, which carries no journal/emergency-raw state -- so
+ * it cannot honestly assert their absence either way). The failure message is now strictly scoped
+ * to the one fact this function DOES know for certain: the structured diagnostic artifact itself
+ * was not persisted. It makes no claim, positive or negative, about anything else.
  * @param {{message: string, committedRelativePath: string, diagnosticWritten: boolean,
  *   diagnosticWriteError: string|null}} result
  */
@@ -388,6 +398,6 @@ export function reportIncident(result) {
   if (result.diagnosticWritten) {
     console.error(`Incident diagnostic written: ${result.committedRelativePath}`);
   } else {
-    console.error(`Incident diagnostic NOT written (${result.diagnosticWriteError}) -- no on-disk artifact exists for this incident; the counters/reason above are the only record.`);
+    console.error(`Incident diagnostic NOT written (${result.diagnosticWriteError}) -- the structured diagnostic artifact was not persisted.`);
   }
 }

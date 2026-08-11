@@ -93,3 +93,45 @@ describe('finalizeIncident -- the emergency raw fallback and the main diagnostic
     }
   });
 });
+
+// Post-Codex-audit fix (PR #418, round 4): reportIncident's own diagnosticWritten:false message
+// used to claim "no on-disk artifact exists for this incident; the counters/reason above are the
+// only record" -- confirmed false by direct reproduction using the EXACT scenario this file's own
+// first test already constructs (the emergency raw fallback genuinely lands on disk while the
+// structured diagnostic write independently fails). reportIncident has no visibility into the
+// emergency raw or the journal (it only ever receives the finalizeIncident() return value), so it
+// cannot honestly assert their absence -- this test drives a REAL finalizeIncident() call through
+// this exact scenario, confirms the emergency raw genuinely exists on disk, and asserts stderr
+// never denies it.
+describe('reportIncident -- never denies a real, still-on-disk emergency raw or journal it has no visibility into', () => {
+  it('when diagnosticWritten:false but the emergency raw genuinely landed on disk, stderr never claims no artifact exists', async () => {
+    const { finalizeIncident, reportIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const runsRootOverride = freshRunsRoot();
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const sentinelRaw = '{"sentinel":"still-on-disk-despite-diagnostic-failure"}\n';
+      const result = finalizeIncident({
+        runKind: 'scenario', journal: fakeJournal(), phase: 'persisting_cell_journal',
+        reasonText: 'journal write failed', cellOrdinal: 0, rawStdout: sentinelRaw,
+        provenance: {}, runsRootOverride,
+      });
+
+      // Ground truth: the emergency raw is GENUINELY on disk right now, independent of whatever
+      // reportIncident is about to print.
+      const expectedRawPath = join(runsRootOverride, 'agentic-eval-incident', 'raw', 'transcripts', result.incidentId, '0.jsonl');
+      expect(existsSync(expectedRawPath)).toBe(true);
+      expect(result.diagnosticWritten).toBe(false);
+
+      reportIncident(result);
+      const calls = spy.mock.calls.map((c) => c[0]).join('\n');
+      expect(calls).toMatch(/NOT written/i);
+      // The false claims a round-3 fix introduced -- must never appear when a real artifact
+      // (the emergency raw, confirmed above) is still genuinely on disk.
+      expect(calls).not.toMatch(/no on-disk artifact exists/i);
+      expect(calls).not.toMatch(/only record/i);
+    } finally {
+      spy.mockRestore();
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+});
