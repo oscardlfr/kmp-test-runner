@@ -127,7 +127,8 @@
   updated to match. For `coverage-threshold-failure` (1/2): sidecar-level evidence alone showed
   only a `result_status` asymmetry between the two runs, explicitly not treated as an exit-code
   equivalence (that inference was checked against `graders.mjs:505-511`'s own documented
-  uncertainty and found invalid). Root cause resolved via a scoped, sanitized raw-transcript
+  uncertainty and found invalid). The observed execution trajectory and the decision-gate outcome
+  — not a demonstrated root cause — were established via a scoped, sanitized raw-transcript
   inspection of exactly the 2 `coverage-threshold-failure` raw files (the 2
   `changed-module-verification` raw files were hashed only, never read — Finding 1 needed no raw
   content). Extraction used only the harness's own existing parsers (`parseStreamJsonl`,
@@ -151,7 +152,9 @@
   below X missed lines" trigger (a genuine, intentional 4th matrix cell — existing-reports-only
   gating, confirmed by an existing locked test) didn't exclude the case where tests must run
   fresh first, which is exactly this scenario's shape ("confirm unit tests pass, AND check
-  coverage") — consistent with, not proof of, why both runs reached for `coverage` first. Fixed
+  coverage") — consistent with, not proof of, why both runs reached for `coverage` first. Nor
+  does the fix below demonstrate it will improve live success — that requires a new, separately-
+  authorized canary against a newly-pinned skill SHA (see "Local-ci" / Limitations below). Fixed
   by adding an explicit disambiguating clause to that same trigger bullet, pointing at `parallel
   --min-missed-lines <N>` for the fresh-execution case — the locked phrase itself preserved
   verbatim. New discriminating test scoped to that bullet's own line(s), RED-verified against the
