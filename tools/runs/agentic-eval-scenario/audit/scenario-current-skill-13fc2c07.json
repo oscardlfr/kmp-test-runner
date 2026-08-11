@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "run_id": "scenario-current-skill-13fc2c07",
+  "run_schema": 5,
+  "run_kind": "scenario",
+  "condition": "current-skill",
+  "scenario_id": "deterministic-unit-test-failure",
+  "first_useful_signal_event": {
+    "type": "user.tool_result",
+    "index": 32
+  },
+  "terminal_authoritative_event": {
+    "type": "user.tool_result",
+    "index": 32
+  },
+  "tool_calls": [
+    {
+      "ordinal": 0,
+      "tool_use_event_index": 6,
+      "tool_result_event_index": 7,
+      "tool_kind": "target-skill",
+      "operation": null,
+      "plan_only": null,
+      "policy_decision": "not-applicable",
+      "result_status": "success",
+      "phase": "pre-signal"
+    },
+    {
+      "ordinal": 1,
+      "tool_use_event_index": 12,
+      "tool_result_event_index": 22,
+      "tool_kind": "kmp-test",
+      "operation": "describe",
+      "plan_only": false,
+      "policy_decision": "allow",
+      "result_status": "success",
+      "phase": "pre-signal"
+    },
+    {
+      "ordinal": 2,
+      "tool_use_event_index": 24,
+      "tool_result_event_index": 32,
+      "tool_kind": "kmp-test",
+      "operation": "parallel",
+      "plan_only": false,
+      "policy_decision": "allow",
+      "result_status": "error",
+      "phase": "produced-signal"
+    }
+  ],
+  "summary": {
+    "tool_calls_total": 3,
+    "shell_commands_total": 2,
+    "post_signal_ms": 6629.7247,
+    "post_signal_tool_calls": 0,
+    "policy_denials_total": 0,
+    "policy_denials_before_first_signal": 0,
+    "policy_denials_after_first_signal": 0,
+    "policy_decisions_missing": 0
+  }
+}

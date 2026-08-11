@@ -1,0 +1,226 @@
+{
+  "schema": 5,
+  "run_id": "scenario-current-skill-da5f2655",
+  "run_kind": "scenario",
+  "benchmark_eligible": true,
+  "scenario_id": "deterministic-unit-test-failure",
+  "query_id": null,
+  "condition": "current-skill",
+  "skill_source_sha": "9814ada0c45e6a3d2a0399291ec96cb8d1ef86bb",
+  "kmp_test_cli_version": "0.14.0",
+  "kmp_test_cli_source_sha": "75dfd96dad02049c98715ac246d82128a1e6f3a7",
+  "resolved_kmp_test_executable_path": "C:\\kmp-eval\\agentic-full-corpus-final-canary-v3\\bin\\kmp-test.js",
+  "model_requested": "claude-sonnet-5",
+  "model_resolved": "claude-sonnet-5",
+  "session_id_observed": "8f31bfe8-bc05-4b22-a1a7-171b50fb67e0",
+  "claude_code_version": "2.1.225",
+  "repo_commit": "75dfd96dad02049c98715ac246d82128a1e6f3a7",
+  "project_alias": "nowinandroid",
+  "project_commit": "058f0e4375ec51ff8811ba2d0bb10bc4c1b4fdb8",
+  "project_url": "https://github.com/android/nowinandroid",
+  "platform": "windows",
+  "family": "test-only",
+  "cache_state": "cold",
+  "daemon_policy": "disabled-via-gradle-user-home-properties",
+  "env_allowlist_profile": "narrow",
+  "seed": 20260722,
+  "order_index": 2,
+  "started_at": "2026-08-11T10:09:07.773Z",
+  "ended_at": "2026-08-11T10:11:32.338Z",
+  "wall_clock_ms": 144565,
+  "skill_available": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invocation_attempted": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invoked": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invocation_event": {
+    "type": "assistant.tool_use.Skill",
+    "index": 6
+  },
+  "success": {
+    "value": true,
+    "reason": null
+  },
+  "expected_outcome_matched": {
+    "value": true,
+    "reason": null
+  },
+  "first_useful_signal_ms": {
+    "value": 138979.2694,
+    "reason": null
+  },
+  "first_useful_signal_event": {
+    "type": "user.tool_result",
+    "index": 32
+  },
+  "post_signal_ms": {
+    "value": 5582.2624,
+    "reason": null
+  },
+  "post_signal_tool_calls": {
+    "value": 0,
+    "reason": null
+  },
+  "policy_denials_before_first_signal": {
+    "value": 0,
+    "reason": null
+  },
+  "policy_denials_after_first_signal": {
+    "value": 0,
+    "reason": null
+  },
+  "accepted_audit": {
+    "schema": 1,
+    "relative_path": "audit/scenario-current-skill-da5f2655.json",
+    "sha256": "431d0066bda47c18b6d220b4b1401757f651734be3c7fed41934ab414a637e5b"
+  },
+  "tokens": {
+    "input": {
+      "value": 8,
+      "reason": null
+    },
+    "output": {
+      "value": 905,
+      "reason": null
+    },
+    "cache_read": {
+      "value": 80441,
+      "reason": null
+    },
+    "cache_creation": {
+      "value": 10939,
+      "reason": null
+    }
+  },
+  "tool_calls_total": {
+    "value": 3,
+    "reason": null
+  },
+  "shell_commands_total": {
+    "value": 2,
+    "reason": null
+  },
+  "test_invocations_total": {
+    "value": 1,
+    "reason": null
+  },
+  "retries": {
+    "value": 0,
+    "reason": null
+  },
+  "output_bytes": {
+    "value": 13973,
+    "reason": null
+  },
+  "stream_json_bytes": {
+    "value": 64465,
+    "reason": null
+  },
+  "human_interventions": {
+    "value": 0,
+    "reason": null
+  },
+  "terminated": false,
+  "termination_reason": null,
+  "exit_code": 0,
+  "permission_mode_used": "dontAsk",
+  "policy_allowed_gradle_tasks": [
+    ":lint:tasks",
+    ":lint:test"
+  ],
+  "policy_allowed_kmptest_subcommands": [
+    "doctor",
+    "describe",
+    "parallel"
+  ],
+  "policy_sha256": "44400952001e67181080ff71d5c01f8660293fc2c972a9b581f3bd5ffc802dfa",
+  "hook_call_count": 2,
+  "hook_deny_count": 0,
+  "privacy_status": "public",
+  "raw_capture_committed": false,
+  "raw_capture_location": "tools/runs/agentic-eval-scenario/raw/",
+  "notes": "Scenario run -- benchmark_eligible reflects protocol/integrity completeness, not answer correctness; see grading_checks and success for the actual outcome.",
+  "grading_checks": {
+    "value": [
+      {
+        "name": "no_transcript_structural_issues",
+        "passed": true,
+        "detail": "no structural issues",
+        "evidence_event_indices": []
+      },
+      {
+        "name": "bash_tool_use_present",
+        "passed": true,
+        "detail": "2 policy-allowed command(s) attempted",
+        "evidence_event_indices": [
+          12,
+          24
+        ]
+      },
+      {
+        "name": "tool_result_correlated",
+        "passed": true,
+        "detail": "every relevant tool_use has a correlated tool_result",
+        "evidence_event_indices": []
+      },
+      {
+        "name": "authoritative_evidence_well_formed",
+        "passed": true,
+        "detail": "the terminal attempt produced well-formed evidence",
+        "evidence_event_indices": [
+          32
+        ]
+      },
+      {
+        "name": "authoritative_target_matches_expected",
+        "passed": true,
+        "detail": "terminal attempt targeted the expected module",
+        "evidence_event_indices": [
+          32
+        ]
+      },
+      {
+        "name": "authoritative_outcome_matches_expected",
+        "passed": true,
+        "detail": "terminal attempt outcome matches expected",
+        "evidence_event_indices": [
+          32
+        ]
+      },
+      {
+        "name": "no_provider_contradiction",
+        "passed": true,
+        "detail": "only one provider (or neither) produced evidence -- trivially no contradiction",
+        "evidence_event_indices": [
+          32
+        ]
+      },
+      {
+        "name": "final_answer_consistent_with_evidence",
+        "passed": true,
+        "detail": "the KMP_EVAL_RESULT block exactly matches the expected module, outcome_kind, and counts",
+        "evidence_event_indices": []
+      }
+    ],
+    "reason": null
+  },
+  "repetition_index": 0,
+  "foreign_skill_summary": {
+    "rejected": 0,
+    "confirmed": 0,
+    "incomplete": 0
+  },
+  "ambient_skill_profile": {
+    "count": 16,
+    "scope_id": "4b9913f9-3c28-4fd9-afc2-275613b66520",
+    "fingerprint_hmac": "359e10a2401e6d1e3d194fd55b3eb97887eed834306b4e0ab93994f02c3a231a"
+  },
+  "errors": []
+}
