@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "run_id": "scenario-current-skill-19b86524",
+  "run_schema": 5,
+  "run_kind": "scenario",
+  "condition": "current-skill",
+  "scenario_id": "coverage-threshold-failure",
+  "first_useful_signal_event": null,
+  "terminal_authoritative_event": {
+    "type": "user.tool_result",
+    "index": 49
+  },
+  "tool_calls": [
+    {
+      "ordinal": 0,
+      "tool_use_event_index": 6,
+      "tool_result_event_index": 7,
+      "tool_kind": "target-skill",
+      "operation": null,
+      "plan_only": null,
+      "policy_decision": "not-applicable",
+      "result_status": "success",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 1,
+      "tool_use_event_index": 12,
+      "tool_result_event_index": 22,
+      "tool_kind": "kmp-test",
+      "operation": "describe",
+      "plan_only": false,
+      "policy_decision": "allow",
+      "result_status": "success",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 2,
+      "tool_use_event_index": 24,
+      "tool_result_event_index": 27,
+      "tool_kind": "kmp-test",
+      "operation": "other",
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 3,
+      "tool_use_event_index": 31,
+      "tool_result_event_index": 34,
+      "tool_kind": "kmp-test",
+      "operation": "other",
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal"
+    },
+    {
+      "ordinal": 4,
+      "tool_use_event_index": 39,
+      "tool_result_event_index": 49,
+      "tool_kind": "kmp-test",
+      "operation": "parallel",
+      "plan_only": false,
+      "policy_decision": "allow",
+      "result_status": "success",
+      "phase": "no-signal"
+    }
+  ],
+  "summary": {
+    "tool_calls_total": 5,
+    "shell_commands_total": 4,
+    "post_signal_ms": null,
+    "post_signal_tool_calls": null,
+    "policy_denials_total": 2,
+    "policy_denials_before_first_signal": null,
+    "policy_denials_after_first_signal": null,
+    "policy_decisions_missing": 0
+  }
+}
