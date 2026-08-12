@@ -9,7 +9,7 @@ repetitions = 8 live sessions, all accepted.
 | Field | Value |
 |---|---|
 | Harness / base commit | `dc62a72ce8b151878767eeea3a7866772f9d7de9` |
-| Skill snapshot pin | `8492d98d40b9f2208bac88cf8ac357aeb4c095ca` |
+| Skill snapshot pin (campaign-level) | `8492d98d40b9f2208bac88cf8ac357aeb4c095ca` |
 | Model (requested = resolved) | `claude-sonnet-5` |
 | Claude Code | `2.1.227` |
 | Source project | `nowinandroid` @ `7d45eae4f8720a0c77f507712ba2437ff974b6ed` |
@@ -20,16 +20,35 @@ repetitions = 8 live sessions, all accepted.
 | Capture date | 2026-08-12 |
 | Record schema | 5 |
 
-Every one of the 8 records carries these values identically; the fields were
-asserted field-by-field rather than spot-checked. All 8 are
-`benchmark_eligible: true`, `terminated: false`, `exit_code: 0`, with an empty
-`errors` array and a passing `no_transcript_structural_issues` grading check.
+Every one of the 8 records carries the harness/base commit, model, Claude Code
+version, source project, platform, seed, measurement scope id, and record
+schema identically; those fields were asserted field-by-field rather than
+spot-checked. The skill snapshot pin is fixed at the campaign level, but its
+per-record field is conditional, not uniform: `skill_source_sha` is
+`8492d98d40b9f2208bac88cf8ac357aeb4c095ca` on all 4 `current-skill` records
+and `null` on all 4 `no-skill` records, as the schema requires when the
+target skill is unavailable. All 8 are `benchmark_eligible: true`,
+`terminated: false`, `exit_code: 0`, with an empty `errors` array and a
+passing `no_transcript_structural_issues` grading check.
 
 ## Method
 
 Both matrices ran sequentially in fixed order with an identical command shape,
 varying only the scenario id. Each invocation planned 4 cells and executed all 4;
 no cell was retried, replaced, or re-seeded, and no result was authored by hand.
+This is a claim about session/matrix orchestration only: zero live sessions
+were re-run and zero cells were replaced across the whole campaign.
+
+That is a distinct claim from the per-record `retries` metric, which is
+unrelated to session orchestration. Per `graders.mjs`, `retries` is
+`test_invocations_total` minus one, floored at zero -- an in-session count of
+how many times a single accepted session invoked a test capable of producing
+target evidence, not a session re-run. That metric is nonzero on 2 of the 8
+committed records, both `changed-module-verification` `current-skill`
+successes: `scenario-current-skill-6693a3b2` and
+`scenario-current-skill-709ebd76`, each `retries.value: 1` (sum 2). The
+records are append-only measurement evidence and were not modified to fit
+either narrative; this paragraph is the correction.
 
 `no-skill` is a **target-skill ablation**, not an unconstrained control: both
 conditions run under the same policy, the same allowed gradle tasks, the same
@@ -66,19 +85,32 @@ Per-cell detail (all values read from the committed records):
 The two arms did not fail in the same way, and the distinction matters more than
 the headline counts.
 
-All 4 `no-skill` cells failed identically and early: `bash_tool_use_present` was
-false, meaning **no policy-allowed command was ever attempted**. With no attempt,
-the three authoritative-evidence checks and the final-answer check had nothing to
-evaluate. These runs did not attempt the task and get it wrong; they did not
-reach the point of producing target evidence at all. Median wall clock across the
-4 `no-skill` cells is well under a minute (35.1s, 39.4s, 40.7s, 72.6s).
+All 4 `no-skill` cells failed identically: `bash_tool_use_present` was false,
+meaning no policy-**allowed** command was ever attempted. That is not the same
+as no attempt at all: every `no-skill` cell made policy-**denied** attempts.
+Denials per cell (`hook_deny_count`, linked to run ID): `scenario-no-skill-
+901aa1aa` 7, `scenario-no-skill-8bd6240f` 8, `scenario-no-skill-56e03794` 10,
+`scenario-no-skill-580d0dce` 8. The correct characterization is policy-denied
+attempts without an eligible test invocation or terminal evidence, not that
+the task was never attempted. With no eligible invocation, the three
+authoritative-evidence checks and the final-answer check had nothing to
+evaluate. Individual wall clock across the 4 `no-skill` cells: 35.1s, 39.4s,
+40.7s, 72.6s; median ~40.1s.
+
+The `current-skill` arm was not friction-free either. Denials per cell:
+`scenario-current-skill-6693a3b2` 6, `scenario-current-skill-709ebd76` 6,
+`scenario-current-skill-19b86524` 2, `scenario-current-skill-f7e4b3bd` 2. The
+two `changed-module-verification` successes (`6693a3b2`, `709ebd76`) are also
+the two records carrying an in-session `retries` count of 1 (see Method); the
+two `coverage-threshold-failure` cells recorded no retries.
 
 The single `current-skill` cell that failed
-(`coverage-threshold-failure`, rep 1) failed at exactly one check:
-`authoritative_outcome_matches_expected`. It invoked the skill, ran a test
-invocation, and produced well-formed, correctly-targeted terminal evidence — the
-evidence was simply not the expected outcome. That is a substantively different
-failure mode from "never attempted", and it is the only near-miss in the batch.
+(`coverage-threshold-failure`, rep 1, `scenario-current-skill-19b86524`) failed
+at exactly one check: `authoritative_outcome_matches_expected`. It invoked the
+skill, ran a test invocation, and produced well-formed, correctly-targeted
+terminal evidence — the evidence was simply not the expected outcome. That is
+a substantively different failure mode from a policy-denied non-invocation,
+and it is the only near-miss in the batch.
 
 3 of 4 `no-skill` cells recorded `foreign_skill_summary.confirmed = 1`, i.e. a
 confirmed invocation of a non-target skill. `rejected` is 0 across all 8 records.
