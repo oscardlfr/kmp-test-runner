@@ -88,9 +88,10 @@ the headline counts.
 All 4 `no-skill` cells failed identically: `bash_tool_use_present` was false,
 meaning no policy-**allowed** command was ever attempted. That is not the same
 as no attempt at all: every `no-skill` cell made policy-**denied** attempts.
-Denials per cell (`hook_deny_count`, linked to run ID): `scenario-no-skill-
-901aa1aa` 7, `scenario-no-skill-8bd6240f` 8, `scenario-no-skill-56e03794` 10,
-`scenario-no-skill-580d0dce` 8. The correct characterization is policy-denied
+Denials per cell (`hook_deny_count`, linked to run ID):
+`scenario-no-skill-901aa1aa` 7, `scenario-no-skill-8bd6240f` 8,
+`scenario-no-skill-56e03794` 10, `scenario-no-skill-580d0dce` 8. The correct
+characterization is policy-denied
 attempts without an eligible test invocation or terminal evidence, not that
 the task was never attempted. With no eligible invocation, the three
 authoritative-evidence checks and the final-answer check had nothing to
