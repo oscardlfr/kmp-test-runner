@@ -828,15 +828,75 @@ function canonicalModuleFilterIdentity(moduleFilter) {
   return normalizeModuleName(moduleFilter);
 }
 
+/** Validates `envelope.tests`'s own closed-form arithmetic coherence: all 5 counters are
+ * non-negative integers, and the task-level `total === passed + failed` (`skipped` is validated
+ * separately as always-zero at each derivation branch's own call site, since none of this
+ * harness's supported KMP_EVAL_RESULT closed forms can represent a genuine per-individual-test
+ * skip). A task-level counter set that doesn't even add up to itself is never trustworthy
+ * evidence, independent of what the DERIVED outcome's own total/passed/failed end up being (those
+ * come from `individual_total`/`test_failures` -- a different granularity entirely: task-level vs
+ * per-test-case). */
+function isCoherentTestsCounters(tests) {
+  if (tests == null || typeof tests !== 'object' || Array.isArray(tests)) return false;
+  const fields = [tests.total, tests.passed, tests.failed, tests.skipped, tests.individual_total];
+  if (!fields.every((n) => Number.isInteger(n) && n >= 0)) return false;
+  return tests.total === tests.passed + tests.failed;
+}
+
+/** True iff `moduleEntry.test_failures` is a non-empty array -- real per-test failure detail that
+ * directly contradicts a clean-pass or coverage-gate claim (both mean "every test that ran also
+ * passed"), regardless of what the top-level `errors[]`/`tests.failed` counters otherwise say. */
+function hasNonEmptyTestFailures(moduleEntry) {
+  return Array.isArray(moduleEntry?.test_failures) && moduleEntry.test_failures.length > 0;
+}
+
+/** True iff `warnings[]` carries a `junit_xml_oversized` entry for THIS specific module -- per
+ * result-rollup.js's own doc comment (the real producer of this warning), every skipped file means
+ * `tests.individual_total` undercounts and `test_failures[]` may be incomplete for that task, so a
+ * clean-pass or coverage-gate claim resting on those same counts cannot be trusted once this
+ * warning fires for the module being derived. Scoped to the observed module specifically -- an
+ * unrelated module's own oversized-XML warning says nothing about THIS module's counts. */
+function hasOversizedJunitWarning(warnings, module) {
+  return Array.isArray(warnings) && warnings.some((w) => w && w.code === 'junit_xml_oversized' && normalizeModuleName(w.module) === module);
+}
+
+/** Validates `envelope.coverage`'s own internal coherence for a single-module coverage claim, and
+ * returns the coherent `{missed_lines, threshold, modules_contributing}` triple, or `null` if any
+ * of the coverage block's own internal claims contradict each other or the observed module.
+ * Mirrors `validateKmpEnvelopeForAttempt`'s identical `coverageOk` computation (bucket-exclusivity,
+ * exact single-entry `with_data`, `modules_contributing===1`) -- scoped to the OBSERVED module
+ * rather than a scenario's expected one, since this function never compares against
+ * scenario.expected at all. */
+function deriveCoherentCoverageFacts(covBlock, err, module) {
+  if (covBlock == null || typeof covBlock !== 'object' || Array.isArray(covBlock)) return null;
+  if (!Number.isInteger(err.missed_lines) || err.missed_lines < 0) return null;
+  if (!Number.isInteger(err.threshold) || err.threshold < 0) return null;
+  // The error's own echoed missed_lines must agree with the coverage summary block -- if they
+  // disagree, there is no way to tell which one reflects reality without guessing.
+  if (covBlock.missed_lines !== err.missed_lines) return null;
+  // Exactly one module was ever dispatched (the caller is already inside the modules.length===1
+  // branch) -- a coherent claim can never say more than one module "contributed" real data.
+  if (covBlock.modules_contributing !== 1) return null;
+  const buckets = covBlock.module_buckets;
+  const withData = buckets?.with_data;
+  if (!Array.isArray(withData) || withData.length !== 1 || normalizeModuleName(withData[0]) !== module) return null;
+  const exclusiveBucketKeys = ['no_xml', 'parse_errored', 'skipped_by_user'];
+  if (!exclusiveBucketKeys.every((key) => Array.isArray(buckets[key]) && !buckets[key].some((m) => normalizeModuleName(m) === module))) return null;
+  return { missed_lines: err.missed_lines, threshold: err.threshold, modules_contributing: covBlock.modules_contributing };
+}
+
 /**
  * Derives the closed-form canonical facts a kmp-test envelope's OWN content actually shows --
  * never scenario.expected, never a comparison against it, purely a structural reading of
  * already-extracted, already-classified evidence. Returns `null` whenever the envelope's shape
  * can't be attributed to exactly one real outcome without guessing (competing/incoherent error
- * shapes, an unattributable module, or missing/malformed per-test detail) -- the caller
- * (gradeScenarioCondition, via evaluateFinalAnswer) treats `null` as "no observed facts to compare
- * the final answer against," failing check 8 closed rather than falling back to any expected
- * value.
+ * shapes, an unattributable module, missing/malformed per-test detail, incoherent counters, or an
+ * execution/plan-mode contradiction) -- the caller (gradeScenarioCondition, via
+ * evaluateFinalAnswer) treats `null` as "no observed facts to compare the final answer against,"
+ * failing check 8 closed rather than falling back to any expected value.
+ * @param {boolean|null|undefined} resultIsError - this attempt's own tool_result-level error flag
+ *   (bashResult.resultIsError) -- checked for the identical resultIsError:true+exit_code:0
+ *   contradiction validateKmpEnvelopeForAttempt's expected-comparison path already guards against.
  * @returns {null
  *   | {module:string, outcome_kind:'tests_executed', total:number, passed:number, failed:number}
  *   | {module:string, outcome_kind:'tests_failed', total:number, passed:number, failed:number}
@@ -844,7 +904,7 @@ function canonicalModuleFilterIdentity(moduleFilter) {
  *       failed:number, missed_lines:number, threshold:number, modules_contributing:number}
  *   | {module:string, outcome_kind:'no_applicable_tests'}}
  */
-function deriveObservedKmpTestResult(envelope, classification) {
+function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
   // The envelope's own self-reported subcommand must agree with what was actually invoked -- a
   // stale or mismatched tool_result (the command said `parallel`, the attached envelope's own
   // `subcommand` field says something else, e.g. `doctor`) cannot be trusted to describe THIS
@@ -852,18 +912,32 @@ function deriveObservedKmpTestResult(envelope, classification) {
   // validateKmpEnvelopeForAttempt's own identical first check for the expected-comparison path --
   // observed-facts derivation must be no less careful than that.
   if (envelope.subcommand !== classification.subcommand) return null;
+  // Execution/plan-mode coherence -- mirrors validateKmpEnvelopeForAttempt's own identical
+  // fail-closed allowlist (see that function's own doc comment for the full "wrong-typed value"
+  // rationale): the ONLY acceptable states are "field absent" or "field explicitly false". A
+  // command with no --dry-run/--list-only in its own text (so it was never excluded earlier as
+  // plan-only) paired with an envelope that itself claims plan-only mode must not be trusted.
+  if (envelope.dry_run !== undefined && envelope.dry_run !== false) return null;
+  if (envelope.parallel?.list_only !== undefined && envelope.parallel?.list_only !== false) return null;
+  // resultIsError:true contradicting a CLEAN exit_code:0 claim is wrong under any plausible
+  // convention -- same deliberately ONE-directional check as validateKmpEnvelopeForAttempt's own
+  // (see that function's own doc comment for why the reverse direction is not asserted).
+  if (resultIsError === true && envelope.exit_code === 0) return null;
+  // Shared closed-form arithmetic coherence (non-negative integers, total===passed+failed) for
+  // ALL branches below -- a task-level counter set that doesn't add up to itself is never
+  // trustworthy evidence, independent of which specific outcome shape it's otherwise claiming.
+  if (!isCoherentTestsCounters(envelope.tests)) return null;
 
-  const individualTotal = envelope.tests?.individual_total;
+  const individualTotal = envelope.tests.individual_total;
 
   if (envelope.modules.length === 1) {
     const module = normalizeModuleName(envelope.modules[0]?.name);
     if (typeof module !== 'string') return null;
-    if (!Number.isInteger(individualTotal) || individualTotal < 0) return null;
     // A genuine per-individual-test skip has no representation in any closed form below (the
     // KMP_EVAL_RESULT schema itself carries no `skipped` key) -- with any skipped case present,
     // `passed`/`failed` could not be derived from `individualTotal` alone without guessing which
     // of the skipped cases would otherwise have counted as which.
-    if (envelope.tests?.skipped !== 0) return null;
+    if (envelope.tests.skipped !== 0) return null;
     // A genuine `parallel` envelope's own internal coherence (leg shapes, per-leg exit/failed
     // agreement, and both aggregate-cardinality invariants against envelope.tests.total/failed) is
     // independently re-checked here via the SAME validator the rest of this file already trusts --
@@ -881,8 +955,12 @@ function deriveObservedKmpTestResult(envelope, classification) {
     if (envelope.errors.length === 0) {
       // A genuinely clean run -- every individual test that ran also passed. Cross-checked against
       // the task-level failed counter too -- an envelope claiming no error entries while its own
-      // tests.failed counter disagrees is self-contradictory, not real clean-pass evidence.
-      if (envelope.tests?.failed !== 0) return null;
+      // tests.failed counter disagrees is self-contradictory, not real clean-pass evidence. A
+      // clean-pass claim must also not ALSO carry stray per-test failure detail, or an
+      // oversized-XML warning that makes individual_total an admitted undercount, for this module.
+      if (envelope.tests.failed !== 0) return null;
+      if (hasNonEmptyTestFailures(envelope.modules[0])) return null;
+      if (hasOversizedJunitWarning(envelope.warnings, module)) return null;
       // The envelope's own exit_code must agree with classifyExitCode's real, single-source-of-truth
       // mapping (lib/envelope/exit-codes.js -- the SAME function every real orchestrator's own
       // exit-code decision goes through) for a clean run with no errors: SUCCESS (0). An envelope
@@ -895,37 +973,44 @@ function deriveObservedKmpTestResult(envelope, classification) {
     if (envelope.errors.length === 1 && coverageErrors.length === 1) {
       // A coverage-gate failure is still a genuinely clean TEST pass underneath (see this
       // function's own coverage_threshold_exceeded return, below) -- the task-level failed counter
-      // must agree.
-      if (envelope.tests?.failed !== 0) return null;
+      // must agree, and the same stray-failure-detail/oversized-XML contradictions apply as the
+      // clean-run branch above.
+      if (envelope.tests.failed !== 0) return null;
+      if (hasNonEmptyTestFailures(envelope.modules[0])) return null;
+      if (hasOversizedJunitWarning(envelope.warnings, module)) return null;
       const err = coverageErrors[0];
-      const cov = envelope.coverage;
-      if (cov == null || typeof cov !== 'object' || Array.isArray(cov)) return null;
-      if (!Number.isInteger(err.missed_lines) || !Number.isInteger(err.threshold) || !Number.isInteger(cov.modules_contributing)) return null;
-      // The error's own echoed missed_lines must agree with the coverage summary block -- if they
-      // disagree, there is no way to tell which one reflects reality without guessing.
-      if (cov.missed_lines !== err.missed_lines) return null;
+      const coverageFacts = deriveCoherentCoverageFacts(envelope.coverage, err, module);
+      if (coverageFacts == null) return null;
       // The error's own echoed threshold must agree with the --min-missed-lines value actually
       // invoked on THIS command -- a stale/mismatched tool_result whose error names a different
       // threshold than the one this specific command line asked for cannot be trusted, regardless
       // of the error's own internal coverage self-consistency (mirrors
       // validateKmpEnvelopeForAttempt's identical command-vs-envelope coherence check).
-      if (classification.minMissedLines == null || String(err.threshold) !== classification.minMissedLines) return null;
+      if (classification.minMissedLines == null || String(coverageFacts.threshold) !== classification.minMissedLines) return null;
       if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: 0 })) return null;
       return {
         module, outcome_kind: 'coverage_threshold_exceeded',
         total: individualTotal, passed: individualTotal, failed: 0,
-        missed_lines: err.missed_lines, threshold: err.threshold, modules_contributing: cov.modules_contributing,
+        missed_lines: coverageFacts.missed_lines, threshold: coverageFacts.threshold, modules_contributing: coverageFacts.modules_contributing,
       };
     }
 
     const moduleFailedErrors = envelope.errors.filter((e) => e && e.code === 'module_failed' && normalizeModuleName(e.module) === module);
     if (envelope.errors.length === 1 && moduleFailedErrors.length === 1) {
+      const soleError = moduleFailedErrors[0];
+      // A genuine test failure never carries this key at all -- result-rollup.js only ever ADDS it,
+      // set to the literal boolean true, for a pre-test (setup/compile) failure where the target
+      // task's tests never actually ran (see evaluateGradleAttempt's identical, longer-standing
+      // reasoning for the Gradle-provider equivalent of this same discriminator). Required genuine
+      // ABSENCE, not merely inequality with true, so a wrong-typed value is rejected identically.
+      if ('setup_failed' in soleError) return null;
+      if (typeof soleError.task !== 'string' || soleError.task.length === 0) return null;
       // A genuine module-task failure requires a positive task-level failed count -- a
       // `module_failed` error entry alongside `tests.failed:0` is self-contradictory (the error
       // claims the task failed, the aggregate counter claims it didn't). Explicit Number.isInteger
       // guard (not a loose `> 0` comparison) -- mirrors this file's own established idiom
       // everywhere else, and avoids JS's numeric-coercion surprises on a wrong-typed value.
-      if (!Number.isInteger(envelope.tests?.failed) || envelope.tests.failed === 0) return null;
+      if (!Number.isInteger(envelope.tests.failed) || envelope.tests.failed === 0) return null;
       const failures = envelope.modules[0].test_failures;
       if (!Array.isArray(failures) || failures.length === 0 || !failures.every(isWellFormedTestFailureEntry)) return null;
       if (failures.length > individualTotal) return null; // impossible shape -- more real failures than total cases
@@ -950,8 +1035,8 @@ function deriveObservedKmpTestResult(envelope, classification) {
     if (envelope.errors.length !== 1 || noTestErrors.length !== 1) return null;
     // A genuine "nothing resolved" claim must carry all-zero counters -- any nonzero value here
     // directly contradicts "no applicable tests were ever found or run."
-    if (envelope.tests?.total !== 0 || envelope.tests?.passed !== 0 || envelope.tests?.failed !== 0
-      || envelope.tests?.skipped !== 0 || individualTotal !== 0) return null;
+    if (envelope.tests.total !== 0 || envelope.tests.passed !== 0 || envelope.tests.failed !== 0
+      || envelope.tests.skipped !== 0 || individualTotal !== 0) return null;
     if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: 0 })) return null;
     const module = canonicalModuleFilterIdentity(classification.moduleFilter);
     if (module == null) return null;
@@ -1089,7 +1174,7 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
   // shapes (see its own doc comment). The caller (gradeScenarioCondition) only ever trusts this
   // field once it has ALSO confirmed evidenceWellFormed (hasEvidence && !malformed &&
   // !parallelEvidenceInvalid && !changedEvidenceInvalid) for whichever attempt becomes terminal.
-  const observedResult = hasEvidence ? deriveObservedKmpTestResult(envelope, classification) : null;
+  const observedResult = hasEvidence ? deriveObservedKmpTestResult(envelope, classification, bashResult.resultIsError) : null;
 
   return {
     provider: 'kmp_test', subcommand: classification.subcommand, bashIndex: bashResult.index, resultIndex: bashResult.resultIndex,
@@ -1173,14 +1258,24 @@ function parseExactGradleFooter(resultContent, resultIsError) {
 function deriveObservedGradleResult(module, mode, observedExitCode, resolvedEvidence, taskGenuinelyFailed) {
   if (typeof module !== 'string') return null;
   if (mode === 'no_source' && observedExitCode === 0) {
-    // A genuine NO-SOURCE task never produces real JUnit-XML output at all -- `status:'ok'` here
-    // (a genuinely resolved, well-formed testsuite from junit-evidence.mjs) directly contradicts
-    // "no tests ran for this task"; no way to tell which signal is real without guessing.
-    if (resolvedEvidence?.status === 'ok') return null;
+    // A genuine NO-SOURCE task can never ALSO be genuinely failed -- "nothing to run" and "ran and
+    // failed" describe mutually exclusive real facts about the SAME target task (classifyTaskResults
+    // is the unanchored, authoritative failure signal -- see evaluateGradleAttempt's own doc
+    // comment on why `mode` alone is unreliable for detecting a genuine failure).
+    if (taskGenuinelyFailed) return null;
+    // Only two states are compatible with a genuine NO-SOURCE claim: no JUnit-evidence record at
+    // all, or an explicit 'no_xml' resolution -- a real NO-SOURCE task never produces JUnit-XML
+    // output, so 'ok' (real, resolved XML), 'integrity_error', and 'conflict' are all equally
+    // incompatible with it, not merely 'ok'.
+    if (resolvedEvidence !== undefined && resolvedEvidence?.status !== 'no_xml') return null;
     return { module, outcome_kind: 'no_applicable_tests' };
   }
-  if (resolvedEvidence?.status === 'ok') {
-    const { total, passed, failed } = resolvedEvidence.junit;
+  // Guard the shape of resolvedEvidence.junit BEFORE destructuring it -- an adversarial/malformed
+  // `{status:'ok'}` record with no real junit object at all (or a non-object one) must fail closed
+  // here, never throw.
+  const junit = resolvedEvidence?.status === 'ok' ? resolvedEvidence.junit : null;
+  if (junit != null && typeof junit === 'object' && !Array.isArray(junit)) {
+    const { total, passed, failed } = junit;
     if (!Number.isInteger(total) || total < 0) return null;
     if (!Number.isInteger(passed) || passed < 0) return null;
     if (!Number.isInteger(failed) || failed < 0) return null;
@@ -1189,9 +1284,10 @@ function deriveObservedGradleResult(module, mode, observedExitCode, resolvedEvid
     if (passed + failed !== total) return null;
     const executedModes = new Set(['fresh', 'up_to_date', 'from_cache']);
     if (observedExitCode === 0 && executedModes.has(mode)) {
-      // BUILD SUCCESSFUL contradicted by a real JUnit failure -- Gradle does not report a task
-      // successful while a test case genuinely failed.
-      if (failed !== 0) return null;
+      // BUILD SUCCESSFUL contradicted by a real JUnit failure, or by the task's own independent
+      // FAILED classification -- Gradle does not report a task successful while it genuinely
+      // failed, whichever signal is checked.
+      if (failed !== 0 || taskGenuinelyFailed) return null;
       return { module, outcome_kind: 'tests_executed', total, passed, failed };
     }
     if (observedExitCode === 1 && taskGenuinelyFailed) {
