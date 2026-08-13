@@ -172,7 +172,9 @@ and 2 of 12 cells missed:
   correctly-targeted terminal evidence — it failed at exactly one check,
   `authoritative_outcome_matches_expected`. The evidence was simply not the
   expected outcome, a substantively different failure mode from a
-  policy-denied non-invocation.
+  policy-denied non-invocation. `final_answer_consistent_with_evidence`
+  passes on this same record despite that failure — see Limitations for why
+  that is a known grader-naming gap, not a contradiction in the data.
 - `scenario-current-skill-9337f6a9` (`kampkit-android-host-test-discovery`,
   rep 1) invoked the skill with zero policy denials, but failed 3 checks:
   `authoritative_target_matches_expected`,
@@ -265,3 +267,24 @@ Windows/macOS comparison.
 - No conclusion here depends on raw transcript or stderr text. Raw
   transcripts and stderr were used only as fixed-size/hash integrity
   artifacts, never read, parsed, or quoted.
+- **`final_answer_consistent_with_evidence` validates against
+  `scenario.expected`, not against this run's own observed terminal
+  evidence.** Verified directly in `graders.mjs`:
+  `kmpEvalResultBlockMatchesScenario(block, scenario)` (the function backing
+  this check) takes only the parsed `KMP_EVAL_RESULT` block and the scenario
+  object as arguments — it never receives the condition's own
+  transcript-derived evidence — so it can pass even when
+  `authoritative_outcome_matches_expected` fails, exactly as it does on
+  `scenario-current-skill-88f37070` (`final_answer_consistent_with_evidence:
+  true`, `authoritative_outcome_matches_expected: false`). The check's name
+  currently overstates its contract: it verifies the final answer against
+  the scenario's *expected* answer, not against what this specific run
+  actually produced as evidence. This is a genuine grader-precision finding
+  (raised by CodeRabbit review on this PR, verified here against source),
+  not a data error, and it changes nothing else in this campaign: `success`
+  values, structural acceptance, the 24 committed records/sidecars, and
+  every reconciliation number above are unaffected. Fixing the comparison
+  target (or renaming the check to describe its actual contract) is scoped
+  as a focused harness follow-up for a separate PR, to land before the
+  macOS canary — not implemented here, and no field in these append-only
+  records is retroactively renamed by this report.
