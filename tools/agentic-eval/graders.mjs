@@ -858,14 +858,21 @@ function hasContradictoryTestFailures(moduleEntry) {
   return failures.length > 0;
 }
 
-/** True iff `warnings[]` carries a `junit_xml_oversized` entry for THIS specific module -- per
- * result-rollup.js's own doc comment (the real producer of this warning), every skipped file means
- * `tests.individual_total` undercounts and `test_failures[]` may be incomplete for that task, so a
- * clean-pass or coverage-gate claim resting on those same counts cannot be trusted once this
- * warning fires for the module being derived. Scoped to the observed module specifically -- an
- * unrelated module's own oversized-XML warning says nothing about THIS module's counts. */
-function hasOversizedJunitWarning(warnings, module) {
-  return Array.isArray(warnings) && warnings.some((w) => w && w.code === 'junit_xml_oversized' && normalizeModuleName(w.module) === module);
+/** True iff `warnings[]` carries ANY `junit_xml_oversized` entry at all -- per result-rollup.js's
+ * own doc comment (the real producer of this warning), every skipped file means
+ * `tests.individual_total` undercounts and `test_failures[]` may be incomplete for that task.
+ * Deliberately NOT scoped to the observed module: this harness's own scenarios only ever dispatch
+ * one module per attempt, so a warning naming a DIFFERENT module is not "an unrelated module's own
+ * problem" the way it might be in a genuinely multi-module dispatch -- it is itself an
+ * unattributable, incoherent shape (see deriveObservedKmpTestResult's own module-cardinality
+ * checks) that cannot be reconciled with a single-module observation without guessing which side
+ * of the contradiction to trust. And for `no_applicable_tests` (envelope.modules the empty array),
+ * there is no "observed module" to scope a match against at all, yet the warning is exactly as
+ * disqualifying: the outcome shape of a `no_test_modules` claim is untrustworthy evidence when
+ * this warning is present anywhere in the same envelope. Called once, universally, before any
+ * modules.length branching -- see deriveObservedKmpTestResult's own call site. */
+function hasOversizedJunitWarning(warnings) {
+  return warnings.some((w) => w && w.code === 'junit_xml_oversized');
 }
 
 /** Validates `envelope.coverage`'s own internal coherence for a single-module coverage claim, and
@@ -943,6 +950,12 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
   // an array (possibly empty), so anything else (absent, wrong-typed) is itself untrustworthy
   // evidence, independent of whether any SPECIFIC warning ends up mattering below.
   if (!Array.isArray(envelope.warnings)) return null;
+  // An oversized-XML skip anywhere in the envelope means individual_total/test_failures may be
+  // incomplete -- checked here, universally, BEFORE branching on modules.length, so it covers
+  // no_applicable_tests (modules:[], no "observed module" to scope a match against at all) exactly
+  // as it covers the three count-bearing outcome shapes below (see hasOversizedJunitWarning's own
+  // doc comment for why this is deliberately NOT limited to the observed module).
+  if (hasOversizedJunitWarning(envelope.warnings)) return null;
 
   const individualTotal = envelope.tests.individual_total;
 
@@ -967,11 +980,6 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
     // changedEvidenceInvalid's own doc comment) -- scoped to `parallel` specifically, mirroring
     // parallelEvidenceInvalid's own identical `classification.subcommand !== 'changed'` guard.
     if (classification.subcommand !== 'changed' && !validateParallelEvidence(envelope, classification.testType)) return null;
-    // An oversized-XML skip for THIS module contradicts any of the three outcome shapes below
-    // equally (tests_executed/coverage_threshold_exceeded/tests_failed all rest on individual_total
-    // and/or test_failures, both of which the warning itself documents as potentially
-    // incomplete) -- checked once, here, rather than duplicated at each branch's own call site.
-    if (hasOversizedJunitWarning(envelope.warnings, module)) return null;
 
     if (envelope.errors.length === 0) {
       // A genuinely clean run -- every individual test that ran also passed. Cross-checked against
@@ -1260,26 +1268,66 @@ function parseExactGradleFooter(resultContent, resultIsError) {
 }
 
 /**
+ * Scans `resultContent` directly for EVERY status line matching `task` -- not just the first, the
+ * way `classifyTaskExecutionMode` (`lib/orchestrators/parallel/result-rollup.js`, deliberately left
+ * unmodified here -- this function duplicates its matching grammar rather than touching that
+ * module's own, different real-envelope-construction contract) is built to return via its own bare,
+ * non-global `.exec()` call. Returns the closed SET of distinct execution states found (duplicate
+ * occurrences of the identical state collapse, since the return value is a `Set`). A real Gradle
+ * invocation prints exactly one terminal status line per task -- TWO OR MORE distinct states
+ * collected for the SAME target task within one attempt's output is therefore an impossible
+ * real-world shape (e.g. a stale/adversarial tool_result, or two genuinely different task runs
+ * concatenated) -- exposing that ambiguity directly, as a multi-member set, is what lets
+ * `deriveObservedGradleResult` fail closed on it instead of silently trusting whichever status
+ * happened to be matched first. */
+function collectTaskExecutionStates(resultContent, task) {
+  const escaped = task.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp('Task\\s+' + escaped + '(?:\\s+(UP-TO-DATE|FROM-CACHE|NO-SOURCE|SKIPPED|FAILED))?\\s*$', 'gm');
+  const states = new Set();
+  let m;
+  while ((m = re.exec(resultContent)) !== null) {
+    const suffix = m[1];
+    if (!suffix) states.add('fresh');
+    else if (suffix === 'UP-TO-DATE') states.add('up_to_date');
+    else if (suffix === 'FROM-CACHE') states.add('from_cache');
+    else if (suffix === 'NO-SOURCE') states.add('no_source');
+    else if (suffix === 'SKIPPED') states.add('skipped_by_gradle');
+    else if (suffix === 'FAILED') states.add('failed');
+  }
+  return states;
+}
+
+/** True iff `states` is EXACTLY the given set of state names (same size, every named state
+ * present) -- never a subset/superset match. */
+function statesEqual(states, names) {
+  return states.size === names.length && names.every((n) => states.has(n));
+}
+
+/**
  * Derives the closed-form canonical facts a Gradle attempt's OWN already-parsed evidence actually
- * shows -- the already-parsed footer exit code, the already-classified task-execution mode, and
- * the JUnit evidence already resolved and attributed to THIS attempt by junit-evidence.mjs. Never
- * reads scenario.expected.gradle.tests/exit_code/marker. `module` is taken from the scenario's own
- * task-to-module binding (what makes this attempt a Gradle "candidate" for this scenario at all --
- * see evaluateGradleAttempt's own `invokedAllowed` gate above) purely as an identity label, never
- * to judge correctness -- a raw Gradle task name never structurally announces its own module the
- * way a kmp-test envelope's `modules[]` does. Returns `null` when the observed shape doesn't
- * cleanly resolve to exactly one of the three Gradle-provable outcomes; Gradle can never prove
- * coverage_threshold_exceeded at all (--min-missed-lines is a kmp-test-only concept -- see
- * isTerminalEligibleAttempt, which already excludes Gradle from ever becoming terminal for that
- * outcome_kind).
+ * shows -- the already-parsed footer exit code, the target task's own closed set of distinct
+ * execution states (see `collectTaskExecutionStates`, above -- never a single first-match mode
+ * value, which cannot by itself prove no OTHER, contradictory status line exists for the same
+ * task), and the JUnit evidence already resolved and attributed to THIS attempt by
+ * junit-evidence.mjs. Never reads scenario.expected.gradle.tests/exit_code/marker. `module` is
+ * taken from the scenario's own task-to-module binding (what makes this attempt a Gradle
+ * "candidate" for this scenario at all -- see evaluateGradleAttempt's own `invokedAllowed` gate
+ * above) purely as an identity label, never to judge correctness -- a raw Gradle task name never
+ * structurally announces its own module the way a kmp-test envelope's `modules[]` does. Returns
+ * `null` when the observed shape doesn't cleanly resolve to exactly one of the three
+ * Gradle-provable outcomes -- including whenever `taskStates` holds anything other than one of the
+ * three closed, allowed combinations below; Gradle can never prove coverage_threshold_exceeded at
+ * all (--min-missed-lines is a kmp-test-only concept -- see isTerminalEligibleAttempt, which
+ * already excludes Gradle from ever becoming terminal for that outcome_kind).
  */
-function deriveObservedGradleResult(module, mode, observedExitCode, resolvedEvidence, taskGenuinelyFailed) {
+function deriveObservedGradleResult(module, taskStates, observedExitCode, resolvedEvidence, taskGenuinelyFailed) {
   if (typeof module !== 'string') return null;
-  if (mode === 'no_source' && observedExitCode === 0) {
+  if (taskStates.size === 0) return null; // no status line found for the target task at all
+  if (statesEqual(taskStates, ['no_source']) && observedExitCode === 0) {
     // A genuine NO-SOURCE task can never ALSO be genuinely failed -- "nothing to run" and "ran and
     // failed" describe mutually exclusive real facts about the SAME target task (classifyTaskResults
     // is the unanchored, authoritative failure signal -- see evaluateGradleAttempt's own doc
-    // comment on why `mode` alone is unreliable for detecting a genuine failure).
+    // comment on why a single first-match mode value is unreliable for detecting a genuine failure).
     if (taskGenuinelyFailed) return null;
     // Only two states are compatible with a genuine NO-SOURCE claim: no JUnit-evidence record at
     // all, or an explicit 'no_xml' resolution -- a real NO-SOURCE task never produces JUnit-XML
@@ -1300,28 +1348,31 @@ function deriveObservedGradleResult(module, mode, observedExitCode, resolvedEvid
     // Every real test case counts toward exactly one of passed/failed -- a JUnit summary where
     // they don't sum to the total is internally incoherent, not real evidence.
     if (passed + failed !== total) return null;
-    const executedModes = new Set(['fresh', 'up_to_date', 'from_cache']);
-    if (observedExitCode === 0 && executedModes.has(mode)) {
+    // A genuinely successful execution is EXACTLY one of these three single-member states -- never
+    // a mix (a task is either freshly executed, up-to-date, or from-cache; never two of those
+    // simultaneously for one invocation).
+    const isSingleExecutedState = ['fresh', 'up_to_date', 'from_cache'].some((s) => statesEqual(taskStates, [s]));
+    if (observedExitCode === 0 && isSingleExecutedState) {
       // BUILD SUCCESSFUL contradicted by a real JUnit failure, or by the task's own independent
       // FAILED classification -- Gradle does not report a task successful while it genuinely
       // failed, whichever signal is checked.
       if (failed !== 0 || taskGenuinelyFailed) return null;
       return { module, outcome_kind: 'tests_executed', total, passed, failed };
     }
-    // A genuine task failure's own status line reliably classifies as exactly one of two modes:
-    // 'fresh' (the common real-world case -- Gradle prints a BARE "> Task <name>" announcement
-    // line FIRST, which classifyTaskExecutionMode's single-match regex matches before the later,
-    // real "> Task <name> FAILED" line ever appears -- see this function's own call site in
-    // evaluateGradleAttempt for the full ground-truth-confirmed rationale) or 'failed' (when the
-    // FAILED line is matched directly, with no preceding bare announcement). Every OTHER mode
-    // describes a task that did NOT genuinely execute-and-fail (no_source: nothing to run;
-    // up_to_date/from_cache: cached, never re-executed this invocation; skipped_by_gradle:
-    // explicitly skipped; no_evidence: no status line found at all for the target task) -- none of
-    // those coexist with a real failure for the SAME target task, regardless of what
-    // taskGenuinelyFailed/observedExitCode otherwise say.
-    const failureCompatibleModes = new Set(['fresh', 'failed']);
-    if (observedExitCode === 1 && taskGenuinelyFailed) {
-      if (!failureCompatibleModes.has(mode)) return null;
+    // A genuine task failure's own status line(s) reliably classify as EXACTLY one of two closed
+    // combinations: `{failed}` alone (the FAILED line matched directly, with no preceding bare
+    // announcement), or `{fresh, failed}` together (the common real-world case -- Gradle prints a
+    // BARE "> Task <name>" announcement line FIRST, since the task also produces console output
+    // for the JUnit failure reporting, and only prints the terminal "> Task <name> FAILED" line
+    // AFTER -- see this function's own call site in evaluateGradleAttempt for the full
+    // ground-truth-confirmed rationale). Any OTHER combination -- a third state present alongside
+    // `failed` (e.g. `no_source`/`up_to_date` genuinely coexisting with a FAILED line for the SAME
+    // task, an impossible-in-real-Gradle but adversarially-constructible shape), or `failed` absent
+    // entirely -- means the task's own status lines do not agree on a real, singular failure, and
+    // no outcome can be safely derived from them, regardless of what taskGenuinelyFailed/
+    // observedExitCode otherwise say.
+    const isFailurePattern = statesEqual(taskStates, ['failed']) || statesEqual(taskStates, ['fresh', 'failed']);
+    if (observedExitCode === 1 && taskGenuinelyFailed && isFailurePattern) {
       // A genuinely failed task contradicted by zero real JUnit failures -- the task-failure
       // signal and its own JUnit detail must agree on there being an actual failing case.
       if (failed === 0) return null;
@@ -1453,7 +1504,13 @@ function evaluateGradleAttempt(bashResult, scenario, decision, resolvedEvidence)
       // junitEvidenceEnabled for it).
       outcomeMatches = observedExitCode === g.exit_code && mode === 'no_source' && g.marker === 'NO-SOURCE';
     }
-    observedResult = deriveObservedGradleResult(normalizeModuleName(scenario.expected.module), mode, observedExitCode, resolvedEvidence, taskGenuinelyFailed);
+    // deriveObservedGradleResult needs the target task's own COMPLETE set of distinct status
+    // lines, not just `mode`'s single first-match value (see collectTaskExecutionStates's own doc
+    // comment for why a single value can never prove no OTHER, contradictory status line exists
+    // for the same task) -- computed here, additionally, without touching `mode`/`modes` above,
+    // which check 6's own outcomeMatches formula (untouched) still consumes as before.
+    const taskStates = collectTaskExecutionStates(bashResult.resultContent, g.evidence_task);
+    observedResult = deriveObservedGradleResult(normalizeModuleName(scenario.expected.module), taskStates, observedExitCode, resolvedEvidence, taskGenuinelyFailed);
   }
 
   return { provider: 'gradle', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence: true, malformed, targetMatches, intendedTargetMatches, outcomeMatches, observedResult };

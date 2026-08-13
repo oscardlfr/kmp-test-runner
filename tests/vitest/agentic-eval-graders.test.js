@@ -4643,4 +4643,58 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
     expect(grade.success).toBe(false);
   });
+
+  // --- round-5 hardening: junit_xml_oversized now rejected universally (before any
+  // modules.length branching, and never scoped to a single module name), and Gradle task-state
+  // derivation now collects the target task's COMPLETE set of distinct status lines instead of
+  // trusting classifyTaskExecutionMode's single first-match value. ---
+
+  it('[hardening V] a no_applicable_tests claim (modules:[]) carrying ANY junit_xml_oversized warning is untrustworthy, even though there is no "observed module" to scope a match against -- must not produce a canonicalizable observedResult', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS);
+    envelope.warnings = [{ code: 'junit_xml_oversized', module: 'somewhere', task: ':somewhere:test', file: 'TEST-x.xml', size_bytes: 99999999, max_bytes: 10000000 }];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: JSON.stringify(envelope) }],
+      kmpEvalResultText('The :app module has no applicable tests.', { module: ':app', outcome_kind: 'no_applicable_tests' }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening W] a clean single-module run carrying a junit_xml_oversized warning attributed to a DIFFERENT module is untrustworthy -- with only one module ever dispatched, no other real module could legitimately appear in a warning at all -- must not produce a canonicalizable observedResult', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
+    envelope.warnings = [{ code: 'junit_xml_oversized', module: 'other', task: ':other:test', file: 'TEST-x.xml', size_bytes: 99999999, max_bytes: 10000000 }];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening X] a target task classified FAILED (the first status line encountered) and later NO-SOURCE (a second, contradictory status line for the SAME task), with a real BUILD FAILED footer and JUnit evidence otherwise coherent with the failure, is self-contradictory -- must not produce a canonicalizable observedResult', () => {
+    const contradictoryStdout = '> Task :lint:test FAILED\n> Task :lint:test NO-SOURCE\n\nFAILURE: Build failed with an exception.\n\nBUILD FAILED in 2s\n1 actionable task: 1 executed\n';
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :lint:test --console=plain', resultContent: contradictoryStdout, resultIsError: true, evidence: okJunit(3, 0, 3) }],
+      kmpEvalResultText('3 tests ran in :lint; all 3 failed.', { module: ':lint', outcome_kind: 'tests_failed', total: 3, passed: 0, failed: 3 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening Y] a target task classified NO-SOURCE (the first status line encountered) and later UP-TO-DATE (a second, contradictory status line for the SAME task), with a real BUILD SUCCESSFUL footer, is self-contradictory -- must not produce a canonicalizable observedResult', () => {
+    const contradictoryStdout = '> Task :app:testDebugUnitTest NO-SOURCE\n> Task :app:testDebugUnitTest UP-TO-DATE\n\nBUILD SUCCESSFUL in 1s\n1 actionable task: 1 executed\n';
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :app:testDebugUnitTest --console=plain', resultContent: contradictoryStdout }],
+      kmpEvalResultText('The :app module has no applicable tests.', { module: ':app', outcome_kind: 'no_applicable_tests' }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
 });
