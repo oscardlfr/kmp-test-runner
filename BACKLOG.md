@@ -96,6 +96,24 @@
 
 ### 📋 QUEUED follow-ups (next sessions)
 
+- 🔍 **Discard-safety asymmetry: the raw-transcript (stdout) tier lacks content verification** —
+  found 2026-08-13 during an independent adversarial review of the macOS auth-preflight fix
+  (`feature/agentic-macos-auth-preflight-crash-safety`, `tools/agentic-eval/`). Confirmed by direct
+  code trace, not fixed in that PR (pre-existing behavior the PR's own diff never touches; out of
+  scope for a narrowly-scoped incident fix). `journalRawExactlyMatchesRejectionManifest` (`cli.mjs`)
+  and `writeRejectionRawTranscripts`'s own manifest (`rejection-diagnostics.mjs`) only compare
+  `{run_id, capture_ordinal, filename}` — never `byte_length`/`sha256`, never a reread of either
+  copy from disk. The auth-preflight PR's NEW stderr-tier sibling
+  (`journalStderrExactlyMatchesRejectionManifest`) rereads and rehashes both copies before allowing
+  a discard; the older stdout-tier check does not. Concretely: if the rejection tier's raw `.jsonl`
+  file is truncated/corrupted AFTER a successful write (disk-full flush, AV quarantine, external
+  cleanup) but the stdout-side binding/filename check still passes, and the stderr side also
+  verifies, `discardJournalIfRedundant` deletes the journal — losing the only other copy of the
+  now-corrupted transcript. Fix shape: extend `writeRejectionRawTranscripts`'s manifest with
+  `byte_length`/`sha256` (mirroring the stderr tier), and make
+  `journalRawExactlyMatchesRejectionManifest` reread+rehash both copies before a discard, exactly
+  like its stderr sibling already does.
+
 - 🔧 **v3 canary skill-remediation: `changed-module-verification` routing gap closed** — opened
   2026-08-11 (`feature/agentic-v3-skill-remediation` → `develop`, not yet merged). Follow-up to
   the full-corpus canary v3 (`tools/runs/agentic-eval-full-corpus-final-canary-v3-2026-08-11.md`,
