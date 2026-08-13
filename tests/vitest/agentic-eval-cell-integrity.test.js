@@ -312,4 +312,45 @@ describe('cellTranscriptIntegrityOk', () => {
     const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
   });
+
+  // Post-adversarial-review fix: the usage conjunct must fail CLOSED on ambiguity, never open.
+  // The only observed incident shape has `usage` present with every counter at an explicit 0 --
+  // that is the sole evidence this repo has for the real CLI's error-path JSON. Failing open on a
+  // missing/absent counter would silently promote the exact class of cell this check exists to
+  // catch, the moment a real failure's JSON happens to omit rather than zero a field.
+  // NOTE: cleanConditionResult's own DEFAULT events include a real Bash tool_use (see its
+  // definition above) -- every test below must explicitly override events to the same
+  // zero-tool-use shape the first noPreInferenceFailureOk test uses, or findAllToolUses' own
+  // conjunct would independently rule the signature out regardless of the usage-conjunct fix
+  // these tests exist to prove.
+  const NO_TOOL_USE_EVENTS = [initEventStub(), { type: 'assistant', message: { content: [{ type: 'text', text: 'Not logged in.' }], usage: ZERO_USAGE } }, resultEventStub()];
+
+  it('ok:false (noPreInferenceFailureOk) when usage is absent entirely, with the other 3 conjuncts holding -- fails closed, never open, on missing data', () => {
+    const conditionResult = cleanConditionResult('current-skill', {
+      events: NO_TOOL_USE_EVENTS,
+      result: preInferenceFailureResult({ usage: undefined }),
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.checksByName.noPreInferenceFailureOk).toBe(false);
+  });
+
+  it('ok:false (noPreInferenceFailureOk) when usage is present but missing a single counter (e.g. cache_read_input_tokens absent, not zero), with the other 3 conjuncts holding', () => {
+    const { cache_read_input_tokens, ...usageMissingOneCounter } = ZERO_USAGE;
+    const conditionResult = cleanConditionResult('current-skill', {
+      events: NO_TOOL_USE_EVENTS,
+      result: preInferenceFailureResult({ usage: usageMissingOneCounter }),
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.checksByName.noPreInferenceFailureOk).toBe(false);
+  });
+
+  it('ok:true (noPreInferenceFailureOk) when usage is missing a counter AND a DIFFERENT counter is genuinely non-zero -- real engagement still rules it out regardless of the missing field', () => {
+    const { cache_read_input_tokens, ...usageMissingOneCounter } = ZERO_USAGE;
+    const conditionResult = cleanConditionResult('current-skill', {
+      events: NO_TOOL_USE_EVENTS,
+      result: preInferenceFailureResult({ usage: { ...usageMissingOneCounter, output_tokens: 5 } }),
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
+  });
 });

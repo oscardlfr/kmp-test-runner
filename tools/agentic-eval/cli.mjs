@@ -1259,6 +1259,30 @@ function findBlockingHarnessToolingDirty(record, runsRootIsDefault) {
 }
 
 /**
+ * Builds the stderrByRunId map writeRejectionForensics' 3rd transaction needs, reading each
+ * cell's ALREADY-redacted stderr back from the journal (never conditionResult.spawnResult.stderr
+ * raw). Returns null -- skipping that transaction cleanly, identical to the "no journal" case --
+ * when journal is absent OR when ANY read throws (post-adversarial-review fix). Without this
+ * guard, a real filesystem race between this read and persistSpawnOutcome's own earlier write
+ * (EACCES/EBUSY on Windows, plausible; or, defensively, a stale ordinal) would let an uncaught
+ * exception escape all the way out of finalizeAndWriteRecords/finalizeAndWriteMatrixRecords --
+ * silently skipping Transactions 1 and 2 (raw transcripts, structured diagnostics) as collateral
+ * damage, and degrading a well-handled gate rejection into a generic, far-less-informative
+ * incident instead. The journal itself is unaffected either way -- it is never discarded on an
+ * incident path -- so this guard only protects the REJECTION's own forensics, not data survival.
+ * @param {object|null} journal
+ * @param {Record<string,number>} cellOrdinalByRunId
+ */
+function buildStderrByRunId(journal, cellOrdinalByRunId) {
+  if (!journal) return null;
+  try {
+    return Object.fromEntries(Object.entries(cellOrdinalByRunId).map(([runId, ordinal]) => [runId, journal.readStderrFor(ordinal)]));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Shared rejection-forensics writer for BOTH finalizeAndWriteRecords (pair path) and
  * finalizeAndWriteMatrixRecords (matrix path) -- TWO INDEPENDENT transactions (see
  * rejection-diagnostics.mjs's own header comment for the full rationale): raw transcripts first
@@ -1398,7 +1422,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
     // function) -- writeRejectionForensics skips its 3rd transaction cleanly in that case. When a
     // journal IS present, every value is read back ALREADY-redacted via journal.readStderrFor --
     // never re-derived from a fresh string, and never conditionResult.spawnResult.stderr raw.
-    const stderrByRunId = journal ? { [recordB.run_id]: journal.readStderrFor(runB.cellOrdinal) } : null;
+    const stderrByRunId = buildStderrByRunId(journal, { [recordB.run_id]: runB.cellOrdinal });
     const forensics = await writeRejectionForensics({
       runKind, records: [recordB],
       failedChecksByRunId: { [recordB.run_id]: failFastStop.failedChecks },
@@ -1495,9 +1519,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
     // stay null unless the write actually succeeded -- round-6 audit finding ("localización del
     // diagnóstico"): a caller must be able to tell a human WHERE a successfully-written diagnostic
     // landed, not just that no error was thrown.
-    const stderrByRunId = journal
-      ? { [recordB.run_id]: journal.readStderrFor(runB.cellOrdinal), [recordA.run_id]: journal.readStderrFor(runA.cellOrdinal) }
-      : null;
+    const stderrByRunId = buildStderrByRunId(journal, { [recordB.run_id]: runB.cellOrdinal, [recordA.run_id]: runA.cellOrdinal });
     const forensics = await writeRejectionForensics({
       runKind, records: [recordA, recordB],
       failedChecksByRunId: { [recordA.run_id]: gate.failedChecksA ?? [], [recordB.run_id]: gate.failedChecksB ?? [] },
@@ -1721,9 +1743,7 @@ async function finalizeAndWriteMatrixRecords({
     // trustworthy, and deriving it from the authoritative source removes an unverified implicit
     // invariant rather than relying on array-construction order never changing.
     const captureOrdinalByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].cellOrdinal]));
-    const stderrByRunId = journal
-      ? Object.fromEntries(records.map((r, i) => [r.run_id, journal.readStderrFor(conditionResults[i].cellOrdinal)]))
-      : null;
+    const stderrByRunId = buildStderrByRunId(journal, captureOrdinalByRunId);
 
     const forensics = await writeRejectionForensics({
       runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
@@ -1788,9 +1808,7 @@ async function finalizeAndWriteMatrixRecords({
     // trustworthy, and deriving it from the authoritative source removes an unverified implicit
     // invariant rather than relying on array-construction order never changing.
     const captureOrdinalByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].cellOrdinal]));
-    const stderrByRunId = journal
-      ? Object.fromEntries(records.map((r, i) => [r.run_id, journal.readStderrFor(conditionResults[i].cellOrdinal)]))
-      : null;
+    const stderrByRunId = buildStderrByRunId(journal, captureOrdinalByRunId);
     // ambientProfileMatrixOk (correction 6): scenarioHardGate's own matrix-wide consensus result
     // (gate.ambientProfileMatrixOk, exposed on its return value) -- threaded straight through, so
     // a rejection diagnostic for a COMPLETE scenario batch always records whether the ambient-
@@ -3386,4 +3404,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, cmdCorpusValidate, cmdScopeInit, cmdAggregate, cmdAnalyze, cmdValidate, validateRunRecordFile, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA, adoptJournalRaw, journalRawExactlyMatchesRejectionManifest, discardJournalIfRedundant, incidentPhaseOf, reasonTextFor };
+export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, cmdCorpusValidate, cmdScopeInit, cmdAggregate, cmdAnalyze, cmdValidate, validateRunRecordFile, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA, adoptJournalRaw, journalRawExactlyMatchesRejectionManifest, discardJournalIfRedundant, incidentPhaseOf, reasonTextFor, buildStderrByRunId };

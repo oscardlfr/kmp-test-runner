@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
-import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, validateRunRecordFile, SUBCOMMAND_SHAPES, discardJournalIfRedundant } from '../../tools/agentic-eval/cli.mjs';
+import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, validateRunRecordFile, SUBCOMMAND_SHAPES, discardJournalIfRedundant, buildStderrByRunId } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 import { LATEST_RUN_SCHEMA, validateRun, buildAggregateGroup } from '../../tools/agentic-eval/schemas.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
@@ -907,6 +907,39 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
     } finally {
       rmSync(runsRoot, { recursive: true, force: true });
     }
+  });
+});
+
+// Post-adversarial-review fix: journal.readStderrFor() is real filesystem I/O (unlike every
+// other *ByRunId map finalizeAndWriteRecords/finalizeAndWriteMatrixRecords build, which are pure
+// in-memory), and was the only one of the 4 stderrByRunId construction call sites NOT wrapped in
+// its own try/catch. A real fs race (EACCES/EBUSY on Windows) or a stale ordinal reaching
+// readStderrFor's own assertOrdinal would otherwise let an uncaught exception escape all the way
+// out of the finalize function, silently skipping Transactions 1 and 2 (raw transcripts,
+// structured diagnostics) as collateral damage -- degrading a well-handled gate rejection into a
+// far-less-informative generic incident. buildStderrByRunId is exported solely for direct
+// testability (same established convention as adoptJournalRaw/discardJournalIfRedundant).
+describe('buildStderrByRunId -- never lets a journal.readStderrFor() throw escape; falls back to null (skipping the stderr transaction entirely), exactly like the "no journal" case', () => {
+  it('returns null when journal is absent', () => {
+    expect(buildStderrByRunId(null, { 'run-a': 0 })).toBeNull();
+  });
+
+  it('returns the constructed {run_id: stderr} map when every read succeeds', () => {
+    const fakeJournal = { readStderrFor: (ordinal) => `stderr-for-ordinal-${ordinal}` };
+    expect(buildStderrByRunId(fakeJournal, { 'run-a': 0, 'run-b': 1 })).toEqual({
+      'run-a': 'stderr-for-ordinal-0', 'run-b': 'stderr-for-ordinal-1',
+    });
+  });
+
+  it('returns null (never throws) when readStderrFor throws for ANY one cell -- the whole transaction is skipped cleanly rather than one bad read taking down the caller', () => {
+    const fakeJournal = {
+      readStderrFor: (ordinal) => {
+        if (ordinal === 1) throw new Error('simulated fs race: EBUSY, resource busy or locked');
+        return `stderr-for-ordinal-${ordinal}`;
+      },
+    };
+    expect(() => buildStderrByRunId(fakeJournal, { 'run-a': 0, 'run-b': 1 })).not.toThrow();
+    expect(buildStderrByRunId(fakeJournal, { 'run-a': 0, 'run-b': 1 })).toBeNull();
   });
 });
 
