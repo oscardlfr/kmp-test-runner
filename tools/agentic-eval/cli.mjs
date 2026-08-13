@@ -2034,6 +2034,13 @@ function scenarioCellIntegrityOk(record, conditionResult, { sharedAmbientNames =
     ['junitCaptureCompleteOk', junitCaptureCompleteOk],
     ['ambientSkillProfileOk', shared.checksByName.ambientSkillProfileOk], ['targetSkillAmbientIdentityOk', shared.checksByName.targetSkillAmbientIdentityOk],
     ['ambientProfileMatrixOk', ambientProfileMatrixOk],
+    // Deliberately NOT `shared.checksByName.noPreInferenceFailureOk`-only-by-spread: this array is
+    // hand-built (never Object.entries(shared.checksByName)), so a check added only inside
+    // cellTranscriptIntegrityOk is computed but silently never enforced here unless it also gets
+    // its own tuple -- exactly the gap that would let a pre-inference failure on the LAST planned
+    // cell of a matrix (matrixComplete:true, the fail-fast break never fires) slip through this,
+    // the only gate that still runs for that case.
+    ['noPreInferenceFailureOk', shared.checksByName.noPreInferenceFailureOk],
   ]);
   return {
     ok: evaluation.ok, reason: evaluation.reason, failedChecks: evaluation.failedChecks,

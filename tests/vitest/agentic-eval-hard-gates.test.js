@@ -1942,6 +1942,32 @@ describe('scenarioCellIntegrityOk', () => {
       }
     });
   });
+
+  // Wiring-point regression lock (Diseño 3, noPreInferenceFailureOk): this function does NOT
+  // spread shared.checksByName generically -- it hand-lists every tuple explicitly. A check added
+  // only inside cellTranscriptIntegrityOk's own checksByName is computed but silently never
+  // enforced here unless it ALSO gets its own tuple in this function's evaluateNamedChecks call.
+  // This is precisely the gap that would let a pre-inference failure on the LAST planned cell of a
+  // matrix (matrixComplete:true, so the fail-fast break in runScenarioMatrix's loop never fires --
+  // only this function's own re-evaluation decides) slip through undetected.
+  it('rejects a cell matching the pre-inference-failure signature -- proves the manual tuple list was updated, not just cellTranscriptIntegrityOk', () => {
+    const cr = passConditionResult('current-skill', {
+      events: [initEventStub(), { type: 'assistant', message: { content: [{ type: 'text', text: 'Not logged in.' }], usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }, resultEventStub()],
+      result: { subtype: 'error_during_execution', is_error: true, num_turns: 1, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    });
+    const { ok, reason, failedChecks } = scenarioCellIntegrityOk(passRecord('current-skill'), cr);
+    expect(ok).toBe(false);
+    expect(failedChecks).toContain('noPreInferenceFailureOk');
+    expect(reason).toContain('noPreInferenceFailureOk:false');
+  });
+
+  it('a real negative-outcome cell (is_error:true, genuine engagement) is never rejected by noPreInferenceFailureOk here either', () => {
+    const cr = passConditionResult('current-skill', {
+      result: { subtype: 'error_during_execution', is_error: true, num_turns: 4, usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    });
+    const { failedChecks } = scenarioCellIntegrityOk(passRecord('current-skill'), cr);
+    expect(failedChecks).not.toContain('noPreInferenceFailureOk');
+  });
 });
 
 describe('scenarioHardGate', () => {

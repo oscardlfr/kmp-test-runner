@@ -20,6 +20,7 @@ import {
   isSkillAvailable, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile,
   classifyForeignSkillUses, findTranscriptStructuralIssuesToleratingTimeout,
   findIncompleteToolResultsToleratingTimeout, computeAmbientSkillProfile,
+  extractTokenUsage, findAllToolUses,
 } from './stream-parser.mjs';
 
 // The ONLY tools either condition's own --tools argv value ever grants -- moved here verbatim from
@@ -92,7 +93,31 @@ export function summarizeUnexpectedToolUses(events, expectedToolNames) {
 }
 
 /**
- * Canonical per-cell harness-integrity evaluation -- exactly the 15 checks from cli.mjs's
+ * Detects the exact pre-inference-failure signature a live macOS canary exposed: a terminal
+ * `result` event with is_error:true, num_turns in [0,1], every usage counter exactly zero, and
+ * zero tool_use of any kind -- the process spawned and Claude Code emitted a well-formed
+ * transcript, but the model never got a genuine turn (auth broken before the first turn, in the
+ * canary's case). All 4 conjuncts are required at once (AND): a real negative-outcome cell that
+ * genuinely engaged -- more than one turn, any tool_use, or any non-zero usage counter, even with
+ * is_error:true -- must never match this, since a wrong answer via legitimate engagement is data,
+ * not a harness defect (see cli.mjs's scenarioHardGate doc comment on that same distinction).
+ * Never inspects duration_ms, exit code in isolation, or any English-language text.
+ * @param {object} conditionResult - reads .result (the raw stream-json `result` event) and .events
+ * @returns {boolean}
+ */
+function isPreInferenceFailureSignature(conditionResult) {
+  const result = conditionResult.result;
+  if (result == null || result.is_error !== true) return false;
+  if (!Number.isInteger(result.num_turns) || result.num_turns < 0 || result.num_turns > 1) return false;
+  const usage = extractTokenUsage(result);
+  if (usage == null) return false;
+  if (![usage.input, usage.output, usage.cache_read, usage.cache_creation].every((v) => v === 0)) return false;
+  if (findAllToolUses(conditionResult.events).length !== 0) return false;
+  return true;
+}
+
+/**
+ * Canonical per-cell harness-integrity evaluation -- exactly the 16 checks from cli.mjs's
  * scenarioCellIntegrityOk that are computable from `conditionResult` ALONE: no matrix-wide
  * consensus, no already-built run record, no grading result. Deliberately EXCLUDES:
  *  - `skillSelectionOk` -- needs `sharedAmbientNames`, a matrix-wide consensus value that doesn't
@@ -158,12 +183,13 @@ export function cellTranscriptIntegrityOk(conditionResult, { targetPluginName, t
   const ambientProfile = computeAmbientSkillProfile(conditionResult.init, targetPluginName, targetSkillName, { expectTargetPresent: expectSkillAvailable });
   const ambientSkillProfileOk = ambientProfile.structurallyWellFormed;
   const targetSkillAmbientIdentityOk = ambientProfile.targetIdentityOk;
+  const noPreInferenceFailureOk = !isPreInferenceFailureSignature(conditionResult);
 
   const checksByName = {
     availabilityOk, noSkillSafetyOk, pluginProfileOk, pluginSnapshotBindingOk,
     foreignSkillToolResultsCompleteOk, initOk, toolProfileOk, noUnexpectedToolsOk,
     hookAccountingOk, cleanTranscriptOk, transcriptStructureOk, toolResultsCompleteOk,
-    terminationOk, ambientSkillProfileOk, targetSkillAmbientIdentityOk,
+    terminationOk, ambientSkillProfileOk, targetSkillAmbientIdentityOk, noPreInferenceFailureOk,
   };
   const evaluation = evaluateNamedChecks(Object.entries(checksByName));
 
