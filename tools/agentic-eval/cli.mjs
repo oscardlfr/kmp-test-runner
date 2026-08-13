@@ -1261,24 +1261,30 @@ function findBlockingHarnessToolingDirty(record, runsRootIsDefault) {
 /**
  * Builds the stderrByRunId map writeRejectionForensics' 3rd transaction needs, reading each
  * cell's ALREADY-redacted stderr back from the journal (never conditionResult.spawnResult.stderr
- * raw). Returns null -- skipping that transaction cleanly, identical to the "no journal" case --
- * when journal is absent OR when ANY read throws (post-adversarial-review fix). Without this
- * guard, a real filesystem race between this read and persistSpawnOutcome's own earlier write
- * (EACCES/EBUSY on Windows, plausible; or, defensively, a stale ordinal) would let an uncaught
- * exception escape all the way out of finalizeAndWriteRecords/finalizeAndWriteMatrixRecords --
- * silently skipping Transactions 1 and 2 (raw transcripts, structured diagnostics) as collateral
- * damage, and degrading a well-handled gate rejection into a generic, far-less-informative
- * incident instead. The journal itself is unaffected either way -- it is never discarded on an
- * incident path -- so this guard only protects the REJECTION's own forensics, not data survival.
+ * raw). Returns `{stderrByRunId: null, stderrReadError: null}` -- skipping the transaction
+ * cleanly, no failure to report -- when journal is absent entirely (the transaction genuinely
+ * doesn't apply). Returns `{stderrByRunId: null, stderrReadError: 'stderr_read_failed'}` when
+ * journal IS present but ANY read throws (post-adversarial-review fix, round 2): a real
+ * filesystem race between this read and persistSpawnOutcome's own earlier write (EACCES/EBUSY on
+ * Windows, plausible; or, defensively, a stale ordinal) must never let an uncaught exception
+ * escape finalizeAndWriteRecords/finalizeAndWriteMatrixRecords -- but it ALSO must never be
+ * silently folded into the SAME "no journal, nothing to report" state, which would hide a REAL
+ * failure behind a code path that means something else entirely (the operator would see total
+ * silence on the stderr tier instead of a closed failure code). The caller threads
+ * `stderrReadError` into writeRejectionForensics, which surfaces it through the SAME
+ * `stderrWriteError` field/reporting channel `stderr_write_failed` already uses -- one unified
+ * "was the stderr tier preserved" signal, regardless of which specific step failed.
  * @param {object|null} journal
  * @param {Record<string,number>} cellOrdinalByRunId
+ * @returns {{stderrByRunId: Record<string,string>|null, stderrReadError: string|null}}
  */
 function buildStderrByRunId(journal, cellOrdinalByRunId) {
-  if (!journal) return null;
+  if (!journal) return { stderrByRunId: null, stderrReadError: null };
   try {
-    return Object.fromEntries(Object.entries(cellOrdinalByRunId).map(([runId, ordinal]) => [runId, journal.readStderrFor(ordinal)]));
+    const stderrByRunId = Object.fromEntries(Object.entries(cellOrdinalByRunId).map(([runId, ordinal]) => [runId, journal.readStderrFor(ordinal)]));
+    return { stderrByRunId, stderrReadError: null };
   } catch {
-    return null;
+    return { stderrByRunId: null, stderrReadError: 'stderr_read_failed' };
   }
 }
 
@@ -1301,8 +1307,10 @@ async function writeRejectionForensics({
   // the 3rd transaction below is skipped cleanly in that case, never throws, never blocks the
   // other two. When present, every value MUST already be a string (the caller reads it back
   // already-redacted from the journal) -- see cli.mjs's own call sites for how stderrByRunId is
-  // built.
-  stderrByRunId = null,
+  // built. stderrReadError: set by the caller's own buildStderrByRunId when journal WAS present
+  // but reading it back failed -- distinct from stderrByRunId:null-with-no-journal (nothing to
+  // report) -- surfaces through the SAME stderrWriteError field below, never silently dropped.
+  stderrByRunId = null, stderrReadError = null,
 }) {
   const rejectionId = randomUUID();
   let rawTranscriptsWriteError = null;
@@ -1324,12 +1332,16 @@ async function writeRejectionForensics({
   // Transaction 3 of 3 -- stderr, the exact sibling of Transaction 1 (raw transcripts) above:
   // independent of it and of Transaction 2 below, never blocking or blocked by either. A closed
   // code, never err.message (a real fs error can carry an absolute path with the OS username).
-  let stderrWriteError = null;
+  // stderrReadError (set by the caller's buildStderrByRunId when the journal read itself failed)
+  // short-circuits straight to the SAME error field a write failure uses -- there is nothing to
+  // attempt writing in that case (stderrByRunId is null), but the failure must still be reported,
+  // never conflated with the unrelated "no journal at all" silence.
+  let stderrWriteError = stderrReadError;
   let stderrPersisted = false;
   let stderrRelativeDir = null;
   let stderrManifest = null;
   let stderrCount = 0;
-  if (stderrByRunId != null) {
+  if (stderrReadError == null && stderrByRunId != null) {
     try {
       const raw = writeRejectionRawStderr(rejectionId, stderrByRunId, captureOrdinalByRunId, { runsRootOverride, privatePatternsFile });
       stderrRelativeDir = raw.stderrRelativeDir;
@@ -1422,7 +1434,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
     // function) -- writeRejectionForensics skips its 3rd transaction cleanly in that case. When a
     // journal IS present, every value is read back ALREADY-redacted via journal.readStderrFor --
     // never re-derived from a fresh string, and never conditionResult.spawnResult.stderr raw.
-    const stderrByRunId = buildStderrByRunId(journal, { [recordB.run_id]: runB.cellOrdinal });
+    const { stderrByRunId, stderrReadError } = buildStderrByRunId(journal, { [recordB.run_id]: runB.cellOrdinal });
     const forensics = await writeRejectionForensics({
       runKind, records: [recordB],
       failedChecksByRunId: { [recordB.run_id]: failFastStop.failedChecks },
@@ -1438,7 +1450,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
       // check ever runs).
       captureOrdinalByRunId: { [recordB.run_id]: runB.cellOrdinal },
       plannedCellCount, executedCellCount,
-      privatePatternsFile, runsRootOverride, stderrByRunId,
+      privatePatternsFile, runsRootOverride, stderrByRunId, stderrReadError,
     });
     return { ok: false, reason: failFastStop.reason, ...forensics };
   }
@@ -1519,7 +1531,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
     // stay null unless the write actually succeeded -- round-6 audit finding ("localización del
     // diagnóstico"): a caller must be able to tell a human WHERE a successfully-written diagnostic
     // landed, not just that no error was thrown.
-    const stderrByRunId = buildStderrByRunId(journal, { [recordB.run_id]: runB.cellOrdinal, [recordA.run_id]: runA.cellOrdinal });
+    const { stderrByRunId, stderrReadError } = buildStderrByRunId(journal, { [recordB.run_id]: runB.cellOrdinal, [recordA.run_id]: runA.cellOrdinal });
     const forensics = await writeRejectionForensics({
       runKind, records: [recordA, recordB],
       failedChecksByRunId: { [recordA.run_id]: gate.failedChecksA ?? [], [recordB.run_id]: gate.failedChecksB ?? [] },
@@ -1540,7 +1552,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
       // resolves to {B:0, A:1} -- but reads it from the real per-cell source of truth now, not a
       // parameter-list-order-tempting literal.
       captureOrdinalByRunId: { [recordB.run_id]: runB.cellOrdinal, [recordA.run_id]: runA.cellOrdinal },
-      privatePatternsFile, runsRootOverride, stderrByRunId,
+      privatePatternsFile, runsRootOverride, stderrByRunId, stderrReadError,
     });
     return { ok: false, reason: gate.reason, ...forensics };
   }
@@ -1743,13 +1755,13 @@ async function finalizeAndWriteMatrixRecords({
     // trustworthy, and deriving it from the authoritative source removes an unverified implicit
     // invariant rather than relying on array-construction order never changing.
     const captureOrdinalByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].cellOrdinal]));
-    const stderrByRunId = buildStderrByRunId(journal, captureOrdinalByRunId);
+    const { stderrByRunId, stderrReadError } = buildStderrByRunId(journal, captureOrdinalByRunId);
 
     const forensics = await writeRejectionForensics({
       runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
       foreignSkillNamesByRunId, transcriptsByRunId, captureOrdinalByRunId,
       ambientProfileMatrixOk: null, plannedCellCount, executedCellCount,
-      privatePatternsFile, runsRootOverride, stderrByRunId,
+      privatePatternsFile, runsRootOverride, stderrByRunId, stderrReadError,
     });
     return { ok: false, reason: failFastStop?.reason ?? `scenario matrix stopped early after a local per-cell integrity failure (${executedCellCount}/${plannedCellCount} cells executed)`, ...forensics };
   }
@@ -1808,7 +1820,7 @@ async function finalizeAndWriteMatrixRecords({
     // trustworthy, and deriving it from the authoritative source removes an unverified implicit
     // invariant rather than relying on array-construction order never changing.
     const captureOrdinalByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].cellOrdinal]));
-    const stderrByRunId = buildStderrByRunId(journal, captureOrdinalByRunId);
+    const { stderrByRunId, stderrReadError } = buildStderrByRunId(journal, captureOrdinalByRunId);
     // ambientProfileMatrixOk (correction 6): scenarioHardGate's own matrix-wide consensus result
     // (gate.ambientProfileMatrixOk, exposed on its return value) -- threaded straight through, so
     // a rejection diagnostic for a COMPLETE scenario batch always records whether the ambient-
@@ -1817,7 +1829,7 @@ async function finalizeAndWriteMatrixRecords({
       runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
       foreignSkillNamesByRunId, transcriptsByRunId, captureOrdinalByRunId,
       ambientProfileMatrixOk: gate.ambientProfileMatrixOk,
-      privatePatternsFile, runsRootOverride, stderrByRunId,
+      privatePatternsFile, runsRootOverride, stderrByRunId, stderrReadError,
     });
     return { ok: false, reason: gate.reason, ...forensics };
   }

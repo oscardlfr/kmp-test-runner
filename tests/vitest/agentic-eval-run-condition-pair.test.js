@@ -39,18 +39,6 @@ const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 // accident, masking that the test would fail closed (a DIFFERENT error: the preflight's own
 // failure message, never reaching materializeFixture at all) anywhere else, including CI's Linux
 // Docker lane, where claude is not installed at all (exit code 127).
-async function withFakeClaudePath(scenario, fn) {
-  const fakeDir = path.join(FIXTURES_DIR, `fake-claude-${scenario}`);
-  const delimiter = process.platform === 'win32' ? ';' : ':';
-  const savedPath = process.env.PATH;
-  process.env.PATH = `${fakeDir}${delimiter}${savedPath ?? ''}`;
-  try {
-    return await fn();
-  } finally {
-    process.env.PATH = savedPath;
-  }
-}
-
 // Node coerces `process.env.KEY = undefined` to the literal STRING "undefined" rather than
 // removing the variable -- assigning back a `saved` value that was itself `undefined` (the var
 // genuinely wasn't set before this test touched it, plausible for TMPDIR specifically on Linux)
@@ -59,6 +47,19 @@ async function withFakeClaudePath(scenario, fn) {
 function restoreEnvVar(key, value) {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
+}
+
+async function withFakeClaudePath(scenario, fn) {
+  const fakeDir = path.join(FIXTURES_DIR, `fake-claude-${scenario}`);
+  const delimiter = process.platform === 'win32' ? ';' : ':';
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${fakeDir}${delimiter}${savedPath ?? ''}`;
+  try {
+    return await fn();
+  } finally {
+    // Post-review fix (P3): restoreEnvVar (not a bare assignment) -- see its own doc comment.
+    restoreEnvVar('PATH', savedPath);
+  }
 }
 
 describe('runConditionPair -- cleanup on acquisition failure', () => {

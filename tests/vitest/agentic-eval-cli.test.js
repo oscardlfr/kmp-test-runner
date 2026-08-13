@@ -908,30 +908,122 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
       rmSync(runsRoot, { recursive: true, force: true });
     }
   });
-});
 
-// Post-adversarial-review fix: journal.readStderrFor() is real filesystem I/O (unlike every
-// other *ByRunId map finalizeAndWriteRecords/finalizeAndWriteMatrixRecords build, which are pure
-// in-memory), and was the only one of the 4 stderrByRunId construction call sites NOT wrapped in
-// its own try/catch. A real fs race (EACCES/EBUSY on Windows) or a stale ordinal reaching
-// readStderrFor's own assertOrdinal would otherwise let an uncaught exception escape all the way
-// out of the finalize function, silently skipping Transactions 1 and 2 (raw transcripts,
-// structured diagnostics) as collateral damage -- degrading a well-handled gate rejection into a
-// far-less-informative generic incident. buildStderrByRunId is exported solely for direct
-// testability (same established convention as adoptJournalRaw/discardJournalIfRedundant).
-describe('buildStderrByRunId -- never lets a journal.readStderrFor() throw escape; falls back to null (skipping the stderr transaction entirely), exactly like the "no journal" case', () => {
-  it('returns null when journal is absent', () => {
-    expect(buildStderrByRunId(null, { 'run-a': 0 })).toBeNull();
+  // The buildStderrByRunId-focused describe block further down proves that helper's own contract
+  // in isolation; these 2 tests prove the SAME failure mode survives the real producer wiring end
+  // to end -- a real journal (Transaction 1/2 inputs genuinely intact), with readStderrFor
+  // specifically forced to fail, driven through a real finalize call.
+  it('a real journal.readStderrFor() failure during a real producer call surfaces stderrWriteError:"stderr_read_failed" through finalizeAndWriteRecords -- Transactions 1+2 (raw transcripts, diagnostics) still succeed, matching a genuine write failure\'s own contract', async () => {
+    const runsRoot = freshRunsRoot();
+    try {
+      const common = commonFields('calibration');
+      const conditionResultB = fakeConditionResult(0, 'raw-b');
+      const recordB = buildRunRecord({ conditionResult: conditionResultB, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
+      const journal = createInvocationJournal({ runKind: 'calibration', plannedCellCount: 2, runsRootOverride: runsRoot });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'raw-b', stderr: stderrFor(0) });
+      // A real journal, every OTHER method unchanged, with readStderrFor specifically forced to
+      // fail -- simulates a real fs race (EACCES/EBUSY) between the successful write above and
+      // this read, without needing to actually break the filesystem.
+      const journalWithBrokenStderrRead = {
+        ...journal,
+        readStderrFor: () => { throw new Error('simulated fs race: EBUSY, resource busy or locked'); },
+      };
+
+      const failFastStop = { reason: 'test fail-fast', failedChecks: ['cleanTranscriptOk'], unexpectedToolUsesCount: 0, unexpectedTools: [] };
+      const result = await finalizeAndWriteRecords({
+        runKind: 'calibration', recordA: null, recordB, runA: null, runB: conditionResultB,
+        privatePatternsFile: null, hardGateFn: () => { throw new Error('must not be called on the fail-fast path'); },
+        matrixComplete: false, plannedCellCount: 2, executedCellCount: 1, failFastStop,
+        journal: journalWithBrokenStderrRead, runsRootOverride: runsRoot,
+      });
+
+      expect(result.ok).toBe(false);
+      // The stderr tier reports the real, distinguishable failure -- never silence, never
+      // conflated with "no journal at all", and never the raw err.message.
+      expect(result.stderrWriteError).toBe('stderr_read_failed');
+      expect(result.stderrCount).toBe(0);
+      expect(result.stderrManifest).toBeNull();
+      expect(JSON.stringify(result)).not.toContain('EBUSY');
+      expect(JSON.stringify(result)).not.toContain('resource busy');
+
+      // Transactions 1+2 are UNAFFECTED -- the read failure never blocks the other 2 independent
+      // transactions.
+      expect(result.rawTranscriptsPersisted).toBe(true);
+      expect(result.rejectionId).not.toBeNull();
+      const committedDiagnosticPath = path.join(runsRoot, result.diagnosticsRelativePath);
+      expect(existsSync(committedDiagnosticPath)).toBe(true);
+    } finally {
+      rmSync(runsRoot, { recursive: true, force: true });
+    }
   });
 
-  it('returns the constructed {run_id: stderr} map when every read succeeds', () => {
+  it('a real journal.readStderrFor() failure during a real producer call surfaces the same closed code through finalizeAndWriteMatrixRecords (the matrix-path sibling)', async () => {
+    const runsRoot = freshRunsRoot();
+    try {
+      const common = commonFields('scenario');
+      const conditionResult0 = fakeConditionResult(0, 'raw-0');
+      const record0 = buildRunRecord({ conditionResult: conditionResult0, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', repetitionIndex: 0, orderIndex: 0, gradeResult: MINIMAL_GRADE_RESULT, ...common });
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 4, runsRootOverride: runsRoot });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'raw-0', stderr: stderrFor(0) });
+      const journalWithBrokenStderrRead = {
+        ...journal,
+        readStderrFor: () => { throw new Error('simulated fs race: EBUSY, resource busy or locked'); },
+      };
+
+      const localIntegrityByRunId = { [record0.run_id]: { failedChecks: ['cleanTranscriptOk'], unexpectedToolUsesCount: 0, unexpectedTools: [] } };
+      const result = await finalizeAndWriteMatrixRecords({
+        runKind: 'scenario', records: [record0], conditionResults: [conditionResult0],
+        hardGateFn: () => { throw new Error('must not be called on the fail-fast path'); },
+        privatePatternsFile: null, repeats: 2, matrixComplete: false,
+        plannedCellCount: 4, executedCellCount: 1, localIntegrityByRunId,
+        journal: journalWithBrokenStderrRead, runsRootOverride: runsRoot,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.stderrWriteError).toBe('stderr_read_failed');
+      expect(result.stderrCount).toBe(0);
+      expect(JSON.stringify(result)).not.toContain('EBUSY');
+      expect(result.rawTranscriptsPersisted).toBe(true);
+      expect(result.rejectionId).not.toBeNull();
+    } finally {
+      rmSync(runsRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// Post-adversarial-review fix (round 1): journal.readStderrFor() is real filesystem I/O (unlike
+// every other *ByRunId map finalizeAndWriteRecords/finalizeAndWriteMatrixRecords build, which are
+// pure in-memory), and was the only one of the 4 stderrByRunId construction call sites NOT
+// wrapped in its own try/catch. A real fs race (EACCES/EBUSY on Windows) or a stale ordinal
+// reaching readStderrFor's own assertOrdinal would otherwise let an uncaught exception escape all
+// the way out of the finalize function, silently skipping Transactions 1 and 2 (raw transcripts,
+// structured diagnostics) as collateral damage -- degrading a well-handled gate rejection into a
+// far-less-informative generic incident.
+//
+// Post-adversarial-review fix (round 2): the FIRST fix's own null-fallback silently collapsed TWO
+// distinct states into the same value -- "no journal at all" (a legitimate, expected silence; the
+// transaction genuinely does not apply) and "journal present but the read itself failed" (a REAL
+// failure that must be reported, exactly like a write failure already is). An operator watching
+// the terminal could not tell these apart; the second case produced total, unexplained silence on
+// the stderr tier. buildStderrByRunId now returns a `{stderrByRunId, stderrReadError}` pair so the
+// caller (writeRejectionForensics) can surface a closed `stderr_read_failed` code through the SAME
+// `stderrWriteError` field/reporting channel a write failure already uses. buildStderrByRunId is
+// exported solely for direct testability (same established convention as
+// adoptJournalRaw/discardJournalIfRedundant).
+describe('buildStderrByRunId -- never lets a journal.readStderrFor() throw escape, AND never conflates "no journal" with "journal present but the read failed"', () => {
+  it('returns {stderrByRunId: null, stderrReadError: null} when journal is absent -- no failure to report, the transaction genuinely does not apply', () => {
+    expect(buildStderrByRunId(null, { 'run-a': 0 })).toEqual({ stderrByRunId: null, stderrReadError: null });
+  });
+
+  it('returns the constructed {run_id: stderr} map, with stderrReadError:null, when every read succeeds', () => {
     const fakeJournal = { readStderrFor: (ordinal) => `stderr-for-ordinal-${ordinal}` };
     expect(buildStderrByRunId(fakeJournal, { 'run-a': 0, 'run-b': 1 })).toEqual({
-      'run-a': 'stderr-for-ordinal-0', 'run-b': 'stderr-for-ordinal-1',
+      stderrByRunId: { 'run-a': 'stderr-for-ordinal-0', 'run-b': 'stderr-for-ordinal-1' },
+      stderrReadError: null,
     });
   });
 
-  it('returns null (never throws) when readStderrFor throws for ANY one cell -- the whole transaction is skipped cleanly rather than one bad read taking down the caller', () => {
+  it('returns {stderrByRunId: null, stderrReadError: "stderr_read_failed"} (never throws) when readStderrFor throws for ANY one cell -- a real failure, distinguishable from "no journal"', () => {
     const fakeJournal = {
       readStderrFor: (ordinal) => {
         if (ordinal === 1) throw new Error('simulated fs race: EBUSY, resource busy or locked');
@@ -939,7 +1031,9 @@ describe('buildStderrByRunId -- never lets a journal.readStderrFor() throw escap
       },
     };
     expect(() => buildStderrByRunId(fakeJournal, { 'run-a': 0, 'run-b': 1 })).not.toThrow();
-    expect(buildStderrByRunId(fakeJournal, { 'run-a': 0, 'run-b': 1 })).toBeNull();
+    expect(buildStderrByRunId(fakeJournal, { 'run-a': 0, 'run-b': 1 })).toEqual({
+      stderrByRunId: null, stderrReadError: 'stderr_read_failed',
+    });
   });
 });
 

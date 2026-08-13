@@ -42,6 +42,16 @@ const PINNED_SKILL_SHA = '9814ada0c45e6a3d2a0399291ec96cb8d1ef86bb';
 const TARGET_PLUGIN_NAME = 'kmp-test-runner';
 const TARGET_SKILL_NAME = 'kmp-test-runner';
 
+// Node coerces `process.env.KEY = undefined` to the literal STRING "undefined" rather than
+// removing the variable -- assigning back a `saved` value that was itself `undefined` (PATH
+// genuinely absent before this helper touched it) would corrupt process.env for the rest of this
+// worker process's test run, not actually restore the pre-test state. delete is the correct
+// restoration for an originally-absent variable (post-review fix, P3).
+function restoreEnvVar(key, value) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
 /** Prepends a fake-claude-<scenario> fixture directory to process.env.PATH for the duration of
  * `fn`, always restoring the exact original value afterward -- see this file's own header
  * comment for why this is a safe, PATH-only override that can never reach the real claude binary. */
@@ -53,7 +63,7 @@ async function withFakeClaudePath(scenario, fn) {
   try {
     return await fn();
   } finally {
-    process.env.PATH = savedPath;
+    restoreEnvVar('PATH', savedPath);
   }
 }
 

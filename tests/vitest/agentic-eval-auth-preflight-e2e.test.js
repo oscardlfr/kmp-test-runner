@@ -26,6 +26,14 @@ const PINNED_SKILL_SHA = '9814ada0c45e6a3d2a0399291ec96cb8d1ef86bb';
 const TARGET_PLUGIN_NAME = 'kmp-test-runner';
 const TARGET_SKILL_NAME = 'kmp-test-runner';
 
+/** Same as agentic-eval-run-condition-pair.test.js's own identical helper -- `delete` (never
+ * assigning back `undefined`, which Node coerces to the literal string "undefined") is the
+ * correct restoration for an originally-absent env var. */
+function restoreEnvVar(key, value) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
 /** Same as agentic-eval-matrix-runner-crash-safety.test.js's own identical helper. */
 async function withFakeClaudePath(scenario, fn) {
   const fakeDir = path.join(FIXTURES_DIR, `fake-claude-${scenario}`);
@@ -35,16 +43,9 @@ async function withFakeClaudePath(scenario, fn) {
   try {
     return await fn();
   } finally {
-    process.env.PATH = savedPath;
+    // Post-review fix (P3): restoreEnvVar (not a bare assignment) -- see its own doc comment.
+    restoreEnvVar('PATH', savedPath);
   }
-}
-
-/** Same as agentic-eval-run-condition-pair.test.js's own identical helper -- `delete` (never
- * assigning back `undefined`, which Node coerces to the literal string "undefined") is the
- * correct restoration for an originally-absent env var. */
-function restoreEnvVar(key, value) {
-  if (value === undefined) delete process.env[key];
-  else process.env[key] = value;
 }
 
 const SCENARIO = {
@@ -104,10 +105,12 @@ describe('Caso A -- auth preflight fails closed BEFORE any live spawn', () => {
       expect(caught.agenticEvalPhase).toBe('acquiring_shared_resources');
       // A closed reason code + normalized fields only -- never authMethod/apiProvider/
       // subscriptionType (which come straight from the external claude auth status JSON,
-      // unvalidated) and never raw JSON/stdout/stderr. This fixture exits non-zero AND reports
-      // loggedIn:false -- authPreflightReasonCode checks exitCode first, so the nonzero-exit code
-      // takes precedence over the (also-true) not-logged-in signal, exactly matching its own
-      // documented precedence order.
+      // unvalidated) and never raw JSON/stdout/stderr. This fixture exits non-zero NORMALLY (a
+      // real, non-terminated process, per condition-launcher.mjs's own "a merely nonzero exit
+      // code is NOT a termination" contract) AND reports loggedIn:false --
+      // authPreflightReasonCode checks terminated first (false here, so it's a no-op), then
+      // exitCode, so the nonzero-exit code takes precedence over the (also-true) not-logged-in
+      // signal, exactly matching its own documented precedence order.
       expect(caught.message).toContain('reason=auth_preflight_nonzero_exit');
       expect(caught.message).toMatch(/exit_code=\d+/);
       expect(caught.message).toContain('logged_in=false');

@@ -45,11 +45,22 @@ describe('buildEvalEnv', () => {
     expect(serialized).not.toContain(FAKE_AWS_SECRET);
   });
 
-  it('drops HOME/USERPROFILE/APPDATA by default', () => {
-    const out = buildEvalEnv(fakeSourceEnv());
-    expect(out).not.toHaveProperty('HOME');
+  // Post-review fix: this test previously asserted HOME is absent unconditionally under the
+  // DEFAULT platform (no explicit `platform` option) -- true on Windows/Linux CI, but false on a
+  // real macOS host, where the default IS process.platform === 'darwin' and Diseño 1's own fix
+  // preserves HOME there. That made this test directly contradict the (correctly platform-guarded)
+  // "defaults platform to the real process.platform" test that used to sit further down this
+  // file -- both would have run on a real Mac, and this one would have failed. Folded into one
+  // platform-aware test instead of two that could disagree.
+  it('drops USERPROFILE/APPDATA under the default platform always; drops HOME too UNLESS the real host is macOS, where it is preserved', () => {
+    const out = buildEvalEnv(fakeSourceEnv()); // no explicit platform -- exercises the REAL process.platform default
     expect(out).not.toHaveProperty('USERPROFILE');
     expect(out).not.toHaveProperty('APPDATA');
+    if (process.platform === 'darwin') {
+      expect(out.HOME).toBe('C:\\Users\\real-user');
+    } else {
+      expect(out).not.toHaveProperty('HOME');
+    }
   });
 
   it('preserves HOME on macOS (platform: darwin) -- resolves the observed auth failure there', () => {
@@ -77,12 +88,6 @@ describe('buildEvalEnv', () => {
   it('regression-locks Linux: scope is darwin only, never "every non-Windows platform"', () => {
     const out = buildEvalEnv(fakeSourceEnv(), { platform: 'linux' });
     expect(out).not.toHaveProperty('HOME');
-  });
-
-  it('defaults platform to the real process.platform when not passed explicitly', () => {
-    if (process.platform !== 'darwin') return; // only meaningful on a real macOS host
-    const out = buildEvalEnv(fakeSourceEnv());
-    expect(out.HOME).toBe('C:\\Users\\real-user');
   });
 
   it('HOME never collides with the secret-shape or cloud-cred guards (documentary, not defensive)', () => {
