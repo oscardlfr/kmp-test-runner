@@ -7,10 +7,11 @@
 // The real installers (scripts/install.sh / install.ps1) use a plain symlink (POSIX) or a
 // minimal `@echo off` + `node "<path>" %*` wrapper (Windows) -- see install.ps1's
 // $WrapperContent. This shim necessarily differs: it additionally redirects HOME/USERPROFILE
-// for the grandchild node process ONLY (never the parent claude session's own env, which needs
-// its real HOME for OAuth -- see env-builder.mjs's header comment), so ~/.kmp-test/config.json
-// can never affect either measured arm. A plain symlink can't inject an environment override,
-// so a wrapper script is required here even though the production installer doesn't need one.
+// for the grandchild node process ONLY (never the parent claude session's own env, which on
+// macOS needs its real HOME for OAuth -- env-builder.mjs's buildEvalEnv now preserves it there
+// for exactly this reason, see its header comment), so ~/.kmp-test/config.json can never affect
+// either measured arm. A plain symlink can't inject an environment override, so a wrapper script
+// is required here even though the production installer doesn't need one.
 //
 // Verified empirically during Step 1: the POSIX form correctly resolves to the pinned
 // worktree's version (not a stray global install) and correctly redirects what
