@@ -991,20 +991,17 @@ function validateExpected(expected, policy, errors) {
 
   if ('changed' in expected) validateChangedContract(expected.changed, errors);
 
-  // Cross-provider consistency -- a real gap found on review: kmp_test.tests.individual_total (the
-  // real per-test-case count from kmp-test's own JUnit-XML walk) and gradle.tests.total (the same
-  // real test run's count, independently derived by matrix-runner.mjs's own JUnit-XML capture)
-  // describe the SAME underlying test execution and must agree. Without this check, a scenario
-  // could declare kmp_test.individual_total:0 alongside gradle.tests.total:24 -- both values would
-  // pass their OWN provider's shape validation independently, and because graders.mjs's
-  // kmpEvalResultBlockMatchesScenario checks the agent's KMP_EVAL_RESULT block against
-  // expected.gradle.tests specifically (never against whichever provider's evidence was actually
-  // terminal), a kmp-test attempt reporting individual_total:0 (matching a permissive kmp_test
-  // contract) could sit alongside an agent's block claiming total:24 (matching gradle.tests.total)
-  // -- a direct, gradeable-as-success self-contradiction. Forcing the two scenario-authored
-  // constants to agree closes this at the source: with individual_total forced to equal
-  // gradle.tests.total always, there is only ever one canonical number to satisfy, so an envelope
-  // and a block that each independently "match their own expected constant" can no longer diverge.
+  // Cross-provider consistency: kmp_test.tests.individual_total (the real per-test-case count
+  // from kmp-test's own JUnit-XML walk) and gradle.tests.total (the same real test run's count,
+  // independently derived by matrix-runner.mjs's own JUnit-XML capture) describe the SAME
+  // underlying test execution and must agree -- without this check, a scenario could declare
+  // kmp_test.individual_total:0 alongside gradle.tests.total:24, and both values would pass their
+  // OWN provider's shape validation independently even though they can't both be true of the same
+  // real test run. Forcing the two scenario-authored constants to agree closes this at the source.
+  // This also keeps graders.mjs's own observed-facts derivation (deriveObservedKmpTestResult/
+  // deriveObservedGradleResult, which read whichever provider's evidence actually turned out to be
+  // the terminal attempt, never a fixed provider) grading against one unambiguous ground-truth
+  // number regardless of which provider a given attempt happened to use.
   if ((expected.outcome_kind === 'tests_executed' || expected.outcome_kind === 'tests_failed')
     && expected.kmp_test != null && typeof expected.kmp_test === 'object' && expected.kmp_test.tests != null
     && typeof expected.kmp_test.tests.individual_total === 'number'

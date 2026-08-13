@@ -23,7 +23,7 @@
 // the scenario's exact expected module/task/outcome identifiers.
 import { classifyTaskExecutionMode, classifyTaskResults } from '../../lib/orchestrators/parallel/result-rollup.js';
 import { findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout } from './stream-parser.mjs';
-import { ENVELOPE_SCHEMA_VERSION } from '../../lib/envelope/exit-codes.js';
+import { ENVELOPE_SCHEMA_VERSION, classifyExitCode } from '../../lib/envelope/exit-codes.js';
 import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
 import { classifyBashCommand, normalizeModuleName } from './command-classify.mjs';
 import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
@@ -845,6 +845,14 @@ function canonicalModuleFilterIdentity(moduleFilter) {
  *   | {module:string, outcome_kind:'no_applicable_tests'}}
  */
 function deriveObservedKmpTestResult(envelope, classification) {
+  // The envelope's own self-reported subcommand must agree with what was actually invoked -- a
+  // stale or mismatched tool_result (the command said `parallel`, the attached envelope's own
+  // `subcommand` field says something else, e.g. `doctor`) cannot be trusted to describe THIS
+  // attempt at all, regardless of how plausible its other fields look. Mirrors
+  // validateKmpEnvelopeForAttempt's own identical first check for the expected-comparison path --
+  // observed-facts derivation must be no less careful than that.
+  if (envelope.subcommand !== classification.subcommand) return null;
+
   const individualTotal = envelope.tests?.individual_total;
 
   if (envelope.modules.length === 1) {
@@ -875,6 +883,11 @@ function deriveObservedKmpTestResult(envelope, classification) {
       // the task-level failed counter too -- an envelope claiming no error entries while its own
       // tests.failed counter disagrees is self-contradictory, not real clean-pass evidence.
       if (envelope.tests?.failed !== 0) return null;
+      // The envelope's own exit_code must agree with classifyExitCode's real, single-source-of-truth
+      // mapping (lib/envelope/exit-codes.js -- the SAME function every real orchestrator's own
+      // exit-code decision goes through) for a clean run with no errors: SUCCESS (0). An envelope
+      // otherwise reading "clean" but reporting a nonzero exit_code contradicts itself.
+      if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: 0 })) return null;
       return { module, outcome_kind: 'tests_executed', total: individualTotal, passed: individualTotal, failed: 0 };
     }
 
@@ -891,6 +904,13 @@ function deriveObservedKmpTestResult(envelope, classification) {
       // The error's own echoed missed_lines must agree with the coverage summary block -- if they
       // disagree, there is no way to tell which one reflects reality without guessing.
       if (cov.missed_lines !== err.missed_lines) return null;
+      // The error's own echoed threshold must agree with the --min-missed-lines value actually
+      // invoked on THIS command -- a stale/mismatched tool_result whose error names a different
+      // threshold than the one this specific command line asked for cannot be trusted, regardless
+      // of the error's own internal coverage self-consistency (mirrors
+      // validateKmpEnvelopeForAttempt's identical command-vs-envelope coherence check).
+      if (classification.minMissedLines == null || String(err.threshold) !== classification.minMissedLines) return null;
+      if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: 0 })) return null;
       return {
         module, outcome_kind: 'coverage_threshold_exceeded',
         total: individualTotal, passed: individualTotal, failed: 0,
@@ -900,9 +920,14 @@ function deriveObservedKmpTestResult(envelope, classification) {
 
     const moduleFailedErrors = envelope.errors.filter((e) => e && e.code === 'module_failed' && normalizeModuleName(e.module) === module);
     if (envelope.errors.length === 1 && moduleFailedErrors.length === 1) {
+      // A genuine module-task failure requires a positive task-level failed count -- a
+      // `module_failed` error entry alongside `tests.failed:0` is self-contradictory (the error
+      // claims the task failed, the aggregate counter claims it didn't).
+      if (!(envelope.tests?.failed > 0)) return null;
       const failures = envelope.modules[0].test_failures;
       if (!Array.isArray(failures) || failures.length === 0 || !failures.every(isWellFormedTestFailureEntry)) return null;
       if (failures.length > individualTotal) return null; // impossible shape -- more real failures than total cases
+      if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: envelope.tests.failed })) return null;
       return { module, outcome_kind: 'tests_failed', total: individualTotal, passed: individualTotal - failures.length, failed: failures.length };
     }
 
@@ -914,8 +939,18 @@ function deriveObservedKmpTestResult(envelope, classification) {
     // validateParallelEvidence's own sibling comment on this exact invariant. A `parallel` block
     // present alongside an empty modules[] is self-contradictory: no way to tell which half lies.
     if (envelope.parallel !== undefined) return null;
-    const noTestErrors = envelope.errors.filter((e) => e && e.code === 'no_test_modules');
+    // `caused_by_filter:true` specifically -- the ONLY no_test_modules shape this closed form
+    // models (an agent-invoked --module-filter resolving to zero modules; the OTHER real shape,
+    // a project genuinely lacking any test infrastructure at all, is a structurally different fact
+    // this corpus's own no_applicable_tests scenario never represents -- see
+    // lib/envelope/exit-codes.js's own CONFIG_ERROR_CODES/ENV_ERROR_CODES split).
+    const noTestErrors = envelope.errors.filter((e) => e && e.code === 'no_test_modules' && e.caused_by_filter === true);
     if (envelope.errors.length !== 1 || noTestErrors.length !== 1) return null;
+    // A genuine "nothing resolved" claim must carry all-zero counters -- any nonzero value here
+    // directly contradicts "no applicable tests were ever found or run."
+    if (envelope.tests?.total !== 0 || envelope.tests?.passed !== 0 || envelope.tests?.failed !== 0
+      || envelope.tests?.skipped !== 0 || individualTotal !== 0) return null;
+    if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: 0 })) return null;
     const module = canonicalModuleFilterIdentity(classification.moduleFilter);
     if (module == null) return null;
     return { module, outcome_kind: 'no_applicable_tests' };
@@ -1136,16 +1171,31 @@ function parseExactGradleFooter(resultContent, resultIsError) {
 function deriveObservedGradleResult(module, mode, observedExitCode, resolvedEvidence, taskGenuinelyFailed) {
   if (typeof module !== 'string') return null;
   if (mode === 'no_source' && observedExitCode === 0) {
+    // A genuine NO-SOURCE task never produces real JUnit-XML output at all -- `status:'ok'` here
+    // (a genuinely resolved, well-formed testsuite from junit-evidence.mjs) directly contradicts
+    // "no tests ran for this task"; no way to tell which signal is real without guessing.
+    if (resolvedEvidence?.status === 'ok') return null;
     return { module, outcome_kind: 'no_applicable_tests' };
   }
   if (resolvedEvidence?.status === 'ok') {
     const { total, passed, failed } = resolvedEvidence.junit;
-    if (!Number.isInteger(total) || !Number.isInteger(passed) || !Number.isInteger(failed)) return null;
+    if (!Number.isInteger(total) || total < 0) return null;
+    if (!Number.isInteger(passed) || passed < 0) return null;
+    if (!Number.isInteger(failed) || failed < 0) return null;
+    // Every real test case counts toward exactly one of passed/failed -- a JUnit summary where
+    // they don't sum to the total is internally incoherent, not real evidence.
+    if (passed + failed !== total) return null;
     const executedModes = new Set(['fresh', 'up_to_date', 'from_cache']);
     if (observedExitCode === 0 && executedModes.has(mode)) {
+      // BUILD SUCCESSFUL contradicted by a real JUnit failure -- Gradle does not report a task
+      // successful while a test case genuinely failed.
+      if (failed !== 0) return null;
       return { module, outcome_kind: 'tests_executed', total, passed, failed };
     }
     if (observedExitCode === 1 && taskGenuinelyFailed) {
+      // A genuinely failed task contradicted by zero real JUnit failures -- the task-failure
+      // signal and its own JUnit detail must agree on there being an actual failing case.
+      if (failed === 0) return null;
       return { module, outcome_kind: 'tests_failed', total, passed, failed };
     }
   }

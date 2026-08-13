@@ -4370,4 +4370,119 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
     expect(grade.success).toBe(false);
   });
+
+  // --- post-review hardening round: canonicalization must fail closed on internally
+  // contradictory evidence, not just on evidence the pre-existing checks 4/5/6 already flag.
+  // Each case below constructs evidence that is well-formed enough to satisfy every EXISTING
+  // check (case 4 in particular), yet is self-contradictory in a way only deriveObservedKmpTestResult/
+  // deriveObservedGradleResult's own independent coherence checks catch. ---
+
+  it("[hardening A] a module_failed error entry alongside envelope.tests.failed:0 is self-contradictory (the error claims the task failed, the aggregate counter claims it did not) -- must not produce a canonicalizable observedResult, even though the final block honestly echoes the real test_failures detail", () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    envelope.tests.failed = 0;
+    envelope.parallel.legs[0].exit_code = 0;
+    envelope.parallel.legs[0].execution.failed = 0;
+    envelope.parallel.legs[0].execution.fresh = 1;
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      kmpEvalResultText('3 tests ran in :lint; all 3 failed.', { module: ':lint', outcome_kind: 'tests_failed', total: 3, passed: 0, failed: 3 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it("[hardening B] the envelope's own subcommand field disagreeing with the invoked command (a stale/mismatched tool_result -- e.g. the command said `parallel`, the envelope says `doctor`) must not produce a canonicalizable observedResult, even though the pre-existing well-formedness gate does not independently catch it", () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
+    envelope.subcommand = 'doctor';
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening C] a genuinely clean run (no errors, tests.failed:0) reporting a nonzero exit_code contradicts itself (classifyExitCode says a clean, error-free run is always exit 0) -- must not produce a canonicalizable observedResult', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
+    envelope.exit_code = 1;
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening D] a no_test_modules claim (modules:[] + a filtered no_test_modules error) alongside nonzero tests counters and exit_code:0 is self-contradictory (a genuine "nothing resolved" claim can never carry nonzero counts, and classifyExitCode maps a filtered no_test_modules error to CONFIG_ERROR:2, never 0) -- must not produce a canonicalizable observedResult', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS);
+    envelope.tests = { total: 5, passed: 3, failed: 2, skipped: 0, individual_total: 5 };
+    envelope.exit_code = 0;
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: JSON.stringify(envelope) }],
+      kmpEvalResultText('The :app module has no applicable tests.', { module: ':app', outcome_kind: 'no_applicable_tests' }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it("[hardening E] the invoked --min-missed-lines value (15) disagreeing with the envelope error's own echoed threshold (99) is self-contradictory -- must not produce a canonicalizable observedResult, even when the final block honestly echoes that same (wrong) threshold and the coverage block's own missed_lines/threshold otherwise agree with each other", () => {
+    const envelope = JSON.parse(coverageEnvelope());
+    envelope.errors[0].threshold = 99;
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: JSON.stringify(envelope) }],
+      kmpEvalResultText('4 tests pass; 23 lines uncovered, exceeding the 99-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 99, modules_contributing: 1 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening F] BUILD SUCCESSFUL contradicted by a real JUnit failure (failed>0) -- Gradle does not report a task successful while a test case genuinely failed -- must not produce a canonicalizable observedResult', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(3, 2, 1) }],
+      kmpEvalResultText('3 tests ran; 2 passed, 1 failed.', { module: ':shared', outcome_kind: 'tests_executed', total: 3, passed: 2, failed: 1 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening G] a genuinely failed task (BUILD FAILED, the target task itself genuinely mentioned as FAILED) contradicted by zero real JUnit failures -- must not produce a canonicalizable observedResult', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :lint:test --console=plain', resultContent: GRADLE_SCENARIO4_FAIL_STDOUT, resultIsError: true, evidence: okJunit(3, 3, 0) }],
+      kmpEvalResultText('3 tests ran in :lint, all 3 passed.', { module: ':lint', outcome_kind: 'tests_failed', total: 3, passed: 3, failed: 0 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening H] a JUnit summary where passed+failed does not sum to total is internally incoherent -- must not produce a canonicalizable observedResult', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(24, 20, 0) }],
+      kmpEvalResultText('24 tests passed.', { module: ':shared', outcome_kind: 'tests_executed', total: 24, passed: 20, failed: 0 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it("[hardening I] a NO-SOURCE task cannot coexist with genuinely resolved JUnit evidence (status:'ok') -- a real NO-SOURCE task never produces JUnit-XML output at all -- must not produce a canonicalizable observedResult", () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :app:testDebugUnitTest --console=plain', resultContent: GRADLE_SCENARIO2_NO_SOURCE_VIA_DIRECT, evidence: okJunit(5, 5, 0) }],
+      kmpEvalResultText('The :app module has no applicable tests.', { module: ':app', outcome_kind: 'no_applicable_tests' }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
 });

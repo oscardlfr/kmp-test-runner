@@ -172,7 +172,10 @@ matrix is rejected anyway.
   answer directly -- a deliberately separate question from whether that observed evidence was
   itself correct for the scenario (`authoritative_target_matches_expected`/
   `authoritative_outcome_matches_expected`, both compared against the scenario). An agent can
-  honestly report a wrong-for-the-scenario result and still satisfy the final-answer check. For a
+  honestly report a wrong-for-the-scenario result and still satisfy the final-answer check. That
+  canonicalization step itself fails closed on internally contradictory terminal evidence (e.g. a
+  task-failure error alongside a clean aggregate counter, or a JUnit result whose own passed/failed
+  don't sum to its total) rather than guessing which signal to trust. For a
   `tests_executed`/`tests_failed` scenario (both represent a genuine test execution, just with a
   different real outcome), target-module identity (`authoritative_target_matches_expected`)
   resolves the condition's own `--module-filter` argument through the exact same `matchModuleFilter`
