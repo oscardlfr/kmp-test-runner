@@ -3,7 +3,10 @@
 Full six-scenario Windows capture run immediately after PR #423 hardened auth
 preflight, pre-inference failure detection, and stderr/crash forensics. 6
 scenarios x 2 conditions x 2 repetitions = 24 live sessions, all accepted on
-the first attempt with zero retries.
+the first attempt with **zero session/matrix re-executions and zero cell
+replacements**. That orchestration claim is distinct from the in-session
+`retries` grading metric (defined in Method below), which is nonzero on 4 of
+the 24 records.
 
 ## Identity and provenance
 
@@ -30,7 +33,14 @@ per-record field is conditional, not uniform: `skill_source_sha` is
 `8492d98d40b9f2208bac88cf8ac357aeb4c095ca` on all 12 `current-skill` records
 and `null` on all 12 `no-skill` records, as the schema requires when the
 target skill is unavailable. All 24 are `benchmark_eligible: true`,
-`terminated: false`, `exit_code: 0`, with an empty `errors` array.
+`terminated: false`, with an empty `errors` array. 23 of 24 are also
+`exit_code: 0`; the exception is `scenario-no-skill-152dc615`
+(`changed-module-verification`, rep 1), `exit_code: 1`. `exit_code` is the
+spawned process's own exit status, not a grading input or a harness-integrity
+signal: `152dc615` is still `benchmark_eligible: true`, structurally valid
+(passes `no_transcript_structural_issues` and `tool_result_correlated`), and
+`validate --run` clean — a captured measurement outcome, not a harness
+failure. See "How the two arms failed differently" for detail.
 
 ## Method
 
@@ -47,16 +57,21 @@ whole campaign.
 
 That is a distinct claim from the per-record `retries` metric, which is
 unrelated to session orchestration. Per `graders.mjs`, `retries` is
-`test_invocations_total` minus one, floored at zero — an in-session count of
-how many times a single accepted session invoked a test capable of producing
-target evidence, not a session re-run. That metric is nonzero on 3 of the 24
-committed records: `scenario-current-skill-dfd8d553` (retries: 1),
+`max(0, test_invocations_total - 1)` — an in-session count of how many times
+a single accepted session invoked a test capable of producing target
+evidence, not a session re-run. That metric is nonzero on 4 of the 24
+committed records, summing to **7 in-session retries total**:
+`scenario-current-skill-dfd8d553` (retries: 1) and
 `scenario-current-skill-ae75e718` (retries: 1), both
-`changed-module-verification` `current-skill` successes, and
+`changed-module-verification` `current-skill` successes;
 `scenario-current-skill-c5c7aa51` (retries: 1),
-`kampkit-android-host-test-discovery` `current-skill` success. The records are
-append-only measurement evidence and were not modified to fit either
-narrative; this paragraph is the correction.
+`kampkit-android-host-test-discovery` `current-skill` success; and
+`scenario-no-skill-152dc615` (retries: 4), a `changed-module-verification`
+`no-skill` **failure** — 5 test invocations, none producing valid
+authoritative evidence (see "How the two arms failed differently"). The
+records are append-only measurement evidence and were not modified to fit
+either narrative; this paragraph is itself a correction of an earlier draft
+that omitted `152dc615`.
 
 `no-skill` is a **target-skill ablation**, not an unconstrained control: both
 conditions in a pair run under the same policy, the same allowed gradle
@@ -112,16 +127,37 @@ Per-cell detail (all values read from the committed records):
 
 ## How the two arms failed differently
 
-11 of 12 `no-skill` cells failed identically: `bash_tool_use_present` was
-false, meaning no policy-**allowed** command was ever attempted. That is not
-the same as no attempt at all — every `no-skill` cell made policy-**denied**
-attempts (7–22 per cell; see table above). With no eligible invocation, the
-authoritative-evidence and final-answer checks had nothing to evaluate. 5 of
-12 `no-skill` cells recorded `foreign_skill_summary.confirmed = 1` (a
+Of the 12 `no-skill` cells, 1 succeeded (below) and 11 failed — but the 11
+failures are not one uniform shape.
+
+**10 of the 11** failed identically: `bash_tool_use_present` was false,
+meaning no policy-**allowed** command was ever attempted. That is not the
+same as no attempt at all — every `no-skill` cell, including these 10, made
+policy-**denied** attempts (7–22 per cell; see table above). With no eligible
+invocation, the authoritative-evidence and final-answer checks had nothing to
+evaluate for these 10.
+
+**The 11th failure, `scenario-no-skill-152dc615`**
+(`changed-module-verification`, rep 1), is a distinct failure shape: it made
+**5** policy-**allowed** test invocations (`bash_tool_use_present: true`,
+`test_invocations_total: 5`) — the most eligible invocations of any cell in
+the batch — alongside 22 policy denials, yet still produced no well-formed
+authoritative evidence: it fails `authoritative_evidence_well_formed`,
+`authoritative_target_matches_expected`,
+`authoritative_outcome_matches_expected`, and
+`final_answer_consistent_with_evidence`. Unlike the other 10 no-skill
+failures, this is an eligible-but-unproductive attempt, not a non-attempt.
+It is also the one record with `exit_code: 1` (see Identity) and the highest
+in-session `retries` in the batch (4). None of that affects its acceptance —
+`benchmark_eligible: true`, structurally valid, `validate --run` clean — but
+it is a different empirical outcome than "no-skill never gets a command in,"
+and the two should not be conflated.
+
+5 of 12 `no-skill` cells recorded `foreign_skill_summary.confirmed = 1` (a
 confirmed invocation of a non-target skill); `rejected` is 0 across all 24
 records.
 
-The 1 `no-skill` exception (`scenario-no-skill-4d544cb4`,
+The 1 `no-skill` success (`scenario-no-skill-4d544cb4`,
 `deterministic-unit-test-failure`, rep 1) succeeded without the target skill:
 it made 1 eligible test invocation and produced correct terminal evidence
 through direct exploration alone. This is a legitimate ablation outcome, not
