@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# Auth-status short-circuit -- ALWAYS the first check in this file, before any PROBE_LOG/
+# invocation-counter logic below: this call must never consume an invocation-counter slot the
+# rest of this fixture's own branching depends on.
+if [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  echo '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":null,"subscriptionType":null}'
+  exit 0
+fi
 # tests/fixtures/fake-claude-no-tool-use/claude -- see fake-claude-success/claude for the
 # shared rationale. "no-tool-use" scenario: the no-skill arm (A, no --plugin-dir) genuinely
 # attempts nothing at all; the current-skill arm (B, --plugin-dir present) genuinely attempts

@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-auth-ok-pre-inference-failure/claude -- Diseño 5 Caso B: auth passes
+# (loggedIn:true), but the FIRST cell's own live session hits the exact pre-inference-failure
+# signature the 2026-08 macOS canary incident produced -- a well-formed transcript (init ->
+# assistant text-only turn, zero tool_use) terminating in a `result` event with is_error:true,
+# num_turns:1, every usage counter exactly zero -- plus non-empty stderr, so the diagnosability
+# fix (Diseño 4) has real content to persist and recover. Every invocation produces the identical
+# failure (unlike fake-claude-run-failfast-first-cell/claude, which varies content by invocation
+# index) -- this fixture only needs to prove fail-fast stops the matrix after exactly ONE live
+# session, never that later invocations would have looked different.
+if [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  echo '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":null,"subscriptionType":null}'
+  exit 0
+fi
+
+# CodeRabbit review finding (PR #417, reproduced here identically -- see
+# fake-claude-run-failfast-first-cell/claude's own header comment): fail closed if TMPDIR/TMP/TEMP
+# are ALL unset/empty, rather than silently deriving PROBE_LOG at filesystem root.
+PROBE_DIR="${TMPDIR:-${TMP:-$TEMP}}"
+if [ -z "$PROBE_DIR" ]; then
+  echo "fake-claude-auth-ok-pre-inference-failure: TMPDIR/TMP/TEMP are all unset -- refusing to write the invocation probe log to an unresolved location" >&2
+  exit 1
+fi
+PROBE_LOG="$PROBE_DIR/auth-ok-pre-inference-failure-invocations.log"
+if [ -f "$PROBE_LOG" ]; then
+  INVOCATION=$(( $(wc -l < "$PROBE_LOG") + 1 ))
+else
+  INVOCATION=1
+fi
+echo "$INVOCATION" >> "$PROBE_LOG"
+
+# Same --plugin-dir detection as fake-claude-run-scenario-success/claude and
+# fake-claude-run-failfast-first-cell/claude -- reports a plugin/skill profile that genuinely
+# matches whatever this specific cell's real invocation passed, so availabilityOk/pluginProfileOk/
+# pluginSnapshotBindingOk/ambientSkillProfileOk all stay isolated-passing: the ONLY check this
+# fixture exists to fail is noPreInferenceFailureOk.
+HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  PREV_ARG="$arg"
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
+  SKILLS='["kmp-test-runner"]'
+else
+  PLUGINS='[]'
+  SKILLS='[]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-preinf\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"dontAsk\",\"plugins\":$PLUGINS,\"skills\":$SKILLS,\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+# A single text-only assistant turn -- zero tool_use of any kind, matching the incident's own
+# transcript shape (the model never got a genuine turn before the process errored out).
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"text","text":"encountering an issue before I can proceed"}],"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+
+# Non-empty stderr -- Diseño 4's own persistence/recovery has real content to prove against,
+# mirroring what a genuine pre-inference auth/network failure would actually emit.
+echo "fake-claude-auth-ok-pre-inference-failure: simulated pre-inference failure (e.g. auth/network) -- no model turn occurred" >&2
+
+# The terminal result event: is_error:true, num_turns:1, every usage counter exactly zero -- the
+# exact 4-conjunct signature isPreInferenceFailureSignature (cell-integrity.mjs) detects.
+node -e "console.log(JSON.stringify({type:'result',subtype:'error_during_execution',is_error:true,duration_ms:5,num_turns:1,result:null,permission_denials:[],usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))"
+exit 1

@@ -24,8 +24,21 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runConditionPair } from '../../tools/agentic-eval/cli.mjs';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
+
+// Same as agentic-eval-matrix-runner-crash-safety.test.js's own identical helper -- required as
+// of the auth-preflight fix: acquireSharedEvalResources now calls runAuthPreflight as its own
+// LAST step, before materializeFixture is ever reached, so this test's injected
+// materializeFixture failure is only reachable when the preflight itself succeeds first. Without
+// this, the real (bare) `claude` on PATH is resolved instead -- on a machine with a pre-
+// authenticated claude CLI (a real developer workstation) the preflight happens to succeed by
+// accident, masking that the test would fail closed (a DIFFERENT error: the preflight's own
+// failure message, never reaching materializeFixture at all) anywhere else, including CI's Linux
+// Docker lane, where claude is not installed at all (exit code 127).
 // Node coerces `process.env.KEY = undefined` to the literal STRING "undefined" rather than
 // removing the variable -- assigning back a `saved` value that was itself `undefined` (the var
 // genuinely wasn't set before this test touched it, plausible for TMPDIR specifically on Linux)
@@ -34,6 +47,19 @@ import { runConditionPair } from '../../tools/agentic-eval/cli.mjs';
 function restoreEnvVar(key, value) {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
+}
+
+async function withFakeClaudePath(scenario, fn) {
+  const fakeDir = path.join(FIXTURES_DIR, `fake-claude-${scenario}`);
+  const delimiter = process.platform === 'win32' ? ';' : ':';
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${fakeDir}${delimiter}${savedPath ?? ''}`;
+  try {
+    return await fn();
+  } finally {
+    // Post-review fix (P3): restoreEnvVar (not a bare assignment) -- see its own doc comment.
+    restoreEnvVar('PATH', savedPath);
+  }
 }
 
 describe('runConditionPair -- cleanup on acquisition failure', () => {
@@ -49,16 +75,18 @@ describe('runConditionPair -- cleanup on acquisition failure', () => {
     process.env.TMPDIR = isolatedTmp;
     try {
       let materializeCalls = 0;
-      await expect(runConditionPair({
-        prompt: 'irrelevant -- never reaches a real spawn',
-        model: 'fake-model-x',
-        allowedGradleTasks: [],
-        allowedKmpTestSubcommands: ['doctor'],
-        materializeFixture: () => {
-          materializeCalls++;
-          throw new Error('injected acquisition failure');
-        },
-      })).rejects.toThrow('injected acquisition failure');
+      await withFakeClaudePath('run-scenario-success', async () => {
+        await expect(runConditionPair({
+          prompt: 'irrelevant -- never reaches a real spawn',
+          model: 'fake-model-x',
+          allowedGradleTasks: [],
+          allowedKmpTestSubcommands: ['doctor'],
+          materializeFixture: () => {
+            materializeCalls++;
+            throw new Error('injected acquisition failure');
+          },
+        })).rejects.toThrow('injected acquisition failure');
+      });
       // Confirms the failure really did happen AFTER acquisition (not e.g. materializeFixture
       // being skipped and some earlier step throwing instead, which would make this test
       // meaningless -- it would then be testing a different failure point than it claims to).

@@ -159,11 +159,11 @@ describe('cellTranscriptIntegrityOk', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('exposes all 15 canonical checks by name via checksByName, every one true for a clean cell', () => {
+  it('exposes all 16 canonical checks by name via checksByName, every one true for a clean cell', () => {
     const result = cellTranscriptIntegrityOk(cleanConditionResult('current-skill'), { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(Object.keys(result.checksByName).sort()).toEqual([
       'ambientSkillProfileOk', 'availabilityOk', 'cleanTranscriptOk', 'foreignSkillToolResultsCompleteOk',
-      'hookAccountingOk', 'initOk', 'noSkillSafetyOk', 'noUnexpectedToolsOk', 'pluginProfileOk',
+      'hookAccountingOk', 'initOk', 'noPreInferenceFailureOk', 'noSkillSafetyOk', 'noUnexpectedToolsOk', 'pluginProfileOk',
       'pluginSnapshotBindingOk', 'targetSkillAmbientIdentityOk', 'terminationOk', 'toolProfileOk',
       'toolResultsCompleteOk', 'transcriptStructureOk',
     ].sort());
@@ -245,5 +245,112 @@ describe('cellTranscriptIntegrityOk', () => {
     expect(result.failedChecks).not.toContain('terminationOk');
     expect(result.failedChecks).not.toContain('toolResultsCompleteOk');
     expect(result.failedChecks).not.toContain('transcriptStructureOk');
+  });
+
+  // noPreInferenceFailureOk -- detects the exact macOS-canary signature (auth broken before the
+  // model's first turn): a terminal `result` event with is_error:true, num_turns<=1, every usage
+  // counter exactly zero, and zero tool_use of any kind. All 4 conjuncts are required at once
+  // (AND, never any single one alone) so a real negative-outcome cell that consumed tokens or used
+  // tools is never misclassified -- see the "Case C" tests below.
+  const ZERO_USAGE = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  function preInferenceFailureResult(overrides = {}) {
+    return { subtype: 'error_during_execution', is_error: true, num_turns: 1, usage: { ...ZERO_USAGE }, ...overrides };
+  }
+
+  it('ok:false (noPreInferenceFailureOk) for the exact incident signature: is_error:true, num_turns:1, usage all zero, zero tool_use', () => {
+    const conditionResult = cleanConditionResult('current-skill', {
+      events: [initEventStub(), { type: 'assistant', message: { content: [{ type: 'text', text: 'Not logged in.' }], usage: ZERO_USAGE } }, resultEventStub()],
+      result: preInferenceFailureResult(),
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.checksByName.noPreInferenceFailureOk).toBe(false);
+    expect(result.ok).toBe(false);
+    expect(result.failedChecks).toContain('noPreInferenceFailureOk');
+  });
+
+  it('ok:true (noPreInferenceFailureOk) when is_error:false -- a normal success is never flagged', () => {
+    const conditionResult = cleanConditionResult('current-skill', { result: { subtype: 'success', is_error: false, num_turns: 1, usage: ZERO_USAGE } });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
+  });
+
+  it('ok:true (noPreInferenceFailureOk) when conditionResult.result is absent entirely -- never claims a signature without evidence', () => {
+    const conditionResult = cleanConditionResult('current-skill'); // no `result` override at all
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
+  });
+
+  // Case C (plan Diseño 3 / Diseño 5): a REAL negative-outcome cell -- is_error:true, but the
+  // model genuinely engaged (multiple turns, or spent tokens, or used a tool) -- must never be
+  // misclassified as a pre-inference failure. Each test below violates exactly one of the 4
+  // conjuncts, proving the AND is load-bearing on every axis independently.
+  it('Case C -- ok:true (noPreInferenceFailureOk) when num_turns > 1, even with is_error:true and zero usage/tools', () => {
+    const conditionResult = cleanConditionResult('current-skill', { result: preInferenceFailureResult({ num_turns: 3 }) });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
+  });
+
+  it('Case C -- ok:true (noPreInferenceFailureOk) when num_turns is a negative integer -- the range is 0<=n<=1, never just "<=1"', () => {
+    const conditionResult = cleanConditionResult('current-skill', { result: preInferenceFailureResult({ num_turns: -1 }) });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
+  });
+
+  it('Case C -- ok:true (noPreInferenceFailureOk) when the cell used a real tool, even with is_error:true, num_turns:1, zero usage', () => {
+    const conditionResult = cleanConditionResult('current-skill', {
+      events: [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json'), toolResultEvent('t1', true), resultEventStub()],
+      result: preInferenceFailureResult(),
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
+  });
+
+  it('Case C -- ok:true (noPreInferenceFailureOk) when any single usage counter is non-zero, even with is_error:true, num_turns:1, zero tools', () => {
+    const conditionResult = cleanConditionResult('current-skill', {
+      result: preInferenceFailureResult({ usage: { ...ZERO_USAGE, output_tokens: 5 } }),
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
+  });
+
+  // Post-adversarial-review fix: the usage conjunct must fail CLOSED on ambiguity, never open.
+  // The only observed incident shape has `usage` present with every counter at an explicit 0 --
+  // that is the sole evidence this repo has for the real CLI's error-path JSON. Failing open on a
+  // missing/absent counter would silently promote the exact class of cell this check exists to
+  // catch, the moment a real failure's JSON happens to omit rather than zero a field.
+  // NOTE: cleanConditionResult's own DEFAULT events include a real Bash tool_use (see its
+  // definition above) -- every test below must explicitly override events to the same
+  // zero-tool-use shape the first noPreInferenceFailureOk test uses, or findAllToolUses' own
+  // conjunct would independently rule the signature out regardless of the usage-conjunct fix
+  // these tests exist to prove.
+  const NO_TOOL_USE_EVENTS = [initEventStub(), { type: 'assistant', message: { content: [{ type: 'text', text: 'Not logged in.' }], usage: ZERO_USAGE } }, resultEventStub()];
+
+  it('ok:false (noPreInferenceFailureOk) when usage is absent entirely, with the other 3 conjuncts holding -- fails closed, never open, on missing data', () => {
+    const conditionResult = cleanConditionResult('current-skill', {
+      events: NO_TOOL_USE_EVENTS,
+      result: preInferenceFailureResult({ usage: undefined }),
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.checksByName.noPreInferenceFailureOk).toBe(false);
+  });
+
+  it('ok:false (noPreInferenceFailureOk) when usage is present but missing a single counter (e.g. cache_read_input_tokens absent, not zero), with the other 3 conjuncts holding', () => {
+    const { cache_read_input_tokens, ...usageMissingOneCounter } = ZERO_USAGE;
+    const conditionResult = cleanConditionResult('current-skill', {
+      events: NO_TOOL_USE_EVENTS,
+      result: preInferenceFailureResult({ usage: usageMissingOneCounter }),
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.checksByName.noPreInferenceFailureOk).toBe(false);
+  });
+
+  it('ok:true (noPreInferenceFailureOk) when usage is missing a counter AND a DIFFERENT counter is genuinely non-zero -- real engagement still rules it out regardless of the missing field', () => {
+    const { cache_read_input_tokens, ...usageMissingOneCounter } = ZERO_USAGE;
+    const conditionResult = cleanConditionResult('current-skill', {
+      events: NO_TOOL_USE_EVENTS,
+      result: preInferenceFailureResult({ usage: { ...usageMissingOneCounter, output_tokens: 5 } }),
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
   });
 });

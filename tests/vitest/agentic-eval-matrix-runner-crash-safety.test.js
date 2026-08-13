@@ -26,7 +26,7 @@
 // fakeClaudeEnv() subprocess convention -- it never resolves the real, live claude binary that
 // may also be installed on the host machine.
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +42,16 @@ const PINNED_SKILL_SHA = '9814ada0c45e6a3d2a0399291ec96cb8d1ef86bb';
 const TARGET_PLUGIN_NAME = 'kmp-test-runner';
 const TARGET_SKILL_NAME = 'kmp-test-runner';
 
+// Node coerces `process.env.KEY = undefined` to the literal STRING "undefined" rather than
+// removing the variable -- assigning back a `saved` value that was itself `undefined` (PATH
+// genuinely absent before this helper touched it) would corrupt process.env for the rest of this
+// worker process's test run, not actually restore the pre-test state. delete is the correct
+// restoration for an originally-absent variable (post-review fix, P3).
+function restoreEnvVar(key, value) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
 /** Prepends a fake-claude-<scenario> fixture directory to process.env.PATH for the duration of
  * `fn`, always restoring the exact original value afterward -- see this file's own header
  * comment for why this is a safe, PATH-only override that can never reach the real claude binary. */
@@ -53,7 +63,7 @@ async function withFakeClaudePath(scenario, fn) {
   try {
     return await fn();
   } finally {
-    process.env.PATH = savedPath;
+    restoreEnvVar('PATH', savedPath);
   }
 }
 
@@ -146,6 +156,89 @@ describe("runScenarioMatrix -- crash-safety journal preserves an earlier cell ac
       const raw0 = journal.readRawFor(0);
       expect(raw0.length).toBeGreaterThan(0);
       expect(raw0).toContain('"type"'); // a real stream-json transcript, not synthetic filler
+    } finally {
+      rmSync(journalRunsRoot, { recursive: true, force: true });
+      for (const dir of fixtureDirs) rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+});
+
+// Diseño 4a (macOS auth-preflight PR) -- the most severe P1 finding of the whole review process:
+// a cell whose stderr persistence genuinely fails must NEVER be allowed to continue toward
+// parse/evaluate/promotion as if nothing happened. persistSpawnOutcome's own fail-fast throws the
+// instant the stderr write fails; this test proves that throw genuinely propagates all the way out
+// of a REAL runScenarioMatrix invocation (a real fake-claude session spawns and completes, THEN
+// the stderr write fails), tagged for finalizeIncident exactly like materializeFixture's own
+// exception above -- same phase family, different cause. The journal is never discarded on this
+// path (this test, like its siblings above, never calls promoteAndDiscard/discardJournalIfRedundant
+// -- the journal directory's continued presence on disk IS the preservation).
+describe('runScenarioMatrix -- a real stderr-persistence failure aborts as an incident, never reaching promotion', () => {
+  it("cell 0's real fake-claude session spawns and completes, but its stderr write fails (a plain file occupies the journal's stderr/ directory slot) -- persistSpawnOutcome's fail-fast throws, tagged persisting_cell_journal/cellOrdinal:0, rawStdout still recoverable, zero cells ever reach evaluated", async () => {
+    const journalRunsRoot = mkdtempSync(path.join(os.tmpdir(), 'aemr-stderr-fail-journal-root-'));
+    const fixtureDirs = [];
+
+    try {
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride: journalRunsRoot });
+      // Occupies the directory slot persistSpawnOutcome needs for stderr/0.txt -- BEFORE any real
+      // spawn happens, using the journal's own known (not internally-random) journalDir, unlike the
+      // rejection tier's rejectionId which is only known after the fact.
+      mkdirSync(journal.journalDir, { recursive: true });
+      writeFileSync(path.join(journal.journalDir, 'stderr'), 'blocking-file');
+
+      const materializeFixture = () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), 'aemr-stderr-fail-fixture-'));
+        fixtureDirs.push(dir);
+        return { fixtureDir: dir };
+      };
+
+      let caught = null;
+      await withFakeClaudePath('run-scenario-success', async () => {
+        try {
+          await runScenarioMatrix({
+            scenario: SCENARIO, repeats: 1, seed: 1, model: 'fake-model-x',
+            allowedGradleTasks: SCENARIO.policy.allowed_gradle_tasks,
+            allowedKmpTestSubcommands: SCENARIO.policy.allowed_kmptest_subcommands,
+            repoRoot: REPO_ROOT, pinnedSkillSha: PINNED_SKILL_SHA, runPluginValidator,
+            materializeFixture,
+            cleanupFixture: () => {},
+            targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
+            timeoutMs: 30000,
+            journal,
+          });
+        } catch (err) {
+          caught = err;
+        }
+      });
+
+      expect(caught).not.toBeNull();
+      expect(caught.message).toMatch(/stderr persistence failed for cellOrdinal 0/);
+      expect(caught.message).toMatch(/stderr_write_failed/);
+      // Never the raw fs error text (which, on this exact setup, genuinely contains an absolute path).
+      expect(caught.message).not.toContain(journalRunsRoot);
+      expect(caught.agenticEvalPhase).toBe('persisting_cell_journal');
+      expect(caught.agenticEvalCellOrdinal).toBe(0);
+      expect(typeof caught.agenticEvalRawStdout).toBe('string');
+      expect(caught.agenticEvalRawStdout.length).toBeGreaterThan(0);
+      expect(caught.agenticEvalRawStdout).toContain('"type"'); // the real spawned session's own transcript
+
+      // rawStdout was persisted to the journal BEFORE the stderr failure -- still recoverable there
+      // too, not just on the error object.
+      const raw0 = journal.readRawFor(0);
+      expect(raw0.length).toBeGreaterThan(0);
+      expect(raw0).toContain('"type"');
+
+      // The stderr failure is recorded structurally, never masked.
+      const { stderrMeta } = journal.summarize();
+      expect(stderrMeta[0].present).toBe(false);
+      expect(stderrMeta[0].writeError).toBe('stderr_write_failed');
+
+      // Zero cells ever reached parse/evaluate -- the throw happens strictly between
+      // raw_persisted and any further processing, so nothing downstream of the failed cell ever
+      // ran, and no promotion path was ever reachable.
+      const summary = journal.summarize();
+      expect(summary.counts.evaluated).toBe(0);
+      expect(summary.counts.parsed).toBe(0);
+      expect(existsSync(journal.journalDir)).toBe(true); // conserved -- the incident path never discards
     } finally {
       rmSync(journalRunsRoot, { recursive: true, force: true });
       for (const dir of fixtureDirs) rmSync(dir, { recursive: true, force: true });

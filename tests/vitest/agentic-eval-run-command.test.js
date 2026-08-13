@@ -33,7 +33,7 @@
 // millisecond-scale, never the actual contributor to the cumulative blocking time.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1071,6 +1071,11 @@ describe('fail-fast (preserve rejected matrix forensics) -- scenario matrix stop
     expect(listEvidenceFiles('scenario')).toEqual([]);
     expect(result.stderr).toContain('rejected-run diagnostics written');
     expect(result.stderr).toContain('1 raw transcript(s) preserved locally');
+    // 3rd tier (stderr, Diseño 4d): the matrix-fail-fast producer -- same reporting pattern as the
+    // 2 tiers above, now covering the piece the original macOS incident actually needed
+    // (diagnosable stderr from the one live session that ran).
+    expect(result.stderr).toContain('1 stderr file(s) preserved locally under');
+    expect(result.stderr).toContain(path.join('agentic-eval-rejected', 'raw', 'stderr'));
 
     const rejectionId = extractRejectionId(result.stderr);
     expect(rejectionId).not.toBeNull();
@@ -1106,6 +1111,113 @@ describe('fail-fast (preserve rejected matrix forensics) -- scenario matrix stop
     expect(readFileSync(transcriptPath, 'utf8')).toContain('"name":"Read"');
   }, 30000);
 
+  // Diseño 4d (round-2/round-4 audit findings): a real filesystem failure blocking the stderr
+  // transaction specifically must (a) never block the OTHER two independent transactions (raw
+  // transcripts, structured diagnostics -- both must still succeed), (b) report only the closed
+  // code 'stderr_write_failed', never the real underlying fs error text (which, on this exact
+  // setup, genuinely contains an absolute path), and (c) leave rawStdout for the failing cell
+  // recoverable regardless. A plain FILE occupies the `raw/stderr` directory slot BEFORE the
+  // subprocess ever runs -- any rejectionId the subprocess generates internally (unpredictable
+  // from outside) collides the same way, since its parent directory is what is blocked, not one
+  // specific rejection_id's own subdirectory.
+  it('a real stderr-tier filesystem failure blocks ONLY that tier -- diagnostics + raw transcripts still succeed, and the error text never leaks the real fs failure', async () => {
+    const blockedDir = path.join(runsRoot, 'agentic-eval-rejected', 'raw');
+    mkdirSync(blockedDir, { recursive: true });
+    writeFileSync(path.join(blockedDir, 'stderr'), 'blocking-file'); // occupies the directory slot as a plain file
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '2']), fakeClaudeEnv('run-failfast-first-cell'), 30000);
+    expect(result.status).toBe(1);
+
+    // The other 2 transactions succeed exactly as they do without the collision (same test as the
+    // sibling above, minus the stderr-specific line).
+    expect(result.stderr).toContain('rejected-run diagnostics written');
+    expect(result.stderr).toContain('1 raw transcript(s) preserved locally');
+
+    // The stderr tier reports failure via its own closed code, never a raw fs error.
+    expect(result.stderr).toContain('stderr was NOT preserved: stderr_write_failed');
+    expect(result.stderr).not.toContain('stderr file(s) preserved locally');
+    expect(result.stderr).not.toContain('ENOTDIR');
+    expect(result.stderr).not.toContain('not a directory');
+    expect(result.stderr).not.toContain('blocking-file');
+    expect(result.stderr).not.toContain(runsRoot); // the real absolute path never leaks either
+
+    const rejectionId = extractRejectionId(result.stderr);
+    expect(rejectionId).not.toBeNull();
+    const committed = readCommittedRejectionDiagnostic(rejectionId);
+    expect(committed.raw_transcripts_persisted).toBe(true);
+  }, 30000);
+
+  // Diseño 5 Caso B (macOS auth-preflight PR): the real 2026-08 canary incident's OWN exact
+  // failure shape, reproduced end-to-end through a real `node cli.mjs run` subprocess -- auth
+  // passes, the first cell's live session produces a well-formed but pre-inference-failed
+  // transcript (is_error:true, num_turns:1, usage all zero, zero tool_use), fail-fast stops the
+  // matrix after exactly that one session, and the cell's stderr survives independently in the
+  // rejection tier (the diagnosability gap the incident's own postmortem asked for). This is the
+  // mandatory (not optional, per the plan's own round-3 ruling) subprocess-level closure of
+  // Diseño 4d's wiring for the matrix-fail-fast producer specifically, using the NEW fixture --
+  // agentic-eval-cli.test.js's own 4-producer suite already covers the other 3 producers
+  // in-process with synthetic records, and this file's own sibling test above already covers a
+  // stderr WRITE FAILURE for the (pre-existing) unexpected-tool fail-fast shape; this test is the
+  // one place that proves the auth-preflight incident's own signature, specifically, survives all
+  // the way through a real CLI invocation.
+  it('Caso B: exactly ONE live session runs, matrixComplete:false, noPreInferenceFailureOk is the failing check, and the cell\'s stderr survives independently in the rejection tier', async () => {
+    const probeLogPath = path.join(isolatedTmp, 'auth-ok-pre-inference-failure-invocations.log');
+    expect(existsSync(probeLogPath)).toBe(false);
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '2']), fakeClaudeEnv('auth-ok-pre-inference-failure'), 30000);
+    expect(result.status).toBe(1);
+
+    expect(existsSync(probeLogPath)).toBe(true);
+    const invocationLines = readFileSync(probeLogPath, 'utf8').trim().split('\n').filter(Boolean);
+    expect(invocationLines.length).toBe(1);
+
+    expect(result.stderr).toMatch(/RUN FAILED/);
+    expect(result.stderr).toContain('fail-fast stopped the matrix early at order_index 0');
+    expect(result.stderr).toContain('1/4 cells executed, remaining cells never spawned');
+    expect(result.stderr).toContain('noPreInferenceFailureOk:false');
+    expect(listEvidenceFiles('scenario')).toEqual([]);
+    expect(result.stderr).toContain('rejected-run diagnostics written');
+    expect(result.stderr).toContain('1 raw transcript(s) preserved locally');
+    expect(result.stderr).toContain('1 stderr file(s) preserved locally under');
+
+    const rejectionId = extractRejectionId(result.stderr);
+    expect(rejectionId).not.toBeNull();
+
+    const committed = readCommittedRejectionDiagnostic(rejectionId);
+    expect(committed.matrix_complete).toBe(false);
+    expect(committed.planned_cell_count).toBe(4);
+    expect(committed.executed_cell_count).toBe(1);
+    expect(committed.raw_transcripts_persisted).toBe(true);
+    expect(committed.cells.length).toBe(1);
+    expect(committed.cells[0].order_index).toBe(0);
+    expect(committed.cells[0].failed_checks).toEqual(['noPreInferenceFailureOk']);
+    // Never an English-language-text detection -- the committed diagnostic's own failed_checks
+    // entry is the structural signal, with zero unexpected tool uses (this is NOT a tool-profile
+    // rejection).
+    expect(committed.cells[0].unexpected_tool_uses_count).toBe(0);
+
+    const local = readLocalRejectionDiagnostic(rejectionId);
+    expect(local.raw_transcripts_persisted).toBe(true);
+    expect(local.cells[0].transcript_filename).toMatch(/^0-[0-9a-f]{64}\.jsonl$/);
+    const transcriptPath = path.join(rejectedDir(), 'raw', 'transcripts', rejectionId, local.cells[0].transcript_filename);
+    expect(existsSync(transcriptPath)).toBe(true);
+    expect(readFileSync(transcriptPath, 'utf8')).toContain('"type":"result"');
+
+    // The stderr tier -- independently recoverable, non-empty, and never embedded in either
+    // committable diagnostic tier.
+    const stderrDir = path.join(rejectedDir(), 'raw', 'stderr', rejectionId);
+    const stderrFiles = readdirSync(stderrDir);
+    expect(stderrFiles.length).toBe(1);
+    expect(stderrFiles[0]).toMatch(/^0-[0-9a-f]{64}\.stderr\.txt$/);
+    const stderrText = readFileSync(path.join(stderrDir, stderrFiles[0]), 'utf8');
+    expect(stderrText.length).toBeGreaterThan(0);
+    expect(stderrText).toContain('simulated pre-inference failure');
+    expect(JSON.stringify(committed)).not.toContain('simulated pre-inference failure');
+    expect(JSON.stringify(local)).not.toContain('simulated pre-inference failure');
+
+    // No record was ever promoted as benchmark_eligible:true (or promoted at all) -- fail-fast
+    // rejection, not a graded negative result.
+    expect(listEvidenceFiles('scenario')).toEqual([]);
+  }, 30000);
+
   // "No false savings" (correction 7): the real 2026-08 canary incident's own failing cell was the
   // LAST of 4 planned cells -- fail-fast would NOT have saved any live session in that specific
   // shape, since every cell had already been spawned by the time the last one failed. This fixture
@@ -1136,6 +1248,9 @@ describe('fail-fast (preserve rejected matrix forensics) -- scenario matrix stop
     // BOTH executed cells' transcripts are preserved -- not just the failing one -- since Transaction
     // 1 persists every EXECUTED cell of the batch, and here that batch is the whole (complete) matrix.
     expect(result.stderr).toContain('2 raw transcript(s) preserved locally');
+    // 3rd tier (stderr, Diseño 4d): the matrix-complete producer -- both executed cells' stderr
+    // preserved, matching the raw-transcript count above.
+    expect(result.stderr).toContain('2 stderr file(s) preserved locally under');
 
     const rejectionId = extractRejectionId(result.stderr);
     expect(rejectionId).not.toBeNull();
