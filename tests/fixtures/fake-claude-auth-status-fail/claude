@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude-auth-status-fail/claude -- Diseño 5 Caso A: the auth preflight itself
+# fails closed (loggedIn:false, non-zero exit), proving acquireSharedEvalResources aborts BEFORE
+# any live session spawn is ever attempted. The auth-status response below is the ONLY thing this
+# fixture ever answers -- unlike every fake-claude-* fixture whose auth-status block is a short-
+# circuit ahead of its own normal-argv logic, this fixture has no normal-argv logic to reach at
+# all if the preflight is genuinely wired correctly.
+if [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  echo '{"loggedIn":false,"authMethod":"none","apiProvider":null,"subscriptionType":null}'
+  exit 1
+fi
+
+# The normal argv (`-p ...`) must NEVER be reached if the preflight correctly fails closed --
+# write a probe log entry anyway (same TMPDIR/TMP/TEMP idiom as fake-claude-run-failfast-first-
+# cell/claude's own invocation counter) so a test can assert zero real invocations occurred rather
+# than merely assuming it from the absence of other side effects.
+PROBE_DIR="${TMPDIR:-${TMP:-$TEMP}}"
+if [ -z "$PROBE_DIR" ]; then
+  echo "fake-claude-auth-status-fail: TMPDIR/TMP/TEMP are all unset -- refusing to write the invocation probe log to an unresolved location" >&2
+  exit 1
+fi
+PROBE_LOG="$PROBE_DIR/auth-status-fail-invocations.log"
+echo "UNEXPECTED-NORMAL-INVOCATION" >> "$PROBE_LOG"
+exit 1
