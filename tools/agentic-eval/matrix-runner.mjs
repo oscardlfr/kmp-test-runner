@@ -30,6 +30,7 @@ import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
 import { attributeCondition } from './junit-evidence.mjs';
 import { cellTranscriptIntegrityOk } from './cell-integrity.mjs';
 import { tagIncidentPhase } from './durable-journal.mjs';
+import { runAuthPreflight, authPreflightReasonCode } from './auth-preflight.mjs';
 
 /** Prints a single, clearly-labeled WARNING line if `failures` (from a cleanup accumulator's
  * runCleanup()) is non-empty -- never silent, but never escalated into a hard failure either: a
@@ -105,6 +106,20 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
       expectedFixtureRoot: null, // set per-condition once the fixture dir is materialized
       allowedGradleTasks, allowedKmpTestSubcommands,
     });
+
+    // Confirms `claude` can actually authenticate BEFORE the first live spawn -- the exact same
+    // sharedEnv/PATH every measured session will receive, so a broken environment is caught here,
+    // once, rather than burning every planned cell on a pre-inference failure (the macOS
+    // incident this preflight exists to close). Self-tags 'acquiring_shared_resources': the
+    // existing catch below has no phase-tagging of its own for other failures in this function
+    // either, but this throw must not silently inherit the outer incidentPhaseOf() fallback.
+    const preflight = await runAuthPreflight({ sharedEnv, repoRoot });
+    if (!preflight.ok) {
+      throw tagIncidentPhase(
+        new Error(`Auth preflight failed: reason=${authPreflightReasonCode(preflight)}, exit_code=${Number.isInteger(preflight.exitCode) ? preflight.exitCode : 'null'}, logged_in=${preflight.loggedIn === true}`),
+        'acquiring_shared_resources',
+      );
+    }
 
     return {
       settingsPath, shimDir, snapshotDir, gradleUserHome, gradleSnapshotDir,
