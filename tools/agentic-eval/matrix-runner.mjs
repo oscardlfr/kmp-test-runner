@@ -249,7 +249,7 @@ export async function runSingleCondition({ condition, materializeFixture, previo
   // this cell's rawStdout even though the journal's own bookkeeping is what broke.
   if (journal) {
     try {
-      journal.persistSpawnOutcome(cellOrdinal, { didSpawn, spawnStartedAt, rawStdout: spawnResult.rawStdout });
+      journal.persistSpawnOutcome(cellOrdinal, { didSpawn, spawnStartedAt, rawStdout: spawnResult.rawStdout, stderr: spawnResult.stderr });
     } catch (err) {
       throw tagIncidentPhase(err, 'persisting_cell_journal', cellOrdinal, spawnResult.rawStdout);
     }

@@ -10,10 +10,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
-import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, validateRunRecordFile, SUBCOMMAND_SHAPES } from '../../tools/agentic-eval/cli.mjs';
+import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, validateRunRecordFile, SUBCOMMAND_SHAPES, discardJournalIfRedundant } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 import { LATEST_RUN_SCHEMA, validateRun, buildAggregateGroup } from '../../tools/agentic-eval/schemas.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
+import { createInvocationJournal } from '../../tools/agentic-eval/durable-journal.mjs';
+import { readRejectionStderrFile } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -703,6 +705,208 @@ describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree'
     expect(hardGateCalled).toBe(false);
     expect(result.ok).toBe(false);
     expect(result.reason).toContain('unclean harness-tooling tree');
+  });
+});
+
+// Diseño 4d (macOS auth-preflight PR): exactly 4 real call sites build stderrByRunId and pass it
+// to writeRejectionForensics -- pair fail-fast, pair complete (gate rejects), matrix fail-fast,
+// matrix complete (gate rejects). Before this coverage, only the matrix-fail-fast producer (the
+// one the original incident actually walked) had ANY end-to-end proof that a rejected cell's
+// stderr survives past the eventual journal discard; the other 3 were wired identically but never
+// independently exercised. Each test here drives the REAL finalizeAndWriteRecords/
+// finalizeAndWriteMatrixRecords with a REAL journal, confirms the stderr the journal captured is
+// independently recoverable from the rejection tier (raw/stderr/<rejection_id>/) via
+// readRejectionStderrFile, and then runs it through the real discardJournalIfRedundant -- proving
+// the journal itself is safely discarded (both stdout and stderr correspondence held) while the
+// rejection-tier copy survives on its own, independent of the journal's lifecycle.
+describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected cell\'s stderr survives independently in the rejection tier, for all 4 rejection producers', () => {
+  function fakeConditionResult(cellOrdinal, rawStdout) {
+    return {
+      init: { model: 'claude-sonnet-5-fake', session_id: `sess-${cellOrdinal}`, claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+      result: { subtype: 'success', is_error: false },
+      invocation: null,
+      hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      spawnResult: { terminated: false, terminationReason: null, exitCode: 0, rawStdout },
+      events: [],
+      cellOrdinal,
+    };
+  }
+  const MINIMAL_GRADE_RESULT = { expectedOutcomeMatched: false, success: false, checks: [], firstUsefulSignalEventIndex: null, testInvocationsTotal: 0, retries: 0 };
+  function commonFields(runKind) {
+    return {
+      runKind, scenarioId: 'test-stderr-producer', daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: 'fake-model', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000',
+      ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+      // run_kind:'scenario' schema-requires a real project_commit + integer seed (calibration/smoke
+      // don't) -- buildRejectionDiagnostics' own committed-record validation refuses without them.
+      ...(runKind === 'scenario' ? { seed: 42, projectCommit: 'a'.repeat(40) } : {}),
+    };
+  }
+  function freshRunsRoot() {
+    return mkdtempSync(path.join(os.tmpdir(), 'aec-stderr-producer-'));
+  }
+  function stderrFor(cellOrdinal) {
+    return `stderr text for cellOrdinal ${cellOrdinal} -- distinctive sentinel, never shared across cells`;
+  }
+  function assertStderrSurvivedFor(result, journal, runsRoot, cellOrdinal, runId) {
+    expect(result.stderrWriteError).toBeNull();
+    expect(result.rejectionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(journal.readStderrFor(cellOrdinal)).toBe(stderrFor(cellOrdinal));
+    expect(readRejectionStderrFile(result.rejectionId, cellOrdinal, runId, { runsRootOverride: runsRoot })).toBe(stderrFor(cellOrdinal));
+  }
+
+  it('producer 1/4 -- pair fail-fast (only B ran, A never spawned)', async () => {
+    const runsRoot = freshRunsRoot();
+    try {
+      const common = commonFields('calibration');
+      const conditionResultB = fakeConditionResult(0, 'raw-b');
+      const recordB = buildRunRecord({ conditionResult: conditionResultB, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
+      const journal = createInvocationJournal({ runKind: 'calibration', plannedCellCount: 2, runsRootOverride: runsRoot });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'raw-b', stderr: stderrFor(0) });
+
+      const failFastStop = { reason: 'test fail-fast', failedChecks: ['cleanTranscriptOk'], unexpectedToolUsesCount: 0, unexpectedTools: [] };
+      const result = await finalizeAndWriteRecords({
+        runKind: 'calibration', recordA: null, recordB, runA: null, runB: conditionResultB,
+        privatePatternsFile: null, hardGateFn: () => { throw new Error('must not be called on the fail-fast path'); },
+        matrixComplete: false, plannedCellCount: 2, executedCellCount: 1, failFastStop,
+        journal, runsRootOverride: runsRoot,
+      });
+      expect(result.ok).toBe(false);
+      assertStderrSurvivedFor(result, journal, runsRoot, 0, recordB.run_id);
+
+      discardJournalIfRedundant(journal, result, { [recordB.run_id]: 0 }, runsRoot);
+      expect(existsSync(journal.journalDir)).toBe(false);
+      expect(readRejectionStderrFile(result.rejectionId, 0, recordB.run_id, { runsRootOverride: runsRoot })).toBe(stderrFor(0));
+    } finally {
+      rmSync(runsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('producer 2/4 -- pair complete (both A and B ran), hard gate rejects', async () => {
+    const runsRoot = freshRunsRoot();
+    try {
+      const common = commonFields('calibration');
+      const conditionResultA = fakeConditionResult(1, 'raw-a');
+      const conditionResultB = fakeConditionResult(0, 'raw-b');
+      const recordA = buildRunRecord({ conditionResult: conditionResultA, condition: 'no-skill', skillSourceSha: null, ...common });
+      const recordB = buildRunRecord({ conditionResult: conditionResultB, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
+      const journal = createInvocationJournal({ runKind: 'calibration', plannedCellCount: 2, runsRootOverride: runsRoot });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'raw-b', stderr: stderrFor(0) });
+      journal.persistSpawnOutcome(1, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'raw-a', stderr: stderrFor(1) });
+
+      const gate = { ok: false, reason: 'test hard gate rejection', failedChecksA: [], failedChecksB: ['cleanTranscriptOk'], unexpectedToolUsesCountA: 0, unexpectedToolUsesCountB: 0, unexpectedToolsA: [], unexpectedToolsB: [] };
+      const result = await finalizeAndWriteRecords({
+        runKind: 'calibration', recordA, recordB, runA: conditionResultA, runB: conditionResultB,
+        privatePatternsFile: null, hardGateFn: () => gate,
+        journal, runsRootOverride: runsRoot,
+      });
+      expect(result.ok).toBe(false);
+      assertStderrSurvivedFor(result, journal, runsRoot, 0, recordB.run_id);
+      assertStderrSurvivedFor(result, journal, runsRoot, 1, recordA.run_id);
+
+      // stderr text is persisted ONLY in its own dedicated raw/stderr/ file tier -- it must never
+      // be embedded into the committed diagnostic JSON (which is neither gitignored the same way
+      // nor schema-scoped for free text). Read the ACTUAL committed file back from disk, not just
+      // trust that buildRejectionDiagnostics' own parameter list never received it.
+      const committedDiagnosticPath = path.join(runsRoot, result.diagnosticsRelativePath);
+      const committedDiagnosticText = readFileSync(committedDiagnosticPath, 'utf8');
+      expect(committedDiagnosticText).not.toContain(stderrFor(0));
+      expect(committedDiagnosticText).not.toContain(stderrFor(1));
+
+      discardJournalIfRedundant(journal, result, { [recordB.run_id]: 0, [recordA.run_id]: 1 }, runsRoot);
+      expect(existsSync(journal.journalDir)).toBe(false);
+    } finally {
+      rmSync(runsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('producer 3/4 -- matrix fail-fast (records only cover the cells that actually executed)', async () => {
+    const runsRoot = freshRunsRoot();
+    try {
+      const common = commonFields('scenario');
+      const conditionResult0 = fakeConditionResult(0, 'raw-0');
+      const record0 = buildRunRecord({ conditionResult: conditionResult0, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', repetitionIndex: 0, orderIndex: 0, gradeResult: MINIMAL_GRADE_RESULT, ...common });
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 4, runsRootOverride: runsRoot });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'raw-0', stderr: stderrFor(0) });
+
+      const localIntegrityByRunId = { [record0.run_id]: { failedChecks: ['cleanTranscriptOk'], unexpectedToolUsesCount: 0, unexpectedTools: [] } };
+      const result = await finalizeAndWriteMatrixRecords({
+        runKind: 'scenario', records: [record0], conditionResults: [conditionResult0],
+        hardGateFn: () => { throw new Error('must not be called on the fail-fast path'); },
+        privatePatternsFile: null, repeats: 2, matrixComplete: false,
+        plannedCellCount: 4, executedCellCount: 1, localIntegrityByRunId,
+        journal, runsRootOverride: runsRoot,
+      });
+      expect(result.ok).toBe(false);
+      assertStderrSurvivedFor(result, journal, runsRoot, 0, record0.run_id);
+
+      discardJournalIfRedundant(journal, result, { [record0.run_id]: 0 }, runsRoot);
+      expect(existsSync(journal.journalDir)).toBe(false);
+    } finally {
+      rmSync(runsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('producer 4/4 -- matrix complete (all planned cells ran), hard gate rejects', async () => {
+    const runsRoot = freshRunsRoot();
+    try {
+      const common = commonFields('scenario');
+      const conditionResult0 = fakeConditionResult(0, 'raw-0');
+      const conditionResult1 = fakeConditionResult(1, 'raw-1');
+      const record0 = buildRunRecord({ conditionResult: conditionResult0, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', repetitionIndex: 0, orderIndex: 0, gradeResult: MINIMAL_GRADE_RESULT, ...common });
+      const record1 = buildRunRecord({ conditionResult: conditionResult1, condition: 'no-skill', skillSourceSha: null, repetitionIndex: 0, orderIndex: 1, gradeResult: MINIMAL_GRADE_RESULT, ...common });
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 2, runsRootOverride: runsRoot });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'raw-0', stderr: stderrFor(0) });
+      journal.persistSpawnOutcome(1, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'raw-1', stderr: stderrFor(1) });
+
+      const gate = {
+        ok: false, reason: 'test whole-matrix hard gate rejection', ambientProfileMatrixOk: true,
+        cellResults: [
+          { runId: record0.run_id, failedChecks: ['cleanTranscriptOk'], unexpectedToolUsesCount: 0, unexpectedTools: [] },
+          { runId: record1.run_id, failedChecks: [], unexpectedToolUsesCount: 0, unexpectedTools: [] },
+        ],
+      };
+      const result = await finalizeAndWriteMatrixRecords({
+        runKind: 'scenario', records: [record0, record1], conditionResults: [conditionResult0, conditionResult1],
+        hardGateFn: () => gate, privatePatternsFile: null, repeats: 1,
+        journal, runsRootOverride: runsRoot,
+      });
+      expect(result.ok).toBe(false);
+      assertStderrSurvivedFor(result, journal, runsRoot, 0, record0.run_id);
+      assertStderrSurvivedFor(result, journal, runsRoot, 1, record1.run_id);
+
+      discardJournalIfRedundant(journal, result, { [record0.run_id]: 0, [record1.run_id]: 1 }, runsRoot);
+      expect(existsSync(journal.journalDir)).toBe(false);
+    } finally {
+      rmSync(runsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('a journal-absent caller (journal:null, matching every test that predates this fix) skips the stderr transaction cleanly -- stderrCount:0, stderrWriteError:null, never a throw', async () => {
+    const runsRoot = freshRunsRoot();
+    try {
+      const common = commonFields('calibration');
+      const conditionResultB = fakeConditionResult(0, 'raw-b');
+      const recordB = buildRunRecord({ conditionResult: conditionResultB, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
+      const failFastStop = { reason: 'test fail-fast', failedChecks: ['cleanTranscriptOk'], unexpectedToolUsesCount: 0, unexpectedTools: [] };
+      const result = await finalizeAndWriteRecords({
+        runKind: 'calibration', recordA: null, recordB, runA: null, runB: conditionResultB,
+        privatePatternsFile: null, hardGateFn: () => { throw new Error('must not be called on the fail-fast path'); },
+        matrixComplete: false, plannedCellCount: 2, executedCellCount: 1, failFastStop,
+        runsRootOverride: runsRoot,
+        // journal intentionally omitted -- defaults to null
+      });
+      expect(result.ok).toBe(false);
+      expect(result.stderrWriteError).toBeNull();
+      expect(result.stderrCount).toBe(0);
+      expect(result.stderrManifest).toBeNull();
+    } finally {
+      rmSync(runsRoot, { recursive: true, force: true });
+    }
   });
 });
 

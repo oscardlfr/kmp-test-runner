@@ -48,7 +48,7 @@ describe('journal transition state machine -- the normal branch', () => {
     const runsRootOverride = freshRunsRoot();
     try {
       const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
-      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: '{"line":1}\n' });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: '{"line":1}\n', stderr: '' });
       journal.recordParsed(0);
       journal.recordEvaluated(0);
 
@@ -68,7 +68,7 @@ describe('journal transition state machine -- the normal branch', () => {
     const runsRootOverride = freshRunsRoot();
     try {
       const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
-      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'x' });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'x', stderr: '' });
       journal.recordParsed(0);
 
       const eventsDir = join(journal.journalDir, 'events');
@@ -134,8 +134,8 @@ describe('journal transition state machine -- rejects illegal transitions (wirin
     const runsRootOverride = freshRunsRoot();
     try {
       const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
-      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'a' });
-      expect(() => journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'b' }))
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'a', stderr: '' });
+      expect(() => journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'b', stderr: '' }))
         .toThrow(/illegal transition|duplicate|already/i);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
@@ -147,9 +147,9 @@ describe('journal transition state machine -- rejects illegal transitions (wirin
     const runsRootOverride = freshRunsRoot();
     try {
       const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 2, runsRootOverride });
-      expect(() => journal.persistSpawnOutcome(2, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'x' }))
+      expect(() => journal.persistSpawnOutcome(2, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'x', stderr: '' }))
         .toThrow(/cellOrdinal|out of range|bounds/i);
-      expect(() => journal.persistSpawnOutcome(-1, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'x' }))
+      expect(() => journal.persistSpawnOutcome(-1, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'x', stderr: '' }))
         .toThrow(/cellOrdinal|out of range|bounds/i);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
@@ -163,10 +163,10 @@ describe('journal coherence invariants (summarize)', () => {
     const runsRootOverride = freshRunsRoot();
     try {
       const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 3, runsRootOverride });
-      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'a' });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'a', stderr: '' });
       journal.recordParsed(0);
       journal.recordEvaluated(0);
-      journal.persistSpawnOutcome(1, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'b' });
+      journal.persistSpawnOutcome(1, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'b', stderr: '' });
       // cell 1 stops after raw_persisted -- never parsed/evaluated (simulates a mid-parse crash)
       // cell 2 never even starts -- still just planned
 
@@ -276,6 +276,111 @@ describe('journal.promoteAndDiscard', () => {
       // here (already gone), so this specific case resolves {ok:true} -- the REAL failure case is
       // covered by the isolated vi.mock file referenced above.
       expect(result).toEqual({ ok: true });
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('journal stderr tier -- persistence, redaction, absent-vs-empty contract', () => {
+  it('persists stderr alongside rawStdout, and readStderrFor returns the exact (already-redacted) text', async () => {
+    const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'stdout-content', stderr: 'a real stderr line\n' });
+      expect(journal.readRawFor(0)).toBe('stdout-content');
+      expect(journal.readStderrFor(0)).toBe('a real stderr line\n');
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('summarize() exposes stderrMeta keyed by cellOrdinal, with real byteLength/sha256 computed from a REREAD of the file on disk', async () => {
+    const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
+    const { createHash } = await import('node:crypto');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'x', stderr: 'stderr-text' });
+      const { stderrMeta } = journal.summarize();
+      expect(stderrMeta[0].present).toBe(true);
+      expect(stderrMeta[0].writeError).toBeNull();
+      expect(stderrMeta[0].byteLength).toBe(Buffer.byteLength('stderr-text', 'utf8'));
+      expect(stderrMeta[0].sha256).toBe(createHash('sha256').update('stderr-text', 'utf8').digest('hex'));
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('an empty string is a legitimate, distinct, stable stderr value -- present:true, byteLength:0, readStderrFor returns \'\' (never null)', async () => {
+    const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
+    const { createHash } = await import('node:crypto');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'x', stderr: '' });
+      const { stderrMeta } = journal.summarize();
+      expect(stderrMeta[0]).toEqual({ present: true, byteLength: 0, sha256: createHash('sha256').update('', 'utf8').digest('hex'), writeError: null });
+      expect(journal.readStderrFor(0)).toBe('');
+      expect(journal.readStderrFor(0)).not.toBeNull();
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('a cell that never spawned has stderr "absent", not "empty" -- readStderrFor returns null, same as readRawFor', async () => {
+    const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
+      journal.persistSpawnOutcome(0, { didSpawn: false, spawnStartedAt: null, rawStdout: '' });
+      expect(journal.readRawFor(0)).toBeNull();
+      expect(journal.readStderrFor(0)).toBeNull();
+      expect(journal.summarize().stderrMeta[0]).toBeUndefined();
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('stderr that is not a string is a structural failure (stderr_not_a_string), never silently treated as empty -- throws, but rawStdout is preserved first', async () => {
+    const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
+      expect(() => journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'stdout-survives', stderr: undefined }))
+        .toThrow(/stderr_not_a_string/);
+      expect(journal.readRawFor(0)).toBe('stdout-survives'); // rawStdout write happened BEFORE the stderr failure
+      expect(journal.summarize().stderrMeta[0]).toEqual({ present: false, byteLength: 0, sha256: null, writeError: 'stderr_not_a_string' });
+      expect(journal.readStderrFor(0)).toBeNull();
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('a null stderr is the same structural failure as undefined -- never coerced to an empty string', async () => {
+    const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
+      expect(() => journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'x', stderr: null }))
+        .toThrow(/stderr_not_a_string/);
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts a known PII pattern (a Windows user-home path) before persisting -- the file on disk never contains the raw path', async () => {
+    const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
+    const { findLeaks, PUBLIC_SHAPE_RULES } = await import('../../tools/agentic-eval/privacy.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
+      const sensitiveStderr = 'Error: ENOENT, open \'C:\\Users\\realname\\.claude\\config.json\'';
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'x', stderr: sensitiveStderr });
+      const onDisk = journal.readStderrFor(0);
+      expect(onDisk).not.toContain('realname');
+      expect(findLeaks(onDisk, PUBLIC_SHAPE_RULES)).toEqual([]);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }

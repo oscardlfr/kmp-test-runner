@@ -29,10 +29,11 @@
 // spawn_completed/raw_persisted for a process that never spawned would be a lie the accounting
 // this journal exists to make trustworthy cannot afford.
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { RUNS_ROOT, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
 import { removeDirRobust } from './materialize.mjs';
+import { redactAndVerify } from './privacy.mjs';
 
 /** Closed vocabulary an incident's thrown error is tagged with (agenticEvalPhase), so
  * incident-diagnostics.mjs's finalizeIncident() never has to guess which phase failed. */
@@ -100,9 +101,9 @@ const NEXT_ALLOWED = Object.freeze({
  * cell this invocation intended to run" independently of how far execution actually got. Preflighted
  * with the exact same gitignore-safety check every other local-only tier in this harness uses
  * (`isRawDirSafeFromAccidentalCommit`) before anything is written.
- * @param {{runKind: string, plannedCellCount: number, runsRootOverride?: string}} opts
+ * @param {{runKind: string, plannedCellCount: number, runsRootOverride?: string, privatePatternsFile?: string}} opts
  */
-export function createInvocationJournal({ runKind, plannedCellCount, runsRootOverride = RUNS_ROOT }) {
+export function createInvocationJournal({ runKind, plannedCellCount, runsRootOverride = RUNS_ROOT, privatePatternsFile = null }) {
   if (!Number.isInteger(plannedCellCount) || plannedCellCount < 0) {
     throw new Error(`createInvocationJournal: plannedCellCount must be a non-negative integer, got ${JSON.stringify(plannedCellCount)}`);
   }
@@ -110,6 +111,10 @@ export function createInvocationJournal({ runKind, plannedCellCount, runsRootOve
   const journalDir = join(runsRootOverride, 'agentic-eval-journal', invocationId);
   const eventsDir = join(journalDir, 'events');
   const rawDir = join(journalDir, 'raw');
+  // Sibling of raw/ (never mixed into the same file -- keeps raw/<ordinal>.jsonl the untouched,
+  // authoritative stdout transcript). Covered by the SAME journalDir-wide gitignore check below --
+  // no separate check needed for this subdirectory.
+  const stderrDir = join(journalDir, 'stderr');
   // Fail closed BEFORE any filesystem I/O -- isRawDirSafeFromAccidentalCommit only needs the path
   // STRING (git check-ignore doesn't require the target to exist), so checking it before
   // mkdirSync means a refusal here never leaves an orphaned, empty journal directory tree behind.
@@ -121,6 +126,11 @@ export function createInvocationJournal({ runKind, plannedCellCount, runsRootOve
   let seq = 0;
   const lastTransition = new Array(plannedCellCount).fill(null);
   const cellOrdinalsByTransition = Object.fromEntries(TRANSITIONS.map((t) => [t, new Set()]));
+  // cellOrdinal -> {present, byteLength, sha256, writeError} -- populated by persistSpawnOutcome
+  // below. In-memory only (never serialized as its own journal event): consulted by
+  // discardJournalIfRedundant's content-correspondence checks during the SAME process invocation,
+  // never needs to survive a restart.
+  const stderrMetaByOrdinal = new Map();
 
   function writeEvent(cellOrdinal, transitionName, meta) {
     const thisSeq = seq;
@@ -159,10 +169,21 @@ export function createInvocationJournal({ runKind, plannedCellCount, runsRootOve
      * caller's own `onSpawned` callback (never from inspecting spawnResult.terminated/
      * terminationReason after the fact, which conflates "never started" with "started, then
      * crashed" -- only the callback's own firing unambiguously distinguishes them).
+     *
+     * `stderr` is a REQUIRED string (never `?? ''`-defaulted) -- missing/wrong-type is a
+     * structural failure (`stderr_not_a_string`), not a legitimate empty value; `''` itself IS
+     * legitimate and persists normally. `rawStdout` is preserved FIRST and unconditionally, before
+     * `stderr` is touched at all, so a `stderr`-specific failure (redaction rejects it, or the
+     * write itself fails) never costs the stdout transcript. If `stderr` fails to persist, this
+     * method THROWS after recording rawStdout + the failure's own closed-code metadata -- the
+     * caller (matrix-runner.mjs's runSingleCondition) already wraps this call in a try/catch
+     * tagging `persisting_cell_journal`, the same phase used for every other journal-wiring
+     * failure -- so a cell with incomplete stderr observability can never continue to parse/
+     * evaluate/promotion as though nothing happened.
      * @param {number} cellOrdinal
-     * @param {{didSpawn: boolean, spawnStartedAt: number|null, rawStdout: string}} outcome
+     * @param {{didSpawn: boolean, spawnStartedAt: number|null, rawStdout: string, stderr: string}} outcome
      */
-    persistSpawnOutcome(cellOrdinal, { didSpawn, spawnStartedAt, rawStdout }) {
+    persistSpawnOutcome(cellOrdinal, { didSpawn, spawnStartedAt, rawStdout, stderr }) {
       if (!didSpawn) {
         transitionTo(cellOrdinal, 'spawn_failed');
         return;
@@ -171,7 +192,50 @@ export function createInvocationJournal({ runKind, plannedCellCount, runsRootOve
       transitionTo(cellOrdinal, 'spawn_completed');
       const rawPath = join(rawDir, `${cellOrdinal}.jsonl`);
       promoteTargetsAtomically([[rawPath, rawStdout]], rawDir);
-      transitionTo(cellOrdinal, 'raw_persisted');
+      // rawStdout is durable at this point -- everything from here on is the stderr tier, which
+      // must never be able to roll back or block the transition that already-persisted stdout
+      // depends on. The 'raw_persisted' transition itself is recorded ONCE, below, after the
+      // stderr outcome is known, so the same event carries both facts; calling transitionTo twice
+      // for 'raw_persisted' would be an illegal duplicate transition.
+      let present = false;
+      let byteLength = 0;
+      let sha256 = null;
+      let writeError = null;
+      if (typeof stderr !== 'string') {
+        writeError = 'stderr_not_a_string';
+      } else {
+        let redacted = null;
+        try {
+          const verified = redactAndVerify(stderr, { privatePatternsFile });
+          if (verified.ok) redacted = verified.redacted;
+        } catch { /* treated as not-ok below */ }
+        if (redacted == null) {
+          writeError = 'stderr_redaction_incomplete';
+        } else {
+          try {
+            const stderrPath = join(stderrDir, `${cellOrdinal}.txt`);
+            promoteTargetsAtomically([[stderrPath, redacted]], stderrDir);
+            // Reread from disk -- byteLength/sha256 must reflect what actually landed there, never
+            // the in-memory `redacted` string, so a later re-verification (discardJournalIfRedundant)
+            // can detect a truncation/corruption that happened after this write.
+            const onDisk = readFileSync(stderrPath, 'utf8');
+            present = true;
+            byteLength = Buffer.byteLength(onDisk, 'utf8');
+            sha256 = createHash('sha256').update(onDisk, 'utf8').digest('hex');
+          } catch {
+            // Never err.message -- a real fs error (e.g. ENOENT) can carry the real absolute path,
+            // with the OS username embedded. Same closed-code precedent as promoteAndDiscard's own
+            // 'journal_discard_failed' below.
+            writeError = 'stderr_write_failed';
+          }
+        }
+      }
+      stderrMetaByOrdinal.set(cellOrdinal, { present, byteLength, sha256, writeError });
+      transitionTo(cellOrdinal, 'raw_persisted', { stderrPersisted: present, stderrByteLength: byteLength, stderrSha256: sha256, stderrWriteError: writeError });
+
+      if (writeError) {
+        throw new Error(`stderr persistence failed for cellOrdinal ${cellOrdinal}: ${writeError}`);
+      }
     },
 
     recordParsed(cellOrdinal) {
@@ -187,11 +251,13 @@ export function createInvocationJournal({ runKind, plannedCellCount, runsRootOve
      * check. Also enforces the closed coherence invariants by construction (never computed
      * separately): every recorded ordinal is in-bounds and un-duplicated (assertOrdinal +
      * Set semantics), and the per-transition sets nest strictly because a cell can only ever reach
-     * transition N by having already legally passed through N-1. */
+     * transition N by having already legally passed through N-1. `stderrMeta` is keyed by
+     * cellOrdinal -> {present, byteLength, sha256, writeError}, populated by persistSpawnOutcome. */
     summarize() {
       const counts = Object.fromEntries(TRANSITIONS.map((t) => [t, cellOrdinalsByTransition[t].size]));
       const cellOrdinals = Object.fromEntries(TRANSITIONS.map((t) => [t, [...cellOrdinalsByTransition[t]]]));
-      return { plannedCellCount, counts, cellOrdinals };
+      const stderrMeta = Object.fromEntries(stderrMetaByOrdinal.entries());
+      return { plannedCellCount, counts, cellOrdinals, stderrMeta };
     },
 
     /** Reads a cell's own already-persisted raw back, or `null` if it never reached
@@ -209,6 +275,16 @@ export function createInvocationJournal({ runKind, plannedCellCount, runsRootOve
       const rawPath = join(rawDir, `${cellOrdinal}.jsonl`);
       if (!existsSync(rawPath)) return null;
       return readFileSync(rawPath, 'utf8');
+    },
+
+    /** Mirror of readRawFor, for the stderr tier: `null` if this cell never reached raw_persisted
+     * OR its stderr write failed; `''` (not `null`) if it persisted a genuinely empty stderr --
+     * that distinction is the explicit "absent vs. empty" contract this tier exists to preserve. */
+    readStderrFor(cellOrdinal) {
+      assertOrdinal(cellOrdinal);
+      const stderrPath = join(stderrDir, `${cellOrdinal}.txt`);
+      if (!existsSync(stderrPath)) return null;
+      return readFileSync(stderrPath, 'utf8');
     },
 
     /** Deletes the whole journal directory -- called by the command ONLY after the real evidence

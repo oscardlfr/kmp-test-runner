@@ -53,9 +53,10 @@
 // resolveEvidenceOutDir's agentic-eval-<run_kind> (RUN_KIND_VALUES never includes 'rejected'), so
 // it can never be confused with real evidence by aggregate/validate.
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import { resolveRejectedDiagnosticsDir, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
-import { assertCleanOrThrowObject } from './privacy.mjs';
+import { assertCleanOrThrowObject, redactAndVerify } from './privacy.mjs';
 import { RUN_KIND_VALUES, CONDITION_VALUES, PLATFORM_VALUES, PRIVACY_STATUS_VALUES } from './schemas.mjs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1032,6 +1033,122 @@ export function writeRejectionRawTranscripts(rejectionId, transcriptsByRunId, ca
       filename: deriveTranscriptFilename(captureOrdinalByRunId[id], id),
     })),
   };
+}
+
+/**
+ * Sibling of deriveTranscriptFilename, same safe ordinal+hash(run_id) derivation, own extension --
+ * `.jsonl` (deriveTranscriptFilename's own suffix) mislabels free-text stderr as JSON-lines
+ * content; this never reuses that function, it reuses only the derivation LOGIC.
+ */
+export function deriveStderrFilename(captureOrdinal, runId) {
+  if (!(Number.isInteger(captureOrdinal) && captureOrdinal >= 0)) {
+    throw new Error(`deriveStderrFilename: captureOrdinal must be a non-negative integer, got ${JSON.stringify(captureOrdinal)}`);
+  }
+  if (typeof runId !== 'string' || runId.length === 0) {
+    throw new Error('deriveStderrFilename: runId must be a non-empty string');
+  }
+  const hash = createHash('sha256').update(runId, 'utf8').digest('hex');
+  return `${captureOrdinal}-${hash}.stderr.txt`;
+}
+
+/**
+ * Transaction 3 of a rejection's forensics (sibling of writeRejectionRawTranscripts, never a
+ * modification of it) -- persists each rejected cell's already-redacted stderr to its own tier,
+ * `raw/stderr/<rejection_id>/...`, the exact sibling of `raw/transcripts/<rejection_id>/...`.
+ *
+ * `stderrByRunId` values are REQUIRED strings (never `?? ''`) -- a missing/wrong-type entry is a
+ * structural failure (thrown), never silently treated as an empty-but-legitimate stderr. Each
+ * value is re-verified against the privacy pipeline before writing (defense in depth over the
+ * ALREADY-redacted value the caller reads back from the journal, never a first redaction pass
+ * here): if this second pass would change the value, the input was never actually clean, so this
+ * refuses rather than silently persisting a further-transformed string.
+ *
+ * `byte_length`/`sha256` in the returned manifest are computed from a REREAD of what actually
+ * landed on disk, never the in-memory string -- the same discipline persistSpawnOutcome (the
+ * journal's own stderr tier) uses, so a later correspondence check can detect a truncation/
+ * corruption that happened during or after either write.
+ * @param {string} rejectionId
+ * @param {Record<string,string>} stderrByRunId
+ * @param {Record<string,number>} captureOrdinalByRunId
+ * @param {{runsRootOverride?: string, privatePatternsFile?: string}} [opts]
+ */
+export function writeRejectionRawStderr(rejectionId, stderrByRunId, captureOrdinalByRunId, { runsRootOverride, privatePatternsFile } = {}) {
+  if (typeof rejectionId !== 'string' || !UUID_RE.test(rejectionId)) {
+    throw new Error(`refusing to write raw stderr: rejectionId must be a full UUID string, got ${JSON.stringify(rejectionId)}`);
+  }
+  if (stderrByRunId == null || typeof stderrByRunId !== 'object' || Array.isArray(stderrByRunId)) {
+    throw new Error('refusing to write raw stderr: stderrByRunId is required and must be an object keyed by run_id');
+  }
+  const runIds = [...new Set(Object.keys(stderrByRunId))];
+  validateCaptureOrdinalSet(captureOrdinalByRunId, runIds, 'refusing to write raw stderr');
+  for (const id of runIds) {
+    if (typeof stderrByRunId[id] !== 'string') {
+      throw new Error(`refusing to write raw stderr: stderrByRunId['${id}'] must be a string (the cell's already-redacted stderr; '' is legitimate, missing/undefined is not), got ${typeof stderrByRunId[id]}`);
+    }
+  }
+
+  const outDir = resolveRejectedDiagnosticsDir(runsRootOverride);
+  const stderrRootDir = join(outDir, 'raw', 'stderr', rejectionId);
+  if (!isRawDirSafeFromAccidentalCommit(stderrRootDir, runsRootOverride)) {
+    throw new Error(`refusing to write raw stderr: ${stderrRootDir} is inside this repo's worktree but not covered by .gitignore -- would risk an accidental commit of raw stderr text`);
+  }
+
+  const verifiedByRunId = {};
+  for (const id of runIds) {
+    const { ok, redacted } = redactAndVerify(stderrByRunId[id], { privatePatternsFile });
+    if (!ok || redacted !== stderrByRunId[id]) {
+      throw new Error(`refusing to write raw stderr for run_id '${id}': re-verification found the already-redacted value was not byte-identical (possible incomplete redaction upstream)`);
+    }
+    verifiedByRunId[id] = redacted;
+  }
+
+  const targets = runIds.map((id) => [join(stderrRootDir, deriveStderrFilename(captureOrdinalByRunId[id], id)), verifiedByRunId[id]]);
+  promoteTargetsAtomically(targets, stderrRootDir);
+
+  const stderrManifest = runIds.map((id) => {
+    const filename = deriveStderrFilename(captureOrdinalByRunId[id], id);
+    const onDisk = readFileSync(join(stderrRootDir, filename), 'utf8');
+    return {
+      run_id: id, capture_ordinal: captureOrdinalByRunId[id], filename,
+      byte_length: Buffer.byteLength(onDisk, 'utf8'),
+      sha256: createHash('sha256').update(onDisk, 'utf8').digest('hex'),
+    };
+  });
+
+  return {
+    stderrDir: stderrRootDir,
+    stderrRelativeDir: join('agentic-eval-rejected', 'raw', 'stderr', rejectionId),
+    stderrManifest,
+    stderrCount: runIds.length,
+  };
+}
+
+/**
+ * Reads a rejected cell's own already-persisted stderr back, for the discard-time content
+ * correspondence check (cli.mjs's journalStderrExactlyMatchesRejectionManifest). The filename is
+ * ALWAYS derived internally from (captureOrdinal, runId) -- this function never accepts a raw
+ * filename/path fragment as input, so a manifest entry's own (untrusted) `filename` field can
+ * never participate in constructing the read path. Even though deriveStderrFilename's hash-based
+ * output already makes traversal impossible by construction, the resolved path is additionally
+ * confirmed to stay within stderrRootDir before reading -- the same defense-in-depth discipline
+ * durable-journal.mjs's readRawFor uses, closing the exact bug class a crafted cellOrdinal once
+ * exploited there.
+ * @returns {string|null} the raw stderr text, or `null` if it was never persisted
+ */
+export function readRejectionStderrFile(rejectionId, captureOrdinal, runId, { runsRootOverride } = {}) {
+  if (typeof rejectionId !== 'string' || !UUID_RE.test(rejectionId)) {
+    throw new Error('readRejectionStderrFile: rejectionId must be a full UUID string');
+  }
+  const outDir = resolveRejectedDiagnosticsDir(runsRootOverride);
+  const stderrRootDir = join(outDir, 'raw', 'stderr', rejectionId);
+  const filename = deriveStderrFilename(captureOrdinal, runId); // throws on invalid captureOrdinal/runId
+  const resolvedTarget = resolve(join(stderrRootDir, filename));
+  const resolvedRoot = resolve(stderrRootDir);
+  if (!resolvedTarget.startsWith(resolvedRoot + sep)) {
+    throw new Error('readRejectionStderrFile: resolved path escapes the expected rejection stderr directory');
+  }
+  if (!existsSync(resolvedTarget)) return null;
+  return readFileSync(resolvedTarget, 'utf8');
 }
 
 /**

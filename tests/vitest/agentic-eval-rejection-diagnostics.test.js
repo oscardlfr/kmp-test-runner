@@ -6,8 +6,8 @@
 // this module reuses rather than reinventing.
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,7 +22,11 @@ import {
   writeRejectionRawTranscripts,
   deriveTranscriptFilename,
   validateCaptureOrdinalSet,
+  writeRejectionRawStderr,
+  deriveStderrFilename,
+  readRejectionStderrFile,
 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
+import { findLeaks, PUBLIC_SHAPE_RULES, redactAndVerify } from '../../tools/agentic-eval/privacy.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -1864,6 +1868,221 @@ describe('writeRejectionRawTranscripts -- Transaction 1 (raw transcripts, minima
       // target from that second call was never written either -- all-or-nothing, not partial.
       expect(readFileSync(path.join(dir, deriveTranscriptFilename(0, 'r1')), 'utf8')).toBe('first-write');
       expect(existsSync(path.join(dir, deriveTranscriptFilename(1, 'r2')))).toBe(false);
+    });
+  });
+});
+
+describe('deriveStderrFilename -- sibling of deriveTranscriptFilename, own extension (Diseño 4b)', () => {
+  it('produces "<ordinal>-<sha256(runId)>.stderr.txt", never .jsonl', () => {
+    const filename = deriveStderrFilename(0, 'calibration-current-skill-jjjj1111');
+    expect(filename).toMatch(/^0-[0-9a-f]{64}\.stderr\.txt$/);
+  });
+
+  it('a runId containing path-traversal characters never produces a filename containing / or .. -- the hash-based derivation makes traversal structurally impossible, by construction rather than by escaping', () => {
+    const filename = deriveStderrFilename(0, '../../etc/passwd');
+    expect(filename).not.toContain('/');
+    expect(filename).not.toContain('..');
+    expect(filename).toMatch(/^0-[0-9a-f]{64}\.stderr\.txt$/);
+  });
+
+  it('throws on a negative captureOrdinal', () => {
+    expect(() => deriveStderrFilename(-1, 'r1')).toThrow(/non-negative integer/);
+  });
+
+  it('throws on an empty runId', () => {
+    expect(() => deriveStderrFilename(0, '')).toThrow(/non-empty string/);
+  });
+});
+
+describe('writeRejectionRawStderr -- Transaction 3 (stderr, sibling of writeRejectionRawTranscripts, Diseño 4b)', () => {
+  function isolatedRunsRoot(fn) {
+    const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aerdw-raw-stderr-'));
+    try {
+      return fn(runsRoot);
+    } finally {
+      rmSync(runsRoot, { recursive: true, force: true });
+    }
+  }
+
+  it('writes exactly N files, one per run_id, named via deriveStderrFilename, ending .stderr.txt', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      const stderrByRunId = { r1: 'stderr one\n', r2: 'stderr two\n' };
+      const captureOrdinalByRunId = { r1: 0, r2: 1 };
+      const result = writeRejectionRawStderr(rejectionId, stderrByRunId, captureOrdinalByRunId, { runsRootOverride: runsRoot });
+      expect(result.stderrCount).toBe(2);
+      expect(result.stderrRelativeDir).toBe(path.join('agentic-eval-rejected', 'raw', 'stderr', rejectionId));
+      const dir = path.join(runsRoot, 'agentic-eval-rejected', 'raw', 'stderr', rejectionId);
+      const files = readdirSync(dir);
+      expect(files.sort()).toEqual([deriveStderrFilename(0, 'r1'), deriveStderrFilename(1, 'r2')].sort());
+      for (const f of files) expect(f).toMatch(/\.stderr\.txt$/);
+      expect(readFileSync(path.join(dir, deriveStderrFilename(0, 'r1')), 'utf8')).toBe('stderr one\n');
+      expect(readFileSync(path.join(dir, deriveStderrFilename(1, 'r2')), 'utf8')).toBe('stderr two\n');
+    });
+  });
+
+  it('the returned stderrManifest byte_length/sha256 are computed from a REREAD of what actually landed on disk, never the input string in memory', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      const content = 'exact-content-to-verify-by-rereading-from-disk';
+      const result = writeRejectionRawStderr(rejectionId, { r1: content }, { r1: 0 }, { runsRootOverride: runsRoot });
+      const dir = path.join(runsRoot, 'agentic-eval-rejected', 'raw', 'stderr', rejectionId);
+      const onDisk = readFileSync(path.join(dir, deriveStderrFilename(0, 'r1')), 'utf8');
+      expect(onDisk).toBe(content);
+      const entry = result.stderrManifest.find((e) => e.run_id === 'r1');
+      expect(entry.capture_ordinal).toBe(0);
+      expect(entry.filename).toBe(deriveStderrFilename(0, 'r1'));
+      expect(entry.byte_length).toBe(Buffer.byteLength(onDisk, 'utf8'));
+      expect(entry.sha256).toBe(createHash('sha256').update(onDisk, 'utf8').digest('hex'));
+    });
+  });
+
+  it('accepts an empty-string stderr -- legitimate and forensically meaningful (the cell produced no stderr)', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      const result = writeRejectionRawStderr(rejectionId, { r1: '' }, { r1: 0 }, { runsRootOverride: runsRoot });
+      expect(result.stderrCount).toBe(1);
+      const dir = path.join(runsRoot, 'agentic-eval-rejected', 'raw', 'stderr', rejectionId);
+      expect(readFileSync(path.join(dir, deriveStderrFilename(0, 'r1')), 'utf8')).toBe('');
+      expect(result.stderrManifest[0].byte_length).toBe(0);
+    });
+  });
+
+  it('throws when a stderrByRunId value is undefined (never silently treated as \'\' -- absent must never become empty)', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      expect(() => writeRejectionRawStderr(rejectionId, { r1: undefined }, { r1: 0 }, { runsRootOverride: runsRoot })).toThrow(/must be a string/);
+      expect(existsSync(path.join(runsRoot, 'agentic-eval-rejected'))).toBe(false);
+    });
+  });
+
+  it('throws when a stderrByRunId value is null (the same structural failure as undefined, never coerced)', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      expect(() => writeRejectionRawStderr(rejectionId, { r1: null }, { r1: 0 }, { runsRootOverride: runsRoot })).toThrow(/must be a string/);
+    });
+  });
+
+  it('throws when a stderrByRunId value is a number (any non-string type, not just null/undefined)', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      expect(() => writeRejectionRawStderr(rejectionId, { r1: 42 }, { r1: 0 }, { runsRootOverride: runsRoot })).toThrow(/must be a string/);
+    });
+  });
+
+  it('rejects a rejectionId that is not a full UUID, before any filesystem operation', () => {
+    isolatedRunsRoot((runsRoot) => {
+      expect(() => writeRejectionRawStderr('not-a-uuid', { r1: 'x' }, { r1: 0 }, { runsRootOverride: runsRoot })).toThrow(/full UUID string/);
+      expect(existsSync(path.join(runsRoot, 'agentic-eval-rejected'))).toBe(false);
+    });
+  });
+
+  it('throws when captureOrdinalByRunId keys do not exactly match stderrByRunId keys (same exact-set discipline as writeRejectionRawTranscripts)', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      expect(() => writeRejectionRawStderr(rejectionId, { r1: 'x', r2: 'y' }, { r1: 0 }, { runsRootOverride: runsRoot })).toThrow(/keys must exactly match/);
+    });
+  });
+
+  it('accepts an already-redacted value containing a known PII shape (a Windows user-home path) -- the file on disk stays redacted, matching what the journal\'s own readStderrFor already produced', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      const sensitive = 'Error: ENOENT, open \'C:\\Users\\realname\\.claude\\config.json\'';
+      // writeRejectionRawStderr's own contract (see its doc comment) is to receive the value
+      // ALREADY redacted -- exactly what journal.readStderrFor(cellOrdinal) returns in production,
+      // never the raw stderr text. Pre-redact once here to match that real caller contract; the
+      // dedicated re-verification test above already proves an UNREDACTED value is refused.
+      const { ok, redacted: alreadyRedacted } = redactAndVerify(sensitive);
+      expect(ok).toBe(true);
+      expect(alreadyRedacted).not.toContain('realname');
+      const result = writeRejectionRawStderr(rejectionId, { r1: alreadyRedacted }, { r1: 0 }, { runsRootOverride: runsRoot });
+      const dir = path.join(runsRoot, 'agentic-eval-rejected', 'raw', 'stderr', rejectionId);
+      const onDisk = readFileSync(path.join(dir, deriveStderrFilename(0, 'r1')), 'utf8');
+      expect(onDisk).not.toContain('realname');
+      expect(findLeaks(onDisk, PUBLIC_SHAPE_RULES)).toEqual([]);
+      expect(result.stderrManifest[0].sha256).toBe(createHash('sha256').update(onDisk, 'utf8').digest('hex'));
+    });
+  });
+
+  // Round-2/round-4 audit findings (Diseño 4b): writeRejectionRawStderr re-verifies the
+  // ALREADY-redacted value it receives against the privacy pipeline a second time, rather than
+  // trusting the caller. This proves that pass is real (it actually catches an unredacted value),
+  // not a no-op trust-through -- an upstream redaction that was somehow incomplete must never
+  // silently reach disk.
+  it('refuses (throws) when the input still matches a configured private-pattern rule -- proves the re-verification pass is real, never a no-op trust-through of an "already redacted" value', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const patternsFile = path.join(runsRoot, 'private-patterns.json');
+      const marker = 'totally-fake-marker-for-redaction-idempotency-test';
+      writeFileSync(patternsFile, JSON.stringify([{ class: 'test_marker', literal: marker, replacement: '<REDACTED>' }]));
+      const rejectionId = randomUUID();
+      expect(() => writeRejectionRawStderr(rejectionId, { r1: `stderr containing ${marker}` }, { r1: 0 }, { runsRootOverride: runsRoot, privatePatternsFile: patternsFile }))
+        .toThrow(/not byte-identical/);
+      // Nothing was written -- the transaction aborts before any promoteTargetsAtomically call.
+      expect(existsSync(path.join(runsRoot, 'agentic-eval-rejected', 'raw', 'stderr', rejectionId))).toBe(false);
+    });
+  });
+
+  // Round-3/round-4 audit findings: a real fs-level failure is a raw throw AT THIS LAYER (same
+  // contract writeRejectionRawTranscripts already has, see the "pre-existing file" test above) --
+  // closing the code to the fixed 'stderr_write_failed' and dropping err.message is
+  // writeRejectionForensics' (cli.mjs) responsibility, verified separately at that layer (see
+  // agentic-eval-cli.test.js's finalizeAndWriteRecords-level coverage).
+  it('a real filesystem failure (a plain file occupying the path a directory needs to be created at) is a genuine throw, not a silent success', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rawDir = path.join(runsRoot, 'agentic-eval-rejected', 'raw');
+      mkdirSync(rawDir, { recursive: true });
+      writeFileSync(path.join(rawDir, 'stderr'), 'blocking-file'); // occupies the directory slot as a file
+      const rejectionId = randomUUID();
+      expect(() => writeRejectionRawStderr(rejectionId, { r1: 'x' }, { r1: 0 }, { runsRootOverride: runsRoot })).toThrow();
+    });
+  });
+});
+
+describe('readRejectionStderrFile -- always derives its own filename internally, never accepts one as input (path-traversal defense, Diseño 4b round-4 audit finding)', () => {
+  function isolatedRunsRoot(fn) {
+    const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aerdw-read-stderr-'));
+    try {
+      return fn(runsRoot);
+    } finally {
+      rmSync(runsRoot, { recursive: true, force: true });
+    }
+  }
+
+  it('reads back exactly what writeRejectionRawStderr wrote, for the real (captureOrdinal, runId) pair', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      writeRejectionRawStderr(rejectionId, { r1: 'real content' }, { r1: 0 }, { runsRootOverride: runsRoot });
+      expect(readRejectionStderrFile(rejectionId, 0, 'r1', { runsRootOverride: runsRoot })).toBe('real content');
+    });
+  });
+
+  it('returns null for a (captureOrdinal, runId) pair that was never written -- same absent-not-thrown contract as the journal\'s readRawFor/readStderrFor', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const rejectionId = randomUUID();
+      expect(readRejectionStderrFile(rejectionId, 0, 'never-written', { runsRootOverride: runsRoot })).toBeNull();
+    });
+  });
+
+  // The direct reproduction: a runId crafted to look like a traversal sequence can never escape
+  // raw/stderr/<rejection_id>/, because the filename is ALWAYS derived internally via
+  // deriveStderrFilename's hash -- there is no parameter this function accepts that could carry a
+  // raw filename/path fragment straight into the read path. A sentinel file placed OUTSIDE the
+  // expected directory proves this end-to-end: if a future refactor ever regressed to building the
+  // read path directly from an external value, this is what would catch it.
+  it('a runId containing traversal characters never causes a read outside the expected rejection stderr directory -- returns null, never a file from elsewhere', () => {
+    isolatedRunsRoot((runsRoot) => {
+      const sentinelPath = path.join(runsRoot, 'sentinel.txt');
+      writeFileSync(sentinelPath, 'LEAKED_CONTENT_OUTSIDE_REJECTION_DIR');
+      const rejectionId = randomUUID();
+      const result = readRejectionStderrFile(rejectionId, 0, '../../../sentinel', { runsRootOverride: runsRoot });
+      expect(result).toBeNull();
+      expect(result).not.toBe('LEAKED_CONTENT_OUTSIDE_REJECTION_DIR');
+    });
+  });
+
+  it('throws on a rejectionId that is not a full UUID', () => {
+    isolatedRunsRoot((runsRoot) => {
+      expect(() => readRejectionStderrFile('not-a-uuid', 0, 'r1', { runsRootOverride: runsRoot })).toThrow(/full UUID string/);
     });
   });
 });

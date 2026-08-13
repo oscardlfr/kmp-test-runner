@@ -53,7 +53,7 @@ import { assertCleanOrThrow, assertCleanOrThrowObject, loadPrivateRules } from '
 import { tokenize } from './policy-hook.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 import { RUNS_ROOT, resolveEvidenceOutDir, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
-import { buildRejectionDiagnostics, writeRejectionRawTranscripts, writeRejectedRunDiagnostics, deriveTranscriptFilename } from './rejection-diagnostics.mjs';
+import { buildRejectionDiagnostics, writeRejectionRawTranscripts, writeRejectedRunDiagnostics, deriveTranscriptFilename, writeRejectionRawStderr, deriveStderrFilename, readRejectionStderrFile } from './rejection-diagnostics.mjs';
 import { acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from './accepted-run-audit.mjs';
 import { loadMeasurementScopeFile, createMeasurementScopeFileExclusive } from './measurement-scope.mjs';
 import { createInvocationJournal, tagIncidentPhase } from './durable-journal.mjs';
@@ -572,6 +572,108 @@ function journalRawExactlyMatchesRejectionManifest(journal, result, runIdToCellO
 }
 
 /**
+ * Defense against the CAUSE (a cell whose stderr never persisted) -- given persistSpawnOutcome's
+ * own fail-fast (durable-journal.mjs), a cell like that should never be able to reach here at all,
+ * since it aborts the whole invocation as an incident at the point of failure. Kept as a cheap
+ * invariant check that would catch a future regression bypassing that fail-fast, not as the
+ * primary mechanism. Defense against the EFFECT (a file that persisted successfully but was
+ * deleted/truncated SINCE) is the real job here: unlike the rejection path below (which compares
+ * journal vs. a second, independent copy), the acceptance path has no second copy to compare
+ * against -- rereading each cell's stderr from disk now and comparing it against its own
+ * previously-recorded metadata is the only way this branch can detect that before an irreversible
+ * discard.
+ */
+function allExecutedCellsStderrHealthy(journal) {
+  if (!journal) return true;
+  const { cellOrdinals, stderrMeta } = journal.summarize();
+  for (const ordinal of cellOrdinals.raw_persisted) {
+    const meta = stderrMeta[ordinal];
+    if (!meta || meta.present !== true || meta.writeError) return false;
+    let onDisk;
+    try {
+      onDisk = journal.readStderrFor(ordinal);
+    } catch {
+      return false;
+    }
+    if (onDisk == null) return false;
+    const onDiskByteLength = Buffer.byteLength(onDisk, 'utf8');
+    const onDiskSha256 = createHash('sha256').update(onDisk, 'utf8').digest('hex');
+    if (onDiskByteLength !== meta.byteLength || onDiskSha256 !== meta.sha256) return false;
+  }
+  return true;
+}
+
+/**
+ * The stderr-tier sibling of journalRawExactlyMatchesRejectionManifest -- same binding/cardinality
+ * discipline, PLUS content verification neither that function nor the original design of this one
+ * had: comparing byteLength/sha256 already computed by each SIDE's own write (in-memory-adjacent
+ * metadata) never proves what is REALLY on disk right now. This function rereads and rehashes BOTH
+ * copies -- the journal's own file (`journal.readStderrFor`) and the rejection tier's own file
+ * (`readRejectionStderrFile`, injected so a test can point it at an isolated runsRootOverride) --
+ * at the moment of the discard decision, and requires all four sources (journal-on-disk,
+ * rejection-tier-on-disk, the journal's own recorded metadata, and the manifest's own declared
+ * values) to agree. `readRejectionStderrFile` ALWAYS derives its own filename internally from
+ * (capture_ordinal, run_id) -- `entry.filename` is only ever used for the post-hoc equality check
+ * below, never to construct a read path.
+ */
+function journalStderrExactlyMatchesRejectionManifest(journal, result, runIdToCellOrdinal, { readRejectionStderrFile: readStderr } = {}) {
+  if (!journal || result.stderrWriteError || result.stderrManifest == null) return false;
+  const manifest = result.stderrManifest;
+  const binding = runIdToCellOrdinal ?? {};
+  const expectedRunIds = Object.keys(binding);
+  const { stderrMeta, cellOrdinals } = journal.summarize();
+  const journalOrdinals = new Set(cellOrdinals.raw_persisted);
+  if (manifest.length === 0 || manifest.length !== journalOrdinals.size || manifest.length !== expectedRunIds.length) return false;
+
+  const seenOrdinals = new Set();
+  const seenRunIds = new Set();
+  for (const entry of manifest) {
+    if (entry == null || typeof entry.run_id !== 'string' || !Number.isInteger(entry.capture_ordinal)) return false;
+    if (!Object.prototype.hasOwnProperty.call(binding, entry.run_id)) return false;
+    if (binding[entry.run_id] !== entry.capture_ordinal) return false;
+    if (!journalOrdinals.has(entry.capture_ordinal)) return false;
+    if (seenOrdinals.has(entry.capture_ordinal) || seenRunIds.has(entry.run_id)) return false;
+    const meta = stderrMeta[entry.capture_ordinal];
+    if (!meta || meta.present !== true || meta.writeError) return false;
+
+    let journalOnDisk;
+    try {
+      journalOnDisk = journal.readStderrFor(entry.capture_ordinal);
+    } catch {
+      return false;
+    }
+    if (journalOnDisk == null) return false;
+    const journalOnDiskSha256 = createHash('sha256').update(journalOnDisk, 'utf8').digest('hex');
+    const journalOnDiskByteLength = Buffer.byteLength(journalOnDisk, 'utf8');
+
+    let rejectionOnDisk;
+    try {
+      rejectionOnDisk = readStderr(entry.capture_ordinal, entry.run_id);
+    } catch {
+      return false;
+    }
+    if (rejectionOnDisk == null) return false;
+    const rejectionOnDiskSha256 = createHash('sha256').update(rejectionOnDisk, 'utf8').digest('hex');
+    const rejectionOnDiskByteLength = Buffer.byteLength(rejectionOnDisk, 'utf8');
+
+    if (journalOnDiskSha256 !== rejectionOnDiskSha256 || journalOnDiskByteLength !== rejectionOnDiskByteLength) return false;
+    if (meta.byteLength !== journalOnDiskByteLength || meta.sha256 !== journalOnDiskSha256) return false;
+    if (entry.byte_length !== journalOnDiskByteLength || entry.sha256 !== journalOnDiskSha256) return false;
+
+    let expectedFilename;
+    try {
+      expectedFilename = deriveStderrFilename(entry.capture_ordinal, entry.run_id);
+    } catch {
+      return false;
+    }
+    if (entry.filename !== expectedFilename) return false;
+    seenOrdinals.add(entry.capture_ordinal);
+    seenRunIds.add(entry.run_id);
+  }
+  return seenOrdinals.size === journalOrdinals.size && seenRunIds.size === expectedRunIds.length;
+}
+
+/**
  * The shared "what does the command do once finalizeAndWrite* has settled" tail: on full
  * acceptance, or a hard-gate rejection whose own forensics fully, verifiably persisted, the
  * journal is now redundant -- adopt/discard it. In every other outcome, do nothing: the journal's
@@ -582,10 +684,19 @@ function journalRawExactlyMatchesRejectionManifest(journal, result, runIdToCellO
  * short-circuits before it's ever read). A discard failure itself is a reportCleanupFailures-style
  * warning only, never surfaced as a command failure -- by the time this runs, the real evidence is
  * already safely elsewhere.
+ *
+ * `allExecutedCellsStderrHealthy` gates BOTH branches unconditionally, evaluated before either --
+ * `result.ok === true` must never skip it: a stderr persistence/redaction/validation failure keeps
+ * the journal even when the matrix/pair's functional outcome was a full acceptance.
  */
-function discardJournalIfRedundant(journal, result, runIdToCellOrdinal) {
+function discardJournalIfRedundant(journal, result, runIdToCellOrdinal, runsRootOverride) {
   if (!journal) return;
-  const shouldDiscard = result.ok === true || journalRawExactlyMatchesRejectionManifest(journal, result, runIdToCellOrdinal);
+  if (!allExecutedCellsStderrHealthy(journal)) return;
+  const shouldDiscard = result.ok === true
+    || (journalRawExactlyMatchesRejectionManifest(journal, result, runIdToCellOrdinal)
+        && journalStderrExactlyMatchesRejectionManifest(journal, result, runIdToCellOrdinal, {
+          readRejectionStderrFile: (captureOrdinal, runId) => readRejectionStderrFile(result.rejectionId, captureOrdinal, runId, { runsRootOverride }),
+        }));
   if (!shouldDiscard) return;
   const discardResult = journal.promoteAndDiscard();
   if (!discardResult.ok) {
@@ -1162,6 +1273,12 @@ async function writeRejectionForensics({
   runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
   foreignSkillNamesByRunId, transcriptsByRunId, captureOrdinalByRunId, ambientProfileMatrixOk = null,
   plannedCellCount = null, executedCellCount = null, privatePatternsFile, runsRootOverride,
+  // stderrByRunId: null when the caller has no journal (e.g. a direct test of this function) --
+  // the 3rd transaction below is skipped cleanly in that case, never throws, never blocks the
+  // other two. When present, every value MUST already be a string (the caller reads it back
+  // already-redacted from the journal) -- see cli.mjs's own call sites for how stderrByRunId is
+  // built.
+  stderrByRunId = null,
 }) {
   const rejectionId = randomUUID();
   let rawTranscriptsWriteError = null;
@@ -1180,6 +1297,26 @@ async function writeRejectionForensics({
     rawTranscriptsPersisted = false;
   }
 
+  // Transaction 3 of 3 -- stderr, the exact sibling of Transaction 1 (raw transcripts) above:
+  // independent of it and of Transaction 2 below, never blocking or blocked by either. A closed
+  // code, never err.message (a real fs error can carry an absolute path with the OS username).
+  let stderrWriteError = null;
+  let stderrPersisted = false;
+  let stderrRelativeDir = null;
+  let stderrManifest = null;
+  let stderrCount = 0;
+  if (stderrByRunId != null) {
+    try {
+      const raw = writeRejectionRawStderr(rejectionId, stderrByRunId, captureOrdinalByRunId, { runsRootOverride, privatePatternsFile });
+      stderrRelativeDir = raw.stderrRelativeDir;
+      stderrManifest = raw.stderrManifest;
+      stderrCount = raw.stderrCount;
+      stderrPersisted = true;
+    } catch {
+      stderrWriteError = 'stderr_write_failed';
+    }
+  }
+
   let diagnosticsWriteError = null;
   let writtenRejectionId = null;
   let diagnosticsRelativePath = null;
@@ -1195,9 +1332,10 @@ async function writeRejectionForensics({
   }
 
   return {
-    rawTranscriptsWriteError, diagnosticsWriteError, rejectionId: writtenRejectionId,
+    rawTranscriptsWriteError, rawTranscriptsPersisted, diagnosticsWriteError, rejectionId: writtenRejectionId,
     diagnosticsRelativePath, diagnosticsTranscriptsDir, diagnosticsTranscriptCount,
     rawTranscriptsManifest,
+    stderrWriteError, stderrPersisted, stderrRelativeDir, stderrManifest, stderrCount,
   };
 }
 
@@ -1217,6 +1355,13 @@ function printRejectionForensicsStderr(result) {
   } else if (result.diagnosticsTranscriptCount > 0) {
     console.error(`(${result.diagnosticsTranscriptCount} raw transcript(s) preserved locally under ${result.diagnosticsTranscriptsDir})`);
   }
+  // 3rd tier (stderr) -- same pattern as the other two: success reports a count + a RELATIVE path
+  // (never absolute -- could carry the real OS username), failure reports only the closed code.
+  if (result.stderrWriteError) {
+    console.error(`(stderr was NOT preserved: ${result.stderrWriteError})`);
+  } else if (result.stderrCount > 0) {
+    console.error(`(${result.stderrCount} stderr file(s) preserved locally under ${result.stderrRelativeDir})`);
+  }
   if (result.diagnosticsWriteError) {
     console.error(`(rejected-run diagnostics were NOT written: ${result.diagnosticsWriteError})`);
   } else if (result.rejectionId) {
@@ -1224,7 +1369,7 @@ function printRejectionForensicsStderr(result) {
   }
 }
 
-async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, hardGateFn, privatePatternsFile, runsRootOverride = RUNS_ROOT, matrixComplete = true, plannedCellCount = 2, executedCellCount = 2, failFastStop = null }) {
+async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, hardGateFn, privatePatternsFile, runsRootOverride = RUNS_ROOT, matrixComplete = true, plannedCellCount = 2, executedCellCount = 2, failFastStop = null, journal = null }) {
   // Fail-fast (preserve rejected matrix forensics): only B ran -- runConditionPair's own fail-fast
   // check on B already found a local integrity failure and never spawned A at all. hardGateFn is
   // NEVER invoked here: there is no A side to give it, and calibrationHardGate/smokeHardGate both
@@ -1249,6 +1394,11 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
     if (recordB.policy_sha256 !== freshHashB) {
       return { ok: false, reason: `Run record B policy_sha256 (${recordB.policy_sha256}) does not match the current policy-hook.mjs (${freshHashB}) -- evidence is stale relative to the code that produced it` };
     }
+    // stderrByRunId (Diseño 4d): null when there's no journal at all (e.g. a direct test of this
+    // function) -- writeRejectionForensics skips its 3rd transaction cleanly in that case. When a
+    // journal IS present, every value is read back ALREADY-redacted via journal.readStderrFor --
+    // never re-derived from a fresh string, and never conditionResult.spawnResult.stderr raw.
+    const stderrByRunId = journal ? { [recordB.run_id]: journal.readStderrFor(runB.cellOrdinal) } : null;
     const forensics = await writeRejectionForensics({
       runKind, records: [recordB],
       failedChecksByRunId: { [recordB.run_id]: failFastStop.failedChecks },
@@ -1264,7 +1414,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
       // check ever runs).
       captureOrdinalByRunId: { [recordB.run_id]: runB.cellOrdinal },
       plannedCellCount, executedCellCount,
-      privatePatternsFile, runsRootOverride,
+      privatePatternsFile, runsRootOverride, stderrByRunId,
     });
     return { ok: false, reason: failFastStop.reason, ...forensics };
   }
@@ -1345,6 +1495,9 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
     // stay null unless the write actually succeeded -- round-6 audit finding ("localización del
     // diagnóstico"): a caller must be able to tell a human WHERE a successfully-written diagnostic
     // landed, not just that no error was thrown.
+    const stderrByRunId = journal
+      ? { [recordB.run_id]: journal.readStderrFor(runB.cellOrdinal), [recordA.run_id]: journal.readStderrFor(runA.cellOrdinal) }
+      : null;
     const forensics = await writeRejectionForensics({
       runKind, records: [recordA, recordB],
       failedChecksByRunId: { [recordA.run_id]: gate.failedChecksA ?? [], [recordB.run_id]: gate.failedChecksB ?? [] },
@@ -1365,7 +1518,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
       // resolves to {B:0, A:1} -- but reads it from the real per-cell source of truth now, not a
       // parameter-list-order-tempting literal.
       captureOrdinalByRunId: { [recordB.run_id]: runB.cellOrdinal, [recordA.run_id]: runA.cellOrdinal },
-      privatePatternsFile, runsRootOverride,
+      privatePatternsFile, runsRootOverride, stderrByRunId,
     });
     return { ok: false, reason: gate.reason, ...forensics };
   }
@@ -1503,7 +1656,7 @@ function scenarioMatrixIsBenchmarkEligible(records, gate) {
 async function finalizeAndWriteMatrixRecords({
   runKind, records, conditionResults, hardGateFn, privatePatternsFile, runsRootOverride = RUNS_ROOT,
   repeats, buildSidecarsFn = null, matrixComplete = true, plannedCellCount = repeats * 2,
-  executedCellCount = records.length, localIntegrityByRunId = null, failFastStop = null,
+  executedCellCount = records.length, localIntegrityByRunId = null, failFastStop = null, journal = null,
 }) {
   // Fail-fast (preserve rejected matrix forensics): the matrix stopped early -- `records` only
   // covers the cells that actually executed. NEVER call findMatrixCompletenessGap here (an
@@ -1568,12 +1721,15 @@ async function finalizeAndWriteMatrixRecords({
     // trustworthy, and deriving it from the authoritative source removes an unverified implicit
     // invariant rather than relying on array-construction order never changing.
     const captureOrdinalByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].cellOrdinal]));
+    const stderrByRunId = journal
+      ? Object.fromEntries(records.map((r, i) => [r.run_id, journal.readStderrFor(conditionResults[i].cellOrdinal)]))
+      : null;
 
     const forensics = await writeRejectionForensics({
       runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
       foreignSkillNamesByRunId, transcriptsByRunId, captureOrdinalByRunId,
       ambientProfileMatrixOk: null, plannedCellCount, executedCellCount,
-      privatePatternsFile, runsRootOverride,
+      privatePatternsFile, runsRootOverride, stderrByRunId,
     });
     return { ok: false, reason: failFastStop?.reason ?? `scenario matrix stopped early after a local per-cell integrity failure (${executedCellCount}/${plannedCellCount} cells executed)`, ...forensics };
   }
@@ -1632,6 +1788,9 @@ async function finalizeAndWriteMatrixRecords({
     // trustworthy, and deriving it from the authoritative source removes an unverified implicit
     // invariant rather than relying on array-construction order never changing.
     const captureOrdinalByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].cellOrdinal]));
+    const stderrByRunId = journal
+      ? Object.fromEntries(records.map((r, i) => [r.run_id, journal.readStderrFor(conditionResults[i].cellOrdinal)]))
+      : null;
     // ambientProfileMatrixOk (correction 6): scenarioHardGate's own matrix-wide consensus result
     // (gate.ambientProfileMatrixOk, exposed on its return value) -- threaded straight through, so
     // a rejection diagnostic for a COMPLETE scenario batch always records whether the ambient-
@@ -1640,7 +1799,7 @@ async function finalizeAndWriteMatrixRecords({
       runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
       foreignSkillNamesByRunId, transcriptsByRunId, captureOrdinalByRunId,
       ambientProfileMatrixOk: gate.ambientProfileMatrixOk,
-      privatePatternsFile, runsRootOverride,
+      privatePatternsFile, runsRootOverride, stderrByRunId,
     });
     return { ok: false, reason: gate.reason, ...forensics };
   }
@@ -2159,7 +2318,7 @@ async function cmdCalibrate(args) {
   // up. journal:null is valid input to finalizeIncident (treated as all-zero counts).
   let journal = null;
   try {
-    journal = createInvocationJournal({ runKind: 'calibration', plannedCellCount: 2 });
+    journal = createInvocationJournal({ runKind: 'calibration', plannedCellCount: 2, privatePatternsFile });
   } catch (err) {
     const incidentResult = finalizeIncident({
       runKind: 'calibration', journal: null, phase: 'acquiring_shared_resources',
@@ -2226,7 +2385,7 @@ async function cmdCalibrate(args) {
       runIdToCellOrdinal = { [recordB.run_id]: runB.cellOrdinal };
       result = await finalizeAndWriteRecords({
         runKind: 'calibration', recordA: null, recordB, runA: null, runB, privatePatternsFile,
-        hardGateFn: calibrationHardGate, matrixComplete: false, plannedCellCount, executedCellCount, failFastStop,
+        hardGateFn: calibrationHardGate, matrixComplete: false, plannedCellCount, executedCellCount, failFastStop, journal,
       });
     } else {
       const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
@@ -2234,7 +2393,7 @@ async function cmdCalibrate(args) {
       runIdToCellOrdinal = { [recordB.run_id]: runB.cellOrdinal, [recordA.run_id]: runA.cellOrdinal };
       result = await finalizeAndWriteRecords({
         runKind: 'calibration', recordA, recordB, runA, runB, privatePatternsFile,
-        hardGateFn: calibrationHardGate,
+        hardGateFn: calibrationHardGate, journal,
       });
     }
     if (!result.ok) {
@@ -2440,7 +2599,7 @@ async function cmdSmoke(args) {
   // rationale comment.
   let journal = null;
   try {
-    journal = createInvocationJournal({ runKind: 'smoke', plannedCellCount: 2 });
+    journal = createInvocationJournal({ runKind: 'smoke', plannedCellCount: 2, privatePatternsFile });
   } catch (err) {
     const incidentResult = finalizeIncident({
       runKind: 'smoke', journal: null, phase: 'acquiring_shared_resources',
@@ -2512,7 +2671,7 @@ async function cmdSmoke(args) {
       runIdToCellOrdinal = { [recordB.run_id]: runB.cellOrdinal };
       result = await finalizeAndWriteRecords({
         runKind: 'smoke', recordA: null, recordB, runA: null, runB, privatePatternsFile,
-        hardGateFn: smokeHardGate, matrixComplete: false, plannedCellCount, executedCellCount, failFastStop,
+        hardGateFn: smokeHardGate, matrixComplete: false, plannedCellCount, executedCellCount, failFastStop, journal,
       });
     } else {
       const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
@@ -2520,7 +2679,7 @@ async function cmdSmoke(args) {
       runIdToCellOrdinal = { [recordB.run_id]: runB.cellOrdinal, [recordA.run_id]: runA.cellOrdinal };
       result = await finalizeAndWriteRecords({
         runKind: 'smoke', recordA, recordB, runA, runB, privatePatternsFile,
-        hardGateFn: smokeHardGate,
+        hardGateFn: smokeHardGate, journal,
       });
     }
     if (!result.ok) {
@@ -2795,7 +2954,7 @@ async function cmdRun(args) {
   // guard as cmdCalibrate on the journal creation call itself -- see its identical rationale.
   let journal = null;
   try {
-    journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: plan.length });
+    journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: plan.length, privatePatternsFile });
   } catch (err) {
     const incidentResult = finalizeIncident({
       runKind: 'scenario', journal: null, phase: 'acquiring_shared_resources',
@@ -2913,6 +3072,7 @@ async function cmdRun(args) {
       privatePatternsFile, repeats, buildSidecarsFn: buildSidecars,
       matrixComplete: matrix.matrixComplete, plannedCellCount: matrix.plannedCellCount,
       executedCellCount: matrix.executedCellCount, localIntegrityByRunId, failFastStop: matrix.failFastStop,
+      journal,
     });
     if (!result.ok) {
       if (result.rejectionId == null) {
