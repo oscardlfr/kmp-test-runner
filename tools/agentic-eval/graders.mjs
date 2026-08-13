@@ -703,7 +703,7 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
 // CodeRabbit nitpick (PR #411 review): the `outcome_kind === 'tests_executed' || outcome_kind ===
 // 'tests_failed'` disjunction previously appeared inline at 4 separate sites in this file
 // (computeKmpTestTargetMatch, evaluateKmpTestAttempt's parallelEvidenceInvalid and
-// intendedTargetMatches computations, kmpEvalResultBlockMatchesScenario) -- both outcome_kinds
+// intendedTargetMatches computations, kmpEvalResultBlockMatchesObserved) -- both outcome_kinds
 // share the same envelope-side shape at every one of those sites because both represent a genuine
 // test EXECUTION (the target task actually ran), just with a different real outcome. A future
 // third "ran" outcome_kind would otherwise need updating at every site individually; this single
@@ -814,9 +814,119 @@ function computeKmpTestTargetMatch(envelope, classification, scenario) {
   return classification.moduleFilter != null && normalizeModuleName(classification.moduleFilter) === targetModule;
 }
 
+/** Fail-closed helper for `no_applicable_tests`: the invoked `--module-filter` string is the ONLY
+ * module-identity signal available (envelope.modules[] is empty by definition for this shape) --
+ * usable as a canonical identity only when it is a single literal token, no glob metacharacters
+ * (`*`/`?`) and no comma-separated list (see lib/orchestrators/module-filter.js's matchModuleFilter,
+ * the real grammar this mirrors). A pattern/list could match zero, one, or many real modules --
+ * reporting it as THE observed module would be a guess. Mirrors computeKmpTestTargetMatch's own
+ * no_applicable_tests branch, which already treats a plain literal filter as an exact module
+ * identity (never fuzzy-matched) for the identical reason. */
+function canonicalModuleFilterIdentity(moduleFilter) {
+  if (typeof moduleFilter !== 'string' || moduleFilter.length === 0 || moduleFilter === '*') return null;
+  if (/[*?,]/.test(moduleFilter)) return null;
+  return normalizeModuleName(moduleFilter);
+}
+
+/**
+ * Derives the closed-form canonical facts a kmp-test envelope's OWN content actually shows --
+ * never scenario.expected, never a comparison against it, purely a structural reading of
+ * already-extracted, already-classified evidence. Returns `null` whenever the envelope's shape
+ * can't be attributed to exactly one real outcome without guessing (competing/incoherent error
+ * shapes, an unattributable module, or missing/malformed per-test detail) -- the caller
+ * (gradeScenarioCondition, via evaluateFinalAnswer) treats `null` as "no observed facts to compare
+ * the final answer against," failing check 8 closed rather than falling back to any expected
+ * value.
+ * @returns {null
+ *   | {module:string, outcome_kind:'tests_executed', total:number, passed:number, failed:number}
+ *   | {module:string, outcome_kind:'tests_failed', total:number, passed:number, failed:number}
+ *   | {module:string, outcome_kind:'coverage_threshold_exceeded', total:number, passed:number,
+ *       failed:number, missed_lines:number, threshold:number, modules_contributing:number}
+ *   | {module:string, outcome_kind:'no_applicable_tests'}}
+ */
+function deriveObservedKmpTestResult(envelope, classification) {
+  const individualTotal = envelope.tests?.individual_total;
+
+  if (envelope.modules.length === 1) {
+    const module = normalizeModuleName(envelope.modules[0]?.name);
+    if (typeof module !== 'string') return null;
+    if (!Number.isInteger(individualTotal) || individualTotal < 0) return null;
+    // A genuine per-individual-test skip has no representation in any closed form below (the
+    // KMP_EVAL_RESULT schema itself carries no `skipped` key) -- with any skipped case present,
+    // `passed`/`failed` could not be derived from `individualTotal` alone without guessing which
+    // of the skipped cases would otherwise have counted as which.
+    if (envelope.tests?.skipped !== 0) return null;
+    // A genuine `parallel` envelope's own internal coherence (leg shapes, per-leg exit/failed
+    // agreement, and both aggregate-cardinality invariants against envelope.tests.total/failed) is
+    // independently re-checked here via the SAME validator the rest of this file already trusts --
+    // evidenceWellFormed's own parallelEvidenceInvalid flag only ever runs this check for an
+    // on-target, "ran"-outcome-expecting attempt (see that flag's own doc comment above
+    // evaluateKmpTestAttempt), so a wrong-module, or wrong-outcome-kind-for-THIS-scenario, attempt
+    // could otherwise reach this point with self-contradictory parallel.legs[] data untouched --
+    // deriveObservedKmpTestResult must not inherit that same narrow scoping, since its own facts
+    // feed check 8 regardless of whether checks 5/6 already failed for an unrelated reason. A
+    // `changed` envelope never carries a `parallel` block at all (real production invariant -- see
+    // changedEvidenceInvalid's own doc comment) -- scoped to `parallel` specifically, mirroring
+    // parallelEvidenceInvalid's own identical `classification.subcommand !== 'changed'` guard.
+    if (classification.subcommand !== 'changed' && !validateParallelEvidence(envelope, classification.testType)) return null;
+
+    if (envelope.errors.length === 0) {
+      // A genuinely clean run -- every individual test that ran also passed. Cross-checked against
+      // the task-level failed counter too -- an envelope claiming no error entries while its own
+      // tests.failed counter disagrees is self-contradictory, not real clean-pass evidence.
+      if (envelope.tests?.failed !== 0) return null;
+      return { module, outcome_kind: 'tests_executed', total: individualTotal, passed: individualTotal, failed: 0 };
+    }
+
+    const coverageErrors = envelope.errors.filter((e) => e && e.code === 'coverage_threshold_exceeded');
+    if (envelope.errors.length === 1 && coverageErrors.length === 1) {
+      // A coverage-gate failure is still a genuinely clean TEST pass underneath (see this
+      // function's own coverage_threshold_exceeded return, below) -- the task-level failed counter
+      // must agree.
+      if (envelope.tests?.failed !== 0) return null;
+      const err = coverageErrors[0];
+      const cov = envelope.coverage;
+      if (cov == null || typeof cov !== 'object' || Array.isArray(cov)) return null;
+      if (!Number.isInteger(err.missed_lines) || !Number.isInteger(err.threshold) || !Number.isInteger(cov.modules_contributing)) return null;
+      // The error's own echoed missed_lines must agree with the coverage summary block -- if they
+      // disagree, there is no way to tell which one reflects reality without guessing.
+      if (cov.missed_lines !== err.missed_lines) return null;
+      return {
+        module, outcome_kind: 'coverage_threshold_exceeded',
+        total: individualTotal, passed: individualTotal, failed: 0,
+        missed_lines: err.missed_lines, threshold: err.threshold, modules_contributing: cov.modules_contributing,
+      };
+    }
+
+    const moduleFailedErrors = envelope.errors.filter((e) => e && e.code === 'module_failed' && normalizeModuleName(e.module) === module);
+    if (envelope.errors.length === 1 && moduleFailedErrors.length === 1) {
+      const failures = envelope.modules[0].test_failures;
+      if (!Array.isArray(failures) || failures.length === 0 || !failures.every(isWellFormedTestFailureEntry)) return null;
+      if (failures.length > individualTotal) return null; // impossible shape -- more real failures than total cases
+      return { module, outcome_kind: 'tests_failed', total: individualTotal, passed: individualTotal - failures.length, failed: failures.length };
+    }
+
+    return null; // competing or unrecognized error shape -- fail closed rather than guess
+  }
+
+  if (envelope.modules.length === 0) {
+    // Real production never sets `parallel` on this early-exit at all -- see
+    // validateParallelEvidence's own sibling comment on this exact invariant. A `parallel` block
+    // present alongside an empty modules[] is self-contradictory: no way to tell which half lies.
+    if (envelope.parallel !== undefined) return null;
+    const noTestErrors = envelope.errors.filter((e) => e && e.code === 'no_test_modules');
+    if (envelope.errors.length !== 1 || noTestErrors.length !== 1) return null;
+    const module = canonicalModuleFilterIdentity(classification.moduleFilter);
+    if (module == null) return null;
+    return { module, outcome_kind: 'no_applicable_tests' };
+  }
+
+  return null; // more than one dispatched module -- no single module can be safely attributed
+}
+
 /** @returns {null | {provider:'kmp_test', bashIndex:number, resultIndex:number|null,
  *   hasEvidence:boolean, malformed:boolean, targetMatches:boolean, intendedTargetMatches:boolean,
- *   outcomeMatches:boolean, parallelEvidenceInvalid:boolean}}
+ *   outcomeMatches:boolean, parallelEvidenceInvalid:boolean, observedResult:object|null}}
  * @param {string|null|undefined} decision - this attempt's own resolved policy decision
  *   (`'allow'`/`'deny'`/`null`, from junit-evidence.mjs's attributeCondition), or `undefined` when
  *   the JUnit-evidence-attribution mechanism was never enabled for this condition at all
@@ -937,9 +1047,16 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
       : normalizeModuleName(classification.moduleFilter) === targetModule
   );
 
+  // Best-effort structural derivation, gated only on an envelope actually existing to read --
+  // deriveObservedKmpTestResult is independently fail-closed on its own incoherent/uncanonicalizable
+  // shapes (see its own doc comment). The caller (gradeScenarioCondition) only ever trusts this
+  // field once it has ALSO confirmed evidenceWellFormed (hasEvidence && !malformed &&
+  // !parallelEvidenceInvalid && !changedEvidenceInvalid) for whichever attempt becomes terminal.
+  const observedResult = hasEvidence ? deriveObservedKmpTestResult(envelope, classification) : null;
+
   return {
     provider: 'kmp_test', subcommand: classification.subcommand, bashIndex: bashResult.index, resultIndex: bashResult.resultIndex,
-    hasEvidence, malformed, targetMatches, intendedTargetMatches, outcomeMatches, parallelEvidenceInvalid, changedEvidenceInvalid,
+    hasEvidence, malformed, targetMatches, intendedTargetMatches, outcomeMatches, parallelEvidenceInvalid, changedEvidenceInvalid, observedResult,
   };
 }
 
@@ -1002,9 +1119,42 @@ function parseExactGradleFooter(resultContent, resultIsError) {
   return wasSuccess ? 0 : 1;
 }
 
+/**
+ * Derives the closed-form canonical facts a Gradle attempt's OWN already-parsed evidence actually
+ * shows -- the already-parsed footer exit code, the already-classified task-execution mode, and
+ * the JUnit evidence already resolved and attributed to THIS attempt by junit-evidence.mjs. Never
+ * reads scenario.expected.gradle.tests/exit_code/marker. `module` is taken from the scenario's own
+ * task-to-module binding (what makes this attempt a Gradle "candidate" for this scenario at all --
+ * see evaluateGradleAttempt's own `invokedAllowed` gate above) purely as an identity label, never
+ * to judge correctness -- a raw Gradle task name never structurally announces its own module the
+ * way a kmp-test envelope's `modules[]` does. Returns `null` when the observed shape doesn't
+ * cleanly resolve to exactly one of the three Gradle-provable outcomes; Gradle can never prove
+ * coverage_threshold_exceeded at all (--min-missed-lines is a kmp-test-only concept -- see
+ * isTerminalEligibleAttempt, which already excludes Gradle from ever becoming terminal for that
+ * outcome_kind).
+ */
+function deriveObservedGradleResult(module, mode, observedExitCode, resolvedEvidence, taskGenuinelyFailed) {
+  if (typeof module !== 'string') return null;
+  if (mode === 'no_source' && observedExitCode === 0) {
+    return { module, outcome_kind: 'no_applicable_tests' };
+  }
+  if (resolvedEvidence?.status === 'ok') {
+    const { total, passed, failed } = resolvedEvidence.junit;
+    if (!Number.isInteger(total) || !Number.isInteger(passed) || !Number.isInteger(failed)) return null;
+    const executedModes = new Set(['fresh', 'up_to_date', 'from_cache']);
+    if (observedExitCode === 0 && executedModes.has(mode)) {
+      return { module, outcome_kind: 'tests_executed', total, passed, failed };
+    }
+    if (observedExitCode === 1 && taskGenuinelyFailed) {
+      return { module, outcome_kind: 'tests_failed', total, passed, failed };
+    }
+  }
+  return null;
+}
+
 /** @returns {null | {provider:'gradle', bashIndex:number, resultIndex:number|null,
  *   hasEvidence:boolean, malformed:boolean, targetMatches:boolean, intendedTargetMatches:boolean,
- *   outcomeMatches:boolean}}
+ *   outcomeMatches:boolean, observedResult:object|null}}
  * @param {string|null|undefined} decision - see evaluateKmpTestAttempt's identical parameter doc.
  * @param {object|undefined} resolvedEvidence - this attempt's own resolved JUnit-evidence status
  *   from junit-evidence.mjs's attributeCondition: `{status:'ok', junit:{total,passed,failed}}` |
@@ -1026,7 +1176,7 @@ function evaluateGradleAttempt(bashResult, scenario, decision, resolvedEvidence)
 
   const hasEvidence = typeof bashResult.resultContent === 'string' && bashResult.resultContent.length > 0;
   if (!hasEvidence) {
-    return { provider: 'gradle', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence: false, malformed: false, targetMatches: true, intendedTargetMatches: true, outcomeMatches: false };
+    return { provider: 'gradle', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence: false, malformed: false, targetMatches: true, intendedTargetMatches: true, outcomeMatches: false, observedResult: null };
   }
   // Membership in allowed_invocations (already proven above) IS the target-match for the Gradle
   // path -- the agent invoked one of the scenario-declared acceptable commands for this module.
@@ -1052,6 +1202,7 @@ function evaluateGradleAttempt(bashResult, scenario, decision, resolvedEvidence)
   const malformed = observedExitCode == null;
 
   let outcomeMatches = false;
+  let observedResult = null;
   if (!malformed) {
     // This attempt's OWN resolved JUnit-evidence status (junit-evidence.mjs's attributeCondition,
     // keyed by tool_use_id -- replaces the old pooled per-condition snapshot entirely). Only
@@ -1070,6 +1221,29 @@ function evaluateGradleAttempt(bashResult, scenario, decision, resolvedEvidence)
       && resolvedEvidence.junit.total === g.tests?.total
       && resolvedEvidence.junit.passed === g.tests?.passed
       && resolvedEvidence.junit.failed === g.tests?.failed;
+    // Computed unconditionally (not just inside the tests_failed branch below, where the ONLY
+    // consumer used to live) -- deriveObservedGradleResult, below, needs the REAL observed outcome
+    // shape regardless of what THIS scenario happens to expect, so it can no longer be gated behind
+    // an `if (scenario.expected.outcome_kind === 'tests_failed')` branch the way it used to be. Pure
+    // function of already-available data; computing it here changes no existing behavior.
+    //
+    // Deliberately does NOT reuse `mode` (classifyTaskExecutionMode's own single-match `$`-anchored
+    // regex) to decide "did the task fail" -- ground-truth confirmed directly against a real
+    // `:lint:test` BUILD FAILED capture that this is unreliable for exactly this outcome: Gradle
+    // prints a BARE "> Task :lint:test" announcement line (since the task produces console output
+    // -- the JUnit failure reporting) FIRST, and only prints the terminal "> Task :lint:test
+    // FAILED" line AFTER. `classifyTaskExecutionMode`'s bare (non-global) `.exec()` returns only
+    // the FIRST match -- the suffix-less announcement -- misclassifying a genuinely failed task as
+    // 'fresh'. Real kmp-test envelopes never hit this gap because parallel-orchestrator.js's own
+    // pipeline reconciles it (a task classifyTaskResults says 'failed' is PROMOTED into the
+    // 'failed' execution bucket regardless of what classifyTaskExecutionMode alone found) --
+    // `classifyTaskResults` (an unanchored search that finds a terminal FAILED line wherever it
+    // appears, imported directly rather than re-derived as a second, independently-maintained
+    // approximation of the same rule) is that same authoritative signal, reused here directly. It
+    // ALSO correctly rejects the inverse false-positive -- a target task that itself succeeded
+    // (mentioned, no FAILED line) while an unrelated LATER task in the same leg failed -- since
+    // `taskMentioned` being true skips its own defense-in-depth failed-promotion branch.
+    const taskGenuinelyFailed = classifyTaskResults(bashResult.resultContent, '', [g.evidence_task], observedExitCode ?? 0).get(g.evidence_task) === 'failed';
     // coverage_threshold_exceeded shares tests_executed's Gradle-side claim byte-for-byte: a raw
     // Gradle task has no coverage-threshold concept at all (--min-missed-lines is a kmp-test-only
     // flag), so its own contract (schemas.mjs reuses GRADLE_CONTRACT_KEYS_TESTS_EXECUTED verbatim)
@@ -1082,23 +1256,6 @@ function evaluateGradleAttempt(bashResult, scenario, decision, resolvedEvidence)
       // consumption (junitOk), identical fail-closed treatment of every non-'ok' resolvedEvidence
       // status, `g.exit_code` schema-required to be exactly 1 (never defaulted via `?? 0`).
       //
-      // Deliberately does NOT reuse `mode` (classifyTaskExecutionMode's own single-match `$`-anchored
-      // regex) to decide "did the task fail" -- ground-truth confirmed directly against a real
-      // `:lint:test` BUILD FAILED capture that this is unreliable for exactly this outcome: Gradle
-      // prints a BARE "> Task :lint:test" announcement line (since the task produces console output
-      // -- the JUnit failure reporting) FIRST, and only prints the terminal "> Task :lint:test
-      // FAILED" line AFTER. `classifyTaskExecutionMode`'s bare (non-global) `.exec()` returns only
-      // the FIRST match -- the suffix-less announcement -- misclassifying a genuinely failed task as
-      // 'fresh'. Real kmp-test envelopes never hit this gap because parallel-orchestrator.js's own
-      // pipeline reconciles it (a task classifyTaskResults says 'failed' is PROMOTED into the
-      // 'failed' execution bucket regardless of what classifyTaskExecutionMode alone found) --
-      // `classifyTaskResults` (an unanchored search that finds a terminal FAILED line wherever it
-      // appears, imported directly rather than re-derived as a second, independently-maintained
-      // approximation of the same rule) is that same authoritative signal, reused here directly. It
-      // ALSO correctly rejects the inverse false-positive -- a target task that itself succeeded
-      // (mentioned, no FAILED line) while an unrelated LATER task in the same leg failed -- since
-      // `taskMentioned` being true skips its own defense-in-depth failed-promotion branch.
-      //
       // Step 17's compile/setup-failure case (the target task never even starts -- no status line
       // for it anywhere) is NOT distinguished by `taskGenuinelyFailed` alone: classifyTaskResults'
       // own defense-in-depth branch (legExit!==0 && !buildSucceeded && !taskMentioned) empirically
@@ -1109,7 +1266,6 @@ function evaluateGradleAttempt(bashResult, scenario, decision, resolvedEvidence)
       // produced real, matching JUnit XML, so `resolvedEvidence` reads 'no_xml' and `junitOk` is
       // false regardless of what `taskGenuinelyFailed` says -- BUILD FAILED plus a real nonzero
       // exit_code plus an over-inclusive 'failed' label is still never sufficient on its own.
-      const taskGenuinelyFailed = classifyTaskResults(bashResult.resultContent, '', [g.evidence_task], observedExitCode ?? 0).get(g.evidence_task) === 'failed';
       outcomeMatches = observedExitCode === g.exit_code && taskGenuinelyFailed && junitOk;
     } else {
       // no_applicable_tests never depends on the JUnit-evidence-attribution mechanism at all -- the
@@ -1118,9 +1274,10 @@ function evaluateGradleAttempt(bashResult, scenario, decision, resolvedEvidence)
       // junitEvidenceEnabled for it).
       outcomeMatches = observedExitCode === g.exit_code && mode === 'no_source' && g.marker === 'NO-SOURCE';
     }
+    observedResult = deriveObservedGradleResult(normalizeModuleName(scenario.expected.module), mode, observedExitCode, resolvedEvidence, taskGenuinelyFailed);
   }
 
-  return { provider: 'gradle', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence: true, malformed, targetMatches, intendedTargetMatches, outcomeMatches };
+  return { provider: 'gradle', bashIndex: bashResult.index, resultIndex: bashResult.resultIndex, hasEvidence: true, malformed, targetMatches, intendedTargetMatches, outcomeMatches, observedResult };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1137,8 +1294,19 @@ function evaluateGradleAttempt(bashResult, scenario, decision, resolvedEvidence)
 // (required identically of both the current-skill and no-skill conditions, via the scenario's own
 // prompt text). Free prose stays in the record for a human to read later, but never participates
 // in grading -- this check now succeeds or fails purely on whether the block exists, is
-// unambiguous, parses as valid JSON, and exactly matches the scenario's expected module, outcome
-// kind, and (for tests_executed) counts.
+// unambiguous, parses as valid JSON, and exactly matches the module/outcome_kind/counts actually
+// OBSERVED on the scenario's own terminal attempt (see deriveObservedKmpTestResult/
+// deriveObservedGradleResult, and the `observedResult` field the attempt objects
+// evaluateKmpTestAttempt/evaluateGradleAttempt return) -- never scenario.expected directly, and
+// never terminal.outcomeMatches (itself already a comparison against scenario.expected; reusing it
+// here would just reproduce the same defect in a different shape). Consistency with the evidence
+// and correctness for the scenario are two independent questions: an agent that honestly reports a
+// wrong-for-the-scenario result (wrong module, wrong outcome, wrong counts) still passes THIS
+// check; only checks 5/6 (authoritative_target_matches_expected/authoritative_outcome_matches_
+// expected) and the overall `success` formula care whether the observed result was the CORRECT
+// one. Evidence that isn't well-formed, or whose facts can't be canonicalized without guessing,
+// yields no observedResult at all -- this check then fails closed, regardless of what the final
+// answer claims.
 // ---------------------------------------------------------------------------------------------
 
 const KMP_EVAL_RESULT_BLOCK_RE = /^[ \t]*KMP_EVAL_RESULT[ \t]*\r?\n([\s\S]*?)^[ \t]*KMP_EVAL_RESULT_END[ \t]*\r?$/gm;
@@ -1170,15 +1338,19 @@ const KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS = new Set(['module', 'outcome_kind
 const KMP_EVAL_RESULT_NO_APPLICABLE_KEYS = new Set(['module', 'outcome_kind']);
 const KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS = ['total', 'passed', 'failed'];
 
-/** Strictly validates a parsed `KMP_EVAL_RESULT` block against the scenario's own expected
- * module/outcome/counts -- EXACT key set (no missing, no extra -- an agent hedging with additional
- * fields is rejected, not silently ignored), exact module identity (boundary-safe via
- * `normalizeModuleName`, same colon-prefix tolerance as everywhere else in this file), exact
- * `outcome_kind`, and for `tests_executed`/`tests_failed` (identical block shape either way), exact
- * integer total/passed/failed matching the real, independently-verified ground truth already
- * carried on `scenario.expected.gradle.tests` (the
- * canonical human-readable `{total,passed,failed}` triple -- the same real-world fact kmp_test's
- * own `individual_total` records as a single number).
+/** Strictly validates a parsed `KMP_EVAL_RESULT` block against the terminal attempt's OWN observed
+ * facts (`observedResult`, derived by deriveObservedKmpTestResult/deriveObservedGradleResult from
+ * already-parsed, already-attributed evidence -- never against scenario.expected) -- EXACT key set
+ * (no missing, no extra -- an agent hedging with additional fields is rejected, not silently
+ * ignored), exact module identity (boundary-safe via `normalizeModuleName`, same colon-prefix
+ * tolerance as everywhere else in this file), exact `outcome_kind`, and for
+ * `tests_executed`/`tests_failed` (identical block shape either way), exact integer
+ * total/passed/failed matching the REAL observed counts.
+ *
+ * This is deliberately a different question from whether the observed evidence itself was correct
+ * for the scenario (checks 5/6, `expectedOutcomeMatched`) -- an agent that honestly reports a wrong
+ * result for the scenario (wrong module, wrong outcome, wrong counts) still passes THIS check; only
+ * a block that misrepresents what its own terminal attempt actually showed fails it.
  *
  * `no_applicable_tests` is a narrow, explicit exception to "exact key set": the scenario prompt
  * instructs omitting `total`/`passed`/`failed` entirely, but a round-6 fresh architecture review
@@ -1188,46 +1360,30 @@ const KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS = ['total', 'passed', 'f
  * value, which would be a real internal contradiction: "no applicable tests" alongside a claimed
  * non-zero count). This is a single, bounded, explicitly-reasoned rule -- not the start of a new
  * enumerated-phrasings problem the rest of this file's redesign exists to avoid. */
-function kmpEvalResultBlockMatchesScenario(block, scenario) {
+function kmpEvalResultBlockMatchesObserved(block, observedResult) {
+  if (observedResult == null) return false;
   if (block == null || typeof block !== 'object' || Array.isArray(block)) return false;
-  const targetModule = normalizeModuleName(scenario.expected.module);
-  if (typeof block.module !== 'string' || normalizeModuleName(block.module) !== targetModule) return false;
-  if (block.outcome_kind !== scenario.expected.outcome_kind) return false;
+  if (typeof block.module !== 'string' || normalizeModuleName(block.module) !== observedResult.module) return false;
+  if (block.outcome_kind !== observedResult.outcome_kind) return false;
 
   const keys = Object.keys(block);
-  // Checked BEFORE the isRanOutcome() call below -- coverage_threshold_exceeded's own key set
-  // genuinely differs (it needs missed_lines/threshold/modules_contributing, which the shared
-  // tests_executed/tests_failed shape has no room for), so it must not fall into that branch just
-  // because isRanOutcome() also returns true for it (that predicate governs envelope-side
-  // module-attribution reuse elsewhere -- it was never meant to imply an identical final-answer
-  // shape too).
-  if (scenario.expected.outcome_kind === 'coverage_threshold_exceeded') {
+  // Checked BEFORE the isRanOutcome()-style grouping below -- coverage_threshold_exceeded's own key
+  // set genuinely differs (it needs missed_lines/threshold/modules_contributing, which the shared
+  // tests_executed/tests_failed shape has no room for).
+  if (observedResult.outcome_kind === 'coverage_threshold_exceeded') {
     if (keys.length !== KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS.size || keys.some((k) => !KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS.has(k))) return false;
-    // total/passed compare against expected.kmp_test.tests.individual_total -- an earlier revision
-    // compared against expected.gradle.tests instead (a real bug: kmp-test-classified attempts
-    // never receive external JUnit evidence at all -- junit-evidence.mjs's attributeCondition only
-    // ever attaches perAttemptJunit to Gradle-relevant attempts, kmp-test's own envelope is treated
-    // as self-contained -- so a scenario graded on a SINGLE kmp-test attempt could never legitimately
-    // observe the Gradle-scoped number anywhere; a genuinely honest agent reporting what its own
-    // envelope actually showed would fail, while an unobserved, disconnected number would pass).
-    // individual_total is the one number a kmp-test-only session can always legitimately derive
-    // directly from its own envelope. failed must be exactly 0 (this outcome is never a test
-    // failure) and total===passed follows from that -- a clean pass means every individual test
-    // that ran also passed.
-    const individualTotal = scenario.expected.kmp_test.tests.individual_total;
-    const cov = scenario.expected.kmp_test.coverage;
     return Number.isInteger(block.total) && Number.isInteger(block.passed) && Number.isInteger(block.failed)
-      && block.total === individualTotal && block.passed === individualTotal && block.failed === 0
-      && Number.isInteger(block.missed_lines) && block.missed_lines === cov.missed_lines
-      && Number.isInteger(block.threshold) && block.threshold === cov.min_missed_lines
-      && Number.isInteger(block.modules_contributing) && block.modules_contributing === 1;
+      && block.total === observedResult.total && block.passed === observedResult.passed && block.failed === observedResult.failed
+      && Number.isInteger(block.missed_lines) && block.missed_lines === observedResult.missed_lines
+      && Number.isInteger(block.threshold) && block.threshold === observedResult.threshold
+      && Number.isInteger(block.modules_contributing) && block.modules_contributing === observedResult.modules_contributing;
   }
-  if (isRanOutcome(scenario.expected.outcome_kind)) {
+  if (observedResult.outcome_kind === 'tests_executed' || observedResult.outcome_kind === 'tests_failed') {
     if (keys.length !== KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS.size || keys.some((k) => !KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS.has(k))) return false;
-    const expectedTests = scenario.expected.gradle.tests;
     return Number.isInteger(block.total) && Number.isInteger(block.passed) && Number.isInteger(block.failed)
-      && block.total === expectedTests.total && block.passed === expectedTests.passed && block.failed === expectedTests.failed;
+      && block.total === observedResult.total && block.passed === observedResult.passed && block.failed === observedResult.failed;
   }
+  // no_applicable_tests
   if (keys.some((k) => !KMP_EVAL_RESULT_NO_APPLICABLE_KEYS.has(k) && !KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS.includes(k))) return false;
   const presentCountKeys = KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS.filter((k) => keys.includes(k));
   if (presentCountKeys.length === 0) return true;
@@ -1235,7 +1391,11 @@ function kmpEvalResultBlockMatchesScenario(block, scenario) {
   return block.total === 0 && block.passed === 0 && block.failed === 0;
 }
 
-function evaluateFinalAnswer(resultEvent, scenario) {
+/** @param {object|null} observedResult - the terminal attempt's own canonical observed facts (see
+ *   deriveObservedKmpTestResult/deriveObservedGradleResult), or `null` when no well-formed,
+ *   canonicalizable terminal evidence exists -- in which case this check fails closed regardless
+ *   of what the final-answer block itself claims. */
+function evaluateFinalAnswer(resultEvent, observedResult) {
   const text = typeof resultEvent?.result === 'string' ? resultEvent.result : '';
   if (text.length === 0) return { passed: false, detail: 'no final answer text found' };
 
@@ -1243,10 +1403,13 @@ function evaluateFinalAnswer(resultEvent, scenario) {
   if (!found) return { passed: false, detail: 'final answer contains no KMP_EVAL_RESULT block' };
   if (ambiguous) return { passed: false, detail: 'final answer contains more than one KMP_EVAL_RESULT block -- ambiguous, not resolved by picking one' };
   if (parsed == null) return { passed: false, detail: 'the KMP_EVAL_RESULT block did not parse as valid JSON' };
-  if (!kmpEvalResultBlockMatchesScenario(parsed, scenario)) {
-    return { passed: false, detail: 'the KMP_EVAL_RESULT block does not exactly match the expected module/outcome_kind/counts (or carries unexpected/missing keys)' };
+  if (observedResult == null) {
+    return { passed: false, detail: 'no well-formed, canonicalizable observed result from the terminal attempt to compare the KMP_EVAL_RESULT block against' };
   }
-  return { passed: true, detail: 'the KMP_EVAL_RESULT block exactly matches the expected module, outcome_kind, and counts' };
+  if (!kmpEvalResultBlockMatchesObserved(parsed, observedResult)) {
+    return { passed: false, detail: "the KMP_EVAL_RESULT block does not exactly match the facts observed in the terminal attempt's own evidence (module/outcome_kind/counts, or carries unexpected/missing keys)" };
+  }
+  return { passed: true, detail: "the KMP_EVAL_RESULT block exactly matches the facts observed in the terminal attempt's own evidence" };
 }
 
 // classifyJunitProvenance (the old condition-wide producer-count heuristic) has been removed --
@@ -1433,8 +1596,13 @@ export function gradeScenarioCondition(conditionResult, scenario) {
 
   // Check 8 (decision 8) -- structured, not prose (see this file's own header + the block above
   // evaluateFinalAnswer for the full rationale); positive, specific, secondary; feeds `success`
-  // together with expectedOutcomeMatched, never expectedOutcomeMatched itself.
-  const finalAnswer = evaluateFinalAnswer(conditionResult.result, scenario);
+  // together with expectedOutcomeMatched, never expectedOutcomeMatched itself. Compared against the
+  // terminal attempt's OWN observed facts, only once that attempt's evidence is independently known
+  // to be well-formed (the identical gate check 4 already applies) -- an attempt whose evidence
+  // isn't trustworthy contributes no observedResult to compare against, regardless of what its own
+  // best-effort derivation might otherwise have produced.
+  const observedResult = evidenceWellFormed ? terminal.observedResult : null;
+  const finalAnswer = evaluateFinalAnswer(conditionResult.result, observedResult);
   addCheck('final_answer_consistent_with_evidence', finalAnswer.passed, finalAnswer.detail);
 
   const success = expectedOutcomeMatched && finalAnswer.passed;
