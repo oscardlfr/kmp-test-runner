@@ -843,11 +843,19 @@ function isCoherentTestsCounters(tests) {
   return tests.total === tests.passed + tests.failed;
 }
 
-/** True iff `moduleEntry.test_failures` is a non-empty array -- real per-test failure detail that
- * directly contradicts a clean-pass or coverage-gate claim (both mean "every test that ran also
- * passed"), regardless of what the top-level `errors[]`/`tests.failed` counters otherwise say. */
-function hasNonEmptyTestFailures(moduleEntry) {
-  return Array.isArray(moduleEntry?.test_failures) && moduleEntry.test_failures.length > 0;
+/** Closed-form validation of `moduleEntry.test_failures` for a clean-pass or coverage-gate claim
+ * (both mean "every test that ran also passed"): the field being genuinely ABSENT is fine (a real
+ * clean envelope simply never adds the key at all), and an explicit EMPTY array is tolerated too
+ * (also consistent with "nothing failed") -- but a NON-EMPTY array is real per-test failure detail
+ * that directly contradicts the claim, and any OTHER type at all (a string, a number, `null`, ...)
+ * is neither a well-formed absence nor a well-formed empty list, so it cannot be trusted to mean
+ * "no failures" either -- both read as a contradiction, never silently treated as if the field
+ * were simply missing. */
+function hasContradictoryTestFailures(moduleEntry) {
+  const failures = moduleEntry?.test_failures;
+  if (failures === undefined) return false;
+  if (!Array.isArray(failures)) return true;
+  return failures.length > 0;
 }
 
 /** True iff `warnings[]` carries a `junit_xml_oversized` entry for THIS specific module -- per
@@ -866,7 +874,11 @@ function hasOversizedJunitWarning(warnings, module) {
  * Mirrors `validateKmpEnvelopeForAttempt`'s identical `coverageOk` computation (bucket-exclusivity,
  * exact single-entry `with_data`, `modules_contributing===1`) -- scoped to the OBSERVED module
  * rather than a scenario's expected one, since this function never compares against
- * scenario.expected at all. */
+ * scenario.expected at all. Only ever called from the `envelope.modules.length === 1` branch --
+ * exactly ONE module was ever dispatched, so `with_data` must name exactly that module, and the
+ * other three buckets (which classify modules that WERE dispatched but produced no usable
+ * coverage data) must be entirely empty, not merely free of the observed module -- no OTHER real
+ * module could legitimately appear in any of them either. */
 function deriveCoherentCoverageFacts(covBlock, err, module) {
   if (covBlock == null || typeof covBlock !== 'object' || Array.isArray(covBlock)) return null;
   if (!Number.isInteger(err.missed_lines) || err.missed_lines < 0) return null;
@@ -880,8 +892,8 @@ function deriveCoherentCoverageFacts(covBlock, err, module) {
   const buckets = covBlock.module_buckets;
   const withData = buckets?.with_data;
   if (!Array.isArray(withData) || withData.length !== 1 || normalizeModuleName(withData[0]) !== module) return null;
-  const exclusiveBucketKeys = ['no_xml', 'parse_errored', 'skipped_by_user'];
-  if (!exclusiveBucketKeys.every((key) => Array.isArray(buckets[key]) && !buckets[key].some((m) => normalizeModuleName(m) === module))) return null;
+  const emptyBucketKeys = ['no_xml', 'parse_errored', 'skipped_by_user'];
+  if (!emptyBucketKeys.every((key) => Array.isArray(buckets[key]) && buckets[key].length === 0)) return null;
   return { missed_lines: err.missed_lines, threshold: err.threshold, modules_contributing: covBlock.modules_contributing };
 }
 
@@ -927,6 +939,10 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
   // ALL branches below -- a task-level counter set that doesn't add up to itself is never
   // trustworthy evidence, independent of which specific outcome shape it's otherwise claiming.
   if (!isCoherentTestsCounters(envelope.tests)) return null;
+  // `warnings` must itself structurally be an array -- a real envelope always carries this key as
+  // an array (possibly empty), so anything else (absent, wrong-typed) is itself untrustworthy
+  // evidence, independent of whether any SPECIFIC warning ends up mattering below.
+  if (!Array.isArray(envelope.warnings)) return null;
 
   const individualTotal = envelope.tests.individual_total;
 
@@ -951,16 +967,19 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
     // changedEvidenceInvalid's own doc comment) -- scoped to `parallel` specifically, mirroring
     // parallelEvidenceInvalid's own identical `classification.subcommand !== 'changed'` guard.
     if (classification.subcommand !== 'changed' && !validateParallelEvidence(envelope, classification.testType)) return null;
+    // An oversized-XML skip for THIS module contradicts any of the three outcome shapes below
+    // equally (tests_executed/coverage_threshold_exceeded/tests_failed all rest on individual_total
+    // and/or test_failures, both of which the warning itself documents as potentially
+    // incomplete) -- checked once, here, rather than duplicated at each branch's own call site.
+    if (hasOversizedJunitWarning(envelope.warnings, module)) return null;
 
     if (envelope.errors.length === 0) {
       // A genuinely clean run -- every individual test that ran also passed. Cross-checked against
       // the task-level failed counter too -- an envelope claiming no error entries while its own
       // tests.failed counter disagrees is self-contradictory, not real clean-pass evidence. A
-      // clean-pass claim must also not ALSO carry stray per-test failure detail, or an
-      // oversized-XML warning that makes individual_total an admitted undercount, for this module.
+      // clean-pass claim must also not carry stray per-test failure detail for this module.
       if (envelope.tests.failed !== 0) return null;
-      if (hasNonEmptyTestFailures(envelope.modules[0])) return null;
-      if (hasOversizedJunitWarning(envelope.warnings, module)) return null;
+      if (hasContradictoryTestFailures(envelope.modules[0])) return null;
       // The envelope's own exit_code must agree with classifyExitCode's real, single-source-of-truth
       // mapping (lib/envelope/exit-codes.js -- the SAME function every real orchestrator's own
       // exit-code decision goes through) for a clean run with no errors: SUCCESS (0). An envelope
@@ -973,11 +992,10 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
     if (envelope.errors.length === 1 && coverageErrors.length === 1) {
       // A coverage-gate failure is still a genuinely clean TEST pass underneath (see this
       // function's own coverage_threshold_exceeded return, below) -- the task-level failed counter
-      // must agree, and the same stray-failure-detail/oversized-XML contradictions apply as the
-      // clean-run branch above.
+      // must agree, and the same stray-failure-detail contradiction applies as the clean-run
+      // branch above.
       if (envelope.tests.failed !== 0) return null;
-      if (hasNonEmptyTestFailures(envelope.modules[0])) return null;
-      if (hasOversizedJunitWarning(envelope.warnings, module)) return null;
+      if (hasContradictoryTestFailures(envelope.modules[0])) return null;
       const err = coverageErrors[0];
       const coverageFacts = deriveCoherentCoverageFacts(envelope.coverage, err, module);
       if (coverageFacts == null) return null;
@@ -1290,7 +1308,20 @@ function deriveObservedGradleResult(module, mode, observedExitCode, resolvedEvid
       if (failed !== 0 || taskGenuinelyFailed) return null;
       return { module, outcome_kind: 'tests_executed', total, passed, failed };
     }
+    // A genuine task failure's own status line reliably classifies as exactly one of two modes:
+    // 'fresh' (the common real-world case -- Gradle prints a BARE "> Task <name>" announcement
+    // line FIRST, which classifyTaskExecutionMode's single-match regex matches before the later,
+    // real "> Task <name> FAILED" line ever appears -- see this function's own call site in
+    // evaluateGradleAttempt for the full ground-truth-confirmed rationale) or 'failed' (when the
+    // FAILED line is matched directly, with no preceding bare announcement). Every OTHER mode
+    // describes a task that did NOT genuinely execute-and-fail (no_source: nothing to run;
+    // up_to_date/from_cache: cached, never re-executed this invocation; skipped_by_gradle:
+    // explicitly skipped; no_evidence: no status line found at all for the target task) -- none of
+    // those coexist with a real failure for the SAME target task, regardless of what
+    // taskGenuinelyFailed/observedExitCode otherwise say.
+    const failureCompatibleModes = new Set(['fresh', 'failed']);
     if (observedExitCode === 1 && taskGenuinelyFailed) {
+      if (!failureCompatibleModes.has(mode)) return null;
       // A genuinely failed task contradicted by zero real JUnit failures -- the task-failure
       // signal and its own JUnit detail must agree on there being an actual failing case.
       if (failed === 0) return null;

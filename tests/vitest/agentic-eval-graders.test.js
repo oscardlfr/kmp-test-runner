@@ -4590,4 +4590,57 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
     expect(grade.success).toBe(false);
   });
+
+  // --- round-4 hardening: three closed full false positives (success:true, all 8 checks green)
+  // plus a regression proving the oversized-XML guard now applies uniformly across ALL THREE
+  // count-bearing kmp_test outcome shapes, not just tests_executed/coverage_threshold_exceeded. ---
+
+  it('[hardening R] a clean run whose module entry carries a wrong-typed (non-array) test_failures value is neither a well-formed absence nor a well-formed empty list -- must not produce a canonicalizable observedResult', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
+    envelope.modules[0].test_failures = 'malformed';
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening S] a coverage claim whose no_xml bucket names a module that was NEVER dispatched at all (only ONE module was ever in scope) is self-contradictory, even though with_data itself correctly names the observed module -- must not produce a canonicalizable observedResult', () => {
+    const envelope = JSON.parse(coverageEnvelope());
+    envelope.coverage.module_buckets.no_xml = ['other:module'];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+  });
+
+  it('[hardening T] a target task classified BOTH no_source (the first status line encountered) AND genuinely FAILED (a later status line for the SAME task), with a real BUILD FAILED footer and JUnit evidence coherent with the failures, is self-contradictory -- must not produce a canonicalizable observedResult', () => {
+    const contradictoryStdout = '> Task :lint:test NO-SOURCE\n> Task :lint:test FAILED\n\nFAILURE: Build failed with an exception.\n\nBUILD FAILED in 2s\n1 actionable task: 1 executed\n';
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :lint:test --console=plain', resultContent: contradictoryStdout, resultIsError: true, evidence: okJunit(3, 0, 3) }],
+      kmpEvalResultText('3 tests ran in :lint; all 3 failed.', { module: ':lint', outcome_kind: 'tests_failed', total: 3, passed: 0, failed: 3 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening U] a genuine module_failed claim carrying a junit_xml_oversized warning for the SAME module is self-contradictory -- the warning documents that individual_total/test_failures may be incomplete, which tests_failed must reject too, not just tests_executed/coverage_threshold_exceeded', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
+    envelope.warnings = [{ code: 'junit_xml_oversized', module: 'lint', task: ':lint:test', file: 'TEST-x.xml', size_bytes: 99999999, max_bytes: 10000000 }];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_4_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_4);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
 });
