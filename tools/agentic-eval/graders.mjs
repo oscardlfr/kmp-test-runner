@@ -922,8 +922,10 @@ function deriveObservedKmpTestResult(envelope, classification) {
     if (envelope.errors.length === 1 && moduleFailedErrors.length === 1) {
       // A genuine module-task failure requires a positive task-level failed count -- a
       // `module_failed` error entry alongside `tests.failed:0` is self-contradictory (the error
-      // claims the task failed, the aggregate counter claims it didn't).
-      if (!(envelope.tests?.failed > 0)) return null;
+      // claims the task failed, the aggregate counter claims it didn't). Explicit Number.isInteger
+      // guard (not a loose `> 0` comparison) -- mirrors this file's own established idiom
+      // everywhere else, and avoids JS's numeric-coercion surprises on a wrong-typed value.
+      if (!Number.isInteger(envelope.tests?.failed) || envelope.tests.failed === 0) return null;
       const failures = envelope.modules[0].test_failures;
       if (!Array.isArray(failures) || failures.length === 0 || !failures.every(isWellFormedTestFailureEntry)) return null;
       if (failures.length > individualTotal) return null; // impossible shape -- more real failures than total cases
