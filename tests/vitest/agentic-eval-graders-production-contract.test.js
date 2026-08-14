@@ -161,6 +161,90 @@ describe('gradeScenarioCondition -- production-real envelope (genuine runParalle
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);
   });
+
+  // Round 10 (skipped[]/no_applicable_tests family closure): locks the REAL `state.coverage` shape
+  // at the modules.length===0 (no_applicable_tests) early-exit against actual production code, not
+  // a hand-authored literal -- isCoherentNoApplicableTestsCoverageBlock's own doc comment traces
+  // this shape by reading parallel-orchestrator.js; this test proves that trace against a genuine
+  // runParallel() call so a future edit to that early-exit's own coverage-block construction (e.g.
+  // adding module_buckets to it, or changing missed_lines's initializer) fails HERE first, not
+  // silently drifts away from what the grader's own closed-form check expects.
+  it("a REAL envelope captured from runParallel()'s own modules.length===0 (no_applicable_tests) early-exit -- --module-filter matching ZERO real modules -- carries the EXACT coverage shape isCoherentNoApplicableTestsCoverageBlock expects, and grades success:true end to end", async () => {
+    const dir = makeSyntheticProject();
+    const spawn = makeSpawnStub(':shared:jvmTest', { projectRoot: dir, moduleName: 'shared', taskShortName: 'jvmTest', testcaseCount: 24 });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--module-filter', 'nonexistent-module'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+
+    // Sanity: this really is the genuine no_applicable_tests early-exit, not a re-shaped stand-in --
+    // zero real gradle dispatch happened at all (the spawn stub was never called).
+    expect(spawn.calls).toHaveLength(0);
+    expect(exitCode).toBe(2);
+    expect(envelope.modules).toEqual([]);
+    expect(envelope.errors).toEqual([{
+      code: 'no_test_modules',
+      message: 'No modules found matching filter: nonexistent-module',
+      test_type: '',
+      caused_by_filter: true,
+    }]);
+    // The exact real shape -- pinned field-by-field, not merely "passes the grader's own check",
+    // so a drift shows up as a direct assertion failure here, independent of graders.mjs at all.
+    expect(envelope.coverage).toEqual({
+      tool: 'auto', missed_lines: null, modules_with_kover_plugin: [], modules_with_jacoco_plugin: [],
+    });
+
+    const scenario = {
+      schema: 1,
+      id: 'production-contract-no-applicable-tests-check',
+      family: 'test-only',
+      project_alias: 'synthetic',
+      project_url: 'https://example.com/synthetic/fixture',
+      project_commit: '0'.repeat(40),
+      prompt: 'n/a',
+      expected_outcome: 'n/a',
+      policy: {
+        allowed_kmptest_subcommands: ['parallel'],
+        allowed_gradle_tasks: [],
+      },
+      expected: {
+        module: ':nonexistent-module',
+        outcome_kind: 'no_applicable_tests',
+        kmp_test: { error_code: 'no_test_modules', exit_code: 2, caused_by_filter: true },
+        gradle: { allowed_invocations: [], evidence_task: ':nonexistent-module:test', exit_code: 0, marker: 'NO-SOURCE' },
+      },
+      first_useful_signal_predicate: { description: 'n/a' },
+      tags: ['train'],
+    };
+
+    const finalAnswer = `No applicable tests.\n\nKMP_EVAL_RESULT\n${JSON.stringify({ module: ':nonexistent-module', outcome_kind: 'no_applicable_tests' })}\nKMP_EVAL_RESULT_END\n`;
+    const command = 'kmp-test parallel --module-filter nonexistent-module --json';
+    const events = [
+      { type: 'system', subtype: 'init' },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', id: 't1', input: { command } }] } },
+      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: JSON.stringify(envelope), is_error: false, tool_use_id: 't1' }] } },
+      { type: 'result', subtype: 'success', result: finalAnswer },
+    ];
+    const bashResults = [{
+      index: 1, id: 't1', command, resultFound: true, resultIsError: false, resultIndex: 2, resultContent: JSON.stringify(envelope),
+    }];
+    const conditionResult = {
+      events, bashResults, result: { result: finalAnswer },
+      spawnResult: { terminated: false, terminationReason: null },
+      gradleJunitEvidence: null,
+    };
+
+    const grade = gradeScenarioCondition(conditionResult, scenario);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+  });
 });
 
 // Adversarial-review finding (changed-module-verification scenario): graders.mjs's

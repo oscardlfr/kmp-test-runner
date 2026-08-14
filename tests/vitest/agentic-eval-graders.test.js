@@ -228,11 +228,21 @@ const KMP_TEST_ENVELOPE_SCENARIO1_PASS = JSON.stringify({
   isolated: DEFAULT_ISOLATED_FIELD,
 });
 
+// The EXACT `state.coverage` shape parallel-orchestrator.js's own no_applicable_tests early-exit
+// produces (traced directly, round 10): built BEFORE the modules.length===0 short-circuit even
+// runs, from a `modules` array already known empty at that point -- `missed_lines` stays its
+// initializer value (null, never aggregated), and both plugin-membership lists are `[].filter(...)`
+// over that same empty array. No per-module coverage aggregation ever runs on this path, so
+// `module_buckets`/`modules_contributing` are never even keys here, unlike a real coverage_
+// threshold_exceeded envelope's own `coverage` block (see coverageEnvelope(), which legitimately
+// carries both).
+const NO_APPLICABLE_TESTS_COVERAGE_BLOCK = { tool: 'auto', missed_lines: null, modules_with_kover_plugin: [], modules_with_jacoco_plugin: [] };
+
 const KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS = JSON.stringify({
   tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
   project_root: 'C:\\fake', exit_code: 2, duration_ms: 21,
   tests: { total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0 },
-  modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: {},
+  modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: NO_APPLICABLE_TESTS_COVERAGE_BLOCK,
   errors: [{ code: 'no_test_modules', message: 'No modules found matching filter: app', test_type: '', caused_by_filter: true }],
   warnings: [],
   isolated: DEFAULT_ISOLATED_FIELD,
@@ -1740,7 +1750,7 @@ describe('gradeScenarioCondition -- envelope self-contradiction (review-round-2/
     const contradictoryEnvelope = JSON.stringify({
       tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 2, duration_ms: 21, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 3 },
-      modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: {},
+      modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: NO_APPLICABLE_TESTS_COVERAGE_BLOCK,
       errors: [{ code: 'no_test_modules', message: 'No modules found matching filter: app', test_type: '', caused_by_filter: true }],
       warnings: [],
     });
@@ -1868,7 +1878,7 @@ describe('gradeScenarioCondition -- round-3 mandatory reproduction 4: no_applica
     const staleIndividualTotal = JSON.stringify({
       tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 2, duration_ms: 21, tests: { total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 24 },
-      modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: {},
+      modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: NO_APPLICABLE_TESTS_COVERAGE_BLOCK,
       errors: [{ code: 'no_test_modules', message: 'No modules found matching filter: app', test_type: '', caused_by_filter: true }],
       warnings: [],
     });
@@ -1911,7 +1921,7 @@ describe('gradeScenarioCondition -- round-3 additional finding: no_applicable_te
     const extraUnrelatedError = JSON.stringify({
       tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 2, duration_ms: 21, tests: { total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0 },
-      modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: {},
+      modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: NO_APPLICABLE_TESTS_COVERAGE_BLOCK,
       errors: [
         { code: 'no_test_modules', message: 'No modules found matching filter: app', test_type: '', caused_by_filter: true },
         { code: 'unrelated_config_warning', message: 'some other, unrelated problem', test_type: '', caused_by_filter: false },
@@ -2381,7 +2391,7 @@ describe('gradeScenarioCondition -- round-5: envelope skipped counter validated 
     const skippedEnvelope = JSON.stringify({
       tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 2, duration_ms: 21, tests: { total: 0, passed: 0, failed: 0, skipped: 5, individual_total: 0 },
-      modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: {},
+      modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: NO_APPLICABLE_TESTS_COVERAGE_BLOCK,
       errors: [{ code: 'no_test_modules', message: 'No modules found matching filter: app', test_type: '', caused_by_filter: true }],
       warnings: [],
     });
@@ -5052,5 +5062,82 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
     expect(grade.success).toBe(false);
+  });
+
+  // --- round-10 external audit: skipped[] was never cross-checked against the module it's being
+  // used to derive facts about (or, for no_applicable_tests, was never READ at all -- module
+  // identity came purely from the invoked --module-filter text, independent of what skipped[]
+  // itself claimed), the no_applicable_tests early-exit's own coverage shape was never validated,
+  // and canonicalModuleFilterIdentity could return an empty string for a filter like the bare `:`.
+  // This is a single, narrowly-scoped family: skipped[] attribution + the no_applicable_tests
+  // early-exit's own closed form. Checks 1-7 are untouched throughout. ---
+
+  it("[hardening RR] a skipped[] entry naming a DIFFERENT module than the one genuinely executed and reported is unattributable -- real --module-filter application forecloses any OTHER module ever entering skipped[] alongside a single reported module -- must not produce a canonicalizable observedResult", () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
+    envelope.skipped = [{ module: 'widgets', reason: 'no test source set' }];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening SS] no_applicable_tests: a skipped[] entry naming a DIFFERENT module than the one the invoked --module-filter could ever have matched is unattributable -- module identity must never be derived purely from the invoked filter text while ignoring what skipped[] itself claims -- must not produce a canonicalizable observedResult', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS);
+    envelope.skipped = [{ module: 'widgets', reason: 'no test source set' }];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_2_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening TT] no_applicable_tests: a coverage block carrying real aggregated data (numeric missed_lines, a populated plugin list, module_buckets/modules_contributing) is impossible -- the real early-exit returns before any per-module coverage aggregation ever runs -- must not produce a canonicalizable observedResult', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS);
+    envelope.coverage = {
+      tool: 'auto', missed_lines: 5, modules_contributing: 1,
+      modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['app'],
+      module_buckets: { with_data: ['app'], no_xml: [], parse_errored: [], skipped_by_user: [] },
+    };
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter app --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_2_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening UU] --module-filter ":" normalizes (leading-colon strip) to the empty string -- an empty module identity is not real evidence, even though checks 5/6 already independently reject this exact fixture for their own, unrelated target-mismatch reason -- final_answer_consistent_with_evidence must flip specifically', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS);
+    envelope.skipped = [];
+    envelope.errors[0].message = 'No modules found matching filter: :';
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter : --json', resultContent: JSON.stringify(envelope) }],
+      kmpEvalResultText('No applicable tests.', { module: ':', outcome_kind: 'no_applicable_tests' }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it("[hardening WW] regression guard: a literal --module-filter matching ZERO real modules at all (no candidate module ever existed to skip, skipped[] genuinely empty) stays canonicalizable via the filter's own literal text as identity -- the round-10 skipped[]-based derivation path must not interfere with this genuinely different, pre-existing shape", () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS);
+    envelope.skipped = [];
+    envelope.errors[0].message = 'No modules found matching filter: widgets';
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter widgets --json', resultContent: JSON.stringify(envelope) }],
+      kmpEvalResultText('The :widgets module has no applicable tests.', { module: ':widgets', outcome_kind: 'no_applicable_tests' }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
   });
 });

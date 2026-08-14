@@ -24,7 +24,7 @@
 import { classifyTaskExecutionMode, classifyTaskResults } from '../../lib/orchestrators/parallel/result-rollup.js';
 import { findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout } from './stream-parser.mjs';
 import { ENVELOPE_SCHEMA_VERSION, classifyExitCode } from '../../lib/envelope/exit-codes.js';
-import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
+import { TEST_TYPE_VALUES, COVERAGE_TOOL_VALUES } from '../../lib/parsers/argv-constants.js';
 import { classifyBashCommand, normalizeModuleName } from './command-classify.mjs';
 import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
 
@@ -815,17 +815,53 @@ function computeKmpTestTargetMatch(envelope, classification, scenario) {
 }
 
 /** Fail-closed helper for `no_applicable_tests`: the invoked `--module-filter` string is the ONLY
- * module-identity signal available (envelope.modules[] is empty by definition for this shape) --
- * usable as a canonical identity only when it is a single literal token, no glob metacharacters
- * (`*`/`?`) and no comma-separated list (see lib/orchestrators/module-filter.js's matchModuleFilter,
- * the real grammar this mirrors). A pattern/list could match zero, one, or many real modules --
- * reporting it as THE observed module would be a guess. Mirrors computeKmpTestTargetMatch's own
- * no_applicable_tests branch, which already treats a plain literal filter as an exact module
- * identity (never fuzzy-matched) for the identical reason. */
+ * module-identity signal available when `envelope.skipped` is empty (see this function's own call
+ * site) -- usable as a canonical identity only when it is a single literal token, no glob
+ * metacharacters (`*`/`?`) and no comma-separated list (see lib/orchestrators/module-filter.js's
+ * matchModuleFilter, the real grammar this mirrors). A pattern/list could match zero, one, or many
+ * real modules -- reporting it as THE observed module would be a guess. Mirrors
+ * computeKmpTestTargetMatch's own no_applicable_tests branch, which already treats a plain literal
+ * filter as an exact module identity (never fuzzy-matched) for the identical reason. A round-10
+ * review found a filter like the bare `:` normalizes (via normalizeModuleName's leading-colon
+ * strip) to the EMPTY string -- a well-typed, non-`*`, non-glob literal that nonetheless carries no
+ * real module identity at all; rejected here explicitly rather than trusting "passed the shape
+ * checks above" to also mean "non-empty after normalization". */
 function canonicalModuleFilterIdentity(moduleFilter) {
   if (typeof moduleFilter !== 'string' || moduleFilter.length === 0 || moduleFilter === '*') return null;
   if (/[*?,]/.test(moduleFilter)) return null;
-  return normalizeModuleName(moduleFilter);
+  const normalized = normalizeModuleName(moduleFilter);
+  if (typeof normalized !== 'string' || normalized.length === 0) return null;
+  return normalized;
+}
+
+// The EXACT closed key set `state.coverage` carries at the no_applicable_tests early-exit --
+// see isCoherentNoApplicableTestsCoverageBlock's own doc comment for the full real-producer trace.
+const NO_APPLICABLE_TESTS_COVERAGE_KEYS = new Set(['tool', 'missed_lines', 'modules_with_kover_plugin', 'modules_with_jacoco_plugin']);
+
+/** True iff `cov` has the EXACT shape `parallel-orchestrator.js`'s own `state.coverage` initializer
+ * produces at the `modules.length === 0` (no_applicable_tests) early-exit -- traced directly:
+ * `state.coverage` is built as `{tool: opts.coverageTool, missed_lines: null,
+ * modules_with_kover_plugin: koverModules, modules_with_jacoco_plugin: jacocoModules}` BEFORE the
+ * `if (modules.length === 0)` short-circuit even runs, and `koverModules`/`jacocoModules` are
+ * themselves `modules.filter(...)` over that SAME already-zero-length `modules` array -- so both
+ * are always `[]` here, not as a special case but as a structural consequence of filtering nothing.
+ * `buildJsonReport` serializes `state.coverage` completely UNCHANGED at this return -- no per-module
+ * coverage aggregation (coverage-orchestrator.js) ever runs on this path, so `module_buckets` and
+ * `modules_contributing` are never even KEYS on the object at this point, let alone populated ones.
+ * A coverage block claiming numeric `missed_lines`, a non-empty plugin list, or either of those two
+ * later-aggregation-only keys is therefore evidence of a different code path entirely -- impossible
+ * for a genuine no_applicable_tests early-exit. `tool` is checked against the real, closed
+ * `COVERAGE_TOOL_VALUES` enum (`lib/parsers/argv-constants.js`) rather than merely "any non-empty
+ * string", since `opts.coverageTool` can only ever be one of those four real CLI values. */
+function isCoherentNoApplicableTestsCoverageBlock(cov) {
+  if (cov == null || typeof cov !== 'object' || Array.isArray(cov)) return false;
+  const keys = Object.keys(cov);
+  if (keys.length !== NO_APPLICABLE_TESTS_COVERAGE_KEYS.size || keys.some((k) => !NO_APPLICABLE_TESTS_COVERAGE_KEYS.has(k))) return false;
+  if (!COVERAGE_TOOL_VALUES.includes(cov.tool)) return false;
+  if (cov.missed_lines !== null) return false;
+  if (!Array.isArray(cov.modules_with_kover_plugin) || cov.modules_with_kover_plugin.length !== 0) return false;
+  if (!Array.isArray(cov.modules_with_jacoco_plugin) || cov.modules_with_jacoco_plugin.length !== 0) return false;
+  return true;
 }
 
 /** Validates `envelope.tests`'s own closed-form arithmetic coherence: all 5 counters are
@@ -1061,7 +1097,17 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
     // entirely" are mutually exclusive claims about the SAME module within one attempt. Every
     // `skipped[]` entry is already known well-formed at this point (the universal
     // isWellFormedSkippedEntry check above), so `s.module` is guaranteed a real, non-empty string.
-    const matchingSkippedCount = envelope.skipped.filter((s) => normalizeModuleName(s.module) === module).length;
+    // A round-10 review found EVERY prior round's own cardinality logic only ever counted entries
+    // MATCHING the observed module -- a `skipped[]` entry naming a completely DIFFERENT, unrelated
+    // module was simply never counted, never rejected. Real production forecloses this: module
+    // discovery always applies `--module-filter` BEFORE any skip logic runs (partitionBySkipEnv,
+    // pickGradleTaskFor), and this whole corpus's own scenarios only ever invoke a single literal
+    // (non-glob, non-CSV) `--module-filter` token -- so no OTHER module could ever legitimately
+    // enter either `envelope.modules[]` or `envelope.skipped[]` for the same dispatch. ANY entry
+    // naming a different module is therefore unattributable, adversarial evidence -- checked here,
+    // unconditionally, before any single-leg/multi-leg branching, since it disqualifies the whole
+    // envelope regardless of dispatch shape.
+    if (envelope.skipped.some((s) => normalizeModuleName(s.module) !== module)) return null;
     // Scoped to a `changed` dispatch or a single-leg `parallel` dispatch specifically: a genuine
     // `test_type:"all"` dispatch (legsForAll, MIN_LEGS_FOR_ALL === 3) can legitimately execute a
     // module in one leg while a DIFFERENT leg skips that same module for an unrelated
@@ -1069,7 +1115,7 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
     // below, but NOT unconditionally: they always owe an EXACT correspondence (see below).
     const isSingleTargetDispatch = classification.subcommand === 'changed' || envelope.parallel?.legs?.length === 1;
     if (isSingleTargetDispatch) {
-      if (matchingSkippedCount > 0) return null;
+      if (envelope.skipped.length > 0) return null;
     } else {
       // A round-7 review reproduced a real gap in the multi-leg exemption above: it accepted ANY
       // multi-leg envelope naming the observed module in skipped[], even one where every single
@@ -1089,18 +1135,21 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
       // check: it wrongly accepted a mismatched count in EITHER direction -- e.g. 2 real
       // zero-execution legs alongside only 1 (undercounts a real producing leg) or 3 (an
       // impossible extra entry no leg could have produced) matching skipped[] entries. A round-9
-      // review found the equality itself was still only ever CHECKED inside `matchingSkippedCount
-      // > 0` -- so 0 matching entries alongside real zero-execution legs (e.g. 2 legs genuinely
-      // dispatched nothing, but skipped[] is entirely empty) bypassed this check altogether. The
-      // equality below now runs unconditionally for every multi-leg dispatch, including the
-      // 0-vs-0 case, so it can never again be reasoned around by omitting the skipped[] entries
-      // real production would have unconditionally emitted for those same legs.
+      // review found the equality itself was still only ever CHECKED inside a `> 0` guard -- so 0
+      // matching entries alongside real zero-execution legs (e.g. 2 legs genuinely dispatched
+      // nothing, but skipped[] is entirely empty) bypassed this check altogether. The equality
+      // below runs unconditionally for every multi-leg dispatch, including the 0-vs-0 case, so it
+      // can never again be reasoned around by omitting the skipped[] entries real production would
+      // have unconditionally emitted for those same legs. (Every entry in envelope.skipped is
+      // already known, by the foreign-module check above, to name the observed module -- so its
+      // own `.length` here IS the count of entries matching this module, with nothing left to
+      // separately filter.)
       const legs = envelope.parallel?.legs;
       const zeroExecutionLegCount = Array.isArray(legs)
         ? legs.filter((leg) => leg && typeof leg.execution === 'object' && leg.execution !== null
           && EXECUTION_MODE_KEYS.every((k) => leg.execution[k] === 0)).length
         : 0;
-      if (matchingSkippedCount !== zeroExecutionLegCount) return null;
+      if (envelope.skipped.length !== zeroExecutionLegCount) return null;
     }
     // A genuine per-individual-test skip has no representation in any closed form below (the
     // KMP_EVAL_RESULT schema itself carries no `skipped` key) -- with any skipped case present,
@@ -1209,8 +1258,38 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
     if (envelope.tests.total !== 0 || envelope.tests.passed !== 0 || envelope.tests.failed !== 0
       || envelope.tests.skipped !== 0 || individualTotal !== 0) return null;
     if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: 0 })) return null;
-    const module = canonicalModuleFilterIdentity(classification.moduleFilter);
-    if (module == null) return null;
+    // The early-exit this branch models returns BEFORE any per-module coverage aggregation ever
+    // runs -- a coverage block claiming real aggregated data (a numeric missed_lines, a non-empty
+    // plugin list, or the later-aggregation-only module_buckets/modules_contributing keys) is
+    // therefore evidence of a different code path entirely, impossible here.
+    if (!isCoherentNoApplicableTestsCoverageBlock(envelope.coverage)) return null;
+    // Module identity: envelope.modules[] is empty by definition for this outcome_kind, so the
+    // ONLY two real shapes are (a) the invoked --module-filter itself matched zero real modules at
+    // all -- skipped[] is then genuinely empty too, and the filter's own literal text is the
+    // closed-form identity (canonicalModuleFilterIdentity, unchanged) -- or (b) the filter DID
+    // match one or more real modules, each of which was then individually skipped (no test source
+    // set, etc.) -- state.skipped is populated in that case, and each entry's own `module` field
+    // (real production project-model data, not agent-controlled) is the trustworthy identity
+    // signal instead. A round-10 review found the PRE-fix code always used shape (a)'s derivation
+    // unconditionally, even when skipped[] was non-empty and named a module having nothing to do
+    // with the invoked filter -- envelope.skipped's own content was never read here at all.
+    let module;
+    if (envelope.skipped.length === 0) {
+      module = canonicalModuleFilterIdentity(classification.moduleFilter);
+      if (module == null) return null;
+    } else {
+      // Exactly one candidate required -- two or more skipped entries here would mean the invoked
+      // filter matched multiple real modules, each individually skipped, with no single one of
+      // them safely reportable as THE observed module without guessing which.
+      if (envelope.skipped.length !== 1) return null;
+      const skippedModule = normalizeModuleName(envelope.skipped[0].module);
+      if (typeof skippedModule !== 'string' || skippedModule.length === 0) return null;
+      // The skipped entry's own module must actually be reachable from the invoked --module-filter
+      // under the real production matcher -- an entry naming some unrelated module the filter
+      // could never have matched at all is unattributable, adversarial evidence.
+      if (typeof classification.moduleFilter !== 'string' || !matchModuleFilter(skippedModule, classification.moduleFilter)) return null;
+      module = skippedModule;
+    }
     return { module, outcome_kind: 'no_applicable_tests' };
   }
 
