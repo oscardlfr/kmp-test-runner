@@ -166,7 +166,19 @@ matrix is rejected anyway.
   guaranteed split across repetitions, not merely a shuffle that's unbiased only in expectation)
   against one scenario from `corpus/scenarios/` and grades each condition's transcript with
   `graders.mjs`'s 8 structured, evidence-anchored checks (never a free-text keyword scan — see
-  `graders.mjs`'s own header comment for why that design was rejected once already). For a
+  `graders.mjs`'s own header comment for why that design was rejected once already). The final
+  `KMP_EVAL_RESULT` block check (`final_answer_consistent_with_evidence`) is compared against the
+  terminal attempt's own observed module/outcome_kind/counts, never against the scenario's expected
+  answer directly -- a deliberately separate question from whether that observed evidence was
+  itself correct for the scenario (`authoritative_target_matches_expected`/
+  `authoritative_outcome_matches_expected`, both compared against the scenario). An agent can
+  honestly report a wrong-for-the-scenario result and still satisfy the final-answer check. That
+  canonicalization step also validates a specific, enumerated set of internal-coherence properties
+  on the terminal evidence before trusting it -- among them, subcommand/exit-code/execution-mode
+  agreement, counter arithmetic (e.g. a JUnit result whose own passed/failed don't sum to its
+  total), and a coverage claim's own module attribution -- rather than accepting any well-formed-
+  looking shape at face value; this is a checked set, not a claim of exhaustive coverage against
+  every possible contradiction. For a
   `tests_executed`/`tests_failed` scenario (both represent a genuine test execution, just with a
   different real outcome), target-module identity (`authoritative_target_matches_expected`)
   resolves the condition's own `--module-filter` argument through the exact same `matchModuleFilter`
