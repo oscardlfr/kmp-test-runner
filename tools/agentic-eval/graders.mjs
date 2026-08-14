@@ -875,6 +875,25 @@ function hasOversizedJunitWarning(warnings) {
   return warnings.some((w) => w && w.code === 'junit_xml_oversized');
 }
 
+/** True iff `w` has the shape every real `warnings[]` producer across the codebase unconditionally
+ * emits: a plain object with a non-empty string `code` and a non-empty string `message` (confirmed
+ * directly against every `warnings.push(...)`/`state.warnings.push(...)` call site --
+ * lib/runners/script-dispatcher.js, lib/orchestrators/android-orchestrator.js,
+ * lib/orchestrators/benchmark-orchestrator.js, lib/parsers/script-output.js,
+ * lib/orchestrators/coverage-orchestrator.js, lib/orchestrators/parallel-orchestrator.js,
+ * lib/orchestrators/parallel/result-rollup.js, lib/orchestrators/parallel/cascade-retry.js -- every
+ * one constructs `code` as a string literal and `message` via either a literal or a template
+ * string that always interpolates real content, never an empty string). Deliberately allows any
+ * OTHER field to be present (real warnings carry producer-specific extras like `module`, `task`,
+ * `modules`, `gradle_exit_code`) -- unlike `isWellFormedParallelLeg`'s exact-7-keys contract, there
+ * is no single closed key set across every warning code, so this is well-formedness-of-the-two-
+ * always-present-fields only, mirroring `isWellFormedSkippedEntry`'s identical idiom. */
+function isWellFormedWarningEntry(w) {
+  return w != null && typeof w === 'object' && !Array.isArray(w)
+    && typeof w.code === 'string' && w.code.length > 0
+    && typeof w.message === 'string' && w.message.length > 0;
+}
+
 /** True iff `s` has the exact shape both real `skipped[]` producers
  * (`partitionBySkipEnv` and `executeLeg`'s own `pickGradleTaskFor` handling, both in
  * lib/orchestrators/parallel/{dispatch,cascade-retry}.js) unconditionally emit: a plain object with
@@ -929,7 +948,16 @@ function deriveCoherentCoverageFacts(covBlock, err, module, warnings) {
   if (warnings.some((w) => w && COVERAGE_INCOMPLETE_WARNING_CODES.has(w.code))) return null;
   if (covBlock == null || typeof covBlock !== 'object' || Array.isArray(covBlock)) return null;
   if (!Number.isInteger(err.missed_lines) || err.missed_lines < 0) return null;
-  if (!Number.isInteger(err.threshold) || err.threshold < 0) return null;
+  // coverage-orchestrator.js's own real gate (`if (gateThreshold > 0 && agg.grandMissed >
+  // gateThreshold)`) is the ONLY call site that ever constructs a coverage_threshold_exceeded
+  // error -- threshold:0 is documented there as "disables the gate" (never fires this error at
+  // all), so a claimed threshold of exactly 0 is impossible real evidence for this outcome, not
+  // merely an edge-case value tolerated by coincidence.
+  if (!Number.isInteger(err.threshold) || err.threshold <= 0) return null;
+  // The same real gate's own condition requires the aggregate to be STRICTLY greater than the
+  // threshold for the error to fire at all -- "exceeded" is not "met" or "under". missed_lines
+  // equal to or below threshold could never have produced this error in real production.
+  if (err.missed_lines <= err.threshold) return null;
   // The error's own echoed missed_lines must agree with the coverage summary block -- if they
   // disagree, there is no way to tell which one reflects reality without guessing.
   if (covBlock.missed_lines !== err.missed_lines) return null;
@@ -991,13 +1019,16 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
   // evidence, independent of whether any SPECIFIC entry ends up mattering below.
   if (!Array.isArray(envelope.warnings)) return null;
   if (!Array.isArray(envelope.skipped)) return null;
-  // Every entry, not just ones that happen to name the observed module -- a `skipped[]` array
-  // containing even ONE malformed entry (null, a scalar, a nested array, an empty/missing
-  // `module`/`reason`) is itself untrustworthy evidence, since real production never emits
-  // anything but the closed {module, reason} shape (see isWellFormedSkippedEntry's own doc
-  // comment for both real producers). Checked here, universally, alongside its sibling
-  // Array.isArray(envelope.skipped) check above -- the array's own CONTENTS must be trustworthy
-  // before any branch below relies on membership tests against it.
+  // Every entry of BOTH arrays, not just ones a later branch happens to inspect the content of --
+  // an array containing even ONE malformed entry (null, a scalar, a nested array, an empty/missing
+  // required field) is itself untrustworthy evidence, since real production never emits anything
+  // but each array's own closed shape (see isWellFormedWarningEntry/isWellFormedSkippedEntry's own
+  // doc comments for the full real-producer survey each is based on). Checked here, universally,
+  // immediately alongside each array's own Array.isArray precondition above -- the arrays' own
+  // CONTENTS must be trustworthy before any branch below relies on membership/code tests against
+  // them (hasOversizedJunitWarning and COVERAGE_INCOMPLETE_WARNING_CODES membership, just below,
+  // and the skipped-module cardinality checks inside the modules.length===1 branch).
+  if (!envelope.warnings.every(isWellFormedWarningEntry)) return null;
   if (!envelope.skipped.every(isWellFormedSkippedEntry)) return null;
   // An oversized-XML skip anywhere in the envelope means individual_total/test_failures may be
   // incomplete -- checked here, universally, BEFORE branching on modules.length, so it covers
@@ -1016,21 +1047,30 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
 
   if (envelope.modules.length === 1) {
     const module = normalizeModuleName(envelope.modules[0]?.name);
-    if (typeof module !== 'string') return null;
+    if (typeof module !== 'string' || module.length === 0) return null;
+    // recordLegResults (lib/orchestrators/parallel/result-rollup.js) increments `state.tests.total`
+    // and pushes/updates the module's own `state.modules[]` entry TOGETHER, in the SAME per-task
+    // loop iteration, unconditionally, for every task in taskList -- a module can never appear here
+    // (envelope.modules.length === 1) without at least one real task having incremented
+    // envelope.tests.total. (The universal individualTotal!==0 check above only ever fires the
+    // REVERSE direction -- a nonzero individual_total alongside total:0 -- and does not by itself
+    // exclude total:0 when individual_total is ALSO 0.)
+    if (envelope.tests.total === 0) return null;
     // A module the envelope itself also lists as skipped cannot simultaneously be the module this
     // branch is about to report real test facts FOR -- "executed with real results" and "skipped
     // entirely" are mutually exclusive claims about the SAME module within one attempt. Every
     // `skipped[]` entry is already known well-formed at this point (the universal
     // isWellFormedSkippedEntry check above), so `s.module` is guaranteed a real, non-empty string.
     const matchingSkippedCount = envelope.skipped.filter((s) => normalizeModuleName(s.module) === module).length;
-    if (matchingSkippedCount > 0) {
-      // Scoped to a `changed` dispatch or a single-leg `parallel` dispatch specifically: a genuine
-      // `test_type:"all"` dispatch (legsForAll, MIN_LEGS_FOR_ALL === 3) can legitimately execute a
-      // module in one leg while a DIFFERENT leg skips that same module for an unrelated
-      // platform-specific reason -- so multi-leg envelopes are exempted from the flat rejection
-      // below, but NOT unconditionally: they still owe an EXACT correspondence (see below).
-      const isSingleTargetDispatch = classification.subcommand === 'changed' || envelope.parallel?.legs?.length === 1;
-      if (isSingleTargetDispatch) return null;
+    // Scoped to a `changed` dispatch or a single-leg `parallel` dispatch specifically: a genuine
+    // `test_type:"all"` dispatch (legsForAll, MIN_LEGS_FOR_ALL === 3) can legitimately execute a
+    // module in one leg while a DIFFERENT leg skips that same module for an unrelated
+    // platform-specific reason -- so multi-leg envelopes are exempted from the flat rejection
+    // below, but NOT unconditionally: they always owe an EXACT correspondence (see below).
+    const isSingleTargetDispatch = classification.subcommand === 'changed' || envelope.parallel?.legs?.length === 1;
+    if (isSingleTargetDispatch) {
+      if (matchingSkippedCount > 0) return null;
+    } else {
       // A round-7 review reproduced a real gap in the multi-leg exemption above: it accepted ANY
       // multi-leg envelope naming the observed module in skipped[], even one where every single
       // leg's own `execution` showed positive real dispatch. That shape is impossible real
@@ -1048,7 +1088,13 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
       // A round-8 review reproduced a real gap in an `.some()` (existence-only) version of this
       // check: it wrongly accepted a mismatched count in EITHER direction -- e.g. 2 real
       // zero-execution legs alongside only 1 (undercounts a real producing leg) or 3 (an
-      // impossible extra entry no leg could have produced) matching skipped[] entries.
+      // impossible extra entry no leg could have produced) matching skipped[] entries. A round-9
+      // review found the equality itself was still only ever CHECKED inside `matchingSkippedCount
+      // > 0` -- so 0 matching entries alongside real zero-execution legs (e.g. 2 legs genuinely
+      // dispatched nothing, but skipped[] is entirely empty) bypassed this check altogether. The
+      // equality below now runs unconditionally for every multi-leg dispatch, including the
+      // 0-vs-0 case, so it can never again be reasoned around by omitting the skipped[] entries
+      // real production would have unconditionally emitted for those same legs.
       const legs = envelope.parallel?.legs;
       const zeroExecutionLegCount = Array.isArray(legs)
         ? legs.filter((leg) => leg && typeof leg.execution === 'object' && leg.execution !== null
@@ -1125,12 +1171,17 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
       // ABSENCE, not merely inequality with true, so a wrong-typed value is rejected identically.
       if ('setup_failed' in soleError) return null;
       if (typeof soleError.task !== 'string' || soleError.task.length === 0) return null;
-      // A genuine module-task failure requires a positive task-level failed count -- a
-      // `module_failed` error entry alongside `tests.failed:0` is self-contradictory (the error
-      // claims the task failed, the aggregate counter claims it didn't). Explicit Number.isInteger
-      // guard (not a loose `> 0` comparison) -- mirrors this file's own established idiom
-      // everywhere else, and avoids JS's numeric-coercion surprises on a wrong-typed value.
-      if (!Number.isInteger(envelope.tests.failed) || envelope.tests.failed === 0) return null;
+      // recordLegResults (lib/orchestrators/parallel/result-rollup.js) increments
+      // `state.tests.failed` by exactly 1 in the SAME per-task loop iteration that pushes a
+      // `module_failed` error for that task -- the two counts are produced together, one-to-one,
+      // never independently. This branch already knows `moduleFailedErrors.length === 1` (this
+      // module's own single accepted module_failed error); `envelope.tests.failed` must therefore
+      // equal exactly that count, not merely be nonzero -- `2` or `3` alongside a single accepted
+      // error for this module is exactly as impossible as `0` (a second real failure, whether for
+      // this module or another, would need its own separate error entry, contradicting the
+      // `envelope.errors.length === 1` guard on this branch, or the observed module's own
+      // module_failed-error cardinality this filter already fixed at 1).
+      if (envelope.tests.failed !== moduleFailedErrors.length) return null;
       const failures = envelope.modules[0].test_failures;
       if (!Array.isArray(failures) || failures.length === 0 || !failures.every(isWellFormedTestFailureEntry)) return null;
       if (failures.length > individualTotal) return null; // impossible shape -- more real failures than total cases
