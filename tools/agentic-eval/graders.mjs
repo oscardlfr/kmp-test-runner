@@ -875,18 +875,44 @@ function hasOversizedJunitWarning(warnings) {
   return warnings.some((w) => w && w.code === 'junit_xml_oversized');
 }
 
+// The closed set of warnings[].code values `lib/orchestrators/coverage-orchestrator.js` and
+// `lib/orchestrators/parallel-orchestrator.js` produce that mean the coverage AGGREGATION pipeline
+// itself was incomplete, skipped, disabled, unparseable, or drifted -- any of these directly
+// contradicts trusting `envelope.coverage`'s own missed_lines/modules_contributing/module_buckets
+// as a complete, accurate picture, regardless of how internally self-consistent those fields look
+// in isolation. Deliberately does NOT include `coverage_report_write_failed`: that producer's own
+// message is explicit that "coverage data in this envelope is still valid -- only the on-disk
+// report file failed to write" (docs/envelope-contract.md's identical wording confirms this is the
+// one coverage-adjacent warning that names a problem with an OUTPUT ARTIFACT, never the envelope's
+// own JSON coverage data).
+const COVERAGE_INCOMPLETE_WARNING_CODES = new Set([
+  'coverage_report_dispatch_failed',
+  'coverage_aggregation_failed',
+  'coverage_aggregation_skipped',
+  'no_coverage_data',
+  'coverage_xml_disabled',
+  'coverage_xml_oversized',
+  'coverage_parse_failed',
+  'coverage_aggregation_drift',
+]);
+
 /** Validates `envelope.coverage`'s own internal coherence for a single-module coverage claim, and
  * returns the coherent `{missed_lines, threshold, modules_contributing}` triple, or `null` if any
- * of the coverage block's own internal claims contradict each other or the observed module.
- * Mirrors `validateKmpEnvelopeForAttempt`'s identical `coverageOk` computation (bucket-exclusivity,
- * exact single-entry `with_data`, `modules_contributing===1`) -- scoped to the OBSERVED module
- * rather than a scenario's expected one, since this function never compares against
- * scenario.expected at all. Only ever called from the `envelope.modules.length === 1` branch --
- * exactly ONE module was ever dispatched, so `with_data` must name exactly that module, and the
- * other three buckets (which classify modules that WERE dispatched but produced no usable
- * coverage data) must be entirely empty, not merely free of the observed module -- no OTHER real
- * module could legitimately appear in any of them either. */
-function deriveCoherentCoverageFacts(covBlock, err, module) {
+ * of the coverage block's own internal claims contradict each other, the observed module, or the
+ * envelope's own coverage-aggregation warnings. Mirrors `validateKmpEnvelopeForAttempt`'s identical
+ * `coverageOk` computation (bucket-exclusivity, exact single-entry `with_data`,
+ * `modules_contributing===1`) -- scoped to the OBSERVED module rather than a scenario's expected
+ * one, since this function never compares against scenario.expected at all. Only ever called from
+ * the `envelope.modules.length === 1` branch -- exactly ONE module was ever dispatched, so
+ * `with_data` must name exactly that module, and the other three buckets (which classify modules
+ * that WERE dispatched but produced no usable coverage data) must be entirely empty, not merely
+ * free of the observed module -- no OTHER real module could legitimately appear in any of them
+ * either. `warnings` is checked against `COVERAGE_INCOMPLETE_WARNING_CODES` universally (not
+ * scoped to any particular module named inside the warning) -- a coverage claim's own bucket/count
+ * fields can look perfectly self-consistent while the aggregation pipeline that PRODUCED them
+ * independently reported it never completed. */
+function deriveCoherentCoverageFacts(covBlock, err, module, warnings) {
+  if (warnings.some((w) => w && COVERAGE_INCOMPLETE_WARNING_CODES.has(w.code))) return null;
   if (covBlock == null || typeof covBlock !== 'object' || Array.isArray(covBlock)) return null;
   if (!Number.isInteger(err.missed_lines) || err.missed_lines < 0) return null;
   if (!Number.isInteger(err.threshold) || err.threshold < 0) return null;
@@ -946,10 +972,11 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
   // ALL branches below -- a task-level counter set that doesn't add up to itself is never
   // trustworthy evidence, independent of which specific outcome shape it's otherwise claiming.
   if (!isCoherentTestsCounters(envelope.tests)) return null;
-  // `warnings` must itself structurally be an array -- a real envelope always carries this key as
-  // an array (possibly empty), so anything else (absent, wrong-typed) is itself untrustworthy
-  // evidence, independent of whether any SPECIFIC warning ends up mattering below.
+  // `warnings`/`skipped` must both structurally be arrays -- a real envelope always carries both
+  // keys this way (possibly empty), so anything else (absent, wrong-typed) is itself untrustworthy
+  // evidence, independent of whether any SPECIFIC entry ends up mattering below.
   if (!Array.isArray(envelope.warnings)) return null;
+  if (!Array.isArray(envelope.skipped)) return null;
   // An oversized-XML skip anywhere in the envelope means individual_total/test_failures may be
   // incomplete -- checked here, universally, BEFORE branching on modules.length, so it covers
   // no_applicable_tests (modules:[], no "observed module" to scope a match against at all) exactly
@@ -958,10 +985,25 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
   if (hasOversizedJunitWarning(envelope.warnings)) return null;
 
   const individualTotal = envelope.tests.individual_total;
+  // A genuinely zero task-level total can never legitimately carry individual test cases -- if no
+  // task ran at all (total:0), there is nothing for individual_total to count. The REVERSE is not
+  // asserted: a real executed task can legitimately have individual_total:0 (e.g. a task with zero
+  // real test cases of its own), so this is deliberately one-directional, exactly like the
+  // resultIsError/exit_code check above.
+  if (envelope.tests.total === 0 && individualTotal !== 0) return null;
 
   if (envelope.modules.length === 1) {
     const module = normalizeModuleName(envelope.modules[0]?.name);
     if (typeof module !== 'string') return null;
+    // A module the envelope itself also lists as skipped cannot simultaneously be the module this
+    // branch is about to report real test facts FOR -- "executed with real results" and "skipped
+    // entirely" are mutually exclusive claims about the SAME module within one attempt. Scoped to
+    // a `changed` dispatch or a single-leg `parallel` dispatch specifically: a genuine `test_type:
+    // "all"` dispatch (legsForAll, MIN_LEGS_FOR_ALL === 3) can legitimately execute a module in one
+    // leg while a DIFFERENT leg skips that same module for an unrelated platform-specific reason,
+    // so multi-leg envelopes are deliberately exempted from this check.
+    const isSingleTargetDispatch = classification.subcommand === 'changed' || envelope.parallel?.legs?.length === 1;
+    if (isSingleTargetDispatch && envelope.skipped.some((s) => s && normalizeModuleName(s.module) === module)) return null;
     // A genuine per-individual-test skip has no representation in any closed form below (the
     // KMP_EVAL_RESULT schema itself carries no `skipped` key) -- with any skipped case present,
     // `passed`/`failed` could not be derived from `individualTotal` alone without guessing which
@@ -1005,7 +1047,7 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
       if (envelope.tests.failed !== 0) return null;
       if (hasContradictoryTestFailures(envelope.modules[0])) return null;
       const err = coverageErrors[0];
-      const coverageFacts = deriveCoherentCoverageFacts(envelope.coverage, err, module);
+      const coverageFacts = deriveCoherentCoverageFacts(envelope.coverage, err, module, envelope.warnings);
       if (coverageFacts == null) return null;
       // The error's own echoed threshold must agree with the --min-missed-lines value actually
       // invoked on THIS command -- a stale/mismatched tool_result whose error names a different

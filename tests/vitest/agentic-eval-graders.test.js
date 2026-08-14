@@ -4380,6 +4380,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
   it("[hardening A] a module_failed error entry alongside envelope.tests.failed:0 is self-contradictory (the error claims the task failed, the aggregate counter claims it did not) -- must not produce a canonicalizable observedResult, even though the final block honestly echoes the real test_failures detail", () => {
     const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO4_FAIL);
     envelope.tests.failed = 0;
+    envelope.tests.passed = 1;
     envelope.parallel.legs[0].exit_code = 0;
     envelope.parallel.legs[0].execution.failed = 0;
     envelope.parallel.legs[0].execution.fresh = 1;
@@ -4694,6 +4695,90 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
       kmpEvalResultText('The :app module has no applicable tests.', { module: ':app', outcome_kind: 'no_applicable_tests' }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_2);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // --- round-6 post-CodeRabbit-audit hardening: a coverage claim's own bucket/count fields can
+  // look perfectly self-consistent while the aggregation pipeline that PRODUCED them independently
+  // reported it never completed; a module can be simultaneously (mis)reported executed AND skipped;
+  // and a zero task-level total can still carry a nonzero individual_total. Each case below was
+  // proven a real full-8/8-green false positive against pre-fix code before being closed here. ---
+
+  const COVERAGE_INCOMPLETE_WARNING_REPRODUCTIONS = [
+    'coverage_report_dispatch_failed',
+    'coverage_aggregation_failed',
+    'coverage_aggregation_skipped',
+    'no_coverage_data',
+    'coverage_xml_disabled',
+    'coverage_xml_oversized',
+    'coverage_parse_failed',
+    'coverage_aggregation_drift',
+  ];
+
+  it.each(COVERAGE_INCOMPLETE_WARNING_REPRODUCTIONS)('[hardening Z] a coverage_threshold_exceeded claim alongside a %s warning is untrustworthy -- that warning documents coverage data as incomplete/skipped/unparsed/uncounted for this run, so missed_lines/modules_contributing cannot be trusted -- must not produce a canonicalizable observedResult', (code) => {
+    const envelope = JSON.parse(coverageEnvelope());
+    envelope.warnings = [{ code, message: `synthetic ${code}` }];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: JSON.stringify(envelope) }],
+      kmpEvalResultText('4 tests pass; 23 lines uncovered, exceeding the 15-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it("[hardening AA] regression guard: a coverage_threshold_exceeded claim alongside a coverage_report_write_failed warning stays canonicalizable -- that warning's own producer documents only that the Markdown report FILE failed to write, never that the envelope's own coverage data is incomplete", () => {
+    const envelope = JSON.parse(coverageEnvelope());
+    envelope.warnings = [{ code: 'coverage_report_write_failed', message: 'failed to write coverage-report.md' }];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: JSON.stringify(envelope) }],
+      kmpEvalResultText('4 tests pass; 23 lines uncovered, exceeding the 15-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
+  });
+
+  it("[hardening BB] a module the envelope itself also lists as skipped cannot simultaneously be reported with real tests_executed evidence for a `changed` or single-leg `parallel` dispatch -- 'executed with real results' and 'skipped entirely' are mutually exclusive claims about the SAME module in the SAME attempt -- must not produce a canonicalizable observedResult", () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
+    envelope.skipped = [{ module: 'shared', reason: 'no test source set' }];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it("[hardening CC] regression guard: a module executed across a genuine multi-leg test_type:'all' dispatch, while ALSO appearing in the envelope's own top-level skipped[] (added by a DIFFERENT leg that legitimately skipped it for an unrelated platform-specific reason), stays canonicalizable -- [hardening BB]'s single-target-dispatch-only contradiction check must not misfire on a real multi-leg 'all' shape", () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
+    const leg = envelope.parallel.legs[0];
+    envelope.parallel.test_type = 'all';
+    envelope.parallel.legs = ['common', 'desktop', 'androidUnit'].map((t) => ({ ...leg, test_type: t }));
+    envelope.tests = { total: 3, passed: 3, failed: 0, skipped: 0, individual_total: 24 };
+    envelope.skipped = [{ module: 'shared', reason: 'not applicable to the androidUnit leg' }];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --test-type all --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('[hardening DD] envelope.tests.total:0 (no task-level dispatch at all) alongside a nonzero individual_total:24 is self-contradictory -- zero dispatched tasks can never carry real individual test cases -- must not produce a canonicalizable observedResult, even when every execution bucket honestly stays zero too and checks 1-7 do not independently catch this specific shape', () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
+    envelope.tests = { total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 24 };
+    envelope.parallel.legs[0].execution = { fresh: 0, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 };
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
     expect(grade.success).toBe(false);
   });
