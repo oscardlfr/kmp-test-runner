@@ -4702,8 +4702,14 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
   // --- round-6 post-CodeRabbit-audit hardening: a coverage claim's own bucket/count fields can
   // look perfectly self-consistent while the aggregation pipeline that PRODUCED them independently
   // reported it never completed; a module can be simultaneously (mis)reported executed AND skipped;
-  // and a zero task-level total can still carry a nonzero individual_total. Each case below was
-  // proven a real full-8/8-green false positive against pre-fix code before being closed here. ---
+  // and a zero task-level total can still carry a nonzero individual_total. NOT every case below is
+  // a full false positive: [hardening Z] and [hardening BB] were (pre-fix: success:true, all 8
+  // checks green); [hardening DD] was narrower (check 6 already failed for the unrelated reason
+  // that tests.total didn't match scenario.expected, so success was already false pre-fix -- but
+  // check 8 kept asserting a consistency that didn't exist, the same defect class under a
+  // different check); [hardening AA] and [hardening CC] are POSITIVE regression guards, proving
+  // the new checks don't over-reject a legitimate shape -- they were never broken and pass both
+  // pre- and post-fix by design, not something "closed here". ---
 
   const COVERAGE_INCOMPLETE_WARNING_REPRODUCTIONS = [
     'coverage_report_dispatch_failed',
@@ -4738,6 +4744,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
+    expect(grade.success).toBe(true);
   });
 
   it("[hardening BB] a module the envelope itself also lists as skipped cannot simultaneously be reported with real tests_executed evidence for a `changed` or single-leg `parallel` dispatch -- 'executed with real results' and 'skipped entirely' are mutually exclusive claims about the SAME module in the SAME attempt -- must not produce a canonicalizable observedResult", () => {
@@ -4753,7 +4760,36 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     expect(grade.success).toBe(false);
   });
 
-  it("[hardening CC] regression guard: a module executed across a genuine multi-leg test_type:'all' dispatch, while ALSO appearing in the envelope's own top-level skipped[] (added by a DIFFERENT leg that legitimately skipped it for an unrelated platform-specific reason), stays canonicalizable -- [hardening BB]'s single-target-dispatch-only contradiction check must not misfire on a real multi-leg 'all' shape", () => {
+  it("[hardening CC] regression guard: a module genuinely executed by exactly ONE leg of a real multi-leg test_type:'all' dispatch, while the envelope's own top-level skipped[] names that same module for the OTHER (non-executing) legs -- each of which honestly shows all-zero execution buckets, since a single-module-filter dispatch can never have anything else in a non-executing leg's own taskList -- stays canonicalizable, including full end-to-end success against SCENARIO_1's own single-task expectation", () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
+    const runningLeg = envelope.parallel.legs[0];
+    const ZERO_EXECUTION = { fresh: 0, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 };
+    envelope.parallel.test_type = 'all';
+    envelope.parallel.legs = [
+      { ...runningLeg, test_type: 'common' }, // the one leg that actually dispatches :shared -- fresh:1, unchanged from the base fixture
+      { ...runningLeg, test_type: 'desktop', execution: { ...ZERO_EXECUTION } },
+      { ...runningLeg, test_type: 'androidUnit', execution: { ...ZERO_EXECUTION } },
+    ];
+    // Only one leg ever dispatched a real task -- task-level total stays 1, exactly like the
+    // real single-leg SCENARIO1_PASS fixture this is derived from (individual_total, the real
+    // per-testcase count from that one task, is untouched).
+    envelope.tests = { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 };
+    // Real production would emit one skipped[] entry per non-executing leg (executeLeg's own
+    // per-leg pickGradleTaskFor loop) -- both represented here, naming the same single module.
+    envelope.skipped = [
+      { module: 'shared', reason: 'not applicable to the desktop leg' },
+      { module: 'shared', reason: 'not applicable to the androidUnit leg' },
+    ];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --test-type all --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  it("[hardening EE] a genuine multi-leg test_type:'all' dispatch where EVERY leg shows POSITIVE real execution for the SAME single observed module, while that module ALSO appears in the envelope's own top-level skipped[], is impossible evidence -- no leg could plausibly be the source of the skip if all three genuinely dispatched a real task for the only module ever in scope -- must not produce a canonicalizable observedResult, even though the top-level cardinality (bucket-sum, per-leg exit/failed coherence) is otherwise internally consistent and checks 1-7 do not independently catch it", () => {
     const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
     const leg = envelope.parallel.legs[0];
     envelope.parallel.test_type = 'all';
@@ -4765,12 +4801,12 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
       SCENARIO_1_CORRECT_ANSWER,
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
-    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
-    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
     expect(grade.success).toBe(false);
   });
 
-  it('[hardening DD] envelope.tests.total:0 (no task-level dispatch at all) alongside a nonzero individual_total:24 is self-contradictory -- zero dispatched tasks can never carry real individual test cases -- must not produce a canonicalizable observedResult, even when every execution bucket honestly stays zero too and checks 1-7 do not independently catch this specific shape', () => {
+  it('[hardening DD] envelope.tests.total:0 (no task-level dispatch at all) alongside a nonzero individual_total:24 is self-contradictory -- zero dispatched tasks can never carry real individual test cases -- must not produce a canonicalizable observedResult, even when every execution bucket honestly stays zero too. Check 6 already catches this SPECIFIC fixture (tests.total:0 disagrees with scenario.expected) and already fails success for that unrelated reason -- the defect this proves is that check 8 kept asserting a consistency that did not exist regardless', () => {
     const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
     envelope.tests = { total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 24 };
     envelope.parallel.legs[0].execution = { fresh: 0, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 };

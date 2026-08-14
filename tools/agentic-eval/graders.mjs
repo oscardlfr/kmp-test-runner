@@ -997,13 +997,35 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
     if (typeof module !== 'string') return null;
     // A module the envelope itself also lists as skipped cannot simultaneously be the module this
     // branch is about to report real test facts FOR -- "executed with real results" and "skipped
-    // entirely" are mutually exclusive claims about the SAME module within one attempt. Scoped to
-    // a `changed` dispatch or a single-leg `parallel` dispatch specifically: a genuine `test_type:
-    // "all"` dispatch (legsForAll, MIN_LEGS_FOR_ALL === 3) can legitimately execute a module in one
-    // leg while a DIFFERENT leg skips that same module for an unrelated platform-specific reason,
-    // so multi-leg envelopes are deliberately exempted from this check.
-    const isSingleTargetDispatch = classification.subcommand === 'changed' || envelope.parallel?.legs?.length === 1;
-    if (isSingleTargetDispatch && envelope.skipped.some((s) => s && normalizeModuleName(s.module) === module)) return null;
+    // entirely" are mutually exclusive claims about the SAME module within one attempt.
+    const moduleListedSkipped = envelope.skipped.some((s) => s && normalizeModuleName(s.module) === module);
+    if (moduleListedSkipped) {
+      // Scoped to a `changed` dispatch or a single-leg `parallel` dispatch specifically: a genuine
+      // `test_type:"all"` dispatch (legsForAll, MIN_LEGS_FOR_ALL === 3) can legitimately execute a
+      // module in one leg while a DIFFERENT leg skips that same module for an unrelated
+      // platform-specific reason -- so multi-leg envelopes are exempted from the flat rejection
+      // below, but NOT unconditionally: they still owe a plausible producing leg (see below).
+      const isSingleTargetDispatch = classification.subcommand === 'changed' || envelope.parallel?.legs?.length === 1;
+      if (isSingleTargetDispatch) return null;
+      // A round-7 review reproduced a real gap in the multi-leg exemption above: it accepted ANY
+      // multi-leg envelope naming the observed module in skipped[], even one where every single
+      // leg's own `execution` showed positive real dispatch. That shape is impossible real
+      // evidence -- `executeLeg` (lib/orchestrators/parallel/cascade-retry.js) never adds a module
+      // it skips to that SAME leg's own taskList (the skip path `continue`s immediately, before
+      // the `taskList.push`/`taskOwners.push` lines), and `recordLegResults`
+      // (lib/orchestrators/parallel/result-rollup.js) only ever tallies execution buckets for
+      // tasks actually present in taskList -- so whichever leg genuinely produced this skip entry
+      // must show all 7 EXECUTION_MODE_KEYS at zero. With only one module ever in scope here
+      // (envelope.modules.length === 1), that leg's taskList could never have held a task for any
+      // OTHER module either, so "all-zero" is the complete signature of "this leg is a plausible
+      // source of the skip," not merely a necessary-but-insufficient one. If no leg shows that
+      // signature, none of them could have been the source -- impossible evidence, regardless of
+      // how internally tidy each leg looks in isolation.
+      const legs = envelope.parallel?.legs;
+      const hasPlausibleSkippingLeg = Array.isArray(legs) && legs.some((leg) => leg && typeof leg.execution === 'object' && leg.execution !== null
+        && EXECUTION_MODE_KEYS.every((k) => leg.execution[k] === 0));
+      if (!hasPlausibleSkippingLeg) return null;
+    }
     // A genuine per-individual-test skip has no representation in any closed form below (the
     // KMP_EVAL_RESULT schema itself carries no `skipped` key) -- with any skipped case present,
     // `passed`/`failed` could not be derived from `individualTotal` alone without guessing which
