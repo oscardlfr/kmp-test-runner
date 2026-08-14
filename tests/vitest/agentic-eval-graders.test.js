@@ -4775,10 +4775,13 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     // per-testcase count from that one task, is untouched).
     envelope.tests = { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 };
     // Real production would emit one skipped[] entry per non-executing leg (executeLeg's own
-    // per-leg pickGradleTaskFor loop) -- both represented here, naming the same single module.
+    // per-leg pickGradleTaskFor loop) -- both represented here, naming the same single module, with
+    // the exact reason text pickGradleTaskFor's own desktop/androidUnit cases return
+    // (`no ${testType} target` / `'no androidUnit target'`), wrapped by cascade-retry.js's
+    // `${reason} (--test-type=${testType})` template.
     envelope.skipped = [
-      { module: 'shared', reason: 'not applicable to the desktop leg' },
-      { module: 'shared', reason: 'not applicable to the androidUnit leg' },
+      { module: 'shared', reason: 'no desktop target (--test-type=desktop)' },
+      { module: 'shared', reason: 'no androidUnit target (--test-type=androidUnit)' },
     ];
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --test-type all --json', resultContent: JSON.stringify(envelope) }],
@@ -4796,6 +4799,89 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     envelope.parallel.legs = ['common', 'desktop', 'androidUnit'].map((t) => ({ ...leg, test_type: t }));
     envelope.tests = { total: 3, passed: 3, failed: 0, skipped: 0, individual_total: 24 };
     envelope.skipped = [{ module: 'shared', reason: 'not applicable to the androidUnit leg' }];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --test-type all --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // --- round-8 external audit: skipped[] entries were never structurally validated (a malformed
+  // entry that names no module at all still silently poisoned nothing), and the multi-leg
+  // correspondence only ever checked EXISTENCE of a plausible zero-execution leg -- never that the
+  // COUNT of matching skipped[] entries equals the count of zero-execution legs. Both real
+  // producers (partitionBySkipEnv, executeLeg's pickGradleTaskFor handling) unconditionally emit
+  // exactly one well-formed {module, reason} entry per non-dispatching leg -- never zero, never
+  // more than one -- so the two counts describe the same set of legs and must match exactly. ---
+
+  const MALFORMED_SKIPPED_ENTRIES = [
+    ['null', null],
+    ['a bare string', 'other-module'],
+    ['a bare number', 42],
+    ['a nested array', ['other-module', 'no test source set']],
+    ['module missing', { reason: 'no test source set' }],
+    ['module an empty string', { module: '', reason: 'no test source set' }],
+    ['reason missing (module names a DIFFERENT module)', { module: 'other-module' }],
+    ['reason an empty string (module names a DIFFERENT module)', { module: 'other-module', reason: '' }],
+  ];
+
+  it.each(MALFORMED_SKIPPED_ENTRIES)('[hardening FF] a skipped[] array containing a malformed entry (%s) is untrustworthy evidence for the WHOLE array, even though that entry names no module the observed module could ever be confused with -- must not produce a canonicalizable observedResult', (_label, entry) => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
+    envelope.skipped = [entry];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it("[hardening GG] two genuinely zero-execution legs (desktop, androidUnit) but only ONE matching skipped[] entry for the observed module is impossible -- both real producers unconditionally push a skipped[] entry for every leg that doesn't dispatch a task, so a real zero-execution leg missing its own entry is not real evidence -- must not produce a canonicalizable observedResult", () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
+    const runningLeg = envelope.parallel.legs[0];
+    const ZERO_EXECUTION = { fresh: 0, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 };
+    envelope.parallel.test_type = 'all';
+    envelope.parallel.legs = [
+      { ...runningLeg, test_type: 'common' },
+      { ...runningLeg, test_type: 'desktop', execution: { ...ZERO_EXECUTION } },
+      { ...runningLeg, test_type: 'androidUnit', execution: { ...ZERO_EXECUTION } },
+    ];
+    envelope.tests = { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 };
+    // Only ONE entry, even though TWO legs (desktop, androidUnit) genuinely show all-zero execution.
+    envelope.skipped = [{ module: 'shared', reason: 'no desktop target (--test-type=desktop)' }];
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter shared --test-type all --json', resultContent: JSON.stringify(envelope) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it("[hardening HH] two genuinely zero-execution legs (desktop, androidUnit) but THREE matching skipped[] entries for the observed module is impossible -- only two legs could ever have produced a skip for this module, so a third entry has no possible source leg -- must not produce a canonicalizable observedResult, even though the top-level cardinality (bucket-sum, per-leg exit/failed coherence) is otherwise internally consistent", () => {
+    const envelope = JSON.parse(KMP_TEST_ENVELOPE_SCENARIO1_PASS);
+    const runningLeg = envelope.parallel.legs[0];
+    const ZERO_EXECUTION = { fresh: 0, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 };
+    envelope.parallel.test_type = 'all';
+    envelope.parallel.legs = [
+      { ...runningLeg, test_type: 'common' },
+      { ...runningLeg, test_type: 'desktop', execution: { ...ZERO_EXECUTION } },
+      { ...runningLeg, test_type: 'androidUnit', execution: { ...ZERO_EXECUTION } },
+    ];
+    envelope.tests = { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 };
+    // THREE entries, even though only TWO legs (desktop, androidUnit) genuinely show all-zero
+    // execution -- the exact shape a bare existence (.some()) check could not distinguish from CC.
+    envelope.skipped = [
+      { module: 'shared', reason: 'no desktop target (--test-type=desktop)' },
+      { module: 'shared', reason: 'no androidUnit target (--test-type=androidUnit)' },
+      { module: 'shared', reason: 'no desktop target (--test-type=desktop)' },
+    ];
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --test-type all --json', resultContent: JSON.stringify(envelope) }],
       SCENARIO_1_CORRECT_ANSWER,

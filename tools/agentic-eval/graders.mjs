@@ -875,6 +875,20 @@ function hasOversizedJunitWarning(warnings) {
   return warnings.some((w) => w && w.code === 'junit_xml_oversized');
 }
 
+/** True iff `s` has the exact shape both real `skipped[]` producers
+ * (`partitionBySkipEnv` and `executeLeg`'s own `pickGradleTaskFor` handling, both in
+ * lib/orchestrators/parallel/{dispatch,cascade-retry}.js) unconditionally emit: a plain object with
+ * a non-empty string `module` and a non-empty string `reason` -- neither producer ever pushes
+ * anything else (no null, no bare string, no missing/empty field). Deliberately does NOT compare
+ * `reason` text or `module` identity against anything (e.g. scenario.expected) -- this is a
+ * structural well-formedness check only, mirroring this file's own established idiom for every
+ * other array-of-objects field (`isWellFormedTestFailureEntry`, `isWellFormedParallelLeg`). */
+function isWellFormedSkippedEntry(s) {
+  return s != null && typeof s === 'object' && !Array.isArray(s)
+    && typeof s.module === 'string' && s.module.length > 0
+    && typeof s.reason === 'string' && s.reason.length > 0;
+}
+
 // The closed set of warnings[].code values `lib/orchestrators/coverage-orchestrator.js` and
 // `lib/orchestrators/parallel-orchestrator.js` produce that mean the coverage AGGREGATION pipeline
 // itself was incomplete, skipped, disabled, unparseable, or drifted -- any of these directly
@@ -977,6 +991,14 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
   // evidence, independent of whether any SPECIFIC entry ends up mattering below.
   if (!Array.isArray(envelope.warnings)) return null;
   if (!Array.isArray(envelope.skipped)) return null;
+  // Every entry, not just ones that happen to name the observed module -- a `skipped[]` array
+  // containing even ONE malformed entry (null, a scalar, a nested array, an empty/missing
+  // `module`/`reason`) is itself untrustworthy evidence, since real production never emits
+  // anything but the closed {module, reason} shape (see isWellFormedSkippedEntry's own doc
+  // comment for both real producers). Checked here, universally, alongside its sibling
+  // Array.isArray(envelope.skipped) check above -- the array's own CONTENTS must be trustworthy
+  // before any branch below relies on membership tests against it.
+  if (!envelope.skipped.every(isWellFormedSkippedEntry)) return null;
   // An oversized-XML skip anywhere in the envelope means individual_total/test_failures may be
   // incomplete -- checked here, universally, BEFORE branching on modules.length, so it covers
   // no_applicable_tests (modules:[], no "observed module" to scope a match against at all) exactly
@@ -997,14 +1019,16 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
     if (typeof module !== 'string') return null;
     // A module the envelope itself also lists as skipped cannot simultaneously be the module this
     // branch is about to report real test facts FOR -- "executed with real results" and "skipped
-    // entirely" are mutually exclusive claims about the SAME module within one attempt.
-    const moduleListedSkipped = envelope.skipped.some((s) => s && normalizeModuleName(s.module) === module);
-    if (moduleListedSkipped) {
+    // entirely" are mutually exclusive claims about the SAME module within one attempt. Every
+    // `skipped[]` entry is already known well-formed at this point (the universal
+    // isWellFormedSkippedEntry check above), so `s.module` is guaranteed a real, non-empty string.
+    const matchingSkippedCount = envelope.skipped.filter((s) => normalizeModuleName(s.module) === module).length;
+    if (matchingSkippedCount > 0) {
       // Scoped to a `changed` dispatch or a single-leg `parallel` dispatch specifically: a genuine
       // `test_type:"all"` dispatch (legsForAll, MIN_LEGS_FOR_ALL === 3) can legitimately execute a
       // module in one leg while a DIFFERENT leg skips that same module for an unrelated
       // platform-specific reason -- so multi-leg envelopes are exempted from the flat rejection
-      // below, but NOT unconditionally: they still owe a plausible producing leg (see below).
+      // below, but NOT unconditionally: they still owe an EXACT correspondence (see below).
       const isSingleTargetDispatch = classification.subcommand === 'changed' || envelope.parallel?.legs?.length === 1;
       if (isSingleTargetDispatch) return null;
       // A round-7 review reproduced a real gap in the multi-leg exemption above: it accepted ANY
@@ -1014,17 +1038,23 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
       // it skips to that SAME leg's own taskList (the skip path `continue`s immediately, before
       // the `taskList.push`/`taskOwners.push` lines), and `recordLegResults`
       // (lib/orchestrators/parallel/result-rollup.js) only ever tallies execution buckets for
-      // tasks actually present in taskList -- so whichever leg genuinely produced this skip entry
-      // must show all 7 EXECUTION_MODE_KEYS at zero. With only one module ever in scope here
-      // (envelope.modules.length === 1), that leg's taskList could never have held a task for any
-      // OTHER module either, so "all-zero" is the complete signature of "this leg is a plausible
-      // source of the skip," not merely a necessary-but-insufficient one. If no leg shows that
-      // signature, none of them could have been the source -- impossible evidence, regardless of
-      // how internally tidy each leg looks in isolation.
+      // tasks actually present in taskList -- so whichever leg genuinely produced a skip entry for
+      // the single module ever in scope here (envelope.modules.length === 1) must show all 7
+      // EXECUTION_MODE_KEYS at zero, and (round 8) EVERY leg that shows all-zero execution
+      // unconditionally pushes its own skipped[] entry for that module -- `pickGradleTaskFor`
+      // returning `{task:null,...}` always routes straight to `state.skipped.push(...)`, with no
+      // conditional path that skips the push. The two counts are therefore not merely
+      // each-other's-lower-bound; they describe the SAME set of legs and must be exactly equal.
+      // A round-8 review reproduced a real gap in an `.some()` (existence-only) version of this
+      // check: it wrongly accepted a mismatched count in EITHER direction -- e.g. 2 real
+      // zero-execution legs alongside only 1 (undercounts a real producing leg) or 3 (an
+      // impossible extra entry no leg could have produced) matching skipped[] entries.
       const legs = envelope.parallel?.legs;
-      const hasPlausibleSkippingLeg = Array.isArray(legs) && legs.some((leg) => leg && typeof leg.execution === 'object' && leg.execution !== null
-        && EXECUTION_MODE_KEYS.every((k) => leg.execution[k] === 0));
-      if (!hasPlausibleSkippingLeg) return null;
+      const zeroExecutionLegCount = Array.isArray(legs)
+        ? legs.filter((leg) => leg && typeof leg.execution === 'object' && leg.execution !== null
+          && EXECUTION_MODE_KEYS.every((k) => leg.execution[k] === 0)).length
+        : 0;
+      if (matchingSkippedCount !== zeroExecutionLegCount) return null;
     }
     // A genuine per-individual-test skip has no representation in any closed form below (the
     // KMP_EVAL_RESULT schema itself carries no `skipped` key) -- with any skipped case present,
