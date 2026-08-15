@@ -63,10 +63,22 @@ function baseRecord(overrides = {}) {
   };
 }
 
-function conditionResultFrom(events, { decisionByAttempt = new Map(), endedHrtimeNs } = {}) {
+/**
+ * `dispatchAccounting` mirrors what buildBashDispatchAccounting produces in production: every Bash
+ * call carrying an allow/deny decision is `hook_evaluated`. It must be supplied explicitly, because
+ * the sidecar builder takes dispatch_status EXCLUSIVELY from this map and never re-derives it from
+ * decisionByAttempt -- a sidecar built without it reads every Bash call as `unaccounted` and fails
+ * validation, which is the intended fail-closed behaviour (asserted directly further down).
+ * Pass `dispatchAccounting: null` to exercise that path.
+ */
+function conditionResultFrom(events, { decisionByAttempt = new Map(), endedHrtimeNs, dispatchAccounting } = {}) {
+  const derived = dispatchAccounting !== undefined
+    ? dispatchAccounting
+    : { dispatchStatusByAttempt: new Map([...decisionByAttempt].map(([id, d]) => [id, (d === 'allow' || d === 'deny') ? 'hook_evaluated' : 'unaccounted'])) };
   return {
     events,
     junitAttribution: { decisionByAttempt },
+    dispatchAccounting: derived,
     spawnResult: { endedHrtimeNs },
   };
 }

@@ -214,7 +214,9 @@ matrix is rejected anyway.
   `ambient_profile_matrix_ok`) when this happens.
 
   **How `hookAccountingOk` is proven differs by run kind, and is selected explicitly (never
-  inferred).** `cellTranscriptIntegrityOk()` takes a `requireDispatchAccounting` flag.
+  inferred).** `cellTranscriptIntegrityOk()` takes a **required** `requireDispatchAccounting` flag —
+  there is no default, and an omitted or non-boolean value yields `hookAccountingOk:false` rather
+  than quietly selecting the weaker proof.
   Calibrate/smoke pass `false` and keep the historical aggregate proof (`everyCallHooked`): *every*
   Bash call reached the policy hook, full stop — those run kinds have no per-attempt decision
   channel, so nothing finer is derivable there. The scenario matrix and `scenarioCellIntegrityOk()`
@@ -477,9 +479,15 @@ matrix is rejected anyway.
   cross-validation. That equality was implicit while only one version existed and is now asserted.
 
   The boundary matters for what `dispatch_status: "pre_dispatch_blocked"` can be trusted to mean.
-  At **construction** time `buildAcceptedRunAuditSidecar` has the transcript — command, tool_result
-  content, `tool_use_result` — and derives that label *exclusively* from the id set the strict
-  matcher produced; no caller can supply or fabricate it. At **rest**,
+  At **construction** time `buildAcceptedRunAuditSidecar` consumes the canonical per-attempt map
+  (`dispatchAccounting.dispatchStatusByAttempt`) as the *only* source of `dispatch_status` — it
+  never re-derives a status from `decisionByAttempt`, so a sidecar built without that map reads
+  every Bash call as `unaccounted` and cannot validate. Concretely, the guarantee is a three-link
+  chain rather than an absolute "nobody can fabricate this": the label is produced once in
+  `resolveDecisions` by the strict matcher, cross-checked in `dispatch-accounting.mjs` against the
+  hook-event and decision channels, and re-checked for literal-shape coherence by the builder
+  (which throws rather than emit a `pre_dispatch_blocked` entry whose transcript does not match).
+  At **rest**,
   `validateAcceptedRunAuditSidecar` has only the sidecar, which carries none of those fields, so it
   cannot and does not attempt to prove the matcher matched. It enforces the closed *structural*
   contract only: `hook_evaluated` ⟺ `policy_decision` is `allow`/`deny`; `pre_dispatch_blocked` ⟺

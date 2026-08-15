@@ -146,7 +146,7 @@ describe('summarizeUnexpectedToolUses', () => {
 
 describe('cellTranscriptIntegrityOk', () => {
   it('ok:true for a clean current-skill cell', () => {
-    const result = cellTranscriptIntegrityOk(cleanConditionResult('current-skill'), { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(cleanConditionResult('current-skill'), { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.ok).toBe(true);
     expect(result.reason).toBeNull();
     expect(result.failedChecks).toEqual([]);
@@ -155,12 +155,12 @@ describe('cellTranscriptIntegrityOk', () => {
   });
 
   it('ok:true for a clean no-skill cell', () => {
-    const result = cellTranscriptIntegrityOk(cleanConditionResult('no-skill'), { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(cleanConditionResult('no-skill'), { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.ok).toBe(true);
   });
 
   it('exposes all 16 canonical checks by name via checksByName, every one true for a clean cell', () => {
-    const result = cellTranscriptIntegrityOk(cleanConditionResult('current-skill'), { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(cleanConditionResult('current-skill'), { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(Object.keys(result.checksByName).sort()).toEqual([
       'ambientSkillProfileOk', 'availabilityOk', 'cleanTranscriptOk', 'foreignSkillToolResultsCompleteOk',
       'hookAccountingOk', 'initOk', 'noPreInferenceFailureOk', 'noSkillSafetyOk', 'noUnexpectedToolsOk', 'pluginProfileOk',
@@ -175,7 +175,7 @@ describe('cellTranscriptIntegrityOk', () => {
       init: { plugins: KMP_TEST_RUNNER_PLUGIN, skills: ['kmp-test-runner:kmp-test-runner'], tools: ['Bash', 'Skill', 'Read'], mcp_servers: [], permissionMode: 'dontAsk' },
       events: [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json'), toolResultEvent('t1'), readToolUseEvent('t2'), toolResultEvent('t2'), resultEventStub()],
     });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.ok).toBe(false);
     expect(result.failedChecks).toEqual(expect.arrayContaining(['toolProfileOk', 'noUnexpectedToolsOk']));
     expect(result.unexpectedToolUsesCount).toBe(1);
@@ -184,7 +184,7 @@ describe('cellTranscriptIntegrityOk', () => {
 
   it('ok:false when the transcript has a malformed line (cleanTranscriptOk)', () => {
     const conditionResult = cleanConditionResult('current-skill', { malformedLines: ['not valid json'] });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.ok).toBe(false);
     expect(result.failedChecks).toContain('cleanTranscriptOk');
   });
@@ -194,7 +194,7 @@ describe('cellTranscriptIntegrityOk', () => {
       events: [initEventStub(), skillToolUseEvent('s1', 'kmp-test-runner'), toolResultEvent('s1'), resultEventStub()],
       invocation: { confirmed: true },
     });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.ok).toBe(false);
     expect(result.failedChecks).toContain('noSkillSafetyOk');
   });
@@ -214,7 +214,7 @@ describe('cellTranscriptIntegrityOk', () => {
     const conditionResult = cleanConditionResult('no-skill', {
       events: [initEventStub(), skillToolUseEvent('s1', 'run'), toolResultEvent('s1'), resultEventStub()],
     });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.ok).toBe(true);
     // foreignSkillUses is still exposed (scenarioCellIntegrityOk's own skillSelectionOk reads it
     // via shared.foreignSkillUses) -- this function computes it, just never gates on it itself.
@@ -224,14 +224,14 @@ describe('cellTranscriptIntegrityOk', () => {
 
   it('ok:false when init is missing entirely (initOk)', () => {
     const conditionResult = cleanConditionResult('current-skill', { init: null });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.ok).toBe(false);
     expect(result.failedChecks).toContain('initOk');
   });
 
   it('ok:false when the process was terminated with a genuine error (not a timeout)', () => {
     const conditionResult = cleanConditionResult('current-skill', { spawnResult: { terminated: true, terminationReason: 'error' } });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.ok).toBe(false);
     expect(result.failedChecks).toContain('terminationOk');
   });
@@ -241,7 +241,7 @@ describe('cellTranscriptIntegrityOk', () => {
       spawnResult: { terminated: true, terminationReason: 'timeout' },
       events: [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json')],
     });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.failedChecks).not.toContain('terminationOk');
     expect(result.failedChecks).not.toContain('toolResultsCompleteOk');
     expect(result.failedChecks).not.toContain('transcriptStructureOk');
@@ -262,7 +262,7 @@ describe('cellTranscriptIntegrityOk', () => {
       events: [initEventStub(), { type: 'assistant', message: { content: [{ type: 'text', text: 'Not logged in.' }], usage: ZERO_USAGE } }, resultEventStub()],
       result: preInferenceFailureResult(),
     });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.checksByName.noPreInferenceFailureOk).toBe(false);
     expect(result.ok).toBe(false);
     expect(result.failedChecks).toContain('noPreInferenceFailureOk');
@@ -270,13 +270,13 @@ describe('cellTranscriptIntegrityOk', () => {
 
   it('ok:true (noPreInferenceFailureOk) when is_error:false -- a normal success is never flagged', () => {
     const conditionResult = cleanConditionResult('current-skill', { result: { subtype: 'success', is_error: false, num_turns: 1, usage: ZERO_USAGE } });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
   });
 
   it('ok:true (noPreInferenceFailureOk) when conditionResult.result is absent entirely -- never claims a signature without evidence', () => {
     const conditionResult = cleanConditionResult('current-skill'); // no `result` override at all
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
   });
 
@@ -286,13 +286,13 @@ describe('cellTranscriptIntegrityOk', () => {
   // conjuncts, proving the AND is load-bearing on every axis independently.
   it('Case C -- ok:true (noPreInferenceFailureOk) when num_turns > 1, even with is_error:true and zero usage/tools', () => {
     const conditionResult = cleanConditionResult('current-skill', { result: preInferenceFailureResult({ num_turns: 3 }) });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
   });
 
   it('Case C -- ok:true (noPreInferenceFailureOk) when num_turns is a negative integer -- the range is 0<=n<=1, never just "<=1"', () => {
     const conditionResult = cleanConditionResult('current-skill', { result: preInferenceFailureResult({ num_turns: -1 }) });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
   });
 
@@ -301,7 +301,7 @@ describe('cellTranscriptIntegrityOk', () => {
       events: [initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json'), toolResultEvent('t1', true), resultEventStub()],
       result: preInferenceFailureResult(),
     });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
   });
 
@@ -309,7 +309,7 @@ describe('cellTranscriptIntegrityOk', () => {
     const conditionResult = cleanConditionResult('current-skill', {
       result: preInferenceFailureResult({ usage: { ...ZERO_USAGE, output_tokens: 5 } }),
     });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
   });
 
@@ -330,7 +330,7 @@ describe('cellTranscriptIntegrityOk', () => {
       events: NO_TOOL_USE_EVENTS,
       result: preInferenceFailureResult({ usage: undefined }),
     });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.checksByName.noPreInferenceFailureOk).toBe(false);
   });
 
@@ -340,7 +340,7 @@ describe('cellTranscriptIntegrityOk', () => {
       events: NO_TOOL_USE_EVENTS,
       result: preInferenceFailureResult({ usage: usageMissingOneCounter }),
     });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.checksByName.noPreInferenceFailureOk).toBe(false);
   });
 
@@ -350,7 +350,7 @@ describe('cellTranscriptIntegrityOk', () => {
       events: NO_TOOL_USE_EVENTS,
       result: preInferenceFailureResult({ usage: { ...usageMissingOneCounter, output_tokens: 5 } }),
     });
-    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const result = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
   });
 });
@@ -359,7 +359,7 @@ describe('cellTranscriptIntegrityOk', () => {
 // EXPLICIT option rather than inferred from whether the accounting happens to be present, so no
 // caller can silently fall back to the weaker aggregate proof by forgetting to wire it through.
 describe('cellTranscriptIntegrityOk -- requireDispatchAccounting mode selection', () => {
-  const OPTS = { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME };
+  const OPTS = { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false };
 
   it('scenario mode: hookAccountingOk follows the dispatch accounting, not everyCallHooked', () => {
     // everyCallHooked:false is exactly the incident's aggregate signature -- the accounting is what
@@ -399,10 +399,10 @@ describe('cellTranscriptIntegrityOk -- requireDispatchAccounting mode selection'
   // historical aggregate proof. This must behave exactly as it did before the change.
   it('calibrate/smoke mode: hookAccountingOk still follows everyCallHooked', () => {
     const passing = cleanConditionResult('current-skill', { hookStats: { everyCallHooked: true, hookAllowCount: 1, hookDenyCount: 0 } });
-    expect(cellTranscriptIntegrityOk(passing, OPTS).checksByName.hookAccountingOk).toBe(true);
+    expect(cellTranscriptIntegrityOk(passing, { ...OPTS, requireDispatchAccounting: false }).checksByName.hookAccountingOk).toBe(true);
 
     const failing = cleanConditionResult('current-skill', { hookStats: { everyCallHooked: false, hookAllowCount: 1, hookDenyCount: 0 } });
-    expect(cellTranscriptIntegrityOk(failing, OPTS).checksByName.hookAccountingOk).toBe(false);
+    expect(cellTranscriptIntegrityOk(failing, { ...OPTS, requireDispatchAccounting: false }).checksByName.hookAccountingOk).toBe(false);
   });
 
   it('calibrate/smoke mode ignores dispatch accounting entirely', () => {
@@ -410,6 +410,6 @@ describe('cellTranscriptIntegrityOk -- requireDispatchAccounting mode selection'
       hookStats: { everyCallHooked: true, hookAllowCount: 1, hookDenyCount: 0 },
       dispatchAccounting: { everyCallAccountedFor: false },
     });
-    expect(cellTranscriptIntegrityOk(conditionResult, OPTS).checksByName.hookAccountingOk).toBe(true);
+    expect(cellTranscriptIntegrityOk(conditionResult, { ...OPTS, requireDispatchAccounting: false }).checksByName.hookAccountingOk).toBe(true);
   });
 });

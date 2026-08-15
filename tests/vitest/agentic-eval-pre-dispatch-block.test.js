@@ -18,7 +18,8 @@ import {
   isRecognizedPreDispatchBlock,
 } from '../../tools/agentic-eval/stream-parser.mjs';
 import { buildBashDispatchAccounting, DISPATCH_STATUS_VALUES } from '../../tools/agentic-eval/dispatch-accounting.mjs';
-import { validateAcceptedRunAuditSidecar } from '../../tools/agentic-eval/accepted-run-audit.mjs';
+import { validateAcceptedRunAuditSidecar, buildAcceptedRunAuditSidecar } from '../../tools/agentic-eval/accepted-run-audit.mjs';
+import { cellTranscriptIntegrityOk } from '../../tools/agentic-eval/cell-integrity.mjs';
 
 // The exact strings observed on the real incident transcript (events 34-35), written out here as
 // literals INDEPENDENTLY of the implementation so this file genuinely pins the product shape
@@ -404,5 +405,121 @@ describe('dispatch_status vocabulary has one source of truth', () => {
 
   it('the accounting vocabulary is exactly the Bash statuses -- not_applicable is sidecar-only', () => {
     expect([...DISPATCH_STATUS_VALUES].sort()).toEqual(['hook_evaluated', 'pre_dispatch_blocked', 'unaccounted']);
+  });
+});
+
+// Single source of truth, ENFORCED rather than merely documented. The sidecar builder takes
+// dispatch_status only from the canonical accounting map: it never re-derives it from
+// decisionByAttempt, and never infers a status the map did not supply.
+describe('the audit sidecar cannot certify itself without the canonical accounting', () => {
+  const RECORD = {
+    schema: 5, run_id: 'scenario-current-skill-abcd1234', run_kind: 'scenario',
+    condition: 'current-skill', scenario_id: 's', first_useful_signal_event: null,
+    policy_allowed_gradle_tasks: [], policy_allowed_kmptest_subcommands: ['parallel'],
+    hook_call_count: 0, hook_deny_count: 0,
+    tool_calls_total: { value: 0, reason: null }, shell_commands_total: { value: 0, reason: null },
+    post_signal_ms: { value: null, reason: 'x' }, post_signal_tool_calls: { value: null, reason: 'x' },
+    policy_denials_before_first_signal: { value: null, reason: 'x' },
+    policy_denials_after_first_signal: { value: null, reason: 'x' },
+  };
+
+  function build(events, { decisionByAttempt, dispatchAccounting }) {
+    return buildAcceptedRunAuditSidecar({
+      record: RECORD,
+      conditionResult: { events, junitAttribution: { decisionByAttempt }, dispatchAccounting, spawnResult: {} },
+      terminalAuthoritativeEventIndex: null,
+      targetPluginName: 'kmp-test-runner',
+      targetSkillName: 'kmp-test-runner',
+    });
+  }
+
+  const HOOKED_EVENTS = [
+    bashUseEvent('t1', 'kmp-test parallel --json'),
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } },
+  ];
+
+  it('an allow decision with NO dispatch accounting reads as unaccounted and fails validation', () => {
+    const sidecar = build(HOOKED_EVENTS, { decisionByAttempt: new Map([['t1', 'allow']]), dispatchAccounting: null });
+    // Never silently upgraded to hook_evaluated on the strength of the decision alone...
+    expect(sidecar.tool_calls[0].dispatch_status).toBe('unaccounted');
+    // ...and since policy_decision still reports the real decision, the pair is incoherent, so the
+    // sidecar cannot certify itself. That incoherence is the intended fail-closed outcome.
+    expect(sidecar.tool_calls[0].policy_decision).toBe('allow');
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors.length).toBeGreaterThan(0);
+  });
+
+  it('the same transcript WITH the canonical map validates cleanly', () => {
+    const sidecar = build(HOOKED_EVENTS, {
+      decisionByAttempt: new Map([['t1', 'allow']]),
+      dispatchAccounting: { dispatchStatusByAttempt: new Map([['t1', 'hook_evaluated']]) },
+    });
+    expect(sidecar.tool_calls[0].dispatch_status).toBe('hook_evaluated');
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
+  });
+
+  it('the exact incident shape with the canonical map produces a valid pre_dispatch_blocked entry', () => {
+    const sidecar = build(incidentEvents(), {
+      decisionByAttempt: new Map([['toolu_blocked', null]]),
+      dispatchAccounting: { dispatchStatusByAttempt: new Map([['toolu_blocked', 'pre_dispatch_blocked']]) },
+    });
+    expect(sidecar.tool_calls[0].dispatch_status).toBe('pre_dispatch_blocked');
+    expect(sidecar.tool_calls[0].policy_decision).toBe('not-applicable');
+    expect(sidecar.tool_calls[0].result_status).toBe('error');
+    expect(sidecar.summary.pre_dispatch_blocked_total).toBe(1);
+    expect(sidecar.summary.policy_decisions_missing).toBe(0);
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
+  });
+
+  it('a FABRICATED pre_dispatch_blocked claim over a non-matching transcript fails closed', () => {
+    // The map asserts a block; the transcript is an ordinary hooked kmp-test call. The builder
+    // re-checks the literal shape purely as a coherence guard and refuses to emit the label.
+    expect(() => build(HOOKED_EVENTS, {
+      decisionByAttempt: new Map([['t1', null]]),
+      dispatchAccounting: { dispatchStatusByAttempt: new Map([['t1', 'pre_dispatch_blocked']]) },
+    })).toThrow(/does not match the recognized pre-dispatch block shape/);
+  });
+
+  it('a fabricated claim over a NEARLY-matching transcript also fails closed', () => {
+    expect(() => build(incidentEvents('sleep 59'), {
+      decisionByAttempt: new Map([['toolu_blocked', null]]),
+      dispatchAccounting: { dispatchStatusByAttempt: new Map([['toolu_blocked', 'pre_dispatch_blocked']]) },
+    })).toThrow(/does not match the recognized pre-dispatch block shape/);
+  });
+});
+
+describe('requireDispatchAccounting is mandatory, never defaulted', () => {
+  const BASE = {
+    condition: 'no-skill',
+    init: { plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
+    snapshotDir: null,
+    hookStats: { everyCallHooked: true, hookAllowCount: 1, hookDenyCount: 0 },
+    events: [],
+    malformedLines: [],
+    spawnResult: { terminated: false, terminationReason: null },
+    invocation: null,
+    dispatchAccounting: { everyCallAccountedFor: true },
+  };
+  const IDS = { targetPluginName: 'kmp-test-runner', targetSkillName: 'kmp-test-runner' };
+
+  it.each([
+    ['omitted', {}],
+    ['undefined', { requireDispatchAccounting: undefined }],
+    ['null', { requireDispatchAccounting: null }],
+    ['truthy non-boolean', { requireDispatchAccounting: 1 }],
+    ['string', { requireDispatchAccounting: 'true' }],
+  ])('yields hookAccountingOk:false when the flag is %s', (_label, extra) => {
+    // Both underlying proofs would otherwise pass -- only the missing/invalid flag fails it, so a
+    // caller can never inherit the weaker mechanism by forgetting to choose.
+    expect(cellTranscriptIntegrityOk(BASE, { ...IDS, ...extra }).checksByName.hookAccountingOk).toBe(false);
+  });
+
+  it('explicit true uses the dispatch accounting', () => {
+    expect(cellTranscriptIntegrityOk({ ...BASE, hookStats: { everyCallHooked: false } }, { ...IDS, requireDispatchAccounting: true }).checksByName.hookAccountingOk).toBe(true);
+    expect(cellTranscriptIntegrityOk({ ...BASE, dispatchAccounting: { everyCallAccountedFor: false } }, { ...IDS, requireDispatchAccounting: true }).checksByName.hookAccountingOk).toBe(false);
+  });
+
+  it('explicit false preserves the calibrate/smoke aggregate proof', () => {
+    expect(cellTranscriptIntegrityOk({ ...BASE, dispatchAccounting: null }, { ...IDS, requireDispatchAccounting: false }).checksByName.hookAccountingOk).toBe(true);
+    expect(cellTranscriptIntegrityOk({ ...BASE, hookStats: { everyCallHooked: false } }, { ...IDS, requireDispatchAccounting: false }).checksByName.hookAccountingOk).toBe(false);
   });
 });

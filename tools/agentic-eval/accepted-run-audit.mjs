@@ -26,7 +26,7 @@
 // finalizeAcceptedRunAuditSidecar wires build->validate->redact->revalidate->hash into the one
 // sequence cli.mjs's matrix finalization needs before it can attach `accepted_audit` to a record.
 import { createHash } from 'node:crypto';
-import { findAllToolUsesWithResults, derivePostSignalMs, isTargetSkillReference } from './stream-parser.mjs';
+import { findAllToolUsesWithResults, derivePostSignalMs, isTargetSkillReference, isRecognizedPreDispatchBlock } from './stream-parser.mjs';
 import { classifyBashCommand } from './command-classify.mjs';
 import { assertCleanOrThrowObject } from './privacy.mjs';
 import { DISPATCH_STATUS_VALUES as BASH_DISPATCH_STATUS_VALUES } from './dispatch-accounting.mjs';
@@ -36,17 +36,15 @@ import { DISPATCH_STATUS_VALUES as BASH_DISPATCH_STATUS_VALUES } from './dispatc
  * (and keep rejecting) exactly what they did when the 92 historical sidecars were written. v2 adds
  * per-call `dispatch_status` and the `pre_dispatch_blocked_total` summary counter.
  *
- * Deliberately THREE separate constants rather than one repurposed `ACCEPTED_AUDIT_SIDECAR_SCHEMA`:
- * that single name is imported by test builders that construct genuinely v1-shaped sidecars, so
- * silently redefining it as "latest" would have rewritten those fixtures' meaning underneath them.
- * `ACCEPTED_AUDIT_SIDECAR_SCHEMA` is kept as an alias of V1 for exactly those callers.
+ * Deliberately three EXPLICIT constants and no bare `ACCEPTED_AUDIT_SIDECAR_SCHEMA`: a single
+ * unversioned name cannot say whether a caller means "the historical shape" or "whatever is current",
+ * and test builders constructing genuinely v1-shaped sidecars would have had their meaning rewritten
+ * underneath them the moment it started resolving to 2. Use V1 for historical fixtures, LATEST for
+ * newly built sidecars, and SUPPORTED for validation.
  */
 export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1 = 1;
 export const LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA = 2;
 export const SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS = Object.freeze([1, 2]);
-/** @deprecated Use ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1 (v1 fixtures) or
- *  LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA (newly built sidecars) -- never this ambiguous alias. */
-export const ACCEPTED_AUDIT_SIDECAR_SCHEMA = ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1;
 
 const SIDECAR_TOP_FIELDS = [
   'schema', 'run_id', 'run_schema', 'run_kind', 'condition', 'scenario_id',
@@ -112,9 +110,11 @@ function rejectUnrecognizedKeys(obj, allowedKeys, field, errors) {
  *
  * `dispatchStatusByAttempt` is CONSUMED, never re-derived: it is the canonical per-attempt
  * classification buildBashDispatchAccounting already produced for this condition. This function
- * deliberately does not re-run the pre-dispatch matcher, nor recombine `decisionByAttempt` with a
- * recognized-id set on its own -- two independent derivations of the same fact is exactly how the
- * two channels would drift apart.
+ * never recombines `decisionByAttempt` with a recognized-id set of its own, and never infers a
+ * status the map did not supply -- two independent derivations of the same fact is exactly how the
+ * two channels would drift apart. The one place the matcher is re-run is a COHERENCE check on a
+ * `pre_dispatch_blocked` entry (does the transcript entry still carry the exact literal shape?),
+ * which can only ever reject, never assign.
  */
 function classifyToolCall(u, { targetPluginName, targetSkillName, allowedGradleTasks, allowedKmpTestSubcommands, decisionByAttempt, dispatchStatusByAttempt, firstUsefulSignalEventIndex }) {
   let toolKind;
@@ -141,14 +141,23 @@ function classifyToolCall(u, { targetPluginName, targetSkillName, allowedGradleT
       planOnly = false;
     }
     const decision = decisionByAttempt.get(u.id);
-    const hasDecision = decision === 'allow' || decision === 'deny';
-    // The canonical accounting is authoritative when present. When it is absent (calibrate/smoke,
-    // or any caller that never built it) fall back to the pre-v2 split, which is exactly what the
-    // decision alone can prove: a decision means the hook evaluated the call, no decision means it
-    // is unaccounted. Note `pre_dispatch_blocked` is UNREACHABLE from this fallback by
-    // construction -- that label can only ever come from the strict matcher's own id set, so no
-    // caller can conjure it from a missing decision.
-    dispatchStatus = dispatchStatusByAttempt?.get(u.id) ?? (hasDecision ? 'hook_evaluated' : 'unaccounted');
+    // The canonical accounting is the ONLY source of dispatch_status. A missing map, or a missing
+    // entry within it, yields `unaccounted` -- deliberately even when decisionByAttempt holds an
+    // allow/deny. Re-deriving `hook_evaluated` from the decision here would be a SECOND, independent
+    // derivation of the same fact, which is exactly what having a canonical map exists to prevent:
+    // it would let a sidecar built without the accounting certify itself as fully hook-evaluated.
+    // Because policy_decision below still reports the real decision, that combination
+    // (policy_decision:allow + dispatch_status:unaccounted) violates the validator's biconditional
+    // and the sidecar fails closed -- which is the intended outcome, not an oversight.
+    // Calibrate/smoke never build accepted-run sidecars at all, so they justify no fallback here.
+    dispatchStatus = dispatchStatusByAttempt?.get(u.id) ?? 'unaccounted';
+    // Coherence check, NOT a second classification: if the map claims this call was blocked before
+    // dispatch, the entry must still carry the exact literal shape the strict matcher recognizes.
+    // This catches a corrupted or fabricated map, and throws rather than silently downgrading --
+    // downgrading to `unaccounted` would pair with policy_decision:missing and quietly VALIDATE.
+    if (dispatchStatus === 'pre_dispatch_blocked' && !isRecognizedPreDispatchBlock(u)) {
+      throw new Error(`accepted-run-audit: dispatch accounting claims pre_dispatch_blocked for tool_use ordinal at event index ${u.index}, but the transcript entry does not match the recognized pre-dispatch block shape`);
+    }
     if (decision === 'allow') policyDecision = 'allow';
     else if (decision === 'deny') policyDecision = 'deny';
     // A recognized pre-dispatch block has no policy decision to report, and calling it 'missing'
@@ -209,10 +218,9 @@ function classifyToolCall(u, { targetPluginName, targetSkillName, allowedGradleT
  */
 export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminalAuthoritativeEventIndex, targetPluginName, targetSkillName }) {
   const decisionByAttempt = conditionResult.junitAttribution?.decisionByAttempt ?? new Map();
-  // The canonical per-attempt classification, consumed as-is and never re-derived. When it is
-  // absent (any caller that did not build it) classifyToolCall falls back to the decision-derived
-  // hook_evaluated/unaccounted split -- see its own comment for why `pre_dispatch_blocked` stays
-  // unreachable from that fallback.
+  // The canonical per-attempt classification, consumed as-is and never re-derived. If it is absent
+  // every Bash call reads as `unaccounted`, so a sidecar built without it cannot validate -- see
+  // classifyToolCall for why that is the intended failure mode rather than a gap.
   const dispatchStatusByAttempt = conditionResult.dispatchAccounting?.dispatchStatusByAttempt ?? new Map();
   const firstUsefulSignalEventIndex = record.first_useful_signal_event?.index ?? null;
   const events = conditionResult.events ?? [];

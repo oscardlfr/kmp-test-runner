@@ -27,7 +27,7 @@ import {
   analyzeRunRecord, buildSummary, analyzeRunsDir,
 } from '../../tools/agentic-eval/analysis.mjs';
 import { cmdAnalyze } from '../../tools/agentic-eval/cli.mjs';
-import { ACCEPTED_AUDIT_SIDECAR_SCHEMA } from '../../tools/agentic-eval/accepted-run-audit.mjs';
+import { ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1 } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 
 const VALID_SCOPE_ID = '11111111-2222-4333-8444-555555555555';
@@ -151,7 +151,7 @@ function sidecarFor(record, { entries = [], firstUsefulSignalEvent = null, termi
   const bashEntries = toolCalls.filter(isBash);
   const hasBoundary = boundaryIndex != null;
   return {
-    schema: ACCEPTED_AUDIT_SIDECAR_SCHEMA, run_id: record.run_id, run_schema: 5, run_kind: 'scenario',
+    schema: ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, run_id: record.run_id, run_schema: 5, run_kind: 'scenario',
     condition: record.condition, scenario_id: record.scenario_id,
     first_useful_signal_event: firstUsefulSignalEvent,
     terminal_authoritative_event: terminalAuthoritativeEvent !== undefined ? terminalAuthoritativeEvent : firstUsefulSignalEvent,

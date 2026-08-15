@@ -778,7 +778,7 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     // A anyway would spend a second live session on a pair that is already going to be rejected.
     let integrityB;
     try {
-      integrityB = cellTranscriptIntegrityOk(runB, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+      integrityB = cellTranscriptIntegrityOk(runB, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     } catch (err) {
       throw tagIncidentPhase(err, 'parsing_or_attributing_cell', 0, runB.spawnResult?.rawStdout);
     }
@@ -809,7 +809,7 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     // the same thing -- "this cell's own local integrity has been evaluated" -- for every cell in
     // every command, not merely "control returned" for A specifically.
     try {
-      cellTranscriptIntegrityOk(runA, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+      cellTranscriptIntegrityOk(runA, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     } catch (err) {
       throw tagIncidentPhase(err, 'parsing_or_attributing_cell', 1, runA.spawnResult?.rawStdout);
     }
