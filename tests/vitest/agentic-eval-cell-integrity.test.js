@@ -354,3 +354,62 @@ describe('cellTranscriptIntegrityOk', () => {
     expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
   });
 });
+
+// Claude Code pre-dispatch tool blocks: hookAccountingOk's proof mechanism is now selected by an
+// EXPLICIT option rather than inferred from whether the accounting happens to be present, so no
+// caller can silently fall back to the weaker aggregate proof by forgetting to wire it through.
+describe('cellTranscriptIntegrityOk -- requireDispatchAccounting mode selection', () => {
+  const OPTS = { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME };
+
+  it('scenario mode: hookAccountingOk follows the dispatch accounting, not everyCallHooked', () => {
+    // everyCallHooked:false is exactly the incident's aggregate signature -- the accounting is what
+    // decides, and here it says the transcript is fully accounted for.
+    const conditionResult = cleanConditionResult('current-skill', {
+      hookStats: { everyCallHooked: false, hookAllowCount: 1, hookDenyCount: 0 },
+      dispatchAccounting: { everyCallAccountedFor: true },
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { ...OPTS, requireDispatchAccounting: true });
+    expect(result.checksByName.hookAccountingOk).toBe(true);
+  });
+
+  it('scenario mode: still fails on a genuinely unaccounted call', () => {
+    const conditionResult = cleanConditionResult('current-skill', {
+      hookStats: { everyCallHooked: true, hookAllowCount: 1, hookDenyCount: 0 },
+      dispatchAccounting: { everyCallAccountedFor: false },
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { ...OPTS, requireDispatchAccounting: true });
+    expect(result.checksByName.hookAccountingOk).toBe(false);
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['null', null],
+    ['malformed (no everyCallAccountedFor)', {}],
+    ['malformed (non-boolean)', { everyCallAccountedFor: 'yes' }],
+  ])('scenario mode fails closed when the accounting is %s', (_label, dispatchAccounting) => {
+    const conditionResult = cleanConditionResult('current-skill', {
+      hookStats: { everyCallHooked: true, hookAllowCount: 1, hookDenyCount: 0 },
+      dispatchAccounting,
+    });
+    const result = cellTranscriptIntegrityOk(conditionResult, { ...OPTS, requireDispatchAccounting: true });
+    expect(result.checksByName.hookAccountingOk).toBe(false);
+  });
+
+  // Characterization: calibrate/smoke have no per-attempt decision channel at all, so they keep the
+  // historical aggregate proof. This must behave exactly as it did before the change.
+  it('calibrate/smoke mode: hookAccountingOk still follows everyCallHooked', () => {
+    const passing = cleanConditionResult('current-skill', { hookStats: { everyCallHooked: true, hookAllowCount: 1, hookDenyCount: 0 } });
+    expect(cellTranscriptIntegrityOk(passing, OPTS).checksByName.hookAccountingOk).toBe(true);
+
+    const failing = cleanConditionResult('current-skill', { hookStats: { everyCallHooked: false, hookAllowCount: 1, hookDenyCount: 0 } });
+    expect(cellTranscriptIntegrityOk(failing, OPTS).checksByName.hookAccountingOk).toBe(false);
+  });
+
+  it('calibrate/smoke mode ignores dispatch accounting entirely', () => {
+    const conditionResult = cleanConditionResult('current-skill', {
+      hookStats: { everyCallHooked: true, hookAllowCount: 1, hookDenyCount: 0 },
+      dispatchAccounting: { everyCallAccountedFor: false },
+    });
+    expect(cellTranscriptIntegrityOk(conditionResult, OPTS).checksByName.hookAccountingOk).toBe(true);
+  });
+});

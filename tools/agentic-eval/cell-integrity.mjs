@@ -167,12 +167,22 @@ function isPreInferenceFailureSignature(conditionResult) {
  * @param {object} conditionResult - matrix-runner.mjs's runSingleCondition() return shape (or
  *   cli.mjs's runConditionPair equivalent) -- reads .condition, .init, .events, .hookStats,
  *   .malformedLines, .spawnResult, .snapshotDir, .invocation.
- * @param {{targetPluginName: string, targetSkillName: string, expectedToolNames?: Set<string>}} opts
+ * @param {{targetPluginName: string, targetSkillName: string, expectedToolNames?: Set<string>,
+ *   requireDispatchAccounting?: boolean}} opts - `requireDispatchAccounting` selects how
+ *   `hookAccountingOk` is proven, and is deliberately EXPLICIT rather than inferred from whether
+ *   the accounting happens to be present. `true` (scenario matrices and the scenario hard gate)
+ *   demands the canonical per-tool_use_id dispatch accounting: a missing or malformed
+ *   `dispatchAccounting` fails closed. `false` (runConditionPair / calibrate / smoke) keeps the
+ *   pre-existing aggregate `hookStats.everyCallHooked` proof, because those run kinds have no
+ *   per-attempt decision channel at all (no KMP_EVAL_JUNIT_EVIDENCE_DIR, hence no decision
+ *   sidecars), so a per-attempt classification is not derivable there. Making this a parameter
+ *   rather than a `?? fallback` is the point: no caller can silently drop back to the weaker
+ *   mechanism by forgetting to wire the accounting through.
  * @returns {{ok: boolean, reason: string|null, failedChecks: string[], unexpectedToolUsesCount: number,
  *   unexpectedTools: Array<{name: string, event_index: number}>, checksByName: Record<string, boolean>,
  *   foreignSkillUses: Array<object>}}
  */
-export function cellTranscriptIntegrityOk(conditionResult, { targetPluginName, targetSkillName, expectedToolNames = EXPECTED_TOOL_NAMES }) {
+export function cellTranscriptIntegrityOk(conditionResult, { targetPluginName, targetSkillName, expectedToolNames = EXPECTED_TOOL_NAMES, requireDispatchAccounting = false }) {
   const expectSkillAvailable = conditionResult.condition === 'current-skill';
   const availabilityOk = isSkillAvailable(conditionResult.init, targetPluginName) === expectSkillAvailable;
   const noSkillSafetyOk = expectSkillAvailable || (conditionResult.invocation?.confirmed ?? false) === false;
@@ -184,7 +194,14 @@ export function cellTranscriptIntegrityOk(conditionResult, { targetPluginName, t
   const toolProfileOk = hasExpectedToolProfile(conditionResult.init, expectedToolNames);
   const unexpectedTools = summarizeUnexpectedToolUses(conditionResult.events, expectedToolNames);
   const noUnexpectedToolsOk = unexpectedTools.ok;
-  const hookAccountingOk = conditionResult.hookStats.everyCallHooked === true;
+  // Mechanism integrity only -- never `hook_deny_count === 0`; a denial is the policy hook working
+  // as intended and is itself valid data. Under requireDispatchAccounting the proof is the
+  // canonical per-attempt accounting (which additionally admits the exact recognized Claude Code
+  // pre-dispatch tool block, where no hook could ever have run); otherwise it is the historical
+  // aggregate proof, unchanged.
+  const hookAccountingOk = requireDispatchAccounting
+    ? conditionResult.dispatchAccounting?.everyCallAccountedFor === true
+    : conditionResult.hookStats.everyCallHooked === true;
   const cleanTranscriptOk = conditionResult.malformedLines.length === 0;
   const timeoutCtx = { terminated: conditionResult.spawnResult.terminated, terminationReason: conditionResult.spawnResult.terminationReason };
   const transcriptStructureOk = findTranscriptStructuralIssuesToleratingTimeout(conditionResult.events, timeoutCtx).length === 0;

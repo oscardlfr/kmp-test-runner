@@ -13,7 +13,7 @@
 import { GRADLE_TASK_ENTRY_RE, KMPTEST_SUBCOMMAND_ENTRY_RE } from './policy-hook.mjs';
 import { GRADING_CHECK_NAMES } from './graders.mjs';
 import { normalizeModuleName } from './command-classify.mjs';
-import { ACCEPTED_AUDIT_SIDECAR_SCHEMA } from './accepted-run-audit.mjs';
+import { SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS } from './accepted-run-audit.mjs';
 import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 
 // Run schema went from a single CURRENT_RUN_SCHEMA equality check to explicit per-version
@@ -424,8 +424,11 @@ export function validateRun(run) {
         if (actualKeys.some((k) => !allowedKeys.has(k)) || actualKeys.length !== allowedKeys.size) {
           errors.push({ field: 'accepted_audit', message: `must have exactly the keys schema/relative_path/sha256, got ${JSON.stringify(actualKeys)}` });
         }
-        if (audit.schema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA) {
-          errors.push({ field: 'accepted_audit.schema', message: `must be exactly ${ACCEPTED_AUDIT_SIDECAR_SCHEMA}` });
+        // A SET, not a pinned constant: the 92 historical records point at v1 sidecars and must
+        // keep validating verbatim, while newly built records point at v2. The loader/validator
+        // dispatches on the sidecar's real version; an unknown version fails closed there.
+        if (!SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS.includes(audit.schema)) {
+          errors.push({ field: 'accepted_audit.schema', message: `must be one of ${SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS.join('|')}` });
         }
         const expectedRelativePath = typeof run.run_id === 'string' ? `audit/${run.run_id}.json` : null;
         if (typeof audit.relative_path !== 'string' || !ACCEPTED_AUDIT_RELATIVE_PATH_RE.test(audit.relative_path) || audit.relative_path !== expectedRelativePath) {

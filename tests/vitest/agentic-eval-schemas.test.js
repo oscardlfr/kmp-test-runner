@@ -829,8 +829,15 @@ describe('schema v1/v2/v3/v4/v5 dispatch (decision 6, extended for v3 -- foreign
       expect(validateRun(extraKey).errors.some((e) => e.field === 'accepted_audit')).toBe(true);
     });
 
-    it('REQUIRES schema to be exactly 1', () => {
-      const run = scenarioBase({ accepted_audit: { schema: 2, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+    // Sidecar schemas 1 and 2 now coexist: the 92 historical records point at v1, newly built ones
+    // at v2. Both must validate; anything outside that closed set must not.
+    it.each([1, 2])('ACCEPTS a supported sidecar schema (%i)', (schema) => {
+      const run = scenarioBase({ accepted_audit: { schema, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(false);
+    });
+
+    it.each([0, 3, -1, '1', 1.5, null])('REJECTS an unsupported sidecar schema (%j)', (schema) => {
+      const run = scenarioBase({ accepted_audit: { schema, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
       expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(true);
     });
 

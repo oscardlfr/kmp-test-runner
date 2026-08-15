@@ -211,7 +211,35 @@ matrix is rejected anyway.
   (`cellTranscriptIntegrityOk()`) — a local failure stops the matrix from spawning any further live
   session, rather than running every planned cell only to reject the whole batch at the end; see
   "Rejected-run diagnostics" below for exactly what changes (`matrix_complete`,
-  `ambient_profile_matrix_ok`) when this happens. Each cell
+  `ambient_profile_matrix_ok`) when this happens.
+
+  **How `hookAccountingOk` is proven differs by run kind, and is selected explicitly (never
+  inferred).** `cellTranscriptIntegrityOk()` takes a `requireDispatchAccounting` flag.
+  Calibrate/smoke pass `false` and keep the historical aggregate proof (`everyCallHooked`): *every*
+  Bash call reached the policy hook, full stop — those run kinds have no per-attempt decision
+  channel, so nothing finer is derivable there. The scenario matrix and `scenarioCellIntegrityOk()`
+  pass `true` and require the canonical per-`tool_use_id` dispatch accounting
+  (`dispatch-accounting.mjs`), where a Bash call is `hook_evaluated`, `pre_dispatch_blocked`, or
+  `unaccounted`, and **any** unaccounted call fails the cell. Scenario runs admit exactly one
+  additional case: a **recognized Claude Code pre-dispatch tool block**, where Claude Code refused
+  the call at its own tool layer before dispatching `PreToolUse:Bash`, so no hook could ever have
+  run and nothing reached a shell. Every other Bash call must still be hook-evaluated. A recognized
+  pre-dispatch block is **not** a policy-hook deny: a deny is the hook working as intended and is
+  recorded as such (`hook_deny_count`), whereas a pre-dispatch block never produced a policy
+  decision at all. The matcher is a closed, exact-shape check over the product's own strings
+  (`isRecognizedPreDispatchBlock`, `stream-parser.mjs`) — never a substring or prefix match — and
+  anything that diverges from it falls through as `unaccounted` and fails closed. Widening the
+  recognized set requires fresh real product evidence, not inference from a neighbouring case.
+
+  The accounting also cross-checks the two independent channels against each other: hook ids must be
+  unique and their started/response sets identical, the hook-pair count must equal the
+  hook-evaluated count, and the stream's own allow/deny totals must equal the decision map's. An
+  on-disk decision sidecar therefore can never stand in for a hook event pair that is missing from
+  the transcript, nor the reverse. One consequence worth knowing: a missing or incoherent decision
+  sidecar for a call whose hook events ARE present is now caught here, during fail-fast, rather than
+  later by `junitCaptureCompleteOk` — the rejection is the same, it just happens before any further
+  live session is spawned. `junitCaptureCompleteOk` keeps its own independent reach over the Gradle
+  *evidence* half of the same capture mechanism, which fail-fast cannot preempt. Each cell
   otherwise records its own real, non-null `success`/`expected_outcome_matched` (via
   `gradeScenarioCondition`), `grading_checks` (the full per-check detail), `test_invocations_total`/
   `retries` (derived from the same attempt list grading itself built), and `cache_state:'cold'`
@@ -418,7 +446,9 @@ matrix is rejected anyway.
   — never the raw subcommand/task/module value itself unless it's already a member of the record's
   own `policy_allowed_*` list, and even then only that allowed value, never an arbitrary one),
   `plan_only`, `policy_decision` (`allow|deny|missing|not-applicable`), `result_status`
-  (`success|error|missing`), and `phase` (`pre-signal|produced-signal|post-signal|no-signal`) — plus
+  (`success|error|missing`), `phase` (`pre-signal|produced-signal|post-signal|no-signal`), and — in
+  schema 2 — `dispatch_status`
+  (`hook_evaluated|pre_dispatch_blocked|unaccounted|not_applicable`) — plus
   each entry's own `tool_use_event_index`/`tool_result_event_index` (integers, not timestamps) and a
   stable `ordinal` (`0..N-1`, transcript order, including multiple calls dispatched in one assistant
   turn). The sidecar's own `terminal_authoritative_event` comes directly from the grader's own
@@ -438,6 +468,28 @@ matrix is rejected anyway.
   facts a record's metrics rest on independently reproducible from committed artifacts — it does
   **not** independently prove the original raw transcript's own content, which was never committed
   in the first place and is not recoverable from the sidecar.
+
+  **Schema versions, and the construction-time vs at-rest evidentiary boundary.** Two versions
+  coexist: **v1** (frozen — the 92 historical committed sidecars) and **v2** (current), which adds
+  per-call `dispatch_status` and `summary.pre_dispatch_blocked_total`. Validation dispatches on the
+  sidecar's own real version and fails closed on anything outside `{1, 2}`; a record's
+  `accepted_audit.schema` must equal the schema of the sidecar it points at, checked during
+  cross-validation. That equality was implicit while only one version existed and is now asserted.
+
+  The boundary matters for what `dispatch_status: "pre_dispatch_blocked"` can be trusted to mean.
+  At **construction** time `buildAcceptedRunAuditSidecar` has the transcript — command, tool_result
+  content, `tool_use_result` — and derives that label *exclusively* from the id set the strict
+  matcher produced; no caller can supply or fabricate it. At **rest**,
+  `validateAcceptedRunAuditSidecar` has only the sidecar, which carries none of those fields, so it
+  cannot and does not attempt to prove the matcher matched. It enforces the closed *structural*
+  contract only: `hook_evaluated` ⟺ `policy_decision` is `allow`/`deny`; `pre_dispatch_blocked` ⟺
+  `policy_decision: "not-applicable"` **and** `result_status: "error"`; `unaccounted` ⟺
+  `policy_decision: "missing"`; `not_applicable` ⟺ a non-Bash tool. A Bash call may use
+  `not-applicable` **only** when its `dispatch_status` is `pre_dispatch_blocked` — for any other
+  Bash entry it remains an error, exactly as in v1. `summary.policy_decisions_missing` counts only
+  `unaccounted` calls, so the accepted-sidecar invariant (it must be exactly 0) still means "every
+  Bash call's dispatch is accounted for", and a recognized pre-dispatch block — for which no policy
+  decision was ever due — no longer reads as a capture failure that did not happen.
 
   **Binding and location.** Every schema-v5 scenario record carries
   `accepted_audit: {schema, relative_path, sha256}` — `relative_path` is always exactly

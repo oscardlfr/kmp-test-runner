@@ -5,7 +5,8 @@
 // with synthetic conditionResult/record inputs -- no real Claude session, no subprocess.
 import { describe, it, expect } from 'vitest';
 import {
-  ACCEPTED_AUDIT_SIDECAR_SCHEMA,
+  ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1,
+  LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA,
   acceptedAuditRelativePathFor,
   buildAcceptedRunAuditSidecar,
   validateAcceptedRunAuditSidecar,
@@ -81,7 +82,7 @@ describe('buildAcceptedRunAuditSidecar -- top-level identity + shape', () => {
     const record = baseRecord();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
     const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
-    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA);
+    expect(sidecar.schema).toBe(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA);
     expect(sidecar.run_id).toBe(record.run_id);
     expect(sidecar.run_schema).toBe(5);
     expect(sidecar.run_kind).toBe('scenario');
@@ -654,7 +655,26 @@ describe('crossValidateAcceptedRunAuditAgainstRecord', () => {
     const record = baseRecord({ first_useful_signal_event: { type: 'user.tool_result', index: 2 }, tool_calls_total: { value: 1, reason: null }, shell_commands_total: { value: 1, reason: null }, post_signal_ms: { value: null, reason: 'not recorded' }, post_signal_tool_calls: { value: 0, reason: null }, policy_denials_before_first_signal: { value: 0, reason: null }, policy_denials_after_first_signal: { value: 0, reason: null } });
     const cr = conditionResultFrom([initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --module-filter shared --json'), toolResultEvent('t1'), resultEventStub()], { endedHrtimeNs: undefined });
     const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 2, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    // Mirrors production ordering exactly: cli.mjs's buildSidecarsFn attaches the pointer (with the
+    // BUILT sidecar's own schema) before finalizeAndWriteMatrixRecords cross-validates the pair.
+    record.accepted_audit = { schema: sidecar.schema, relative_path: `audit/${record.run_id}.json`, sha256: 'f'.repeat(64) };
     expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record)).toEqual([]);
+  });
+
+  it('rejects a record pointing at a different sidecar schema than the sidecar itself carries', () => {
+    const record = baseRecord();
+    const cr = conditionResultFrom([initEventStub(), resultEventStub()], { endedHrtimeNs: undefined });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(sidecar.schema).toBe(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA);
+
+    // Record says v1, file on disk is v2.
+    record.accepted_audit = { schema: ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, relative_path: `audit/${record.run_id}.json`, sha256: 'f'.repeat(64) };
+    expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record).map((e) => e.field)).toContain('schema');
+
+    // ...and the reverse: record says v2, file on disk is v1.
+    record.accepted_audit.schema = LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA;
+    const v1Sidecar = { ...sidecar, schema: ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1 };
+    expect(crossValidateAcceptedRunAuditAgainstRecord(v1Sidecar, record).map((e) => e.field)).toContain('schema');
   });
 
   it('flags a run_id mismatch', () => {
