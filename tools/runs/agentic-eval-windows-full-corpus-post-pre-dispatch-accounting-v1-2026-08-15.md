@@ -230,24 +230,34 @@ committed report:
 Note the v3 row also differs in pin and Claude Code version, so only the last
 two rows share a skill snapshot and a toolchain at all.
 
-**This is not evidence of a regression, and must not be read as one.** Three
-reasons, each sufficient on its own:
+**This is a weak directional observation, but it does not establish a
+behavioural regression.** Three things limit what can be read from it:
 
-1. **n = 2 per cell.** A 10→8 move is two cells. Nothing about run-to-run
-   variance at this sample size is characterised, so the difference is not
-   distinguishable from noise.
-2. **The grader changed between the campaigns.** PR #425 rebound
+1. **n = 2 per cell does not characterise variability.** A 10→8 move is two
+   cells, and this design produces no estimate of run-to-run spread. That means
+   the difference cannot be shown to exceed normal variation — it does not mean
+   it has been shown to be normal variation.
+2. **The success totals are not directly comparable.** PR #425 rebound
    `final_answer_consistent_with_evidence` to terminal evidence and PR #426
-   reworked dispatch accounting — both **prospectively**. The 2026-08-13 batch
-   was graded under the older semantics and was not re-graded. The three totals
-   are therefore not measured on one instrument.
-3. **The series is not monotonic** (9 → 10 → 8), which is what one would expect
-   from variance rather than a directional trend.
+   reworked dispatch accounting, both **prospectively**; earlier batches were
+   graded under the older semantics and were not re-graded. The three totals are
+   therefore not measured on one instrument, so differencing them measures the
+   instrument change as well as any behavioural change.
+3. **The non-monotonic shape (9 → 10 → 8) settles nothing.** It is not proof of
+   variance, and it does not rule out a real regression in the most recent
+   transition. A genuine change occurring between 08-13 and 08-15 would produce
+   this same shape.
 
-Recorded here because it is worth a deliberate look **before** the macOS canary,
-not because it supports any conclusion now. Answering it would need more repeats
-on a single fixed grader version, which this campaign was not designed to
-provide.
+No claim is made here about which explanation is more likely; the data do not
+support ranking them.
+
+Recorded because it is worth a deliberate look **before** the macOS canary, not
+because it supports a conclusion now. Investigating it causally would need more
+repeats while holding **all** of the following fixed: harness and grader
+version, skill pin, Claude Code version, platform, corpus and source commits,
+and the execution protocol. Fixing the grader alone would not be sufficient —
+each of the others is an uncontrolled difference in the table above or a
+plausible source of one. This campaign was not designed to provide that.
 - **No macOS comparison of any kind is made here** — not directional, not
   illustrative. The committed baseline contains **108 Windows records and zero
   macOS records**, so there is nothing to compare against. A valid macOS canary
