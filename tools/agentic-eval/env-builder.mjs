@@ -16,6 +16,16 @@
 // anything else (including every CLAUDE*-prefixed nested-session variable) is dropped by
 // construction, never by a denylist alone.
 //
+// A later macOS full-corpus canary (Stage A zero-live auth preflight, run against this exact
+// harness/base SHA) found HOME alone insufficient: with HOME present but USER absent, `claude
+// auth status` still reported loggedIn:false. Bisected empirically on that host: HOME+PATH+
+// SHELL+LANG+LC_CTYPE alone fails; adding USER succeeds; substituting LOGNAME for USER does not
+// -- USER specifically is required, not merely "some username-shaped variable". As with HOME, the
+// exact internal mechanism is not established -- only that preserving USER alongside HOME
+// resolves the observed failure. USER is therefore preserved on macOS only, alongside HOME;
+// LOGNAME/USERPROFILE/APPDATA/XDG_* remain excluded everywhere -- there is no evidence any of
+// them are needed.
+//
 // Case-insensitive matching is required: git-bash/MSYS normalizes Windows env var names to
 // UPPERCASE (SYSTEMROOT, COMSPEC, WINDIR) while native cmd/PowerShell keep mixed case
 // (SystemRoot, ComSpec, windir) -- confirmed empirically on this machine.
@@ -49,12 +59,12 @@ const CLOUD_CRED_NAMES = new Set([
 /**
  * @param {NodeJS.ProcessEnv} sourceEnv
  * @param {{extraAllowed?: string[], platform?: string}} [opts] - `platform` defaults to
- *   `process.platform`; only ever used to decide whether HOME joins the allowlist (macOS only --
- *   see this file's header comment). Injectable for deterministic cross-platform tests.
+ *   `process.platform`; only ever used to decide whether HOME and USER join the allowlist (macOS
+ *   only -- see this file's header comment). Injectable for deterministic cross-platform tests.
  * @returns {NodeJS.ProcessEnv}
  */
 export function buildEvalEnv(sourceEnv, { extraAllowed = [], platform = process.platform } = {}) {
-  const platformAllowed = platform === 'darwin' ? ['HOME'] : [];
+  const platformAllowed = platform === 'darwin' ? ['HOME', 'USER'] : [];
   const allowedLower = new Set([...ALLOWED_NAMES, ...platformAllowed, ...extraAllowed].map((k) => k.toLowerCase()));
   const out = {};
   for (const key of Object.keys(sourceEnv)) {
