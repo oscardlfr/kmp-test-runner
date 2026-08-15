@@ -1,0 +1,125 @@
+{
+  "schema": 2,
+  "run_id": "scenario-no-skill-48b23f48",
+  "run_schema": 5,
+  "run_kind": "scenario",
+  "condition": "no-skill",
+  "scenario_id": "deterministic-unit-test-failure",
+  "first_useful_signal_event": {
+    "type": "user.tool_result",
+    "index": 62
+  },
+  "terminal_authoritative_event": {
+    "type": "user.tool_result",
+    "index": 62
+  },
+  "tool_calls": [
+    {
+      "ordinal": 0,
+      "tool_use_event_index": 4,
+      "tool_result_event_index": 7,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 1,
+      "tool_use_event_index": 8,
+      "tool_result_event_index": 11,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 2,
+      "tool_use_event_index": 16,
+      "tool_result_event_index": 19,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 3,
+      "tool_use_event_index": 23,
+      "tool_result_event_index": 26,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 4,
+      "tool_use_event_index": 28,
+      "tool_result_event_index": 31,
+      "tool_kind": "gradle",
+      "operation": "other",
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 5,
+      "tool_use_event_index": 35,
+      "tool_result_event_index": 38,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 6,
+      "tool_use_event_index": 43,
+      "tool_result_event_index": 46,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 7,
+      "tool_use_event_index": 52,
+      "tool_result_event_index": 62,
+      "tool_kind": "gradle",
+      "operation": "allowed-task",
+      "plan_only": false,
+      "policy_decision": "allow",
+      "result_status": "error",
+      "phase": "produced-signal",
+      "dispatch_status": "hook_evaluated"
+    }
+  ],
+  "summary": {
+    "tool_calls_total": 8,
+    "shell_commands_total": 8,
+    "post_signal_ms": 3829.4625,
+    "post_signal_tool_calls": 0,
+    "policy_denials_total": 7,
+    "policy_denials_before_first_signal": 7,
+    "policy_denials_after_first_signal": 0,
+    "policy_decisions_missing": 0,
+    "pre_dispatch_blocked_total": 0
+  }
+}
