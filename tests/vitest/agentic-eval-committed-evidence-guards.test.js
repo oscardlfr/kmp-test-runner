@@ -3,15 +3,29 @@
 // here must pass identically before and after any change -- they are not RED->GREEN proofs of new
 // behaviour, they exist so a change to the sidecar schema or to .gitignore cannot silently
 // invalidate the historical corpus or start staging local-only diagnostics.
+//
+// "Identically" is a claim about CODE changes, not about the corpus growing. These guards are
+// version-AWARE by necessity: the audit directory is append-only and every sidecar written since
+// the dispatch-accounting change is schema 2, so an assertion phrased over "every committed
+// sidecar" expires the moment the next canary lands its evidence. What each guard below pins is
+// therefore either a rule the production code still owns (the supported-schema set, the validator)
+// or a property of the frozen historical cohort -- never a snapshot of the corpus's current mix.
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateAcceptedRunAuditSidecar, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA } from '../../tools/agentic-eval/accepted-run-audit.mjs';
+import { validateAcceptedRunAuditSidecar, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA, SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const AUDIT_DIR = path.join(REPO_ROOT, 'tools', 'runs', 'agentic-eval-scenario', 'audit');
+
+/** The frozen historical v1 cohort. `buildAcceptedRunAuditSidecar` emits
+ * LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA, which is no longer 1, so no code path can add to this
+ * number; committed evidence is never rewritten, so nothing should remove from it either. A move in
+ * EITHER direction means a historical sidecar was converted to a later shape, edited, or deleted --
+ * which is exactly what this file exists to catch. */
+const HISTORICAL_V1_SIDECAR_COUNT = 92;
 
 describe('committed accepted-run-audit sidecars keep validating under their own schema version', () => {
   const files = existsSync(AUDIT_DIR) ? readdirSync(AUDIT_DIR).filter((f) => f.endsWith('.json')) : [];
@@ -21,9 +35,21 @@ describe('committed accepted-run-audit sidecars keep validating under their own 
     expect(files.length).toBeGreaterThan(0);
   });
 
-  it('every committed sidecar is schema v1 -- the frozen historical shape', () => {
-    const schemas = new Set(files.map((f) => JSON.parse(readFileSync(path.join(AUDIT_DIR, f), 'utf8')).schema));
-    expect([...schemas]).toEqual([ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1]);
+  it('every committed sidecar declares a schema the production code still supports', () => {
+    // The supported set is READ from production rather than restated here: retiring a version there
+    // must make this fail loudly, not keep passing against a stale copy of the list.
+    const schemas = [...new Set(files.map((f) => JSON.parse(readFileSync(path.join(AUDIT_DIR, f), 'utf8')).schema))];
+    expect(schemas.filter((s) => !SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS.includes(s))).toEqual([]);
+  });
+
+  it('the frozen historical v1 cohort is intact -- none converted to a later schema', () => {
+    // Narrower, and non-expiring, replacement for an earlier "every committed sidecar is v1"
+    // assertion: that one was a snapshot of the corpus at the time it was written, and no code path
+    // can produce a v1 sidecar any more, so it could only ever be falsified by the corpus growing
+    // exactly as intended. The property actually worth guarding is that the historical files
+    // themselves were never rewritten -- new v2 evidence coexisting alongside them is not a defect.
+    const v1Count = files.filter((f) => JSON.parse(readFileSync(path.join(AUDIT_DIR, f), 'utf8')).schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1).length;
+    expect(v1Count).toBe(HISTORICAL_V1_SIDECAR_COUNT);
   });
 
   it('every committed sidecar validates with zero errors', () => {
@@ -40,6 +66,11 @@ describe('committed accepted-run-audit sidecars keep validating under their own 
     const offenders = [];
     for (const f of files) {
       const sidecar = JSON.parse(readFileSync(path.join(AUDIT_DIR, f), 'utf8'));
+      // Scoped to v1 files, which is what the assertion always meant. These two fields are REQUIRED
+      // on a v2 sidecar -- the validator rejects a v2 that omits either -- so leaving the check
+      // unscoped would report the current writer's own mandatory output as corpus corruption. On a
+      // v1 file they stay unrecognized keys, and v1's closed-key rule still rejects them.
+      if (sidecar.schema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1) continue;
       if ('pre_dispatch_blocked_total' in (sidecar.summary ?? {})) offenders.push(`${f}: summary.pre_dispatch_blocked_total`);
       if ((sidecar.tool_calls ?? []).some((tc) => 'dispatch_status' in tc)) offenders.push(`${f}: tool_calls[].dispatch_status`);
     }
