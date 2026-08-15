@@ -53,6 +53,19 @@ current-skill and **6** for no-skill.
 
 ## Results
 
+### "6/6 matrices accepted" is a structural statement, not a behavioural one
+
+All six matrices were **accepted**: every cell passed the harness's structural
+integrity gates — hook accounting, transcript structure, provenance, sidecar
+construction and cross-validation — so all 24 records were promoted. That is
+what acceptance means and it is the harness property this campaign set out to
+test.
+
+It is **not** a claim that the agent succeeded in 24 of 24 tasks. Behavioural
+outcomes are separate and lower: **current-skill 8/12, no-skill 1/12**. A cell
+can be structurally accepted and still fail its grading checks; 15 of the 24
+cells did exactly that.
+
 ### By condition (n = 12 cells each)
 
 | Metric | current-skill | no-skill |
@@ -113,6 +126,31 @@ A policy **deny** is the hook working as intended and is recorded as such
 "hook_evaluated"`). It is not an error and is categorically distinct from a
 pre-dispatch block.
 
+### The four failed current-skill cells
+
+Read verbatim from the committed records' own `grading_checks`. These are the
+failing check names and their recorded details — **no cause is attributed**, no
+skill defect is claimed, and no regression is inferred. Establishing why any of
+these happened requires evidence this report does not contain.
+
+| Run id | Scenario | Rep | Checks | Failing checks (as recorded) |
+|---|---|---|---|---|
+| `scenario-current-skill-d9d1a5fe` | `changed-module-verification` | 1 | 4/8 | terminal attempt produced content that did not parse as valid evidence; target and outcome therefore had no well-formed evidence to check; final answer contains no `KMP_EVAL_RESULT` block |
+| `scenario-current-skill-29d93e1c` | `coverage-threshold-failure` | 0 | 6/8 | terminal attempt outcome does not match expected; `KMP_EVAL_RESULT` block does not match the facts observed in the terminal attempt's own evidence |
+| `scenario-current-skill-151c2029` | `coverage-threshold-failure` | 1 | 6/8 | same two checks, same recorded details as the cell above |
+| `scenario-current-skill-4e6425f2` | `kampkit-android-host-test-discovery` | 0 | 6/8 | terminal attempt targeted the wrong module; outcome therefore had no well-formed, correctly-targeted evidence to check |
+
+Two structural notes, both readable directly from the check sets:
+
+- For `d9d1a5fe`, `29d93e1c` and `151c2029`, evidence was produced and reached
+  the grader; for `d9d1a5fe` it did not parse, for the other two it parsed but
+  the outcome disagreed with the scenario's expectation.
+- For `4e6425f2`, `final_answer_consistent_with_evidence` **passed** while the
+  target check failed — the agent's final answer was consistent with the
+  evidence it actually produced, which happened to target the wrong module.
+  That is PR #425's semantics working as designed: the check binds the final
+  answer to terminal evidence, not to `scenario.expected`.
+
 ## Dispatch accounting — the point of this campaign
 
 Structural counts, taken from the schema-2 sidecars' own fields only. No raw
@@ -127,14 +165,20 @@ transcript or stderr was read to produce any number in this report.
 Per scenario, `pre_dispatch_blocked_total` is 0 for all 4 cells of all 6
 scenarios.
 
-**This campaign did not exercise the pre-dispatch block form live.** Zero
-occurrences is a real, reportable outcome, not a gap in verification: the form's
-focused end-to-end coverage exists at this base in
-`tests/fixtures/fake-claude-run-pre-dispatch-blocked`, driven by
-`agentic-eval-run-command.test.js`. What this campaign does establish is the
-other half — that the reworked accounting classifies 24 real Windows sessions
-with zero unaccounted calls and zero spurious missing decisions, which is the
-regression the incident made a live risk.
+**What this campaign validated, and what it did not.**
+
+Validated: the ordinary dispatch-accounting path over 24 real Windows sessions.
+Every Bash attempt in every cell was classified, with zero unaccounted calls and
+zero spurious missing decisions — the regression the incident made a live risk.
+
+**Not validated: the pre-dispatch block matcher itself.** Zero occurrences means
+`isRecognizedPreDispatchBlock` was never exercised against a real Claude Code
+pre-dispatch block in this campaign. **This is a live-coverage limitation of the
+canary**, and it should be recorded as one. The focused end-to-end fixture at
+this base (`tests/fixtures/fake-claude-run-pre-dispatch-blocked`, driven by
+`agentic-eval-run-command.test.js`) mitigates it, but a fixture is not a
+substitute for a live observation: it exercises the matcher against a recorded
+shape, not against whatever the product actually emits next.
 
 ## Reconciliation
 
@@ -171,6 +215,39 @@ frozen) plus **24 schema 2** (this batch). Every record's
 
 - **n = 2 per cell.** No causal, significance, reliability, or generalization
   claim is made or supported. The tables are descriptive counts.
+
+### Directional context — a signal to analyse, not a conclusion
+
+Windows 6-scenario `current-skill` totals, each read from its own campaign's
+committed report:
+
+| Campaign | Date | Claude Code | Pin | current-skill | no-skill |
+|---|---|---|---|---|---|
+| full-corpus canary v3 | 2026-08-11 | `2.1.225` | `9814ada…` | 9/12 | 1/12 |
+| Windows post-auth-hardening v1 | 2026-08-13 | `2.1.227` | `8492d98…` | 10/12 | 1/12 |
+| **this campaign** | 2026-08-15 | `2.1.227` | `8492d98…` | **8/12** | **1/12** |
+
+Note the v3 row also differs in pin and Claude Code version, so only the last
+two rows share a skill snapshot and a toolchain at all.
+
+**This is not evidence of a regression, and must not be read as one.** Three
+reasons, each sufficient on its own:
+
+1. **n = 2 per cell.** A 10→8 move is two cells. Nothing about run-to-run
+   variance at this sample size is characterised, so the difference is not
+   distinguishable from noise.
+2. **The grader changed between the campaigns.** PR #425 rebound
+   `final_answer_consistent_with_evidence` to terminal evidence and PR #426
+   reworked dispatch accounting — both **prospectively**. The 2026-08-13 batch
+   was graded under the older semantics and was not re-graded. The three totals
+   are therefore not measured on one instrument.
+3. **The series is not monotonic** (9 → 10 → 8), which is what one would expect
+   from variance rather than a directional trend.
+
+Recorded here because it is worth a deliberate look **before** the macOS canary,
+not because it supports any conclusion now. Answering it would need more repeats
+on a single fixed grader version, which this campaign was not designed to
+provide.
 - **No macOS comparison of any kind is made here** — not directional, not
   illustrative. The committed baseline contains **108 Windows records and zero
   macOS records**, so there is nothing to compare against. A valid macOS canary
