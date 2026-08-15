@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Auth-status short-circuit -- ALWAYS the first check in this file, before any PROBE_LOG/
+# invocation-counter logic below: this call must never consume an invocation-counter slot the
+# rest of this fixture's own branching depends on.
+if [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  echo '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":null,"subscriptionType":null}'
+  exit 0
+fi
+# tests/fixtures/fake-claude-run-pre-dispatch-blocked/claude -- byte-for-byte the
+# fake-claude-run-scenario-success fixture PLUS one extra Bash call that Claude Code rejects at its
+# own tool layer before the PreToolUse:Bash hook is ever dispatched. Reproduces the exact shape a
+# real Claude Code 2.1.227 transcript showed on the aborted Windows full-corpus canary (events
+# 34-35 of matrix 1/6, cell 3): a structurally valid `sleep 60` tool_use, NO hook_started/
+# hook_response pair, and an immediate is_error tool_result carrying the product's own
+# <tool_use_error>Blocked: standalone ...</tool_use_error> message, with the same message repeated
+# on the event-level `tool_use_result` sibling as a plain STRING prefixed "Error: ".
+#
+# The point of this fixture is that such a cell must reach promotion + grading: nothing executed,
+# no enforcement gap occurred, and the agent's own (correct) answer must not be discarded. It is
+# ALSO the only fixture in the tree that emits `tool_use_result` at all.
+#
+# Original header follows.
+#
+# tests/fixtures/fake-claude-run-scenario-success/claude -- deterministic stand-in for the real
+# `claude` CLI, used by tests/vitest/agentic-eval-run-command.test.js to exercise cmdRun's own
+# scenario-matrix orchestration end-to-end (per-cell materialize/reset, grading integration via
+# graders.mjs, atomic N-record promotion) without spending live API budget. Never invoked outside
+# these tests -- production runs always use the real, authenticated `claude` CLI. See
+# fake-claude-success/claude (calibrate/smoke's own fixture) for the shared --plugin-dir-sniffing
+# convention this mirrors.
+#
+# Both conditions attempt the Skill tool (--plugin-dir presence decides confirmed vs. "Unknown
+# skill") and BOTH then run the exact same single Bash call -- `kmp-test parallel --module-filter
+# :fakemod --json` -- reporting a real, well-formed no_test_modules envelope for a module named
+# :fakemod, matching tests/vitest/agentic-eval-run-command.test.js's own synthetic,
+# integration-test-only scenario (its `expected.kmp_test` contract exactly, and its
+# `expected.module`). Whether the skill was "available" doesn't change what command gets run here
+# -- this fixture exists to prove cmdRun's own WIRING works end-to-end for a correct answer in
+# both arms, not to model realistic skill-driven behavioral divergence (that is exactly what a
+# live/corpus-probe run would measure for real, deliberately out of scope for an infrastructure
+# integration test).
+#
+# Also writes the decision sidecar the real policy-hook.mjs now writes for EVERY scenario
+# condition (round-7 fix -- KMP_EVAL_JUNIT_EVIDENCE_DIR is no longer 'tests_executed'-only), the
+# same way fake-claude-run-tests-executed-two-gradle/claude already does for its own Gradle
+# attempts -- see that fixture's header comment for why this simulates the hook's own side effect
+# inline rather than spawning it for real.
+write_sidecar() {
+  local kind="$1" toolUseId="$2" recordJson="$3"
+  node -e '
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const [kind, toolUseId, recordJson] = process.argv.slice(1);
+const idHash = crypto.createHash("sha256").update(toolUseId).digest("hex");
+const dir = path.join(process.env.KMP_EVAL_JUNIT_EVIDENCE_DIR, kind);
+fs.mkdirSync(dir, { recursive: true });
+fs.writeFileSync(path.join(dir, idHash + ".json"), recordJson);
+' -- "$kind" "$toolUseId" "$recordJson"
+}
+
+HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  PREV_ARG="$arg"
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
+  # Round-3 audit finding (P1): a current-skill condition's skills[] must genuinely carry the
+  # target's own identity -- computeAmbientSkillProfile's targetIdentityOk now REQUIRES presence
+  # for expectTargetPresent:true, not merely "not duplicated" (the pre-fix bug this closes).
+  SKILLS='["kmp-test-runner"]'
+else
+  PLUGINS='[]'
+  SKILLS='[]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-0001\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"dontAsk\",\"plugins\":$PLUGINS,\"skills\":$SKILLS,\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+else
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
+fi
+
+# --- Claude-Code-internal pre-dispatch tool block (the whole point of this fixture) -----------
+# Emitted BEFORE the real kmp-test call so it sits on the pre-signal side of the
+# first_useful_signal boundary. Deliberately NO hook_started/hook_response and NO write_sidecar:
+# the policy hook never ran, because Claude Code refused the call before dispatching it. The
+# tool_result event carries EXACTLY ONE content block -- `tool_use_result` is event-level, so the
+# matcher only accepts it as attributable when nothing else shares the event.
+BLOCK_BODY='Blocked: standalone sleep 60. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.'
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeblocked1","name":"Bash","input":{"command":"sleep 60","description":"Wait for background test run"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{type:'tool_result',content:'<tool_use_error>'+process.argv[1]+'</tool_use_error>',is_error:true,tool_use_id:'toolu_fakeblocked1'}]},tool_use_result:'Error: '+process.argv[1]}))" "$BLOCK_BODY"
+
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test parallel --module-filter :fakemod --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+write_sidecar decisions toolu_fakebash1 '{"decision":"allow","command":"kmp-test parallel --module-filter :fakemod --json"}'
+
+# Built via `node -e` (never manual bash quote-escaping) specifically so the nested JSON envelope
+# survives as a byte-exact string VALUE inside the outer transcript line -- the tool_result's own
+# `content` field must be the literal stdout text a real `kmp-test parallel --json` would have
+# printed, i.e. a JSON-encoded STRING whose PARSED value is this envelope object, not the object
+# itself inlined.
+KMP_ENVELOPE='{"tool":"kmp-test","schema_version":2,"subcommand":"parallel","version":"0.14.0","project_root":"/fake","exit_code":2,"duration_ms":21,"tests":{"total":0,"passed":0,"failed":0,"skipped":0,"individual_total":0},"modules":[],"skipped":[{"module":"fakemod","reason":"no test source set"}],"coverage":{"tool":"auto","missed_lines":null,"modules_with_kover_plugin":[],"modules_with_jacoco_plugin":[]},"errors":[{"code":"no_test_modules","message":"No modules found matching filter: :fakemod","test_type":"","caused_by_filter":true}],"warnings":[],"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true}}'
+node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{type:'tool_result',content:process.argv[1],tool_use_id:'toolu_fakebash1'}]}}))" "$KMP_ENVELOPE"
+
+# The trailing KMP_EVAL_RESULT block is what graders.mjs's structured final-answer check (check
+# 8) actually reads -- the prose above it is retained in the record for human review only, never
+# inspected for grading (see graders.mjs's own header comment for why free-prose parsing was
+# removed from the grading path entirely).
+FINAL_ANSWER='The :fakemod module has no applicable unit tests -- kmp-test reported no test modules matching that filter.
+
+KMP_EVAL_RESULT
+{"module": ":fakemod", "outcome_kind": "no_applicable_tests"}
+KMP_EVAL_RESULT_END'
+node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
+exit 0

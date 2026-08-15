@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { cmdValidate, validateRunRecordFile } from '../../tools/agentic-eval/cli.mjs';
-import { ACCEPTED_AUDIT_SIDECAR_SCHEMA } from '../../tools/agentic-eval/accepted-run-audit.mjs';
+import { ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 
 const VALID_SCOPE_ID = '11111111-2222-4333-8444-555555555555';
@@ -81,7 +81,7 @@ function scenarioV5Base(overrides = {}) {
 
 function validSidecarFor(record, overrides = {}) {
   return {
-    schema: ACCEPTED_AUDIT_SIDECAR_SCHEMA, run_id: record.run_id, run_schema: 5, run_kind: 'scenario',
+    schema: ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, run_id: record.run_id, run_schema: 5, run_kind: 'scenario',
     condition: record.condition, scenario_id: record.scenario_id,
     first_useful_signal_event: null, terminal_authoritative_event: null, tool_calls: [],
     summary: {
@@ -99,7 +99,7 @@ function writeRunAndSidecar(dir, record, sidecarOverrides = {}, { tamperSha256Af
   const sidecar = validSidecarFor(record, sidecarOverrides);
   const sidecarText = sidecarTextOverride ?? JSON.stringify(sidecar, null, 2);
   const sha256 = createHash('sha256').update(sidecarText, 'utf8').digest('hex');
-  record.accepted_audit = { schema: 1, relative_path: `audit/${record.run_id}.json`, sha256: tamperSha256AfterWrite ? 'f'.repeat(64) : sha256 };
+  record.accepted_audit = { schema: sidecar.schema, relative_path: `audit/${record.run_id}.json`, sha256: tamperSha256AfterWrite ? 'f'.repeat(64) : sha256 };
   const runPath = path.join(dir, `${record.run_id}.json`);
   writeFileSync(runPath, JSON.stringify(record, null, 2));
   const auditDir = path.join(dir, 'audit');

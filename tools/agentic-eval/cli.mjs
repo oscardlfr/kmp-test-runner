@@ -54,7 +54,7 @@ import { tokenize } from './policy-hook.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 import { RUNS_ROOT, resolveEvidenceOutDir, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
 import { buildRejectionDiagnostics, writeRejectionRawTranscripts, writeRejectedRunDiagnostics, deriveTranscriptFilename, writeRejectionRawStderr, deriveStderrFilename, readRejectionStderrFile } from './rejection-diagnostics.mjs';
-import { acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from './accepted-run-audit.mjs';
+import { acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord, LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA } from './accepted-run-audit.mjs';
 import { loadMeasurementScopeFile, createMeasurementScopeFileExclusive } from './measurement-scope.mjs';
 import { createInvocationJournal, tagIncidentPhase } from './durable-journal.mjs';
 import { finalizeIncident, reportIncident } from './incident-diagnostics.mjs';
@@ -778,7 +778,7 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     // A anyway would spend a second live session on a pair that is already going to be rejected.
     let integrityB;
     try {
-      integrityB = cellTranscriptIntegrityOk(runB, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+      integrityB = cellTranscriptIntegrityOk(runB, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     } catch (err) {
       throw tagIncidentPhase(err, 'parsing_or_attributing_cell', 0, runB.spawnResult?.rawStdout);
     }
@@ -809,7 +809,7 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     // the same thing -- "this cell's own local integrity has been evaluated" -- for every cell in
     // every command, not merely "control returned" for A specifically.
     try {
-      cellTranscriptIntegrityOk(runA, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+      cellTranscriptIntegrityOk(runA, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     } catch (err) {
       throw tagIncidentPhase(err, 'parsing_or_attributing_cell', 1, runA.spawnResult?.rawStdout);
     }
@@ -2179,7 +2179,11 @@ function scenarioCellIntegrityOk(record, conditionResult, { sharedAmbientNames =
   // plus `foreignSkillUses` (reused for skillSelectionOk, never re-scanned) and the
   // unexpectedToolUsesCount/unexpectedTools structural detail this rejection-diagnostics fix needs
   // propagated, without reparsing anything.
-  const shared = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+  // requireDispatchAccounting:true -- this is the scenario path, so hookAccountingOk must be proven
+  // by the canonical per-tool_use_id dispatch accounting, exactly as the fail-fast hook proved it.
+  // Passing false here would let the final gate accept a cell on weaker evidence than the fail-fast
+  // check already applied to that same cell.
+  const shared = cellTranscriptIntegrityOk(conditionResult, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: true });
 
   // Ambient-skill-profile fix: a real live run's no-skill cells were wrongly rejected for
   // confirming Claude Code's own bundled "run" skill -- present in init.skills[] regardless of
@@ -3088,7 +3092,15 @@ async function cmdRun(args) {
         if (!sidecarResult.ok) {
           return { ok: false, reason: `accepted-run-audit sidecar for record [${i}] (repetition ${record.repetition_index}, ${record.condition}): ${sidecarResult.reason}` };
         }
-        record.accepted_audit = { schema: 1, relative_path: acceptedAuditRelativePathFor(record.run_id), sha256: sidecarResult.sha256 };
+        // The pointer takes the BUILT sidecar's own version, never a hardcoded literal: with v1 and
+        // v2 coexisting, a literal here would keep claiming v1 while the file on disk moved on, and
+        // crossValidateAcceptedRunAuditAgainstRecord's schema equality would fail at promotion time.
+        // The LATEST assertion is the belt-and-braces half -- a builder that somehow emitted a stale
+        // version must not be silently blessed by faithfully copying it.
+        if (builtSidecar.schema !== LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA) {
+          return { ok: false, reason: `accepted-run-audit sidecar for record [${i}] (repetition ${record.repetition_index}, ${record.condition}): built sidecar schema ${builtSidecar.schema} is not the latest (${LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA})` };
+        }
+        record.accepted_audit = { schema: builtSidecar.schema, relative_path: acceptedAuditRelativePathFor(record.run_id), sha256: sidecarResult.sha256 };
         texts.push(sidecarResult.redactedText);
       }
       return { ok: true, sidecarTexts: texts };

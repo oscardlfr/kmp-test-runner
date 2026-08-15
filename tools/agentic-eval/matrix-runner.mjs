@@ -28,6 +28,7 @@ import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsF
 import { parseStreamJsonl, findInitEvent, findResultEvent, findSkillInvocation, countHookEvents, computeByteMetrics, findBashToolUsesWithResults } from './stream-parser.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
 import { attributeCondition } from './junit-evidence.mjs';
+import { buildBashDispatchAccounting } from './dispatch-accounting.mjs';
 import { cellTranscriptIntegrityOk } from './cell-integrity.mjs';
 import { tagIncidentPhase } from './durable-journal.mjs';
 import { runAuthPreflight, authPreflightReasonCode } from './auth-preflight.mjs';
@@ -463,11 +464,24 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
         if (conditionResult.evidenceDir) {
           rmSync(conditionResult.evidenceDir, { recursive: true, force: true });
         }
-        fullConditionResult = { ...conditionResult, junitAttribution };
+        // Canonical per-tool_use_id dispatch accounting. Built HERE, after attributeCondition, and
+        // never from the hookStats computed back in runSingleCondition's parse step: the
+        // per-attempt decision map does not exist until attributeCondition has run, so this is the
+        // earliest point the classification is derivable at all -- and it must exist before the
+        // cell gate below reads it.
+        const dispatchAccounting = junitAttribution
+          ? buildBashDispatchAccounting({
+              bashResults: conditionResult.bashResults,
+              hookStats: conditionResult.hookStats,
+              decisionByAttempt: junitAttribution.decisionByAttempt,
+              preDispatchBlockedAttemptIds: junitAttribution.preDispatchBlockedAttemptIds,
+            })
+          : null;
+        fullConditionResult = { ...conditionResult, junitAttribution, dispatchAccounting };
         // Fail-fast integrity check -- evaluated for EVERY executed cell (not only ones that fail),
         // so a caller building a partial rejection diagnostic has a real verdict for every cell
         // that ran, never just the one that stopped the matrix.
-        localIntegrity = cellTranscriptIntegrityOk(fullConditionResult, { targetPluginName, targetSkillName });
+        localIntegrity = cellTranscriptIntegrityOk(fullConditionResult, { targetPluginName, targetSkillName, requireDispatchAccounting: true });
       } catch (err) {
         throw tagIncidentPhase(err, 'parsing_or_attributing_cell', orderIndex, conditionResult.spawnResult?.rawStdout);
       }

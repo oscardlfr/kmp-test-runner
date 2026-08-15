@@ -79,14 +79,30 @@ export function isSkillAvailable(initEvent, pluginName) {
  * (content: "<tool_use_error>Unknown skill: ...</tool_use_error>", is_error: true,
  * tool_use_id: "..."). `content` is exposed alongside index/isError (not extracted separately by
  * callers) so a single lookup gives both the correlation metadata AND the raw payload a grader
- * would parse -- findBashToolUsesWithResults is the current consumer of the content field. */
+ * would parse -- findBashToolUsesWithResults is the current consumer of the content field.
+ *
+ * `toolUseResult` and `contentBlockCount` are additive (every pre-existing field keeps its exact
+ * name and meaning). `tool_use_result` is a sibling of `message` on the `user` event -- NOT inside
+ * message.content -- and is returned RAW because its real wire type is a union: the sanitized
+ * Step-1 JSONL fixtures carry an object (`{success, commandName}`), while a real Claude Code
+ * 2.1.227 pre-dispatch tool-block carries a plain STRING. Never assume one shape.
+ * `contentBlockCount` is the length of that same user event's own `message.content`: because
+ * `tool_use_result` is event-level rather than per-block, it is only unambiguously attributable to
+ * this tool_result when the event carries exactly one block. */
 function findToolResultById(events, toolUseId, fromIndex) {
   for (let i = fromIndex; i < events.length; i++) {
     const ev = events[i];
     if (ev.type !== 'user') continue;
-    for (const c of ev.message?.content ?? []) {
+    const blocks = ev.message?.content ?? [];
+    for (const c of blocks) {
       if (c.type === 'tool_result' && c.tool_use_id === toolUseId) {
-        return { index: i, isError: c.is_error === true, content: c.content ?? null };
+        return {
+          index: i,
+          isError: c.is_error === true,
+          content: c.content ?? null,
+          toolUseResult: ev.tool_use_result ?? null,
+          contentBlockCount: Array.isArray(blocks) ? blocks.length : 0,
+        };
       }
     }
   }
@@ -659,6 +675,8 @@ export function findBashToolUsesWithResults(events) {
       resultIsError: result ? result.isError : null,
       resultIndex: result ? result.index : null,
       resultContent: result ? result.content : null,
+      resultToolUseResult: result ? result.toolUseResult : null,
+      resultEventContentBlocks: result ? result.contentBlockCount : null,
     };
   });
 }
@@ -692,6 +710,8 @@ export function findAllToolUsesWithResults(events) {
       resultIsError: result ? result.isError : null,
       resultIndex: result ? result.index : null,
       resultContent: result ? result.content : null,
+      resultToolUseResult: result ? result.toolUseResult : null,
+      resultEventContentBlocks: result ? result.contentBlockCount : null,
     };
   });
 }
@@ -735,8 +755,71 @@ export function countHookEvents(events) {
     // hookDenyCount===0 would silently accept a malformed/unrecognized decision as if it were
     // an allow; requiring hookAllowCount===hookCallCount closes that gap.
     hookAllowCount: decisions.filter((d) => d === 'allow').length,
+    // Additive (everyCallHooked's own formula is unchanged): the hook_id uniqueness + set-equality
+    // proof this function already computed internally and discarded. dispatch-accounting.mjs needs
+    // exactly this fact and must not re-parse hook events to get it -- a second parser would be a
+    // second thing to keep in sync. Deliberately ORTHOGONAL to everyCallHooked: hookPairingOk says
+    // "the hook ids that DO exist are cleanly paired", not "every Bash call produced a pair".
+    hookPairingOk: idsMatch,
     everyCallHooked: bashCallCount === hookStarted.length && bashCallCount === hookResponses.length && idsMatch,
   };
+}
+
+/** The single command a real Claude Code 2.1.227 pre-dispatch tool-block was actually observed
+ * rejecting. Deliberately ONE literal, not a numeric grammar: the incident demonstrated `sleep 60`
+ * and nothing else, and a fail-closed matcher must never widen the observed contract on inference.
+ * Adding an entry requires fresh, real product evidence of that exact command's own strings. */
+const RECOGNIZED_PRE_DISPATCH_BLOCK_COMMANDS = Object.freeze(['sleep 60']);
+
+/** Renders the product's own message body for a recognized command. Both compared strings are
+ * derived from this ONE function so the wrapped (`tool_result.content`) and unwrapped-with-prefix
+ * (`tool_use_result`) forms can never drift apart. */
+function renderPreDispatchBlockBody(command) {
+  return `Blocked: standalone ${command}. To wait for a condition, use Monitor with an until-loop `
+    + '(e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use '
+    + 'run_in_background: true. Do not chain shorter sleeps to work around this block.';
+}
+
+/**
+ * Whether this Bash attempt is a RECOGNIZED Claude-Code-internal pre-dispatch tool block: the model
+ * emitted the tool_use, Claude Code rejected it at its own tool layer before ever dispatching the
+ * PreToolUse:Bash hook, and nothing reached a shell.
+ *
+ * Deliberately NOT matched on `Blocked`/`Error`/`permission` substrings, on the `<tool_use_error>`
+ * wrapper alone (14 fixtures emit that wrapper for ordinary "Unknown skill" Skill errors), on event
+ * distance, or on duration. Every conjunct below is required; ANY divergence falls through as an
+ * unrecognized, unaccounted call and fails closed.
+ *
+ * Note what this function deliberately does NOT check: whether a policy decision was correlated to
+ * the attempt. That is supplied by each CALL SITE, because this is invoked from inside
+ * resolveDecisions -- the very function that builds decisionByAttempt -- where taking the decision
+ * as an input would be circular. In resolveDecisions the absence holds by construction (it is the
+ * missing-record branch); in buildBashDispatchAccounting it is an explicit lookup.
+ *
+ * @param {object} bashUse - one findBashToolUsesWithResults entry.
+ */
+export function isRecognizedPreDispatchBlock(bashUse) {
+  if (bashUse == null || typeof bashUse !== 'object' || Array.isArray(bashUse)) return false;
+  // findBashToolUsesWithResults entries carry no `name` (they are Bash by construction); the
+  // name-agnostic findAllToolUsesWithResults shape does. Reject anything explicitly non-Bash.
+  if (bashUse.name !== undefined && bashUse.name !== 'Bash') return false;
+
+  const command = typeof bashUse.command === 'string' ? bashUse.command : bashUse.input?.command;
+  if (typeof command !== 'string' || !RECOGNIZED_PRE_DISPATCH_BLOCK_COMMANDS.includes(command)) return false;
+
+  if (bashUse.resultFound !== true || bashUse.resultIsError !== true) return false;
+  // Immediate: the tool_result is the very next event. A real hook round-trip costs at least two
+  // intervening events, so anything further out is not this shape.
+  if (!Number.isInteger(bashUse.index) || !Number.isInteger(bashUse.resultIndex)) return false;
+  if (bashUse.resultIndex !== bashUse.index + 1) return false;
+  // tool_use_result is event-level, so it is only attributable when the event carries one block.
+  if (bashUse.resultEventContentBlocks !== 1) return false;
+
+  const body = renderPreDispatchBlockBody(command);
+  if (bashUse.resultContent !== `<tool_use_error>${body}</tool_use_error>`) return false;
+  if (typeof bashUse.resultToolUseResult !== 'string') return false;
+  if (bashUse.resultToolUseResult !== `Error: ${body}`) return false;
+  return true;
 }
 
 /**

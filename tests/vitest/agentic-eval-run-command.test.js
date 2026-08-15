@@ -197,6 +197,13 @@ function listEvidenceFiles(runKind) {
   return readdirSync(dir).filter((f) => f.endsWith('.json'));
 }
 
+/** The accepted-run-audit sidecar actually written to disk beside a promoted scenario record --
+ * resolved through the same deterministic `audit/<run_id>.json` path the record's own
+ * accepted_audit.relative_path points at. */
+function readAcceptedAuditSidecar(runId) {
+  return JSON.parse(readFileSync(path.join(evidenceDirFor('scenario'), 'audit', `${runId}.json`), 'utf8'));
+}
+
 function runArgs(extra = []) {
   return ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--model', 'fake-model-x', ...extra];
 }
@@ -605,7 +612,15 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
   it('round-7: a genuinely missing decision sidecar for an otherwise-clean attempt fails the WHOLE matrix closed -- never silently promoted', async () => {
     const result = await runCli(runArgs(['--seed', '1', '--repeats', '1']), fakeClaudeEnv('run-scenario-parallel-missing-decision'), 30000);
     expect(result.status).toBe(1);
-    expect(result.stderr).toMatch(/junitCaptureCompleteOk:false/);
+    // The rejection is unchanged (exit 1, zero evidence promoted); WHICH gate catches it moved
+    // EARLIER. This fixture emits a real hook_started/hook_response pair but never writes the
+    // decision sidecar, so the per-attempt dispatch accounting now sees hook events with no
+    // correlated decision -- a cross-channel incoherence -- and fails hookAccountingOk during
+    // fail-fast, before grading (and therefore before junitCaptureCompleteOk, which reads
+    // record.errors, is ever computed). junitCaptureCompleteOk keeps its own independent reach via
+    // the Gradle-evidence half of captureIncomplete, which fail-fast cannot preempt.
+    expect(result.stderr).toMatch(/hookAccountingOk:false/);
+    expect(result.stderr).toContain('fail-fast stopped the matrix early');
     expect(listEvidenceFiles('scenario')).toEqual([]);
   }, 30000);
 
@@ -620,6 +635,60 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
   // this PR (see fake-claude-run-foreign-skill-rejected/claude's own header comment): a REJECTED
   // ("Unknown skill") foreign Skill attempt, alongside otherwise-correct diagnostic work, must no
   // longer block the whole matrix's promotion.
+  // The real 2026-08 Windows canary incident, reproduced end-to-end. Before this fix the matrix
+  // aborted at fail-fast on hookAccountingOk:false, discarding three already-spent live sessions
+  // and the agent's own correct answer, because 13 Bash tool_uses had only 12 hook pairs. Nothing
+  // executed and no enforcement gap occurred -- Claude Code refused the call at its own tool layer
+  // -- so the cell must promote and be graded, with the attempt still fully visible.
+  it('a Claude-Code pre-dispatch tool block, otherwise clean, promotes and grades the WHOLE matrix -- no respawn, no extra sessions', async () => {
+    const result = await runCli(runArgs(['--seed', '5', '--repeats', '2']), fakeClaudeEnv('run-pre-dispatch-blocked'), 30000);
+    expect(result.status).toBe(0);
+    expect(result.parsed).not.toBeNull();
+    const { records } = result.parsed;
+    // Exactly 4 cells ran and 4 were promoted: no cell was re-launched, replaced, or re-seeded.
+    expect(records.length).toBe(4);
+    expect(listEvidenceFiles('scenario').length).toBe(4);
+    expect(result.stderr).not.toMatch(/hookAccountingOk:false/);
+    expect(result.stderr).not.toMatch(/fail-fast/);
+
+    for (const record of records) {
+      expect(record.benchmark_eligible).toBe(true);
+      // The agent's own (correct) answer is graded normally -- a pre-dispatch block is not an
+      // outcome, and must not leak a negative result.
+      expect(record.expected_outcome_matched.value).toBe(true);
+      // The attempt stays counted as behaviour: 2 Bash calls (the blocked `sleep 60` + the real
+      // kmp-test call) plus 1 Skill attempt.
+      expect(record.shell_commands_total.value).toBe(2);
+      expect(record.tool_calls_total.value).toBe(3);
+      // ...but it is neither a hook allow nor a hook deny: only the ONE dispatched call was hooked.
+      expect(record.hook_call_count).toBe(1);
+      expect(record.hook_deny_count).toBe(0);
+      // ...and it is not a test invocation (the single real kmp-test call is).
+      expect(record.test_invocations_total.value).toBe(1);
+      expect(record.retries.value).toBe(0);
+      expect((record.errors ?? []).some((e) => e.code === 'junit_evidence_capture_incomplete')).toBe(false);
+      // The record points at a schema-2 sidecar, matching what was actually written.
+      expect(record.accepted_audit.schema).toBe(2);
+    }
+
+    // The audit sidecar records the attempt honestly: present, error result, no policy decision
+    // (none was ever due), and counted as a pre-dispatch block rather than a missing decision.
+    const sidecar = readAcceptedAuditSidecar(records[0].run_id);
+    expect(sidecar.schema).toBe(2);
+    expect(sidecar.summary.pre_dispatch_blocked_total).toBe(1);
+    expect(sidecar.summary.policy_decisions_missing).toBe(0);
+    expect(sidecar.summary.shell_commands_total).toBe(2);
+    const blocked = sidecar.tool_calls.filter((tc) => tc.dispatch_status === 'pre_dispatch_blocked');
+    expect(blocked.length).toBe(1);
+    expect(blocked[0].tool_kind).toBe('other-bash');
+    expect(blocked[0].policy_decision).toBe('not-applicable');
+    expect(blocked[0].result_status).toBe('error');
+    // The real kmp-test call is still ordinarily hook-evaluated.
+    const hooked = sidecar.tool_calls.filter((tc) => tc.dispatch_status === 'hook_evaluated');
+    expect(hooked.length).toBe(1);
+    expect(hooked[0].policy_decision).toBe('allow');
+  }, 30000);
+
   it('a REJECTED foreign-skill attempt (is_error:true), otherwise clean, promotes the WHOLE matrix successfully end-to-end', async () => {
     // --repeats 2 (even), not 1 -- benchmark_eligible additionally requires balanced realized
     // current-skill-first/no-skill-first start counts (decision 15), which is structurally
@@ -816,7 +885,12 @@ describe('cli.mjs run -- JUnit-evidence-attribution pipeline, real subprocess ag
     const result = await runCli(runTestsExecutedArgs(['--seed', '7', '--repeats', '1']), fakeClaudeEnv('run-tests-executed-collision'), 30000);
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/RUN FAILED/);
-    expect(result.stderr).toContain('junitCaptureCompleteOk:false');
+    // Same shift as the missing-decision case above: a duplicate write leaves an anomaly tombstone,
+    // so the attempt resolves to a null decision while its hook pair is present in the transcript.
+    // The per-attempt dispatch accounting catches that incoherence during fail-fast, ahead of
+    // junitCaptureCompleteOk. The safety property under test -- whole matrix rejected, zero records
+    // written for ANY cell -- is unchanged.
+    expect(result.stderr).toContain('hookAccountingOk:false');
     expect(listEvidenceFiles('scenario')).toEqual([]);
   }, 30000);
 });

@@ -1481,6 +1481,15 @@ describe('scenarioCellIntegrityOk', () => {
       malformedLines: [],
       spawnResult: { terminated: false, terminationReason: null },
       ...overrides,
+      // scenarioCellIntegrityOk now proves hookAccountingOk via the canonical per-tool_use_id
+      // dispatch accounting (requireDispatchAccounting:true) rather than the aggregate
+      // hookStats.everyCallHooked. Every pre-existing test here expresses a hook-accounting
+      // failure by overriding hookStats.everyCallHooked, so mirror that override into the
+      // accounting unless a test supplies its own -- otherwise those tests would silently stop
+      // discriminating (they would still fail, but for the wrong reason: absent accounting).
+      dispatchAccounting: overrides.dispatchAccounting !== undefined
+        ? overrides.dispatchAccounting
+        : { everyCallAccountedFor: (overrides.hookStats ?? { everyCallHooked: true }).everyCallHooked === true },
     };
   }
 
@@ -1488,6 +1497,22 @@ describe('scenarioCellIntegrityOk', () => {
     const { ok, reason } = scenarioCellIntegrityOk(passRecord('no-skill'), passConditionResult('no-skill'));
     expect(ok).toBe(true);
     expect(reason).toBeNull();
+  });
+
+  // Independence guard. Tightening hookAccountingOk (it now fails on a Bash call whose hook events
+  // and decision record disagree) means fail-fast catches the DECISION half of captureIncomplete
+  // earlier than before. junitCaptureCompleteOk must keep its own separate reach for the half
+  // fail-fast can never preempt -- the Gradle EVIDENCE record -- so neither check masks the other.
+  it('junitCaptureCompleteOk still fails independently on a cell whose dispatch accounting is clean', () => {
+    const record = passRecord('no-skill', {
+      errors: [{ code: 'junit_evidence_capture_incomplete', message: 'evidence record missing for a relevant attempt' }],
+    });
+    const conditionResult = passConditionResult('no-skill');
+    const { ok, reason } = scenarioCellIntegrityOk(record, conditionResult);
+    expect(ok).toBe(false);
+    expect(reason).toContain('junitCaptureCompleteOk:false');
+    // ...and specifically NOT because hook accounting also tripped.
+    expect(reason).toContain('hookAccountingOk:true');
   });
 
   it('passes for a clean current-skill cell', () => {
@@ -1994,6 +2019,12 @@ describe('scenarioHardGate', () => {
       malformedLines: [],
       spawnResult: { terminated: false, terminationReason: null },
       ...integrityOverrides,
+      // Same rationale as passConditionResult's own identical line: hookAccountingOk is now proven
+      // via the canonical dispatch accounting, so mirror any hookStats.everyCallHooked override
+      // into it unless the test supplies its own accounting.
+      dispatchAccounting: integrityOverrides.dispatchAccounting !== undefined
+        ? integrityOverrides.dispatchAccounting
+        : { everyCallAccountedFor: (integrityOverrides.hookStats ?? { everyCallHooked: true }).everyCallHooked === true },
     };
     return { record, conditionResult };
   }

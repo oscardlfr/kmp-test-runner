@@ -15,6 +15,9 @@ import { join } from 'node:path';
 import { forEachJunitXml, extractTestcaseFailures } from '../../lib/parsers/junit-xml.js';
 import { classifyBashCommand, isRelevantGradleInvocation, isRelevantKmpTestParallel, isRelevantKmpTestChanged } from './command-classify.mjs';
 import { sha256Hex, listSidecarIds, readSidecarRecord } from './junit-evidence-io.mjs';
+// stream-parser.mjs imports only node:crypto, so a hook subprocess importing this module still
+// pulls in nothing heavy -- the same constraint that keeps graders.mjs out of this file.
+import { isRecognizedPreDispatchBlock } from './stream-parser.mjs';
 
 /** Concrete, documented aggregate bounds for a single capture (round 5 -- fixed now, not decided
  * during implementation). `MAX_JUNIT_XML_FILES` is comfortably above any realistic single Gradle
@@ -118,8 +121,19 @@ export function countEvidenceTaskJunit(fixtureRoot, evidenceTask) {
  * @param {string} evidenceDir - KMP_EVAL_JUNIT_EVIDENCE_DIR for this condition
  * @param {Array} bashResults - conditionResult.bashResults (real transcript order, real `.id`)
  * @param {{terminated?: boolean, terminationReason?: string|null}} [terminationInfo]
- * @returns {{decisionByAttempt: Map<string, string|null>, captureIncomplete: boolean}} keyed by
- *   each attempt's own `tool_use_id` string (`b.id`), never `b.index`.
+ * SECOND tolerance (Claude Code pre-dispatch tool blocks): a Bash attempt Claude Code rejected at
+ * its OWN tool layer never reaches the PreToolUse:Bash hook, so no decision sidecar can exist for
+ * it -- the hook is what writes them. That is not a capture failure, so it does not raise
+ * `captureIncomplete`. It is admitted ONLY when the strict transcript matcher
+ * (`isRecognizedPreDispatchBlock`) recognizes the exact observed product shape; any divergence
+ * falls through to the ordinary missing-record branch and still fails closed. Note the decision
+ * itself stays `null`: that is what keeps such an attempt out of graders.mjs's own attempt list
+ * (`decision === 'deny' || decision === null` excludes it), so a blocked call can never be counted
+ * as a test invocation. Recognized ids are returned so no downstream consumer re-derives them.
+ *
+ * @returns {{decisionByAttempt: Map<string, string|null>, captureIncomplete: boolean,
+ *   preDispatchBlockedAttemptIds: Set<string>}} keyed by each attempt's own `tool_use_id` string
+ *   (`b.id`), never `b.index`.
  */
 export function resolveDecisions(evidenceDir, bashResults, terminationInfo = {}) {
   const { terminated = false, terminationReason = null } = terminationInfo;
@@ -129,6 +143,7 @@ export function resolveDecisions(evidenceDir, bashResults, terminationInfo = {})
   const lastAttemptId = bashResults.length > 0 ? bashResults[bashResults.length - 1].id : null;
 
   const decisionByAttempt = new Map();
+  const preDispatchBlockedAttemptIds = new Set();
   let captureIncomplete = false;
   for (const b of bashResults) {
     const idHash = sha256Hex(b.id);
@@ -141,6 +156,15 @@ export function resolveDecisions(evidenceDir, bashResults, terminationInfo = {})
     }
     const decisionRecord = readSidecarRecord(decisionsDir, idHash);
     if (decisionRecord == null) {
+      // Checked BEFORE raising captureIncomplete, and only in this branch: a recognized
+      // pre-dispatch block legitimately has no sidecar, because the hook that writes sidecars
+      // never ran. An anomaly tombstone or an incoherent record is a different, real failure and
+      // is never excused here.
+      if (isRecognizedPreDispatchBlock(b)) {
+        preDispatchBlockedAttemptIds.add(b.id);
+        decisionByAttempt.set(b.id, null);
+        continue;
+      }
       if (!isTrailingUnderTimeout) captureIncomplete = true;
       decisionByAttempt.set(b.id, null);
       continue;
@@ -157,7 +181,7 @@ export function resolveDecisions(evidenceDir, bashResults, terminationInfo = {})
     }
     decisionByAttempt.set(b.id, decisionRecord.decision);
   }
-  return { decisionByAttempt, captureIncomplete };
+  return { decisionByAttempt, captureIncomplete, preDispatchBlockedAttemptIds };
 }
 
 /**
@@ -248,7 +272,7 @@ export function attributeCondition(evidenceDir, scenario, bashResults, terminati
   const targetModule = scenario.expected?.module;
   const evidenceRecordsDir = join(evidenceDir, 'evidence');
 
-  const { decisionByAttempt, captureIncomplete: decisionCaptureIncomplete } = resolveDecisions(evidenceDir, bashResults, terminationInfo);
+  const { decisionByAttempt, captureIncomplete: decisionCaptureIncomplete, preDispatchBlockedAttemptIds } = resolveDecisions(evidenceDir, bashResults, terminationInfo);
 
   let ambiguousJunitEvidence = false;
   let evidenceCaptureIncomplete = false;
@@ -325,5 +349,9 @@ export function attributeCondition(evidenceDir, scenario, bashResults, terminati
     perAttemptJunit, decisionByAttempt, ambiguousJunitEvidence,
     captureIncomplete: decisionCaptureIncomplete || evidenceCaptureIncomplete,
     unreliable,
+    // Carried through verbatim from resolveDecisions -- the ONE place the strict matcher runs.
+    // buildBashDispatchAccounting and the audit sidecar both consume this rather than
+    // re-classifying, so there is a single source of truth per condition.
+    preDispatchBlockedAttemptIds,
   };
 }
