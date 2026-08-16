@@ -480,6 +480,88 @@ function changedBlockMatchesExpected(changedBlock, expectedChanged) {
   return changedBlock.staged_only === expectedChanged.staged_only && changedBlock.base_ref === expectedChanged.base_ref;
 }
 
+/** Closed-form coherence check for a target-scoped coverage-threshold claim.
+ * `discoverCoverageModules` (lib/orchestrators/coverage-orchestrator.js) publishes the same
+ * detected modules twice: once in the disjoint `modules_with_kover_plugin`/
+ * `modules_with_jacoco_plugin` lists, and once in exactly one of the four accounting buckets --
+ * every project module is processed exactly once (coverage-orchestrator.js:142-182) and assigned to
+ * exactly one bucket (`dispatched` vs `skippedByUser` are mutually exclusive there). A trustworthy
+ * claim must preserve that one-to-one correspondence -- production already tracks this invariant
+ * itself (coverage-orchestrator.js:720-729's own `coverage_aggregation_drift` warning), but this
+ * function re-derives it independently rather than trusting a fabricated/adversarial envelope to
+ * have honestly declared its own incoherence, the same fail-closed posture this file already takes
+ * everywhere else (e.g. `isCoherentNoApplicableTestsCoverageBlock`, above).
+ *
+ * Foreign (non-target) modules MAY legitimately appear in `no_xml` or `skipped_by_user`:
+ * `runCoverageInProcess` (lib/orchestrators/parallel-orchestrator.js) never forwards the
+ * test-dispatch `--module-filter` into the coverage args it builds for `runCoverage` -- only
+ * `--coverage-tool`/`--coverage-modules`/`--exclude-coverage`/`--flavor`/`--output-file` cross that
+ * boundary -- so `discoverCoverageModules` scans EVERY project module carrying a coverage plugin,
+ * independent of which module(s) `--module-filter` actually dispatched for TESTS. Without an
+ * explicit `--coverage-modules`, every plugin-bearing module lands in `dispatched` and, lacking real
+ * XML from a test run `--module-filter` never triggered for it, later in `no_xml`; with an explicit
+ * `--coverage-modules`, every plugin-bearing module outside that list lands in `skipped_by_user`
+ * instead. This is a DIFFERENT scoping rule than `envelope.skipped[]` (test dispatch,
+ * `lib/orchestrators/parallel/dispatch.js` -- always `--module-filter`-scoped, see
+ * `deriveObservedKmpTestResult`'s own foreign-module rejection for that array, below) -- conflating
+ * the two was the root cause this function's introduction fixes.
+ *
+ * `parse_errored` is the one bucket that stays required-empty: every real parse error
+ * unconditionally carries an incomplete-coverage warning (`coverage_xml_oversized` or
+ * `coverage_parse_failed`, coverage-orchestrator.js:661-717), both already members of
+ * `COVERAGE_INCOMPLETE_WARNING_CODES` -- accepting a foreign `parse_errored` entry here, without
+ * that warning, would validate a shape no real producer ever emits.
+ *
+ * True iff `module_buckets` has exactly the producer's four keys, all plugin lists and buckets are
+ * arrays of non-empty, normalizable strings, every identity is unique (within a list/bucket and
+ * across all of them), the plugin-set equals the bucket-set exactly (same cardinality plus full
+ * inclusion, proving equality independent of order), `parse_errored` is empty, and `with_data` is
+ * exactly `[targetModule]`.
+ * Shared by `validateKmpEnvelopeForAttempt`'s `coverage_threshold_exceeded` branch (expected-side,
+ * checks 4/5/6) and `deriveCoherentCoverageFacts` (observed-side, check 8) so both sides of the
+ * expected/observed comparison apply the identical contract. This deliberately adds a narrow
+ * fail-closed hardening for malformed, duplicated, unbound, or parse-incomplete shapes that neither
+ * side's own prior inline check ever covered -- well-formed, plugin-corresponding producer output is
+ * unaffected. */
+function isCoherentTargetScopedCoverageBlock(covBlock, targetModule) {
+  if (covBlock == null || typeof covBlock !== 'object' || Array.isArray(covBlock)) return false;
+  if (typeof targetModule !== 'string' || targetModule.length === 0) return false;
+
+  const pluginKeys = ['modules_with_kover_plugin', 'modules_with_jacoco_plugin'];
+  const buckets = covBlock.module_buckets;
+  const bucketKeys = ['with_data', 'no_xml', 'parse_errored', 'skipped_by_user'];
+  if (buckets == null || typeof buckets !== 'object' || Array.isArray(buckets)) return false;
+  const actualBucketKeys = Object.keys(buckets);
+  if (actualBucketKeys.length !== bucketKeys.length
+    || !actualBucketKeys.every((key) => bucketKeys.includes(key))) return false;
+  if (![...pluginKeys.map((key) => covBlock[key]), ...bucketKeys.map((key) => buckets[key])]
+    .every(Array.isArray)) return false;
+
+  const normalizeList = (entries) => {
+    const normalized = [];
+    for (const entry of entries) {
+      if (typeof entry !== 'string' || entry.length === 0) return null;
+      const identity = normalizeModuleName(entry);
+      if (typeof identity !== 'string' || identity.length === 0) return null;
+      normalized.push(identity);
+    }
+    return normalized;
+  };
+
+  const pluginIdentities = pluginKeys.flatMap((key) => normalizeList(covBlock[key]) ?? [null]);
+  const bucketIdentities = bucketKeys.flatMap((key) => normalizeList(buckets[key]) ?? [null]);
+  if (pluginIdentities.includes(null) || bucketIdentities.includes(null)) return false;
+  if (new Set(pluginIdentities).size !== pluginIdentities.length) return false;
+  if (new Set(bucketIdentities).size !== bucketIdentities.length) return false;
+  if (pluginIdentities.length !== bucketIdentities.length) return false;
+  const pluginSet = new Set(pluginIdentities);
+  if (!bucketIdentities.every((identity) => pluginSet.has(identity))) return false;
+
+  if (buckets.parse_errored.length !== 0) return false;
+  return buckets.with_data.length === 1
+    && normalizeModuleName(buckets.with_data[0]) === targetModule;
+}
+
 function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsError, scenario, invokedTestType, invokedMinMissedLines) {
   if (envelope.subcommand !== invokedSubcommand) return false;
   // Execution/plan-mode coherence: the envelope's OWN self-reported mode must agree with a real
@@ -653,18 +735,12 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
     // The authoritative proof itself -- envelope.coverage.*, NOT envelope.tests (fact #1/#3: Gradle
     // has no equivalent event, so only the real coverage envelope + errors[] can prove this).
     const covBlock = envelope.coverage;
-    const buckets = covBlock?.module_buckets;
-    const withData = buckets?.with_data;
     const targetModule = normalizeModuleName(scenario.expected.module);
-    const bucketExclusive = Array.isArray(buckets?.no_xml) && !buckets.no_xml.some((m) => normalizeModuleName(m) === targetModule)
-      && Array.isArray(buckets?.parse_errored) && !buckets.parse_errored.some((m) => normalizeModuleName(m) === targetModule)
-      && Array.isArray(buckets?.skipped_by_user) && !buckets.skipped_by_user.some((m) => normalizeModuleName(m) === targetModule);
     const coverageOk = covBlock != null && typeof covBlock === 'object'
       && covBlock.tool === cov.tool
       && covBlock.missed_lines === cov.missed_lines
       && covBlock.modules_contributing === 1
-      && Array.isArray(withData) && withData.length === 1 && normalizeModuleName(withData[0]) === targetModule
-      && bucketExclusive;
+      && isCoherentTargetScopedCoverageBlock(covBlock, targetModule);
 
     // errors[] -- EXACTLY one entry, and it is the matching coverage_threshold_exceeded one (this
     // outcome's exit_code:1 is caused by a SINGLE coherent threshold error, never anything else).
@@ -969,17 +1045,18 @@ const COVERAGE_INCOMPLETE_WARNING_CODES = new Set([
  * returns the coherent `{missed_lines, threshold, modules_contributing}` triple, or `null` if any
  * of the coverage block's own internal claims contradict each other, the observed module, or the
  * envelope's own coverage-aggregation warnings. Mirrors `validateKmpEnvelopeForAttempt`'s identical
- * `coverageOk` computation (bucket-exclusivity, exact single-entry `with_data`,
- * `modules_contributing===1`) -- scoped to the OBSERVED module rather than a scenario's expected
- * one, since this function never compares against scenario.expected at all. Only ever called from
- * the `envelope.modules.length === 1` branch -- exactly ONE module was ever dispatched, so
- * `with_data` must name exactly that module, and the other three buckets (which classify modules
- * that WERE dispatched but produced no usable coverage data) must be entirely empty, not merely
- * free of the observed module -- no OTHER real module could legitimately appear in any of them
- * either. `warnings` is checked against `COVERAGE_INCOMPLETE_WARNING_CODES` universally (not
- * scoped to any particular module named inside the warning) -- a coverage claim's own bucket/count
- * fields can look perfectly self-consistent while the aggregation pipeline that PRODUCED them
- * independently reported it never completed. */
+ * `coverageOk` computation -- both share `isCoherentTargetScopedCoverageBlock` (see that function's
+ * own doc comment for the full bucket/plugin-list contract and its causal justification) -- scoped
+ * to the OBSERVED module rather than a scenario's expected one, since this function never compares
+ * against scenario.expected at all. Only ever called from the `envelope.modules.length === 1`
+ * branch -- exactly ONE module was ever dispatched FOR TESTS, but coverage discovery is a broader,
+ * project-wide concern (never `--module-filter`-scoped -- see
+ * `isCoherentTargetScopedCoverageBlock`), so `no_xml`/`skipped_by_user` may legitimately name other,
+ * untested modules; only `with_data` is required to name exactly the observed module. `warnings` is
+ * checked against `COVERAGE_INCOMPLETE_WARNING_CODES` universally (not scoped to any particular
+ * module named inside the warning) -- a coverage claim's own bucket/count fields can look perfectly
+ * self-consistent while the aggregation pipeline that PRODUCED them independently reported it never
+ * completed. */
 function deriveCoherentCoverageFacts(covBlock, err, module, warnings) {
   if (warnings.some((w) => w && COVERAGE_INCOMPLETE_WARNING_CODES.has(w.code))) return null;
   if (covBlock == null || typeof covBlock !== 'object' || Array.isArray(covBlock)) return null;
@@ -1000,11 +1077,7 @@ function deriveCoherentCoverageFacts(covBlock, err, module, warnings) {
   // Exactly one module was ever dispatched (the caller is already inside the modules.length===1
   // branch) -- a coherent claim can never say more than one module "contributed" real data.
   if (covBlock.modules_contributing !== 1) return null;
-  const buckets = covBlock.module_buckets;
-  const withData = buckets?.with_data;
-  if (!Array.isArray(withData) || withData.length !== 1 || normalizeModuleName(withData[0]) !== module) return null;
-  const emptyBucketKeys = ['no_xml', 'parse_errored', 'skipped_by_user'];
-  if (!emptyBucketKeys.every((key) => Array.isArray(buckets[key]) && buckets[key].length === 0)) return null;
+  if (!isCoherentTargetScopedCoverageBlock(covBlock, module)) return null;
   return { missed_lines: err.missed_lines, threshold: err.threshold, modules_contributing: covBlock.modules_contributing };
 }
 

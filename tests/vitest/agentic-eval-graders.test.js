@@ -3552,6 +3552,200 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     expect(grade.success).toBe(false);
   });
 
+  // --- agentic-eval-observed-result-bucket-scope: checks 4/5/6 (validateKmpEnvelopeForAttempt,
+  // above) already accept a coverage_threshold_exceeded envelope whose no_xml/skipped_by_user name
+  // modules OTHER than the target -- runCoverageInProcess (lib/orchestrators/parallel-orchestrator.js)
+  // never forwards --module-filter into the coverage args it builds, so coverage-orchestrator.js's
+  // discoverCoverageModules independently scans every project module carrying a coverage plugin,
+  // regardless of which module --module-filter dispatched for TESTS. A foreign module a real
+  // producer legitimately discovered-but-didn't-test-dispatch is not incoherent BY ITSELF -- it only
+  // becomes incoherent if it lacks the matching plugin-list entry a real producer always attaches
+  // (see the retitled '[hardening S]' test far below, which is the negative contrast for this exact
+  // pair: same no_xml shape, but WITHOUT the corresponding modules_with_jacoco_plugin entry).
+  // Module names below are synthetic ('foreign:one'/'foreign:two') -- the contract under test is the
+  // BEHAVIOR, not any concrete project's real module names.
+  it('accepts a legitimate foreign module in no_xml (module-filter-scoped test dispatch vs. project-wide coverage discovery)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: {
+          tool: 'auto', missed_lines: 23, modules_contributing: 1,
+          modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one', 'foreign:two'],
+          module_buckets: { with_data: ['core:domain'], no_xml: ['foreign:one', 'foreign:two'], parse_errored: [], skipped_by_user: [] },
+        },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  it('accepts a legitimate foreign module in skipped_by_user when the command passes an explicit --coverage-modules', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --coverage-modules core:domain --json', resultContent: coverageEnvelope({
+        coverage: {
+          tool: 'auto', missed_lines: 23, modules_contributing: 1,
+          modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one', 'foreign:two'],
+          module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: [], skipped_by_user: ['foreign:one', 'foreign:two'] },
+        },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  // Discriminating negatives -- regression guards proving the relaxation above is narrow: every one
+  // of these stays rejected (grade.success:false) both before and after the fix.
+  it('rejects the target module present in BOTH with_data and parse_errored simultaneously', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: ['core:domain'], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects the target module present in BOTH with_data and skipped_by_user simultaneously', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --coverage-modules core:domain --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: [], skipped_by_user: ['core:domain'] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects with_data containing the target module twice', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain', 'core:domain'], no_xml: [], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects when missed_lines does not exceed threshold (missed_lines <= threshold), even with an otherwise-coherent bucket shape', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 10, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: [], skipped_by_user: [] } },
+        errors: [{ code: 'coverage_threshold_exceeded', message: 'x', threshold: 15, missed_lines: 10 }],
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects a coverage block with module_buckets missing entirely', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'] },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects a module_buckets object carrying an unexpected 5th key', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: [], skipped_by_user: [], extra: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects the same foreign module duplicated within a single bucket (no_xml)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one'], module_buckets: { with_data: ['core:domain'], no_xml: ['foreign:one', 'foreign:one'], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects the same foreign module duplicated across two different buckets (no_xml and skipped_by_user)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one'], module_buckets: { with_data: ['core:domain'], no_xml: ['foreign:one'], parse_errored: [], skipped_by_user: ['foreign:one'] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects a module present in modules_with_jacoco_plugin but absent from every bucket', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects the same module listed in BOTH modules_with_kover_plugin and modules_with_jacoco_plugin', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: ['core:domain'], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects a foreign module in parse_errored even when well-formed and plugin-corresponding -- parse_errored must always be empty (a real parse error unconditionally carries an incomplete-coverage warning)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: ['foreign:one'], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  const MALFORMED_MODULE_BUCKET_ENTRIES = [
+    ['null', null],
+    ['a number', 42],
+    ['a nested array', ['foreign:one']],
+    ['an empty string', ''],
+    ['a colon-only string (normalizes to an empty identity)', ':'],
+  ];
+  it.each(MALFORMED_MODULE_BUCKET_ENTRIES)('rejects a no_xml bucket containing %s -- no real producer ever emits a malformed module-bucket entry', (_label, entry) => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain'], no_xml: [entry], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
   it('rejects an incompatible extra error alongside coverage_threshold_exceeded (errors.length !== 1)', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
@@ -4619,7 +4813,14 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     expect(grade.success).toBe(false);
   });
 
-  it('[hardening S] a coverage claim whose no_xml bucket names a module that was NEVER dispatched at all (only ONE module was ever in scope) is self-contradictory, even though with_data itself correctly names the observed module -- must not produce a canonicalizable observedResult', () => {
+  // NOTE: a foreign module in no_xml/skipped_by_user is NOT, by itself, disqualifying -- see the
+  // 'accepts a legitimate foreign module in no_xml/skipped_by_user' positives in the
+  // coverage_threshold_exceeded describe block above, which use the identical shape but ALSO add
+  // the foreign module to modules_with_jacoco_plugin (discoverCoverageModules always publishes a
+  // detected module in both the plugin list AND exactly one bucket -- coverage-orchestrator.js's
+  // own bucket-sum invariant, coverage_aggregation_drift). This test's fixture deliberately omits
+  // that plugin-list entry, which is what actually makes it incoherent.
+  it('[hardening S] a coverage claim whose no_xml bucket names a module absent from BOTH plugin-detection lists (modules_with_kover_plugin/modules_with_jacoco_plugin) is self-contradictory -- discoverCoverageModules can never assign a module to an accounting bucket without first detecting its coverage plugin, so a bucket entry with no corresponding plugin-list entry is impossible real evidence, even though with_data itself correctly names the observed module -- must not produce a canonicalizable observedResult', () => {
     const envelope = JSON.parse(coverageEnvelope());
     envelope.coverage.module_buckets.no_xml = ['other:module'];
     const cr = buildConditionResult(
