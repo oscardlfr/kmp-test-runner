@@ -566,13 +566,23 @@ describe('Steps table -- tests+coverage-budget routing (grounds the BACKLOG "ski
   // itself say tests must run -- it could mean "check the threshold against whatever coverage
   // XML already exists", which belongs to `coverage --min-missed-lines` (grounded above), not
   // `parallel`. The row must carry explicit test-execution intent, not just "missed lines".
+  // Hardened for the coverage-budget command invariant: the row is now located by the flag it
+  // dispatches rather than by loose prose (the trigger wording is exactly what this change
+  // rewrites), and the trigger itself must state an UPPER BOUND on missed/uncovered lines. The
+  // prior "missed lines under 100" phrasing is narrow -- it reads as a property of "missed lines"
+  // specifically, so a user asking about "uncovered lines" or "at most N" has no matching row --
+  // and `--min-missed-lines <N>` fails when missed lines EXCEED N, which "under" states only
+  // obliquely.
   it('a separate row exists for an explicit missed-lines budget, carrying explicit test-execution intent (not just "missed lines" co-occurrence) and linking parallel + --min-missed-lines in the SAME row', () => {
-    const row = findRowContaining(steps, 'missed lines');
+    const row = findRowContaining(steps, '--min-missed-lines');
     expect(row).toBeTruthy();
     expect(row.toLowerCase()).toMatch(/run tests|test this/);
     expect(row).toContain('parallel');
     expect(row).toContain('--min-missed-lines');
     expect(row).toContain('kmp-test parallel --min-missed-lines 100 --json --project-root .');
+    expect(row).toMatch(/\bat most\b|\bno more than\b/i);
+    expect(row).toMatch(/\buncovered\b/i);
+    expect(row.replace(/--min-missed-lines/g, '')).toMatch(/\bmissed\b/i);
   });
 
   it('the bare "run coverage" row stays separate -- no "with coverage", no parallel, no --min-missed-lines', () => {
@@ -630,6 +640,40 @@ describe('Steps table -- tests+coverage-budget routing (grounds the BACKLOG "ski
     const triggerClause = lines.slice(triggerLineIdx, triggerLineIdx + 2).join(' ');
     expect(triggerClause).toMatch(/existing XML|existing report/i);
     expect(triggerClause).toMatch(/\bparallel\b/i);
+  });
+});
+
+// unit-tests.md's own trigger list is the other place a budget ask is exemplified, and it used a
+// percentage framing ("make sure coverage doesn't drop below X") for a flag that counts MISSED
+// lines -- the inverse quantity. An agent copying that example has to invert the relation before
+// it can pick a value for `--min-missed-lines <N>`, and the flag it points at gates on missed lines
+// EXCEEDING N. Bullet-scoped (located by the flag it recommends, not by file-wide substring), so a
+// correction landing on the neighbouring `--test-type` / `--module-filter` bullets, on the flags
+// table lower in the same file, or in coverage.md cannot satisfy it. coverage.md is deliberately
+// NOT re-asserted here -- its own fresh-vs-existing contract is already locked, unchanged, above.
+describe('unit-tests.md missed-lines budget bullet -- upper bound on missed/uncovered lines, never an inverted percentage', () => {
+  const budgetBullet = readFileSync(
+    path.join(SKILL_DIR, 'references', 'workflows', 'unit-tests.md'), 'utf8'
+  )
+    .replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    .split('\n')
+    .find((l) => l.startsWith('- ') && l.includes('--min-missed-lines <N>'));
+
+  it('the budget bullet exists and still routes to --min-missed-lines (preservation)', () => {
+    expect(budgetBullet).toBeTruthy();
+    expect(budgetBullet).toContain('--min-missed-lines <N>');
+  });
+
+  it('the budget bullet drops the ambiguous percentage phrasing', () => {
+    expect(budgetBullet).toBeTruthy();
+    expect(budgetBullet).not.toMatch(/drop below/i);
+  });
+
+  it('the budget bullet states an upper bound on missed/uncovered lines', () => {
+    expect(budgetBullet).toBeTruthy();
+    expect(budgetBullet).toMatch(/\bat most\b|\bno more than\b/i);
+    expect(budgetBullet).toMatch(/\buncovered\b/i);
+    expect(budgetBullet.replace(/--min-missed-lines/g, '')).toMatch(/\bmissed\b/i);
   });
 });
 
@@ -1087,6 +1131,52 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(step1).toMatch(/workflow is `changed`, not `parallel`/i);
   });
 
+  // Coverage-budget command invariant. Sanitized forensic comparison of four comparable
+  // current-skill cells: three resolved the workflow but issued a terminal `parallel` with no
+  // `--min-missed-lines` at all, so production's default threshold 0 left the gate off (exit 0,
+  // missed lines reported, no `coverage_threshold_exceeded`); the one cell that carried the budget
+  // through to its terminal command produced exit 1 with the gate applied. All three also probed
+  // `coverage` (without a threshold) first and were denied. That is an observed difference in
+  // ACTIONS/COMMANDS, not a claim about the model's internal reasoning, and it is not evidence that
+  // this wording changes live behavior. The contract it motivates: step 1 resolves the workflow AND
+  // the modifiers the same request makes mandatory as ONE item. Each required clause gets its own
+  // it() so a RED run names exactly which clause is missing, and each is scoped to step 1's own
+  // span (the same anchors the two tests above use) so a fix landing elsewhere in the protocol --
+  // or in another file -- cannot produce a false green.
+  const step1Span = () => {
+    const start = protocol.indexOf('Resolve the workflow first');
+    const end = protocol.indexOf('**Classify scope**');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return protocol.slice(start, end);
+  };
+
+  it('step 1: frames a tests+budget ask as an upper bound, never as an inverted percentage', () => {
+    const step1 = step1Span();
+    expect(step1).toMatch(/\bat most\b|\bno more than\b/i);
+    expect(step1).not.toMatch(/drop below/i);
+  });
+
+  it('step 1: names both the missed and the uncovered framing of the same lines', () => {
+    const step1 = step1Span();
+    expect(step1).toMatch(/\buncovered\b/i);
+    // "missed" must be present as prose -- stripping the flag token first stops
+    // `--min-missed-lines` from satisfying this on its own.
+    expect(step1.replace(/--min-missed-lines/g, '')).toMatch(/\bmissed\b/i);
+  });
+
+  it('step 1: carries the concrete parallel --min-missed-lines command in that same item', () => {
+    expect(step1Span()).toContain('parallel --min-missed-lines 100');
+  });
+
+  it('step 1: says to substitute the example value with the integer the user asked for', () => {
+    expect(step1Span()).toMatch(/\b100\b[^.\n]*\b(?:replaced|substituted|swapped)\b[^.\n]*\binteger\b/i);
+  });
+
+  it('step 1: forbids splitting the ask into a separate coverage probe first', () => {
+    expect(step1Span()).toMatch(/\bnever\b[^.\n]{0,40}`coverage`[^.\n]{0,40}\bfirst\b/i);
+  });
+
   // Schema-v5 canary forensic fact #1/#2 (tools/runs/agentic-eval-evidence-driven-scope-canary-
   // 2026-07-26.md): the skill was invoked first in only 1/4 current-skill cells (the other 3
   // spent 3-4 denied Bash probes before invocation), and a separate cell landed on a wrong,
@@ -1502,6 +1592,32 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(clause).toMatch(/isn.t yet canonical/i);
     expect(clause).toMatch(/issue the exact standalone command once/i);
     expect(clause).toMatch(/if denied too, stop and report/i);
+  });
+
+  // Same forensic comparison as the step-1 clauses above, second half of the mechanism: in all
+  // three cells that lost the gate, the missing modifier appeared on a command issued AFTER an
+  // exploratory `coverage` probe was denied. The existing rule already says to abandon the probe
+  // and move to the next canonical step, but never said what that next command must be rebuilt
+  // FROM -- so a constraint the user stated could silently disappear across the command change.
+  // Scoped to the exploratory-denial sentence's own span (up to the next denial rule) so the
+  // neighbouring EXACT-canonical and DECORATED clauses, asserted above, cannot satisfy this.
+  const deniedFallbackSpan = () => {
+    const start = protocol.indexOf('A denied exploratory command');
+    const end = protocol.indexOf('A denied EXACT canonical');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return protocol.slice(start, end);
+  };
+
+  it('denial recovery: the next canonical step is rebuilt from the already-resolved workflow and its modifiers', () => {
+    const fallback = deniedFallbackSpan();
+    expect(fallback).toMatch(/rebuil|reconstruct/i);
+    expect(fallback).toMatch(/\bworkflow\b/i);
+    expect(fallback).toMatch(/modifier/i);
+  });
+
+  it('denial recovery: a denial never drops a constraint the user set', () => {
+    expect(deniedFallbackSpan()).toMatch(/\bnever\b[^.\n]{0,40}\b(?:drops?|removes?|loses?)\b[^.\n]{0,40}constraint/i);
   });
 
   // Round-3 fix (preserved through the schema-v5 restructure): round 2's version let describe's

@@ -23,10 +23,12 @@ metadata:
 
 Resolve scope before acting.
 
-1. **Resolve the workflow first** — from what the user asked (see the table under Steps).
-   `describe` discovers modules and tasks; it does not decide the workflow. Unnamed target, only
-   an uncommitted change: the workflow is `changed`, not `parallel`. If ambiguous, ask before
-   running.
+1. **Resolve the workflow first** — from what the user asked (see the table under Steps), with the
+   modifiers that request makes mandatory. `describe` discovers modules and tasks;
+   it does not decide the workflow. Unnamed target, only an uncommitted change:
+   the workflow is `changed`, not `parallel`. Run/confirm tests plus at most N missed/uncovered
+   lines is one item — `parallel --min-missed-lines 100`, `100` replaced by the integer asked
+   for; never a separate `coverage` probe first. If ambiguous, ask before running.
 2. **Classify scope** — broad, exact module, test-capability target, or likely-no-tests target.
    Naming or platform wording never settles task capability: an Android-named module with
    `test_tasks.unit: null` loses to a differently-named KMP module whose own field is
@@ -77,7 +79,8 @@ before trusting exact scope.
 always empty — verify via `plan.coverage_modules` on `--dry-run` (echoes the filter, unresolved)
 or `coverage.module_buckets` on a real run.
 
-A denied exploratory command isn't worth retrying — abandon it and go to the next canonical step.
+A denied exploratory command isn't worth retrying — abandon it and go to the next canonical step,
+rebuilt from the resolved workflow and its modifiers; a denial never drops a user constraint.
 A denied EXACT canonical `kmp-test` command is final: stop and report the blockage; don't retry
 with a different flag, subcommand, or shell wrapper. A denied DECORATED command — redirection, a
 pipe, chaining, `head`, or a shell wrapper — isn't yet canonical: issue the exact standalone command once;
@@ -113,7 +116,7 @@ Pick the subcommand:
 | "run tests" / "test this" / "run tests with coverage" | `kmp-test parallel --json --project-root .` | `test`/`jvmTest`/`desktopTest` |
 | "run instrumented tests" / "run on device" | `kmp-test android --json --project-root .` | `connectedAndroidTest` |
 | "run coverage" | `kmp-test coverage --json --project-root .` ||
-| "run tests; missed lines under 100" | `kmp-test parallel --min-missed-lines 100 --json --project-root .` ||
+| "run tests; at most 100 missed/uncovered lines" | `kmp-test parallel --min-missed-lines 100 --json --project-root .` ||
 | "run benchmarks" | `kmp-test benchmark --json --project-root .` ||
 | "what would run?" / "dry run" | append `--dry-run` to the command above ||
 | "run only changed tests" | `kmp-test changed --json --project-root .` | Git-derived |
