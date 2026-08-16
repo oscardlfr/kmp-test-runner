@@ -270,8 +270,8 @@ describe('materializeSkillSnapshot', () => {
     expect(budgetTrigger).toMatch(/at\s+most\s+100/i);
     expect(budgetTrigger).toContain('missed');
     expect(budgetTrigger).toContain('uncovered');
-    // The old floor-sounding wording is gone: the flag gates on missed lines EXCEEDING N, so
-    // "under 100" described the opposite of what it triggers.
+    // The old wording is gone. "under 100" was stricter at the boundary: it excludes 100, while
+    // the gate fails only when missed lines EXCEED N -- so exactly 100 missed lines passes.
     expect(stepsSection).not.toContain('missed lines under 100');
 
     // Bare "run coverage" (no test-execution intent) stays its own, narrower row -- existing-XML
