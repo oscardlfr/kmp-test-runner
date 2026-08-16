@@ -1,0 +1,89 @@
+{
+  "schema": 2,
+  "run_id": "scenario-current-skill-de6faa60",
+  "run_schema": 5,
+  "run_kind": "scenario",
+  "condition": "current-skill",
+  "scenario_id": "coverage-threshold-failure",
+  "first_useful_signal_event": {
+    "type": "user.tool_result",
+    "index": 44
+  },
+  "terminal_authoritative_event": {
+    "type": "user.tool_result",
+    "index": 44
+  },
+  "tool_calls": [
+    {
+      "ordinal": 0,
+      "tool_use_event_index": 4,
+      "tool_result_event_index": 7,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 1,
+      "tool_use_event_index": 11,
+      "tool_result_event_index": 12,
+      "tool_kind": "target-skill",
+      "operation": null,
+      "plan_only": null,
+      "policy_decision": "not-applicable",
+      "result_status": "success",
+      "phase": "pre-signal",
+      "dispatch_status": "not_applicable"
+    },
+    {
+      "ordinal": 2,
+      "tool_use_event_index": 15,
+      "tool_result_event_index": 24,
+      "tool_kind": "kmp-test",
+      "operation": "describe",
+      "plan_only": false,
+      "policy_decision": "allow",
+      "result_status": "success",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 3,
+      "tool_use_event_index": 26,
+      "tool_result_event_index": 29,
+      "tool_kind": "kmp-test",
+      "operation": "other",
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 4,
+      "tool_use_event_index": 36,
+      "tool_result_event_index": 44,
+      "tool_kind": "kmp-test",
+      "operation": "parallel",
+      "plan_only": false,
+      "policy_decision": "allow",
+      "result_status": "error",
+      "phase": "produced-signal",
+      "dispatch_status": "hook_evaluated"
+    }
+  ],
+  "summary": {
+    "tool_calls_total": 5,
+    "shell_commands_total": 4,
+    "post_signal_ms": 3608.683708,
+    "post_signal_tool_calls": 0,
+    "policy_denials_total": 2,
+    "policy_denials_before_first_signal": 2,
+    "policy_denials_after_first_signal": 0,
+    "policy_decisions_missing": 0,
+    "pre_dispatch_blocked_total": 0
+  }
+}
