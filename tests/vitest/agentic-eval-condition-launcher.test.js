@@ -109,10 +109,48 @@ describe('buildSharedEnv -- byte-identical policy config between conditions', ()
     expectedFixtureRoot: 'C:\\fixture', allowedGradleTasks: ['build'], allowedKmpTestSubcommands: ['doctor'],
   };
 
-  it('never includes HOME/USERPROFILE (narrow allowlist, fix #7)', () => {
-    const env = buildSharedEnv(opts);
-    expect(env).not.toHaveProperty('HOME');
-    expect(env).not.toHaveProperty('USERPROFILE');
+  // buildSharedEnv has no injectable platform/sourceEnv param (unlike buildEvalEnv) -- it reads
+  // process.env/process.platform directly -- so this test stubs process.env (restored in
+  // finally) rather than the ambient real user, and asserts against the REAL process.platform
+  // rather than mocking it, matching this suite's existing convention everywhere else
+  // (agentic-eval-*.test.js never stubs process.platform, only branches on it -- see e.g.
+  // agentic-eval-resolve-bash.test.js, agentic-eval-measurement-scope.test.js). The underlying
+  // per-platform allowlist mechanism itself is exhaustively regression-locked with explicit
+  // platform injection in agentic-eval-env-builder.test.js; this test only needs to prove
+  // buildSharedEnv doesn't reintroduce or strip HOME/USER through its own additional logic
+  // (PATH-prepending, policy/gradle/temp-home vars) on top of whatever buildEvalEnv(process.env)
+  // already returned for the real host.
+  it('preserves HOME+USER on macOS (matches buildEvalEnv\'s darwin contract); excludes both elsewhere; USERPROFILE/APPDATA/LOGNAME/XDG_CONFIG_HOME excluded everywhere', () => {
+    const stubbed = {
+      HOME: 'C:\\Users\\fake-user',
+      USER: 'fake-user',
+      USERPROFILE: 'C:\\Users\\fake-user',
+      APPDATA: 'C:\\Users\\fake-user\\AppData\\Roaming',
+      LOGNAME: 'fake-user-logname',
+      XDG_CONFIG_HOME: 'C:\\Users\\fake-user\\.config',
+    };
+    const original = {};
+    for (const key of Object.keys(stubbed)) original[key] = process.env[key];
+    try {
+      Object.assign(process.env, stubbed);
+      const env = buildSharedEnv(opts);
+      expect(env).not.toHaveProperty('USERPROFILE');
+      expect(env).not.toHaveProperty('APPDATA');
+      expect(env).not.toHaveProperty('LOGNAME');
+      expect(env).not.toHaveProperty('XDG_CONFIG_HOME');
+      if (process.platform === 'darwin') {
+        expect(env.HOME).toBe(stubbed.HOME);
+        expect(env.USER).toBe(stubbed.USER);
+      } else {
+        expect(env).not.toHaveProperty('HOME');
+        expect(env).not.toHaveProperty('USER');
+      }
+    } finally {
+      for (const key of Object.keys(stubbed)) {
+        if (original[key] === undefined) delete process.env[key];
+        else process.env[key] = original[key];
+      }
+    }
   });
 
   it('carries the harness-controlled policy config', () => {

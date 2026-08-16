@@ -17,8 +17,11 @@ function fakeSourceEnv(overrides = {}) {
     JAVA_HOME: 'C:\\java',
     TEMP: 'C:\\temp',
     HOME: 'C:\\Users\\real-user',
+    USER: 'real-user',
+    LOGNAME: 'real-user-logname',
     USERPROFILE: 'C:\\Users\\real-user',
     APPDATA: 'C:\\Users\\real-user\\AppData\\Roaming',
+    XDG_CONFIG_HOME: 'C:\\Users\\real-user\\.config',
     ANTHROPIC_API_KEY: FAKE_API_KEY,
     AWS_SECRET_ACCESS_KEY: FAKE_AWS_SECRET,
     SOME_RANDOM_TOKEN: 'fake-should-never-appear',
@@ -52,14 +55,18 @@ describe('buildEvalEnv', () => {
   // "defaults platform to the real process.platform" test that used to sit further down this
   // file -- both would have run on a real Mac, and this one would have failed. Folded into one
   // platform-aware test instead of two that could disagree.
-  it('drops USERPROFILE/APPDATA under the default platform always; drops HOME too UNLESS the real host is macOS, where it is preserved', () => {
+  it('drops USERPROFILE/APPDATA/LOGNAME/XDG_* under the default platform always; drops HOME and USER too UNLESS the real host is macOS, where both are preserved', () => {
     const out = buildEvalEnv(fakeSourceEnv()); // no explicit platform -- exercises the REAL process.platform default
     expect(out).not.toHaveProperty('USERPROFILE');
     expect(out).not.toHaveProperty('APPDATA');
+    expect(out).not.toHaveProperty('LOGNAME');
+    expect(out).not.toHaveProperty('XDG_CONFIG_HOME');
     if (process.platform === 'darwin') {
       expect(out.HOME).toBe('C:\\Users\\real-user');
+      expect(out.USER).toBe('real-user');
     } else {
       expect(out).not.toHaveProperty('HOME');
+      expect(out).not.toHaveProperty('USER');
     }
   });
 
@@ -68,31 +75,55 @@ describe('buildEvalEnv', () => {
     expect(out.HOME).toBe('C:\\Users\\real-user');
   });
 
+  it('preserves USER on macOS (platform: darwin) -- HOME alone was found insufficient for auth there', () => {
+    const out = buildEvalEnv(fakeSourceEnv(), { platform: 'darwin' });
+    expect(out.USER).toBe('real-user');
+  });
+
+  it('preserves exactly HOME+USER on macOS, never substituting LOGNAME for USER', () => {
+    const out = buildEvalEnv(fakeSourceEnv(), { platform: 'darwin' });
+    expect(out.HOME).toBe('C:\\Users\\real-user');
+    expect(out.USER).toBe('real-user');
+    expect(out).not.toHaveProperty('LOGNAME');
+  });
+
   it('does not invent HOME on macOS when absent from sourceEnv', () => {
     const { HOME, ...withoutHome } = fakeSourceEnv();
     const out = buildEvalEnv(withoutHome, { platform: 'darwin' });
     expect(out).not.toHaveProperty('HOME');
   });
 
-  it('still drops USERPROFILE/APPDATA on macOS -- only HOME is added, no evidence for the others', () => {
+  it('does not invent USER on macOS when absent from sourceEnv', () => {
+    const { USER, ...withoutUser } = fakeSourceEnv();
+    const out = buildEvalEnv(withoutUser, { platform: 'darwin' });
+    expect(out).not.toHaveProperty('USER');
+  });
+
+  it('still drops USERPROFILE/APPDATA/LOGNAME/XDG_* on macOS -- only HOME+USER are added, no evidence for the others', () => {
     const out = buildEvalEnv(fakeSourceEnv(), { platform: 'darwin' });
     expect(out).not.toHaveProperty('USERPROFILE');
     expect(out).not.toHaveProperty('APPDATA');
+    expect(out).not.toHaveProperty('LOGNAME');
+    expect(out).not.toHaveProperty('XDG_CONFIG_HOME');
   });
 
-  it('regression-locks Windows: still drops HOME even when platform is passed explicitly', () => {
+  it('regression-locks Windows: still drops HOME and USER even when platform is passed explicitly', () => {
     const out = buildEvalEnv(fakeSourceEnv(), { platform: 'win32' });
     expect(out).not.toHaveProperty('HOME');
+    expect(out).not.toHaveProperty('USER');
   });
 
-  it('regression-locks Linux: scope is darwin only, never "every non-Windows platform"', () => {
+  it('regression-locks Linux: scope is darwin only, never "every non-Windows platform" (HOME and USER both)', () => {
     const out = buildEvalEnv(fakeSourceEnv(), { platform: 'linux' });
     expect(out).not.toHaveProperty('HOME');
+    expect(out).not.toHaveProperty('USER');
   });
 
-  it('HOME never collides with the secret-shape or cloud-cred guards (documentary, not defensive)', () => {
+  it('HOME/USER never collide with the secret-shape or cloud-cred guards (documentary, not defensive)', () => {
     expect(SECRET_SHAPE_RE.test('HOME')).toBe(false);
     expect(CLOUD_CRED_NAMES.has('HOME')).toBe(false);
+    expect(SECRET_SHAPE_RE.test('USER')).toBe(false);
+    expect(CLOUD_CRED_NAMES.has('USER')).toBe(false);
   });
 
   it('drops nested-Claude-session variables (no CLAUDE*-prefixed var is ever named in the allowlist)', () => {
