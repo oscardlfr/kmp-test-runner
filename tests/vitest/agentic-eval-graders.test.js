@@ -3598,6 +3598,33 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     expect(grade.success).toBe(true);
   });
 
+  // --no-coverage is policy-hook.mjs-authorized (KMP_TEST_BOOLEAN_FLAGS) -- unlike --coverage-tool/
+  // --coverage-modules/--exclude-coverage, this command is genuinely policy-allowed. But
+  // expandNoCoverageAlias rewrites it to --coverage-tool none, and runParallel's own coverage
+  // hand-off never calls runCoverageInProcess at all when that's set
+  // (parallel-orchestrator.js:816) -- a real --no-coverage invocation can NEVER produce
+  // coverage_threshold_exceeded. Unlike the tool/skipped_by_user cases above, there is no
+  // compensating check-6 barrier here from scenario.expected alone (the envelope below is
+  // otherwise byte-identical to the accepted no_xml positive, tool:'auto' included) -- this is a
+  // genuine RED against the base commit, not a check-8-only closure: before this fix, checks 6 and
+  // 8 and grade.success were all true for this exact envelope+command pair.
+  it('rejects a self-reported coverage_threshold_exceeded envelope when the invoked command requested --no-coverage, even though the envelope itself is otherwise identical to the accepted no_xml positive', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --no-coverage --json', resultContent: coverageEnvelope({
+        coverage: {
+          tool: 'auto', missed_lines: 23, modules_contributing: 1,
+          modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one', 'foreign:two'],
+          module_buckets: { with_data: ['core:domain'], no_xml: ['foreign:one', 'foreign:two'], parse_errored: [], skipped_by_user: [] },
+        },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
   // skipped_by_user can only be produced by --coverage-modules/--exclude-coverage
   // (coverage-orchestrator.js:153-159) -- policy-hook.mjs never authorizes either flag, and
   // classifyBashCommand never captures them from the invoked command even if it did, so a

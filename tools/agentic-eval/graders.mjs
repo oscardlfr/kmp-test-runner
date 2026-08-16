@@ -594,7 +594,7 @@ function isCoherentTargetScopedCoverageBlock(covBlock, targetModule) {
   return bucketIdentities.every((identity) => pluginSet.has(identity));
 }
 
-function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsError, scenario, invokedTestType, invokedMinMissedLines) {
+function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsError, scenario, invokedTestType, invokedMinMissedLines, invokedCoverageDisabled) {
   if (envelope.subcommand !== invokedSubcommand) return false;
   // Execution/plan-mode coherence: the envelope's OWN self-reported mode must agree with a real
   // execution, not merely with what the invoking command's text happened to say. A fresh review
@@ -744,6 +744,14 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
       && envelope.tests?.individual_total === kt.tests.individual_total;
   }
   if (scenario.expected.outcome_kind === 'coverage_threshold_exceeded') {
+    // --no-coverage is policy-hook.mjs-authorized (KMP_TEST_BOOLEAN_FLAGS) but genuinely disables
+    // coverage aggregation in production (expandNoCoverageAlias rewrites it to --coverage-tool
+    // none; runParallel's own coverage hand-off never calls runCoverageInProcess at all when that's
+    // set -- parallel-orchestrator.js:816) -- a real --no-coverage invocation can never produce this
+    // outcome, so a self-reported coverage_threshold_exceeded envelope paired with an invoked
+    // command that requested --no-coverage is impossible real evidence, regardless of how coherent
+    // the envelope's own coverage.* fields otherwise look.
+    if (invokedCoverageDisabled) return false;
     // Corroborating (parallel genuinely runs tests -- fact #4/#6): the real test execution must
     // show a genuine clean pass -- never itself a failure (the core distinction from tests_failed,
     // even though both produce exit_code:1).
@@ -1293,6 +1301,13 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
 
     const coverageErrors = envelope.errors.filter((e) => e && e.code === 'coverage_threshold_exceeded');
     if (envelope.errors.length === 1 && coverageErrors.length === 1) {
+      // --no-coverage is policy-hook.mjs-authorized but genuinely disables coverage aggregation in
+      // production -- see validateKmpEnvelopeForAttempt's identical coverage_threshold_exceeded
+      // guard, above, for the full real-producer trace. A self-reported coverage_threshold_exceeded
+      // claim can never be genuine observed evidence when the invoked command requested
+      // --no-coverage, independent of how internally coherent the envelope's own coverage.* fields
+      // otherwise look.
+      if (classification.coverageDisabled) return null;
       // A coverage-gate failure is still a genuinely clean TEST pass underneath (see this
       // function's own coverage_threshold_exceeded return, below) -- the task-level failed counter
       // must agree, and the same stray-failure-detail contradiction applies as the clean-run
@@ -1452,7 +1467,7 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
   const targetMatches = hasEvidence && computeKmpTestTargetMatch(envelope, classification, scenario);
 
   const outcomeMatches = hasEvidence && targetMatches
-    && validateKmpEnvelopeForAttempt(envelope, classification.subcommand, bashResult.resultIsError, scenario, classification.testType, classification.minMissedLines);
+    && validateKmpEnvelopeForAttempt(envelope, classification.subcommand, bashResult.resultIsError, scenario, classification.testType, classification.minMissedLines, classification.coverageDisabled);
 
   // A systematic-closure review found this: `validateParallelEvidence` rejecting a genuinely
   // incoherent `parallel` block was previously laundered ONLY through `outcomeMatches`, which check

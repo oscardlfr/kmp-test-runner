@@ -14,7 +14,7 @@ import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
 /** Classifies one Bash tool_use's raw command string. Relocated verbatim from graders.mjs (the
  * grammar itself is unchanged) so it can be shared by graders.mjs, junit-evidence.mjs, and
  * junit-evidence-hook.mjs without a second, potentially divergent parser. Returns
- * `{kind:'kmp-test', subcommand, moduleFilter, testType, minMissedLines, isPlanOnly}` |
+ * `{kind:'kmp-test', subcommand, moduleFilter, testType, minMissedLines, coverageDisabled, isPlanOnly}` |
  * `{kind:'gradle', taskTokens, isPlanOnly}` | `{kind:'other'}`. */
 export function classifyBashCommand(command) {
   if (typeof command !== 'string') return { kind: 'other' };
@@ -40,7 +40,18 @@ export function classifyBashCommand(command) {
     // execution, only a preview of which modules a real run would touch): excluded from terminal
     // contention/retries/JUnit relevance downstream exactly like --dry-run/--list/--list-only.
     const isPlanOnly = tokens.includes('--dry-run') || tokens.includes('--list') || tokens.includes('--list-only') || tokens.includes('--show-modules-only');
-    return { kind: 'kmp-test', subcommand: tokens[1] ?? null, moduleFilter, testType, minMissedLines, isPlanOnly };
+    // --no-coverage -- policy-hook.mjs's own KMP_TEST_BOOLEAN_FLAGS authorizes this flag, but it is
+    // real and consequential: expandNoCoverageAlias (lib/orchestrators/orchestrator-utils.js)
+    // rewrites it to `--coverage-tool none`, and runParallel's own coverage hand-off
+    // (`if (opts.coverageTool !== 'none') { ... runCoverageInProcess ... }`,
+    // lib/orchestrators/parallel-orchestrator.js:816) never even CALLS coverage aggregation when
+    // that's set -- a real `--no-coverage` invocation can therefore never produce a
+    // coverage_threshold_exceeded outcome. Captured here (unlike --coverage-tool/--coverage-modules/
+    // --exclude-coverage, none of which this classifier extracts, since none of them are policy
+    // hook -- authorized) specifically so graders.mjs can reject a self-reported
+    // coverage_threshold_exceeded claim paired with a command that could never have produced one.
+    const coverageDisabled = tokens.includes('--no-coverage');
+    return { kind: 'kmp-test', subcommand: tokens[1] ?? null, moduleFilter, testType, minMissedLines, coverageDisabled, isPlanOnly };
   }
   if (tokens[0] === './gradlew' || tokens[0] === './gradlew.bat') {
     const taskTokens = tokens.slice(1).filter((t) => !t.startsWith('-'));
