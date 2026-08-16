@@ -12,7 +12,7 @@ The agent should dispatch `kmp-test parallel` when the user asks any of:
 
 - "Run the tests" / "run unit tests" / "test this" / "run all tests"
 - "Make sure the tests still pass" / "verify nothing broke"
-- "Run the tests" + a missed-lines budget ("...make sure coverage doesn't drop below X") — narrow with `--min-missed-lines <N>`; without an explicit budget, plain `parallel` already aggregates coverage by default (no flag needed)
+- "Run the tests" + a missed-lines budget ("...at most X missed/uncovered lines") — narrow with `--min-missed-lines <N>`; without an explicit budget, plain `parallel` already aggregates coverage by default (no flag needed)
 - "Run the JVM / desktop / iOS / macOS tests" — narrow with `--test-type`
 - "Run only `<module>`'s tests" — narrow with `--module-filter`
 
