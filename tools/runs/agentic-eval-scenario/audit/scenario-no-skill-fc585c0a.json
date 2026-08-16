@@ -1,0 +1,107 @@
+{
+  "schema": 2,
+  "run_id": "scenario-no-skill-fc585c0a",
+  "run_schema": 5,
+  "run_kind": "scenario",
+  "condition": "no-skill",
+  "scenario_id": "deterministic-unit-test-failure",
+  "first_useful_signal_event": null,
+  "terminal_authoritative_event": null,
+  "tool_calls": [
+    {
+      "ordinal": 0,
+      "tool_use_event_index": 6,
+      "tool_result_event_index": 9,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 1,
+      "tool_use_event_index": 13,
+      "tool_result_event_index": 16,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 2,
+      "tool_use_event_index": 20,
+      "tool_result_event_index": 23,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 3,
+      "tool_use_event_index": 27,
+      "tool_result_event_index": 30,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 4,
+      "tool_use_event_index": 32,
+      "tool_result_event_index": 35,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 5,
+      "tool_use_event_index": 40,
+      "tool_result_event_index": 43,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 6,
+      "tool_use_event_index": 48,
+      "tool_result_event_index": 51,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "no-signal",
+      "dispatch_status": "hook_evaluated"
+    }
+  ],
+  "summary": {
+    "tool_calls_total": 7,
+    "shell_commands_total": 7,
+    "post_signal_ms": null,
+    "post_signal_tool_calls": null,
+    "policy_denials_total": 7,
+    "policy_denials_before_first_signal": null,
+    "policy_denials_after_first_signal": null,
+    "policy_decisions_missing": 0,
+    "pre_dispatch_blocked_total": 0
+  }
+}
