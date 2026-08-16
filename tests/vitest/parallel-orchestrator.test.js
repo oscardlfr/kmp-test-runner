@@ -1729,9 +1729,9 @@ describe('runParallel', () => {
   // TESTS (applyModuleFilters, above) -- it is never forwarded into the coverage args
   // runCoverageInProcess builds, so coverage-orchestrator.js's own discoverCoverageModules
   // independently scans every project module carrying a coverage plugin, regardless of
-  // --module-filter. --coverage-modules is the only flag that narrows COVERAGE's own module set,
-  // and only when explicitly supplied. This is why a foreign (non-test-dispatched) module can
-  // legitimately land in module_buckets.no_xml or .skipped_by_user.
+  // --module-filter. --coverage-modules and --exclude-coverage are the only flags that narrow
+  // COVERAGE's own module set, and only when explicitly supplied. This is why a foreign
+  // (non-test-dispatched) module can legitimately land in module_buckets.no_xml or .skipped_by_user.
   it('--module-filter does not implicitly become --coverage-modules', async () => {
     const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
     const stubCoverage = makeRunCoverageStub();

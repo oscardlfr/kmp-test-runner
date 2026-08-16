@@ -483,10 +483,10 @@ function changedBlockMatchesExpected(changedBlock, expectedChanged) {
 /** Closed-form coherence check for a target-scoped coverage-threshold claim.
  * `discoverCoverageModules` (lib/orchestrators/coverage-orchestrator.js) publishes the same
  * detected modules twice: once in the disjoint `modules_with_kover_plugin`/
- * `modules_with_jacoco_plugin` lists (gated on `detected` alone, independent of `opts.coverageTool`),
- * and once in exactly one of the four accounting buckets -- every project module is processed
- * exactly once (coverage-orchestrator.js:142-182) and assigned to exactly one bucket (`dispatched`
- * vs `skippedByUser` are mutually exclusive there). Production already tracks a version of this
+ * `modules_with_jacoco_plugin` lists (gated on `detected` alone), and once in exactly one of the
+ * four accounting buckets -- every project module is processed exactly once
+ * (coverage-orchestrator.js:142-182) and assigned to exactly one bucket (`dispatched` vs
+ * `skippedByUser` are mutually exclusive there). Production already tracks a version of this
  * invariant itself (coverage-orchestrator.js:720-729's own `coverage_aggregation_drift` warning),
  * but this function re-derives it independently rather than trusting a fabricated/adversarial
  * envelope to have honestly declared its own incoherence, the same fail-closed posture this file
@@ -506,40 +506,45 @@ function changedBlockMatchesExpected(changedBlock, expectedChanged) {
  * `deriveObservedKmpTestResult`'s own foreign-module rejection for that array, below) -- conflating
  * the two was the root cause this function's introduction fixes.
  *
- * The plugin-set/bucket-set relationship itself depends on `covBlock.tool`, because
- * `discoverCoverageModules`'s own `effectiveTool` computation does:
- *   - `'auto'`: `effectiveTool = detected` -- a module is dispatched (hence lands in some bucket)
- *     if AND ONLY IF it was plugin-detected, so plugin-set === bucket-set EXACTLY.
- *   - `'kover'`/`'jacoco'` (forced): `effectiveTool` is forced to that literal value regardless of
- *     `detected` -- an UNDETECTED module (absent from both plugin lists) is still dispatched and can
- *     land in `with_data`/`no_xml`, so plugin-set is only a SUBSET of the (`with_data` ∪ `no_xml`)
- *     portion of bucket-set. `skipped_by_user` is NOT relaxed the same way: `discoverCoverageModules`
- *     gates it on `detected` alone, checked in the include/exclude branches BEFORE the tool-forcing
- *     branch ever runs -- it can never legitimately contain an undetected module, forced tool or not.
- *   - anything else (including `'none'`, which never reaches this shape at all -- `runCoverage`
- *     short-circuits before ever calling `discoverCoverageModules` for it): rejected: impossible for
- *     a real `coverage_threshold_exceeded` claim, which requires real coverage collection to have run.
+ * `covBlock.tool` is REQUIRED to be exactly `'auto'` -- not merely preferred. discoverCoverageModules
+ * forces `effectiveTool` true for an UNDETECTED module (absent from both plugin lists) whenever
+ * `opts.coverageTool` is explicitly `'kover'`/`'jacoco'` (verified directly against the real
+ * producer -- coverage-orchestrator.test.js's own 'forced --coverage-tool kover ALSO dispatches a
+ * module with no detected plugin' case), which would make plugin-set only a SUBSET of bucket-set
+ * rather than an exact match. That relaxation is deliberately NOT supported here: this harness's own
+ * scenario-schema contract (schemas.mjs's `COVERAGE_TOOL_EXPECTED_VALUES = ['auto']`) means no real
+ * scenario can ever expect a non-'auto' tool; `command-classify.mjs`'s `classifyBashCommand` does not
+ * capture `--coverage-tool` from the invoked command at all, so there is no way to cross-validate a
+ * self-reported `covBlock.tool` against what was actually run; and `policy-hook.mjs`'s
+ * `KMP_TEST_FILTER_FLAGS`/`KMP_TEST_NUMERIC_VALUE_FLAGS` do not authorize `--coverage-tool` as an
+ * allowed flag in the first place. Accepting a self-reported non-'auto' `tool` here would validate a
+ * claim this harness can neither expect nor independently corroborate -- exactly the kind of
+ * self-reported-and-unverifiable shape this file's fail-closed posture exists to reject elsewhere.
+ * Supporting forced-tool scenarios legitimately would require extending schemas/policy/classifier
+ * together, out of scope for this fix.
  *
- * `parse_errored` is the one bucket that stays required-empty regardless of `tool`: a foreign module
- * CAN legitimately land there in real production, but every genuine parse error unconditionally
- * carries an incomplete-coverage warning (`coverage_xml_oversized` or `coverage_parse_failed`,
+ * `parse_errored` is the one bucket that stays required-empty: a foreign module CAN legitimately
+ * land there in real production, but every genuine parse error unconditionally carries an
+ * incomplete-coverage warning (`coverage_xml_oversized` or `coverage_parse_failed`,
  * coverage-orchestrator.js:661-717), both already members of `COVERAGE_INCOMPLETE_WARNING_CODES` --
  * so a non-empty `parse_errored` can never accompany canonicalizable evidence, independent of whether
  * the entries themselves are otherwise well-formed and plugin-corresponding.
  *
- * True iff `module_buckets` has exactly the producer's four keys, all plugin lists and buckets are
- * arrays of non-empty, normalizable strings, every identity is unique (within a list/bucket and
- * across all of them), `parse_errored` is empty, `with_data` is exactly `[targetModule]`, and the
- * plugin-set/bucket-set relationship matches `covBlock.tool` per the three cases above.
+ * True iff `covBlock.tool === 'auto'`, `module_buckets` has exactly the producer's four keys, all
+ * plugin lists and buckets are arrays of non-empty, normalizable strings, every identity is unique
+ * (within a list/bucket and across all of them), the plugin-set equals the bucket-set EXACTLY (same
+ * cardinality plus full inclusion, proving equality independent of order), `parse_errored` is empty,
+ * and `with_data` is exactly `[targetModule]`.
  * Shared by `validateKmpEnvelopeForAttempt`'s `coverage_threshold_exceeded` branch (expected-side,
  * checks 4/5/6) and `deriveCoherentCoverageFacts` (observed-side, check 8) so both sides of the
  * expected/observed comparison apply the identical contract. This deliberately adds a narrow
- * fail-closed hardening for malformed, duplicated, unbound, tool-incoherent, or parse-incomplete
- * shapes that neither side's own prior inline check ever covered -- well-formed, plugin-corresponding
- * producer output (for whichever `tool` it actually used) is unaffected. */
+ * fail-closed hardening for malformed, duplicated, unbound, or parse-incomplete shapes that neither
+ * side's own prior inline check ever covered -- well-formed, plugin-corresponding, 'auto'-tool
+ * producer output is unaffected. */
 function isCoherentTargetScopedCoverageBlock(covBlock, targetModule) {
   if (covBlock == null || typeof covBlock !== 'object' || Array.isArray(covBlock)) return false;
   if (typeof targetModule !== 'string' || targetModule.length === 0) return false;
+  if (covBlock.tool !== 'auto') return false;
 
   const pluginKeys = ['modules_with_kover_plugin', 'modules_with_jacoco_plugin'];
   const buckets = covBlock.module_buckets;
@@ -570,22 +575,14 @@ function isCoherentTargetScopedCoverageBlock(covBlock, targetModule) {
   const bucketIdentities = normalizedBuckets.flat();
   if (new Set(pluginIdentities).size !== pluginIdentities.length) return false;
   if (new Set(bucketIdentities).size !== bucketIdentities.length) return false;
+  if (pluginIdentities.length !== bucketIdentities.length) return false;
 
-  const [withData, , parseErrored, skippedByUser] = normalizedBuckets;
+  const [withData, , parseErrored] = normalizedBuckets;
   if (parseErrored.length !== 0) return false;
   if (withData.length !== 1 || withData[0] !== targetModule) return false;
 
   const pluginSet = new Set(pluginIdentities);
-  if (covBlock.tool === 'auto') {
-    if (pluginIdentities.length !== bucketIdentities.length) return false;
-    return bucketIdentities.every((identity) => pluginSet.has(identity));
-  }
-  if (covBlock.tool === 'kover' || covBlock.tool === 'jacoco') {
-    const bucketSet = new Set(bucketIdentities);
-    if (!pluginIdentities.every((identity) => bucketSet.has(identity))) return false;
-    return skippedByUser.every((identity) => pluginSet.has(identity));
-  }
-  return false;
+  return bucketIdentities.every((identity) => pluginSet.has(identity));
 }
 
 function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsError, scenario, invokedTestType, invokedMinMissedLines) {
