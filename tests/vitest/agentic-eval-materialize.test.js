@@ -72,14 +72,14 @@ describe('materializeSkillSnapshot', () => {
   // above (mechanism-only) and from the live-HEAD test above (tracks develop's tip forever, never
   // references this constant). calibrate/smoke both materialize current-skill via
   // runConditionPair's one call site using exactly PINNED_SKILL_SHA. This is a tripwire, not a
-  // general staleness detector: it deliberately hardcodes 8492d98 and will need its own edit on
+  // general staleness detector: it deliberately hardcodes 0bb958d and will need its own edit on
   // every future legitimate pin advance -- the next test verifies the semantics that should
   // survive such an advance. Split into two independent it() blocks on purpose: expect().toBe()
   // throws synchronously, so a single block with the equality check first would hide whether the
   // content assertions below actually discriminate -- two blocks means a run against a stale pin
   // shows both failing for real, not just the first one.
-  it('PINNED_SKILL_SHA is locked to the PR #420 v3 skill-remediation snapshot', () => {
-    expect(PINNED_SKILL_SHA).toBe('8492d98d40b9f2208bac88cf8ac357aeb4c095ca');
+  it('PINNED_SKILL_SHA is locked to the PR #432 coverage-budget skill snapshot', () => {
+    expect(PINNED_SKILL_SHA).toBe('0bb958d464ccd4b2f463aa10a4101d726e2154c4');
   });
 
   it('the pinned current-skill snapshot reflects the PR #403 target-binding fix', async () => {
@@ -253,11 +253,26 @@ describe('materializeSkillSnapshot', () => {
     expect(withCoverageRow).toContain('kmp-test parallel --json --project-root .');
     expect(withCoverageRow).not.toContain('--min-missed-lines');
 
-    // "run tests; missed lines under 100" (explicit test intent + explicit budget) -> parallel
-    // --min-missed-lines, never bare coverage.
-    const budgetRow = findRow('missed lines under 100');
-    expect(budgetRow).toBeTruthy();
+    // The budget row (explicit test intent + explicit budget) -> parallel --min-missed-lines,
+    // never bare coverage. Located by the FLAG, not by any one trigger phrasing: PR #432 rewrote
+    // that trigger away from the narrow, obliquely-worded "missed lines under 100", so keying the
+    // lookup on a historical phrase would re-break on every future rewording of the same row.
+    // Collected as a filtered list rather than findRow()'s first match so the row's identity
+    // within this table is asserted unique, not merely present.
+    const budgetRows = stepsSection.split('\n').filter((l) => l.startsWith('|') && l.includes('--min-missed-lines'));
+    expect(budgetRows.length).toBe(1);
+    const budgetRow = budgetRows[0];
     expect(budgetRow).toContain('kmp-test parallel --min-missed-lines 100 --json --project-root .');
+    // #432: the trigger states an UPPER BOUND on missed lines. Scoped to the trigger cell, not
+    // the whole row -- `--min-missed-lines` in the command cell already contains "missed", so a
+    // row-wide check would pass on the flag name alone and prove nothing about the wording.
+    const budgetTrigger = budgetRow.split('|')[1];
+    expect(budgetTrigger).toMatch(/at\s+most\s+100/i);
+    expect(budgetTrigger).toContain('missed');
+    expect(budgetTrigger).toContain('uncovered');
+    // The old floor-sounding wording is gone: the flag gates on missed lines EXCEEDING N, so
+    // "under 100" described the opposite of what it triggers.
+    expect(stepsSection).not.toContain('missed lines under 100');
 
     // Bare "run coverage" (no test-execution intent) stays its own, narrower row -- existing-XML
     // aggregation only, distinct from both rows above.
@@ -399,6 +414,63 @@ describe('materializeSkillSnapshot', () => {
     const thresholdTrigger = lines.slice(thresholdTriggerIndex, thresholdTriggerIndex + 3).join(' ');
     expect(thresholdTrigger).toMatch(/existing reports?|no\s+fresh\s+test\s+run/i);
     expect(thresholdTrigger).toContain('parallel --min-missed-lines <N>');
+  });
+
+  // PR #432 closed an observed coverage-budget loss on the terminal `parallel` command: of four
+  // comparable current-skill cells, three issued it with no `--min-missed-lines` at all (and all
+  // three probed a separate `coverage` without a threshold first, and were denied), while the one
+  // cell that carried the budget through produced the gate. The fix lands in existing canonical
+  // homes in SKILL.md, so every assertion below is scoped to the span making the claim --
+  // `--min-missed-lines`, `coverage`, and the denial paragraph's opening clause all already
+  // existed pre-#432, so whole-document checks would pass against the old text too.
+  it('the pinned snapshot preserves a coverage budget across the PR #432 workflow-fallback path', async () => {
+    const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runValidator });
+    cleanupDirs.push(snapshotDir);
+    expect(validation.ok).toBe(true);
+    const skillMd = readFileSync(path.join(snapshotDir, '.skills', 'kmp-test-runner', 'SKILL.md'), 'utf8')
+      .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    // Span 1 -- Decision protocol item 1 alone, bounded by item 2's own bold heading, so nothing
+    // asserted here can be satisfied by text that actually lives in a later item.
+    const step1Start = skillMd.indexOf('1. **Resolve the workflow first**');
+    const step1End = skillMd.indexOf('2. **Classify scope**', step1Start);
+    expect(step1Start).toBeGreaterThan(-1);
+    expect(step1End).toBeGreaterThan(step1Start);
+    const resolveWorkflowItem = skillMd.slice(step1Start, step1End);
+
+    // Step 1 resolves the workflow and the request's mandatory modifiers JOINTLY, in one
+    // sentence -- not workflow first with modifiers as a separable later concern. Matched as a
+    // single literal, whitespace-tolerant run with no wildcard span bridging the two halves (the
+    // discipline PR #404's review round settled on), so an unrelated injected sentence can't
+    // satisfy it from two independently-scoped occurrences. `\s+` between every word because
+    // markdown re-wrapping moves the line breaks inside this item without changing a word.
+    expect(resolveWorkflowItem).toMatch(
+      /\*\*Resolve\s+the\s+workflow\s+first\*\*\s*—\s*from\s+what\s+the\s+user\s+asked\s*\(see\s+the\s+table\s+under\s+Steps\),\s*with\s+the\s+modifiers\s+that\s+request\s+makes\s+mandatory\./i
+    );
+
+    // Fresh tests + a missed-lines budget is ONE item bound to `parallel --min-missed-lines <N>`
+    // -- the budget reaches the terminal command instead of being dropped on the way there.
+    expect(resolveWorkflowItem).toMatch(
+      /Run\/confirm\s+tests\s+plus\s+at\s+most\s+N\s+missed\/uncovered\s+lines\s+is\s+one\s+item\s*—\s*`parallel\s+--min-missed-lines\s+100`/i
+    );
+    // ...and it is not reached by issuing a separate `coverage` first, the observed precursor in
+    // every budget-losing cell.
+    expect(resolveWorkflowItem).toMatch(/never\s+a\s+separate\s+`coverage`\s+probe\s+first/i);
+
+    // Span 2 -- the denied-EXPLORATORY-command clause alone, bounded by the denied-EXACT clause
+    // that follows it. The two prescribe different recoveries and must not be conflated: only the
+    // exploratory one is allowed to proceed to a next canonical step at all.
+    const deniedStart = skillMd.indexOf("A denied exploratory command isn't worth retrying");
+    const deniedEnd = skillMd.indexOf('A denied EXACT canonical', deniedStart);
+    expect(deniedStart).toBeGreaterThan(-1);
+    expect(deniedEnd).toBeGreaterThan(deniedStart);
+    const deniedExploratoryClause = skillMd.slice(deniedStart, deniedEnd);
+
+    // After a denial the next canonical step is REBUILT from the resolved workflow and its
+    // modifiers, so recovery re-derives the budget rather than falling back to a bare command --
+    // and the constraint-preservation half is stated explicitly, not left implied.
+    expect(deniedExploratoryClause).toMatch(/rebuilt\s+from\s+the\s+resolved\s+workflow\s+and\s+its\s+modifiers/i);
+    expect(deniedExploratoryClause).toMatch(/a\s+denial\s+never\s+drops\s+a\s+user\s+constraint/i);
   });
 
   it('cleans up its temp directory when validation fails partway through (not just on an invalid SHA)', async () => {

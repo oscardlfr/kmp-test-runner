@@ -71,7 +71,7 @@ import { analyzeRunsDir } from './analysis.mjs';
 // CI job -- see condition-launcher.mjs's identical fix for the full story).
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
-const PINNED_SKILL_SHA = '8492d98d40b9f2208bac88cf8ac357aeb4c095ca';
+const PINNED_SKILL_SHA = '0bb958d464ccd4b2f463aa10a4101d726e2154c4';
 // KMP_EVAL_RUNS_ROOT override exists specifically so tests never write to (or, worse, clean up
 // inside) the real committable tools/runs/ directory -- an earlier version of the integration
 // test suite listed and deleted files directly under the real RUNS_ROOT, including an
