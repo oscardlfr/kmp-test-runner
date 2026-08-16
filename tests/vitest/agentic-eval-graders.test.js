@@ -3527,6 +3527,8 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
       SCENARIO_5_CORRECT_ANSWER,
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
     expect(grade.success).toBe(false);
   });
 
@@ -3538,6 +3540,8 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
       SCENARIO_5_CORRECT_ANSWER,
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
     expect(grade.success).toBe(false);
   });
 
@@ -3549,6 +3553,301 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
       SCENARIO_5_CORRECT_ANSWER,
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // --- agentic-eval-observed-result-bucket-scope: checks 4/5/6 (validateKmpEnvelopeForAttempt,
+  // above) already accept a coverage_threshold_exceeded envelope whose no_xml names a module OTHER
+  // than the target -- runCoverageInProcess (lib/orchestrators/parallel-orchestrator.js) never
+  // forwards --module-filter into the coverage args it builds, so coverage-orchestrator.js's
+  // discoverCoverageModules independently scans every project module carrying a coverage plugin,
+  // regardless of which module --module-filter dispatched for TESTS, WITH ONLY the default
+  // --coverage-tool auto and neither --coverage-modules nor --exclude-coverage narrowing the set --
+  // the one path this harness's own policy hook can actually authorize (--module-filter,
+  // --min-missed-lines, --json are the only flags coverage-threshold-failure needs, all in
+  // policy-hook.mjs's KMP_TEST_FILTER_FLAGS/KMP_TEST_NUMERIC_VALUE_FLAGS/KMP_TEST_BOOLEAN_FLAGS). A
+  // foreign module a real producer legitimately discovered-but-didn't-test-dispatch is not incoherent
+  // BY ITSELF -- it only becomes incoherent if it lacks the matching plugin-list entry a real
+  // producer always attaches (see the retitled '[hardening S]' test far below, which is the negative
+  // contrast for this exact pair: same no_xml shape, but WITHOUT the corresponding
+  // modules_with_jacoco_plugin entry). skipped_by_user is a DIFFERENT case -- see the dedicated
+  // negative below: it can only be produced via --coverage-modules/--exclude-coverage, neither of
+  // which policy-hook.mjs authorizes, so this harness never relaxes it, even though the general CLI
+  // can legitimately populate it outside this harness. Module names below are synthetic
+  // ('foreign:one'/'foreign:two') -- the contract under test is the BEHAVIOR, not any concrete
+  // project's real module names.
+  it('accepts a legitimate foreign module in no_xml (module-filter-scoped test dispatch vs. project-wide coverage discovery)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: {
+          tool: 'auto', missed_lines: 23, modules_contributing: 1,
+          modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one', 'foreign:two'],
+          module_buckets: { with_data: ['core:domain'], no_xml: ['foreign:one', 'foreign:two'], parse_errored: [], skipped_by_user: [] },
+        },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
+    expect(grade.success).toBe(true);
+  });
+
+  // --no-coverage is policy-hook.mjs-authorized (KMP_TEST_BOOLEAN_FLAGS) -- unlike --coverage-tool/
+  // --coverage-modules/--exclude-coverage, this command is genuinely policy-allowed. But
+  // expandNoCoverageAlias rewrites it to --coverage-tool none, and runParallel's own coverage
+  // hand-off never calls runCoverageInProcess at all when that's set
+  // (parallel-orchestrator.js:816) -- a real --no-coverage invocation can NEVER produce
+  // coverage_threshold_exceeded. Unlike the tool/skipped_by_user cases above, there is no
+  // compensating check-6 barrier here from scenario.expected alone (the envelope below is
+  // otherwise byte-identical to the accepted no_xml positive, tool:'auto' included) -- this is a
+  // genuine RED against the base commit, not a check-8-only closure: before this fix, checks 6 and
+  // 8 and grade.success were all true for this exact envelope+command pair.
+  it('rejects a self-reported coverage_threshold_exceeded envelope when the invoked command requested --no-coverage, even though the envelope itself is otherwise identical to the accepted no_xml positive', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --no-coverage --json', resultContent: coverageEnvelope({
+        coverage: {
+          tool: 'auto', missed_lines: 23, modules_contributing: 1,
+          modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one', 'foreign:two'],
+          module_buckets: { with_data: ['core:domain'], no_xml: ['foreign:one', 'foreign:two'], parse_errored: [], skipped_by_user: [] },
+        },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // skipped_by_user can only be produced by --coverage-modules/--exclude-coverage
+  // (coverage-orchestrator.js:153-159) -- policy-hook.mjs never authorizes either flag, and
+  // classifyBashCommand never captures them from the invoked command even if it did, so a
+  // self-reported skipped_by_user entry can never be cross-validated against what actually ran. The
+  // command below is fully policy-allowed and deliberately never requests --coverage-modules or
+  // --exclude-coverage -- only the envelope self-reports a foreign module in skipped_by_user
+  // (correctly cross-referenced in the plugin list, exactly like the accepted no_xml positive above),
+  // and that alone must still be rejected, since nothing about this harness's authorized flag set
+  // could have produced it.
+  it('rejects a foreign module in skipped_by_user even when well-formed and plugin-corresponding, when the command never requested --coverage-modules/--exclude-coverage', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: {
+          tool: 'auto', missed_lines: 23, modules_contributing: 1,
+          modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one', 'foreign:two'],
+          module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: [], skipped_by_user: ['foreign:one', 'foreign:two'] },
+        },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // This harness only ever expects/authorizes covBlock.tool === 'auto': schemas.mjs's own
+  // COVERAGE_TOOL_EXPECTED_VALUES = ['auto'] means no real scenario can ever expect a different
+  // tool; policy-hook.mjs's KMP_TEST_FILTER_FLAGS/KMP_TEST_NUMERIC_VALUE_FLAGS do not authorize
+  // --coverage-tool as an allowed flag at all; and classifyBashCommand (command-classify.mjs) does
+  // not capture --coverage-tool from the invoked command, so a self-reported covBlock.tool can never
+  // be cross-validated against what was actually run. A forced kover/jacoco tool WOULD change the
+  // real producer's plugin-set/bucket-set relationship from exact equality to a subset (confirmed
+  // directly against discoverCoverageModules in coverage-orchestrator.test.js's own 'forced
+  // --coverage-tool kover ALSO dispatches a module with no detected plugin at all' case) -- but
+  // supporting that safely would require extending schemas/policy/classifier together, out of scope
+  // here. The command below deliberately never includes --coverage-tool (policy would not authorize
+  // it) -- only the envelope self-reports a non-'auto' tool, and that alone must still be rejected.
+  const NON_AUTO_COVERAGE_TOOLS = ['kover', 'jacoco', 'none', 'not-a-real-tool'];
+  it.each(NON_AUTO_COVERAGE_TOOLS)('rejects a coverage block self-reporting tool:%s -- only tool:\'auto\' is ever expected or authorized by this harness', (tool) => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool, missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // Discriminating negatives -- regression guards proving the relaxation above is narrow: every one
+  // asserts BOTH checks the helper actually feeds (check 6 authoritative_outcome_matches_expected,
+  // expected-side; check 8 final_answer_consistent_with_evidence, observed-side) explicitly, not
+  // merely grade.success -- a coincidental failure of some unrelated check must not be mistaken for
+  // the helper doing its job. All stay rejected both before and after the fix.
+  it('rejects the target module present in BOTH with_data and parse_errored simultaneously', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: ['core:domain'], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects the target module present in skipped_by_user (also independently disqualifying now that skipped_by_user must always be empty)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: [], skipped_by_user: ['core:domain'] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects with_data containing the target module twice', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain', 'core:domain'], no_xml: [], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects when missed_lines does not exceed threshold (missed_lines <= threshold), even with an otherwise-coherent bucket shape', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 10, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: [], skipped_by_user: [] } },
+        errors: [{ code: 'coverage_threshold_exceeded', message: 'x', threshold: 15, missed_lines: 10 }],
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects a coverage block with module_buckets missing entirely', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'] },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects a module_buckets object carrying an unexpected 5th key', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: [], skipped_by_user: [], extra: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects the same foreign module duplicated within a single bucket (no_xml)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one'], module_buckets: { with_data: ['core:domain'], no_xml: ['foreign:one', 'foreign:one'], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects the same foreign module duplicated across two different buckets (no_xml and skipped_by_user)', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one'], module_buckets: { with_data: ['core:domain'], no_xml: ['foreign:one'], parse_errored: [], skipped_by_user: ['foreign:one'] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects a module present in modules_with_jacoco_plugin but absent from every bucket, under tool:auto', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('rejects the same module listed in BOTH modules_with_kover_plugin and modules_with_jacoco_plugin', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: ['core:domain'], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  // parse_errored CAN hold a real, well-formed, plugin-corresponding foreign entry in production --
+  // it is never rejected for being malformed or unbound. It is rejected because a genuine parse
+  // error unconditionally carries an incomplete-coverage warning (coverage-orchestrator.js:661-717,
+  // coverage_xml_oversized/coverage_parse_failed) that the untouched COVERAGE_INCOMPLETE_WARNING_CODES
+  // guard already disqualifies -- so parse_errored is required empty here purely because a
+  // non-empty one could never accompany canonicalizable evidence, not because the shape itself is
+  // impossible.
+  it('rejects a foreign module in parse_errored even when well-formed and plugin-corresponding -- real or not, a non-empty parse_errored can never accompany canonicalizable evidence', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain', 'foreign:one'], module_buckets: { with_data: ['core:domain'], no_xml: [], parse_errored: ['foreign:one'], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  const MALFORMED_MODULE_BUCKET_ENTRIES = [
+    ['null', null],
+    ['a number', 42],
+    ['a nested array', ['foreign:one']],
+    ['an empty string', ''],
+    ['a colon-only string (normalizes to an empty identity)', ':'],
+  ];
+  it.each(MALFORMED_MODULE_BUCKET_ENTRIES)('rejects a no_xml bucket containing %s -- no real producer ever emits a malformed module-bucket entry', (_label, entry) => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({
+        coverage: { tool: 'auto', missed_lines: 23, modules_contributing: 1, modules_with_kover_plugin: [], modules_with_jacoco_plugin: ['core:domain'], module_buckets: { with_data: ['core:domain'], no_xml: [entry], parse_errored: [], skipped_by_user: [] } },
+      }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
     expect(grade.success).toBe(false);
   });
 
@@ -4619,14 +4918,27 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     expect(grade.success).toBe(false);
   });
 
-  it('[hardening S] a coverage claim whose no_xml bucket names a module that was NEVER dispatched at all (only ONE module was ever in scope) is self-contradictory, even though with_data itself correctly names the observed module -- must not produce a canonicalizable observedResult', () => {
+  // NOTE: a foreign module in no_xml/skipped_by_user is NOT, by itself, disqualifying -- see the
+  // 'accepts a legitimate foreign module in no_xml/skipped_by_user' positives in the
+  // coverage_threshold_exceeded describe block above, which use the identical shape but ALSO add
+  // the foreign module to modules_with_jacoco_plugin (discoverCoverageModules always publishes a
+  // detected module in both the plugin list AND exactly one bucket -- coverage-orchestrator.js's
+  // own bucket-sum invariant, coverage_aggregation_drift). This test's fixture deliberately omits
+  // that plugin-list entry, which is what actually makes it incoherent. isCoherentTargetScopedCoverageBlock
+  // requires covBlock.tool === 'auto' outright (coverageEnvelope()'s own base fixture, unmodified
+  // here) -- see that helper's own doc comment for why a self-reported non-'auto' tool is rejected
+  // rather than supported: this harness's scenario schema, policy hook, and command classifier
+  // none of them can currently express, authorize, or cross-validate a forced coverage tool.
+  it('[hardening S] a coverage claim (tool:auto) whose no_xml bucket names a module absent from BOTH plugin-detection lists (modules_with_kover_plugin/modules_with_jacoco_plugin) is self-contradictory -- discoverCoverageModules can never assign a module to an accounting bucket without first detecting its coverage plugin in auto mode, so a bucket entry with no corresponding plugin-list entry is impossible real evidence there, even though with_data itself correctly names the observed module -- must not produce a canonicalizable observedResult', () => {
     const envelope = JSON.parse(coverageEnvelope());
+    expect(envelope.coverage.tool).toBe('auto');
     envelope.coverage.module_buckets.no_xml = ['other:module'];
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: JSON.stringify(envelope) }],
       SCENARIO_5_CORRECT_ANSWER,
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
   });
 

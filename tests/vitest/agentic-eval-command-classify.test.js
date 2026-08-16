@@ -29,7 +29,7 @@ describe('classifyBashCommand', () => {
 
   it('kmp-test parallel with --module-filter (space form) extracts the module and subcommand', () => {
     const c = classifyBashCommand('kmp-test parallel --module-filter shared --json');
-    expect(c).toEqual({ kind: 'kmp-test', subcommand: 'parallel', moduleFilter: 'shared', testType: null, minMissedLines: null, isPlanOnly: false });
+    expect(c).toEqual({ kind: 'kmp-test', subcommand: 'parallel', moduleFilter: 'shared', testType: null, minMissedLines: null, coverageDisabled: false, isPlanOnly: false });
   });
 
   it('kmp-test parallel with --module-filter=shared (equals form) extracts the module identically', () => {
@@ -69,12 +69,12 @@ describe('classifyBashCommand', () => {
   });
 
   it('a non-parallel kmp-test subcommand (doctor) is classified with subcommand:"doctor", moduleFilter:null', () => {
-    expect(classifyBashCommand('kmp-test doctor --json')).toEqual({ kind: 'kmp-test', subcommand: 'doctor', moduleFilter: null, testType: null, minMissedLines: null, isPlanOnly: false });
+    expect(classifyBashCommand('kmp-test doctor --json')).toEqual({ kind: 'kmp-test', subcommand: 'doctor', moduleFilter: null, testType: null, minMissedLines: null, coverageDisabled: false, isPlanOnly: false });
   });
 
   it('a kmp-test command with a terminal stderr merge retains its operation classification', () => {
     expect(classifyBashCommand('kmp-test parallel --module-filter :shared --json 2>&1')).toEqual({
-      kind: 'kmp-test', subcommand: 'parallel', moduleFilter: ':shared', testType: null, minMissedLines: null, isPlanOnly: false,
+      kind: 'kmp-test', subcommand: 'parallel', moduleFilter: ':shared', testType: null, minMissedLines: null, coverageDisabled: false, isPlanOnly: false,
     });
   });
 
@@ -123,6 +123,27 @@ describe('classifyBashCommand', () => {
     expect(c.moduleFilter).toBe(':core:domain');
     expect(c.testType).toBe('androidUnit');
     expect(c.minMissedLines).toBe('15');
+  });
+
+  // --no-coverage -- policy-hook.mjs authorizes this flag (KMP_TEST_BOOLEAN_FLAGS), but
+  // expandNoCoverageAlias (lib/orchestrators/orchestrator-utils.js) rewrites it to
+  // `--coverage-tool none`, and runParallel's own coverage hand-off never calls coverage
+  // aggregation at all when that's set (parallel-orchestrator.js:816) -- captured here so
+  // graders.mjs can reject a self-reported coverage_threshold_exceeded claim a real --no-coverage
+  // invocation could never have produced.
+  it('--no-coverage sets coverageDisabled:true', () => {
+    expect(classifyBashCommand('kmp-test parallel --module-filter shared --no-coverage --json').coverageDisabled).toBe(true);
+  });
+
+  it('an ordinary command (no --no-coverage) has coverageDisabled:false', () => {
+    expect(classifyBashCommand('kmp-test parallel --module-filter shared --json').coverageDisabled).toBe(false);
+  });
+
+  it('--no-coverage combined with --module-filter/--min-missed-lines on the same command line still extracts everything independently', () => {
+    const c = classifyBashCommand('kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --no-coverage --json');
+    expect(c.moduleFilter).toBe(':core:domain');
+    expect(c.minMissedLines).toBe('15');
+    expect(c.coverageDisabled).toBe(true);
   });
 });
 

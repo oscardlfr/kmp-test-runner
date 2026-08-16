@@ -1724,6 +1724,43 @@ describe('runParallel', () => {
     expect(gradlewCalls.length).toBe(0);
   });
 
+  // Causal characterization for the agentic-eval graders fix (module_buckets bucket-scoping,
+  // tools/agentic-eval/graders.mjs): --module-filter scopes which module(s) actually dispatch FOR
+  // TESTS (applyModuleFilters, above) -- it is never forwarded into the coverage args
+  // runCoverageInProcess builds, so coverage-orchestrator.js's own discoverCoverageModules
+  // independently scans every project module carrying a coverage plugin, regardless of
+  // --module-filter. --coverage-modules and --exclude-coverage are the only flags that narrow
+  // COVERAGE's own module set, and only when explicitly supplied. This is why a foreign
+  // (non-test-dispatched) module can legitimately land in module_buckets.no_xml or .skipped_by_user.
+  it('--module-filter does not implicitly become --coverage-modules', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const stubCoverage = makeRunCoverageStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', 'core'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(stubCoverage.calls.length).toBe(1);
+    expect(stubCoverage.calls[0].args).not.toContain('--coverage-modules');
+  });
+
+  it('--coverage-modules only forwards to runCoverage when explicitly supplied', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const stubCoverage = makeRunCoverageStub();
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--module-filter', 'core', '--coverage-modules', 'core'],
+      spawn: makeSpawnStub(),
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(stubCoverage.calls.length).toBe(1);
+    expect(stubCoverage.calls[0].args).toContain('--coverage-modules');
+    expect(stubCoverage.calls[0].args).toContain('core');
+  });
+
   it('successful run populates modules:[] when tests.passed > 0 (WS-9)', async () => {
     const dir = makeProject([
       { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
