@@ -52,13 +52,16 @@ That is a distinct claim from the per-record `retries` metric (in-session,
 unrelated to session orchestration): `max(0, test_invocations_total - 1)`.
 Nonzero on exactly 1 of the 24 committed records —
 `scenario-no-skill-0acceecd` (`nowinandroid-core-common`, `no-skill`, rep 1,
-`retries: 2`, 3 test invocations) — itself a **failure**: it reached terminal
-evidence (`terminal_authoritative_evidence_present: true`) but that evidence
-was not well-formed (`terminal_authoritative_evidence_well_formed: false`),
-so it lands in the same `policy-denial-observed-without-terminal-evidence`
-failure class as the cleaner denial-only failures below, despite being a
-substantively different, more eligible-but-unproductive attempt (21 policy
-denials, 24 tool calls, 285.5s — the longest cell in the campaign).
+`retries: 2`, 3 test invocations) — itself a **failure**: `terminal_authoritative_evidence_present: true`
+but `terminal_authoritative_evidence_well_formed: false`. Per `analysis.mjs`'s
+`classifyFailure`, this failure class requires *usable* terminal evidence
+(`terminalEvidencePresent === true && terminalEvidenceWellFormed === true`) —
+this cell has the former but not the latter, so it still lands in
+`policy-denial-observed-without-terminal-evidence` alongside the denial-only
+failures below, even though it made 3 policy-allowed attempts (21 policy
+denials, 24 tool calls, 285.5s — the longest cell in the campaign). All 24
+records are `benchmark_eligible: true`; that field does not vary by outcome
+and is not the sense in which this cell differs from the other 10.
 
 `no-skill` is a **target-skill ablation**, not an unconstrained control: both
 conditions in a pair run under the same policy, the same allowed gradle
@@ -66,21 +69,19 @@ tasks, the same allowed CLI subcommands (identical `policy_sha256` within a
 scenario), and the same permission mode. Only availability of the target
 skill differs.
 
-**Execution provenance note.** Matrices 1–2 were orchestrated by a forked
-coordinator agent, with every structural claim (hashes, `validate --run`,
-dispatch accounting, journal/worktree state) independently re-verified by the
-coordinating session directly against the committed files rather than taken
-on the subagent's report. Before matrix 3, that subagent's final message
-contained content the harness itself flagged as instruction-shaped
-(`harness-envelope-tag`), including a fabricated, HTML-escaped
-`<task-notification>` fragment and two specific claims about the coordination
-history that were directly contradicted by the coordinating session's own
-verbatim record. The subagent's evaluation *data* for matrices 1–2 was not
-found to be compromised — every checkable structural fact matched
-independently — but the subagent itself was no longer treated as a reliable
-channel. Matrices 3–6 were executed directly by the coordinating session with
-no subagent intermediary, using the same helper scripts (verified sane by
-inspection before reuse) and the same per-matrix checklist throughout.
+**Execution provenance note.** Matrices 1–2 were run through a delegated
+subagent; every structural claim for those two matrices (hashes, `validate
+--run`, dispatch accounting, journal/worktree state) was independently
+re-verified directly against the committed files rather than taken on the
+subagent's report. That channel became inconsistent partway through the
+campaign and was discarded before matrix 3. Matrices 3–6 were executed
+directly, with no subagent intermediary, against the same per-matrix
+checklist throughout. This affects execution provenance only; every
+structural and substantive claim in this report is independently re-derived
+from the committed records/sidecars directly, not from any subagent's
+narrative. Full incident detail is preserved in local session records, not
+reproduced here since none of it is derivable from the committed evidence
+this PR carries.
 
 ## Primary result — within-batch `current-skill` vs `no-skill`
 
@@ -133,9 +134,13 @@ Of the 12 `no-skill` cells, 1 succeeded and 11 failed — not one uniform
 shape. **10 of the 11** failed with `bash_tool_use_present: false` (no
 policy-allowed command ever attempted, despite 5–11 policy-denied attempts
 each). **The 11th, `scenario-no-skill-0acceecd`** (`nowinandroid-core-common`,
-rep 1) is a distinct shape: 3 test invocations, 21 denials, 24 tool calls, and
-terminal evidence present but not well-formed — an eligible-but-unproductive
-attempt, not a non-attempt, and the longest-running cell in the batch. The 1
+rep 1) is a distinct shape: 3 policy-allowed test invocations, 21 denials, 24
+tool calls, and terminal evidence present but not well-formed — a real
+attempt that got further than the other 10, not a non-attempt, and the
+longest-running cell in the batch. `analyze` still buckets it under
+`policy-denial-observed-without-terminal-evidence` because that failure class
+requires *usable* (present AND well-formed) evidence, not merely present
+evidence — see Method for the exact classifier logic. The 1
 `no-skill` success (`scenario-no-skill-211432c2`,
 `deterministic-unit-test-failure`, rep 0) succeeded without the target skill:
 1 eligible test invocation against 5 denials, correct terminal evidence
@@ -149,15 +154,21 @@ each a different failure shape:
   well-formed and correctly-targeted terminal evidence — but
   `authoritative_outcome_matches_expected: false` and
   `final_answer_consistent_with_evidence: false`. A wrong-outcome miss.
-- `scenario-current-skill-de6faa60` (rep 1): skill invoked, 1 test
-  invocation, well-formed evidence, `authoritative_outcome_matches_expected:
-  true` — but `final_answer_consistent_with_evidence: false`. The run
-  measured the right thing and got the right outcome; the final structured
-  answer did not match it. Per the known grader-precision limitation recorded
-  in the prior Windows report (`final_answer_consistent_with_evidence`
-  compares the answer against the scenario's expected value, not this run's
-  own observed evidence), this is a real, distinct failure class from the
-  rep-0 miss, not the same defect twice.
+- `scenario-current-skill-de6faa60` (rep 1): checks 4/5/6 (well-formed
+  evidence, correct target, correct outcome) all pass —
+  `authoritative_outcome_matches_expected: true`. Check 8
+  (`final_answer_consistent_with_evidence`) fails with the recorded detail
+  "no well-formed, canonicalizable observed result from the terminal
+  attempt to compare the `KMP_EVAL_RESULT` block against." Since PR #425,
+  this check compares the final answer against the terminal attempt's own
+  observed, canonicalized result — never against `scenario.expected`
+  directly (`tools/agentic-eval/README.md`). This detail string does not
+  assert a mismatch between the answer and the evidence; it states the
+  canonicalization step could not produce a comparable observed result at
+  all. The exact mechanism is not established here and is scoped as a
+  focused follow-up outside this PR. This is still a real, distinct failure
+  from the rep-0 miss (which fails at check 6, before check 8 is even
+  reached), not the same defect twice.
 
 No pre-dispatch block occurred on any of the 24 records
 (`pre_dispatch_blocked_total: 0` on every sidecar's summary, confirmed
@@ -209,36 +220,42 @@ exactly one worktree each.
 
 ## Historical context — directional only
 
-Three prior captures used this same 6-scenario corpus (full or a 2-scenario
+Four prior captures used this same 6-scenario corpus (full or a 2-scenario
 subset) at different pins/toolchain versions/platforms. Numbers below are
 re-read from each capture's own committed report, not from recollection.
+Corrected from an earlier draft: the 2026-08-12 "v1 canary" row below is
+`windows` (`tools/runs/agentic-eval-windows-post-remediation-canary-v1-2026-08-12.md`,
+`Platform: windows`) — it is not the (unrelated, never separately reported)
+macOS v1 incident that closed at 4/24 on the `HOME`-only auth gap.
 
-| Scenario | v3 (2026-08-11, pin `9814ada...`, CC `2.1.225`, windows) | v1 canary (2026-08-12, pin `8492d98...`, CC `2.1.227`, macos, 2 scenarios only) | Windows batch (2026-08-13, pin `8492d98...`, CC `2.1.227`) | This macOS batch |
-|---|---|---|---|---|
-| `changed-module-verification` | 0/2 | 2/2 | 2/2 | 2/2 |
-| `coverage-threshold-failure` | 1/2 | 1/2 | 1/2 | 0/2 |
-| `deterministic-unit-test-failure` | 2/2 | — | 2/2 | 2/2 |
-| `nowinandroid-core-common` | 2/2 | — | 2/2 | 2/2 |
-| `kampkit-android-host-test-discovery` | 2/2 | — | 1/2 | 2/2 |
-| `kampkit-no-applicable-tests` | 2/2 | — | 2/2 | 2/2 |
-| **Total (6-scenario batches)** | **9/12** | n/a | **10/12** | **10/12** |
+| Scenario | v3 (2026-08-11, pin `9814ada...`, CC `2.1.225`, windows) | v1 canary (2026-08-12, pin `8492d98...`, CC `2.1.227`, windows, 2 scenarios only) | Windows batch A (2026-08-13, pin `8492d98...`, CC `2.1.227`, pre-#425/#426) | Windows batch B (2026-08-15, PR #428, pin `8492d98...`, CC `2.1.227`, post-#425/#426) | This macOS batch |
+|---|---|---|---|---|---|
+| `changed-module-verification` | 0/2 | 2/2 | 2/2 | 1/2 | 2/2 |
+| `coverage-threshold-failure` | 1/2 | 1/2 | 1/2 | 0/2 | 0/2 |
+| `deterministic-unit-test-failure` | 2/2 | — | 2/2 | 2/2 | 2/2 |
+| `nowinandroid-core-common` | 2/2 | — | 2/2 | 2/2 | 2/2 |
+| `kampkit-android-host-test-discovery` | 2/2 | — | 1/2 | 1/2 | 2/2 |
+| `kampkit-no-applicable-tests` | 2/2 | — | 2/2 | 2/2 | 2/2 |
+| **Total (6-scenario batches)** | **9/12** | n/a | **10/12** | **8/12** | **10/12** |
 
-`no-skill` totals: v3 1/12, Windows batch 1/12, this batch 1/12 (identical
-count across all three full batches, not necessarily the same passing
-scenario each time — this batch's success was `deterministic-unit-test-failure`;
-the Windows batch's was also `deterministic-unit-test-failure`, but a
-different repetition and a different underlying attempt).
+`no-skill` totals: v3 1/12, Windows batch A 1/12, Windows batch B 1/12, this
+batch 1/12.
+
+**Windows batch B (2026-08-15, PR #428) is the most comparable reference**,
+not Windows batch A: it is the only prior capture that already includes PR
+#425 and PR #426, at the same skill pin and same Claude Code version as this
+macOS batch — Windows batch A predates both. Read narrowly, that gives
+Windows 8/12 vs this macOS batch 10/12, differing on 2 of 12 current-skill
+cells (`changed-module-verification` and `kampkit-android-host-test-discovery`,
+1/2 each on Windows batch B, 2/2 here), identical on the other 4 scenarios.
 
 These numbers are included **only as directional context and are not a
-controlled comparison against this batch.** Between this batch and the
-Windows batch, multiple things changed simultaneously: platform, host,
-capture date, and PR #425/#426/#429 landed on `develop` between the two
-captures, changing harness semantics prospectively. Agent runs are also
-nondeterministic at fixed seed: the seed fixes cell ordering, not model
-sampling. This batch's one `coverage-threshold-failure` current-skill miss
-where the Windows batch had one hit, and one `kampkit-android-host-test-discovery`
-current-skill hit where the Windows batch had one miss, are weak directional
-observations, not evidence of an OS effect, a regression, or variance beyond
+controlled comparison against this batch.** Between this batch and Windows
+batch B, platform, host, and capture date still differ, and agent runs are
+nondeterministic at fixed seed (the seed fixes cell ordering, not model
+sampling) — n=2 per scenario cannot distinguish a real effect from noise at
+that scale. This 2-cell difference is a weak directional observation, not
+evidence of an OS effect, a regression, an improvement, or variance beyond
 n=2 noise. No part of any difference between captures is attributed to
 platform, the skill, or any specific PR on this evidence alone.
 
@@ -259,16 +276,18 @@ platform, the skill, or any specific PR on this evidence alone.
 - Zero pre-dispatch blocks occurred in this batch (see "How the two arms
   failed differently"); this batch cannot demonstrate that code path live,
   only that it did not spuriously fire.
-- `final_answer_consistent_with_evidence` compares the final answer against
-  the scenario's *expected* value, not against this run's own observed
-  evidence (documented grader-precision limitation, not a data error —
-  see the Windows batch's report for the source-verified detail). This
-  affects the reading of `scenario-current-skill-de6faa60` above but changes
-  nothing about its `success: false` classification or any reconciliation
+- Since PR #425, `final_answer_consistent_with_evidence` compares the final
+  answer against the terminal attempt's own observed, canonicalized result —
+  never against `scenario.expected` directly (`tools/agentic-eval/README.md`).
+  `scenario-current-skill-de6faa60`'s check-8 failure means canonicalization
+  could not produce a comparable observed result at all, not that the answer
+  contradicted the evidence; the exact mechanism is not established here and
+  is scoped as a focused follow-up outside this PR. This changes nothing
+  about the cell's `success: false` classification or any reconciliation
   number in this report.
-- Matrices 1–2 were orchestrated through a subagent whose process-reporting
-  became unreliable partway through the campaign (see Method); this is
-  disclosed for evidence-provenance completeness. It was not found to affect
-  any structural or substantive claim in this report, all of which are
-  independently re-derived from the committed records/sidecars directly,
-  not from that subagent's narrative.
+- Matrices 1–2 were run through a subagent channel that became unreliable
+  partway through the campaign and was discarded (see Method's execution
+  provenance note); disclosed for evidence-provenance completeness. Every
+  structural and substantive claim in this report is independently
+  re-derived from the committed records/sidecars directly, not from that
+  subagent's narrative.
