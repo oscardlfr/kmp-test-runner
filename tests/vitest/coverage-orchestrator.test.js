@@ -431,6 +431,23 @@ describe('discoverCoverageModules', () => {
     expect(r.dispatched.map(m => m.tool)).toEqual(['kover']);
   });
 
+  it('forced --coverage-tool kover ALSO dispatches a module with no detected plugin at all (undetected != excluded) -- auto never does', () => {
+    const projectModel = {
+      modules: {
+        ':target': { coveragePlugin: 'kover', type: 'jvm' },
+        ':undetected': { coveragePlugin: null, type: 'jvm' },
+      },
+    };
+    const autoResult = discoverCoverageModules(projectModel, parseArgs([]));
+    expect(autoResult.koverModules).toEqual(['target']);
+    expect(autoResult.dispatched.map(m => m.name)).toEqual(['target']);
+
+    const forcedResult = discoverCoverageModules(projectModel, parseArgs(['--coverage-tool', 'kover']));
+    expect(forcedResult.koverModules).toEqual(['target']);
+    expect(forcedResult.dispatched.map(m => m.name).sort()).toEqual(['target', 'undetected']);
+    expect(forcedResult.dispatched.find(m => m.name === 'undetected').tool).toBe('kover');
+  });
+
   it('classifies root-convention jacoco via probe-derived resolved.coverageTask (Bug 1)', () => {
     // Static coveragePlugin is null (jacoco applied via root subprojects {}),
     // but the gradle probe resolved jacocoTestReport. effectiveCoveragePlugin
