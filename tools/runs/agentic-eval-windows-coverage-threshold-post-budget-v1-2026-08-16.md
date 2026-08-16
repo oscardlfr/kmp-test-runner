@@ -132,15 +132,31 @@ All four `current-skill` cells (order_index 1, 2, 5, 6) passed all 8 checks:
 
 All four `no-skill` cells (order_index 0, 3, 4, 7) passed 3 of 8 —
 `no_transcript_structural_issues`, `tool_result_correlated` and
-`no_provider_contradiction` — and failed the same 5 in every cell:
+`no_provider_contradiction` — and failed the same 5 in every cell. The recorded
+details are identical across all four cells for the first four of those checks,
+quoted literally here:
 
-| Failing check | Recorded detail |
+| Failing check | Recorded detail (all 4 cells) |
 |---|---|
-| `bash_tool_use_present` | no allowed, evidence-capable shell invocation was made |
+| `bash_tool_use_present` | no policy-allowed command was ever attempted |
 | `authoritative_evidence_well_formed` | no attempt capable of producing target evidence was ever made |
 | `authoritative_target_matches_expected` | no well-formed terminal evidence to check |
 | `authoritative_outcome_matches_expected` | no well-formed, correctly-targeted terminal evidence to check |
-| `final_answer_consistent_with_evidence` | final answer contains no `KMP_EVAL_RESULT` block |
+
+The fifth check failed in all four cells too, but **not for the same recorded
+reason**, so it is reported per cell rather than collapsed:
+
+| Cell | `final_answer_consistent_with_evidence` recorded detail |
+|---|---|
+| `no-skill-115425bb` | final answer contains no `KMP_EVAL_RESULT` block |
+| `no-skill-17db32ac` | final answer contains no `KMP_EVAL_RESULT` block |
+| `no-skill-ced1c9f8` | final answer contains no `KMP_EVAL_RESULT` block |
+| `no-skill-3f2e929a` | no well-formed, canonicalizable observed result from the terminal attempt to compare the `KMP_EVAL_RESULT` block against |
+
+The `3f2e929a` detail records the absence of a canonicalizable observed terminal
+result to compare against. It says nothing about whether that cell's final answer
+did or did not contain a `KMP_EVAL_RESULT` block, and no such inference is drawn
+here.
 
 The `no-skill` comparator is a within-batch ablation. It is not a requirement
 that those cells fail, and their failure is not itself the finding.
