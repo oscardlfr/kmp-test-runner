@@ -1,9 +1,10 @@
 # macOS full-corpus post-Darwin-auth canary v2 — 2026-08-16
 
 Full six-scenario macOS capture run after PR #429 corrected the Darwin auth
-preflight to preserve `USER` alongside `HOME` (the v1 macOS canary closed at
-4/24 on the `HOME`-only gap; PR #423 fixed `HOME`, PR #429 fixed the remaining
-`USER` requirement). 6 scenarios x 2 conditions x 2 repetitions = 24 live
+preflight to preserve `USER` alongside `HOME`. The v1 macOS canary stopped at
+4/24 because the harness omitted `HOME`. PR #423 restored `HOME`; a
+subsequent macOS preflight then demonstrated that `USER` was also required,
+and PR #429 restored `USER`. 6 scenarios x 2 conditions x 2 repetitions = 24 live
 sessions, all accepted on the first attempt with **zero session/matrix
 re-executions and zero cell replacements**. That orchestration claim is
 distinct from the in-session `retries` grading metric (defined in Method
@@ -243,8 +244,11 @@ batch 1/12.
 
 **Windows batch B (2026-08-15, PR #428) is the most comparable reference**,
 not Windows batch A: it is the only prior capture that already includes PR
-#425 and PR #426, at the same skill pin and same Claude Code version as this
-macOS batch — Windows batch A predates both. Read narrowly, that gives
+#425 and PR #426, at the same skill pin and the same Claude Code semantic
+version (`2.1.227`) as this macOS batch — though `2.1.227` names
+platform-specific Windows and macOS distributions, not an identical binary
+(see Identity and provenance). Windows batch A predates both PR #425 and
+PR #426. Read narrowly, that gives
 Windows 8/12 vs this macOS batch 10/12, differing on 2 of 12 current-skill
 cells (`changed-module-verification` and `kampkit-android-host-test-discovery`,
 1/2 each on Windows batch B, 2/2 here), identical on the other 4 scenarios.
@@ -253,11 +257,11 @@ These numbers are included **only as directional context and are not a
 controlled comparison against this batch.** Between this batch and Windows
 batch B, platform, host, and capture date still differ, and agent runs are
 nondeterministic at fixed seed (the seed fixes cell ordering, not model
-sampling) — n=2 per scenario cannot distinguish a real effect from noise at
-that scale. This 2-cell difference is a weak directional observation, not
-evidence of an OS effect, a regression, an improvement, or variance beyond
-n=2 noise. No part of any difference between captures is attributed to
-platform, the skill, or any specific PR on this evidence alone.
+sampling). With n=2 per scenario, the data cannot distinguish or rank a
+platform effect, a behavioural change, or ordinary run-to-run variation. No
+causal explanation is established. No part of any difference between
+captures is attributed to platform, the skill, or any specific PR on this
+evidence alone.
 
 ## Limitations
 
