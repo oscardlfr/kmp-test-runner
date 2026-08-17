@@ -96,6 +96,64 @@
 
 ### 📋 QUEUED follow-ups (next sessions)
 
+- 🧭 **Agentic-eval multi-runtime foundation v1: Claude Code + Codex CLI, with a safely isolated no-policy profile** —
+  APPROVED DIRECTION 2026-08-17; implementation not started. Detailed, ordered plan:
+  [`docs/audits/agentic-eval-claude-codex-v1-plan.md`](docs/audits/agentic-eval-claude-codex-v1-plan.md).
+  Runtime capability audit, including future-candidate screening for Copilot, Google, and Microsoft:
+  [`docs/audits/agentic-eval-runtime-capability-audit-2026-08-17.md`](docs/audits/agentic-eval-runtime-capability-audit-2026-08-17.md).
+  Goal: preserve the current Claude Code `strict-policy` canaries while introducing two independent,
+  explicit axes — runtime (`claude-code` / `codex-cli`) and execution profile
+  (`strict-policy-v1` / `sandboxed-unrestricted-v1`) — so the `current-skill` vs `no-skill` token,
+  command, latency, and success numbers are reported as an observed within-partition contrast
+  (`observed_contrast = metric(current-skill) - metric(no-skill)`) inside a complete runtime/model/
+  version/platform/profile partition. That contrast is descriptive: it is not by itself a causal
+  estimate or a reliability measure, the four-repetition pilots are intervention signals rather
+  than demonstrated effects, and run order is pre-registered and hashed before any live session.
+  The no-policy arm is never permitted on a normal maintainer host:
+  it requires a disposable external containment boundary, no ambient secrets, a recorded isolation
+  attestation, and complete command/result accounting even though the Claude policy hook is absent.
+  Prospective records move to schema v6; historical v3/v4/v5 records and sidecars remain frozen and
+  are not regraded. Adding a model becomes validated registry configuration after each runtime
+  adapter exists; retiring one means `enabled: false`, never deleting an entry that committed
+  evidence references, and runtime/model/profile IDs are immutable once cited by a record. Runtime-native token fields remain separate (missing means `not recorded`, never
+  zero); cross-runtime token totals are descriptive, never treated as one tokenizer or causal
+  leaderboard. Execution order is load-bearing: freeze current Claude behavior → extract Claude
+  adapter without behavior change → schema v6/registry/partitioned reporting → isolated unrestricted
+  Claude profile → focused Claude 2x2 pilot → characterize/add Codex → focused Codex 2x2 pilot.
+  Required capability matrix: Claude supports both profiles; Codex must support the isolated
+  unrestricted profile, while strict-policy Codex is optional unless characterization proves an
+  equivalent auditable control (no fake hook parity and no runtime-neutral broker required for v1).
+  Focused budget: 48 fresh sessions across both platforms (Claude 16 + Codex 8 per platform),
+  separately authorized Windows then macOS; optional strict Codex raises the maximum to 64. Required
+  full corpus is 144 maximum sessions (192 only with optional strict Codex) and stays blocked until
+  both focused runtimes pass structural acceptance on both platforms. GitHub Copilot CLI and Google
+  Antigravity CLI implementation, APIs, live CI calls, runtime rankings, and retrospective pooling
+  of PR #434/#435 evidence are OUT of v1. This backlog entry and its plan authorize no live calls,
+  raw reads, pin advance, merge, or implementation by themselves.
+
+- 🧩 **Agentic-eval post-v1 runtime extensions: Copilot CLI and Google Antigravity CLI** — PARKED
+  behind completion of the Claude+Codex v1 contract. Do not implement both together. At promotion,
+  refresh a zero-live readiness snapshot and select one by structured-stream stability, skill-state
+  observability, dispatch accounting, cross-platform parity, and privacy surface. Follow plan stages
+  E0-E4: exact-version readiness → at most 2 characterization sessions per platform → one offline
+  adapter PR → focused 8-session Windows then 8-session macOS pilot → registry-only model profiles.
+  The architecture is runtime-based: Gemini under Antigravity and Gemini under Copilot are different
+  runtime partitions; Microsoft `MAI-Code` is a model profile under Copilot, not a `microsoft-cli`
+  adapter. Legacy Gemini CLI is screened out for the normal individual-account path after Google's
+  Antigravity transition; Microsoft AI Shell is archived; Foundry hosted agents and Microsoft
+  Conductor are different orchestration/API experiments, not equivalent coding-runtime adapters.
+  Reconsider a screened-out candidate only after a documented product-status change. No installation,
+  authentication change, live spend, or campaign is authorized by this item.
+
+- 🔍 **macOS coverage-budget finalization failure (`f650117e`)** — separate offline follow-up from
+  PR #435; do not fold it into the runtime/profile refactor. The cell was structurally accepted,
+  reached the expected outcome with authoritative terminal evidence, and failed only
+  `final_answer_consistent_with_evidence` because the final text lacked a well-formed result block.
+  Investigate committed record + accepted sidecar + grader/finalization code first. Raw transcript
+  access remains separately phrase-gated and is permitted only if the committed evidence cannot
+  distinguish runtime finalization behavior from harness parsing/canonicalization. No skill-doc
+  change, grader relaxation, or causal claim without a reproduced mechanism.
+
 - 🔍 **Discard-safety asymmetry: the raw-transcript (stdout) tier lacks content verification** —
   found 2026-08-13 during an independent adversarial review of the macOS auth-preflight fix
   (`feature/agentic-macos-auth-preflight-crash-safety`, `tools/agentic-eval/`). Confirmed by direct

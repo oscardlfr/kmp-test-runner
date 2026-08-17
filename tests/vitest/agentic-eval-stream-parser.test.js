@@ -83,6 +83,211 @@ describe('parseStreamJsonl', () => {
   });
 });
 
+// Characterization freeze (runtime-contract PR): ONE literal structural photograph per sanitized
+// fixture, assembled only from the public helpers already exported by stream-parser.mjs.
+//
+// These two fixtures were ALREADY exercised by individual tests elsewhere in this file (parse,
+// skill detection, hook counting, byte metrics, receipt tagging, ...). What is new here is not
+// their first use: it is a single JOINT, closed photograph of their sanitized structure. Each of
+// those individual tests pins one helper's answer; none of them pins what the fixtures as a whole
+// decode to, so a change that shifted an event index, dropped a hook pair, or altered a usage
+// field would keep every one of them green. This is the wire contract a later runtime adapter
+// must reproduce.
+//
+// Deliberately excluded from the summaries: cwd, session id, any path, the prompt, tool inputs,
+// and the final answer text. Only counts, closed enums, identity strings, and the four usage
+// integers are frozen.
+//
+// On correlation: the historical sanitization of these captures stripped the Bash `tool_use.id`
+// and the matching `tool_result.tool_use_id`, keeping only the Skill call's id. So these fixtures
+// do NOT demonstrate end-to-end Bash tool_use/tool_result correlation, and the photograph does not
+// pretend otherwise -- it reports `uncorrelatableWithoutId` separately from any notion of a
+// missing result. An id-less attempt is UNOBSERVABLE here, not a missing tool_result and not a
+// defect of the original session: the `tool_result` blocks are present in the fixture, they simply
+// carry no `tool_use_id` to correlate on. Freezing that keeps the property honest and visible: if
+// a future re-sanitization preserved the ids, these numbers change and this test goes red.
+// The correlation SEMANTICS proper (resultFound true/false, resultIndex, resultIsError) are
+// covered by the dedicated synthetic describe blocks further down, which build events that do
+// carry ids -- see 'findBashToolUsesWithResults -- resultIndex/resultContent (additive fields)'
+// and 'findAllToolUsesWithResults -- name-agnostic tool_use+result enumeration'. Production's
+// fail-closed behaviour on a missing id is deliberately left untouched.
+//
+// The `2.1.212` below is the PROVENANCE of these sanitized fixtures -- the Claude Code version
+// that produced the captures they were derived from. It is NOT the currently supported version,
+// and it is NOT the 2.1.227 seen in the later pre-dispatch-block incident. The four usage
+// integers are likewise a property of those two specific historical sessions: they are frozen
+// here as a decode contract, and no token-cost or per-session-cost figure may be extrapolated
+// from them.
+describe('sanitized fixture wire contract -- literal structural photograph per fixture', () => {
+  /** Correlation tally over an already-enumerated tool_use list. `correlatedById` is the helper's
+   * own resultFound, never re-derived here; `uncorrelatableWithoutId` is the id-less remainder,
+   * which is deliberately NOT called a missing result. */
+  function tallyToolUses(uses) {
+    return {
+      total: uses.length,
+      withId: uses.filter((entry) => entry.id != null).length,
+      correlatedById: uses.filter((entry) => entry.resultFound === true).length,
+      uncorrelatableWithoutId: uses.filter((entry) => entry.id == null).length,
+    };
+  }
+
+  /** Counts tool_result BLOCKS over the already-parsed events -- the other side of the same
+   * question, proving the results exist in the fixture even where no id links them back. Local to
+   * this test on purpose: stream-parser.mjs gains no new production helper for a test's benefit. */
+  function tallyToolResultBlocks(events) {
+    let total = 0;
+    let withToolUseId = 0;
+    for (const ev of events) {
+      for (const block of ev.message?.content ?? []) {
+        if (block.type !== 'tool_result') continue;
+        total += 1;
+        if (block.tool_use_id != null) withToolUseId += 1;
+      }
+    }
+    return { total, withToolUseId, withoutToolUseId: total - withToolUseId };
+  }
+
+  function structuralSummary(raw) {
+    const { events, malformedLines } = parseStreamJsonl(raw);
+    const init = findInitEvent(events);
+    const result = findResultEvent(events);
+    const invocation = findSkillInvocation(events, 'kmp-test-runner', 'kmp-test-runner');
+    const hooks = countHookEvents(events);
+    const allToolUses = findAllToolUsesWithResults(events);
+    const bashToolUses = findBashToolUsesWithResults(events);
+    return {
+      eventCount: events.length,
+      malformedLineCount: malformedLines.length,
+      init: {
+        type: init.type,
+        subtype: init.subtype,
+        model: init.model,
+        permissionMode: init.permissionMode,
+        claudeCodeVersion: init.claude_code_version,
+        pluginAvailable: isSkillAvailable(init, 'kmp-test-runner'),
+      },
+      skill: {
+        attempted: invocation ? invocation.attempted : false,
+        confirmed: invocation ? invocation.confirmed : false,
+        attemptCount: invocation ? invocation.attemptCount : 0,
+        type: invocation ? invocation.type : null,
+        index: invocation ? invocation.index : null,
+        resultIsError: invocation ? invocation.resultIsError : null,
+      },
+      usage: extractTokenUsage(result),
+      hooks: {
+        calls: hooks.hookCallCount,
+        responses: hooks.hookResponseCount,
+        denies: hooks.hookDenyCount,
+        allows: hooks.hookAllowCount,
+        pairingOk: hooks.hookPairingOk,
+        everyCallHooked: hooks.everyCallHooked,
+      },
+      toolUses: {
+        all: tallyToolUses(allToolUses),
+        bash: tallyToolUses(bashToolUses),
+      },
+      toolResults: tallyToolResultBlocks(events),
+      result: {
+        type: result.type,
+        subtype: result.subtype,
+        isError: result.is_error,
+        numTurns: result.num_turns,
+      },
+    };
+  }
+
+  it('current-skill fixture decodes to exactly this structure', () => {
+    expect(structuralSummary(currentSkillRaw)).toEqual({
+      eventCount: 26,
+      malformedLineCount: 0,
+      init: {
+        type: 'system',
+        subtype: 'init',
+        model: 'claude-sonnet-5',
+        permissionMode: 'dontAsk',
+        claudeCodeVersion: '2.1.212',
+        pluginAvailable: true,
+      },
+      skill: {
+        attempted: true,
+        confirmed: true,
+        attemptCount: 1,
+        type: 'assistant.tool_use.Skill',
+        index: 3,
+        resultIsError: false,
+      },
+      usage: { input: 8, output: 1194, cache_read: 77339, cache_creation: 5847 },
+      hooks: { calls: 2, responses: 2, denies: 2, allows: 0, pairingOk: true, everyCallHooked: true },
+      toolUses: {
+        all: {
+          total: 3,
+          withId: 1,
+          correlatedById: 1,
+          uncorrelatableWithoutId: 2,
+        },
+        bash: {
+          total: 2,
+          withId: 0,
+          correlatedById: 0,
+          uncorrelatableWithoutId: 2,
+        },
+      },
+      toolResults: {
+        total: 3,
+        withToolUseId: 1,
+        withoutToolUseId: 2,
+      },
+      result: { type: 'result', subtype: 'success', isError: false, numTurns: 5 },
+    });
+  });
+
+  it('no-skill fixture decodes to exactly this structure', () => {
+    expect(structuralSummary(noSkillRaw)).toEqual({
+      eventCount: 13,
+      malformedLineCount: 0,
+      init: {
+        type: 'system',
+        subtype: 'init',
+        model: 'claude-sonnet-5',
+        permissionMode: 'dontAsk',
+        claudeCodeVersion: '2.1.212',
+        pluginAvailable: false,
+      },
+      skill: {
+        attempted: false,
+        confirmed: false,
+        attemptCount: 0,
+        type: null,
+        index: null,
+        resultIsError: null,
+      },
+      usage: { input: 4, output: 790, cache_read: 32898, cache_creation: 531 },
+      hooks: { calls: 1, responses: 1, denies: 1, allows: 0, pairingOk: true, everyCallHooked: true },
+      toolUses: {
+        all: {
+          total: 1,
+          withId: 0,
+          correlatedById: 0,
+          uncorrelatableWithoutId: 1,
+        },
+        bash: {
+          total: 1,
+          withId: 0,
+          correlatedById: 0,
+          uncorrelatableWithoutId: 1,
+        },
+      },
+      toolResults: {
+        total: 1,
+        withToolUseId: 0,
+        withoutToolUseId: 1,
+      },
+      result: { type: 'result', subtype: 'success', isError: false, numTurns: 2 },
+    });
+  });
+});
+
 // isTargetSkillReference is the ONE place that decides whether a Skill tool_use's `input.skill`
 // refers to the logical target skill (pluginName, skillName) -- see stream-parser.mjs's own doc
 // comment for the full rationale. pluginName/skillName are tested here with DIFFERENT literal
