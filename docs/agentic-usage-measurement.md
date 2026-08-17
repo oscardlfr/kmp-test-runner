@@ -106,7 +106,9 @@ contrast, and say how many sessions produced it.
 
 A stronger causal claim requires, at minimum, all of the following:
 
-- assignment and run order pre-registered before any session is spent;
+- treatment assignment randomized or otherwise identified by a
+  pre-registered experimental design, with run order pre-registered and
+  counterbalanced;
 - enough independent units to distinguish the contrast from session-to-
   session variation;
 - explicit control of the partition keys above and of known confounders
@@ -122,8 +124,8 @@ funding. They are not a demonstrated effect, they do not support a
 confidence interval anyone should act on, and no report may present them as
 one.
 
-A difference between two runtimes is a runtime difference, and it stays
-exclusively descriptive. It is not this contrast, and it is not a causal
+An observed difference between two runtimes is an observed cross-runtime
+difference, and it stays exclusively descriptive. It is not this contrast, and it is not a causal
 ranking: the products differ in prompt scaffolding, tool availability,
 permission behavior, context handling, and hidden system content, none of
 which this methodology controls. Cross-runtime numbers may be reported side
@@ -166,6 +168,13 @@ and record its hash **before any live session is spent**. The sequence is
 then fixed: it may not be reinterpreted, reordered, or re-derived after
 results are observed, and a deviation is recorded as a deviation rather than
 folded into the design.
+
+Pre-registering the order is necessary, not sufficient. It removes order as
+an uncontrolled confounder; it does not by itself license a causal reading.
+The four-repetition pilots still fail the remaining requirements above --
+too few independent units, no uncertainty estimate -- so their results stay
+descriptive. Do not read the presence of a Williams design as a promotion
+from contrast to effect.
 
 ### Conditions
 
@@ -263,24 +272,44 @@ A separate confusion is worth naming explicitly, because it looks like a
 token measurement and is not one. Three quantities are recorded separately
 and never summed:
 
-1. **Static treatment size.** What was delivered, measurable offline before
-   any session: the canonical prompt's SHA-256 and UTF-8 byte length, the
-   skill source SHA, the materialized snapshot's hash, its canonical UTF-8
-   byte total, its file count, and the delivery mode. These are **artifact
-   sizes**. A snapshot of N bytes does not mean N bytes entered the context
-   window -- a runtime may index it, load it lazily, summarize it, or never
-   read parts of it. Never render these as tokens consumed, context actually
-   loaded, or billable cost. Under `no-skill` the snapshot fields are `null`
-   with the closed reason `condition-no-skill`, never `0`.
+1. **Static treatment size.** The artifact **made available to the runtime**,
+   measurable offline before any session: the canonical prompt's SHA-256 and
+   UTF-8 byte length, the skill source SHA, the snapshot manifest's hash, its
+   summed blob byte length, its file count, and the delivery mode. These are
+   **artifact sizes**, and "made available" is not "loaded": a snapshot of N
+   bytes does not mean N bytes entered the context window -- a runtime may
+   index it, load it lazily, summarize it, or never read parts of it. Never
+   render these as tokens consumed, context actually loaded, or billable
+   cost. Under `no-skill` the snapshot fields are `null` with the closed
+   reason `condition-no-skill`, never `0`.
+
+   To be comparable across hosts these values are computed from **Git
+   objects, not checkout bytes** -- blobs under the skill's canonical root,
+   paths normalized to `/` and sorted, hashed over a canonical JSON
+   manifest -- so that `core.autocrlf`, per-file `eol` attributes, locale and
+   path separators cannot make Windows and macOS disagree about the same
+   skill. Symlinks, submodules and out-of-root paths fail closed. Prompt
+   bytes are the harness's canonical prompt before any runtime wrapping;
+   hidden runtime scaffolding is neither counted nor estimated, and any
+   observable adapter wrapping is a separate surface. The normative
+   definition lives in the plan's Token and cost contract.
 2. **Observed end-to-end session usage.** The runtime-reported dimensions
    plus wall-clock, turns, commands, tool results and captured bytes. The
    `current-skill` minus `no-skill` difference over this is a whole-session
    contrast.
 3. **Usage attributable to loading the skill.** Recorded only when the
-   runtime exposes it directly. Otherwise `not recorded` -- never the
-   residual between the two arms, which also absorbs different
-   trajectories, tool calls, retries and cache behavior. Calling that
-   residual "the skill's token cost" is a fabricated attribution.
+   runtime explicitly attributes usage to skill or plugin content. It stays
+   **dimensional** -- input, cached input, cache write, output and reasoning
+   output kept separate, with an explicit unit -- because a single scalar
+   would re-introduce exactly the summation rule 3 above forbids, and would
+   hide which dimension the runtime actually attributed. Either it is
+   runtime-reported, with at least one dimension holding a non-negative
+   integer and a stated unit, or it is `not recorded`, with every dimension
+   null and a closed reason. It is never the residual between the two arms,
+   which also absorbs different trajectories, tool calls, retries and cache
+   behavior; calling that residual "the skill's token cost" is a fabricated
+   attribution. A null dimension is never rendered as zero, and cost or AI
+   units never live in this structure.
 
 Reports show all three separately. A session-level contrast answers "what
 did these sessions cost"; it does not answer "what did loading the skill
@@ -621,7 +650,7 @@ and the raw evidence has been checked for privacy.
   powered measurement wave: n=1 per cell, single-rater non-blind grading, and
   a confirmed instrumentation-bug confound (see that document's
   Interpretation section) all mean its numbers should not be read as clean
-  condition effects. The Reporting format table above remains `TBD`
+  condition contrasts. The Reporting format table above remains `TBD`
   placeholders — that table is this document's own future-format sketch, and
   the pilot's actual results live in the pilot document instead of being
   transcribed into this table.

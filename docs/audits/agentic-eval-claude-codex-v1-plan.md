@@ -109,7 +109,7 @@ product:
 | Codex CLI | Optional, only with equivalent auditable control | Required |
 
 This supports a same-profile Claude-vs-Codex descriptive comparison and a
-within-Claude policy-effect comparison without pretending that Claude hooks and
+within-Claude policy-profile contrast without pretending that Claude hooks and
 Codex sandbox controls are equivalent. A future runtime-neutral command broker
 may add strict Codex support, but it is not a v1 prerequisite.
 
@@ -270,7 +270,15 @@ The v6 record adds these canonical groups:
     "reasoning_output": null,
     "attributable_to_skill_load": {
       "status": "runtime-reported|not-recorded",
-      "value": null
+      "dimensions": {
+        "input": null,
+        "cached_input": null,
+        "cache_write": null,
+        "output": null,
+        "reasoning_output": null
+      },
+      "unit": "tokens|null",
+      "reason": "closed reason or null"
     }
   }
 }
@@ -283,9 +291,27 @@ the frozen v5 inventory keeps naming the complete v6 set.
 `treatment_size` is artifact metadata, not consumption: its byte counts are
 never rendered as tokens, context loaded, or cost. Under `no-skill` its
 snapshot fields are null with `absent_reason: "condition-no-skill"`, never
-zero. `attributable_to_skill_load` is populated only when the runtime itself
-reports it, and is `not-recorded` otherwise -- never computed as the residual
-between the two arms.
+zero.
+
+`attributable_to_skill_load` keeps the same dimensional structure as `usage`
+itself, because a single scalar would silently re-create exactly the addition
+this contract forbids: input, cached input, cache write, output and reasoning
+output are not the same quantity and cannot be collapsed into one number.
+Its prospective rules are:
+
+- `status: "runtime-reported"` requires at least one dimension carrying a
+  non-negative integer, `unit: "tokens"`, and `reason: null`.
+- `status: "not-recorded"` requires every dimension `null`, `unit: null`, and
+  a non-empty closed reason.
+- No `tokens_total` is ever derived, and dimensions are never summed --
+  neither with each other nor across runtimes or models.
+- A `null` dimension is never converted to zero at any layer, including
+  aggregation and reporting.
+- `runtime-reported` is used only when the runtime **explicitly attributes**
+  those dimensions to loading skill or plugin content. A whole-session figure,
+  or a difference between arms, never qualifies.
+- Cost and AI units stay outside this structure entirely; they keep their own
+  separate dated contract (section 7.4).
 
 The exact allowed enums are locked by the schema PR. No generic `tokens_total`
 is derived by adding dimensions whose runtime/model semantics differ.
@@ -362,10 +388,12 @@ observed_contrast = metric(current-skill) - metric(no-skill)
 
 evaluated inside one complete partition. It is descriptive. It is not by
 itself a causal estimate and not a measure of reliability. A stronger causal
-claim additionally requires pre-registered assignment and run order, enough
-independent units to separate the contrast from session-to-session variation,
-explicit control of the partition keys above and of known confounders, and a
-reported uncertainty or sensitivity estimate. The four-repetition pilots in
+claim additionally requires treatment assignment randomized or otherwise
+identified by a pre-registered experimental design, with run order
+pre-registered and counterbalanced; enough independent units to separate the
+contrast from session-to-session variation; explicit control of the partition
+keys above and of known confounders; and a reported uncertainty or
+sensitivity estimate. The four-repetition pilots in
 this plan are intervention signals that justify or refuse a larger
 measurement; they are never reported as demonstrated effects.
 
@@ -429,21 +457,65 @@ per-skill price.
 
 ### 7.1 Static treatment size (an input artifact, not a consumption measure)
 
-Describes the treatment that was delivered, measurable entirely offline
-before any session runs:
+Describes the treatment artifact **made available to the runtime**,
+measurable entirely offline before any session runs:
 
 - `prompt_sha256` -- SHA-256 of the canonical prompt;
 - `prompt_bytes` -- UTF-8 byte length of the canonical prompt;
 - `skill_source_sha` -- the pinned skill identity;
-- `skill_snapshot_sha256` -- hash of the materialized skill snapshot;
-- `skill_snapshot_bytes` -- canonical UTF-8 byte total of that snapshot;
-- `skill_snapshot_file_count` -- number of files in the snapshot;
+- `skill_snapshot_sha256` -- hash of the canonical snapshot manifest;
+- `skill_snapshot_bytes` -- summed blob byte length of that manifest;
+- `skill_snapshot_file_count` -- manifest cardinality;
 - `delivery_mode` -- runtime-specific closed enum for how it was delivered.
 
-These are **artifact sizes**. They must never be described as tokens
-consumed, as context actually loaded into the model, or as billable cost. A
+These are **artifact sizes**. "What was delivered" means "artifact made
+available to the runtime": it does not demonstrate that the model loaded it,
+read it, or admitted it to the context window. They must never be described
+as tokens consumed, as context actually loaded, or as billable cost. A
 snapshot of N bytes does not entail that N bytes entered the context window:
 runtimes may index, lazily load, summarize, or never read parts of it.
+
+#### Canonical snapshot computation
+
+Naming a hash is not enough: the same skill must produce identical values on
+Windows and macOS. A checkout-based measurement would not, because
+`core.autocrlf`, per-file `eol` attributes, filesystem case handling, and
+path separators all differ. The computation is therefore defined over Git
+objects, never over checkout bytes:
+
+1. Resolve the skill from the exact Git tree identified by `skill_source_sha`
+   -- never from the working-tree bytes of any checkout.
+2. Enumerate every blob under the skill's canonical root.
+3. Normalize each path to be relative to that root, using `/` separators.
+4. Sort the entries lexicographically by normalized path.
+5. Emit, per file, exactly `{ path, git_blob_oid, byte_length }`.
+6. `skill_snapshot_bytes` = sum of `byte_length` over the exact Git blob
+   bytes -- not over checkout bytes, and not over a concatenation.
+7. `skill_snapshot_file_count` = the manifest's cardinality.
+8. `skill_snapshot_sha256` = SHA-256 over a canonical UTF-8 JSON
+   serialization of that manifest, with key order and separators fixed by
+   the future tested helper rather than by a language default.
+9. Symlinks, submodules, non-regular entries, and any path resolving outside
+   the canonical root fail closed or are prohibited outright by the
+   contract. They are never silently skipped and never followed.
+10. No checkout CRLF conversion, ambient encoding, locale, or platform may
+    change any of these values.
+
+`skill_source_sha` identifies the tree; `skill_snapshot_sha256` identifies
+the exact file set measured from it. Both are recorded because a tree
+identity alone does not pin which subset the harness treated as the skill.
+
+#### Canonical prompt computation
+
+`prompt_bytes` and `prompt_sha256` are computed over the exact UTF-8 bytes of
+the canonical prompt **as the harness produces it**, before any internal
+wrapping the runtime applies.
+
+Hidden or non-observable runtime scaffolding is neither included nor
+estimated -- an estimate here would be indistinguishable from a measurement
+in the record. Where an adapter applies observable wrapping of its own, that
+wrapping is recorded as a **separate surface** with its own byte count, and
+is never folded into `prompt_bytes`.
 
 For `no-skill`, every snapshot field is `null` with the closed reason
 `condition-no-skill`. Never zero: zero would assert a measured empty
@@ -468,15 +540,28 @@ session-level contrast, not an attribution of cost to the skill.
 
 ### 7.3 Usage attributable to loading the skill
 
-Recorded **only** when the runtime directly exposes it -- for example a
-usage dimension the runtime itself attributes to skill or plugin content.
+Recorded **only** when the runtime directly exposes it -- that is, when the
+runtime itself attributes usage dimensions to skill or plugin content.
 
-Otherwise it is `not-recorded`. It is never derived as the residual
-difference between the two arms: that residual also absorbs different
-trajectories, different tool calls, different retries, and different cache
-behavior, so calling it "the skill's token cost" would be a fabricated
-attribution. `not-recorded` here means the harness cannot separate the two,
-which is the honest state for a runtime that does not report it.
+It is dimensional, never a single number: `input`, `cached_input`,
+`cache_write`, `output` and `reasoning_output` are kept separate, carry an
+explicit `unit`, and are never added together. A lone scalar would smuggle
+back the summation this contract forbids, and would also hide which
+dimension a runtime actually attributed.
+
+The two states are closed:
+
+- `runtime-reported` -- at least one dimension is a non-negative integer,
+  `unit` is `tokens`, and `reason` is null;
+- `not-recorded` -- every dimension is null, `unit` is null, and a non-empty
+  closed reason says why.
+
+It is never derived as the residual difference between the two arms: that
+residual also absorbs different trajectories, different tool calls, different
+retries, and different cache behavior, so calling it "the skill's token cost"
+would be a fabricated attribution. A null dimension is never rendered as
+zero. `not-recorded` means the harness cannot separate the two, which is the
+honest state for a runtime that does not report it.
 
 ### 7.4 Shared rules
 
@@ -703,6 +788,11 @@ The concrete campaign runbook must write the literal sequence and record its
 hash before any live session is spent. The sequence may not be reinterpreted,
 reordered, or re-derived once results are observed; a departure from it is
 recorded as a deviation, never absorbed into the design.
+
+This design controls order; it does not make the pilot causal. At four
+repetitions the remaining requirements in ADR-7 -- enough independent units
+and a reported uncertainty estimate -- are still unmet, so this pilot's
+output stays an observed within-partition contrast.
 
 Exit: structurally accepted evidence under both profiles, or an incident that
 demonstrates the unrestricted profile is not yet trustworthy. Behavioral
