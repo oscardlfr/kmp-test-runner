@@ -103,14 +103,19 @@
   [`docs/audits/agentic-eval-runtime-capability-audit-2026-08-17.md`](docs/audits/agentic-eval-runtime-capability-audit-2026-08-17.md).
   Goal: preserve the current Claude Code `strict-policy` canaries while introducing two independent,
   explicit axes — runtime (`claude-code` / `codex-cli`) and execution profile
-  (`strict-policy-v1` / `sandboxed-unrestricted-v1`) — so `current-skill` vs `no-skill` token,
-  command, latency, and success effects are measured within a complete runtime/model/version/
-  platform/profile partition. The no-policy arm is never permitted on a normal maintainer host:
+  (`strict-policy-v1` / `sandboxed-unrestricted-v1`) — so the `current-skill` vs `no-skill` token,
+  command, latency, and success numbers are reported as an observed within-partition contrast
+  (`observed_contrast = metric(current-skill) - metric(no-skill)`) inside a complete runtime/model/
+  version/platform/profile partition. That contrast is descriptive: it is not by itself a causal
+  estimate or a reliability measure, the four-repetition pilots are intervention signals rather
+  than demonstrated effects, and run order is pre-registered and hashed before any live session.
+  The no-policy arm is never permitted on a normal maintainer host:
   it requires a disposable external containment boundary, no ambient secrets, a recorded isolation
   attestation, and complete command/result accounting even though the Claude policy hook is absent.
   Prospective records move to schema v6; historical v3/v4/v5 records and sidecars remain frozen and
-  are not regraded. Model add/remove becomes validated registry configuration after each runtime
-  adapter exists. Runtime-native token fields remain separate (missing means `not recorded`, never
+  are not regraded. Adding a model becomes validated registry configuration after each runtime
+  adapter exists; retiring one means `enabled: false`, never deleting an entry that committed
+  evidence references, and runtime/model/profile IDs are immutable once cited by a record. Runtime-native token fields remain separate (missing means `not recorded`, never
   zero); cross-runtime token totals are descriptive, never treated as one tokenizer or causal
   leaderboard. Execution order is load-bearing: freeze current Claude behavior → extract Claude
   adapter without behavior change → schema v6/registry/partitioned reporting → isolated unrestricted

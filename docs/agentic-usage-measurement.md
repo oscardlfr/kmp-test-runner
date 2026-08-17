@@ -84,28 +84,88 @@ question. Every other axis is held fixed within a comparison and recorded on
 every run so that pooling incompatible runs is detectable rather than
 invisible.
 
-### The skill effect is defined inside one complete partition
+### The observed within-partition contrast
 
 The quantity this document measures is:
 
 ```text
-effect = metric(current-skill) - metric(no-skill)
+observed_contrast = metric(current-skill) - metric(no-skill)
 ```
 
 evaluated within a single complete partition -- same runtime, runtime
 version, model profile, execution profile, platform, scenario, project
 commit, harness commit, skill pin, and cache policy. A difference measured
-across any of those boundaries is not a skill effect and must not be
+across any of those boundaries is not this contrast at all and must not be
 reported as one.
 
-In particular, a difference between two runtimes is a runtime difference. It
-is not a skill effect, and it is not a causal ranking of the runtimes: the
-products differ in prompt scaffolding, tool availability, permission
-behavior, context handling, and hidden system content, none of which this
-methodology controls. Cross-runtime numbers may be reported descriptively,
-side by side, with their partition keys attached. They may never be
-subtracted from each other and presented as an effect, and no runtime may be
-declared better than another on this evidence.
+**This value is descriptive.** It is the difference actually observed
+between two sets of sessions. On its own it is neither a causal estimate
+nor a measure of reliability: it carries no uncertainty, and nothing about
+subtracting two numbers turns them into an effect. Call it an observed
+contrast, and say how many sessions produced it.
+
+A stronger causal claim requires, at minimum, all of the following:
+
+- assignment and run order pre-registered before any session is spent;
+- enough independent units to distinguish the contrast from session-to-
+  session variation;
+- explicit control of the partition keys above and of known confounders
+  (cache state, ordering, host load, model-side drift);
+- an uncertainty or sensitivity estimate reported alongside the number.
+
+Until those hold, the honest wording is "observed contrast", not "effect".
+
+The focused pilots in this program run four repetitions per condition. Four
+repetitions are an **intervention signal** -- enough to notice that
+something changed and to decide whether a larger measurement is worth
+funding. They are not a demonstrated effect, they do not support a
+confidence interval anyone should act on, and no report may present them as
+one.
+
+A difference between two runtimes is a runtime difference, and it stays
+exclusively descriptive. It is not this contrast, and it is not a causal
+ranking: the products differ in prompt scaffolding, tool availability,
+permission behavior, context handling, and hidden system content, none of
+which this methodology controls. Cross-runtime numbers may be reported side
+by side with their partition keys attached. They may never be subtracted
+from each other and presented as an effect, and no runtime may be declared
+better than another on this evidence.
+
+### Pre-registered run order
+
+Order is a confounder, so it is fixed in advance and recorded, never chosen
+after seeing results.
+
+The Claude 2x2 pilot has four conditions:
+
+```text
+A = strict-policy-v1 / no-skill
+B = strict-policy-v1 / current-skill
+C = sandboxed-unrestricted-v1 / no-skill
+D = sandboxed-unrestricted-v1 / current-skill
+```
+
+Its order is this Williams design, four blocks, each condition appearing
+once in every position and each ordered pair balanced:
+
+```text
+block 0: A B D C
+block 1: B C A D
+block 2: C D B A
+block 3: D A C B
+```
+
+This replaces "balanced order" as a description with a sequence that can be
+checked. Four independent shuffles are not equivalent and are not permitted.
+
+A two-condition pilot uses a pre-registered counterbalanced order in which
+each condition appears twice in each position.
+
+In both cases the concrete campaign runbook must write the literal sequence
+and record its hash **before any live session is spent**. The sequence is
+then fixed: it may not be reinterpreted, reordered, or re-derived after
+results are observed, and a deviation is recorded as a deviation rather than
+folded into the design.
 
 ### Conditions
 
@@ -136,8 +196,8 @@ vendor-specific assumptions.
 | Total wall-clock | Time from task start to final verified answer | Easy to compare with cold/warm cache noted |
 | Commands run | Count of shell/tool commands, grouped as successful, failing, repeated, or exploratory | Measures operational friction |
 | Test attempts | Count of Gradle/`kmp-test` test invocations | Separates test-loop cost from general exploration |
-| Output bytes read | stdout/stderr bytes returned to the agent | Provider-neutral context proxy |
-| Runtime-reported usage | The token dimensions the runtime itself exposes for the session, stored per dimension exactly as reported | Authoritative for that runtime and model only; never comparable across runtimes |
+| Output bytes read | stdout/stderr bytes returned to the agent, over an explicitly recorded surface set | A common physical unit; comparable only against the same surface set |
+| Runtime-reported usage | The token dimensions the runtime itself exposes for the session, stored per dimension exactly as reported | A faithful record of what that runtime/model/version reported; not a guaranteed-complete or billable total |
 | Offline token estimate | A local tokenizer's count over canonical text volume | Reproducible on one machine; an estimate, never a billable token count |
 | Tool calls / turns | Number of agent-tool interactions and user-visible turns | Captures steering overhead |
 | Human intervention count | Number of clarifications or user corrections needed | Measures autonomy |
@@ -152,22 +212,35 @@ Commands run, plus Test attempts for the test-invocation loop specifically.
 Three distinct kinds of number live here. They are not interchangeable, they
 are stored separately, and they are never summed together.
 
-1. **Provider-neutral bytes.** Always record stdout/stderr and tool-result
-   byte counts. This is the only context proxy that means the same thing for
-   every runtime and every model, so it is the axis that carries a
-   cross-runtime table.
+1. **Bytes over a recorded surface set.** Always record stdout/stderr and
+   tool-result byte counts, together with **which surfaces were captured**.
+   A byte is a common physical unit, so bytes are the axis that can carry a
+   cross-runtime table -- but equal byte counts are not equal context. What
+   each runtime puts on those surfaces, how it truncates, what it summarizes
+   before the model sees it, and what it adds invisibly all differ. Bytes
+   measure what the harness captured, not what the model processed.
 2. **Offline token estimate.** A local tokenizer over canonical text volume.
    Reproducible for same-machine comparison, clearly labelled an estimate,
    and never presented as a billed or billable count.
 3. **Runtime-native usage.** Whatever token dimensions the runtime itself
    reports for the session, recorded per dimension exactly as exposed and
-   attributed to that runtime, runtime version, and model.
+   attributed to that runtime, runtime version, and model. This is a
+   faithful record of what that runtime reported -- no more. It does not
+   guarantee that hidden system prompts, all context the model actually
+   processed, or every billable unit are included, and a runtime may change
+   what it reports between versions without saying so.
 
 Runtime-native dimensions stay separate from each other and from every other
 runtime's. Do not derive a single total by adding dimensions whose semantics
 differ, and do not rank two runtimes by their native counts: tokenizers,
 hidden system content, cache semantics, and billing units are all runtime and
 model specific.
+
+A cross-runtime byte table must state, per runtime, **which surface set** the
+bytes cover and the **completeness status** of that capture. If the surface
+sets are not equivalent, the table is labelled descriptive and limited, and
+the non-equivalence is stated on the table rather than in a footnote nobody
+reads. An unlabelled cross-runtime byte comparison is not publishable.
 
 An unavailable dimension is recorded as `not recorded`. It is never recorded
 as zero, and it is never quietly omitted so that a downstream average treats
@@ -183,6 +256,35 @@ needed.
 Cost is not derived from a current price page during aggregation. A cost
 figure requires a dated snapshot artifact, and any result carrying one keeps
 both the native usage and the snapshot's identity.
+
+### Treatment size is not consumption
+
+A separate confusion is worth naming explicitly, because it looks like a
+token measurement and is not one. Three quantities are recorded separately
+and never summed:
+
+1. **Static treatment size.** What was delivered, measurable offline before
+   any session: the canonical prompt's SHA-256 and UTF-8 byte length, the
+   skill source SHA, the materialized snapshot's hash, its canonical UTF-8
+   byte total, its file count, and the delivery mode. These are **artifact
+   sizes**. A snapshot of N bytes does not mean N bytes entered the context
+   window -- a runtime may index it, load it lazily, summarize it, or never
+   read parts of it. Never render these as tokens consumed, context actually
+   loaded, or billable cost. Under `no-skill` the snapshot fields are `null`
+   with the closed reason `condition-no-skill`, never `0`.
+2. **Observed end-to-end session usage.** The runtime-reported dimensions
+   plus wall-clock, turns, commands, tool results and captured bytes. The
+   `current-skill` minus `no-skill` difference over this is a whole-session
+   contrast.
+3. **Usage attributable to loading the skill.** Recorded only when the
+   runtime exposes it directly. Otherwise `not recorded` -- never the
+   residual between the two arms, which also absorbs different
+   trajectories, tool calls, retries and cache behavior. Calling that
+   residual "the skill's token cost" is a fabricated attribution.
+
+Reports show all three separately. A session-level contrast answers "what
+did these sessions cost"; it does not answer "what did loading the skill
+cost", and only (3) can.
 
 ### Ease-of-use rubric
 
@@ -208,16 +310,18 @@ reviewing transcripts, not for making headline claims alone.
   job. This document treats a single command's token cost as one input among
   several, not the outcome being measured.
 - **General model quality.** This is not a benchmark of which model is
-  "smarter." Both conditions in Conditions use the same model, so any
-  measured difference is attributable to the presence of the
-  `kmp-test-runner` skill/guidance, not the underlying model.
+  "smarter." Both conditions in Conditions hold the model fixed, so an
+  observed contrast is not a model difference. That is a statement about
+  what the contrast excludes, not a demonstration that the skill caused it;
+  see The observed within-partition contrast for what a causal claim would
+  additionally require.
 - **Which agent runtime is better.** Runtimes differ in tool set, permission
   model, prompt scaffolding, context handling, and hidden system content.
   None of that is controlled here, so a runtime-to-runtime difference is
-  neither a skill effect nor a causal ranking. Cross-runtime figures are
-  descriptive only, reported side by side with their partition keys, never
-  subtracted into an effect and never used to declare a winner. See
-  The skill effect is defined inside one complete partition.
+  neither a within-partition contrast nor a causal ranking. Cross-runtime
+  figures are descriptive only, reported side by side with their partition
+  keys, never subtracted into an effect and never used to declare a winner.
+  See The observed within-partition contrast.
 - **Cross-runtime token equivalence.** Native token counts from different
   runtimes are not one currency; see Token accounting.
 - **A replacement for token-cost measurement.**
@@ -296,14 +400,19 @@ The execution profile records what the agent was permitted to run and what
 contained it while it ran. It is an axis in its own right, not a property of
 the runtime and not a property of the skill condition.
 
-### `strict-policy-v1` -- what every existing result was measured under
+### `strict-policy-v1` -- what the harness's own records were measured under
 
-Every accepted Claude Code result committed so far ran under the harness's
-strict command policy: a pre-tool hook evaluates each shell attempt, allows
-or denies it against a closed allowlist, and every attempt is accounted for
-per attempt. That is a real environment with real external validity limits,
-and it is the environment those results describe. It is not a claim about how
-an unconstrained agent behaves.
+Every committed accepted scenario record produced by the current agentic-eval
+harness so far ran under its strict command policy: a pre-tool hook evaluates
+each shell attempt, allows or denies it against a closed allowlist, and every
+attempt is accounted for per attempt. That is a real environment with real
+external validity limits, and it is the environment those records describe.
+It is not a claim about how an unconstrained agent behaves.
+
+The scope of that sentence is exactly the harness's own accepted scenario
+records. It does not extend to the v1 pilot or the v2 benchmark below, which
+predate the harness, were not produced by it, and carry no execution-profile
+identity at all.
 
 ### `sandboxed-unrestricted-v1` -- proposed, not implemented
 
@@ -382,18 +491,23 @@ with new meanings (for example, repurposing `approach` to mean "baseline vs.
 skill" instead of "raw vs. markdown vs. JSON"). Both are worse than a
 dedicated schema.
 
-### The run record that actually exists: schema v5
+### What actually exists: a versioned run-record family
 
-The separate registry this section once sketched is no longer hypothetical.
-The agentic-eval harness defines and validates its own run record in
-[`tools/agentic-eval/schemas.mjs`](../tools/agentic-eval/schemas.mjs). At the
-time of writing, `LATEST_RUN_SCHEMA` is `5` and `SUPPORTED_RUN_SCHEMAS` is
-`[1, 2, 3, 4, 5]`: every historical record keeps validating under the schema
-version it declared, and new records are stamped with the latest. Accepted
-scenario records carry an accepted-audit sidecar, whose own supported schemas
-are `[1, 2]`.
+What this section once sketched as a future registry exists, but not as a
+registry. There is no central append-only ledger for agentic-usage runs.
+What exists is a **versioned run-record family, its validators, and a
+committed evidence corpus**: per-run record files, each declaring its own
+schema version, validated by
+[`tools/agentic-eval/schemas.mjs`](../tools/agentic-eval/schemas.mjs), stored
+under `tools/runs/`.
 
-That record already covers the fields the sketch called for -- condition,
+At the time of writing, `LATEST_RUN_SCHEMA` is `5` and
+`SUPPORTED_RUN_SCHEMAS` is `[1, 2, 3, 4, 5]`: every historical record keeps
+validating under the schema version it declared, and new records are stamped
+with the latest. Accepted scenario records carry an accepted-audit sidecar,
+whose own supported schemas are `[1, 2]`.
+
+Those records already cover the fields the sketch called for -- condition,
 scenario, model requested and resolved, repo/project commits, timestamps,
 wall-clock, success, first-useful-signal latency, tool/shell/test-invocation
 counts, byte counts, human interventions, retries, and the privacy fields
@@ -404,8 +518,11 @@ accounting, and skill-availability evidence.
 The literal field inventories are frozen by
 `tests/vitest/agentic-eval-schemas.test.js` and
 `tests/vitest/agentic-eval-accepted-run-audit.test.js` rather than restated
-here, so this document cannot drift away from the implementation without a
-test failing. Read the schema module for the authoritative list.
+here. Those tests freeze the **implementation's** inventories: they fail if
+the schema module's field set changes, which is what makes restating the list
+here unnecessary. They do not read this document and cannot detect prose that
+has gone stale, so the narrative around them still requires deliberate
+maintenance. Read the schema module for the authoritative list.
 
 ### The prospective schema v6
 
@@ -424,9 +541,11 @@ absent from an older record renders as `not recorded`, never zero.
 
 Do not extend `tools/measurement-registry.mjs` or
 `tools/runs/measurement-registry.jsonl` for agentic-usage data. That
-recommendation stands, and the agentic-eval run schema is the separate
-registry it called for. The token-cost registry remains the source of truth
-for per-command, per-feature token-cost ratios only.
+recommendation stands. It was satisfied by the versioned run-record family
+and its evidence corpus, not by a second registry: no
+`tools/runs/agentic-usage-registry.jsonl` exists in this repo, and none is
+planned. The token-cost registry remains the source of truth for
+per-command, per-feature token-cost ratios only.
 
 ## Acceptance criteria for a future measurement wave
 
@@ -479,7 +598,10 @@ and the raw evidence has been checked for privacy.
 
 ### Run discipline
 
-- Randomize condition order when practical.
+- Fix condition order in advance using the pre-registered counterbalanced
+  sequence from Pre-registered run order, and record its hash before the
+  first live session. Ad-hoc randomization per campaign is not a substitute:
+  it cannot be checked afterwards and it leaves order confounded.
 - Use separate worktrees per condition.
 - Reset the repo and build cache policy between runs, or label runs clearly as
   cold-cache / warm-cache.
@@ -537,10 +659,11 @@ and the raw evidence has been checked for privacy.
   condition labels are the same two skill conditions this document now names
   `no-skill` and `current-skill`; renaming the axis here does not restate,
   reinterpret, or re-derive any number they published.
-- The separate registry once sketched here is no longer a proposal: it landed
-  as the agentic-eval run record described under Registry relationship, not
-  as the `tools/runs/agentic-usage-registry.jsonl` file that sketch named. No
-  file by that name exists in this repo, and none is planned.
+- The registry once sketched here was never built as a registry. What
+  satisfies its purpose is the versioned run-record family, its validators
+  and the committed evidence corpus described under Registry relationship.
+  No `tools/runs/agentic-usage-registry.jsonl` exists in this repo, and none
+  is planned.
 - Nothing in [`README.md`](../README.md) currently depends on any number in
   this document, the pilot, or the v2 benchmark — it only links here and
   states that no agentic benchmark results are published yet. That sentence

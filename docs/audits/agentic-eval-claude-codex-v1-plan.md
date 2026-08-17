@@ -251,7 +251,15 @@ The v6 record adds these canonical groups:
       "status": "confirmed|indirect|not-observed|not-observable",
       "evidence_kind": "runtime-specific closed enum"
     },
-    "source_sha": "pin or null"
+    "source_sha": "pin or null",
+    "treatment_size": {
+      "snapshot_sha256": "hash or null",
+      "snapshot_bytes": null,
+      "snapshot_file_count": null,
+      "prompt_sha256": "hash of the canonical prompt",
+      "prompt_bytes": null,
+      "absent_reason": "condition-no-skill or null"
+    }
   },
   "usage": {
     "source": "runtime-reported|offline-estimate|not-recorded",
@@ -259,10 +267,25 @@ The v6 record adds these canonical groups:
     "cached_input": null,
     "cache_write": null,
     "output": null,
-    "reasoning_output": null
+    "reasoning_output": null,
+    "attributable_to_skill_load": {
+      "status": "runtime-reported|not-recorded",
+      "value": null
+    }
   }
 }
 ```
+
+Deliberately still four top-level groups: the section 7 requirements land
+inside `skill_observation` and `usage` rather than adding a fifth group, so
+the frozen v5 inventory keeps naming the complete v6 set.
+
+`treatment_size` is artifact metadata, not consumption: its byte counts are
+never rendered as tokens, context loaded, or cost. Under `no-skill` its
+snapshot fields are null with `absent_reason: "condition-no-skill"`, never
+zero. `attributable_to_skill_load` is populated only when the runtime itself
+reports it, and is `not-recorded` otherwise -- never computed as the residual
+between the two arms.
 
 The exact allowed enums are locked by the schema PR. No generic `tokens_total`
 is derived by adding dimensions whose runtime/model semantics differ.
@@ -285,9 +308,36 @@ metadata:
 - declared usage dimensions.
 
 It does not contain credentials. It does not calculate cost from a mutable
-undated price table. Adding/removing a model for an existing runtime is a
+undated price table. Adding or retiring a model for an existing runtime is a
 registry-only change plus validation tests. The adapter must not switch on model
 names except where a documented runtime capability genuinely differs.
+
+#### Identity and lifecycle rules
+
+These are contract, not convention, because committed evidence points at
+these identifiers forever:
+
+- `runtime_id` and `model_profile_id` are **immutable once any committed
+  record references them**. They are never renamed, re-cased, or reused for a
+  different thing.
+- "Removing" a model means setting `enabled: false`. It never means deleting
+  the entry.
+- A disabled entry keeps its full historical metadata -- expected vendor,
+  declared usage dimensions, required capabilities -- because that metadata
+  is what makes an old record interpretable.
+- Historical validation must not depend on a model still being enabled. A
+  record referencing a disabled model still validates; `enabled` governs
+  eligibility for **new** campaigns only.
+- Aliases are prohibited, and so are implicit defaults: `auto`, "latest", an
+  unpinned family name, or a fallback applied when a slug is unrecognized.
+  An unknown identifier fails closed.
+- Changing what a profile *means* -- its resolved model, reasoning mode,
+  context, or declared usage dimensions -- requires a **new ID or an explicit
+  version bump**. Editing an existing entry in place would silently
+  retro-relabel every record that already referenced it.
+
+The same rules apply to `execution_profile` IDs: a profile's semantics are
+frozen once evidence cites it, and a semantic change is a new ID/version.
 
 ### ADR-7: comparisons are partitioned before aggregation
 
@@ -304,11 +354,33 @@ Hard aggregation keys are at least:
 - scenario/corpus version;
 - harness and project commits.
 
-The primary effect is `current-skill - no-skill` within one complete partition.
+The primary reported quantity is the observed within-partition contrast:
+
+```text
+observed_contrast = metric(current-skill) - metric(no-skill)
+```
+
+evaluated inside one complete partition. It is descriptive. It is not by
+itself a causal estimate and not a measure of reliability. A stronger causal
+claim additionally requires pre-registered assignment and run order, enough
+independent units to separate the contrast from session-to-session variation,
+explicit control of the partition keys above and of known confounders, and a
+reported uncertainty or sensitivity estimate. The four-repetition pilots in
+this plan are intervention signals that justify or refuse a larger
+measurement; they are never reported as demonstrated effects.
+
 Runtime-native token counts are shown in runtime/model-specific columns and may
-not be ranked as if they shared a tokenizer or hidden prompt. Cross-runtime tables
-may compare success, wall-clock, commands, tool calls, and output bytes
-descriptively, while preserving separate native-token columns.
+not be ranked as if they shared a tokenizer or hidden prompt. Runtime-reported
+usage is a faithful record of what that runtime/model/version reported; it does
+not guarantee coverage of hidden prompts, all processed context, or billable
+units.
+
+Cross-runtime tables may compare success, wall-clock, commands, tool calls, and
+output bytes descriptively, while preserving separate native-token columns.
+Bytes are a common physical unit over explicitly captured surfaces, not
+semantically equivalent context: any cross-runtime byte table states the
+surface set and completeness status per runtime, and is labelled descriptive
+and limited whenever those surface sets are not equivalent.
 
 ## 6. Integrity model
 
@@ -351,20 +423,77 @@ fallback from a broken strict-policy capture.
 
 ## 7. Token and cost contract
 
-For each accepted record, capture:
+Three quantities are captured separately and never collapsed into one
+number. Conflating them is what makes a session-level contrast look like a
+per-skill price.
+
+### 7.1 Static treatment size (an input artifact, not a consumption measure)
+
+Describes the treatment that was delivered, measurable entirely offline
+before any session runs:
+
+- `prompt_sha256` -- SHA-256 of the canonical prompt;
+- `prompt_bytes` -- UTF-8 byte length of the canonical prompt;
+- `skill_source_sha` -- the pinned skill identity;
+- `skill_snapshot_sha256` -- hash of the materialized skill snapshot;
+- `skill_snapshot_bytes` -- canonical UTF-8 byte total of that snapshot;
+- `skill_snapshot_file_count` -- number of files in the snapshot;
+- `delivery_mode` -- runtime-specific closed enum for how it was delivered.
+
+These are **artifact sizes**. They must never be described as tokens
+consumed, as context actually loaded into the model, or as billable cost. A
+snapshot of N bytes does not entail that N bytes entered the context window:
+runtimes may index, lazily load, summarize, or never read parts of it.
+
+For `no-skill`, every snapshot field is `null` with the closed reason
+`condition-no-skill`. Never zero: zero would assert a measured empty
+snapshot, which is a different claim from "no snapshot was delivered".
+
+### 7.2 Observed end-to-end session usage
+
+What the session actually consumed, as reported and captured:
 
 1. runtime-reported usage dimensions exactly as exposed;
-2. stdout/stderr/tool-result byte counts as the runtime-neutral context proxy;
+2. stdout/stderr/tool-result byte counts over the explicitly captured
+   surfaces;
 3. wall-clock, turns, tool calls, shell calls, test invocations, and retries;
 4. optional offline canonical text-volume estimate, clearly labelled as an
    estimate and never as billable tokens;
 5. runtime-reported cost or AI units only when directly exposed and bound to a
    dated runtime contract.
 
+This is a whole-session quantity. The `current-skill` minus `no-skill`
+difference over it is the observed within-partition contrast of ADR-7 -- a
+session-level contrast, not an attribution of cost to the skill.
+
+### 7.3 Usage attributable to loading the skill
+
+Recorded **only** when the runtime directly exposes it -- for example a
+usage dimension the runtime itself attributes to skill or plugin content.
+
+Otherwise it is `not-recorded`. It is never derived as the residual
+difference between the two arms: that residual also absorbs different
+trajectories, different tool calls, different retries, and different cache
+behavior, so calling it "the skill's token cost" would be a fabricated
+attribution. `not-recorded` here means the harness cannot separate the two,
+which is the honest state for a runtime that does not report it.
+
+### 7.4 Shared rules
+
 Never infer zero for an unavailable token dimension. Never infer cost from a
 current web price during aggregation of historical records. If a future cost
 snapshot is added, it is a separate dated artifact and results retain both the
 native usage and snapshot identity.
+
+Every report shows these three as separate rows or columns, never summed:
+
+- static treatment size;
+- end-to-end session usage contrast;
+- attributable skill-load usage, present only where it is observable.
+
+These requirements shape the prospective schema v6 and its input-artifact
+metadata. They are not implemented by the current schema, and nothing here
+authorizes implementing them ahead of the schema PR.
 
 Reports lead with task success and integrity. Token deltas are secondary and
 reported within runtime/model partitions. A Claude-with-skill run must never be
@@ -542,10 +671,38 @@ host.
 - Scenario: `coverage-threshold-failure` only.
 - Conditions: two skill states x two execution profiles.
 - Repetitions: 4 per condition.
-- Balanced four-condition order, not four independent shuffles.
 - Windows first; macOS only after Windows evidence is audited and merged.
 - Separate authorization cap: 16 sessions per runtime/platform campaign.
 - No retries, replacements, or pooling with historical canaries.
+
+Run order is fixed in advance, not described as "balanced". The four
+conditions are:
+
+```text
+A = strict-policy-v1 / no-skill
+B = strict-policy-v1 / current-skill
+C = sandboxed-unrestricted-v1 / no-skill
+D = sandboxed-unrestricted-v1 / current-skill
+```
+
+and the campaign uses this Williams design -- four blocks, every condition
+once in each position, every ordered pair balanced:
+
+```text
+block 0: A B D C
+block 1: B C A D
+block 2: C D B A
+block 3: D A C B
+```
+
+Four independent shuffles are not equivalent to this and are not permitted.
+A two-condition pilot instead uses a pre-registered counterbalanced order
+with each condition appearing twice in each position.
+
+The concrete campaign runbook must write the literal sequence and record its
+hash before any live session is spent. The sequence may not be reinterpreted,
+reordered, or re-derived once results are observed; a departure from it is
+recorded as a deviation, never absorbed into the design.
 
 Exit: structurally accepted evidence under both profiles, or an incident that
 demonstrates the unrestricted profile is not yet trustworthy. Behavioral
@@ -577,6 +734,11 @@ per condition, 8 sessions on Windows and, after audit, 8 on macOS. Prompts,
 scenario, source commits, skill pin, cache policy, and reporting contract match
 the corresponding Claude profile. Runtime CLI and runtime-native model remain
 separate partition keys.
+
+Being a two-condition pilot, it uses a pre-registered counterbalanced order
+with each condition appearing twice in each position, written literally into
+the runbook and hashed before any live session is spent, under the same
+no-reinterpretation rule as the Claude 2x2 pilot above.
 
 If Codex characterization independently demonstrates an auditable equivalent
 for `strict-policy-v1`, add it as a separately reviewed capability and authorize
@@ -779,7 +941,9 @@ permission.
 
 ### E4 - model profiles after runtime acceptance
 
-Add or remove a model through validated registry data only. Every profile pins
+Add a model, or retire it with `enabled: false`, through validated registry
+data only -- never by deleting an entry that committed evidence references
+(see ADR-6's identity and lifecycle rules). Every profile pins
 runtime ID/version, exact model slug, expected vendor, reasoning effort/context,
 and supported usage dimensions. `auto` and implicit defaults are invalid.
 
