@@ -17,6 +17,38 @@ import {
 describe('buildBaseArgv / buildConditionArgv -- mechanical A/B equivalence', () => {
   const settingsPath = 'C:\\fake\\settings.json';
 
+  // Characterization freeze (runtime-contract PR): the WHOLE argv, in order, as one literal
+  // array -- not a set of per-flag spot checks. The individual assertions below this one each
+  // prove a single flag is present/absent; none of them can catch a reordering, a silently
+  // dropped flag, a changed default model, or a new flag appended in the middle. This is the
+  // oracle a later runtime-adapter extraction has to reproduce byte-for-byte to claim
+  // equivalence, so both expected arrays are written out literally and independently -- the
+  // second is NOT derived from the first result by cloning and patching two slots, because a
+  // clone would silently inherit any drift the first assertion was supposed to catch.
+  it('freezes the exact full argv: defaults, and the same array with model/maxBudgetUsd supplied', () => {
+    expect(buildBaseArgv({ prompt: 'PROMPT', settingsPath: 'SETTINGS' })).toEqual([
+      'claude', '-p', 'PROMPT',
+      '--output-format', 'stream-json', '--verbose', '--include-hook-events',
+      '--model', 'claude-sonnet-5',
+      '--setting-sources', '', '--strict-mcp-config', '--no-chrome',
+      '--no-session-persistence', '--settings', 'SETTINGS',
+      '--tools', 'Bash,Skill',
+      '--permission-mode', 'dontAsk',
+      '--max-budget-usd', '0.6',
+    ]);
+
+    expect(buildBaseArgv({ prompt: 'PROMPT', settingsPath: 'SETTINGS', model: 'MODEL', maxBudgetUsd: 1.25 })).toEqual([
+      'claude', '-p', 'PROMPT',
+      '--output-format', 'stream-json', '--verbose', '--include-hook-events',
+      '--model', 'MODEL',
+      '--setting-sources', '', '--strict-mcp-config', '--no-chrome',
+      '--no-session-persistence', '--settings', 'SETTINGS',
+      '--tools', 'Bash,Skill',
+      '--permission-mode', 'dontAsk',
+      '--max-budget-usd', '1.25',
+    ]);
+  });
+
   it('condition A (no-skill) returns the base argv completely unchanged (same reference)', () => {
     const base = buildBaseArgv({ prompt: 'test', settingsPath });
     const argvA = buildConditionArgv(base, 'no-skill', null);

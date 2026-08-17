@@ -2,21 +2,28 @@
 
 ## Purpose
 
-This document defines a future benchmark for measuring how `kmp-test-runner`
+This document defines the benchmark for measuring how `kmp-test-runner`
 changes a real agent's testing workflow. It is different from
 [`token-cost-measurement.md`](token-cost-measurement.md): token-cost measurement
 counts command outputs and report payloads; agentic usage measurement evaluates
 the whole loop from user request to verified diagnosis or fix.
 
-No results are published here yet. The goal is to make the methodology
-stable before running any expensive or API-backed measurement.
+This is no longer a proposal without an implementation. A working harness
+exists at [`tools/agentic-eval/`](../tools/agentic-eval/), and accepted
+Claude Code evidence produced under its strict command policy is committed
+under `tools/runs/`. What remains unpublished is a headline: no number from
+this methodology has been promoted to the README, and the acceptance
+criteria below still gate that promotion. Treat this document as the
+methodology of record for a harness that runs, not as a sketch for one that
+might.
 
 [`README.md`](../README.md)'s "Agentic usage — token-cost rationale"
 section links to this document and states plainly that no agentic
 benchmark results are published yet. Nothing in the README depends on any
 number in this document, and that stays true regardless of how this
-document's internal structure evolves — as long as it continues to exist
-at this path and continues to describe an unpublished, future methodology.
+document's internal structure evolves -- as long as it continues to exist
+at this path and continues to describe a methodology whose results are not
+promoted to the README.
 
 ## What this measures
 
@@ -50,17 +57,72 @@ The comparison should cover:
 - correctness of diagnosis or fix;
 - ease of use and recovery from common Gradle/KMP failure modes.
 
+### Measurement axes
+
+These axes are independent and must never be collapsed into one another.
+Overloading any two of them is how a measurement stops meaning what its
+label says.
+
+| Axis | What it identifies | Example values |
+|------|--------------------|----------------|
+| Runtime | The agent product itself: its loop, tool set, permission system, skill delivery, and event protocol | `claude-code` |
+| Runtime version | The exact CLI build that produced the transcript | an exact Claude Code version string |
+| Model profile | The requested and resolved model identity within a runtime | requested vs resolved model strings |
+| Execution profile | The command-control and isolation contract the session ran under | `strict-policy-v1` |
+| Skill condition | Whether the pinned `kmp-test-runner` skill snapshot was present | `no-skill`, `current-skill` |
+| Platform | The host operating system | `windows`, `macos` |
+
+A runtime is not a model, and a model is not a runtime. The same model
+reached through two different agent products is two different runtimes,
+because the loop, tools, permissions, and skill mechanics differ. A runtime
+version change is a partition change, not noise. An execution profile is
+independent of both: it describes what the agent was allowed to run and what
+contained it, not who ran it.
+
+Only the skill condition is deliberately varied to answer this document's
+question. Every other axis is held fixed within a comparison and recorded on
+every run so that pooling incompatible runs is detectable rather than
+invisible.
+
+### The skill effect is defined inside one complete partition
+
+The quantity this document measures is:
+
+```text
+effect = metric(current-skill) - metric(no-skill)
+```
+
+evaluated within a single complete partition -- same runtime, runtime
+version, model profile, execution profile, platform, scenario, project
+commit, harness commit, skill pin, and cache policy. A difference measured
+across any of those boundaries is not a skill effect and must not be
+reported as one.
+
+In particular, a difference between two runtimes is a runtime difference. It
+is not a skill effect, and it is not a causal ranking of the runtimes: the
+products differ in prompt scaffolding, tool availability, permission
+behavior, context handling, and hidden system content, none of which this
+methodology controls. Cross-runtime numbers may be reported descriptively,
+side by side, with their partition keys attached. They may never be
+subtracted from each other and presented as an effect, and no runtime may be
+declared better than another on this evidence.
+
 ### Conditions
 
-Run each scenario in two conditions.
+Run each scenario in two conditions. These two rows are the skill-condition
+axis; every other axis above is held fixed across the pair.
 
 | Condition | Agent setup | Expected path |
 |-----------|-------------|---------------|
-| Baseline | Same model, no `kmp-test-runner` skill or project-specific test guidance beyond normal repo docs | Discover Gradle modules, run raw Gradle commands, inspect logs and reports manually |
-| `kmp-test` skill | Same model plus the `kmp-test-runner` skill / guidance | Use `kmp-test` commands, prefer `--json` for machine-readable results, branch on envelope codes |
+| `no-skill` | Same model, no `kmp-test-runner` skill or project-specific test guidance beyond normal repo docs | Discover Gradle modules, run raw Gradle commands, inspect logs and reports manually |
+| `current-skill` | Same model plus the pinned `kmp-test-runner` skill snapshot | Use `kmp-test` commands, prefer `--json` for machine-readable results, branch on envelope codes |
 
-Both conditions should use the same model, same repository commit, same task
-prompt, same machine class, same tool permissions, and isolated worktrees.
+`no-skill` means the skill is genuinely absent, not that the prompt asks the
+agent to pretend it is absent.
+
+Both conditions must use the same runtime, runtime version, model profile,
+execution profile, platform, repository commit, task prompt, machine class,
+tool permissions, and cache policy, in isolated worktrees.
 
 ### Metrics
 
@@ -75,7 +137,8 @@ vendor-specific assumptions.
 | Commands run | Count of shell/tool commands, grouped as successful, failing, repeated, or exploratory | Measures operational friction |
 | Test attempts | Count of Gradle/`kmp-test` test invocations | Separates test-loop cost from general exploration |
 | Output bytes read | stdout/stderr bytes returned to the agent | Provider-neutral context proxy |
-| Transcript tokens | Token estimate for prompts, tool outputs, and final answer | Use offline tokenizer first; official APIs only with approval |
+| Runtime-reported usage | The token dimensions the runtime itself exposes for the session, stored per dimension exactly as reported | Authoritative for that runtime and model only; never comparable across runtimes |
+| Offline token estimate | A local tokenizer's count over canonical text volume | Reproducible on one machine; an estimate, never a billable token count |
 | Tool calls / turns | Number of agent-tool interactions and user-visible turns | Captures steering overhead |
 | Human intervention count | Number of clarifications or user corrections needed | Measures autonomy |
 | Verification quality | Whether the final answer includes the right validation command and result | Guards against lucky guesses |
@@ -86,18 +149,40 @@ Commands run, plus Test attempts for the test-invocation loop specifically.
 
 ### Token accounting
 
-Use three levels, in this order:
+Three distinct kinds of number live here. They are not interchangeable, they
+are stored separately, and they are never summed together.
 
-1. **Bytes**: always record stdout/stderr byte counts. This is stable and
-   model-independent.
-2. **Offline token estimate**: use a local tokenizer for reproducible
-   same-machine comparisons.
-3. **Official token APIs**: call Anthropic/OpenAI token-count APIs only after
-   explicit maintainer approval, because those runs can consume quota and may
-   require private transcript handling.
+1. **Provider-neutral bytes.** Always record stdout/stderr and tool-result
+   byte counts. This is the only context proxy that means the same thing for
+   every runtime and every model, so it is the axis that carries a
+   cross-runtime table.
+2. **Offline token estimate.** A local tokenizer over canonical text volume.
+   Reproducible for same-machine comparison, clearly labelled an estimate,
+   and never presented as a billed or billable count.
+3. **Runtime-native usage.** Whatever token dimensions the runtime itself
+   reports for the session, recorded per dimension exactly as exposed and
+   attributed to that runtime, runtime version, and model.
 
-If official token counts are used, record the exact model/tokenizer endpoint,
-date, and whether chunking was needed.
+Runtime-native dimensions stay separate from each other and from every other
+runtime's. Do not derive a single total by adding dimensions whose semantics
+differ, and do not rank two runtimes by their native counts: tokenizers,
+hidden system content, cache semantics, and billing units are all runtime and
+model specific.
+
+An unavailable dimension is recorded as `not recorded`. It is never recorded
+as zero, and it is never quietly omitted so that a downstream average treats
+it as zero. `not recorded` is a fact about the observation; `0` is a claim
+about the session, and the two must never be confused.
+
+Official Anthropic/OpenAI token-count APIs are a separate step, permitted
+only after explicit maintainer approval, because those calls can consume
+quota and may require private transcript handling. If they are used, record
+the exact model/tokenizer endpoint, the date, and whether chunking was
+needed.
+
+Cost is not derived from a current price page during aggregation. A cost
+figure requires a dated snapshot artifact, and any result carrying one keeps
+both the native usage and the snapshot's identity.
 
 ### Ease-of-use rubric
 
@@ -126,6 +211,15 @@ reviewing transcripts, not for making headline claims alone.
   "smarter." Both conditions in Conditions use the same model, so any
   measured difference is attributable to the presence of the
   `kmp-test-runner` skill/guidance, not the underlying model.
+- **Which agent runtime is better.** Runtimes differ in tool set, permission
+  model, prompt scaffolding, context handling, and hidden system content.
+  None of that is controlled here, so a runtime-to-runtime difference is
+  neither a skill effect nor a causal ranking. Cross-runtime figures are
+  descriptive only, reported side by side with their partition keys, never
+  subtracted into an effect and never used to declare a winner. See
+  The skill effect is defined inside one complete partition.
+- **Cross-runtime token equivalence.** Native token counts from different
+  runtimes are not one currency; see Token accounting.
 - **A replacement for token-cost measurement.**
   [`token-cost-measurement.md`](token-cost-measurement.md) and
   [`tools/measurement-registry.mjs`](../tools/measurement-registry.mjs)
@@ -182,10 +276,11 @@ private.
   against a private project, and no private capture is ever sent to an
   Anthropic/OpenAI token-count endpoint, without explicit maintainer approval
   first. Public projects are the default.
-- **Official token-count APIs.** Governed by the three-level Token accounting
-  approach above — bytes first, then an offline tokenizer, then official
-  APIs only with approval. When official APIs are used, also record the
-  exact model/tokenizer endpoint, the date, and whether chunking was needed.
+- **Official token-count APIs.** Governed by Token accounting above: bytes,
+  offline estimate, and runtime-native usage are recorded separately, and
+  official token-count APIs are an extra step taken only with approval. When
+  official APIs are used, also record the exact model/tokenizer endpoint, the
+  date, and whether chunking was needed.
 - **API keys are never persistent, and docs never show a real-looking key
   shape.** If a run needs `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, inject it
   inline for that single command only — for example
@@ -194,6 +289,59 @@ private.
   `export` it into a shell profile, a persistent CI secret scope beyond one
   job step, or any committed config. Placeholder only: never paste a real
   key into a doc, command, or anything else that lands in git history.
+
+## Execution profiles
+
+The execution profile records what the agent was permitted to run and what
+contained it while it ran. It is an axis in its own right, not a property of
+the runtime and not a property of the skill condition.
+
+### `strict-policy-v1` -- what every existing result was measured under
+
+Every accepted Claude Code result committed so far ran under the harness's
+strict command policy: a pre-tool hook evaluates each shell attempt, allows
+or denies it against a closed allowlist, and every attempt is accounted for
+per attempt. That is a real environment with real external validity limits,
+and it is the environment those results describe. It is not a claim about how
+an unconstrained agent behaves.
+
+### `sandboxed-unrestricted-v1` -- proposed, not implemented
+
+The plan in
+[`docs/audits/agentic-eval-claude-codex-v1-plan.md`](audits/agentic-eval-claude-codex-v1-plan.md)
+proposes a second profile that removes the harness command allowlist in order
+to measure the missing comparison arm. It does not exist. No run has used it,
+no record carries it, and nothing in this document authorizes running one.
+
+If it is ever built, removing the allowlist is only admissible inside an
+external containment boundary, because the policy hook was never an operating
+system or filesystem sandbox and a runtime's own workspace flag is defense in
+depth rather than a substitute. The stated prerequisites are:
+
+- a disposable VM, dedicated runner, or equivalently reviewed boundary --
+  never the maintainer's normal workstation, and never a dangerous
+  permission-bypass flag used in place of containment;
+- no maintainer data mounted, and a campaign-specific workspace as the only
+  writable project surface;
+- no ambient secrets beyond the minimum credential the runtime needs to
+  authenticate;
+- a disposable HOME and user state;
+- a documented network mode;
+- destruction or rollback of the environment after evidence is preserved;
+- an isolation attestation recorded in the run metadata, so a reader can tell
+  from the record alone which boundary produced it.
+
+Command accounting does not relax when the policy hook is absent. Every tool
+attempt still needs a correlated result and a place in the dispatch
+accounting. Policy fields are then `not_applicable`, which is a distinct
+value: they are never fabricated as allow decisions and never counted as zero
+denials from a policy that did not run. A missing attempt is a failure under
+either profile.
+
+Results from the two profiles are separate partitions. The unrestricted arm,
+if it ever exists, supplies a comparison that strict-policy evidence cannot
+supply on its own; it does not retroactively reinterpret or rewrite the
+strict-policy results already committed.
 
 ## Registry relationship
 
@@ -234,58 +382,51 @@ with new meanings (for example, repurposing `approach` to mean "baseline vs.
 skill" instead of "raw vs. markdown vs. JSON"). Both are worse than a
 dedicated schema.
 
-### What a future run record might look like
+### The run record that actually exists: schema v5
 
-A lightweight harness should record each run as structured metadata:
+The separate registry this section once sketched is no longer hypothetical.
+The agentic-eval harness defines and validates its own run record in
+[`tools/agentic-eval/schemas.mjs`](../tools/agentic-eval/schemas.mjs). At the
+time of writing, `LATEST_RUN_SCHEMA` is `5` and `SUPPORTED_RUN_SCHEMAS` is
+`[1, 2, 3, 4, 5]`: every historical record keeps validating under the schema
+version it declared, and new records are stamped with the latest. Accepted
+scenario records carry an accepted-audit sidecar, whose own supported schemas
+are `[1, 2]`.
 
-```json
-{
-  "scenario": "coverage-threshold",
-  "condition": "kmp-test-skill",
-  "model": "model-name",
-  "repo_sha": "abc123",
-  "started_at": "2026-07-16T00:00:00Z",
-  "ended_at": "2026-07-16T00:05:00Z",
-  "success": true,
-  "commands": [
-    {
-      "cmd": "kmp-test coverage --json",
-      "exit_code": 1,
-      "duration_ms": 42000,
-      "stdout_bytes": 734,
-      "stderr_bytes": 0
-    }
-  ],
-  "first_useful_signal_ms": 42000,
-  "human_interventions": 0,
-  "notes": "No raw private logs committed."
-}
-```
+That record already covers the fields the sketch called for -- condition,
+scenario, model requested and resolved, repo/project commits, timestamps,
+wall-clock, success, first-useful-signal latency, tool/shell/test-invocation
+counts, byte counts, human interventions, retries, and the privacy fields
+inherited from the token-cost registry's conventions -- plus fields the
+sketch never anticipated, such as per-check grading detail, policy allow/deny
+accounting, and skill-availability evidence.
 
-Fields like `condition`, the nested `commands` array,
-`first_useful_signal_ms`, and `human_interventions` have no equivalent column
-in `CANONICAL_FIELDS`; the reverse is also true, since this shape has no
-`approach`/`tokenizer`/`chunking` axis — a workflow run is not a
-single-command A/B/C comparison.
+The literal field inventories are frozen by
+`tests/vitest/agentic-eval-schemas.test.js` and
+`tests/vitest/agentic-eval-accepted-run-audit.test.js` rather than restated
+here, so this document cannot drift away from the implementation without a
+test failing. Read the schema module for the authoritative list.
+
+### The prospective schema v6
+
+[`docs/audits/agentic-eval-claude-codex-v1-plan.md`](audits/agentic-eval-claude-codex-v1-plan.md)
+proposes a schema v6 that would add explicit `agent_runtime`,
+`execution_profile`, `skill_observation`, and `usage` groups, so that the
+axes named above are recorded structurally instead of being implied by which
+harness produced the file.
+
+Schema v6 is not implemented. No such group exists on any record today, and
+this document does not authorize adding one. When it does land, historical
+v1-v5 records and v1/v2 sidecars stay frozen and are not regraded; a metric
+absent from an older record renders as `not recorded`, never zero.
 
 ### Recommendation
 
 Do not extend `tools/measurement-registry.mjs` or
-`tools/runs/measurement-registry.jsonl` for agentic-usage data. Instead, a
-future implementation phase should propose a separate registry — for example
-`tools/runs/agentic-usage-registry.jsonl` (with a validator module analogous
-to `tools/measurement-registry.mjs`, if/when implemented) — with its own
-schema shaped around the run record above (scenario, condition, model, repo
-commit, timestamps, success, per-command list, first-useful-signal latency,
-human interventions, notes), plus the privacy-relevant fields already
-established by the token-cost registry (`project_alias`,
-`project_visibility`, `raw_capture_committed`, `raw_capture_location`,
-`privacy_status`) for consistency.
-
-This is a design proposal only. No new registry file, schema module, or
-validator is implemented in this PR — that is future implementation work,
-tracked the same way the rest of this document is: as methodology, not
-shipped tooling.
+`tools/runs/measurement-registry.jsonl` for agentic-usage data. That
+recommendation stands, and the agentic-eval run schema is the separate
+registry it called for. The token-cost registry remains the source of truth
+for per-command, per-feature token-cost ratios only.
 
 ## Acceptance criteria for a future measurement wave
 
@@ -379,11 +520,27 @@ and the raw evidence has been checked for privacy.
   section, is that raw Gradle execution time did *not* favor
   `kmp-test-json` in this data; the measured advantage is in avoiding
   Gradle task-name discovery, not speed or command count.
-- The `tools/runs/agentic-usage-registry.jsonl` schema sketched under
-  Registry relationship is still a proposal, not an implementation; no such
-  file exists in this repo. Neither the pilot nor the v2 benchmark
-  implemented it, consistent with the Registry relationship section's own
-  recommendation to treat that as separate future work.
+- **An instrumented harness exists, and so does accepted Claude Code
+  evidence.** [`tools/agentic-eval/`](../tools/agentic-eval/) is the
+  implementation of this methodology: it spawns each condition, parses the
+  runtime's structured transcript, enforces per-attempt command accounting,
+  grades named checks, and writes schema-validated records with accepted-run
+  audit sidecars under `tools/runs/`. Later dated canary campaigns extended
+  that evidence on Windows and macOS. All of it was produced under one
+  runtime (`claude-code`) and one execution profile (`strict-policy-v1`), on
+  one model profile per campaign, and it is scoped to exactly that partition.
+  It is preserved as-is: earlier campaigns are not regraded under later
+  graders, not relabelled under later terminology, and not pooled across
+  harness or schema generations.
+- The v1 pilot and v2 benchmark above predate that harness and remain exactly
+  as they were reported, including their own stated confounds. Their
+  condition labels are the same two skill conditions this document now names
+  `no-skill` and `current-skill`; renaming the axis here does not restate,
+  reinterpret, or re-derive any number they published.
+- The separate registry once sketched here is no longer a proposal: it landed
+  as the agentic-eval run record described under Registry relationship, not
+  as the `tools/runs/agentic-usage-registry.jsonl` file that sketch named. No
+  file by that name exists in this repo, and none is planned.
 - Nothing in [`README.md`](../README.md) currently depends on any number in
   this document, the pilot, or the v2 benchmark — it only links here and
   states that no agentic benchmark results are published yet. That sentence

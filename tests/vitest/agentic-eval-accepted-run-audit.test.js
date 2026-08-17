@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1,
   LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA,
+  SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS,
   acceptedAuditRelativePathFor,
   buildAcceptedRunAuditSidecar,
   validateAcceptedRunAuditSidecar,
@@ -104,6 +105,65 @@ describe('buildAcceptedRunAuditSidecar -- top-level identity + shape', () => {
       'condition', 'first_useful_signal_event', 'run_id', 'run_kind', 'run_schema', 'scenario_id',
       'schema', 'summary', 'terminal_authoritative_event', 'tool_calls',
     ]);
+  });
+
+  // Characterization freeze (runtime-contract PR): the test above pins the sidecar's TOP-LEVEL
+  // keys, but says nothing about what is inside `summary` or inside each `tool_calls[]` entry --
+  // a silently dropped summary counter, or a tool-call entry that stopped carrying its
+  // dispatch_status, would leave it green. These two nested inventories are the remaining gap,
+  // plus the sidecar's own schema version constants. Every expected list is written out
+  // literally and sorted before comparison; none is derived from the produced sidecar or from a
+  // private constant in the module under test.
+  //
+  // The transcript below carries a real Bash tool_use WITH its correlated result and explicit
+  // synthetic dispatch accounting, so tool_calls is genuinely non-empty -- an empty array would
+  // make the per-entry inventory vacuously true.
+  it('freezes the sidecar schema constants and the nested summary / tool_calls[] field inventories', () => {
+    expect(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1).toBe(1);
+    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(2);
+    expect([...SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS]).toEqual([1, 2]);
+
+    const record = baseRecord({
+      hook_call_count: 1,
+      tool_calls_total: { value: 1, reason: null },
+      shell_commands_total: { value: 1, reason: null },
+    });
+    const cr = conditionResultFrom(
+      [initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()],
+      { decisionByAttempt: new Map([['t1', 'allow']]) },
+    );
+    const sidecar = buildAcceptedRunAuditSidecar({
+      record, conditionResult: cr, terminalAuthoritativeEventIndex: null,
+      targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
+    });
+
+    expect(Object.keys(sidecar.summary).sort()).toEqual([
+      'policy_decisions_missing',
+      'policy_denials_after_first_signal',
+      'policy_denials_before_first_signal',
+      'policy_denials_total',
+      'post_signal_ms',
+      'post_signal_tool_calls',
+      'pre_dispatch_blocked_total',
+      'shell_commands_total',
+      'tool_calls_total',
+    ]);
+
+    expect(sidecar.tool_calls.length).toBe(1);
+    for (const toolCall of sidecar.tool_calls) {
+      expect(Object.keys(toolCall).sort()).toEqual([
+        'dispatch_status',
+        'operation',
+        'ordinal',
+        'phase',
+        'plan_only',
+        'policy_decision',
+        'result_status',
+        'tool_kind',
+        'tool_result_event_index',
+        'tool_use_event_index',
+      ]);
+    }
   });
 
   it('first_useful_signal_event mirrors the record\'s own field exactly (or null)', () => {

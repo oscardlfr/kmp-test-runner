@@ -391,6 +391,58 @@ describe('schema v1/v2/v3/v4/v5 dispatch (decision 6, extended for v3 -- foreign
     expect(LATEST_RUN_SCHEMA).toBe(5);
   });
 
+  // Characterization freeze (runtime-contract PR): the v5 record's top-level field set, written
+  // out literally rather than imported. RUN_CANONICAL_FIELDS_V5 is deliberately NOT exported and
+  // is deliberately NOT imported here -- asserting a list against the very constant that produces
+  // it proves nothing. The binding comes from validateRun instead, and it is bidirectional:
+  // validateRun raises an error for every canonical field the record is MISSING, and a warning
+  // for every record key it does NOT recognize. Zero of both therefore proves
+  //     (production canonical set) == (this record's keys) == (the literal list below).
+  // Removing a field from production surfaces as an unrecognized-field warning; adding one
+  // surfaces as a missing-field error. Either way this test goes red, which is exactly what a
+  // later schema v6 extraction needs it to do.
+  it('freezes the exact v5 top-level field inventory, the tokens sub-keys, and the absence of the prospective v6 groups', () => {
+    const run = v5Base();
+
+    // Bidirectional binding to production's own canonical list (see comment above).
+    expect(validateRun(run)).toEqual({ errors: [], warnings: [] });
+
+    expect(Object.keys(run.tokens).sort()).toEqual(['cache_creation', 'cache_read', 'input', 'output']);
+
+    expect(Object.keys(run).sort()).toEqual([
+      'accepted_audit', 'ambient_skill_profile', 'benchmark_eligible',
+      'cache_state', 'claude_code_version', 'condition', 'daemon_policy',
+      'ended_at', 'env_allowlist_profile', 'errors', 'exit_code',
+      'expected_outcome_matched', 'family', 'first_useful_signal_event',
+      'first_useful_signal_ms', 'foreign_skill_summary', 'grading_checks',
+      'hook_call_count', 'hook_deny_count', 'human_interventions',
+      'kmp_test_cli_source_sha', 'kmp_test_cli_version', 'model_requested',
+      'model_resolved', 'notes', 'order_index', 'output_bytes',
+      'permission_mode_used', 'platform', 'policy_allowed_gradle_tasks',
+      'policy_allowed_kmptest_subcommands',
+      'policy_denials_after_first_signal',
+      'policy_denials_before_first_signal', 'policy_sha256', 'post_signal_ms',
+      'post_signal_tool_calls', 'privacy_status', 'project_alias',
+      'project_commit', 'project_url', 'query_id', 'raw_capture_committed',
+      'raw_capture_location', 'repetition_index', 'repo_commit',
+      'resolved_kmp_test_executable_path', 'retries', 'run_id', 'run_kind',
+      'scenario_id', 'schema', 'seed', 'session_id_observed',
+      'shell_commands_total', 'skill_available',
+      'skill_invocation_attempted', 'skill_invocation_event', 'skill_invoked',
+      'skill_source_sha', 'started_at', 'stream_json_bytes', 'success',
+      'terminated', 'termination_reason', 'test_invocations_total', 'tokens',
+      'tool_calls_total', 'wall_clock_ms',
+    ]);
+
+    // The four top-level groups the prospective schema v6 would introduce (see
+    // docs/audits/agentic-eval-claude-codex-v1-plan.md). v6 is NOT implemented, and this PR must
+    // not introduce any of them by accident. Because the inventory above is bound to production's
+    // canonical set bidirectionally, their absence here IS their absence from schema v5.
+    for (const v6Group of ['agent_runtime', 'execution_profile', 'skill_observation', 'usage']) {
+      expect(v6Group in run).toBe(false);
+    }
+  });
+
   it('a schema:1 record WITHOUT grading_checks/repetition_index still validates cleanly -- those fields are never required for v1', () => {
     const run = baseRun({ schema: 1 });
     expect('grading_checks' in run).toBe(false);
