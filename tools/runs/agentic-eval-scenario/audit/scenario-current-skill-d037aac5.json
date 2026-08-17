@@ -1,0 +1,137 @@
+{
+  "schema": 2,
+  "run_id": "scenario-current-skill-d037aac5",
+  "run_schema": 5,
+  "run_kind": "scenario",
+  "condition": "current-skill",
+  "scenario_id": "coverage-threshold-failure",
+  "first_useful_signal_event": {
+    "type": "user.tool_result",
+    "index": 82
+  },
+  "terminal_authoritative_event": {
+    "type": "user.tool_result",
+    "index": 82
+  },
+  "tool_calls": [
+    {
+      "ordinal": 0,
+      "tool_use_event_index": 6,
+      "tool_result_event_index": 7,
+      "tool_kind": "target-skill",
+      "operation": null,
+      "plan_only": null,
+      "policy_decision": "not-applicable",
+      "result_status": "success",
+      "phase": "pre-signal",
+      "dispatch_status": "not_applicable"
+    },
+    {
+      "ordinal": 1,
+      "tool_use_event_index": 12,
+      "tool_result_event_index": 15,
+      "tool_kind": "kmp-test",
+      "operation": "describe",
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 2,
+      "tool_use_event_index": 20,
+      "tool_result_event_index": 23,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 3,
+      "tool_use_event_index": 28,
+      "tool_result_event_index": 40,
+      "tool_kind": "kmp-test",
+      "operation": "parallel",
+      "plan_only": false,
+      "policy_decision": "allow",
+      "result_status": "success",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 4,
+      "tool_use_event_index": 42,
+      "tool_result_event_index": 45,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 5,
+      "tool_use_event_index": 49,
+      "tool_result_event_index": 52,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 6,
+      "tool_use_event_index": 54,
+      "tool_result_event_index": 59,
+      "tool_kind": "kmp-test",
+      "operation": "parallel",
+      "plan_only": false,
+      "policy_decision": "allow",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 7,
+      "tool_use_event_index": 70,
+      "tool_result_event_index": 73,
+      "tool_kind": "other-bash",
+      "operation": null,
+      "plan_only": false,
+      "policy_decision": "deny",
+      "result_status": "error",
+      "phase": "pre-signal",
+      "dispatch_status": "hook_evaluated"
+    },
+    {
+      "ordinal": 8,
+      "tool_use_event_index": 75,
+      "tool_result_event_index": 82,
+      "tool_kind": "kmp-test",
+      "operation": "parallel",
+      "plan_only": false,
+      "policy_decision": "allow",
+      "result_status": "error",
+      "phase": "produced-signal",
+      "dispatch_status": "hook_evaluated"
+    }
+  ],
+  "summary": {
+    "tool_calls_total": 9,
+    "shell_commands_total": 8,
+    "post_signal_ms": 7034.403709,
+    "post_signal_tool_calls": 0,
+    "policy_denials_total": 5,
+    "policy_denials_before_first_signal": 5,
+    "policy_denials_after_first_signal": 0,
+    "policy_decisions_missing": 0,
+    "pre_dispatch_blocked_total": 0
+  }
+}
