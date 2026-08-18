@@ -58,6 +58,20 @@ describe('local CI cost gate', () => {
     expect(gate).toContain('$_.Version.Major -eq 5');
   });
 
+  it('resolves npm lifecycle scripts and node.exe discovery hermetically (no cmd.exe empty-PATH hop)', () => {
+    const gate = read('tools/local-ci/windows-gate.ps1');
+    // npm's OWN lifecycle-script execution (e.g. esbuild's postinstall) is routed through
+    // PowerShell instead of cmd.exe -- on hosts where a child cmd.exe process inherits an empty
+    // PATH regardless of the caller's own environment, that lifecycle-script execution breaks.
+    expect(gate).toContain("Set-ScopedEnvVar -Name 'npm_config_script_shell' -Value (Get-Command powershell -ErrorAction Stop).Source");
+    // TaskActionTest's Windows shim gets a pre-validated node.exe path instead of shelling out to
+    // `cmd.exe /c where node` itself.
+    expect(gate).toContain("Set-ScopedEnvVar -Name 'KMP_LOCAL_CI_NODE_EXE' -Value (Resolve-Path $node24).Path");
+    // Both are restored via the same scoped-restore primitive, not left set after the gate exits.
+    expect(gate).toContain('Restore-ScopedEnvVar -Saved $npmScriptShellScope');
+    expect(gate).toContain('Restore-ScopedEnvVar -Saved $nodeExeScope');
+  });
+
   it('mounts source read-only and forwards no host environment wholesale', () => {
     const runner = read('tools/local-ci/run-linux.sh');
     const prepare = read('tools/local-ci/container/prepare-source.sh');
@@ -142,6 +156,37 @@ describe('local CI cost gate', () => {
       `if ($env:ANTHROPIC_API_KEY_FALLBACK -ne 'fallback-placeholder-only') { exit 7 }`,
       `if ($env:CLAUDE_CODE_OAUTH_TOKEN -ne 'oauth-placeholder-only') { exit 8 }`,
       `if ($env:KMP_PRIVATE_PATTERNS_B64 -ne 'patterns-placeholder-only') { exit 9 }`,
+    ].join('; ');
+    const checked = spawnSync('pwsh', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
+    expect(checked.status, checked.stdout + checked.stderr).toBe(0);
+  });
+
+  it.skipIf(process.platform !== 'win32')('Set-ScopedEnvVar/Restore-ScopedEnvVar round-trip when the variable was originally ABSENT', () => {
+    const scriptPath = resolve(root, 'tools/local-ci/environment-utils.ps1').replaceAll("'", "''");
+    const script = [
+      `. '${scriptPath}'`,
+      `if (Test-Path Env:KMP_SCOPED_ENV_TEST_ABSENT) { exit 1 }`,
+      `$saved = Set-ScopedEnvVar -Name 'KMP_SCOPED_ENV_TEST_ABSENT' -Value 'during-gate'`,
+      `if ($env:KMP_SCOPED_ENV_TEST_ABSENT -ne 'during-gate') { exit 2 }`,
+      `if ($saved.WasSet -ne $false) { exit 3 }`,
+      `Restore-ScopedEnvVar -Saved $saved`,
+      `if (Test-Path Env:KMP_SCOPED_ENV_TEST_ABSENT) { exit 4 }`,
+    ].join('; ');
+    const checked = spawnSync('pwsh', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
+    expect(checked.status, checked.stdout + checked.stderr).toBe(0);
+  });
+
+  it.skipIf(process.platform !== 'win32')('Set-ScopedEnvVar/Restore-ScopedEnvVar round-trip when the variable was originally PRESENT', () => {
+    const scriptPath = resolve(root, 'tools/local-ci/environment-utils.ps1').replaceAll("'", "''");
+    const script = [
+      `. '${scriptPath}'`,
+      `$env:KMP_SCOPED_ENV_TEST_PRESENT = 'before-gate'`,
+      `$saved = Set-ScopedEnvVar -Name 'KMP_SCOPED_ENV_TEST_PRESENT' -Value 'during-gate'`,
+      `if ($env:KMP_SCOPED_ENV_TEST_PRESENT -ne 'during-gate') { exit 1 }`,
+      `if ($saved.WasSet -ne $true) { exit 2 }`,
+      `if ($saved.OriginalValue -ne 'before-gate') { exit 3 }`,
+      `Restore-ScopedEnvVar -Saved $saved`,
+      `if ($env:KMP_SCOPED_ENV_TEST_PRESENT -ne 'before-gate') { exit 4 }`,
     ].join('; ');
     const checked = spawnSync('pwsh', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
     expect(checked.status, checked.stdout + checked.stderr).toBe(0);

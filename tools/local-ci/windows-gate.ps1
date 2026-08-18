@@ -38,6 +38,13 @@ function Find-Jdk17 {
 
 $originalPath = $env:PATH
 $originalJavaHome = $env:JAVA_HOME
+# On hosts where a child cmd.exe process inherits an empty PATH regardless of the caller's own
+# environment, npm's own cmd.exe-routed lifecycle-script execution breaks (e.g. esbuild's
+# postinstall fails to find `node`). Routing npm's lifecycle
+# scripts through PowerShell instead avoids that hop entirely. Set-ScopedEnvVar/Restore-ScopedEnvVar
+# (environment-utils.ps1) capture/restore exactly -- present vs. absent, not just value -- so a
+# caller's own environment is never permanently altered by running this gate.
+$npmScriptShellScope = Set-ScopedEnvVar -Name 'npm_config_script_shell' -Value (Get-Command powershell -ErrorAction Stop).Source
 $sensitiveEnvironment = Suspend-SensitiveEnvironment
 Push-Location $RepoRoot
 try {
@@ -50,6 +57,11 @@ try {
     if ($node24Version -ne 'v24.18.0') {
         throw "Windows lane requires Node 24.18.0; found $node24Version"
     }
+    # Test-only: TaskActionTest's Windows shim used to discover node.exe via `cmd.exe /c where
+    # node`, which fails identically to the npm case above. Exposing this already-validated path
+    # lets the test skip that cmd.exe hop entirely (it still falls back to a pure-Kotlin PATH walk,
+    # no cmd.exe, when run standalone without this variable set).
+    $nodeExeScope = Set-ScopedEnvVar -Name 'KMP_LOCAL_CI_NODE_EXE' -Value (Resolve-Path $node24).Path
 
     Invoke-NativeChecked (Join-Path $Node24Home 'npm.cmd') @('ci') 'npm ci (Node 24)'
     Invoke-NativeChecked $node24 @('tools/check-line-endings.mjs') 'line-ending audit'
@@ -108,6 +120,10 @@ try {
 finally {
     $env:PATH = $originalPath
     $env:JAVA_HOME = $originalJavaHome
+    Restore-ScopedEnvVar -Saved $npmScriptShellScope
+    # $nodeExeScope is only assigned once node24 has been located (inside the try block) -- a
+    # throw before that point means there is nothing to restore.
+    if ($nodeExeScope) { Restore-ScopedEnvVar -Saved $nodeExeScope }
     Restore-SensitiveEnvironment -Entries $sensitiveEnvironment
     Pop-Location
 }

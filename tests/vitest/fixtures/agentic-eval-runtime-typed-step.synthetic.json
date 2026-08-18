@@ -1,0 +1,10 @@
+{
+  "id": "synthetic-typed-step",
+  "note": "Synthetic fixture for tools/agentic-eval/runtimes/contract.mjs conformance tests only. Not a real product wire format; asserts nothing about any real coding-agent runtime.",
+  "typedSteps": [
+    { "type": "session-begin", "sessionId": "syn-typed-session-0002", "modelResolved": "synthetic-model-b" },
+    { "type": "shell-request", "stepId": "s1", "command": "rm -rf /synthetic-path" },
+    { "type": "shell-soft-denied", "stepId": "s1", "policyNote": "synthetic-policy-block: destructive path blocked before dispatch" },
+    { "type": "session-finish", "outcome": "denied", "finalMessage": "blocked by synthetic policy" }
+  ]
+}

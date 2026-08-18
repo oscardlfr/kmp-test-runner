@@ -41,6 +41,10 @@ import { createHash } from 'node:crypto';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
 import { LATEST_RUN_SCHEMA } from '../../tools/agentic-eval/schemas.mjs';
 import { gradeScenarioCondition } from '../../tools/agentic-eval/graders.mjs';
+import {
+  findAllToolUsesWithResults, findResultEvent, findTranscriptStructuralIssuesToleratingTimeout,
+  findIncompleteToolResultsToleratingTimeout,
+} from '../../tools/agentic-eval/stream-parser.mjs';
 import { aggregateRuns } from '../../tools/agentic-eval/aggregate.mjs';
 import { validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 
@@ -926,18 +930,35 @@ describe('cmdRun pipeline -- a legitimately timed-out cell is still recorded, ne
     };
     // A Bash tool_use with NO correlated tool_result (the process was killed mid-call) and a
     // spawnResult declaring a legitimate timeout -- exactly the shape decision 7's
-    // timeout-tolerant structural checks exist to accept.
+    // timeout-tolerant structural checks exist to accept. Converted to the canonical
+    // condition-observation-v1 shape gradeScenarioCondition now reads exclusively, via the REAL
+    // frozen stream-parser.mjs primitives (test files may import stream-parser.mjs directly) --
+    // gradeScenarioCondition only ever reads observation.toolAttempts/
+    // transcript.effective{StructuralIssues,IncompleteToolResults}/terminal.finalText (confirmed by
+    // direct inspection of its current body), so this conversion is deliberately narrow.
+    const timedOutEvents = [
+      { type: 'system', subtype: 'init' },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'kmp-test parallel --module-filter :fakemod --json' } }] } },
+    ];
+    const timedOutTimeoutCtx = { terminated: true, terminationReason: 'timeout' };
     const timedOutConditionResult = {
       condition: 'no-skill',
-      events: [
-        { type: 'system', subtype: 'init' },
-        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'kmp-test parallel --module-filter :fakemod --json' } }] } },
-      ],
-      malformedLines: [],
-      bashResults: [{ index: 1, command: 'kmp-test parallel --module-filter :fakemod --json', resultIndex: null, resultContent: null, resultFound: false }],
-      result: null,
-      spawnResult: { terminated: true, terminationReason: 'timeout', exitCode: null, spawnHrtimeNs: 0n },
-      gradleJunitEvidence: null,
+      observation: {
+        toolAttempts: findAllToolUsesWithResults(timedOutEvents).map((u) => ({
+          id: u.id ?? null, kind: 'shell', runtimeName: u.name ?? null, eventIndex: u.index,
+          receiptNs: typeof u.receiptNs === 'bigint' ? u.receiptNs : null,
+          profileAllowed: true, command: typeof u.input?.command === 'string' ? u.input.command : null,
+          skillReference: null, targetsExpectedSkill: null,
+          result: { found: u.resultFound, eventIndex: u.resultFound ? u.resultIndex : null, isError: u.resultFound ? u.resultIsError : null, text: null, textStatus: u.resultFound ? 'unsupported' : 'missing' },
+          preDispatchBlock: { recognized: false, signature: null },
+        })),
+        transcript: {
+          effectiveStructuralIssues: findTranscriptStructuralIssuesToleratingTimeout(timedOutEvents, timedOutTimeoutCtx),
+          effectiveIncompleteToolResults: findIncompleteToolResultsToleratingTimeout(timedOutEvents, timedOutTimeoutCtx),
+        },
+        terminal: { finalText: findResultEvent(timedOutEvents)?.result ?? null },
+      },
+      junitAttribution: null,
     };
 
     const grade = gradeScenarioCondition(timedOutConditionResult, SCENARIO);

@@ -130,7 +130,7 @@ tests/installer/*.bats text eol=lf
 # stream-json JSONL fixtures (JSON is whitespace-insensitive at the value
 # level, but a CRLF-corrupted JSONL line separator would still break
 # newline-delimited parsing on a Windows checkout).
-tools/agentic-eval/*.mjs text eol=lf
+tools/agentic-eval/**/*.mjs text eol=lf
 tools/agentic-eval/README.md text eol=lf
 tools/agentic-eval/corpus/*.json text eol=lf
 tools/agentic-eval/corpus/scenarios/*.json text eol=lf

@@ -1,6 +1,8 @@
 // tests/vitest/agentic-eval-plugin-snapshot-identity.test.js
-// Isolated unit tests for isPluginBoundToSnapshot's filesystem-IDENTITY comparison (cli.mjs),
-// proving it compares dev+ino (via statSync) rather than any string form of the resolved path.
+// Isolated unit tests for isPluginBoundToSnapshot's filesystem-IDENTITY comparison
+// (runtimes/claude-code.mjs -- moved here from cli.mjs by the Claude-runtime-adapter refactor;
+// same verbatim logic, only the import path changed), proving it compares dev+ino (via statSync)
+// rather than any string form of the resolved path.
 //
 // A review-round-5 finding demonstrated the PREVIOUS implementation
 // (`resolvedReported.toLowerCase() === resolvedExpected.toLowerCase()` on win32, after resolving
@@ -51,7 +53,7 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-const { isPluginBoundToSnapshot } = await import('../../tools/agentic-eval/cli.mjs');
+const { isPluginBoundToSnapshot } = await import('../../tools/agentic-eval/runtimes/claude-code.mjs');
 
 describe('isPluginBoundToSnapshot -- filesystem identity, not a string comparison', () => {
   it('rejects two differently-cased paths that resolve to genuinely DIFFERENT filesystem entries (the NTFS case-sensitivity bypass this closes)', () => {

@@ -46,10 +46,10 @@ describe('writeRunRecordEvidence -- fails closed when the git availability check
     try {
       const recordA = { run_id: 'gitcheck-a-0001' };
       const recordB = { run_id: 'gitcheck-b-0001' };
-      const runA = { spawnResult: { rawStdout: '{"raw":"a"}\n' } };
-      const runB = { spawnResult: { rawStdout: '{"raw":"b"}\n' } };
+      const rawTextA = '{"raw":"a"}\n';
+      const rawTextB = '{"raw":"b"}\n';
 
-      expect(() => writeRunRecordEvidence('test-kind', recordA, recordB, runA, runB, '{"redacted":"a"}', '{"redacted":"b"}', runsRoot))
+      expect(() => writeRunRecordEvidence('test-kind', recordA, recordB, rawTextA, rawTextB, '{"redacted":"a"}', '{"redacted":"b"}', runsRoot))
         .toThrow(/not covered by \.gitignore/);
     } finally {
       rmSync(runsRoot, { recursive: true, force: true });

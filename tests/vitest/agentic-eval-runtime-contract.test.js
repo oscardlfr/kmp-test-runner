@@ -1,0 +1,990 @@
+// tests/vitest/agentic-eval-runtime-contract.test.js
+// Unit tests for tools/agentic-eval/runtimes/contract.mjs -- the runtime-agnostic adapter
+// contract validator and the generic helpers core consumers (cli.mjs, matrix-runner.mjs,
+// cell-integrity.mjs, graders.mjs, accepted-run-audit.mjs, junit-evidence.mjs) use instead of
+// reaching into a provider's own wire format. Exercised entirely against synthetic data --
+// this file never imports runtimes/claude-code.mjs or any Claude-specific module.
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  ADAPTER_KEYS,
+  CAPABILITY_KEYS,
+  USAGE_DIMENSIONS,
+  OBSERVATION_KEYS,
+  TOOL_ATTEMPT_KEYS,
+  validateRuntimeAdapter,
+  defineRuntimeAdapter,
+  validateObservation,
+  freezeObservation,
+  selectShellAttempts,
+  msSinceOrigin,
+  canonicalNamesKey,
+  fingerprintNames,
+} from '../../tools/agentic-eval/runtimes/contract.mjs';
+
+function noop() {}
+async function asyncNoop() {}
+
+function validCapabilities(overrides = {}) {
+  return {
+    observationSources: ['source-a', 'source-b'],
+    structuredTranscript: true,
+    correlatedToolResults: true,
+    skillDeliveryModes: ['mode-a'],
+    skillStateEvidence: true,
+    usageDimensions: ['input', 'output'],
+    softPermissionDenial: true,
+    ...overrides,
+  };
+}
+
+function validAdapter(overrides = {}) {
+  return {
+    id: 'synthetic-runtime',
+    protocolVersion: 1,
+    capabilities: validCapabilities(),
+    probeInstallation: asyncNoop,
+    preflight: asyncNoop,
+    prepareIsolatedHome: asyncNoop,
+    prepareSkillDelivery: noop,
+    buildInvocation: noop,
+    collectObservationSources: asyncNoop,
+    normalizeObservations: noop,
+    redactRuntimeDiagnostics: noop,
+    ...overrides,
+  };
+}
+
+function validToolAttempt(overrides = {}) {
+  return {
+    id: 'attempt-1',
+    kind: 'shell',
+    runtimeName: 'Bash',
+    eventIndex: 3,
+    receiptNs: 100n,
+    profileAllowed: true,
+    command: 'echo hi',
+    skillReference: null,
+    targetsExpectedSkill: null,
+    result: { found: true, eventIndex: 4, isError: false, text: 'ok', textStatus: 'text' },
+    preDispatchBlock: { recognized: false, signature: null },
+    ...overrides,
+  };
+}
+
+function validObservation(overrides = {}) {
+  return {
+    schema: 1,
+    runtime: { id: 'synthetic-runtime', protocolVersion: 1 },
+    process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 500n },
+    session: { initPresent: true, modelResolved: 'synthetic-model', sessionIdObserved: 'sess-synthetic-0001', runtimeVersion: '9.9.9', toolProfileMatchesExpected: true },
+    transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    terminal: { present: true, isError: false, turnCount: 2, finalText: 'done', resultSubtype: 'success', usage: { input: 1, cached_input: 2, cache_write: 3, output: 4, reasoning_output: null } },
+    toolAttempts: [validToolAttempt()],
+    skill: { available: true, profileMatchesCondition: true, snapshotBindingMatches: true, targetInvocation: null, foreignInvocations: [], ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true } },
+    hookStats: { hookCallCount: 1, hookResponseCount: 1, hookDenyCount: 0, hookAllowCount: 1, hookPairingOk: true, everyCallHooked: true },
+    byteMetrics: { outputBytes: 10, streamJsonBytes: 100 },
+    timing: { receiptNsByEventIndex: new Map([[4, 100n]]) },
+    ...overrides,
+  };
+}
+
+describe('ADAPTER_KEYS / CAPABILITY_KEYS -- exact literal inventories', () => {
+  it('is exactly these 11 keys, in this order', () => {
+    expect([...ADAPTER_KEYS]).toEqual([
+      'id', 'protocolVersion', 'capabilities', 'probeInstallation', 'preflight',
+      'prepareIsolatedHome', 'prepareSkillDelivery', 'buildInvocation',
+      'collectObservationSources', 'normalizeObservations', 'redactRuntimeDiagnostics',
+    ]);
+  });
+
+  it('is frozen', () => {
+    expect(Object.isFrozen(ADAPTER_KEYS)).toBe(true);
+  });
+
+  it('is exactly these 7 capability keys, in this order', () => {
+    expect([...CAPABILITY_KEYS]).toEqual([
+      'observationSources', 'structuredTranscript', 'correlatedToolResults',
+      'skillDeliveryModes', 'skillStateEvidence', 'usageDimensions', 'softPermissionDenial',
+    ]);
+  });
+
+  it('USAGE_DIMENSIONS is the closed, ordered universe', () => {
+    expect([...USAGE_DIMENSIONS]).toEqual(['input', 'cached_input', 'cache_write', 'output', 'reasoning_output']);
+  });
+});
+
+describe('validateRuntimeAdapter -- accepts a well-formed synthetic adapter', () => {
+  it('a fully-populated adapter validates clean', () => {
+    const result = validateRuntimeAdapter(validAdapter());
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+});
+
+describe('validateRuntimeAdapter -- rejections', () => {
+  it('rejects a missing required key', () => {
+    const adapter = validAdapter();
+    delete adapter.preflight;
+    const result = validateRuntimeAdapter(adapter);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field === 'preflight')).toBe(true);
+  });
+
+  it('rejects each of the 11 required keys individually when missing', () => {
+    for (const key of ADAPTER_KEYS) {
+      const adapter = validAdapter();
+      delete adapter[key];
+      const result = validateRuntimeAdapter(adapter);
+      expect(result.ok, `expected missing "${key}" to fail`).toBe(false);
+      expect(result.errors.some((e) => e.field === key)).toBe(true);
+    }
+  });
+
+  it('rejects an unknown extra top-level key', () => {
+    const adapter = validAdapter({ someExtraField: 'nope' });
+    const result = validateRuntimeAdapter(adapter);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field === 'someExtraField')).toBe(true);
+  });
+
+  it('rejects id that is empty or not a string', () => {
+    expect(validateRuntimeAdapter(validAdapter({ id: '' })).ok).toBe(false);
+    expect(validateRuntimeAdapter(validAdapter({ id: 42 })).ok).toBe(false);
+    expect(validateRuntimeAdapter(validAdapter({ id: null })).ok).toBe(false);
+  });
+
+  it('rejects a non-positive or non-integer protocolVersion', () => {
+    expect(validateRuntimeAdapter(validAdapter({ protocolVersion: 0 })).ok).toBe(false);
+    expect(validateRuntimeAdapter(validAdapter({ protocolVersion: -1 })).ok).toBe(false);
+    expect(validateRuntimeAdapter(validAdapter({ protocolVersion: 1.5 })).ok).toBe(false);
+    expect(validateRuntimeAdapter(validAdapter({ protocolVersion: '1' })).ok).toBe(false);
+  });
+
+  it('accepts any positive integer protocolVersion, not just 1', () => {
+    expect(validateRuntimeAdapter(validAdapter({ protocolVersion: 7 })).ok).toBe(true);
+  });
+
+  for (const method of ['probeInstallation', 'preflight', 'prepareIsolatedHome', 'prepareSkillDelivery', 'buildInvocation', 'collectObservationSources', 'normalizeObservations', 'redactRuntimeDiagnostics']) {
+    it(`rejects a non-function value for the "${method}" operation`, () => {
+      const result = validateRuntimeAdapter(validAdapter({ [method]: 'not-a-function' }));
+      expect(result.ok).toBe(false);
+      expect(result.errors.some((e) => e.field === method)).toBe(true);
+    });
+  }
+
+  it('rejects capabilities missing a required key', () => {
+    const caps = validCapabilities();
+    delete caps.softPermissionDenial;
+    const result = validateRuntimeAdapter(validAdapter({ capabilities: caps }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field.includes('softPermissionDenial'))).toBe(true);
+  });
+
+  it('rejects capabilities with an unknown extra key', () => {
+    const caps = { ...validCapabilities(), unknownCapability: true };
+    const result = validateRuntimeAdapter(validAdapter({ capabilities: caps }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field.includes('unknownCapability'))).toBe(true);
+  });
+
+  it('rejects an empty observationSources array', () => {
+    const result = validateRuntimeAdapter(validAdapter({ capabilities: validCapabilities({ observationSources: [] }) }));
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects duplicate values within observationSources', () => {
+    const result = validateRuntimeAdapter(validAdapter({ capabilities: validCapabilities({ observationSources: ['a', 'a'] }) }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field === 'capabilities.observationSources')).toBe(true);
+  });
+
+  it('rejects duplicate values within skillDeliveryModes', () => {
+    const result = validateRuntimeAdapter(validAdapter({ capabilities: validCapabilities({ skillDeliveryModes: ['mode-a', 'mode-a'] }) }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field === 'capabilities.skillDeliveryModes')).toBe(true);
+  });
+
+  it('rejects a non-empty-string entry inside observationSources/skillDeliveryModes', () => {
+    expect(validateRuntimeAdapter(validAdapter({ capabilities: validCapabilities({ observationSources: [''] }) })).ok).toBe(false);
+    expect(validateRuntimeAdapter(validAdapter({ capabilities: validCapabilities({ observationSources: [42] }) })).ok).toBe(false);
+    expect(validateRuntimeAdapter(validAdapter({ capabilities: validCapabilities({ skillDeliveryModes: [null] }) })).ok).toBe(false);
+  });
+
+  it('rejects a non-boolean for structuredTranscript/correlatedToolResults/skillStateEvidence/softPermissionDenial', () => {
+    for (const field of ['structuredTranscript', 'correlatedToolResults', 'skillStateEvidence', 'softPermissionDenial']) {
+      const result = validateRuntimeAdapter(validAdapter({ capabilities: validCapabilities({ [field]: 'yes' }) }));
+      expect(result.ok, `expected non-boolean ${field} to fail`).toBe(false);
+    }
+  });
+
+  it('rejects an unknown usage dimension', () => {
+    const result = validateRuntimeAdapter(validAdapter({ capabilities: validCapabilities({ usageDimensions: ['input', 'made_up_dimension'] }) }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field === 'capabilities.usageDimensions')).toBe(true);
+  });
+
+  it('rejects a duplicate usage dimension', () => {
+    const result = validateRuntimeAdapter(validAdapter({ capabilities: validCapabilities({ usageDimensions: ['input', 'input'] }) }));
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects usageDimensions out of the USAGE_DIMENSIONS canonical order', () => {
+    const result = validateRuntimeAdapter(validAdapter({ capabilities: validCapabilities({ usageDimensions: ['output', 'input'] }) }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field === 'capabilities.usageDimensions')).toBe(true);
+  });
+
+  it('accepts an empty usageDimensions array (a runtime that reports no usage at all)', () => {
+    const result = validateRuntimeAdapter(validAdapter({ capabilities: validCapabilities({ usageDimensions: [] }) }));
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts the full 5-dimension set in canonical order', () => {
+    const result = validateRuntimeAdapter(validAdapter({ capabilities: validCapabilities({ usageDimensions: [...USAGE_DIMENSIONS] }) }));
+    expect(result.ok).toBe(true);
+  });
+
+  it('never includes adapter/env/path/content values in error entries -- codes and field names only', () => {
+    const adapter = validAdapter({ id: 'C:\\Users\\secret\\path' });
+    delete adapter.preflight;
+    const result = validateRuntimeAdapter(adapter);
+    const serialized = JSON.stringify(result.errors);
+    expect(serialized).not.toContain('secret');
+    expect(serialized).not.toContain('C:\\Users');
+    for (const err of result.errors) {
+      expect(typeof err.code).toBe('string');
+      expect(err.code.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('defineRuntimeAdapter -- validate + freeze', () => {
+  it('returns the adapter, deeply frozen, for a valid input', () => {
+    const adapter = defineRuntimeAdapter(validAdapter());
+    expect(Object.isFrozen(adapter)).toBe(true);
+    expect(Object.isFrozen(adapter.capabilities)).toBe(true);
+    expect(Object.isFrozen(adapter.capabilities.observationSources)).toBe(true);
+    expect(Object.isFrozen(adapter.capabilities.skillDeliveryModes)).toBe(true);
+    expect(Object.isFrozen(adapter.capabilities.usageDimensions)).toBe(true);
+  });
+
+  it('throws on an invalid adapter, and the thrown message carries no raw adapter content', () => {
+    const adapter = validAdapter({ id: '' });
+    let thrown = null;
+    try {
+      defineRuntimeAdapter(adapter);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).not.toBeNull();
+    expect(thrown.message).not.toContain('probeInstallation');
+    expect(typeof thrown.message).toBe('string');
+  });
+
+  it('mutating a returned frozen adapter is a no-op (strict-mode throw not required, but the value must not change)', () => {
+    const adapter = defineRuntimeAdapter(validAdapter());
+    try { adapter.id = 'mutated'; } catch { /* strict mode may throw -- either way, value must not change */ }
+    expect(adapter.id).toBe('synthetic-runtime');
+  });
+});
+
+describe('validateObservation -- accepts a well-formed synthetic observation', () => {
+  it('a fully-populated observation validates clean', () => {
+    const result = validateObservation(validObservation());
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+});
+
+describe('validateObservation -- top-level shape', () => {
+  it('rejects each of the 11 required top-level keys individually when missing', () => {
+    for (const key of OBSERVATION_KEYS) {
+      const observation = validObservation();
+      delete observation[key];
+      const result = validateObservation(observation);
+      expect(result.ok, `expected missing top-level "${key}" to fail`).toBe(false);
+    }
+  });
+
+  it('rejects an unknown extra top-level key', () => {
+    const result = validateObservation(validObservation({ extraTopLevelField: 1 }));
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects schema values other than the literal 1', () => {
+    expect(validateObservation(validObservation({ schema: 2 })).ok).toBe(false);
+    expect(validateObservation(validObservation({ schema: '1' })).ok).toBe(false);
+  });
+});
+
+describe('validateObservation -- rejects legacy/provider-native containers anywhere', () => {
+  const legacyTopLevel = ['events', 'init', 'result', 'malformedLines', 'invocation', 'bashResults', 'spawnResult'];
+  for (const key of legacyTopLevel) {
+    it(`rejects a legacy top-level container key "${key}"`, () => {
+      const result = validateObservation(validObservation({ [key]: [] }));
+      expect(result.ok).toBe(false);
+    });
+  }
+
+  const providerNativeKeys = ['message', 'tool_use_result', 'is_error', 'num_turns', 'permissionMode', 'mcp_servers', 'hook_id', 'rawStdout', 'stderr', 'taggedLines'];
+  for (const key of providerNativeKeys) {
+    it(`rejects a provider-native key "${key}" nested inside terminal`, () => {
+      const observation = validObservation();
+      observation.terminal = { ...observation.terminal, [key]: 'leaked' };
+      const result = validateObservation(observation);
+      expect(result.ok).toBe(false);
+    });
+
+    it(`rejects a provider-native key "${key}" nested inside session`, () => {
+      const observation = validObservation();
+      observation.session = { ...observation.session, [key]: 'leaked' };
+      const result = validateObservation(observation);
+      expect(result.ok).toBe(false);
+    });
+
+    it(`rejects a provider-native key "${key}" nested inside a toolAttempts[] entry`, () => {
+      const observation = validObservation();
+      observation.toolAttempts = [validToolAttempt({ [key]: 'leaked' })];
+      const result = validateObservation(observation);
+      expect(result.ok).toBe(false);
+    });
+  }
+});
+
+describe('validateObservation -- toolAttempts invariants', () => {
+  it('rejects a missing key on a toolAttempts[] entry', () => {
+    const attempt = validToolAttempt();
+    delete attempt.preDispatchBlock;
+    const result = validateObservation(validObservation({ toolAttempts: [attempt] }));
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects an unrecognized toolAttempts[] key', () => {
+    const result = validateObservation(validObservation({ toolAttempts: [validToolAttempt({ extra: 1 })] }));
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects a kind outside shell|skill|other', () => {
+    const result = validateObservation(validObservation({ toolAttempts: [validToolAttempt({ kind: 'weird' })] }));
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects a non-null command on a non-shell attempt', () => {
+    const result = validateObservation(validObservation({ toolAttempts: [validToolAttempt({ kind: 'skill', command: 'echo', skillReference: 'x', targetsExpectedSkill: true })] }));
+    expect(result.ok).toBe(false);
+  });
+
+  it('accepts a null command on a shell attempt (the transcript can be structurally incomplete)', () => {
+    const result = validateObservation(validObservation({ toolAttempts: [validToolAttempt({ id: null, command: null })] }));
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects skillReference/targetsExpectedSkill set on a shell attempt', () => {
+    const result = validateObservation(validObservation({ toolAttempts: [validToolAttempt({ skillReference: 'x' })] }));
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects toolAttempts out of transcript (eventIndex) order', () => {
+    const a = validToolAttempt({ id: 'a', eventIndex: 5, result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' } });
+    const b = validToolAttempt({ id: 'b', eventIndex: 2, result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' } });
+    const result = validateObservation(validObservation({ toolAttempts: [a, b] }));
+    expect(result.ok).toBe(false);
+  });
+
+  it('preserves duplicate eventIndex values for concurrent same-turn tool calls (not an ordering violation)', () => {
+    const a = validToolAttempt({ id: 'a', eventIndex: 5, result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' } });
+    const b = validToolAttempt({ id: 'b', eventIndex: 5, result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' } });
+    const result = validateObservation(validObservation({ toolAttempts: [a, b] }));
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects a negative or non-integer eventIndex', () => {
+    expect(validateObservation(validObservation({ toolAttempts: [validToolAttempt({ eventIndex: -1 })] })).ok).toBe(false);
+    expect(validateObservation(validObservation({ toolAttempts: [validToolAttempt({ eventIndex: 1.5 })] })).ok).toBe(false);
+  });
+
+  it('rejects a receiptNs that is neither bigint nor null', () => {
+    expect(validateObservation(validObservation({ toolAttempts: [validToolAttempt({ receiptNs: 100 })] })).ok).toBe(false);
+    expect(validateObservation(validObservation({ toolAttempts: [validToolAttempt({ receiptNs: '100' })] })).ok).toBe(false);
+  });
+
+  it('accepts a null receiptNs', () => {
+    const result = validateObservation(validObservation({ toolAttempts: [validToolAttempt({ receiptNs: null })] }));
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe('validateObservation -- tool result invariants', () => {
+  it('rejects a result.textStatus outside text|missing|unsupported', () => {
+    const attempt = validToolAttempt({ result: { found: true, eventIndex: 4, isError: false, text: 'x', textStatus: 'weird' } });
+    expect(validateObservation(validObservation({ toolAttempts: [attempt] })).ok).toBe(false);
+  });
+
+  it('never silently coerces a non-string result body into text -- textStatus:unsupported carries text:null', () => {
+    const attempt = validToolAttempt({ result: { found: true, eventIndex: 4, isError: false, text: 'not-actually-null-and-should-fail', textStatus: 'unsupported' } });
+    const result = validateObservation(validObservation({ toolAttempts: [attempt] }));
+    expect(result.ok).toBe(false);
+  });
+
+  it('accepts textStatus:unsupported paired with text:null', () => {
+    const attempt = validToolAttempt({ result: { found: true, eventIndex: 4, isError: false, text: null, textStatus: 'unsupported' } });
+    expect(validateObservation(validObservation({ toolAttempts: [attempt] })).ok).toBe(true);
+  });
+
+  it('rejects result.found:false paired with a non-null eventIndex', () => {
+    const attempt = validToolAttempt({ result: { found: false, eventIndex: 4, isError: null, text: null, textStatus: 'missing' } });
+    expect(validateObservation(validObservation({ toolAttempts: [attempt] })).ok).toBe(false);
+  });
+
+  it('rejects result.found:false paired with textStatus other than missing', () => {
+    const attempt = validToolAttempt({ result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'text' } });
+    expect(validateObservation(validObservation({ toolAttempts: [attempt] })).ok).toBe(false);
+  });
+});
+
+describe('validateObservation -- pre-dispatch block invariants', () => {
+  it('rejects preDispatchBlock.recognized:true on a non-shell attempt', () => {
+    const attempt = validToolAttempt({ kind: 'skill', command: null, skillReference: 'x', targetsExpectedSkill: true, preDispatchBlock: { recognized: true, signature: 'claude-code/bash-pre-dispatch-block/v1' } });
+    expect(validateObservation(validObservation({ toolAttempts: [attempt] })).ok).toBe(false);
+  });
+
+  it('rejects preDispatchBlock.recognized:true without a result correlation (result.found:false)', () => {
+    const attempt = validToolAttempt({
+      result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' },
+      preDispatchBlock: { recognized: true, signature: 'claude-code/bash-pre-dispatch-block/v1' },
+    });
+    expect(validateObservation(validObservation({ toolAttempts: [attempt] })).ok).toBe(false);
+  });
+
+  it('rejects preDispatchBlock.recognized:true with an empty/missing signature', () => {
+    const attempt = validToolAttempt({ preDispatchBlock: { recognized: true, signature: '' } });
+    expect(validateObservation(validObservation({ toolAttempts: [attempt] })).ok).toBe(false);
+    const attempt2 = validToolAttempt({ preDispatchBlock: { recognized: true, signature: null } });
+    expect(validateObservation(validObservation({ toolAttempts: [attempt2] })).ok).toBe(false);
+  });
+
+  it('rejects preDispatchBlock.recognized:false paired with a non-null signature', () => {
+    const attempt = validToolAttempt({ preDispatchBlock: { recognized: false, signature: 'claude-code/bash-pre-dispatch-block/v1' } });
+    expect(validateObservation(validObservation({ toolAttempts: [attempt] })).ok).toBe(false);
+  });
+
+  it('accepts recognized:true with a well-formed shell attempt and a real signature', () => {
+    const attempt = validToolAttempt({ preDispatchBlock: { recognized: true, signature: 'claude-code/bash-pre-dispatch-block/v1' } });
+    expect(validateObservation(validObservation({ toolAttempts: [attempt] })).ok).toBe(true);
+  });
+});
+
+describe('validateObservation -- terminal.usage null vs zero', () => {
+  it('accepts null for every usage dimension (a runtime that never reports usage)', () => {
+    const observation = validObservation();
+    observation.terminal = { ...observation.terminal, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } };
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('never coerces null to 0, and never coerces 0 to null -- both are independently valid and distinct', () => {
+    const zeroObservation = validObservation();
+    zeroObservation.terminal = { ...zeroObservation.terminal, usage: { input: 0, cached_input: 0, cache_write: 0, output: 0, reasoning_output: null } };
+    const result = validateObservation(zeroObservation);
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects a negative usage number', () => {
+    const observation = validObservation();
+    observation.terminal = { ...observation.terminal, usage: { ...observation.terminal.usage, input: -1 } };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects a non-integer usage number', () => {
+    const observation = validObservation();
+    observation.terminal = { ...observation.terminal, usage: { ...observation.terminal.usage, output: 1.5 } };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects an unrecognized key inside terminal.usage', () => {
+    const observation = validObservation();
+    observation.terminal = { ...observation.terminal, usage: { ...observation.terminal.usage, extra_dimension: 1 } };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+});
+
+describe('validateObservation -- transcript structural-issue / incomplete-result arrays', () => {
+  it('accepts a real structural-issue shape per known type', () => {
+    const observation = validObservation();
+    observation.transcript = {
+      ...observation.transcript,
+      strictStructuralIssues: [
+        { type: 'init_count', count: 2 },
+        { type: 'duplicate_tool_use_id', id: 'toolu_1', count: 2 },
+        { type: 'orphan_tool_result', id: null },
+        { type: 'result_not_last', resultIndex: 3, eventsLength: 5 },
+        { type: 'init_not_first', initIndex: 1 },
+        { type: 'empty_tool_use_id' },
+      ],
+    };
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('rejects a structural issue with an unknown type', () => {
+    const observation = validObservation();
+    observation.transcript = { ...observation.transcript, strictStructuralIssues: [{ type: 'made_up_issue' }] };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects a structural issue carrying an unrecognized extra key', () => {
+    const observation = validObservation();
+    observation.transcript = { ...observation.transcript, strictStructuralIssues: [{ type: 'empty_tool_use_id', unexpected: 1 }] };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects strictStructuralIssues that is not an array', () => {
+    const observation = validObservation();
+    observation.transcript = { ...observation.transcript, strictStructuralIssues: 3 };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts a real incomplete-tool-result entry', () => {
+    const observation = validObservation();
+    observation.transcript = { ...observation.transcript, strictIncompleteToolResults: [{ index: 8, receiptNs: 8n, name: 'Bash', id: null }] };
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('rejects an incomplete-tool-result entry missing a required key', () => {
+    const observation = validObservation();
+    observation.transcript = { ...observation.transcript, strictIncompleteToolResults: [{ index: 8, receiptNs: 8n, name: 'Bash' }] };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects effectiveIncompleteToolResults that is not an array', () => {
+    const observation = validObservation();
+    observation.transcript = { ...observation.transcript, effectiveIncompleteToolResults: 'nope' };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('malformedLineCount stays a plain non-negative integer count, never an array', () => {
+    const observation = validObservation();
+    observation.transcript = { ...observation.transcript, malformedLineCount: [1, 2] };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+});
+
+describe('validateObservation -- does not silently absorb anomalies', () => {
+  it('a malformed shape still reports errors rather than validating clean by omission', () => {
+    const observation = validObservation({ toolAttempts: 'not-an-array' });
+    const result = validateObservation(observation);
+    expect(result.ok).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it('every reported error carries a closed code, never free-form provider text', () => {
+    const observation = validObservation({ toolAttempts: 'not-an-array' });
+    const result = validateObservation(observation);
+    for (const err of result.errors) {
+      expect(typeof err.code).toBe('string');
+      expect(err.code.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('freezeObservation -- deep freeze', () => {
+  it('freezes the observation object and its nested plain objects/arrays', () => {
+    const observation = freezeObservation(validObservation());
+    expect(Object.isFrozen(observation)).toBe(true);
+    expect(Object.isFrozen(observation.terminal)).toBe(true);
+    expect(Object.isFrozen(observation.terminal.usage)).toBe(true);
+    expect(Object.isFrozen(observation.toolAttempts)).toBe(true);
+    expect(Object.isFrozen(observation.toolAttempts[0])).toBe(true);
+    expect(Object.isFrozen(observation.toolAttempts[0].result)).toBe(true);
+    expect(Object.isFrozen(observation.skill)).toBe(true);
+    expect(Object.isFrozen(observation.skill.foreignInvocations)).toBe(true);
+  });
+
+  it('does not throw when freezing Map/Set-bearing fields (timing.receiptNsByEventIndex, skill.ambient.names) -- they remain read-only by contract, not by Object.freeze', () => {
+    const observation = freezeObservation(validObservation());
+    expect(observation.timing.receiptNsByEventIndex instanceof Map).toBe(true);
+    expect(observation.skill.ambient.names instanceof Set).toBe(true);
+    // Object.freeze on the wrapper object holding the Map/Set does not itself change the Map/Set
+    // instance identity, and mutating the Map/Set's own contents is a contract violation the
+    // validator (not the runtime) is responsible for catching -- never asserted as a runtime throw.
+    expect(observation.timing.receiptNsByEventIndex.get(4)).toBe(100n);
+  });
+});
+
+describe('selectShellAttempts -- canonical shell selector', () => {
+  it('returns only kind:shell entries, preserving order', () => {
+    const attempts = [
+      validToolAttempt({ id: 'a', kind: 'shell' }),
+      validToolAttempt({ id: 'b', kind: 'skill', command: null, skillReference: 'x', targetsExpectedSkill: true }),
+      validToolAttempt({ id: 'c', kind: 'shell' }),
+      validToolAttempt({ id: 'd', kind: 'other', command: null }),
+    ];
+    const result = selectShellAttempts(attempts);
+    expect(result.map((a) => a.id)).toEqual(['a', 'c']);
+  });
+
+  it('returns an empty array for no shell attempts', () => {
+    expect(selectShellAttempts([validToolAttempt({ kind: 'other', command: null })])).toEqual([]);
+  });
+});
+
+describe('msSinceOrigin -- generic timing helper', () => {
+  it('computes elapsed milliseconds from two absolute bigint hrtime values', () => {
+    expect(msSinceOrigin(5_000_000n, 1_000_000n)).toBe(4);
+  });
+
+  it('returns null when the receipt is null', () => {
+    expect(msSinceOrigin(null, 1_000_000n)).toBeNull();
+  });
+
+  it('returns null when the origin is not a bigint', () => {
+    expect(msSinceOrigin(5_000_000n, undefined)).toBeNull();
+  });
+
+  it('returns null rather than a negative number when the origin is later than the receipt', () => {
+    expect(msSinceOrigin(1_000_000n, 5_000_000n)).toBeNull();
+  });
+});
+
+describe('canonicalNamesKey / fingerprintNames -- generic ambient HMAC helpers', () => {
+  it('canonicalNamesKey is order-independent', () => {
+    expect(canonicalNamesKey(new Set(['b', 'a']))).toBe(canonicalNamesKey(new Set(['a', 'b'])));
+  });
+
+  it('canonicalNamesKey is a JSON array of the sorted names', () => {
+    expect(canonicalNamesKey(new Set(['zeta', 'alpha']))).toBe(JSON.stringify(['alpha', 'zeta']));
+  });
+
+  it('fingerprintNames is deterministic for the same names + key', () => {
+    const key = Buffer.from('synthetic-key-material');
+    const a = fingerprintNames(new Set(['skill-a', 'skill-b']), key);
+    const b = fingerprintNames(new Set(['skill-b', 'skill-a']), key);
+    expect(a).toBe(b);
+    expect(typeof a).toBe('string');
+    expect(a.length).toBeGreaterThan(0);
+  });
+
+  it('fingerprintNames differs for two different keys over the same names', () => {
+    const names = new Set(['skill-a']);
+    const a = fingerprintNames(names, Buffer.from('key-one'));
+    const b = fingerprintNames(names, Buffer.from('key-two'));
+    expect(a).not.toBe(b);
+  });
+
+  it('fingerprintNames never leaks a raw skill name into its own output', () => {
+    const digest = fingerprintNames(new Set(['a-very-distinctive-skill-name']), Buffer.from('key'));
+    expect(digest).not.toContain('a-very-distinctive-skill-name');
+  });
+});
+
+// Stage 5 (synthetic contract conformance) -- proves runtimes/contract.mjs's validators and
+// generic helpers are genuinely runtime-agnostic by normalizing TWO fixtures with wire shapes
+// that resemble neither Claude Code's stream-jsonl nor each other, using adapters defined ONLY in
+// this test file (never a production runtimes/<id>.mjs module -- see the runbook's own Stage 5
+// instruction). Neither fixture represents, and neither this file nor its fixtures claim to
+// represent, any real coding-agent product's actual wire format; both fixture JSON files carry
+// their own explicit "note" field saying so. No vendor CLI is ever imported, spawned, or
+// referenced anywhere in this block.
+describe('Stage 5 -- synthetic multi-source and typed-step fixtures both satisfy the contract', () => {
+  const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
+  const MULTI_SOURCE_RAW = JSON.parse(readFileSync(join(FIXTURES_DIR, 'agentic-eval-runtime-multi-source.synthetic.json'), 'utf8'));
+  const TYPED_STEP_RAW = JSON.parse(readFileSync(join(FIXTURES_DIR, 'agentic-eval-runtime-typed-step.synthetic.json'), 'utf8'));
+
+  /**
+   * `synthetic-multi-source`'s own normalizer: the fixture's primary stream, hook ledger, and
+   * usage telemetry are three SEPARATE source objects (never one combined stream) -- this proves
+   * the contract doesn't assume a single-stream shape. Fails closed (returns a deliberately
+   * incomplete/invalid observation shell, never a silently-defaulted "valid" one) on: a missing
+   * source, two hook-ledger entries claiming the same callId (an unresolvable conflict -- which
+   * decision governs?), or a tool-outcome step whose callId was never invoked (an orphan result).
+   */
+  function normalizeSyntheticMultiSource(sources) {
+    const { primaryStream, hookLedger, usageTelemetry } = sources ?? {};
+    if (primaryStream == null || hookLedger == null || usageTelemetry == null) {
+      return { schema: 1, runtime: { id: 'synthetic-multi-source', protocolVersion: 1 } };
+    }
+    const entries = hookLedger.entries ?? [];
+    const seenCallIds = new Set();
+    for (const e of entries) {
+      if (seenCallIds.has(e.callId)) {
+        return { schema: 1, runtime: { id: 'synthetic-multi-source', protocolVersion: 1 }, hookStats: null };
+      }
+      seenCallIds.add(e.callId);
+    }
+    const steps = primaryStream.steps ?? [];
+    const invokedCallIds = new Set(steps.filter((s) => s.kind === 'tool-invoke').map((s) => s.callId));
+    const orphanOutcome = steps.some((s) => s.kind === 'tool-outcome' && !invokedCallIds.has(s.callId));
+    if (orphanOutcome) {
+      return { schema: 1, runtime: { id: 'synthetic-multi-source', protocolVersion: 1 }, toolAttempts: null };
+    }
+    const toolAttempts = [];
+    const receiptNsByEventIndex = new Map();
+    steps.forEach((step, eventIndex) => {
+      receiptNsByEventIndex.set(eventIndex, BigInt(eventIndex));
+      if (step.kind !== 'tool-invoke') return;
+      const outcome = steps.find((s) => s.kind === 'tool-outcome' && s.callId === step.callId);
+      toolAttempts.push({
+        id: step.callId, kind: 'shell', runtimeName: step.tool ?? null, eventIndex,
+        receiptNs: BigInt(eventIndex), profileAllowed: true, command: step.command ?? null,
+        skillReference: null, targetsExpectedSkill: null,
+        result: outcome
+          ? { found: true, eventIndex: steps.indexOf(outcome), isError: outcome.ok !== true, text: typeof outcome.output === 'string' ? outcome.output : null, textStatus: typeof outcome.output === 'string' ? 'text' : 'unsupported' }
+          : { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' },
+        preDispatchBlock: { recognized: false, signature: null },
+      });
+    });
+    const sessionEnd = steps.find((s) => s.kind === 'session-end');
+    const hookAllowCount = entries.filter((e) => e.decision === 'allow').length;
+    const hookDenyCount = entries.filter((e) => e.decision === 'deny').length;
+    return {
+      schema: 1,
+      runtime: { id: 'synthetic-multi-source', protocolVersion: 1 },
+      process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: BigInt(steps.length) },
+      session: {
+        initPresent: true, modelResolved: primaryStream.modelResolved ?? null,
+        sessionIdObserved: primaryStream.sessionId ?? null, runtimeVersion: 'synthetic-multi-source-v1',
+        toolProfileMatchesExpected: true,
+      },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+      terminal: {
+        present: sessionEnd != null, isError: sessionEnd ? sessionEnd.outcome !== 'completed' : null,
+        turnCount: 1, finalText: sessionEnd?.finalMessage ?? null,
+        resultSubtype: sessionEnd ? sessionEnd.outcome : null,
+        usage: { input: usageTelemetry.inputUnits ?? null, cached_input: usageTelemetry.cachedInputUnits ?? null, cache_write: usageTelemetry.cacheWriteUnits ?? null, output: usageTelemetry.outputUnits ?? null, reasoning_output: null },
+      },
+      toolAttempts,
+      skill: {
+        available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+        targetInvocation: null, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+      },
+      hookStats: {
+        hookCallCount: entries.length, hookResponseCount: entries.length, hookDenyCount, hookAllowCount,
+        hookPairingOk: true, everyCallHooked: entries.length === toolAttempts.length,
+      },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      timing: { receiptNsByEventIndex },
+    };
+  }
+
+  /**
+   * `synthetic-typed-step`'s own normalizer: a typed-step stream (each entry discriminated by an
+   * explicit `type` field, structurally unlike both Claude's stream-jsonl AND the multi-source
+   * fixture above) carrying a SOFT permission denial -- normalized to exactly one shell toolAttempt
+   * with a correlated result (the denial text itself) and canonical pre-dispatch evidence
+   * (recognized:true, a non-empty synthetic signature). Fails closed when the request/denial pair
+   * can't be correlated (a malformed-tool-result shape: a denial with no matching request, or vice
+   * versa).
+   */
+  function normalizeSyntheticTypedStep(sources) {
+    const { typedSteps } = sources ?? {};
+    if (typedSteps == null) {
+      return { schema: 1, runtime: { id: 'synthetic-typed-step', protocolVersion: 1 } };
+    }
+    const begin = typedSteps.find((s) => s.type === 'session-begin');
+    const request = typedSteps.find((s) => s.type === 'shell-request');
+    const denial = typedSteps.find((s) => s.type === 'shell-soft-denied' && s.stepId === request?.stepId);
+    const finish = typedSteps.find((s) => s.type === 'session-finish');
+    if (request == null || denial == null) {
+      return { schema: 1, runtime: { id: 'synthetic-typed-step', protocolVersion: 1 }, toolAttempts: null };
+    }
+    const requestIndex = typedSteps.indexOf(request);
+    const denialIndex = typedSteps.indexOf(denial);
+    const receiptNsByEventIndex = new Map(typedSteps.map((_, i) => [i, BigInt(i)]));
+    return {
+      schema: 1,
+      runtime: { id: 'synthetic-typed-step', protocolVersion: 1 },
+      process: { exitCode: 1, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: BigInt(typedSteps.length) },
+      session: {
+        initPresent: begin != null, modelResolved: begin?.modelResolved ?? null,
+        sessionIdObserved: begin?.sessionId ?? null, runtimeVersion: 'synthetic-typed-step-v1',
+        toolProfileMatchesExpected: true,
+      },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+      terminal: {
+        present: finish != null, isError: finish ? finish.outcome !== 'completed' : null,
+        turnCount: 1, finalText: finish?.finalMessage ?? null,
+        resultSubtype: finish ? finish.outcome : null,
+        usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null },
+      },
+      toolAttempts: [{
+        id: request.stepId, kind: 'shell', runtimeName: 'shell', eventIndex: requestIndex,
+        receiptNs: BigInt(requestIndex), profileAllowed: true, command: request.command ?? null,
+        skillReference: null, targetsExpectedSkill: null,
+        result: { found: true, eventIndex: denialIndex, isError: true, text: denial.policyNote ?? null, textStatus: typeof denial.policyNote === 'string' ? 'text' : 'unsupported' },
+        preDispatchBlock: { recognized: true, signature: 'synthetic/shell-soft-denial/v1' },
+      }],
+      skill: {
+        available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+        targetInvocation: null, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+      },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      timing: { receiptNsByEventIndex },
+    };
+  }
+
+  function syntheticAsyncNoop() { return async () => ({}); }
+
+  const MULTI_SOURCE_ADAPTER = defineRuntimeAdapter({
+    id: 'synthetic-multi-source',
+    protocolVersion: 1,
+    capabilities: {
+      observationSources: ['primary-stream', 'hook-ledger', 'usage-telemetry'],
+      structuredTranscript: true,
+      correlatedToolResults: true,
+      skillDeliveryModes: [],
+      skillStateEvidence: false,
+      usageDimensions: ['input', 'cached_input', 'output'],
+      softPermissionDenial: false,
+    },
+    probeInstallation: syntheticAsyncNoop(),
+    preflight: syntheticAsyncNoop(),
+    prepareIsolatedHome: syntheticAsyncNoop(),
+    prepareSkillDelivery: () => ({}),
+    buildInvocation: () => [],
+    collectObservationSources: syntheticAsyncNoop(),
+    normalizeObservations: normalizeSyntheticMultiSource,
+    redactRuntimeDiagnostics: (x) => x,
+  });
+
+  const TYPED_STEP_ADAPTER = defineRuntimeAdapter({
+    id: 'synthetic-typed-step',
+    protocolVersion: 1,
+    capabilities: {
+      observationSources: ['typed-step-stream'],
+      structuredTranscript: true,
+      correlatedToolResults: true,
+      skillDeliveryModes: [],
+      skillStateEvidence: false,
+      usageDimensions: [],
+      softPermissionDenial: true,
+    },
+    probeInstallation: syntheticAsyncNoop(),
+    preflight: syntheticAsyncNoop(),
+    prepareIsolatedHome: syntheticAsyncNoop(),
+    prepareSkillDelivery: () => ({}),
+    buildInvocation: () => [],
+    collectObservationSources: syntheticAsyncNoop(),
+    normalizeObservations: normalizeSyntheticTypedStep,
+    redactRuntimeDiagnostics: (x) => x,
+  });
+
+  it('both fixtures\' ids match their own declared adapter id (sanity, catches fixture/adapter drift)', () => {
+    expect(MULTI_SOURCE_RAW.id).toBe('synthetic-multi-source');
+    expect(TYPED_STEP_RAW.id).toBe('synthetic-typed-step');
+  });
+
+  it('both adapters pass the SAME adapter validator', () => {
+    expect(validateRuntimeAdapter(MULTI_SOURCE_ADAPTER)).toEqual({ ok: true, errors: [] });
+    expect(validateRuntimeAdapter(TYPED_STEP_ADAPTER)).toEqual({ ok: true, errors: [] });
+  });
+
+  it('both normalize their own real fixture to a valid observation under the SAME top-level contract', () => {
+    const multiSourceObs = normalizeSyntheticMultiSource(MULTI_SOURCE_RAW);
+    const typedStepObs = normalizeSyntheticTypedStep(TYPED_STEP_RAW);
+    expect(validateObservation(multiSourceObs)).toEqual({ ok: true, errors: [] });
+    expect(validateObservation(typedStepObs)).toEqual({ ok: true, errors: [] });
+    // Not just "both individually valid" -- both share the EXACT same top-level key set, proving
+    // the contract is one shape, not two coincidentally-overlapping ones.
+    expect(Object.keys(multiSourceObs).sort()).toEqual([...OBSERVATION_KEYS].sort());
+    expect(Object.keys(typedStepObs).sort()).toEqual([...OBSERVATION_KEYS].sort());
+  });
+
+  it('source-specific keys/vocabulary never appear anywhere in either normalized observation', () => {
+    const bigintSafe = (_k, v) => (typeof v === 'bigint' ? v.toString() : v instanceof Set ? [...v] : v);
+    const multiSourceText = JSON.stringify(normalizeSyntheticMultiSource(MULTI_SOURCE_RAW), bigintSafe);
+    const typedStepText = JSON.stringify(normalizeSyntheticTypedStep(TYPED_STEP_RAW), bigintSafe);
+    const forbidden = [
+      'primaryStream', 'hookLedger', 'usageTelemetry', 'typedSteps', 'callId', 'stepId',
+      'tool-invoke', 'tool-outcome', 'shell-request', 'shell-soft-denied',
+      'session-start', 'session-end', 'session-begin', 'session-finish', 'policyNote', 'decision',
+    ];
+    for (const term of forbidden) {
+      expect(multiSourceText).not.toContain(term);
+      expect(typedStepText).not.toContain(term);
+    }
+  });
+
+  it('fails closed: a missing source (usageTelemetry absent) never silently defaults to a valid observation', () => {
+    const { usageTelemetry, ...withoutUsage } = MULTI_SOURCE_RAW;
+    expect(usageTelemetry).toBeDefined(); // sanity: the real fixture genuinely had it
+    const obs = normalizeSyntheticMultiSource(withoutUsage);
+    expect(validateObservation(obs).ok).toBe(false);
+  });
+
+  it('fails closed: a duplicate source (two hook-ledger entries for the same callId) never silently resolves', () => {
+    const mutated = {
+      ...MULTI_SOURCE_RAW,
+      hookLedger: { entries: [{ callId: 'c1', decision: 'allow' }, { callId: 'c1', decision: 'deny' }] },
+    };
+    const obs = normalizeSyntheticMultiSource(mutated);
+    expect(validateObservation(obs).ok).toBe(false);
+  });
+
+  it('fails closed: an unknown capability value never passes the adapter validator', () => {
+    const mutated = { ...MULTI_SOURCE_ADAPTER, capabilities: { ...MULTI_SOURCE_ADAPTER.capabilities, usageDimensions: ['input', 'made-up-dimension'] } };
+    const result = validateRuntimeAdapter(mutated);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.code === 'unknown_dimension')).toBe(true);
+  });
+
+  it('fails closed: a malformed tool result (an outcome/denial with no correlated request) never silently drops', () => {
+    // Multi-source: a tool-outcome for a callId that was never invoked (orphan result).
+    const orphanOutcome = {
+      ...MULTI_SOURCE_RAW,
+      primaryStream: { ...MULTI_SOURCE_RAW.primaryStream, steps: [...MULTI_SOURCE_RAW.primaryStream.steps, { kind: 'tool-outcome', callId: 'never-invoked', ok: true, output: 'x' }] },
+    };
+    expect(validateObservation(normalizeSyntheticMultiSource(orphanOutcome)).ok).toBe(false);
+    // Typed-step: a shell-soft-denied step whose stepId matches no shell-request.
+    const orphanDenial = {
+      ...TYPED_STEP_RAW,
+      typedSteps: TYPED_STEP_RAW.typedSteps.filter((s) => s.type !== 'shell-request'),
+    };
+    expect(validateObservation(normalizeSyntheticTypedStep(orphanDenial)).ok).toBe(false);
+  });
+
+  it('fails closed: a fabricated pre-dispatch signature with no correlated (found) result never passes observation validation', () => {
+    const obs = normalizeSyntheticTypedStep(TYPED_STEP_RAW);
+    const fabricated = {
+      ...obs,
+      toolAttempts: [{
+        ...obs.toolAttempts[0],
+        result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' },
+        preDispatchBlock: { recognized: true, signature: 'fabricated-signature-never-really-recognized' },
+      }],
+    };
+    const result = validateObservation(fabricated);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field === 'toolAttempts[0].preDispatchBlock')).toBe(true);
+  });
+
+  it('the generic shell/timing/usage selectors work on BOTH observations without knowing which fixture produced them', () => {
+    for (const obs of [normalizeSyntheticMultiSource(MULTI_SOURCE_RAW), normalizeSyntheticTypedStep(TYPED_STEP_RAW)]) {
+      const shellAttempts = selectShellAttempts(obs.toolAttempts);
+      expect(shellAttempts.length).toBe(1);
+      expect(shellAttempts[0].kind).toBe('shell');
+      const receiptNs = obs.timing.receiptNsByEventIndex.get(shellAttempts[0].eventIndex);
+      expect(typeof msSinceOrigin(obs.process.endedHrtimeNs, receiptNs)).toBe('number');
+    }
+  });
+
+  it('the multi-source usage telemetry is readable via the exact same terminal.usage shape the Claude adapter populates', () => {
+    const obs = normalizeSyntheticMultiSource(MULTI_SOURCE_RAW);
+    expect(obs.terminal.usage.input).toBe(MULTI_SOURCE_RAW.usageTelemetry.inputUnits);
+    expect(obs.terminal.usage.output).toBe(MULTI_SOURCE_RAW.usageTelemetry.outputUnits);
+    expect(obs.terminal.usage.cached_input).toBe(MULTI_SOURCE_RAW.usageTelemetry.cachedInputUnits);
+  });
+
+  it('the typed-step soft denial normalizes to a recognized pre-dispatch block on a correlated (found) result', () => {
+    const obs = normalizeSyntheticTypedStep(TYPED_STEP_RAW);
+    const [attempt] = obs.toolAttempts;
+    expect(attempt.preDispatchBlock.recognized).toBe(true);
+    expect(typeof attempt.preDispatchBlock.signature).toBe('string');
+    expect(attempt.preDispatchBlock.signature.length).toBeGreaterThan(0);
+    expect(attempt.result.found).toBe(true);
+    expect(attempt.result.isError).toBe(true);
+  });
+});

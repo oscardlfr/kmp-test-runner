@@ -40,12 +40,10 @@ import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
 import { LATEST_RUN_SCHEMA, SUPPORTED_RUN_SCHEMAS, validateRun, validateScenario, validateTriggerQueries } from './schemas.mjs';
-import { buildEvalEnv } from './env-builder.mjs';
 import { materializeCalibrationProject, materializeScenarioProject, removeScenarioWorktree, realpath } from './materialize.mjs';
-import { buildBaseArgv } from './condition-launcher.mjs';
-import { isSkillAvailable, findForeignSkillUses, classifyForeignSkillUses, findBashToolUses, hasExpectedToolProfile, hasExpectedPluginProfile, findIncompleteToolResults, findTranscriptStructuralIssues, extractTokenUsage, deriveFirstUsefulSignalMs, derivePostSignalMs, findAllToolUsesWithResults, computeAmbientSkillProfile, canonicalAmbientSkillNamesKey, fingerprintAmbientSkillNames } from './stream-parser.mjs';
+import { msSinceOrigin, fingerprintNames, canonicalNamesKey, selectShellAttempts } from './runtimes/contract.mjs';
 import { acquireSharedEvalResources, runSingleCondition, runScenarioMatrix, reportCleanupFailures } from './matrix-runner.mjs';
-import { cellTranscriptIntegrityOk, summarizeUnexpectedToolUses, evaluateNamedChecks, isPluginBoundToSnapshot, EXPECTED_TOOL_NAMES } from './cell-integrity.mjs';
+import { cellTranscriptIntegrityOk, summarizeUnexpectedToolUses, evaluateNamedChecks } from './cell-integrity.mjs';
 import { gradeScenarioCondition } from './graders.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
 import { aggregateRuns } from './aggregate.mjs';
@@ -135,11 +133,9 @@ function isRunsRootDefault(runsRoot, repoRoot) {
 }
 const RUNS_ROOT_IS_DEFAULT = isRunsRootDefault(RUNS_ROOT, REPO_ROOT);
 
-// isPluginBoundToSnapshot moved to cell-integrity.mjs (imported above) -- it is now also used by
-// the fail-fast hook (matrix-runner.mjs's runScenarioMatrix, this file's own runConditionPair),
-// which cannot import it from here without creating the exact import cycle matrix-runner.mjs's own
-// header comment explains it must avoid. Re-exported below (see the bottom export {} block) so no
-// existing external import path (`import { isPluginBoundToSnapshot } from './cli.mjs'`) breaks.
+// isPluginBoundToSnapshot moved to runtimes/claude-code.mjs (a genuinely Claude-specific fact --
+// see that module's own doc comment) -- this file no longer imports or re-exports it at all; the
+// observation contract already carries its result as skill.snapshotBindingMatches.
 
 const HELP = `tools/agentic-eval/cli.mjs -- reproducible skill evaluation harness
 
@@ -450,8 +446,10 @@ const SMOKE_EXPECTED_COMMANDS = [
   ['kmp-test', 'describe', '--json'],
 ];
 
-// EXPECTED_TOOL_NAMES moved to cell-integrity.mjs (imported above) -- same rationale as
-// isPluginBoundToSnapshot: the fail-fast hook needs it and cannot import it from this file.
+// EXPECTED_TOOL_NAMES moved to runtimes/claude-code.mjs -- a genuinely Claude-specific fact (the
+// exact --tools value this harness launches `claude` with). This file no longer imports it at all;
+// the observation contract already carries its result as session.toolProfileMatchesExpected and
+// toolAttempts[].profileAllowed.
 
 // The ONLY plugin/skill identity findSkillInvocation/findForeignSkillUses/isSkillAvailable/
 // hasExpectedPluginProfile ever target -- two single shared constants (never collapsed into one)
@@ -506,21 +504,27 @@ function generateAmbientProfileScope() {
  */
 
 /**
- * Overwrites a spawned condition's in-memory rawStdout with its journal-persisted copy, keyed
- * STRICTLY by conditionResult.cellOrdinal -- never array position, never an assumed A/B
- * convention (the journal's own ordinal assignment, 0=B/current-skill then 1=A/no-skill for a
- * pair, does not match this codebase's historical recordA/recordB parameter ordering; conflating
- * the two would silently swap two live sessions' transcripts). Fail-closed: a cell that genuinely
- * spawned but has no journal-persisted raw is a wiring bug, not something to silently paper over
- * with the (possibly stale, in this exact failure mode) in-memory value.
+ * Pure read-back of a spawned condition's journal-persisted raw transcript, keyed STRICTLY by
+ * conditionResult.cellOrdinal -- never array position, never an assumed A/B convention (the
+ * journal's own ordinal assignment, 0=B/current-skill then 1=A/no-skill for a pair, does not
+ * match this codebase's historical recordA/recordB parameter ordering; conflating the two would
+ * silently swap two live sessions' transcripts). Fail-closed: a cell that genuinely spawned but
+ * has no journal-persisted raw is a wiring bug, not something to silently paper over. Never
+ * mutates `conditionResult` -- the observation contract carries no raw/legacy fields (no
+ * `spawnResult` to overwrite), so the ONLY source of raw transcript text, anywhere downstream, is
+ * this read. Callers (cmdCalibrate/cmdSmoke/cmdRun) use this to build the `transcriptsByRunId` map
+ * finalizeAndWriteRecords/finalizeAndWriteMatrixRecords require as an explicit parameter -- see
+ * those functions' own doc comments.
+ * @returns {string|null} the raw transcript text, or null if journal/conditionResult is absent or
+ *   the cell never spawned (nothing to read).
  */
-function adoptJournalRaw(conditionResult, journal) {
-  if (!journal || !conditionResult || !conditionResult.didSpawn) return;
+function readJournalRawFor(conditionResult, journal) {
+  if (!journal || !conditionResult || !conditionResult.didSpawn) return null;
   const raw = journal.readRawFor(conditionResult.cellOrdinal);
   if (raw == null) {
     throw new Error(`journal read-back: no raw persisted for cellOrdinal ${conditionResult.cellOrdinal}, but this cell spawned -- refusing to promote unverified content`);
   }
-  conditionResult.spawnResult.rawStdout = raw;
+  return raw;
 }
 
 /**
@@ -723,7 +727,7 @@ function reasonTextFor(err) {
   return err?.rollbackError ? `${err.message} (rollback also failed: ${err.rollbackError.message})` : err?.message;
 }
 
-async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpTestSubcommands, materializeFixture, cleanupFixture, timeoutMs, journal = null }) {
+async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpTestSubcommands, materializeFixture, cleanupFixture, timeoutMs, journal = null, runtimeAdapter }) {
   // Thin wrapper over matrix-runner.mjs's acquireSharedEvalResources/runSingleCondition (extracted
   // so a scenario-matrix run, which repeats this same acquire-then-run shape N times instead of
   // once, can reuse the identical machinery without duplicating it). The external contract here is
@@ -740,11 +744,15 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     // buildPolicySettingsFile's own output is byte-for-byte identical to before this mechanism
     // existed whenever this is false.
     junitEvidenceEnabled: false,
+    runtimeAdapter,
   });
   const { registerCleanup, runCleanup } = shared;
 
   try {
-    const baseArgv = buildBaseArgv({ prompt, model, settingsPath: shared.settingsPath });
+    // shared.runtimeAdapter is the RESOLVED instance (default or test-injected) --
+    // acquireSharedEvalResources returns it specifically so this call site never needs to import
+    // runtimes/claude-code.mjs itself (cli.mjs is a core consumer; only matrix-runner.mjs may).
+    const baseArgv = shared.runtimeAdapter.buildInvocation({ prompt, model, settingsPath: shared.settingsPath });
 
     let fixtureDir;
     let fixtureCleanupQueued = false;
@@ -765,7 +773,7 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
         resetGradleToSnapshot: shared.resetGradleToSnapshot, kmpEvalTempHome: shared.kmpEvalTempHome,
         sharedEnv: shared.sharedEnv, baseArgv, snapshotDir: shared.snapshotDir,
         targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, timeoutMs,
-        junitEvidenceEnabled: false, journal, cellOrdinal,
+        junitEvidenceEnabled: false, journal, cellOrdinal, runtimeAdapter: shared.runtimeAdapter,
       });
       fixtureDir = conditionResult.fixtureDir;
       return conditionResult;
@@ -780,13 +788,16 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     try {
       integrityB = cellTranscriptIntegrityOk(runB, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     } catch (err) {
-      throw tagIncidentPhase(err, 'parsing_or_attributing_cell', 0, runB.spawnResult?.rawStdout);
+      // No raw-text 4th argument (unlike runSingleCondition's own persistSpawnOutcome-failure
+      // catch): persistSpawnOutcome already succeeded for this cell by the time control returns
+      // here, so raw custody has already moved to the journal.
+      throw tagIncidentPhase(err, 'parsing_or_attributing_cell', 0);
     }
     if (journal && runB.didSpawn) {
       try {
         journal.recordEvaluated(0);
       } catch (err) {
-        throw tagIncidentPhase(err, 'persisting_cell_journal', 0, runB.spawnResult?.rawStdout);
+        throw tagIncidentPhase(err, 'persisting_cell_journal', 0);
       }
     }
     if (!integrityB.ok) {
@@ -811,13 +822,13 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     try {
       cellTranscriptIntegrityOk(runA, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
     } catch (err) {
-      throw tagIncidentPhase(err, 'parsing_or_attributing_cell', 1, runA.spawnResult?.rawStdout);
+      throw tagIncidentPhase(err, 'parsing_or_attributing_cell', 1);
     }
     if (journal && runA.didSpawn) {
       try {
         journal.recordEvaluated(1);
       } catch (err) {
-        throw tagIncidentPhase(err, 'persisting_cell_journal', 1, runA.spawnResult?.rawStdout);
+        throw tagIncidentPhase(err, 'persisting_cell_journal', 1);
       }
     }
 
@@ -849,12 +860,13 @@ function buildRunRecord({
   // back to an unkeyed/absent key.
   ambientProfileScopeId, ambientProfileKey,
 }) {
-  const { init, result, invocation, hookStats, byteMetrics, startedAt, endedAt } = conditionResult;
+  const { observation, startedAt, endedAt } = conditionResult;
   const isScenario = runKind === 'scenario';
   const notApplicableReason = `${runKind} run -- no scenario grader applies`;
   // Computed once, shared by tool_calls_total (below) and foreign_skill_summary (schema V3) --
-  // never re-derived twice from the same transcript.
-  const foreignSkillUses = classifyForeignSkillUses(conditionResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME);
+  // never re-derived twice from the same transcript. observation.skill.foreignInvocations is the
+  // adapter's own already-classified list (skillReference replaces the legacy skillArg name).
+  const foreignSkillUses = observation.skill.foreignInvocations;
   const foreignSkillSummary = {
     rejected: foreignSkillUses.filter((u) => u.resultIsError === true).length,
     confirmed: foreignSkillUses.filter((u) => u.confirmed === true).length,
@@ -862,20 +874,18 @@ function buildRunRecord({
   };
   // ambient_skill_profile (schema V4): a privacy-safe {count, scope_id, fingerprint_hmac} summary
   // of the init event's skills[] array with the TARGET skill's own bare/namespaced identity
-  // stripped out (computeAmbientSkillProfile, stream-parser.mjs) -- never the raw names
-  // themselves. Always computed regardless of run_kind or ambientProfile.ok: a malformed
-  // transcript still gets a real, non-null value recorded here (schema requires it non-null on
-  // every record); only scenarioCellIntegrityOk/calibrationHardGate/smokeHardGate (below) actually
-  // enforce strictness on `.ok`. `expectTargetPresent` is condition-aware (correction 1) -- a
-  // no-skill cell must show ZERO target references in skills[] (not merely zero CONFIRMED
-  // invocations), a current-skill cell may show exactly one. `fingerprintAmbientSkillNames` is now
-  // HMAC-keyed by this invocation's own random, never-persisted key (correction 2) -- see
+  // stripped out -- already computed once, by the runtime adapter at normalization time
+  // (observation.skill.ambient), never the raw names themselves. Always present regardless of
+  // run_kind or ambient.ok: a malformed transcript still gets a real, non-null value recorded here
+  // (schema requires it non-null on every record); only scenarioCellIntegrityOk/calibrationHardGate/
+  // smokeHardGate (below) actually enforce strictness on well-formedness. `fingerprintNames` is
+  // contract.mjs's generic HMAC helper (byte-identical algorithm to the adapter's own internal one),
+  // keyed by this invocation's own random, never-persisted key (correction 2) -- see
   // generateAmbientProfileScope's own doc comment for the full privacy rationale.
-  const ambientProfile = computeAmbientSkillProfile(init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: condition === 'current-skill' });
   const ambientSkillProfile = {
-    count: ambientProfile.names.size,
+    count: observation.skill.ambient.names.size,
     scope_id: ambientProfileScopeId,
-    fingerprint_hmac: fingerprintAmbientSkillNames(ambientProfile.names, ambientProfileKey),
+    fingerprint_hmac: fingerprintNames(observation.skill.ambient.names, ambientProfileKey),
   };
   // post_signal_ms/post_signal_tool_calls/policy_denials_{before,after}_first_signal (schema V5):
   // the ONE unified boundary (gradeResult.firstUsefulSignalEventIndex) decides all 4 -- computed
@@ -900,21 +910,20 @@ function buildRunRecord({
     policyDenialsBeforeFirstSignal = nullableMetric(null, noSignalBoundaryReason);
     policyDenialsAfterFirstSignal = nullableMetric(null, noSignalBoundaryReason);
   } else {
-    postSignalMs = nullableMetric(derivePostSignalMs(conditionResult.events, firstUsefulSignalEventIndex, conditionResult.spawnResult.endedHrtimeNs));
-    // post_signal_tool_calls: every tool_use block (any kind) whose OWN assistant event index is
+    postSignalMs = nullableMetric(msSinceOrigin(observation.process.endedHrtimeNs, observation.timing.receiptNsByEventIndex.get(firstUsefulSignalEventIndex)));
+    // post_signal_tool_calls: every tool attempt (any kind) whose OWN assistant event index is
     // strictly greater than the signal's result event index -- a call dispatched before the
-    // signal but completed after it (its own tool_use index is still <= the boundary) is never
-    // post-signal work, matching derivePostSignalMs's own dispatch-time (never completion-time)
-    // framing.
-    postSignalToolCalls = nullableMetric(findAllToolUsesWithResults(conditionResult.events).filter((u) => u.index > firstUsefulSignalEventIndex).length);
+    // signal but completed after it (its own eventIndex is still <= the boundary) is never
+    // post-signal work, matching msSinceOrigin's own dispatch-time (never completion-time) framing.
+    postSignalToolCalls = nullableMetric(observation.toolAttempts.filter((a) => a.eventIndex > firstUsefulSignalEventIndex).length);
     // policy_denials_before/after_first_signal: classify each Bash attempt by its OWN tool-use
     // event index (never its later tool-result index) against the identical boundary.
     const decisionByAttempt = conditionResult.junitAttribution?.decisionByAttempt ?? new Map();
     let before = 0;
     let after = 0;
-    for (const b of conditionResult.bashResults ?? []) {
+    for (const b of selectShellAttempts(observation.toolAttempts)) {
       if (decisionByAttempt.get(b.id) !== 'deny') continue;
-      if (b.index > firstUsefulSignalEventIndex) after++; else before++;
+      if (b.eventIndex > firstUsefulSignalEventIndex) after++; else before++;
     }
     policyDenialsBeforeFirstSignal = nullableMetric(before);
     policyDenialsAfterFirstSignal = nullableMetric(after);
@@ -938,9 +947,9 @@ function buildRunRecord({
     kmp_test_cli_source_sha: provenance.repoCommit,
     resolved_kmp_test_executable_path: provenance.resolvedExecutablePath,
     model_requested: modelRequested,
-    model_resolved: init?.model ?? null,
-    session_id_observed: init?.session_id ?? null,
-    claude_code_version: init?.claude_code_version ?? null,
+    model_resolved: observation.session.modelResolved,
+    session_id_observed: observation.session.sessionIdObserved,
+    claude_code_version: observation.session.runtimeVersion,
     repo_commit: provenance.repoCommit,
     project_alias: projectAlias,
     project_commit: projectCommit,
@@ -959,10 +968,13 @@ function buildRunRecord({
     started_at: startedAt.toISOString(),
     ended_at: endedAt.toISOString(),
     wall_clock_ms: endedAt.getTime() - startedAt.getTime(),
-    skill_available: nullableMetric(isSkillAvailable(init, TARGET_PLUGIN_NAME)),
-    skill_invocation_attempted: nullableMetric(invocation != null),
-    skill_invoked: nullableMetric(invocation?.confirmed ?? false),
-    skill_invocation_event: invocation ? { type: invocation.type, index: invocation.index } : null,
+    skill_available: nullableMetric(observation.skill.available),
+    skill_invocation_attempted: nullableMetric(observation.skill.targetInvocation != null),
+    skill_invoked: nullableMetric(observation.skill.targetInvocation?.confirmed ?? false),
+    // 'assistant.tool_use.Skill' is a closed literal (stream-parser.mjs's own findSkillInvocation
+    // always used exactly this constant, never a variable value) -- hardcoded here rather than
+    // carried through the observation contract, which has no need for a type field that never varies.
+    skill_invocation_event: observation.skill.targetInvocation ? { type: 'assistant.tool_use.Skill', index: observation.skill.targetInvocation.eventIndex } : null,
     // decision 13: for a scenario record, success/expected_outcome_matched are graders.mjs's own
     // already-computed verdict -- real, non-null booleans (which may legitimately be false; a
     // wrong answer is valid negative data, never filtered out). Never re-derived here, never
@@ -972,7 +984,7 @@ function buildRunRecord({
     first_useful_signal_ms: isScenario
       ? nullableMetric(
           gradeResult.firstUsefulSignalEventIndex != null
-            ? deriveFirstUsefulSignalMs(conditionResult.events, gradeResult.firstUsefulSignalEventIndex, conditionResult.spawnResult.spawnHrtimeNs)
+            ? msSinceOrigin(observation.timing.receiptNsByEventIndex.get(gradeResult.firstUsefulSignalEventIndex), observation.process.spawnHrtimeNs)
             : null,
           gradeResult.firstUsefulSignalEventIndex == null ? 'no correlated authoritative outcome event found' : undefined,
         )
@@ -996,36 +1008,36 @@ function buildRunRecord({
     policy_denials_after_first_signal: policyDenialsAfterFirstSignal,
     accepted_audit: null,
     tokens: {
-      input: nullableMetric(extractTokenUsage(result)?.input ?? null, extractTokenUsage(result) ? undefined : 'no result event'),
-      output: nullableMetric(extractTokenUsage(result)?.output ?? null, extractTokenUsage(result) ? undefined : 'no result event'),
-      cache_read: nullableMetric(extractTokenUsage(result)?.cache_read ?? null, extractTokenUsage(result) ? undefined : 'no result event'),
-      cache_creation: nullableMetric(extractTokenUsage(result)?.cache_creation ?? null, extractTokenUsage(result) ? undefined : 'no result event'),
+      input: nullableMetric(observation.terminal.usage.input, observation.terminal.present ? undefined : 'no result event'),
+      output: nullableMetric(observation.terminal.usage.output, observation.terminal.present ? undefined : 'no result event'),
+      cache_read: nullableMetric(observation.terminal.usage.cached_input, observation.terminal.present ? undefined : 'no result event'),
+      cache_creation: nullableMetric(observation.terminal.usage.cache_write, observation.terminal.present ? undefined : 'no result event'),
     },
-    // Counts EVERY tool_use block in the transcript, regardless of name (findAllToolUsesWithResults
-    // -- the identical helper the accepted-run-audit sidecar's own summary.tool_calls_total uses) --
-    // a review finding demonstrated the previous formula (findBashToolUses().length +
+    // Counts EVERY tool attempt in the transcript, regardless of kind (observation.toolAttempts --
+    // the identical field the accepted-run-audit sidecar's own summary.tool_calls_total uses) -- a
+    // review finding demonstrated the previous formula (findBashToolUses().length +
     // invocation?.attemptCount + foreignSkillUses.length) silently dropped a genuinely unexpected
     // tool call (e.g. a bare Read) that is neither Bash nor Skill, undercounting the transcript and
     // making the record disagree with its own sidecar on an otherwise-unremarkable run.
-    tool_calls_total: nullableMetric(findAllToolUsesWithResults(conditionResult.events).length),
-    shell_commands_total: nullableMetric(findBashToolUses(conditionResult.events).length),
+    tool_calls_total: nullableMetric(observation.toolAttempts.length),
+    shell_commands_total: nullableMetric(selectShellAttempts(observation.toolAttempts).length),
     // decision 12: real, non-null counts for a scenario record -- directly reusing the SAME
     // attempt list gradeScenarioCondition already built (never a second, independently-derived
     // count that could drift from what grading itself saw).
     test_invocations_total: isScenario ? nullableMetric(gradeResult.testInvocationsTotal) : nullableMetric(null, `not tracked for ${runKind} runs`),
     retries: isScenario ? nullableMetric(gradeResult.retries) : nullableMetric(null, `not tracked for ${runKind} runs`),
-    output_bytes: nullableMetric(byteMetrics.outputBytes),
-    stream_json_bytes: nullableMetric(byteMetrics.streamJsonBytes),
+    output_bytes: nullableMetric(observation.byteMetrics.outputBytes),
+    stream_json_bytes: nullableMetric(observation.byteMetrics.streamJsonBytes),
     human_interventions: nullableMetric(0),
-    terminated: conditionResult.spawnResult.terminated,
-    termination_reason: conditionResult.spawnResult.terminationReason,
-    exit_code: conditionResult.spawnResult.exitCode,
+    terminated: observation.process.terminated,
+    termination_reason: observation.process.terminationReason,
+    exit_code: observation.process.exitCode,
     permission_mode_used: 'dontAsk',
     policy_allowed_gradle_tasks: allowedGradleTasks,
     policy_allowed_kmptest_subcommands: allowedKmpTestSubcommands,
     policy_sha256: policySha256,
-    hook_call_count: hookStats.hookCallCount,
-    hook_deny_count: hookStats.hookDenyCount,
+    hook_call_count: observation.hookStats.hookCallCount,
+    hook_deny_count: observation.hookStats.hookDenyCount,
     privacy_status: privacyStatus,
     raw_capture_committed: false,
     // Only accurate when RUNS_ROOT is the default -- see RUNS_ROOT_IS_DEFAULT's own comment.
@@ -1173,7 +1185,7 @@ function buildRunRecord({
  * never leave files 1-2 committed as final evidence while 3-4 are missing. See evidence-io.mjs's
  * promoteTargetsAtomically for the exact contract this guarantee actually provides.
  */
-function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB, runsRootOverride = RUNS_ROOT) {
+function writeRunRecordEvidence(runKind, recordA, recordB, rawTextA, rawTextB, redactedTextA, redactedTextB, runsRootOverride = RUNS_ROOT) {
   const outDir = resolveEvidenceOutDir(runKind, runsRootOverride);
   const rawDir = join(outDir, 'raw');
   if (!isRawDirSafeFromAccidentalCommit(rawDir, runsRootOverride)) {
@@ -1182,8 +1194,8 @@ function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedT
   const targets = [
     [join(outDir, `${recordA.run_id}.json`), redactedTextA],
     [join(outDir, `${recordB.run_id}.json`), redactedTextB],
-    [join(rawDir, `${recordA.run_id}.jsonl`), runA.spawnResult.rawStdout],
-    [join(rawDir, `${recordB.run_id}.jsonl`), runB.spawnResult.rawStdout],
+    [join(rawDir, `${recordA.run_id}.jsonl`), rawTextA],
+    [join(rawDir, `${recordB.run_id}.jsonl`), rawTextB],
   ];
   promoteTargetsAtomically(targets, rawDir);
   return outDir;
@@ -1196,8 +1208,10 @@ function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedT
  * every target THIS invocation created, never leaving N-1 records committed and one missing.
  * @param {string} runKind
  * @param {object[]} records - already schema-validated, redacted-text-paired records
- * @param {object[]} conditionResults - parallel array, each record[i]'s own conditionResult
- *   (for conditionResults[i].spawnResult.rawStdout)
+ * @param {string[]} rawTexts - parallel array, each record[i]'s own raw transcript text (the
+ *   caller's own transcriptsByRunId map, projected to records' order -- see
+ *   finalizeAndWriteMatrixRecords' own doc comment on why this function no longer reads
+ *   conditionResult directly for raw text)
  * @param {string[]} redactedTexts - parallel array, each record[i]'s own redacted JSON text
  * @param {string} [runsRootOverride]
  * @param {string[]|null} [sidecarTexts] - accepted-run-observability PR: parallel array, each
@@ -1207,7 +1221,7 @@ function writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedT
  *   pair-based writeRunRecordEvidence sibling never gains this parameter at all, since sidecars are
  *   a scenario-only concept and that pair-based path is deliberately left unchanged.
  */
-function writeRunMatrixRecordEvidence(runKind, records, conditionResults, redactedTexts, runsRootOverride = RUNS_ROOT, sidecarTexts = null) {
+function writeRunMatrixRecordEvidence(runKind, records, rawTexts, redactedTexts, runsRootOverride = RUNS_ROOT, sidecarTexts = null) {
   const outDir = resolveEvidenceOutDir(runKind, runsRootOverride);
   const rawDir = join(outDir, 'raw');
   const auditDir = join(outDir, 'audit');
@@ -1216,7 +1230,7 @@ function writeRunMatrixRecordEvidence(runKind, records, conditionResults, redact
   }
   const targets = records.flatMap((record, i) => [
     [join(outDir, `${record.run_id}.json`), redactedTexts[i]],
-    [join(rawDir, `${record.run_id}.jsonl`), conditionResults[i].spawnResult.rawStdout],
+    [join(rawDir, `${record.run_id}.jsonl`), rawTexts[i]],
     ...(sidecarTexts ? [[join(auditDir, `${record.run_id}.json`), sidecarTexts[i]]] : []),
   ]);
   promoteTargetsAtomically(targets, sidecarTexts ? [rawDir, auditDir] : rawDir);
@@ -1405,13 +1419,45 @@ function printRejectionForensicsStderr(result) {
   }
 }
 
-async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, hardGateFn, privatePatternsFile, runsRootOverride = RUNS_ROOT, matrixComplete = true, plannedCellCount = 2, executedCellCount = 2, failFastStop = null, journal = null }) {
+/**
+ * Fail-closed shape check for the `transcriptsByRunId` map finalizeAndWriteRecords/
+ * finalizeAndWriteMatrixRecords now require as an explicit caller-supplied parameter (raw-custody
+ * rule: these functions never read raw transcript text off `conditionResult` themselves anymore --
+ * the observation contract carries no raw/legacy fields to read). Same reason-string-or-null
+ * convention as findMatrixCompletenessGap: neither missing NOR extra run_ids are tolerated (an
+ * extra id could silently mask a caller wiring the wrong map in), and every value must actually be
+ * a string (never undefined/null -- a caller that failed to read one back from the journal must
+ * fail here, not write a non-string into a `.jsonl` file).
+ * @returns {string|null} a reason string on mismatch, null when `transcriptsByRunId` is exactly right.
+ */
+function validateTranscriptsByRunId(transcriptsByRunId, expectedRunIds) {
+  if (transcriptsByRunId == null || typeof transcriptsByRunId !== 'object' || Array.isArray(transcriptsByRunId)) {
+    return `transcriptsByRunId must be an object, got ${Array.isArray(transcriptsByRunId) ? 'array' : typeof transcriptsByRunId}`;
+  }
+  const expectedSet = new Set(expectedRunIds);
+  const actualRunIds = Object.keys(transcriptsByRunId);
+  const missing = expectedRunIds.filter((id) => !actualRunIds.includes(id));
+  const extra = actualRunIds.filter((id) => !expectedSet.has(id));
+  if (missing.length > 0 || extra.length > 0) {
+    return `transcriptsByRunId run_id mismatch -- missing:${JSON.stringify(missing)} extra:${JSON.stringify(extra)}`;
+  }
+  for (const id of expectedRunIds) {
+    if (typeof transcriptsByRunId[id] !== 'string') {
+      return `transcriptsByRunId[${id}] must be a string, got ${typeof transcriptsByRunId[id]}`;
+    }
+  }
+  return null;
+}
+
+async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, hardGateFn, privatePatternsFile, runsRootOverride = RUNS_ROOT, matrixComplete = true, plannedCellCount = 2, executedCellCount = 2, failFastStop = null, journal = null, transcriptsByRunId }) {
   // Fail-fast (preserve rejected matrix forensics): only B ran -- runConditionPair's own fail-fast
   // check on B already found a local integrity failure and never spawned A at all. hardGateFn is
   // NEVER invoked here: there is no A side to give it, and calibrationHardGate/smokeHardGate both
   // require both sides. Go straight to rejection forensics using failFastStop's own already-
   // computed verdict for B -- never re-derived, never masked.
   if (!matrixComplete) {
+    const transcriptsCheckFF = validateTranscriptsByRunId(transcriptsByRunId, [recordB.run_id]);
+    if (transcriptsCheckFF) return { ok: false, reason: transcriptsCheckFF };
     const { errors } = validateRun(recordB);
     if (errors.length > 0) {
       return { ok: false, reason: `Run record B failed schema validation: ${JSON.stringify(errors)}` };
@@ -1440,8 +1486,8 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
       failedChecksByRunId: { [recordB.run_id]: failFastStop.failedChecks },
       unexpectedToolUsesCountByRunId: { [recordB.run_id]: failFastStop.unexpectedToolUsesCount },
       unexpectedToolsByRunId: { [recordB.run_id]: failFastStop.unexpectedTools },
-      foreignSkillNamesByRunId: { [recordB.run_id]: classifyForeignSkillUses(runB.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null) },
-      transcriptsByRunId: { [recordB.run_id]: runB.spawnResult.rawStdout },
+      foreignSkillNamesByRunId: { [recordB.run_id]: runB.observation.skill.foreignInvocations.map((u) => u.skillReference).filter((s) => s != null) },
+      transcriptsByRunId,
       // Derived from runB.cellOrdinal -- the journal's own authoritative per-cell ordinal (stamped
       // by runSingleCondition itself), never a hardcoded 0 (post-Codex-audit fix, PR #418, round
       // 4: this producer still fabricated the ordinal even after round 3 fixed the CONSUMER-side
@@ -1454,6 +1500,9 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
     });
     return { ok: false, reason: failFastStop.reason, ...forensics };
   }
+
+  const transcriptsCheck = validateTranscriptsByRunId(transcriptsByRunId, [recordA.run_id, recordB.run_id]);
+  if (transcriptsCheck) return { ok: false, reason: transcriptsCheck };
 
   for (const [label, record] of [['A', recordA], ['B', recordB]]) {
     const { errors } = validateRun(record);
@@ -1538,10 +1587,10 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
       unexpectedToolUsesCountByRunId: { [recordA.run_id]: gate.unexpectedToolUsesCountA, [recordB.run_id]: gate.unexpectedToolUsesCountB },
       unexpectedToolsByRunId: { [recordA.run_id]: gate.unexpectedToolsA, [recordB.run_id]: gate.unexpectedToolsB },
       foreignSkillNamesByRunId: {
-        [recordA.run_id]: classifyForeignSkillUses(runA.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null),
-        [recordB.run_id]: classifyForeignSkillUses(runB.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null),
+        [recordA.run_id]: runA.observation.skill.foreignInvocations.map((u) => u.skillReference).filter((s) => s != null),
+        [recordB.run_id]: runB.observation.skill.foreignInvocations.map((u) => u.skillReference).filter((s) => s != null),
       },
-      transcriptsByRunId: { [recordA.run_id]: runA.spawnResult.rawStdout, [recordB.run_id]: runB.spawnResult.rawStdout },
+      transcriptsByRunId,
       // Derived from runB.cellOrdinal/runA.cellOrdinal -- the journal's own authoritative per-cell
       // ordinals (each stamped by runSingleCondition itself), never hardcoded 0/1 constants
       // (post-Codex-audit fix, PR #418, round 4: this producer still fabricated both ordinals even
@@ -1579,7 +1628,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
   // in this function, a refusal returns {ok:false, reason} rather than an uncaught exception
   // propagating out of cmdCalibrate/cmdSmoke, which never wrap this call in their own try/catch.
   try {
-    writeRunRecordEvidence(runKind, recordA, recordB, runA, runB, redactedTextA, redactedTextB, runsRootOverride);
+    writeRunRecordEvidence(runKind, recordA, recordB, transcriptsByRunId[recordA.run_id], transcriptsByRunId[recordB.run_id], redactedTextA, redactedTextB, runsRootOverride);
   } catch (err) {
     return { ok: false, reason: `Evidence write refused: ${err.message}` };
   }
@@ -1691,7 +1740,17 @@ async function finalizeAndWriteMatrixRecords({
   runKind, records, conditionResults, hardGateFn, privatePatternsFile, runsRootOverride = RUNS_ROOT,
   repeats, buildSidecarsFn = null, matrixComplete = true, plannedCellCount = repeats * 2,
   executedCellCount = records.length, localIntegrityByRunId = null, failFastStop = null, journal = null,
+  transcriptsByRunId,
 }) {
+  // Raw-custody rule: this function never reads raw transcript text off `conditionResults` itself
+  // (the observation contract carries no raw/legacy fields) -- the caller (cmdRun) builds this map
+  // from the journal via readJournalRawFor and passes it in complete. Validated once, here, against
+  // `records` -- identical expected id set in both the fail-fast and complete-matrix branches below
+  // (records already covers exactly "the cells this call is about" in either case), so one check
+  // upfront covers both.
+  const transcriptsCheck = validateTranscriptsByRunId(transcriptsByRunId, records.map((r) => r.run_id));
+  if (transcriptsCheck) return { ok: false, reason: transcriptsCheck };
+
   // Fail-fast (preserve rejected matrix forensics): the matrix stopped early -- `records` only
   // covers the cells that actually executed. NEVER call findMatrixCompletenessGap here (an
   // incomplete matrix is BY DESIGN in this branch, not a defect) and NEVER call `hardGateFn`
@@ -1743,9 +1802,8 @@ async function finalizeAndWriteMatrixRecords({
     const unexpectedToolUsesCountByRunId = Object.fromEntries(records.map((r) => [r.run_id, localIntegrityByRunId[r.run_id].unexpectedToolUsesCount]));
     const unexpectedToolsByRunId = Object.fromEntries(records.map((r) => [r.run_id, localIntegrityByRunId[r.run_id].unexpectedTools]));
     const foreignSkillNamesByRunId = Object.fromEntries(
-      records.map((r, i) => [r.run_id, classifyForeignSkillUses(conditionResults[i].events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null)]),
+      records.map((r, i) => [r.run_id, conditionResults[i].observation.skill.foreignInvocations.map((u) => u.skillReference).filter((s) => s != null)]),
     );
-    const transcriptsByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].spawnResult.rawStdout]));
     // Derived from conditionResults[i].cellOrdinal -- the journal's own authoritative per-cell
     // ordinal (always stamped by runSingleCondition, present regardless of whether a journal is
     // actually threaded through) -- never array index `i`. Post-Codex-audit fix (PR #418): under
@@ -1808,9 +1866,8 @@ async function finalizeAndWriteMatrixRecords({
     const unexpectedToolUsesCountByRunId = Object.fromEntries((gate.cellResults ?? []).map((c) => [c.runId, c.unexpectedToolUsesCount]));
     const unexpectedToolsByRunId = Object.fromEntries((gate.cellResults ?? []).map((c) => [c.runId, c.unexpectedTools]));
     const foreignSkillNamesByRunId = Object.fromEntries(
-      records.map((r, i) => [r.run_id, classifyForeignSkillUses(conditionResults[i].events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).map((u) => u.skillArg).filter((s) => s != null)]),
+      records.map((r, i) => [r.run_id, conditionResults[i].observation.skill.foreignInvocations.map((u) => u.skillReference).filter((s) => s != null)]),
     );
-    const transcriptsByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].spawnResult.rawStdout]));
     // Derived from conditionResults[i].cellOrdinal -- the journal's own authoritative per-cell
     // ordinal (always stamped by runSingleCondition, present regardless of whether a journal is
     // actually threaded through) -- never array index `i`. Post-Codex-audit fix (PR #418): under
@@ -1915,16 +1972,17 @@ async function finalizeAndWriteMatrixRecords({
     return { ok: false, reason: `Privacy check refused to report the evidence directory path: ${err.message}` };
   }
   try {
-    writeRunMatrixRecordEvidence(runKind, records, conditionResults, redactedTexts, runsRootOverride, sidecarTexts);
+    const rawTexts = records.map((r) => transcriptsByRunId[r.run_id]);
+    writeRunMatrixRecordEvidence(runKind, records, rawTexts, redactedTexts, runsRootOverride, sidecarTexts);
   } catch (err) {
     return { ok: false, reason: `Evidence write refused: ${err.message}` };
   }
   return { ok: true, reason: null, outDir, redactedOutDir, redactedRecords };
 }
 
-// evaluateNamedChecks moved to cell-integrity.mjs (imported above) -- same rationale as
-// isPluginBoundToSnapshot/EXPECTED_TOOL_NAMES: cellTranscriptIntegrityOk (the fail-fast hook's own
-// canonical check function) needs it too, and cell-integrity.mjs cannot import FROM cli.mjs.
+// evaluateNamedChecks moved to cell-integrity.mjs (imported above) -- cellTranscriptIntegrityOk
+// (the fail-fast hook's own canonical check function) needs it too, and cell-integrity.mjs cannot
+// import FROM cli.mjs.
 
 // Always the full `name:value` list for every check, regardless of pass/fail -- used by
 // calibrationHardGate/smokeHardGate's two-sided (A/B) reason string, which must show BOTH sides'
@@ -1954,6 +2012,8 @@ function joinChecks(checks) {
  * pluginSnapshotBindingOk) are inherently single-sided already and appear in only one list.
  */
 function calibrationHardGate(a, b, runAResult, runBResult) {
+  const obsA = runAResult.observation;
+  const obsB = runBResult.observation;
   const availabilityOkA = a.skill_available.value === false;
   const availabilityOkB = b.skill_available.value === true;
   // The no-skill arm's actual safety property is "never a CONFIRMED invocation" -- whether it
@@ -1977,76 +2037,80 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   // Deliberately still the plain, argument-only findForeignSkillUses (not the result-aware
   // classifyForeignSkillUses used by scenarioCellIntegrityOk below) -- calibration's contract is
   // untouched by this change; ANY foreign Skill call, rejected or not, still fails this check.
-  const skillSelectionOkA = findForeignSkillUses(runAResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).length === 0;
-  const skillSelectionOkB = findForeignSkillUses(runBResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).length === 0;
+  const skillSelectionOkA = obsA.skill.foreignInvocations.length === 0;
+  const skillSelectionOkB = obsB.skill.foreignInvocations.length === 0;
   // Regression coverage for a real gap an independent review pass demonstrated: neither
   // isSkillAvailable nor hasExpectedToolProfile ever inspects the init event's OWN plugins[]
   // array -- an unexpected third-party plugin loaded alongside (or instead of) the intended one
   // went completely undetected. A must load exactly zero plugins; B must load exactly one,
   // named kmp-test-runner -- no duplicates, no extras.
-  const pluginProfileOkA = hasExpectedPluginProfile(runAResult.init, TARGET_PLUGIN_NAME, false);
-  const pluginProfileOkB = hasExpectedPluginProfile(runBResult.init, TARGET_PLUGIN_NAME, true);
+  const pluginProfileOkA = obsA.skill.profileMatchesCondition;
+  const pluginProfileOkB = obsB.skill.profileMatchesCondition;
   // Regression coverage for a real evidence-contamination bypass an independent review pass
   // demonstrated: pluginProfileOk only checks the loaded plugin's NAME, never its path -- a
   // same-named "kmp-test-runner" plugin loaded from a completely unrelated directory satisfied
   // it outright, while the record still published skill_source_sha as the pinned SHA regardless.
-  // See isPluginBoundToSnapshot's own doc comment for the full rationale. Only meaningful for B
-  // (the no-skill arm never loads a plugin at all, per pluginProfileOk above).
-  const pluginSnapshotBindingOk = isPluginBoundToSnapshot(runBResult.init, runBResult.snapshotDir);
+  // See runtimes/claude-code.mjs's isPluginBoundToSnapshot doc comment for the full rationale.
+  // Only meaningful for B (the no-skill arm never loads a plugin at all, per pluginProfileOk
+  // above) -- obsB.skill.snapshotBindingMatches was computed by the adapter at normalization time
+  // against context.expectedSnapshotDir, which the caller only ever supplies for current-skill.
+  const pluginSnapshotBindingOk = obsB.skill.snapshotBindingMatches;
   // Regression coverage for a real gap an independent review pass demonstrated: findInitEvent/
   // findResultEvent/findIncompleteToolResults all either take "the first" event of a kind or only
   // check "at least one" correlation exists -- neither catches a transcript with a SECOND,
   // contradictory init+result pair appended after a legitimate first one, or two tool_use blocks
   // sharing one id satisfied by a single tool_result. See findTranscriptStructuralIssues's own
-  // doc comment for the full rationale.
-  const transcriptStructureOkA = findTranscriptStructuralIssues(runAResult.events).length === 0;
-  const transcriptStructureOkB = findTranscriptStructuralIssues(runBResult.events).length === 0;
+  // doc comment for the full rationale. Strict (never effective/timeout-tolerant) -- calibrate has
+  // no legitimate reason to ever time out mid-diagnostic-command.
+  const transcriptStructureOkA = obsA.transcript.strictStructuralIssues.length === 0;
+  const transcriptStructureOkB = obsB.transcript.strictStructuralIssues.length === 0;
   // A session that never emitted an init event at all is a fundamentally broken/incomplete
   // capture, not a legitimately-observed "skill unavailable" -- without this check, a run with
   // NO init event could still show skill_available:false for the no-skill arm (nothing to derive
   // it from) and happen to match the EXPECTED value there by coincidence, passing availabilityOk
   // for the wrong reason entirely.
-  const initOkA = runAResult.init != null;
-  const initOkB = runBResult.init != null;
+  const initOkA = obsA.session.initPresent;
+  const initOkB = obsB.session.initPresent;
   // The init event's OWN declared profile must match exactly what this harness actually
   // launches with -- proves a genuinely narrow session, not just that ONE happened to arrive.
-  const toolProfileOkA = hasExpectedToolProfile(runAResult.init, EXPECTED_TOOL_NAMES);
-  const toolProfileOkB = hasExpectedToolProfile(runBResult.init, EXPECTED_TOOL_NAMES);
+  const toolProfileOkA = obsA.session.toolProfileMatchesExpected;
+  const toolProfileOkB = obsB.session.toolProfileMatchesExpected;
   // No tool_use ANYWHERE in the transcript may name anything outside Bash/Skill -- a
   // transcript could otherwise use some other tool (e.g. Read) alongside the expected calls and
   // still pass every other check. summarizeUnexpectedToolUses (cell-integrity.mjs) is the single
   // implementation of this projection in the whole repo -- calibrationHardGate/smokeHardGate/
   // scenarioCellIntegrityOk all call it rather than each hand-rolling their own {name, event_index}
-  // mapping over findUnexpectedToolUses' raw output.
-  const unexpectedToolsA = summarizeUnexpectedToolUses(runAResult.events, EXPECTED_TOOL_NAMES);
-  const unexpectedToolsB = summarizeUnexpectedToolUses(runBResult.events, EXPECTED_TOOL_NAMES);
+  // mapping over the observation's own toolAttempts[].profileAllowed field.
+  const unexpectedToolsA = summarizeUnexpectedToolUses(obsA.toolAttempts);
+  const unexpectedToolsB = summarizeUnexpectedToolUses(obsB.toolAttempts);
   const noUnexpectedToolsOkA = unexpectedToolsA.ok;
   const noUnexpectedToolsOkB = unexpectedToolsB.ok;
   const processOkA = a.terminated === false && a.exit_code === 0;
   const processOkB = b.terminated === false && b.exit_code === 0;
-  // subtype==='success' (not just is_error===false) -- a session cut off by e.g. the budget cap
-  // reports a distinct result.subtype (confirmed: 'error_max_budget_usd') that is NOT
-  // necessarily paired with is_error:true, so is_error alone doesn't prove the session ran to a
+  // resultSubtype==='success' (not just isError===false) -- a session cut off by e.g. the budget
+  // cap reports a distinct resultSubtype (confirmed: 'error_max_budget_usd') that is NOT
+  // necessarily paired with isError:true, so isError alone doesn't prove the session ran to a
   // genuine, uninterrupted completion.
-  const resultOkA = runAResult.result?.subtype === 'success' && runAResult.result?.is_error === false;
-  const resultOkB = runBResult.result?.subtype === 'success' && runBResult.result?.is_error === false;
-  const hookAccountingOkA = runAResult.hookStats.everyCallHooked === true;
-  const hookAccountingOkB = runBResult.hookStats.everyCallHooked === true;
+  const resultOkA = obsA.terminal.resultSubtype === 'success' && obsA.terminal.isError === false;
+  const resultOkB = obsB.terminal.resultSubtype === 'success' && obsB.terminal.isError === false;
+  const hookAccountingOkA = obsA.hookStats.everyCallHooked === true;
+  const hookAccountingOkB = obsB.hookStats.everyCallHooked === true;
   // Regression coverage for a real gap an independent review pass demonstrated: findSkillInvocation
   // correctly reports confirmed:false for a Skill attempt with NO correlated tool_result at all
   // (transcript cut short before a result arrived), but the gate previously treated
   // attempted:true/invoked:false uniformly as a "clean" no-skill shape -- a dangling attempt is an
   // INCOMPLETE capture, not a demonstrated Unknown-skill rejection, and must not be silently
-  // accepted as equivalent. Scans every tool_use (Bash included -- calibration has no per-command
-  // result check of its own, unlike smoke's exactCommandsOk).
-  const toolResultsCompleteOkA = findIncompleteToolResults(runAResult.events).length === 0;
-  const toolResultsCompleteOkB = findIncompleteToolResults(runBResult.events).length === 0;
+  // accepted as equivalent. Scans every tool attempt (Bash included -- calibration has no
+  // per-command result check of its own, unlike smoke's exactCommandsOk). Strict, same rationale
+  // as transcriptStructureOk above.
+  const toolResultsCompleteOkA = obsA.transcript.strictIncompleteToolResults.length === 0;
+  const toolResultsCompleteOkB = obsB.transcript.strictIncompleteToolResults.length === 0;
   // Only smokeHardGate had this check until now -- a malformed/truncated JSONL line could hide
   // exactly a Skill tool_use or its result, artificially producing attempted:false for A, which
   // the relaxed no-skill contract now legitimately tolerates. Calibration needs the same
   // protection smoke already has.
-  const cleanTranscriptOkA = runAResult.malformedLines.length === 0;
-  const cleanTranscriptOkB = runBResult.malformedLines.length === 0;
+  const cleanTranscriptOkA = obsA.transcript.malformedLineCount === 0;
+  const cleanTranscriptOkB = obsB.transcript.malformedLineCount === 0;
   // Review-round-2 fix (correction 4): a missing/malformed init.skills[] previously let
   // buildRunRecord silently report a "valid" {count:0, ...} ambient_skill_profile even though the
   // underlying data was genuinely unknown, not a real, verified empty ambient set -- calibration/
@@ -2055,13 +2119,11 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   // references in skills[] (never merely zero confirmed invocations), B may show exactly one.
   // Calibration/smoke's OWN skillSelectionOk (zero-tolerance for any foreign call, confirmed or
   // not) is deliberately left completely untouched -- this only ADDS the two new checks below, it
-  // never relaxes the existing ones.
-  const ambientProfileA = computeAmbientSkillProfile(runAResult.init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: false });
-  const ambientProfileB = computeAmbientSkillProfile(runBResult.init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: true });
-  const ambientSkillProfileOkA = ambientProfileA.structurallyWellFormed;
-  const ambientSkillProfileOkB = ambientProfileB.structurallyWellFormed;
-  const targetSkillAmbientIdentityOkA = ambientProfileA.targetIdentityOk;
-  const targetSkillAmbientIdentityOkB = ambientProfileB.targetIdentityOk;
+  // never relaxes the existing ones. Already computed once, by the adapter, at normalization time.
+  const ambientSkillProfileOkA = obsA.skill.ambient.structurallyWellFormed;
+  const ambientSkillProfileOkB = obsB.skill.ambient.structurallyWellFormed;
+  const targetSkillAmbientIdentityOkA = obsA.skill.ambient.targetIdentityOk;
+  const targetSkillAmbientIdentityOkB = obsB.skill.ambient.targetIdentityOk;
 
   const checksA = [
     ['availabilityOk', availabilityOkA], ['noSkillSafetyOk', noSkillSafetyOk],
@@ -2088,7 +2150,7 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   const ok = evalA.ok && evalB.ok;
   return {
     ok,
-    reason: ok ? null : `calibration hard gate failed -- A:{${joinChecks(checksA)}} B:{${joinChecks(checksB)}} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${runAResult.result?.subtype},result_is_error:${runAResult.result?.is_error},everyCallHooked:${runAResult.hookStats.everyCallHooked},tools:${JSON.stringify(runAResult.init?.tools)}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${runBResult.result?.subtype},result_is_error:${runBResult.result?.is_error},everyCallHooked:${runBResult.hookStats.everyCallHooked},tools:${JSON.stringify(runBResult.init?.tools)}})`,
+    reason: ok ? null : `calibration hard gate failed -- A:{${joinChecks(checksA)}} B:{${joinChecks(checksB)}} (A:{available:${a.skill_available.value},attempted:${a.skill_invocation_attempted.value},invoked:${a.skill_invoked.value},terminated:${a.terminated},exit_code:${a.exit_code},result_subtype:${obsA.terminal.resultSubtype},result_is_error:${obsA.terminal.isError},everyCallHooked:${obsA.hookStats.everyCallHooked},toolProfileMatchesExpected:${obsA.session.toolProfileMatchesExpected}} B:{available:${b.skill_available.value},attempted:${b.skill_invocation_attempted.value},invoked:${b.skill_invoked.value},terminated:${b.terminated},exit_code:${b.exit_code},result_subtype:${obsB.terminal.resultSubtype},result_is_error:${obsB.terminal.isError},everyCallHooked:${obsB.hookStats.everyCallHooked},toolProfileMatchesExpected:${obsB.session.toolProfileMatchesExpected}})`,
     failedChecksA: evalA.failedChecks,
     failedChecksB: evalB.failedChecks,
     unexpectedToolUsesCountA: unexpectedToolsA.count,
@@ -2188,15 +2250,15 @@ function scenarioCellIntegrityOk(record, conditionResult, { sharedAmbientNames =
   // Ambient-skill-profile fix: a real live run's no-skill cells were wrongly rejected for
   // confirming Claude Code's own bundled "run" skill -- present in init.skills[] regardless of
   // --plugin-dir (see isSkillAvailable's doc comment, stream-parser.mjs), not genuine third-party
-  // contamination. A CONFIRMED foreign call is now tolerated ONLY when its exact skillArg was
+  // contamination. A CONFIRMED foreign call is now tolerated ONLY when its exact skillReference was
   // advertised in `sharedAmbientNames` -- the matrix-wide consensus ambient profile scenarioHardGate
-  // computes across every cell (never a hardcoded "run" special-case; a malformed/missing skillArg,
-  // or one absent from that set, still fails closed exactly as before). This is exactly why
-  // skillSelectionOk is EXCLUDED from cell-integrity.mjs's own canonical evaluation (it needs
-  // `sharedAmbientNames`, a matrix-wide value that doesn't exist mid-matrix during fail-fast) and
-  // must still be computed here, where the real value is available.
+  // computes across every cell (never a hardcoded "run" special-case; a malformed/missing
+  // skillReference, or one absent from that set, still fails closed exactly as before). This is
+  // exactly why skillSelectionOk is EXCLUDED from cell-integrity.mjs's own canonical evaluation (it
+  // needs `sharedAmbientNames`, a matrix-wide value that doesn't exist mid-matrix during fail-fast)
+  // and must still be computed here, where the real value is available.
   const confirmedForeignSkillUses = shared.foreignSkillUses.filter((u) => u.confirmed === true);
-  const skillSelectionOk = confirmedForeignSkillUses.every((u) => u.skillArg != null && sharedAmbientNames.has(u.skillArg));
+  const skillSelectionOk = confirmedForeignSkillUses.every((u) => u.skillReference != null && sharedAmbientNames.has(u.skillReference));
   const junitEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'ambiguous_junit_evidence');
   const parallelEvidenceOk = !(record.errors ?? []).some((e) => e.code === 'malformed_parallel_evidence');
   // The identical treatment as parallelEvidenceOk above, for the changed-subcommand sibling.
@@ -2289,9 +2351,13 @@ function scenarioHardGate(records, conditionResults) {
       ambientProfileMatrixOk: false,
     };
   }
-  const ambientProfiles = records.map((r, i) => computeAmbientSkillProfile(conditionResults[i].init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: r.condition === 'current-skill' }));
-  const allAmbientProfilesOk = ambientProfiles.every((p) => p.ok);
-  const canonicalKeys = ambientProfiles.map((p) => canonicalAmbientSkillNamesKey(p.names));
+  // Already computed once, by the adapter, at normalization time (expectTargetPresent baked in
+  // per-cell from that cell's own condition) -- no recomputation needed, same rationale as
+  // calibrationHardGate/smokeHardGate's identical ambientSkillProfileOk/targetSkillAmbientIdentityOk
+  // reuse.
+  const ambientProfiles = conditionResults.map((cr) => cr.observation.skill.ambient);
+  const allAmbientProfilesOk = ambientProfiles.every((p) => p.structurallyWellFormed && p.targetIdentityOk);
+  const canonicalKeys = ambientProfiles.map((p) => canonicalNamesKey(p.names));
   const ambientProfileMatrixOk = allAmbientProfilesOk && new Set(canonicalKeys).size <= 1;
   const sharedAmbientNames = ambientProfileMatrixOk ? ambientProfiles[0].names : new Set();
 
@@ -2395,12 +2461,6 @@ async function cmdCalibrate(args) {
     const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
     const common = { runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey };
 
-    // Read-back adoption (judgment call, §4/§5): each cell's promoted raw bytes are sourced from
-    // the journal's own already-durable copy, keyed by cellOrdinal -- never the in-memory value,
-    // never array position.
-    adoptJournalRaw(runB, journal);
-    if (pairComplete) adoptJournalRaw(runA, journal);
-
     // Calibration's job is narrowly to prove invocation MECHANICS under an explicit-invocation
     // prompt -- see calibrationHardGate's own doc comment for why this is a named function.
     let result;
@@ -2417,17 +2477,24 @@ async function cmdCalibrate(args) {
       // fail-fast branch.
       const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
       runIdToCellOrdinal = { [recordB.run_id]: runB.cellOrdinal };
+      // Read-back (judgment call, §4/§5): each cell's promoted raw bytes are sourced from the
+      // journal's own already-durable copy, keyed by cellOrdinal -- never the in-memory value,
+      // never array position. finalizeAndWriteRecords requires this map complete and exact.
+      const transcriptsByRunId = { [recordB.run_id]: readJournalRawFor(runB, journal) };
       result = await finalizeAndWriteRecords({
         runKind: 'calibration', recordA: null, recordB, runA: null, runB, privatePatternsFile,
         hardGateFn: calibrationHardGate, matrixComplete: false, plannedCellCount, executedCellCount, failFastStop, journal,
+        transcriptsByRunId,
       });
     } else {
       const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
       const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
       runIdToCellOrdinal = { [recordB.run_id]: runB.cellOrdinal, [recordA.run_id]: runA.cellOrdinal };
+      const transcriptsByRunId = { [recordB.run_id]: readJournalRawFor(runB, journal), [recordA.run_id]: readJournalRawFor(runA, journal) };
       result = await finalizeAndWriteRecords({
         runKind: 'calibration', recordA, recordB, runA, runB, privatePatternsFile,
         hardGateFn: calibrationHardGate, journal,
+        transcriptsByRunId,
       });
     }
     if (!result.ok) {
@@ -2480,6 +2547,8 @@ async function cmdCalibrate(args) {
  * zero pass/fail behavior; see calibrationHardGate's identical rationale.
  */
 function smokeHardGate(a, b, runAResult, runBResult) {
+  const obsA = runAResult.observation;
+  const obsB = runBResult.observation;
   const availabilityOkA = a.skill_available.value === false;
   const availabilityOkB = b.skill_available.value === true;
   // Post-#385 review finding, mirrors scenarioCellIntegrityOk's identical new check and
@@ -2492,74 +2561,76 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   // See calibrationHardGate's identical check and doc comment -- noUnexpectedToolsOk only checks
   // the tool NAME (Bash/Skill), never a Skill call's own `input.skill` argument, so this closes
   // the same gap here: neither condition may contain a Skill call targeting anything other than
-  // kmp-test-runner. Deliberately still the plain, argument-only findForeignSkillUses -- smoke's
-  // contract is untouched by this change.
-  const skillSelectionOkA = findForeignSkillUses(runAResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).length === 0;
-  const skillSelectionOkB = findForeignSkillUses(runBResult.events, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME).length === 0;
+  // kmp-test-runner. Deliberately still the plain, argument-only foreignInvocations projection --
+  // smoke's contract is untouched by this change.
+  const skillSelectionOkA = obsA.skill.foreignInvocations.length === 0;
+  const skillSelectionOkB = obsB.skill.foreignInvocations.length === 0;
   // See calibrationHardGate's identical check and doc comment -- neither isSkillAvailable nor
   // hasExpectedToolProfile ever inspects the init event's own plugins[] array.
-  const pluginProfileOkA = hasExpectedPluginProfile(runAResult.init, TARGET_PLUGIN_NAME, false);
-  const pluginProfileOkB = hasExpectedPluginProfile(runBResult.init, TARGET_PLUGIN_NAME, true);
+  const pluginProfileOkA = obsA.skill.profileMatchesCondition;
+  const pluginProfileOkB = obsB.skill.profileMatchesCondition;
   // See calibrationHardGate's identical check and doc comment -- pluginProfileOk never checks
   // the loaded plugin's own path, only its name/count.
-  const pluginSnapshotBindingOk = isPluginBoundToSnapshot(runBResult.init, runBResult.snapshotDir);
+  const pluginSnapshotBindingOk = obsB.skill.snapshotBindingMatches;
   // See calibrationHardGate's identical check and doc comment -- neither findInitEvent/
   // findResultEvent (take "the first" of a kind) nor findIncompleteToolResults (only checks "at
   // least one" correlation) catch a second contradictory init+result pair, or duplicated
-  // tool_use ids satisfied by a single tool_result.
-  const transcriptStructureOkA = findTranscriptStructuralIssues(runAResult.events).length === 0;
-  const transcriptStructureOkB = findTranscriptStructuralIssues(runBResult.events).length === 0;
+  // tool_use ids satisfied by a single tool_result. Strict, same rationale as calibrate.
+  const transcriptStructureOkA = obsA.transcript.strictStructuralIssues.length === 0;
+  const transcriptStructureOkB = obsB.transcript.strictStructuralIssues.length === 0;
   // See calibrationHardGate's identical check -- a session with no init event at all is a
   // broken/incomplete capture, not legitimately-observed data.
-  const initOkA = runAResult.init != null;
-  const initOkB = runBResult.init != null;
+  const initOkA = obsA.session.initPresent;
+  const initOkB = obsB.session.initPresent;
   // See calibrationHardGate's identical checks -- the init event's OWN declared profile must
   // match what this harness actually launches with, and no tool_use anywhere in the transcript
   // may name anything outside Bash/Skill.
-  const toolProfileOkA = hasExpectedToolProfile(runAResult.init, EXPECTED_TOOL_NAMES);
-  const toolProfileOkB = hasExpectedToolProfile(runBResult.init, EXPECTED_TOOL_NAMES);
+  const toolProfileOkA = obsA.session.toolProfileMatchesExpected;
+  const toolProfileOkB = obsB.session.toolProfileMatchesExpected;
   // summarizeUnexpectedToolUses (cell-integrity.mjs) -- see calibrationHardGate's identical check
   // and doc comment; the single implementation of this projection in the whole repo.
-  const unexpectedToolsA = summarizeUnexpectedToolUses(runAResult.events, EXPECTED_TOOL_NAMES);
-  const unexpectedToolsB = summarizeUnexpectedToolUses(runBResult.events, EXPECTED_TOOL_NAMES);
+  const unexpectedToolsA = summarizeUnexpectedToolUses(obsA.toolAttempts);
+  const unexpectedToolsB = summarizeUnexpectedToolUses(obsB.toolAttempts);
   const noUnexpectedToolsOkA = unexpectedToolsA.ok;
   const noUnexpectedToolsOkB = unexpectedToolsB.ok;
   const processOkA = a.terminated === false && a.exit_code === 0;
   const processOkB = b.terminated === false && b.exit_code === 0;
-  // subtype==='success' (not just is_error===false) -- see calibrationHardGate's identical
-  // check; a budget-cap-truncated session is not a genuine completion even when is_error is
+  // resultSubtype==='success' (not just isError===false) -- see calibrationHardGate's identical
+  // check; a budget-cap-truncated session is not a genuine completion even when isError is
   // false for that particular subtype.
-  const resultOkA = runAResult.result?.subtype === 'success' && runAResult.result?.is_error === false;
-  const resultOkB = runBResult.result?.subtype === 'success' && runBResult.result?.is_error === false;
-  const hookAccountingOkA = runAResult.hookStats.everyCallHooked === true;
-  const hookAccountingOkB = runBResult.hookStats.everyCallHooked === true;
+  const resultOkA = obsA.terminal.resultSubtype === 'success' && obsA.terminal.isError === false;
+  const resultOkB = obsB.terminal.resultSubtype === 'success' && obsB.terminal.isError === false;
+  const hookAccountingOkA = obsA.hookStats.everyCallHooked === true;
+  const hookAccountingOkB = obsB.hookStats.everyCallHooked === true;
   // hook_call_count>=1 proves the agent actually tried real commands; hook_deny_count===0 proves
   // every command it tried was inside the approved grammar; hookAllowCount matching
   // hook_call_count proves every decision was explicitly "allow", not merely "not deny" (a
   // hook_response with unparseable `output` JSON produces neither an allow nor a deny decision --
   // hook_deny_count===0 alone would silently accept that).
-  const realWorkOkA = a.hook_call_count >= 1 && a.hook_deny_count === 0 && runAResult.hookStats.hookAllowCount === a.hook_call_count;
-  const realWorkOkB = b.hook_call_count >= 1 && b.hook_deny_count === 0 && runBResult.hookStats.hookAllowCount === b.hook_call_count;
+  const realWorkOkA = a.hook_call_count >= 1 && a.hook_deny_count === 0 && obsA.hookStats.hookAllowCount === a.hook_call_count;
+  const realWorkOkB = b.hook_call_count >= 1 && b.hook_deny_count === 0 && obsB.hookStats.hookAllowCount === b.hook_call_count;
   // Requires the EXACT expected multiset (both commands, --json included, exactly once each, no
-  // extras) -- see verifyExactCommandsSucceeded's own doc comment.
-  const exactCommandsOkA = verifyExactCommandsSucceeded(runAResult.bashResults, SMOKE_EXPECTED_COMMANDS);
-  const exactCommandsOkB = verifyExactCommandsSucceeded(runBResult.bashResults, SMOKE_EXPECTED_COMMANDS);
-  const cleanTranscriptOkA = runAResult.malformedLines.length === 0;
-  const cleanTranscriptOkB = runBResult.malformedLines.length === 0;
+  // extras) -- see verifyExactCommandsSucceeded's own doc comment. Reconstructs the legacy
+  // {command, resultFound, resultIsError} shape it expects from the canonical toolAttempts[].
+  const bashResultsA = selectShellAttempts(obsA.toolAttempts).map((att) => ({ command: att.command, resultFound: att.result.found, resultIsError: att.result.isError }));
+  const bashResultsB = selectShellAttempts(obsB.toolAttempts).map((att) => ({ command: att.command, resultFound: att.result.found, resultIsError: att.result.isError }));
+  const exactCommandsOkA = verifyExactCommandsSucceeded(bashResultsA, SMOKE_EXPECTED_COMMANDS);
+  const exactCommandsOkB = verifyExactCommandsSucceeded(bashResultsB, SMOKE_EXPECTED_COMMANDS);
+  const cleanTranscriptOkA = obsA.transcript.malformedLineCount === 0;
+  const cleanTranscriptOkB = obsB.transcript.malformedLineCount === 0;
   // See calibrationHardGate's identical check and doc comment -- a dangling tool_use with no
-  // correlated tool_result is an incomplete capture, not a demonstrated outcome.
-  const toolResultsCompleteOkA = findIncompleteToolResults(runAResult.events).length === 0;
-  const toolResultsCompleteOkB = findIncompleteToolResults(runBResult.events).length === 0;
+  // correlated tool_result is an incomplete capture, not a demonstrated outcome. Strict.
+  const toolResultsCompleteOkA = obsA.transcript.strictIncompleteToolResults.length === 0;
+  const toolResultsCompleteOkB = obsB.transcript.strictIncompleteToolResults.length === 0;
   // See calibrationHardGate's identical check and doc comment (review-round-2 fix, correction 4) --
   // a missing/malformed init.skills[] must not silently pass as a "verified empty" ambient
   // profile, and A's skills[] must show zero target references (condition-aware, correction 1).
-  // smoke's own skillSelectionOk (zero-tolerance) is untouched.
-  const ambientProfileA = computeAmbientSkillProfile(runAResult.init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: false });
-  const ambientProfileB = computeAmbientSkillProfile(runBResult.init, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME, { expectTargetPresent: true });
-  const ambientSkillProfileOkA = ambientProfileA.structurallyWellFormed;
-  const ambientSkillProfileOkB = ambientProfileB.structurallyWellFormed;
-  const targetSkillAmbientIdentityOkA = ambientProfileA.targetIdentityOk;
-  const targetSkillAmbientIdentityOkB = ambientProfileB.targetIdentityOk;
+  // smoke's own skillSelectionOk (zero-tolerance) is untouched. Already computed once, by the
+  // adapter, at normalization time.
+  const ambientSkillProfileOkA = obsA.skill.ambient.structurallyWellFormed;
+  const ambientSkillProfileOkB = obsB.skill.ambient.structurallyWellFormed;
+  const targetSkillAmbientIdentityOkA = obsA.skill.ambient.targetIdentityOk;
+  const targetSkillAmbientIdentityOkB = obsB.skill.ambient.targetIdentityOk;
 
   const checksA = [
     ['availabilityOk', availabilityOkA], ['noSkillSafetyOk', noSkillSafetyOkA],
@@ -2588,7 +2659,7 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   const ok = evalA.ok && evalB.ok;
   return {
     ok,
-    reason: ok ? null : `smoke hard gate failed -- A:{${joinChecks(checksA)}} B:{${joinChecks(checksB)}} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${runAResult.hookStats.hookAllowCount} result_subtype:${runAResult.result?.subtype} tools:${JSON.stringify(runAResult.init?.tools)}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${runBResult.hookStats.hookAllowCount} result_subtype:${runBResult.result?.subtype} tools:${JSON.stringify(runBResult.init?.tools)})`,
+    reason: ok ? null : `smoke hard gate failed -- A:{${joinChecks(checksA)}} B:{${joinChecks(checksB)}} (A hook_call_count:${a.hook_call_count} hook_deny_count:${a.hook_deny_count} hookAllowCount:${obsA.hookStats.hookAllowCount} result_subtype:${obsA.terminal.resultSubtype} toolProfileMatchesExpected:${obsA.session.toolProfileMatchesExpected}, B hook_call_count:${b.hook_call_count} hook_deny_count:${b.hook_deny_count} hookAllowCount:${obsB.hookStats.hookAllowCount} result_subtype:${obsB.terminal.resultSubtype} toolProfileMatchesExpected:${obsB.session.toolProfileMatchesExpected})`,
     failedChecksA: evalA.failedChecks,
     failedChecksB: evalB.failedChecks,
     unexpectedToolUsesCountA: unexpectedToolsA.count,
@@ -2685,9 +2756,6 @@ async function cmdSmoke(args) {
     const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
     const common = { runKind: 'smoke', scenarioId, skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, projectUrl, family: 'test-only', modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey };
 
-    adoptJournalRaw(runB, journal);
-    if (pairComplete) adoptJournalRaw(runA, journal);
-
     // Smoke's gate requires EQUIVALENT REAL WORK in both arms -- not just skill availability.
     // Every sub-check is reported by name in the failure reason (not just an aggregate boolean)
     // specifically so a negative-fixture test can assert WHICH check failed, proving the fixture
@@ -2703,17 +2771,23 @@ async function cmdSmoke(args) {
       // B already failed locally, A was never spawned.
       const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
       runIdToCellOrdinal = { [recordB.run_id]: runB.cellOrdinal };
+      // See cmdCalibrate's identical rationale: read-back sourced from the journal's own
+      // already-durable copy, keyed by cellOrdinal -- never the in-memory value.
+      const transcriptsByRunId = { [recordB.run_id]: readJournalRawFor(runB, journal) };
       result = await finalizeAndWriteRecords({
         runKind: 'smoke', recordA: null, recordB, runA: null, runB, privatePatternsFile,
         hardGateFn: smokeHardGate, matrixComplete: false, plannedCellCount, executedCellCount, failFastStop, journal,
+        transcriptsByRunId,
       });
     } else {
       const recordA = buildRunRecord({ conditionResult: runA, condition: 'no-skill', ...common });
       const recordB = buildRunRecord({ conditionResult: runB, condition: 'current-skill', ...common });
       runIdToCellOrdinal = { [recordB.run_id]: runB.cellOrdinal, [recordA.run_id]: runA.cellOrdinal };
+      const transcriptsByRunId = { [recordB.run_id]: readJournalRawFor(runB, journal), [recordA.run_id]: readJournalRawFor(runA, journal) };
       result = await finalizeAndWriteRecords({
         runKind: 'smoke', recordA, recordB, runA, runB, privatePatternsFile,
         hardGateFn: smokeHardGate, journal,
+        transcriptsByRunId,
       });
     }
     if (!result.ok) {
@@ -3052,10 +3126,12 @@ async function cmdRun(args) {
     // simpler than conditionally skipping it) -- only actually consumed when the matrix is
     // incomplete.
     const localIntegrityByRunId = {};
+    // transcriptsByRunId: parallel to records, built incrementally as each record's run_id becomes
+    // known -- finalizeAndWriteMatrixRecords requires this map complete and exact, read-back
+    // sourced from the journal's own already-durable copy (keyed by cellOrdinal, never array
+    // position), never from conditionResult itself (the observation contract carries no raw field).
+    const transcriptsByRunId = {};
     for (const cell of matrix.cellResults) {
-      // Read-back adoption (judgment call, §4/§5): sourced from the journal's own already-durable
-      // copy, keyed by cellOrdinal -- never array position.
-      adoptJournalRaw(cell.conditionResult, journal);
       const gradeResult = gradeScenarioCondition(cell.conditionResult, scenario);
       const record = buildRunRecord({
         conditionResult: cell.conditionResult, condition: cell.conditionResult.condition,
@@ -3071,6 +3147,7 @@ async function cmdRun(args) {
       conditionResults.push(cell.conditionResult);
       terminalAuthoritativeEventIndices.push(gradeResult.terminalAuthoritativeEventIndex);
       localIntegrityByRunId[record.run_id] = cell.localIntegrity;
+      transcriptsByRunId[record.run_id] = readJournalRawFor(cell.conditionResult, journal);
     }
     if (!matrix.matrixComplete) {
       console.error(`RUN: fail-fast stopped the matrix early at order_index ${matrix.failFastStop.orderIndex} (repetition ${matrix.failFastStop.repetitionIndex}, condition ${matrix.failFastStop.condition}) -- ${matrix.executedCellCount}/${matrix.plannedCellCount} cells executed, remaining cells never spawned`);
@@ -3086,7 +3163,6 @@ async function cmdRun(args) {
         const builtSidecar = buildAcceptedRunAuditSidecar({
           record, conditionResult: condResults[i],
           terminalAuthoritativeEventIndex: terminalAuthoritativeEventIndices[i],
-          targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
         });
         const sidecarResult = finalizeAcceptedRunAuditSidecar(builtSidecar, { privatePatternsFile });
         if (!sidecarResult.ok) {
@@ -3114,7 +3190,7 @@ async function cmdRun(args) {
       privatePatternsFile, repeats, buildSidecarsFn: buildSidecars,
       matrixComplete: matrix.matrixComplete, plannedCellCount: matrix.plannedCellCount,
       executedCellCount: matrix.executedCellCount, localIntegrityByRunId, failFastStop: matrix.failFastStop,
-      journal,
+      journal, transcriptsByRunId,
     });
     if (!result.ok) {
       if (result.rejectionId == null) {
@@ -3428,4 +3504,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, cmdCorpusValidate, cmdScopeInit, cmdAggregate, cmdAnalyze, cmdValidate, validateRunRecordFile, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, isPluginBoundToSnapshot, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA, adoptJournalRaw, journalRawExactlyMatchesRejectionManifest, discardJournalIfRedundant, incidentPhaseOf, reasonTextFor, buildStderrByRunId };
+export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, cmdCorpusValidate, cmdScopeInit, cmdAggregate, cmdAnalyze, cmdValidate, validateRunRecordFile, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, validateTranscriptsByRunId, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA, readJournalRawFor, journalRawExactlyMatchesRejectionManifest, discardJournalIfRedundant, incidentPhaseOf, reasonTextFor, buildStderrByRunId };

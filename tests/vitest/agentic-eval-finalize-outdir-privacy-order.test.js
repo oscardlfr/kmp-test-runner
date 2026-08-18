@@ -49,17 +49,33 @@ describe('finalizeAndWriteRecords -- evidence-directory-path privacy check runs 
     const { finalizeAndWriteRecords, buildRunRecord } = await import('../../tools/agentic-eval/cli.mjs');
     const { computePolicySha256 } = await import('../../tools/agentic-eval/policy-config.mjs');
 
+    // Matches the canonical minimal condition-observation-v1 shape (see e.g.
+    // agentic-eval-graders.test.js's own baseObservation helper) -- buildRunRecord now reads
+    // conditionResult.observation exclusively, never a raw provider event.
+    function fakeObservation() {
+      return {
+        schema: 1,
+        runtime: { id: 'claude-code', protocolVersion: 1 },
+        process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+        terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+        toolAttempts: [],
+        skill: {
+          available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+          targetInvocation: null, foreignInvocations: [],
+          ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        },
+        hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+        byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+        timing: { receiptNsByEventIndex: new Map() },
+      };
+    }
     function fakeConditionResult() {
       return {
-        init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-        result: { subtype: 'success', is_error: false },
-        invocation: null,
-        hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
-        byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+        observation: fakeObservation(),
         startedAt: new Date('2026-01-01T00:00:00.000Z'),
         endedAt: new Date('2026-01-01T00:00:01.000Z'),
-        spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
-        events: [],
       };
     }
 
@@ -87,9 +103,10 @@ describe('finalizeAndWriteRecords -- evidence-directory-path privacy check runs 
       let hardGateCalled = false;
       const result = await finalizeAndWriteRecords({
         runKind: 'calibration', recordA, recordB,
-        runA: { spawnResult: { rawStdout: '' } },
-        runB: { spawnResult: { rawStdout: '' } },
+        runA: { observation: fakeObservation() },
+        runB: { observation: fakeObservation() },
         hardGateFn: () => { hardGateCalled = true; return { ok: true, reason: null }; },
+        transcriptsByRunId: { [recordA.run_id]: '', [recordB.run_id]: '' },
       });
 
       expect(hardGateCalled).toBe(true);

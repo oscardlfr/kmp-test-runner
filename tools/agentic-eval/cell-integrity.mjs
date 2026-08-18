@@ -6,60 +6,27 @@
 // and the final whole-matrix gate (cli.mjs's scenarioCellIntegrityOk/scenarioHardGate). Exists so
 // there is exactly ONE place that (a) decides which checks are safe to evaluate on a single,
 // possibly-still-executing cell -- no matrix-wide consensus, no already-built run record, no
-// grading result needed -- and (b) turns findUnexpectedToolUses' raw output into the
-// {count, tools} structural detail every rejection diagnostic and every hard gate consumes (see
+// grading result needed -- and (b) turns an unexpected tool attempt into the {count, tools}
+// structural detail every rejection diagnostic and every hard gate consumes (see
 // summarizeUnexpectedToolUses below) -- fixing the gap that made a real 2026-08 canary rejection's
 // root cause (which tool, at which transcript index) permanently unrecoverable: only the boolean
 // `noUnexpectedToolsOk:false` ever survived past this evaluation.
 //
-// Deliberately self-contained (only node:fs + stream-parser.mjs) so both cli.mjs and
+// Reads exclusively from `conditionResult.observation` (the runtime-adapter-normalized
+// condition-observation-v1 contract) and `conditionResult.dispatchAccounting` -- never a raw
+// provider event, never a re-parse. isPluginBoundToSnapshot and the literal Claude tools profile
+// (EXPECTED_TOOL_NAMES) moved to runtimes/claude-code.mjs: both are genuinely Claude-specific facts
+// (a real plugin.json path on disk; the exact --tools value this harness launches Claude with),
+// already folded into the observation's own skill.snapshotBindingMatches/session
+// .toolProfileMatchesExpected/toolAttempts[].profileAllowed fields -- this module no longer needs
+// its own copies.
+//
+// Deliberately self-contained (no imports beyond this doc comment describes) so both cli.mjs and
 // matrix-runner.mjs can import it without creating a cycle -- matrix-runner.mjs's own header
 // comment explains why it never imports FROM cli.mjs.
-import { statSync } from 'node:fs';
-import {
-  isSkillAvailable, findUnexpectedToolUses, hasExpectedToolProfile, hasExpectedPluginProfile,
-  classifyForeignSkillUses, findTranscriptStructuralIssuesToleratingTimeout,
-  findIncompleteToolResultsToleratingTimeout, computeAmbientSkillProfile,
-  extractTokenUsage, findAllToolUses,
-} from './stream-parser.mjs';
-
-// The ONLY tools either condition's own --tools argv value ever grants -- moved here verbatim from
-// cli.mjs (was a private module-level const there); cli.mjs now imports it FROM here so the
-// allowlist can never independently drift between the two modules that need it.
-export const EXPECTED_TOOL_NAMES = new Set(['Bash', 'Skill']);
 
 /**
- * Moved here verbatim from cli.mjs (was a private, unexported function) -- proves the loaded
- * plugin's own reported path is the SAME physical directory as this run's materialized skill
- * snapshot, not merely a same-named plugin loaded from somewhere else. Compared via filesystem
- * identity (device+inode from statSync), never a string path comparison -- NTFS supports
- * per-directory case sensitivity, so a case-folded compare could wrongly treat two genuinely
- * distinct directories as the same snapshot. Fails closed on any unresolvable path. Deliberately
- * returns ONLY a boolean -- the actual paths (which could themselves be privacy-sensitive, e.g.
- * containing the real OS username) are never included in the return value.
- */
-export function isPluginBoundToSnapshot(initEvent, expectedSnapshotDir) {
-  if (initEvent == null || !Array.isArray(initEvent.plugins) || initEvent.plugins.length !== 1) return false;
-  const reportedPath = initEvent.plugins[0]?.path;
-  if (typeof reportedPath !== 'string' || reportedPath.length === 0) return false;
-  if (typeof expectedSnapshotDir !== 'string' || expectedSnapshotDir.length === 0) return false;
-  let reportedStat;
-  let expectedStat;
-  try {
-    reportedStat = statSync(reportedPath, { bigint: true });
-  } catch {
-    return false; // reported path doesn't exist / unresolvable -- fail closed, never assume a match
-  }
-  try {
-    expectedStat = statSync(expectedSnapshotDir, { bigint: true });
-  } catch {
-    return false; // the harness's OWN expected snapshot vanished -- also fail closed
-  }
-  return reportedStat.dev === expectedStat.dev && reportedStat.ino === expectedStat.ino;
-}
-
-/**
- * Moved here verbatim from cli.mjs (was a private function) -- the single source of truth for
+ * Moved here verbatim from cli.mjs (was a private, unexported function) -- the single source of truth for
  * deriving {ok, reason, failedChecks} from ONE shared ordered list of named [name, boolean]
  * checks, so a hand-built failedChecks array can never drift out of sync with a hand-written
  * reason string.
@@ -74,55 +41,56 @@ export function evaluateNamedChecks(checks) {
 }
 
 /**
- * The single implementation, in this whole repo, of "what does an unexpected tool_use look like,
- * structurally" -- both cellTranscriptIntegrityOk (below, for the scenario/matrix path) and
+ * The single implementation, in this whole repo, of "what does an unexpected tool attempt look
+ * like, structurally" -- both cellTranscriptIntegrityOk (below, for the scenario/matrix path) and
  * cli.mjs's calibrationHardGate/smokeHardGate (for the pair path) call this rather than each
- * independently calling findUnexpectedToolUses and hand-rolling their own projection. The explicit
- * destructure-and-rebuild (never a raw passthrough of findUnexpectedToolUses' own output) is
- * load-bearing: it structurally guarantees `id`/`receiptNs` can never reach any diagnostic tier,
- * even if a future caller passed the raw array straight through.
+ * independently filtering `toolAttempts` and hand-rolling their own projection. `profileAllowed`
+ * is the adapter's own per-attempt fact (computed once, at normalization time, against the exact
+ * tool profile this harness actually launched with) -- never re-derived here against a
+ * caller-supplied allowlist, so it can never independently drift from what the observation itself
+ * already proved.
+ * @param {Array} toolAttempts - observation.toolAttempts
  * @returns {{ok: boolean, count: number, tools: Array<{name: string, event_index: number}>}}
  */
-export function summarizeUnexpectedToolUses(events, expectedToolNames) {
-  const found = findUnexpectedToolUses(events, expectedToolNames);
+export function summarizeUnexpectedToolUses(toolAttempts) {
+  const found = toolAttempts.filter((a) => !a.profileAllowed);
   return {
     ok: found.length === 0,
     count: found.length,
-    tools: found.map(({ name, index }) => ({ name, event_index: index })),
+    tools: found.map(({ runtimeName, eventIndex }) => ({ name: runtimeName, event_index: eventIndex })),
   };
 }
 
 /**
- * Detects the exact pre-inference-failure signature a live macOS canary exposed: a terminal
- * `result` event with is_error:true, num_turns in [0,1], every usage counter exactly zero, and
- * zero tool_use of any kind -- the process spawned and Claude Code emitted a well-formed
- * transcript, but the model never got a genuine turn (auth broken before the first turn, in the
- * canary's case). All 4 conjuncts are required at once (AND): a real negative-outcome cell that
- * genuinely engaged -- more than one turn, any tool_use, or any non-zero usage counter, even with
- * is_error:true -- must never match this, since a wrong answer via legitimate engagement is data,
- * not a harness defect (see cli.mjs's scenarioHardGate doc comment on that same distinction).
- * Never inspects duration_ms, exit code in isolation, or any English-language text.
+ * Detects the exact pre-inference-failure signature a live macOS canary exposed: a terminal result
+ * with is_error:true, turn count in [0,1], every usage counter exactly zero, and zero tool
+ * attempts of any kind -- the process spawned and the runtime emitted a well-formed transcript, but
+ * the model never got a genuine turn (auth broken before the first turn, in the canary's case). All
+ * 4 conjuncts are required at once (AND): a real negative-outcome cell that genuinely engaged --
+ * more than one turn, any tool attempt, or any non-zero usage counter, even with terminal
+ * isError:true -- must never match this, since a wrong answer via legitimate engagement is data,
+ * not a harness defect (see cli.mjs's scenarioHardGate doc comment on that same distinction). Never
+ * inspects duration, exit code in isolation, or any English-language text.
  *
  * The usage conjunct fails CLOSED on ambiguity (post-adversarial-review fix): an entirely absent
- * `usage` block, or one missing even a single one of its 4 counters, is treated as CONSISTENT
- * with -- never as ruling out -- the failure signature, given the other 3 conjuncts already hold.
- * The only observed incident shape has `usage` present with every counter at an explicit 0, but
- * that is the sole evidence this repo has for the real CLI's error-path JSON; failing open on a
- * missing counter would silently promote the exact class of cell this check exists to catch, the
- * first time a real failure's JSON happens to omit rather than zero a field. A genuinely non-zero
- * counter is checked first and still unconditionally rules this out, regardless of any OTHER
- * counter being absent -- real engagement is real engagement.
- * @param {object} conditionResult - reads .result (the raw stream-json `result` event) and .events
+ * terminal (present:false), or a usage counter that is null, is treated as CONSISTENT with -- never
+ * as ruling out -- the failure signature, given the other 3 conjuncts already hold. The only
+ * observed incident shape has every usage counter at an explicit 0, but that is the sole evidence
+ * this repo has for the real runtime's error-path JSON; failing open on a null counter would
+ * silently promote the exact class of cell this check exists to catch, the first time a real
+ * failure's JSON happens to omit rather than zero a field. A genuinely non-zero counter is checked
+ * first and still unconditionally rules this out, regardless of any OTHER counter being null --
+ * real engagement is real engagement.
+ * @param {object} observation - conditionResult.observation
  * @returns {boolean}
  */
-function isPreInferenceFailureSignature(conditionResult) {
-  const result = conditionResult.result;
-  if (result == null || result.is_error !== true) return false;
-  if (!Number.isInteger(result.num_turns) || result.num_turns < 0 || result.num_turns > 1) return false;
-  const usage = extractTokenUsage(result);
-  const counters = usage == null ? [] : [usage.input, usage.output, usage.cache_read, usage.cache_creation];
+function isPreInferenceFailureSignature(observation) {
+  const terminal = observation.terminal;
+  if (!terminal.present || terminal.isError !== true) return false;
+  if (!Number.isInteger(terminal.turnCount) || terminal.turnCount < 0 || terminal.turnCount > 1) return false;
+  const counters = [terminal.usage.input, terminal.usage.output, terminal.usage.cached_input, terminal.usage.cache_write];
   if (counters.some((v) => typeof v === 'number' && v !== 0)) return false;
-  if (findAllToolUses(conditionResult.events).length !== 0) return false;
+  if (observation.toolAttempts.length !== 0) return false;
   return true;
 }
 
@@ -152,8 +120,7 @@ function isPreInferenceFailureSignature(conditionResult) {
  *    place.
  *
  * `availabilityOk`/`noSkillSafetyOk` ARE included below, computed directly from
- * `conditionResult.init`/`conditionResult.invocation` via the exact same primitives
- * (isSkillAvailable, invocation?.confirmed) buildRunRecord itself uses to populate
+ * `observation.skill` via the exact same fields buildRunRecord itself uses to populate
  * `record.skill_available.value`/`record.skill_invoked.value` -- a pure, untransformed
  * passthrough, so this function's verdict for these two checks is provably identical to what the
  * final gate would compute from a built record. cli.mjs's own scenarioCellIntegrityOk
@@ -165,13 +132,15 @@ function isPreInferenceFailureSignature(conditionResult) {
  * `checksByName`.
  *
  * @param {object} conditionResult - matrix-runner.mjs's runSingleCondition() return shape (or
- *   cli.mjs's runConditionPair equivalent) -- reads .condition, .init, .events, .hookStats,
- *   .malformedLines, .spawnResult, .snapshotDir, .invocation.
- * @param {{targetPluginName: string, targetSkillName: string, expectedToolNames?: Set<string>,
- *   requireDispatchAccounting: boolean}} opts - `requireDispatchAccounting` is REQUIRED and selects how
- *   `hookAccountingOk` is proven, and is deliberately EXPLICIT rather than inferred from whether
- *   the accounting happens to be present. `true` (scenario matrices and the scenario hard gate)
- *   demands the canonical per-tool_use_id dispatch accounting: a missing or malformed
+ *   cli.mjs's runConditionPair equivalent) -- reads .condition, .observation, .dispatchAccounting.
+ * @param {{requireDispatchAccounting: boolean}} opts - a caller may still pass targetPluginName/
+ *   targetSkillName alongside this (matrix-runner.mjs and cli.mjs's own call sites do, for
+ *   readability at the call site) -- harmlessly ignored, since every check that used to need them
+ *   now reads the adapter's own already-target-aware observation fields instead.
+ *   `requireDispatchAccounting` is REQUIRED and selects how `hookAccountingOk` is proven, and is
+ *   deliberately EXPLICIT rather than inferred from
+ *   whether the accounting happens to be present. `true` (scenario matrices and the scenario hard
+ *   gate) demands the canonical per-tool_use_id dispatch accounting: a missing or malformed
  *   `dispatchAccounting` fails closed. `false` (runConditionPair / calibrate / smoke) keeps the
  *   pre-existing aggregate `hookStats.everyCallHooked` proof, because those run kinds have no
  *   per-attempt decision channel at all (no KMP_EVAL_JUNIT_EVIDENCE_DIR, hence no decision
@@ -183,17 +152,18 @@ function isPreInferenceFailureSignature(conditionResult) {
  *   unexpectedTools: Array<{name: string, event_index: number}>, checksByName: Record<string, boolean>,
  *   foreignSkillUses: Array<object>}}
  */
-export function cellTranscriptIntegrityOk(conditionResult, { targetPluginName, targetSkillName, expectedToolNames = EXPECTED_TOOL_NAMES, requireDispatchAccounting }) {
+export function cellTranscriptIntegrityOk(conditionResult, { requireDispatchAccounting }) {
+  const observation = conditionResult.observation;
   const expectSkillAvailable = conditionResult.condition === 'current-skill';
-  const availabilityOk = isSkillAvailable(conditionResult.init, targetPluginName) === expectSkillAvailable;
-  const noSkillSafetyOk = expectSkillAvailable || (conditionResult.invocation?.confirmed ?? false) === false;
-  const pluginProfileOk = hasExpectedPluginProfile(conditionResult.init, targetPluginName, expectSkillAvailable);
-  const pluginSnapshotBindingOk = !expectSkillAvailable || isPluginBoundToSnapshot(conditionResult.init, conditionResult.snapshotDir);
-  const foreignSkillUses = classifyForeignSkillUses(conditionResult.events, targetPluginName, targetSkillName);
+  const availabilityOk = observation.skill.available === expectSkillAvailable;
+  const noSkillSafetyOk = expectSkillAvailable || (observation.skill.targetInvocation?.confirmed ?? false) === false;
+  const pluginProfileOk = observation.skill.profileMatchesCondition;
+  const pluginSnapshotBindingOk = !expectSkillAvailable || observation.skill.snapshotBindingMatches;
+  const foreignSkillUses = observation.skill.foreignInvocations;
   const foreignSkillToolResultsCompleteOk = !foreignSkillUses.some((u) => u.resultIsError === null);
-  const initOk = conditionResult.init != null;
-  const toolProfileOk = hasExpectedToolProfile(conditionResult.init, expectedToolNames);
-  const unexpectedTools = summarizeUnexpectedToolUses(conditionResult.events, expectedToolNames);
+  const initOk = observation.session.initPresent;
+  const toolProfileOk = observation.session.toolProfileMatchesExpected;
+  const unexpectedTools = summarizeUnexpectedToolUses(observation.toolAttempts);
   const noUnexpectedToolsOk = unexpectedTools.ok;
   // Mechanism integrity only -- never `hook_deny_count === 0`; a denial is the policy hook working
   // as intended and is itself valid data. Under requireDispatchAccounting the proof is the
@@ -206,17 +176,15 @@ export function cellTranscriptIntegrityOk(conditionResult, { targetPluginName, t
   const hookAccountingOk = requireDispatchAccounting === true
     ? conditionResult.dispatchAccounting?.everyCallAccountedFor === true
     : requireDispatchAccounting === false
-      ? conditionResult.hookStats.everyCallHooked === true
+      ? observation.hookStats.everyCallHooked === true
       : false;
-  const cleanTranscriptOk = conditionResult.malformedLines.length === 0;
-  const timeoutCtx = { terminated: conditionResult.spawnResult.terminated, terminationReason: conditionResult.spawnResult.terminationReason };
-  const transcriptStructureOk = findTranscriptStructuralIssuesToleratingTimeout(conditionResult.events, timeoutCtx).length === 0;
-  const toolResultsCompleteOk = findIncompleteToolResultsToleratingTimeout(conditionResult.events, timeoutCtx).length === 0;
-  const terminationOk = conditionResult.spawnResult.terminated === false || conditionResult.spawnResult.terminationReason === 'timeout';
-  const ambientProfile = computeAmbientSkillProfile(conditionResult.init, targetPluginName, targetSkillName, { expectTargetPresent: expectSkillAvailable });
-  const ambientSkillProfileOk = ambientProfile.structurallyWellFormed;
-  const targetSkillAmbientIdentityOk = ambientProfile.targetIdentityOk;
-  const noPreInferenceFailureOk = !isPreInferenceFailureSignature(conditionResult);
+  const cleanTranscriptOk = observation.transcript.malformedLineCount === 0;
+  const transcriptStructureOk = observation.transcript.effectiveStructuralIssues.length === 0;
+  const toolResultsCompleteOk = observation.transcript.effectiveIncompleteToolResults.length === 0;
+  const terminationOk = observation.process.terminated === false || observation.process.terminationReason === 'timeout';
+  const ambientSkillProfileOk = observation.skill.ambient.structurallyWellFormed;
+  const targetSkillAmbientIdentityOk = observation.skill.ambient.targetIdentityOk;
+  const noPreInferenceFailureOk = !isPreInferenceFailureSignature(observation);
 
   const checksByName = {
     availabilityOk, noSkillSafetyOk, pluginProfileOk, pluginSnapshotBindingOk,

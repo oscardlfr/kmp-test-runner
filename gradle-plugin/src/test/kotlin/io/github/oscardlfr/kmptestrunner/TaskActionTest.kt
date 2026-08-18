@@ -14,6 +14,34 @@ import java.util.stream.Stream
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
+/**
+ * Resolves the real node.exe for TaskActionTest's Windows shim without ever shelling out to
+ * cmd.exe: on hosts where a child cmd.exe process inherits an empty PATH regardless of the
+ * caller's own environment, the previous `cmd.exe /c where node` discovery failed outright.
+ * `KMP_LOCAL_CI_NODE_EXE` (set by
+ * tools/local-ci/windows-gate.ps1 to the already-validated node24 path) is used when present and
+ * is REQUIRED to be valid -- an invalid override is a configuration bug in the caller and must
+ * fail closed, not silently fall through to the PATH walk. When the variable is absent entirely
+ * (e.g. running this test directly from an IDE, outside windows-gate.ps1), falls back to a pure
+ * Kotlin walk of PATH for a regular `node.exe` file -- still no cmd.exe involved.
+ */
+internal fun resolveWindowsNodeExe(env: Map<String, String>): String {
+    val override = env["KMP_LOCAL_CI_NODE_EXE"]
+    if (override != null) {
+        val f = File(override)
+        if (!f.isAbsolute) error("KMP_LOCAL_CI_NODE_EXE must be an absolute path, got: $override")
+        if (!f.isFile) error("KMP_LOCAL_CI_NODE_EXE does not point to an existing regular file: $override")
+        return f.absolutePath
+    }
+    val pathKey = env.keys.firstOrNull { it.equals("PATH", ignoreCase = true) } ?: "PATH"
+    for (dir in env[pathKey].orEmpty().split(File.pathSeparator)) {
+        if (dir.isBlank()) continue
+        val candidate = File(dir, "node.exe")
+        if (candidate.isFile) return candidate.absolutePath
+    }
+    error("Cannot locate node.exe: KMP_LOCAL_CI_NODE_EXE is not set and no node.exe was found on PATH")
+}
+
 class TaskActionTest {
 
     @TempDir lateinit var projectDir: File
@@ -52,22 +80,25 @@ class TaskActionTest {
     }
 
     /**
-     * Windows: creates node.bat so cmd.exe-routed invocations find it via PATHEXT.
-     * Injects KMP_NODE_LAUNCHER="cmd.exe /c node" so buildNodeCommand gates through
-     * cmd.exe — otherwise CreateProcess skips PATHEXT and node.bat is invisible.
+     * Windows: points KMP_NODE_LAUNCHER directly at the real, already-resolved node.exe (a single
+     * executable, no .bat, no cmd.exe -- resolveNodeCommand treats it as one argv element).
+     * Recording argv no longer needs a node.bat intermediary: NODE_OPTIONS preloads the recorder
+     * via `--require`, which runs (and, since it calls process.exit(0), terminates the process)
+     * BEFORE the real runnerPath entry script ever starts -- process.argv is unaffected by
+     * --require preloading, so the recorder's existing process.argv.slice(2) read is unchanged.
+     * A single explicit assignment (not an append) so this fixture's own preload is never
+     * accidentally combined with an inherited ambient NODE_OPTIONS from the calling environment.
+     * NODE_OPTIONS's own parser treats backslash as an escape character (confirmed directly: a
+     * raw Windows path here silently lost every backslash, producing an unresolvable module path)
+     * -- forward slashes are used instead, which Windows/Node accept interchangeably in paths.
      */
     private fun createWindowsShim(logFile: File): Map<String, String> {
-        val realNode = ProcessBuilder(listOf("cmd.exe", "/c", "where node"))
-            .start().inputStream.bufferedReader().readLine()?.trim()
-            ?: error("Cannot locate node.exe on PATH")
+        val realNode = resolveWindowsNodeExe(System.getenv())
         val recorderJs = createRecorderJs(shimDir)
-        File(shimDir, "node.bat").writeText(
-            "@echo off\r\n" +
-            "\"$realNode\" \"${recorderJs.absolutePath}\" %*\r\n" +
-            "exit /b 0\r\n"
-        )
+        val recorderJsForNodeOptions = recorderJs.absolutePath.replace('\\', '/')
         return buildShimEnv(logFile).toMutableMap().also {
-            it["KMP_NODE_LAUNCHER"] = "cmd.exe /c node"
+            it["KMP_NODE_LAUNCHER"] = realNode
+            it["NODE_OPTIONS"] = "--require \"$recorderJsForNodeOptions\""
         }
     }
 

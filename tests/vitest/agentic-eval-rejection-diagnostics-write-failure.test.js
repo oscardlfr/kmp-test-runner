@@ -26,22 +26,39 @@ vi.mock('../../tools/agentic-eval/rejection-diagnostics.mjs', async (importOrigi
   };
 });
 
-// Same fakeConditionResult()/buildRunRecord() pattern already established in
+// Same fakeObservation()/fakeConditionResult()/buildRunRecord() pattern already established in
 // agentic-eval-cli.test.js's "finalizeAndWriteRecords -- fails closed on a dirty measured-code
 // tree" describe block -- produces a REAL, fully schema-valid record pair (every field
 // buildRunRecord actually populates), so the test reaches the hard-gate branch instead of
 // tripping on the EARLIER schema-validation step with a hand-rolled, incomplete record literal.
+// Matches the canonical minimal condition-observation-v1 shape (see e.g.
+// agentic-eval-graders.test.js's own baseObservation helper) -- buildRunRecord now reads
+// conditionResult.observation exclusively, never a raw provider event.
+function fakeObservation(overrides = {}) {
+  return {
+    schema: 1,
+    runtime: { id: 'claude-code', protocolVersion: 1 },
+    process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+    session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+    transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+    toolAttempts: [],
+    skill: {
+      available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+      targetInvocation: null, foreignInvocations: [],
+      ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+    },
+    hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+    byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+    timing: { receiptNsByEventIndex: new Map() },
+    ...overrides,
+  };
+}
 function fakeConditionResult(overrides = {}) {
   return {
-    init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-    result: { subtype: 'success', is_error: false },
-    invocation: null,
-    hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
-    byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+    observation: fakeObservation(),
     startedAt: new Date('2026-01-01T00:00:00.000Z'),
     endedAt: new Date('2026-01-01T00:00:01.000Z'),
-    spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
-    events: [],
     ...overrides,
   };
 }
@@ -82,10 +99,13 @@ describe('finalizeAndWriteRecords -- a rejection-diagnostics write failure never
       // #418, round 4).
       const result = await finalizeAndWriteRecords({
         runKind: 'calibration', recordA, recordB,
-        runA: { spawnResult: { rawStdout: '' }, events: [], cellOrdinal: 1 },
-        runB: { spawnResult: { rawStdout: '' }, events: [], cellOrdinal: 0 },
+        runA: { observation: fakeObservation(), cellOrdinal: 1 },
+        runB: { observation: fakeObservation(), cellOrdinal: 0 },
         hardGateFn: alwaysFailGate,
         runsRootOverride,
+        // Transaction 1 (raw transcripts) is NOT mocked here -- it must succeed for real, so this
+        // needs genuinely-writable string content, not merely a shape that passes validation.
+        transcriptsByRunId: { [recordA.run_id]: '', [recordB.run_id]: '' },
       });
 
       expect(result.ok).toBe(false);
@@ -141,11 +161,13 @@ describe('finalizeAndWriteRecords -- a rejection-diagnostics write failure never
       // own orderIndex 0/1) -- captureOrdinalByRunId now derives from conditionResult.cellOrdinal,
       // never array position, so two conditionResults sharing one cellOrdinal (or lacking it
       // entirely) would fail validateCaptureOrdinalSet's own uniqueness/shape check.
-      const conditionResultA = { ...fakeConditionResult(), spawnResult: { rawStdout: '', terminated: false, terminationReason: null }, cellOrdinal: 0 };
-      const conditionResultB = { ...fakeConditionResult(), spawnResult: { rawStdout: '', terminated: false, terminationReason: null }, cellOrdinal: 1 };
+      const conditionResultA = { ...fakeConditionResult(), cellOrdinal: 0 };
+      const conditionResultB = { ...fakeConditionResult(), cellOrdinal: 1 };
       const result = await finalizeAndWriteMatrixRecords({
         runKind: 'scenario', records: [recordA, recordB], conditionResults: [conditionResultA, conditionResultB],
         hardGateFn: alwaysFailMatrixGate, runsRootOverride, repeats: 1,
+        // Transaction 1 (raw transcripts) is NOT mocked here -- it must succeed for real.
+        transcriptsByRunId: { [recordA.run_id]: '', [recordB.run_id]: '' },
       });
 
       expect(result.ok).toBe(false);
@@ -186,10 +208,11 @@ describe('finalizeAndWriteRecords -- captureOrdinalByRunId is derived from the r
       const result = await finalizeAndWriteRecords({
         runKind: 'calibration', recordA, recordB,
         // Deliberately swapped relative to the codebase's own historical B=0/A=1 convention.
-        runA: { spawnResult: { rawStdout: '' }, events: [], cellOrdinal: 0 },
-        runB: { spawnResult: { rawStdout: '' }, events: [], cellOrdinal: 1 },
+        runA: { observation: fakeObservation(), cellOrdinal: 0 },
+        runB: { observation: fakeObservation(), cellOrdinal: 1 },
         hardGateFn: alwaysFailGate,
         runsRootOverride,
+        transcriptsByRunId: { [recordA.run_id]: '', [recordB.run_id]: '' },
       });
 
       expect(result.ok).toBe(false);

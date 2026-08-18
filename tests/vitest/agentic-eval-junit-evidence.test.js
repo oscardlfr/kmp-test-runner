@@ -1127,22 +1127,24 @@ describe('attributeCondition -- wrong-module kmp-test parallel attempts still ge
 // can exist. That is not a capture-mechanism failure and must not raise captureIncomplete. It is
 // admitted ONLY for the exact recognized product shape; anything else still fails closed.
 describe('resolveDecisions -- recognized pre-dispatch block does not contaminate captureIncomplete', () => {
-  const BODY = 'Blocked: standalone sleep 60. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.';
-  const BLOCKED_CONTENT = `<tool_use_error>${BODY}</tool_use_error>`;
-  const BLOCKED_TOOL_USE_RESULT = `Error: ${BODY}`;
-
-  /** A findBashToolUsesWithResults-shaped entry for a pre-dispatch-blocked `sleep 60`. */
+  // Canonical shell-attempt shape (runtimes/contract.mjs's toolAttempts[] entry, filtered to
+  // kind:'shell') -- resolveDecisions now reads attempt.preDispatchBlock.recognized directly,
+  // never re-running the strict transcript matcher itself (that now runs exactly once, inside the
+  // runtime adapter's normalizeObservations). The 6 near-miss PRECISION cases this describe block
+  // used to exercise directly (wrong command, divergent message, divergent tool_use_result,
+  // non-error result, non-immediate result, multi-block result event) moved to
+  // tests/vitest/agentic-eval-claude-runtime-adapter.test.js's own 'isRecognizedPreDispatchBlock
+  // normalization' describe block -- the one place that matching logic still lives; no case's
+  // outcome changed, only where it's proven did. This file keeps the resolveDecisions-level
+  // behavior: given an attempt the adapter already marked recognized (or not), does
+  // captureIncomplete/preDispatchBlockedAttemptIds come out right.
   function blockedAttempt(overrides = {}) {
     return {
       id: 'tblocked',
       command: 'sleep 60',
       index: 10,
       resultFound: true,
-      resultIsError: true,
-      resultIndex: 11,
-      resultContent: BLOCKED_CONTENT,
-      resultToolUseResult: BLOCKED_TOOL_USE_RESULT,
-      resultEventContentBlocks: 1,
+      preDispatchBlock: { recognized: true, signature: 'claude-code/bash-pre-dispatch-block/v1' },
       ...overrides,
     };
   }
@@ -1160,17 +1162,10 @@ describe('resolveDecisions -- recognized pre-dispatch block does not contaminate
     }
   });
 
-  it.each([
-    ['a different command', { command: 'sleep 59' }],
-    ['a divergent message', { resultContent: '<tool_use_error>Blocked: something else.</tool_use_error>' }],
-    ['a divergent tool_use_result', { resultToolUseResult: 'Error: nope' }],
-    ['a non-error result', { resultIsError: false }],
-    ['a non-immediate result', { resultIndex: 13 }],
-    ['a multi-block result event', { resultEventContentBlocks: 2 }],
-  ])('still raises captureIncomplete for %s', (_label, overrides) => {
+  it('still raises captureIncomplete when the adapter did not mark this attempt as a recognized pre-dispatch block', () => {
     const dir = makeEvidenceDir();
     try {
-      const result = resolveDecisions(dir, [blockedAttempt(overrides)]);
+      const result = resolveDecisions(dir, [blockedAttempt({ preDispatchBlock: { recognized: false, signature: null } })]);
       expect(result.captureIncomplete).toBe(true);
       expect(result.preDispatchBlockedAttemptIds.size).toBe(0);
     } finally {
@@ -1195,7 +1190,7 @@ describe('resolveDecisions -- recognized pre-dispatch block does not contaminate
     try {
       writeDecision(dir, 't1', 'allow', 'kmp-test parallel --json');
       const bashResults = [
-        { id: 't1', command: 'kmp-test parallel --json', index: 2, resultFound: true, resultIsError: false },
+        { id: 't1', command: 'kmp-test parallel --json', index: 2, resultFound: true, preDispatchBlock: { recognized: false, signature: null } },
         blockedAttempt(),
       ];
       const result = resolveDecisions(dir, bashResults);

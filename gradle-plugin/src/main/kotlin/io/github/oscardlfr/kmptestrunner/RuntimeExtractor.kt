@@ -71,18 +71,25 @@ internal object RuntimeExtractor {
  * Builds the node command list for spawning the bundled runner.
  *
  * Production default is always `["node", runnerPath, ...]`.
- * KMP_NODE_LAUNCHER is a test-only hook: tests on Windows inject
- * "cmd.exe /c node" here so that a node.bat recorder shim placed on PATH
- * is found via PATHEXT (CreateProcess ignores PATHEXT without cmd.exe routing).
- * This variable is never set in production and has no user-facing semantics.
+ * KMP_NODE_LAUNCHER is a test-only hook: TaskActionTest's Windows fixture sets it to the
+ * already-resolved, absolute node.exe path so its own recorder shim (preloaded via NODE_OPTIONS,
+ * not a PATH-based node.bat) is the exact binary GradleRunner's nested build invokes. Never set in
+ * production and has no user-facing semantics.
  */
-internal fun buildNodeCommand(runnerPath: String, vararg extra: String): List<String> {
-    val launcher = System.getenv("KMP_NODE_LAUNCHER")
-    return if (!launcher.isNullOrEmpty())
-        launcher.split(" ") + listOf(runnerPath, *extra)
+internal fun buildNodeCommand(runnerPath: String, vararg extra: String): List<String> =
+    resolveNodeCommand(System.getenv("KMP_NODE_LAUNCHER"), runnerPath, *extra)
+
+/**
+ * Pure decision logic behind [buildNodeCommand], split out so it is directly testable without
+ * mutating this JVM's real environment. `launcher`, when non-empty, is always exactly ONE argv
+ * element -- a single executable path, never split on whitespace (a launcher path containing a
+ * space, e.g. under "Program Files", must arrive as one token, not be fragmented).
+ */
+internal fun resolveNodeCommand(launcher: String?, runnerPath: String, vararg extra: String): List<String> =
+    if (!launcher.isNullOrEmpty())
+        listOf(launcher, runnerPath, *extra)
     else
         listOf("node", runnerPath, *extra)
-}
 
 /**
  * Spawns the bundled runner via Gradle's injected [ExecOperations] — the

@@ -182,6 +182,32 @@ describe('real .gitattributes coverage (M9 bats/CRLF)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Real .gitattributes coverage (regression — runtime-adapter refactor: a shebang line combined
+// with CRLF endings breaks Vite's SSR transform, `const hashbangRE = /^#!.*\n/` in
+// node_modules/vite/dist/node/chunks/config.js not matching because `.` never consumes `\r`, a
+// line terminator in JS regex semantics — so the file parses as if it started with a bare `#`.
+// `tools/agentic-eval/*.mjs text eol=lf` (a single `*`) does not cross the `runtimes/`
+// subdirectory boundary, so runtime-adapter files written there were never LF-normalized.
+// graders.mjs (a direct child of tools/agentic-eval/) is already covered and stays LF; these
+// prove the nested runtimes/ path specifically, which the existing single-star rule cannot reach.
+
+describe('real .gitattributes coverage (shebang+CRLF breaks Vite SSR transform)', () => {
+  const realPatterns = parseLFPatterns(readFileSync(join(REPO_ROOT, '.gitattributes'), 'utf8'));
+
+  it('already covers a direct child of tools/agentic-eval/ (sanity check)', () => {
+    expect(shouldCheckLF('tools/agentic-eval/graders.mjs', realPatterns)).toBe(true);
+  });
+
+  it('covers tools/agentic-eval/runtimes/contract.mjs', () => {
+    expect(shouldCheckLF('tools/agentic-eval/runtimes/contract.mjs', realPatterns)).toBe(true);
+  });
+
+  it('covers tools/agentic-eval/runtimes/claude-code.mjs', () => {
+    expect(shouldCheckLF('tools/agentic-eval/runtimes/claude-code.mjs', realPatterns)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // checkFiles
 
 describe('checkFiles', () => {

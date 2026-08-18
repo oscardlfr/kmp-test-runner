@@ -86,17 +86,7 @@ describe('resolveHarnessProvenance -- fails closed when the git status check its
     expect(provenance.measuredCodeCheckFailed).toBe(true);
     expect(provenance.measuredCodeDirtyPaths).toEqual([]);
 
-    const conditionResult = {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-      result: { subtype: 'success', is_error: false },
-      invocation: null,
-      hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
-      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
-      startedAt: new Date('2026-01-01T00:00:00.000Z'),
-      endedAt: new Date('2026-01-01T00:00:01.000Z'),
-      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
-      events: [],
-    };
+    const conditionResult = fakeConditionResult();
     const { computePolicySha256 } = await import('../../tools/agentic-eval/policy-config.mjs');
     const record = buildRunRecord({
       conditionResult, condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-git-fail',
@@ -152,21 +142,38 @@ describe('resolveHarnessProvenance -- the measured-code pathspec covers tools/li
 // message text catching up. Asserts on substance (contains the corrected framing, drops the old
 // absolute claim) via .toContain(), never a full-message deep-equal/snapshot, so this survives
 // incidental future rewording as long as the conditional truth is still stated.
+// Matches the canonical minimal condition-observation-v1 shape (see e.g.
+// agentic-eval-graders.test.js's own baseObservation helper) -- buildRunRecord now reads
+// conditionResult.observation exclusively, never a raw provider event.
+function fakeConditionResult() {
+  return {
+    observation: {
+      schema: 1,
+      runtime: { id: 'claude-code', protocolVersion: 1 },
+      process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+      terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      toolAttempts: [],
+      skill: {
+        available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+        targetInvocation: null, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+      },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      timing: { receiptNsByEventIndex: new Map() },
+    },
+    startedAt: new Date('2026-01-01T00:00:00.000Z'),
+    endedAt: new Date('2026-01-01T00:00:01.000Z'),
+  };
+}
+
 async function buildRecordWithHarnessToolingError() {
   const { resolveHarnessProvenance, buildRunRecord } = await import('../../tools/agentic-eval/cli.mjs');
   const { computePolicySha256 } = await import('../../tools/agentic-eval/policy-config.mjs');
   resolveHarnessProvenance({ fresh: true });
-  const conditionResult = {
-    init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-    result: { subtype: 'success', is_error: false },
-    invocation: null,
-    hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
-    byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
-    startedAt: new Date('2026-01-01T00:00:00.000Z'),
-    endedAt: new Date('2026-01-01T00:00:01.000Z'),
-    spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
-    events: [],
-  };
+  const conditionResult = fakeConditionResult();
   return buildRunRecord({
     conditionResult, condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-harness-tooling-wording',
     skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',

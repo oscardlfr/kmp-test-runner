@@ -1,0 +1,25 @@
+{
+  "id": "synthetic-multi-source",
+  "note": "Synthetic fixture for tools/agentic-eval/runtimes/contract.mjs conformance tests only. Not a real product wire format; asserts nothing about any real coding-agent runtime.",
+  "primaryStream": {
+    "sessionId": "syn-multi-session-0001",
+    "modelResolved": "synthetic-model-a",
+    "steps": [
+      { "kind": "session-start" },
+      { "kind": "tool-invoke", "callId": "c1", "tool": "shell", "command": "echo synthetic-multi-source" },
+      { "kind": "tool-outcome", "callId": "c1", "ok": true, "output": "synthetic-multi-source\n" },
+      { "kind": "session-end", "outcome": "completed", "finalMessage": "synthetic run finished" }
+    ]
+  },
+  "hookLedger": {
+    "entries": [
+      { "callId": "c1", "decision": "allow" }
+    ]
+  },
+  "usageTelemetry": {
+    "inputUnits": 12,
+    "outputUnits": 5,
+    "cachedInputUnits": 2,
+    "cacheWriteUnits": 0
+  }
+}

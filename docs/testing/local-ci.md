@@ -50,6 +50,31 @@ Remote-only checks remain: GitHub App branch-protection drift, TruffleHog's veri
 lookup, commit-title status, CodeRabbit, and the final hosted-runner confirmation. macOS remains
 in the separate manually dispatched validation workflow.
 
+### Windows hermeticity: avoiding a broken child cmd.exe
+
+Some Windows hosts run child `cmd.exe` processes with an inherited PATH that is empty regardless
+of what the parent process's own environment contains — this breaks anything that shells out
+through `cmd.exe` for a bare-name lookup: npm's own lifecycle-script execution (`npm ci`'s
+`esbuild` postinstall spawns `cmd.exe /d /s /c node install.js`), a `.bat` file located and
+launched via PowerShell (PowerShell always routes `.bat`/`.cmd` execution through `cmd.exe`
+internally), or `ProcessBuilder(listOf("cmd.exe", "/c", "where node"))`-style discovery code. A
+plain (non-`PATH`) environment variable carrying an absolute path is unaffected and survives that
+same boundary intact.
+
+`windows-gate.ps1` resolves `powershell.exe` via `Get-Command` and sets `npm_config_script_shell`
+to it for the duration of the gate (restored exactly afterward, present-with-a-value or
+genuinely-absent, via `Set-ScopedEnvVar`/`Restore-ScopedEnvVar` in `environment-utils.ps1`) — this
+routes npm's own lifecycle scripts through PowerShell instead of `cmd.exe`. It also exposes
+`KMP_LOCAL_CI_NODE_EXE`, the already-validated absolute path to the Node 24 executable in use,
+restored the same way. `TaskActionTest`'s Windows fixture (`gradle-plugin/src/test/kotlin/.../
+TaskActionTest.kt`) reads that variable (falling back to a pure-Kotlin PATH walk, never `cmd.exe`,
+when run standalone outside this gate) instead of shelling out to `cmd.exe /c where node` to find
+node.exe, and points the plugin's own test-only `KMP_NODE_LAUNCHER` hook directly at that resolved
+executable (a single absolute path, never combined with `cmd.exe`) rather than at a `.bat` shim
+routed through it. `windows-metachar.test.js`'s Candidate B fixture (`echo-args.bat`) similarly
+takes the exact Node running Vitest via a dedicated `KMP_METACHAR_NODE_EXE` environment variable
+instead of a bare `node` PATH lookup.
+
 ## Cost discipline
 
 Open code-changing pull requests as drafts. Draft pushes skip the hosted test matrix. Consolidate
